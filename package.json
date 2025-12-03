@@ -1,0 +1,17 @@
+{
+  "name": "treecrdt-monorepo",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "lint": "echo \"TODO: add linting\"",
+    "build:ext:wasm": "cargo build -p treecrdt-sqlite-ext --target wasm32-unknown-emscripten --release --no-default-features --features static-link",
+    "build:ext:native": "cargo rustc -p treecrdt-sqlite-ext --release --no-default-features --features \"ext-sqlite rusqlite-storage\" -- --crate-type=cdylib",
+    "build": "pnpm -C packages/treecrdt-ts run build && pnpm run build:ext:wasm && (cd vendor/wa-sqlite && make clean-tmp dist) && pnpm -C packages/treecrdt-wa-sqlite run build:ts && pnpm -C packages/treecrdt-wa-sqlite/e2e run build && pnpm -C packages/treecrdt-sqlite-node run build",
+    "test:browser": "pnpm -C packages/treecrdt-wa-sqlite/e2e test:e2e",
+    "test:native-node": "pnpm -C packages/treecrdt-sqlite-node run test",
+    "test": "pnpm run test:browser && pnpm run test:native-node"
+  }
+}

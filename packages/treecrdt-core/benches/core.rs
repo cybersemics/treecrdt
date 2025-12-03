@@ -1,0 +1,63 @@
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use treecrdt_core::{AllowAllAccess, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
+
+fn bench_insert_chain(c: &mut Criterion) {
+    let sizes = [100u64, 1_000, 10_000];
+    let mut group = c.benchmark_group("insert_chain");
+
+    for size in sizes {
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &n| {
+            b.iter_batched(
+                || {
+                    TreeCrdt::new(
+                        ReplicaId::new(b"bench"),
+                        MemoryStorage::default(),
+                        AllowAllAccess,
+                        LamportClock::default(),
+                    )
+                },
+                |mut crdt| {
+                    let mut parent = NodeId::ROOT;
+                    for i in 0..n {
+                        let node = NodeId(i as u128 + 1);
+                        crdt.local_insert(parent, node, 0).unwrap();
+                        parent = node;
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_move_siblings(c: &mut Criterion) {
+    let mut group = c.benchmark_group("move_siblings");
+    group.bench_function("move_first_to_last", |b| {
+        b.iter_batched(
+            || {
+                let mut crdt = TreeCrdt::new(
+                    ReplicaId::new(b"bench"),
+                    MemoryStorage::default(),
+                    AllowAllAccess,
+                    LamportClock::default(),
+                );
+                for i in 0..1_000u64 {
+                    crdt.local_insert(NodeId::ROOT, NodeId(i as u128 + 1), i as usize)
+                        .unwrap();
+                }
+                crdt
+            },
+            |mut crdt| {
+                let first = NodeId(1);
+                crdt.local_move(first, NodeId::ROOT, 999).unwrap();
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
+criterion_group!(core, bench_insert_chain, bench_move_siblings);
+criterion_main!(core);

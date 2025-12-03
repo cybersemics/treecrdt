@@ -1,0 +1,32 @@
+{
+  "name": "@treecrdt/sqlite-node",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "native"
+  ],
+  "scripts": {
+    "build:native-ext": "cd ../.. && pnpm run build:ext:native",
+    "copy:ext": "node ./scripts/copy-ext.mjs",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
+    "test": "pnpm run build && vitest run"
+  },
+  "peerDependencies": {
+    "better-sqlite3": "^9.0.0"
+  },
+  "dependencies": {
+    "@treecrdt/interface": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.19.25",
+    "better-sqlite3": "^9.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  }
+}

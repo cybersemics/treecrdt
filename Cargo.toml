@@ -1,0 +1,14 @@
+[workspace]
+members = [
+  "packages/treecrdt-core",
+  "packages/treecrdt-sqlite-ext",
+  "packages/treecrdt-wasm",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.0.1"
+authors = ["Cybersemics Institute"]
+description = "Workspace for TreeCRDT core, SQLite extension, and bindings."

@@ -1,0 +1,12 @@
+[package]
+name = "treecrdt-wasm"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "WASM bridge for TreeCRDT."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+treecrdt-core = { path = "../treecrdt-core" }
