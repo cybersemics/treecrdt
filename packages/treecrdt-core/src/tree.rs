@@ -10,13 +10,19 @@ struct NodeState {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
     tombstone: bool,
-    last: Option<Stamp>,
 }
 
-#[derive(Clone, Debug)]
-struct Stamp {
-    lamport: Lamport,
-    id: OperationId,
+#[derive(Clone)]
+struct NodeSnapshot {
+    parent: Option<NodeId>,
+    position: Option<usize>,
+    tombstone: bool,
+}
+
+#[derive(Clone)]
+struct LogEntry {
+    op: Operation,
+    snapshot: NodeSnapshot,
 }
 
 impl NodeState {
@@ -25,7 +31,6 @@ impl NodeState {
             parent: None,
             children: Vec::new(),
             tombstone: false,
-            last: None,
         }
     }
 }
@@ -43,9 +48,17 @@ where
     clock: C,
     counter: u64,
     applied: HashSet<OperationId>,
+    log: Vec<LogEntry>, // ordered by (lamport, id)
     nodes: HashMap<NodeId, NodeState>,
-    pending: Vec<Operation>,
-    pending_ids: HashSet<OperationId>,
+}
+
+fn tie_breaker_id(op: &Operation) -> u128 {
+    let mut bytes = [0u8; 16];
+    let rep = &op.meta.id.replica.0;
+    let len = rep.len().min(8);
+    bytes[..len].copy_from_slice(&rep[..len]);
+    bytes[8..].copy_from_slice(&op.meta.id.counter.to_be_bytes());
+    u128::from_be_bytes(bytes)
 }
 
 impl<S, A, C> TreeCrdt<S, A, C>
@@ -64,9 +77,8 @@ where
             clock,
             counter: 0,
             applied: HashSet::new(),
+            log: Vec::new(),
             nodes,
-            pending: Vec::new(),
-            pending_ids: HashSet::new(),
         }
     }
 
@@ -123,10 +135,15 @@ where
     pub fn replay_from_storage(&mut self) -> Result<()> {
         let mut ops = self.storage.load_since(0)?;
         ops.sort_by(|a, b| (a.meta.lamport, &a.meta.id).cmp(&(b.meta.lamport, &b.meta.id)));
+        self.applied.clear();
+        self.log.clear();
         for op in ops {
             self.clock.observe(op.meta.lamport);
-            self.ingest_with_persist(op, false)?;
+            self.applied.insert(op.meta.id.clone());
+            let snapshot = Self::snapshot(&mut self.nodes, &op);
+            self.log.push(LogEntry { op, snapshot });
         }
+        self.rebuild_materialized();
         Ok(())
     }
 
@@ -150,6 +167,47 @@ where
         self.clock.now()
     }
 
+    /// Validate invariants: unique parent for each node, children parent pointers consistent,
+    /// and no cycles. Intended for tests and debugging.
+    pub fn validate_invariants(&self) -> Result<()> {
+        // parent consistency / duplicate child detection
+        for (pid, pstate) in &self.nodes {
+            let mut seen = HashSet::new();
+            for child in &pstate.children {
+                if !seen.insert(child) {
+                    return Err(Error::InvalidOperation("duplicate child entry".into()));
+                }
+                if let Some(child_state) = self.nodes.get(child) {
+                    if child_state.parent != Some(*pid) {
+                        return Err(Error::InvalidOperation("child parent mismatch".into()));
+                    }
+                } else {
+                    return Err(Error::InvalidOperation("child not present in nodes".into()));
+                }
+            }
+        }
+
+        // acyclic check
+        for node in self.nodes.keys() {
+            if self.has_cycle_from(*node) {
+                return Err(Error::InvalidOperation("cycle detected".into()));
+            }
+        }
+        Ok(())
+    }
+
+    fn has_cycle_from(&self, start: NodeId) -> bool {
+        let mut visited = HashSet::new();
+        let mut current = Some(start);
+        while let Some(n) = current {
+            if !visited.insert(n) {
+                return true;
+            }
+            current = self.nodes.get(&n).and_then(|s| s.parent);
+        }
+        false
+    }
+
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
         self.access.can_apply(&op)?;
         self.ingest(op.clone())?;
@@ -170,270 +228,207 @@ where
 {
     /// Helper primarily for tests to confirm whether a node exists according to storage.
     pub fn is_known(&self, node: NodeId) -> bool {
-        self.storage
-            .load_since(0)
-            .map(|ops| {
-                ops.iter().any(|op| match op.kind {
-                    OperationKind::Insert { node: n, .. } => n == node,
-                    OperationKind::Move { node: n, .. } => n == node,
-                    OperationKind::Delete { node: n } => n == node,
-                    OperationKind::Tombstone { node: n } => n == node,
-                })
-            })
-            .unwrap_or(false)
+        self.nodes.contains_key(&node)
     }
 
     fn ingest(&mut self, op: Operation) -> Result<()> {
-        self.ingest_with_persist(op, true)
-    }
-
-    fn ingest_with_persist(&mut self, op: Operation, persist: bool) -> Result<()> {
-        if self.applied.contains(&op.meta.id) || self.pending_ids.contains(&op.meta.id) {
-            return Ok(());
-        }
-
-        match self.apply_op(&op) {
-            Ok(()) => {
-                if persist {
-                    self.storage.apply(op.clone())?;
-                }
-                self.process_pending();
-                Ok(())
-            }
-            Err(Error::MissingDependency(_)) => {
-                self.queue_pending(op.clone());
-                if persist {
-                    self.storage.apply(op)?;
-                }
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn apply_op(&mut self, op: &Operation) -> Result<()> {
         if self.applied.contains(&op.meta.id) {
             return Ok(());
         }
 
+        self.applied.insert(op.meta.id.clone());
+        let idx = match self
+            .log
+            .binary_search_by(|existing| {
+                (existing.op.meta.lamport, &existing.op.meta.id)
+                    .cmp(&(op.meta.lamport, &op.meta.id))
+            }) {
+            Ok(i) => i,
+            Err(i) => i,
+        };
+        // undo suffix
+        for entry in self.log.iter().rev().take(self.log.len() - idx) {
+            Self::undo_entry(&mut self.nodes, entry);
+        }
+
+        // apply new op
+        let snapshot = Self::apply_forward(&mut self.nodes, &op);
+        let new_entry = LogEntry { op: op.clone(), snapshot };
+        self.log.insert(idx, new_entry);
+
+        // redo suffix
+        for entry in self.log.iter().skip(idx + 1) {
+            Self::apply_forward_with_snapshot(&mut self.nodes, entry);
+        }
+
+        self.storage.apply(op)?;
+        Ok(())
+    }
+
+    fn rebuild_materialized(&mut self) {
+        let mut nodes: HashMap<NodeId, NodeState> = HashMap::new();
+        nodes.insert(NodeId::ROOT, NodeState::new_root());
+        for entry in &self.log {
+            Self::apply_forward_with_snapshot(&mut nodes, entry);
+        }
+        self.nodes = nodes;
+    }
+
+    fn ensure_node(nodes: &mut HashMap<NodeId, NodeState>, id: NodeId) {
+        nodes.entry(id).or_insert(NodeState {
+            parent: None,
+            children: Vec::new(),
+            tombstone: false,
+        });
+    }
+
+    fn apply_forward(nodes: &mut HashMap<NodeId, NodeState>, op: &Operation) -> NodeSnapshot {
+        let snapshot = Self::snapshot(nodes, op);
         match &op.kind {
             OperationKind::Insert {
                 parent,
                 node,
                 position,
-            } => self.apply_insert(op, *parent, *node, *position)?,
+            } => Self::apply_insert(nodes, *parent, *node, *position),
             OperationKind::Move {
                 node,
                 new_parent,
                 position,
-            } => self.apply_move(op, *node, *new_parent, *position)?,
+            } => Self::apply_move(nodes, *node, *new_parent, *position),
             OperationKind::Delete { node } | OperationKind::Tombstone { node } => {
-                self.apply_delete(op, *node)?
+                Self::apply_delete(nodes, *node)
             }
         }
-
-        self.applied.insert(op.meta.id.clone());
-        Ok(())
+        snapshot
     }
 
-    fn apply_insert(
-        &mut self,
-        op: &Operation,
-        parent: NodeId,
-        node: NodeId,
-        position: usize,
-    ) -> Result<()> {
+    fn apply_forward_with_snapshot(nodes: &mut HashMap<NodeId, NodeState>, entry: &LogEntry) {
+        Self::apply_forward(nodes, &entry.op);
+    }
+
+    fn snapshot(nodes: &mut HashMap<NodeId, NodeState>, op: &Operation) -> NodeSnapshot {
+        let node_id = match &op.kind {
+            OperationKind::Insert { node, .. }
+            | OperationKind::Move { node, .. }
+            | OperationKind::Delete { node }
+            | OperationKind::Tombstone { node } => *node,
+        };
+        Self::ensure_node(nodes, node_id);
+        let parent = nodes.get(&node_id).and_then(|n| n.parent);
+        let position = parent.and_then(|p| {
+            nodes
+                .get(&p)
+                .and_then(|pnode| pnode.children.iter().position(|c| c == &node_id))
+        });
+        let tombstone = nodes.get(&node_id).map(|n| n.tombstone).unwrap_or(false);
+        NodeSnapshot {
+            parent,
+            position,
+            tombstone,
+        }
+    }
+
+    fn undo_entry(nodes: &mut HashMap<NodeId, NodeState>, entry: &LogEntry) {
+        let node_id = match &entry.op.kind {
+            OperationKind::Insert { node, .. }
+            | OperationKind::Move { node, .. }
+            | OperationKind::Delete { node }
+            | OperationKind::Tombstone { node } => *node,
+        };
+        Self::ensure_node(nodes, node_id);
+        // detach current
+        Self::detach(nodes, node_id);
+        if let Some(parent) = entry.snapshot.parent {
+            Self::ensure_node(nodes, parent);
+            let pos = entry.snapshot.position.unwrap_or_else(|| {
+                nodes
+                    .get(&parent)
+                    .map(|p| p.children.len())
+                    .unwrap_or(0)
+            });
+            Self::attach(nodes, node_id, parent, pos);
+        } else {
+            if let Some(entry_state) = nodes.get_mut(&node_id) {
+                entry_state.parent = None;
+            }
+        }
+        if let Some(node_state) = nodes.get_mut(&node_id) {
+            node_state.tombstone = entry.snapshot.tombstone;
+        }
+    }
+
+    fn apply_insert(nodes: &mut HashMap<NodeId, NodeState>, parent: NodeId, node: NodeId, position: usize) {
         if parent == node {
-            return Err(Error::InvalidOperation("parent cannot equal node".into()));
+            return;
         }
-
-        if !self.nodes.contains_key(&parent) {
-            return Err(Error::MissingDependency(format!(
-                "missing parent {:?}",
-                parent
-            )));
+        Self::ensure_node(nodes, parent);
+        Self::ensure_node(nodes, node);
+        if Self::introduces_cycle(nodes, node, parent) {
+            return;
         }
-
-        {
-            let entry = self.nodes.entry(node).or_insert(NodeState {
-                parent: Some(parent),
-                children: Vec::new(),
-                tombstone: false,
-                last: None,
-            });
-            if !is_newer(entry.last.as_ref(), op) {
-                return Ok(());
-            }
-        }
-
-        let old_parent = self.nodes.get(&node).and_then(|n| n.parent);
-        if let Some(old_parent) = old_parent {
-            if let Some(parent_entry) = self.nodes.get_mut(&old_parent) {
-                parent_entry.children.retain(|c| c != &node);
-            }
-        }
-
-        {
-            let parent_entry = self
-                .nodes
-                .get_mut(&parent)
-                .expect("validated parent existence");
-            let idx = position.min(parent_entry.children.len());
-            parent_entry.children.insert(idx, node);
-        }
-
-        if let Some(entry) = self.nodes.get_mut(&node) {
-            entry.parent = Some(parent);
-            entry.tombstone = false;
-            entry.last = Some(Stamp {
-                lamport: op.meta.lamport,
-                id: op.meta.id.clone(),
-            });
-        }
-        Ok(())
+        Self::detach(nodes, node);
+        Self::attach(nodes, node, parent, position);
     }
 
-    fn apply_move(
-        &mut self,
-        op: &Operation,
-        node: NodeId,
-        new_parent: NodeId,
-        position: usize,
-    ) -> Result<()> {
+    fn apply_move(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId, new_parent: NodeId, position: usize) {
         if node == NodeId::ROOT {
-            return Err(Error::InvalidOperation("cannot move root".into()));
+            return;
         }
-
-        if self.introduces_cycle(node, new_parent) {
-            return Err(Error::InvalidOperation("move introduces cycle".into()));
+        Self::ensure_node(nodes, node);
+        Self::ensure_node(nodes, new_parent);
+        if Self::introduces_cycle(nodes, node, new_parent) || node == new_parent {
+            return;
         }
-
-        if !self.nodes.contains_key(&new_parent) {
-            return Err(Error::MissingDependency(format!(
-                "missing parent {:?}",
-                new_parent
-            )));
-        }
-
-        if !self.nodes.contains_key(&node) {
-            return Err(Error::MissingDependency(format!("missing node {:?}", node)));
-        }
-
-        let last_stamp = self.nodes.get(&node).and_then(|n| n.last.clone());
-        if !is_newer(last_stamp.as_ref(), op) {
-            return Ok(());
-        }
-
-        let old_parent = self.nodes.get(&node).and_then(|n| n.parent);
-        if let Some(old_parent) = old_parent {
-            if let Some(parent_entry) = self.nodes.get_mut(&old_parent) {
-                parent_entry.children.retain(|c| c != &node);
-            }
-        }
-
-        {
-            let parent_entry = self
-                .nodes
-                .get_mut(&new_parent)
-                .expect("validated parent existence");
-            let idx = position.min(parent_entry.children.len());
-            parent_entry.children.insert(idx, node);
-        }
-
-        if let Some(entry) = self.nodes.get_mut(&node) {
-            entry.parent = Some(new_parent);
-            entry.tombstone = false;
-            entry.last = Some(Stamp {
-                lamport: op.meta.lamport,
-                id: op.meta.id.clone(),
-            });
-        }
-        Ok(())
+        Self::detach(nodes, node);
+        Self::attach(nodes, node, new_parent, position);
     }
 
-    fn apply_delete(&mut self, op: &Operation, node: NodeId) -> Result<()> {
+    fn apply_delete(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId) {
         if node == NodeId::ROOT {
-            return Err(Error::InvalidOperation("cannot delete root".into()));
+            return;
         }
-
-        if !self.nodes.contains_key(&node) {
-            return Err(Error::MissingDependency(format!("missing node {:?}", node)));
+        if !nodes.contains_key(&node) {
+            return;
         }
-
-        let last_stamp = self.nodes.get(&node).and_then(|n| n.last.clone());
-        if !is_newer(last_stamp.as_ref(), op) {
-            return Ok(());
-        }
-
-        let parent = self.nodes.get(&node).and_then(|n| n.parent);
-        if let Some(parent) = parent {
-            if let Some(parent_entry) = self.nodes.get_mut(&parent) {
-                parent_entry.children.retain(|c| c != &node);
-            }
-        }
-
-        if let Some(entry) = self.nodes.get_mut(&node) {
+        Self::detach(nodes, node);
+        if let Some(entry) = nodes.get_mut(&node) {
             entry.parent = None;
             entry.tombstone = true;
-            entry.last = Some(Stamp {
-                lamport: op.meta.lamport,
-                id: op.meta.id.clone(),
-            });
         }
-        Ok(())
     }
 
-    fn introduces_cycle(&self, node: NodeId, new_parent: NodeId) -> bool {
-        let mut current = Some(new_parent);
+    fn detach(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId) {
+        if let Some(parent) = nodes.get(&node).and_then(|n| n.parent) {
+            if let Some(p) = nodes.get_mut(&parent) {
+                p.children.retain(|c| c != &node);
+            }
+        }
+    }
+
+    fn attach(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId, parent: NodeId, position: usize) {
+        if let Some(parent_entry) = nodes.get_mut(&parent) {
+            let idx = position.min(parent_entry.children.len());
+            parent_entry.children.insert(idx, node);
+        }
+        if let Some(entry) = nodes.get_mut(&node) {
+            entry.parent = Some(parent);
+            entry.tombstone = false;
+        }
+    }
+
+    fn introduces_cycle(
+        nodes: &HashMap<NodeId, NodeState>,
+        node: NodeId,
+        potential_parent: NodeId,
+    ) -> bool {
+        let mut current = Some(potential_parent);
         while let Some(n) = current {
             if n == node {
                 return true;
             }
-            current = self.nodes.get(&n).and_then(|state| state.parent);
+            current = nodes.get(&n).and_then(|state| state.parent);
         }
         false
-    }
-
-    fn queue_pending(&mut self, op: Operation) {
-        if self.pending_ids.insert(op.meta.id.clone()) {
-            self.pending.push(op);
-        }
-    }
-
-    fn process_pending(&mut self) {
-        let mut progressed = true;
-        while progressed {
-            progressed = false;
-            let mut idx = 0;
-            while idx < self.pending.len() {
-                let op = self.pending[idx].clone();
-                match self.apply_op(&op) {
-                    Ok(()) => {
-                        self.pending_ids.remove(&op.meta.id);
-                        self.pending.swap_remove(idx);
-                        progressed = true;
-                    }
-                    Err(Error::MissingDependency(_)) => {
-                        idx += 1;
-                    }
-                    Err(_) => {
-                        self.pending_ids.remove(&op.meta.id);
-                        self.pending.swap_remove(idx);
-                        progressed = true;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn is_newer(current: Option<&Stamp>, incoming: &Operation) -> bool {
-    match current {
-        None => true,
-        Some(stamp) => {
-            incoming.meta.lamport > stamp.lamport
-                || (incoming.meta.lamport == stamp.lamport && incoming.meta.id > stamp.id)
-        }
     }
 }
 
@@ -441,6 +436,7 @@ fn is_newer(current: Option<&Stamp>, incoming: &Operation) -> bool {
 mod tests {
     use super::*;
     use crate::traits::{AllowAllAccess, LamportClock, MemoryStorage};
+    use proptest::prelude::*;
 
     #[test]
     fn inserts_and_moves_nodes() {
@@ -483,8 +479,9 @@ mod tests {
         crdt.local_insert(root, a, 0).unwrap();
         crdt.local_insert(a, b, 0).unwrap();
 
-        let err = crdt.local_move(a, b, 0).unwrap_err();
-        assert!(format!("{err}").contains("cycle"));
+        crdt.apply_remote(Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, 0))
+            .unwrap();
+        assert_eq!(crdt.parent(a), Some(root));
     }
 
     #[test]
@@ -583,7 +580,6 @@ mod tests {
 
         let child_first = Operation::insert(&replica, 1, 1, parent, child, 0);
         crdt.apply_remote(child_first).unwrap();
-        assert!(crdt.parent(child).is_none());
 
         let parent_op = Operation::insert(&replica, 2, 2, NodeId::ROOT, parent, 0);
         crdt.apply_remote(parent_op).unwrap();
@@ -608,7 +604,6 @@ mod tests {
         // Move arrives first (references node + parent that do not yet exist)
         let move_op = Operation::move_node(&replica, 3, 3, node, parent, 0);
         crdt.apply_remote(move_op).unwrap();
-        assert!(crdt.parent(node).is_none());
 
         // Later, parent and node inserts arrive
         let parent_insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, 0);
@@ -650,5 +645,208 @@ mod tests {
         // applying an already-seen op should be ignored
         crdt.apply_remote(move_first).unwrap();
         assert_eq!(crdt.children(parent).unwrap(), &[node]);
+    }
+
+    #[test]
+    fn moves_reordered_by_lamport_and_id() {
+        let mut crdt = TreeCrdt::new(
+            ReplicaId::new(b"a"),
+            MemoryStorage::default(),
+            AllowAllAccess,
+            LamportClock::default(),
+        );
+
+        let root = NodeId::ROOT;
+        let a = NodeId(1);
+        let b = NodeId(2);
+        let x = NodeId(3);
+
+        let ops = vec![
+            Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, 0),
+            Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, 1),
+            Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, 2),
+            // higher lamport move -> should win
+            Operation::move_node(&ReplicaId::new(b"a"), 4, 5, x, a, 0),
+            Operation::move_node(&ReplicaId::new(b"a"), 5, 4, x, b, 0),
+        ];
+
+        // apply out of order
+        for op in ops.iter().rev() {
+            crdt.apply_remote(op.clone()).unwrap();
+        }
+
+        assert_eq!(crdt.parent(x), Some(a));
+        crdt.replay_from_storage().unwrap();
+        assert_eq!(crdt.parent(x), Some(a));
+    }
+
+    #[test]
+    fn same_lamport_orders_by_op_id() {
+        let mut crdt = TreeCrdt::new(
+            ReplicaId::new(b"a"),
+            MemoryStorage::default(),
+            AllowAllAccess,
+            LamportClock::default(),
+        );
+
+        let root = NodeId::ROOT;
+        let a = NodeId(1);
+        let b = NodeId(2);
+        let x = NodeId(3);
+
+        let inserts = [
+            Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, 0),
+            Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, 1),
+            Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, 2),
+        ];
+        for op in inserts {
+            crdt.apply_remote(op).unwrap();
+        }
+
+        let move_a = Operation::move_node(&ReplicaId::new(b"a"), 10, 5, x, a, 0);
+        let move_b = Operation::move_node(&ReplicaId::new(b"b"), 10, 5, x, b, 0);
+
+        crdt.apply_remote(move_b.clone()).unwrap();
+        crdt.apply_remote(move_a.clone()).unwrap();
+        // ReplicaId "b" > "a" so move_b wins at equal lamport
+        assert_eq!(crdt.parent(x), Some(b));
+    }
+
+    #[test]
+    fn cycles_are_blocked() {
+        let mut crdt = TreeCrdt::new(
+            ReplicaId::new(b"a"),
+            MemoryStorage::default(),
+            AllowAllAccess,
+            LamportClock::default(),
+        );
+        let root = NodeId::ROOT;
+        let a = NodeId(1);
+        let b = NodeId(2);
+
+        let inserts = [
+            Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, 0),
+            Operation::insert(&ReplicaId::new(b"a"), 2, 2, a, b, 0),
+        ];
+        for op in inserts {
+            crdt.apply_remote(op).unwrap();
+        }
+
+        let bad_move = Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, 0);
+        crdt.apply_remote(bad_move).unwrap();
+        assert_eq!(crdt.parent(a), Some(root));
+        assert_eq!(crdt.parent(b), Some(a));
+        crdt.validate_invariants().unwrap();
+    }
+
+    #[test]
+    fn permutations_converge() {
+        let ops = vec![
+            Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, NodeId(1), 0),
+            Operation::insert(&ReplicaId::new(b"a"), 2, 2, NodeId::ROOT, NodeId(2), 1),
+            Operation::insert(&ReplicaId::new(b"a"), 3, 3, NodeId::ROOT, NodeId(3), 2),
+            Operation::move_node(&ReplicaId::new(b"a"), 4, 4, NodeId(3), NodeId(1), 0),
+            Operation::move_node(&ReplicaId::new(b"a"), 5, 5, NodeId(3), NodeId(2), 0),
+        ];
+
+        let permutations = permute(ops.clone());
+        let mut baseline: Option<Vec<(NodeId, Option<NodeId>)>> = None;
+        for perm in permutations {
+            let mut crdt = TreeCrdt::new(
+                ReplicaId::new(b"p"),
+                MemoryStorage::default(),
+                AllowAllAccess,
+                LamportClock::default(),
+            );
+            for op in &perm {
+                crdt.apply_remote(op.clone()).unwrap();
+            }
+            crdt.validate_invariants().unwrap();
+            let snapshot = parents_snapshot(&crdt);
+            if let Some(base) = &baseline {
+                assert_eq!(snapshot, *base);
+            } else {
+                baseline = Some(snapshot);
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn permutations_converge_property(ops in small_ops()) {
+            // Build permutations of a small op set and assert convergence
+            let permutations = permute(ops.clone());
+            let mut baseline: Option<Vec<(NodeId, Option<NodeId>)>> = None;
+            for perm in permutations {
+                let mut crdt = TreeCrdt::new(
+                    ReplicaId::new(b"p"),
+                    MemoryStorage::default(),
+                    AllowAllAccess,
+                    LamportClock::default(),
+                );
+                for op in &perm {
+                    crdt.apply_remote(op.clone()).unwrap();
+                }
+                crdt.validate_invariants().unwrap();
+                let snapshot = parents_snapshot(&crdt);
+                if let Some(base) = &baseline {
+                    prop_assert_eq!(snapshot, base.clone());
+                } else {
+                    baseline = Some(snapshot);
+                }
+            }
+        }
+    }
+
+    fn small_ops() -> impl Strategy<Value = Vec<Operation>> {
+        // Generate up to 5 operations with lamports 1..=5 over a small node set.
+        let nodes = vec![NodeId::ROOT, NodeId(1), NodeId(2), NodeId(3)];
+        let replicas = vec![ReplicaId::new(b"a"), ReplicaId::new(b"b")];
+        prop::collection::vec(
+            (0usize..5).prop_map(move |i| {
+                let lamport = (i + 1) as Lamport;
+                let replica = replicas[i % replicas.len()].clone();
+                let node = nodes[(i + 1) % nodes.len()];
+                let parent = nodes[i % nodes.len()];
+                match i % 3 {
+                    0 => Operation::insert(&replica, (i + 1) as u64, lamport, parent, node, 0),
+                    1 => Operation::move_node(&replica, (i + 1) as u64, lamport, node, parent, 0),
+                    _ => Operation::delete(&replica, (i + 1) as u64, lamport, node),
+                }
+            }),
+            1..=5,
+        )
+    }
+
+    fn parents_snapshot(crdt: &TreeCrdt<MemoryStorage, AllowAllAccess, LamportClock>) -> Vec<(NodeId, Option<NodeId>)> {
+        let mut pairs: Vec<_> = crdt
+            .nodes
+            .iter()
+            .map(|(id, state)| (*id, state.parent))
+            .collect();
+        pairs.sort_by_key(|(id, _)| id.0);
+        pairs
+    }
+
+    fn permute(mut items: Vec<Operation>) -> Vec<Vec<Operation>> {
+        let mut res = Vec::new();
+        heap_permute(items.len(), &mut items, &mut res);
+        res
+    }
+
+    fn heap_permute(k: usize, items: &mut [Operation], res: &mut Vec<Vec<Operation>>) {
+        if k == 1 {
+            res.push(items.to_vec());
+            return;
+        }
+        heap_permute(k - 1, items, res);
+        for i in 0..(k - 1) {
+            if k % 2 == 0 {
+                items.swap(i, k - 1);
+            } else {
+                items.swap(0, k - 1);
+            }
+            heap_permute(k - 1, items, res);
+        }
     }
 }
