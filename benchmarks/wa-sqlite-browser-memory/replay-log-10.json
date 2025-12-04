@@ -2,12 +2,13 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "replay-log-10",
-  "timestamp": "2025-12-04T08:54:15.273Z",
+  "timestamp": "2025-12-04T09:18:30.519Z",
   "name": "replay-log-10",
   "totalOps": 10,
-  "durationMs": 0.5,
-  "opsPerSec": 20000,
+  "durationMs": 0.40000009536743164,
+  "opsPerSec": 24999.994039536945,
   "extra": {
+    "mode": "batch",
     "count": 10
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/replay-log-10.json"

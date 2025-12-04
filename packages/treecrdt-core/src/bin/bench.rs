@@ -24,6 +24,7 @@ struct Output {
 #[serde(rename_all = "camelCase")]
 struct Extra {
     count: u64,
+    mode: &'static str,
 }
 
 fn hex_id(n: u64) -> NodeId {
@@ -75,7 +76,7 @@ fn main() {
         let out_path = out_dir.join(format!("memory-{}.json", workload_name));
 
         let output = Output {
-        implementation: "core-inmem-crdt",
+            implementation: "core-inmem-crdt",
             storage: "memory",
             workload: workload_name.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -87,7 +88,10 @@ fn main() {
             } else {
                 f64::INFINITY
             },
-            extra: Extra { count },
+            extra: Extra {
+                count,
+                mode: "sequential",
+            },
             source_file: Some(out_path.display().to_string()),
         };
 

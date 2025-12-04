@@ -2,12 +2,13 @@
   "implementation": "sqlite-node",
   "storage": "memory",
   "workload": "insert-chain-100",
-  "timestamp": "2025-12-04T08:54:19.394Z",
+  "timestamp": "2025-12-04T09:18:34.069Z",
   "name": "insert-chain-100",
   "totalOps": 100,
-  "durationMs": 0.7385830000000624,
-  "opsPerSec": 135394.3971090474,
+  "durationMs": 0.72199999999998,
+  "opsPerSec": 138504.15512465758,
   "extra": {
+    "mode": "batch",
     "count": 100
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-100.json"

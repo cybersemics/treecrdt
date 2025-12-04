@@ -2,12 +2,13 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-04T08:54:15.543Z",
+  "timestamp": "2025-12-04T09:18:30.829Z",
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 23.59999990463257,
-  "opsPerSec": 8474.576305432143,
+  "durationMs": 33.299999952316284,
+  "opsPerSec": 6006.006014606267,
   "extra": {
+    "mode": "batch",
     "count": 200
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-move-100.json"

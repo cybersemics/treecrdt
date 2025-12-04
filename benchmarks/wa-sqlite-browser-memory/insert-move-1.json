@@ -2,12 +2,13 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "insert-move-1",
-  "timestamp": "2025-12-04T08:54:15.257Z",
+  "timestamp": "2025-12-04T09:18:30.506Z",
   "name": "insert-move-1",
   "totalOps": 2,
-  "durationMs": 3.700000047683716,
-  "opsPerSec": 540.5405335743294,
+  "durationMs": 7.099999904632568,
+  "opsPerSec": 281.6901446287416,
   "extra": {
+    "mode": "batch",
     "count": 2
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-move-1.json"

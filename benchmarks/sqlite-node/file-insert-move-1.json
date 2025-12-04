@@ -2,12 +2,13 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "insert-move-1",
-  "timestamp": "2025-12-04T08:54:19.030Z",
+  "timestamp": "2025-12-04T09:18:33.700Z",
   "name": "insert-move-1",
   "totalOps": 2,
-  "durationMs": 4.270333000000022,
-  "opsPerSec": 468.3475504135133,
+  "durationMs": 0.7535829999999919,
+  "opsPerSec": 2653.9876828431925,
   "extra": {
+    "mode": "batch",
     "count": 2
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-move-1.json"

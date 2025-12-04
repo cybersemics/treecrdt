@@ -2,12 +2,13 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-move-1",
-  "timestamp": "2025-12-04T08:54:24.725Z",
+  "timestamp": "2025-12-04T09:18:38.030Z",
   "name": "insert-move-1",
   "totalOps": 2,
-  "durationMs": 2.3502499999999884,
-  "opsPerSec": 850.9733007126944,
+  "durationMs": 2.3284170000000017,
+  "opsPerSec": 858.9526704194302,
   "extra": {
+    "mode": "sequential",
     "count": 1
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-1.json"

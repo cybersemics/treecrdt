@@ -2,12 +2,13 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "replay-log-10",
-  "timestamp": "2025-12-04T08:54:19.698Z",
+  "timestamp": "2025-12-04T09:18:34.246Z",
   "name": "replay-log-10",
   "totalOps": 10,
-  "durationMs": 0.6111670000000231,
-  "opsPerSec": 16362.139971561985,
+  "durationMs": 0.7519589999999425,
+  "opsPerSec": 13298.597396933563,
   "extra": {
+    "mode": "batch",
     "count": 10
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-replay-log-10.json"

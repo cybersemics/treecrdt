@@ -30,14 +30,16 @@ async function walk(dir) {
 }
 
 function toMarkdown(rows) {
-  const header = ["Implementation", "Storage", "Workload", "TotalOps", "Duration (ms)", "Ops/s", "File"];
+  const header = ["Implementation", "Storage", "Workload", "Mode", "TotalOps", "Duration (ms)", "Ops/s", "File"];
   const lines = [header.join(" | "), header.map(() => "---").join(" | ")];
   for (const row of rows) {
+    const mode = row.extra?.mode ?? "-";
     lines.push(
       [
         row.implementation ?? "-",
         row.storage ?? "-",
         row.workload ?? row.name ?? "-",
+        mode,
         row.totalOps ?? "-",
         row.durationMs?.toFixed?.(2) ?? "-",
         row.opsPerSec?.toFixed?.(2) ?? "-",

@@ -2,12 +2,13 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "replay-log-100",
-  "timestamp": "2025-12-04T08:54:15.548Z",
+  "timestamp": "2025-12-04T09:18:30.839Z",
   "name": "replay-log-100",
   "totalOps": 100,
-  "durationMs": 6.6000001430511475,
-  "opsPerSec": 15151.514823114912,
+  "durationMs": 7,
+  "opsPerSec": 14285.714285714286,
   "extra": {
+    "mode": "batch",
     "count": 100
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/replay-log-100.json"

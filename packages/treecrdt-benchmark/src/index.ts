@@ -7,13 +7,14 @@ export type BenchmarkResult = {
   totalOps: number;
   durationMs: number;
   opsPerSec: number;
+  extra?: Record<string, unknown>;
 };
 
 export type BenchmarkWorkload = {
   name: string;
   totalOps?: number;
   prepare?: () => Promise<void> | void;
-  run: (adapter: TreecrdtAdapter) => Promise<void>;
+  run: (adapter: TreecrdtAdapter) => Promise<void | { extra?: Record<string, unknown> }>;
   cleanup?: () => Promise<void> | void;
 };
 
@@ -44,7 +45,7 @@ export async function runBenchmark(
     await workload.prepare();
   }
   const start = performance.now();
-  await workload.run(adapter);
+  const runResult = await workload.run(adapter);
   const end = performance.now();
   if (workload.cleanup) {
     await workload.cleanup();
@@ -65,6 +66,7 @@ export async function runBenchmark(
     totalOps,
     durationMs,
     opsPerSec,
+    extra: runResult && typeof runResult === "object" ? runResult.extra : undefined,
   };
 }
 
@@ -110,7 +112,8 @@ export function makeInsertMoveWorkload(opts: {
         );
         ops.push(mv);
       }
-      if (adapter.appendOps) {
+      const usedBatch = !!adapter.appendOps;
+      if (usedBatch && adapter.appendOps) {
         await adapter.appendOps(ops, serializeNodeId, serializeReplica);
       } else {
         for (const op of ops) {
@@ -118,6 +121,7 @@ export function makeInsertMoveWorkload(opts: {
         }
       }
       await adapter.opsSince(0);
+      return { extra: { mode: usedBatch ? "batch" : "sequential" } };
     },
   };
 }
@@ -154,7 +158,8 @@ export function makeInsertChainWorkload(opts: {
         ops.push(insert);
         parentHex = nodeHex;
       }
-      if (adapter.appendOps) {
+      const usedBatch = !!adapter.appendOps;
+      if (usedBatch && adapter.appendOps) {
         await adapter.appendOps(ops, serializeNodeId, serializeReplica);
       } else {
         for (const op of ops) {
@@ -162,6 +167,7 @@ export function makeInsertChainWorkload(opts: {
         }
       }
       await adapter.opsSince(0);
+      return { extra: { mode: usedBatch ? "batch" : "sequential" } };
     },
   };
 }
@@ -199,7 +205,8 @@ export function makeReplayLogWorkload(opts: {
     name: `replay-log-${opts.count}`,
     totalOps: ops.length,
     run: async (adapter) => {
-      if (adapter.appendOps) {
+      const usedBatch = !!adapter.appendOps;
+      if (usedBatch && adapter.appendOps) {
         await adapter.appendOps(ops, serializeNodeId, serializeReplica);
       } else {
         for (const op of ops) {
@@ -207,6 +214,7 @@ export function makeReplayLogWorkload(opts: {
         }
       }
       await adapter.opsSince(0);
+      return { extra: { mode: usedBatch ? "batch" : "sequential" } };
     },
   };
 }
@@ -258,13 +266,18 @@ export async function writeResult(
     extra?: Record<string, unknown>;
   }
 ): Promise<BenchmarkOutput> {
+  const mergedExtra =
+    result.extra && opts.extra
+      ? { ...result.extra, ...opts.extra }
+      : result.extra ?? opts.extra;
+  const workload = opts.workload ?? result.name;
   const payload: BenchmarkOutput = {
     implementation: opts.implementation,
     storage: opts.storage,
-    workload: opts.workload ?? result.name,
+    workload,
     timestamp: new Date().toISOString(),
     ...result,
-    extra: opts.extra,
+    extra: mergedExtra,
     sourceFile: path.resolve(opts.outFile),
   };
   await fs.mkdir(path.dirname(opts.outFile), { recursive: true });

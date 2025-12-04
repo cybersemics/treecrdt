@@ -102,12 +102,16 @@ async function runWaSqliteBenchInWorker(
       await adapter.close();
     }
     const [result] = res;
+    const mergedExtra =
+      result.extra && workload.totalOps
+        ? { ...result.extra, count: workload.totalOps }
+        : result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined);
     results.push({
       ...result,
       implementation: "wa-sqlite",
       storage,
       workload: workload.name,
-      extra: { count: workload.totalOps ?? result.totalOps },
+      extra: mergedExtra,
     });
   }
 

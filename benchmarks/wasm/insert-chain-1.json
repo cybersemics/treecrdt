@@ -2,12 +2,13 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-chain-1",
-  "timestamp": "2025-12-04T08:54:25.082Z",
+  "timestamp": "2025-12-04T09:18:38.422Z",
   "name": "insert-chain-1",
   "totalOps": 1,
-  "durationMs": 0.14262500000000955,
-  "opsPerSec": 7011.393514460529,
+  "durationMs": 0.14316700000006222,
+  "opsPerSec": 6984.84986064921,
   "extra": {
+    "mode": "sequential",
     "count": 1
   },
   "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-1.json"

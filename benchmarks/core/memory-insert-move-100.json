@@ -2,13 +2,14 @@
   "implementation": "core-inmem-crdt",
   "storage": "memory",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-04T08:54:27.966880+00:00",
+  "timestamp": "2025-12-04T09:18:42.762690+00:00",
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 1.619875,
-  "opsPerSec": 123466.31684543562,
+  "durationMs": 1.933667,
+  "opsPerSec": 103430.42519730647,
   "extra": {
-    "count": 100
+    "count": 100,
+    "mode": "sequential"
   },
   "sourceFile": "benchmarks/core/memory-insert-move-100.json"
 }

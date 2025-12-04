@@ -1,71 +1,71 @@
-Implementation | Storage | Workload | TotalOps | Duration (ms) | Ops/s | File
---- | --- | --- | --- | --- | --- | ---
-core-inmem-crdt | memory | insert-move-1 | 2 | 0.01 | 151423.38 | benchmarks/core/memory-insert-move-1.json
-core-inmem-crdt | memory | insert-move-10 | 20 | 0.13 | 151180.72 | benchmarks/core/memory-insert-move-10.json
-core-inmem-crdt | memory | insert-move-100 | 200 | 1.62 | 123466.32 | benchmarks/core/memory-insert-move-100.json
-core-inmem-crdt | memory | insert-move-1000 | 2000 | 32.49 | 61557.72 | benchmarks/core/memory-insert-move-1000.json
-core-inmem-crdt | memory | insert-move-10000 | 20000 | 1827.35 | 10944.84 | benchmarks/core/memory-insert-move-10000.json
-sqlite-node | file | insert-chain-1 | 1 | 0.63 | 1586.36 | benchmarks/sqlite-node/file-insert-chain-1.json
-sqlite-node | file | insert-chain-10 | 10 | 0.69 | 14478.78 | benchmarks/sqlite-node/file-insert-chain-10.json
-sqlite-node | file | insert-chain-100 | 100 | 1.41 | 70959.73 | benchmarks/sqlite-node/file-insert-chain-100.json
-sqlite-node | file | insert-chain-1000 | 1000 | 6.72 | 148764.32 | benchmarks/sqlite-node/file-insert-chain-1000.json
-sqlite-node | file | insert-chain-10000 | 10000 | 197.89 | 50531.96 | benchmarks/sqlite-node/file-insert-chain-10000.json
-sqlite-node | file | insert-move-1 | 2 | 4.27 | 468.35 | benchmarks/sqlite-node/file-insert-move-1.json
-sqlite-node | file | insert-move-10 | 20 | 0.81 | 24636.85 | benchmarks/sqlite-node/file-insert-move-10.json
-sqlite-node | file | insert-move-100 | 200 | 2.61 | 76531.85 | benchmarks/sqlite-node/file-insert-move-100.json
-sqlite-node | file | insert-move-1000 | 2000 | 15.08 | 132592.65 | benchmarks/sqlite-node/file-insert-move-1000.json
-sqlite-node | file | insert-move-10000 | 20000 | 154.60 | 129369.56 | benchmarks/sqlite-node/file-insert-move-10000.json
-sqlite-node | file | replay-log-1 | 1 | 0.82 | 1212.55 | benchmarks/sqlite-node/file-replay-log-1.json
-sqlite-node | file | replay-log-10 | 10 | 0.61 | 16362.14 | benchmarks/sqlite-node/file-replay-log-10.json
-sqlite-node | file | replay-log-100 | 100 | 1.61 | 62094.14 | benchmarks/sqlite-node/file-replay-log-100.json
-sqlite-node | file | replay-log-1000 | 1000 | 6.61 | 151344.11 | benchmarks/sqlite-node/file-replay-log-1000.json
-sqlite-node | file | replay-log-10000 | 10000 | 60.40 | 165563.60 | benchmarks/sqlite-node/file-replay-log-10000.json
-sqlite-node | memory | insert-chain-1 | 1 | 0.30 | 3362.76 | benchmarks/sqlite-node/memory-insert-chain-1.json
-sqlite-node | memory | insert-chain-10 | 10 | 0.19 | 51358.96 | benchmarks/sqlite-node/memory-insert-chain-10.json
-sqlite-node | memory | insert-chain-100 | 100 | 0.74 | 135394.40 | benchmarks/sqlite-node/memory-insert-chain-100.json
-sqlite-node | memory | insert-chain-1000 | 1000 | 6.07 | 164664.38 | benchmarks/sqlite-node/memory-insert-chain-1000.json
-sqlite-node | memory | insert-chain-10000 | 10000 | 62.18 | 160818.24 | benchmarks/sqlite-node/memory-insert-chain-10000.json
-sqlite-node | memory | insert-move-1 | 2 | 0.43 | 4646.21 | benchmarks/sqlite-node/memory-insert-move-1.json
-sqlite-node | memory | insert-move-10 | 20 | 0.51 | 39431.48 | benchmarks/sqlite-node/memory-insert-move-10.json
-sqlite-node | memory | insert-move-100 | 200 | 1.82 | 110134.71 | benchmarks/sqlite-node/memory-insert-move-100.json
-sqlite-node | memory | insert-move-1000 | 2000 | 13.21 | 151441.05 | benchmarks/sqlite-node/memory-insert-move-1000.json
-sqlite-node | memory | insert-move-10000 | 20000 | 131.60 | 151971.02 | benchmarks/sqlite-node/memory-insert-move-10000.json
-sqlite-node | memory | replay-log-1 | 1 | 0.21 | 4733.73 | benchmarks/sqlite-node/memory-replay-log-1.json
-sqlite-node | memory | replay-log-10 | 10 | 0.18 | 56497.18 | benchmarks/sqlite-node/memory-replay-log-10.json
-sqlite-node | memory | replay-log-100 | 100 | 0.58 | 172798.72 | benchmarks/sqlite-node/memory-replay-log-100.json
-sqlite-node | memory | replay-log-1000 | 1000 | 5.49 | 182052.67 | benchmarks/sqlite-node/memory-replay-log-1000.json
-sqlite-node | memory | replay-log-10000 | 10000 | 57.61 | 173582.99 | benchmarks/sqlite-node/memory-replay-log-10000.json
-wa-sqlite | browser-memory | insert-chain-1 | 1 | 0.40 | 2500.00 | benchmarks/wa-sqlite-browser-memory/insert-chain-1.json
-wa-sqlite | browser-memory | insert-chain-10 | 10 | 0.50 | 20000.00 | benchmarks/wa-sqlite-browser-memory/insert-chain-10.json
-wa-sqlite | browser-memory | insert-chain-100 | 100 | 2.00 | 50000.00 | benchmarks/wa-sqlite-browser-memory/insert-chain-100.json
-wa-sqlite | browser-memory | insert-chain-1000 | 1000 | 18.40 | 54347.83 | benchmarks/wa-sqlite-browser-memory/insert-chain-1000.json
-wa-sqlite | browser-memory | insert-move-1 | 2 | 3.70 | 540.54 | benchmarks/wa-sqlite-browser-memory/insert-move-1.json
-wa-sqlite | browser-memory | insert-move-10 | 20 | 6.40 | 3125.00 | benchmarks/wa-sqlite-browser-memory/insert-move-10.json
-wa-sqlite | browser-memory | insert-move-100 | 200 | 9.70 | 20618.56 | benchmarks/wa-sqlite-browser-memory/insert-move-100.json
-wa-sqlite | browser-memory | insert-move-1000 | 2000 | 48.00 | 41666.67 | benchmarks/wa-sqlite-browser-memory/insert-move-1000.json
-wa-sqlite | browser-memory | replay-log-1 | 1 | 0.30 | 3333.33 | benchmarks/wa-sqlite-browser-memory/replay-log-1.json
-wa-sqlite | browser-memory | replay-log-10 | 10 | 0.50 | 20000.00 | benchmarks/wa-sqlite-browser-memory/replay-log-10.json
-wa-sqlite | browser-memory | replay-log-100 | 100 | 2.20 | 45454.54 | benchmarks/wa-sqlite-browser-memory/replay-log-100.json
-wa-sqlite | browser-memory | replay-log-1000 | 1000 | 18.30 | 54644.81 | benchmarks/wa-sqlite-browser-memory/replay-log-1000.json
-wa-sqlite | browser-opfs-coop-sync | insert-chain-1 | 1 | 6.20 | 161.29 | benchmarks/wa-sqlite-opfs/insert-chain-1.json
-wa-sqlite | browser-opfs-coop-sync | insert-chain-10 | 10 | 6.40 | 1562.50 | benchmarks/wa-sqlite-opfs/insert-chain-10.json
-wa-sqlite | browser-opfs-coop-sync | insert-chain-100 | 100 | 6.70 | 14925.37 | benchmarks/wa-sqlite-opfs/insert-chain-100.json
-wa-sqlite | browser-opfs-coop-sync | insert-chain-1000 | 1000 | 21.20 | 47169.81 | benchmarks/wa-sqlite-opfs/insert-chain-1000.json
-wa-sqlite | browser-opfs-coop-sync | insert-move-1 | 2 | 13.50 | 148.15 | benchmarks/wa-sqlite-opfs/insert-move-1.json
-wa-sqlite | browser-opfs-coop-sync | insert-move-10 | 20 | 5.90 | 3389.83 | benchmarks/wa-sqlite-opfs/insert-move-10.json
-wa-sqlite | browser-opfs-coop-sync | insert-move-100 | 200 | 23.60 | 8474.58 | benchmarks/wa-sqlite-opfs/insert-move-100.json
-wa-sqlite | browser-opfs-coop-sync | insert-move-1000 | 2000 | 68.30 | 29282.58 | benchmarks/wa-sqlite-opfs/insert-move-1000.json
-wa-sqlite | browser-opfs-coop-sync | replay-log-1 | 1 | 5.10 | 196.08 | benchmarks/wa-sqlite-opfs/replay-log-1.json
-wa-sqlite | browser-opfs-coop-sync | replay-log-10 | 10 | 5.50 | 1818.18 | benchmarks/wa-sqlite-opfs/replay-log-10.json
-wa-sqlite | browser-opfs-coop-sync | replay-log-100 | 100 | 6.60 | 15151.51 | benchmarks/wa-sqlite-opfs/replay-log-100.json
-wa-sqlite | browser-opfs-coop-sync | replay-log-1000 | 1000 | 20.30 | 49261.08 | benchmarks/wa-sqlite-opfs/replay-log-1000.json
-wasm | memory | insert-chain-1 | 1 | 0.14 | 7011.39 | benchmarks/wasm/insert-chain-1.json
-wasm | memory | insert-chain-10 | 10 | 0.12 | 82474.23 | benchmarks/wasm/insert-chain-10.json
-wasm | memory | insert-chain-100 | 100 | 0.82 | 121555.87 | benchmarks/wasm/insert-chain-100.json
-wasm | memory | insert-chain-1000 | 1000 | 22.20 | 45049.78 | benchmarks/wasm/insert-chain-1000.json
-wasm | memory | insert-chain-10000 | 10000 | 2074.00 | 4821.61 | benchmarks/wasm/insert-chain-10000.json
-wasm | memory | insert-move-1 | 2 | 2.35 | 850.97 | benchmarks/wasm/insert-move-1.json
-wasm | memory | insert-move-10 | 20 | 0.69 | 29096.20 | benchmarks/wasm/insert-move-10.json
-wasm | memory | insert-move-100 | 200 | 3.27 | 61251.05 | benchmarks/wasm/insert-move-100.json
-wasm | memory | insert-move-1000 | 2000 | 21.39 | 93481.61 | benchmarks/wasm/insert-move-1000.json
-wasm | memory | insert-move-10000 | 20000 | 325.27 | 61486.68 | benchmarks/wasm/insert-move-10000.json
+Implementation | Storage | Workload | Mode | TotalOps | Duration (ms) | Ops/s | File
+--- | --- | --- | --- | --- | --- | --- | ---
+core-inmem-crdt | memory | insert-move-1 | sequential | 2 | 0.01 | 155848.20 | benchmarks/core/memory-insert-move-1.json
+core-inmem-crdt | memory | insert-move-10 | sequential | 20 | 0.14 | 147874.31 | benchmarks/core/memory-insert-move-10.json
+core-inmem-crdt | memory | insert-move-100 | sequential | 200 | 1.93 | 103430.43 | benchmarks/core/memory-insert-move-100.json
+core-inmem-crdt | memory | insert-move-1000 | sequential | 2000 | 32.83 | 60917.11 | benchmarks/core/memory-insert-move-1000.json
+core-inmem-crdt | memory | insert-move-10000 | sequential | 20000 | 1988.02 | 10060.24 | benchmarks/core/memory-insert-move-10000.json
+sqlite-node | file | insert-chain-1 | batch | 1 | 0.69 | 1445.09 | benchmarks/sqlite-node/file-insert-chain-1.json
+sqlite-node | file | insert-chain-10 | batch | 10 | 0.64 | 15505.87 | benchmarks/sqlite-node/file-insert-chain-10.json
+sqlite-node | file | insert-chain-100 | batch | 100 | 1.27 | 78629.27 | benchmarks/sqlite-node/file-insert-chain-100.json
+sqlite-node | file | insert-chain-1000 | batch | 1000 | 8.10 | 123437.74 | benchmarks/sqlite-node/file-insert-chain-1000.json
+sqlite-node | file | insert-chain-10000 | batch | 10000 | 84.22 | 118730.77 | benchmarks/sqlite-node/file-insert-chain-10000.json
+sqlite-node | file | insert-move-1 | batch | 2 | 0.75 | 2653.99 | benchmarks/sqlite-node/file-insert-move-1.json
+sqlite-node | file | insert-move-10 | batch | 20 | 0.67 | 29928.92 | benchmarks/sqlite-node/file-insert-move-10.json
+sqlite-node | file | insert-move-100 | batch | 200 | 2.51 | 79715.67 | benchmarks/sqlite-node/file-insert-move-100.json
+sqlite-node | file | insert-move-1000 | batch | 2000 | 14.13 | 141583.74 | benchmarks/sqlite-node/file-insert-move-1000.json
+sqlite-node | file | insert-move-10000 | batch | 20000 | 158.57 | 126130.05 | benchmarks/sqlite-node/file-insert-move-10000.json
+sqlite-node | file | replay-log-1 | batch | 1 | 0.75 | 1327.65 | benchmarks/sqlite-node/file-replay-log-1.json
+sqlite-node | file | replay-log-10 | batch | 10 | 0.75 | 13298.60 | benchmarks/sqlite-node/file-replay-log-10.json
+sqlite-node | file | replay-log-100 | batch | 100 | 1.25 | 80146.96 | benchmarks/sqlite-node/file-replay-log-100.json
+sqlite-node | file | replay-log-1000 | batch | 1000 | 6.40 | 156168.65 | benchmarks/sqlite-node/file-replay-log-1000.json
+sqlite-node | file | replay-log-10000 | batch | 10000 | 62.92 | 158944.08 | benchmarks/sqlite-node/file-replay-log-10000.json
+sqlite-node | memory | insert-chain-1 | batch | 1 | 0.24 | 4128.67 | benchmarks/sqlite-node/memory-insert-chain-1.json
+sqlite-node | memory | insert-chain-10 | batch | 10 | 0.25 | 40295.45 | benchmarks/sqlite-node/memory-insert-chain-10.json
+sqlite-node | memory | insert-chain-100 | batch | 100 | 0.72 | 138504.16 | benchmarks/sqlite-node/memory-insert-chain-100.json
+sqlite-node | memory | insert-chain-1000 | batch | 1000 | 5.53 | 180815.48 | benchmarks/sqlite-node/memory-insert-chain-1000.json
+sqlite-node | memory | insert-chain-10000 | batch | 10000 | 60.03 | 166590.66 | benchmarks/sqlite-node/memory-insert-chain-10000.json
+sqlite-node | memory | insert-move-1 | batch | 2 | 0.40 | 5015.67 | benchmarks/sqlite-node/memory-insert-move-1.json
+sqlite-node | memory | insert-move-10 | batch | 20 | 0.63 | 31849.26 | benchmarks/sqlite-node/memory-insert-move-10.json
+sqlite-node | memory | insert-move-100 | batch | 200 | 1.68 | 118732.55 | benchmarks/sqlite-node/memory-insert-move-100.json
+sqlite-node | memory | insert-move-1000 | batch | 2000 | 13.09 | 152815.15 | benchmarks/sqlite-node/memory-insert-move-1000.json
+sqlite-node | memory | insert-move-10000 | batch | 20000 | 147.56 | 135536.71 | benchmarks/sqlite-node/memory-insert-move-10000.json
+sqlite-node | memory | replay-log-1 | batch | 1 | 0.19 | 5260.86 | benchmarks/sqlite-node/memory-replay-log-1.json
+sqlite-node | memory | replay-log-10 | batch | 10 | 0.13 | 79051.38 | benchmarks/sqlite-node/memory-replay-log-10.json
+sqlite-node | memory | replay-log-100 | batch | 100 | 0.59 | 168954.59 | benchmarks/sqlite-node/memory-replay-log-100.json
+sqlite-node | memory | replay-log-1000 | batch | 1000 | 5.28 | 189512.10 | benchmarks/sqlite-node/memory-replay-log-1000.json
+sqlite-node | memory | replay-log-10000 | batch | 10000 | 59.89 | 166981.26 | benchmarks/sqlite-node/memory-replay-log-10000.json
+wa-sqlite | browser-memory | insert-chain-1 | batch | 1 | 0.50 | 2000.00 | benchmarks/wa-sqlite-browser-memory/insert-chain-1.json
+wa-sqlite | browser-memory | insert-chain-10 | batch | 10 | 0.70 | 14285.72 | benchmarks/wa-sqlite-browser-memory/insert-chain-10.json
+wa-sqlite | browser-memory | insert-chain-100 | batch | 100 | 2.50 | 40000.00 | benchmarks/wa-sqlite-browser-memory/insert-chain-100.json
+wa-sqlite | browser-memory | insert-chain-1000 | batch | 1000 | 23.50 | 42553.19 | benchmarks/wa-sqlite-browser-memory/insert-chain-1000.json
+wa-sqlite | browser-memory | insert-move-1 | batch | 2 | 7.10 | 281.69 | benchmarks/wa-sqlite-browser-memory/insert-move-1.json
+wa-sqlite | browser-memory | insert-move-10 | batch | 20 | 4.80 | 4166.67 | benchmarks/wa-sqlite-browser-memory/insert-move-10.json
+wa-sqlite | browser-memory | insert-move-100 | batch | 200 | 9.10 | 21978.02 | benchmarks/wa-sqlite-browser-memory/insert-move-100.json
+wa-sqlite | browser-memory | insert-move-1000 | batch | 2000 | 49.50 | 40404.04 | benchmarks/wa-sqlite-browser-memory/insert-move-1000.json
+wa-sqlite | browser-memory | replay-log-1 | batch | 1 | 2.00 | 500.00 | benchmarks/wa-sqlite-browser-memory/replay-log-1.json
+wa-sqlite | browser-memory | replay-log-10 | batch | 10 | 0.40 | 24999.99 | benchmarks/wa-sqlite-browser-memory/replay-log-10.json
+wa-sqlite | browser-memory | replay-log-100 | batch | 100 | 2.30 | 43478.26 | benchmarks/wa-sqlite-browser-memory/replay-log-100.json
+wa-sqlite | browser-memory | replay-log-1000 | batch | 1000 | 26.80 | 37313.43 | benchmarks/wa-sqlite-browser-memory/replay-log-1000.json
+wa-sqlite | browser-opfs-coop-sync | insert-chain-1 | batch | 1 | 6.10 | 163.93 | benchmarks/wa-sqlite-opfs/insert-chain-1.json
+wa-sqlite | browser-opfs-coop-sync | insert-chain-10 | batch | 10 | 5.50 | 1818.18 | benchmarks/wa-sqlite-opfs/insert-chain-10.json
+wa-sqlite | browser-opfs-coop-sync | insert-chain-100 | batch | 100 | 6.80 | 14705.88 | benchmarks/wa-sqlite-opfs/insert-chain-100.json
+wa-sqlite | browser-opfs-coop-sync | insert-chain-1000 | batch | 1000 | 20.90 | 47846.89 | benchmarks/wa-sqlite-opfs/insert-chain-1000.json
+wa-sqlite | browser-opfs-coop-sync | insert-move-1 | batch | 2 | 8.90 | 224.72 | benchmarks/wa-sqlite-opfs/insert-move-1.json
+wa-sqlite | browser-opfs-coop-sync | insert-move-10 | batch | 20 | 11.10 | 1801.80 | benchmarks/wa-sqlite-opfs/insert-move-10.json
+wa-sqlite | browser-opfs-coop-sync | insert-move-100 | batch | 200 | 33.30 | 6006.01 | benchmarks/wa-sqlite-opfs/insert-move-100.json
+wa-sqlite | browser-opfs-coop-sync | insert-move-1000 | batch | 2000 | 72.80 | 27472.53 | benchmarks/wa-sqlite-opfs/insert-move-1000.json
+wa-sqlite | browser-opfs-coop-sync | replay-log-1 | batch | 1 | 5.30 | 188.68 | benchmarks/wa-sqlite-opfs/replay-log-1.json
+wa-sqlite | browser-opfs-coop-sync | replay-log-10 | batch | 10 | 5.30 | 1886.79 | benchmarks/wa-sqlite-opfs/replay-log-10.json
+wa-sqlite | browser-opfs-coop-sync | replay-log-100 | batch | 100 | 7.00 | 14285.71 | benchmarks/wa-sqlite-opfs/replay-log-100.json
+wa-sqlite | browser-opfs-coop-sync | replay-log-1000 | batch | 1000 | 20.60 | 48543.69 | benchmarks/wa-sqlite-opfs/replay-log-1000.json
+wasm | memory | insert-chain-1 | sequential | 1 | 0.14 | 6984.85 | benchmarks/wasm/insert-chain-1.json
+wasm | memory | insert-chain-10 | sequential | 10 | 0.19 | 51524.35 | benchmarks/wasm/insert-chain-10.json
+wasm | memory | insert-chain-100 | sequential | 100 | 0.91 | 109523.99 | benchmarks/wasm/insert-chain-100.json
+wasm | memory | insert-chain-1000 | sequential | 1000 | 104.31 | 9586.97 | benchmarks/wasm/insert-chain-1000.json
+wasm | memory | insert-chain-10000 | sequential | 10000 | 2035.21 | 4913.50 | benchmarks/wasm/insert-chain-10000.json
+wasm | memory | insert-move-1 | sequential | 2 | 2.33 | 858.95 | benchmarks/wasm/insert-move-1.json
+wasm | memory | insert-move-10 | sequential | 20 | 0.63 | 31876.73 | benchmarks/wasm/insert-move-10.json
+wasm | memory | insert-move-100 | sequential | 200 | 4.44 | 45061.54 | benchmarks/wasm/insert-move-100.json
+wasm | memory | insert-move-1000 | sequential | 2000 | 37.95 | 52700.98 | benchmarks/wasm/insert-move-1000.json
+wasm | memory | insert-move-10000 | sequential | 20000 | 340.59 | 58721.18 | benchmarks/wasm/insert-move-10000.json
