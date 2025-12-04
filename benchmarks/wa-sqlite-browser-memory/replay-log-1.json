@@ -2,11 +2,11 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "replay-log-1",
-  "timestamp": "2025-12-04T06:30:05.946Z",
+  "timestamp": "2025-12-04T08:54:15.272Z",
   "name": "replay-log-1",
   "totalOps": 1,
-  "durationMs": 0.20000004768371582,
-  "opsPerSec": 4999.998807907388,
+  "durationMs": 0.2999999523162842,
+  "opsPerSec": 3333.333863152482,
   "extra": {
     "count": 1
   },

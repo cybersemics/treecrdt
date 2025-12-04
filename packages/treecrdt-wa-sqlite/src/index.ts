@@ -97,6 +97,72 @@ export function createWaSqliteAdapter(db: Database): TreecrdtAdapter {
   return {
     appendOp: (op, serializeNodeId, serializeReplica) =>
       appendOp(db, op, serializeNodeId, serializeReplica),
+    appendOps: async (ops, serializeNodeId, serializeReplica) => {
+      if (ops.length === 0) return;
+      // Try bulk entrypoint first.
+      const payload = ops.map((op) => {
+        const { meta, kind } = op;
+        const { id, lamport } = meta;
+        const { replica, counter } = id;
+        const serReplica = serializeReplica(replica);
+        const serialize = (val: string) => Array.from(serializeNodeId(val));
+        const base = {
+          replica: Array.from(serReplica),
+          counter,
+          lamport,
+          kind: kind.type,
+          position: "position" in kind ? kind.position ?? null : null,
+        };
+        if (kind.type === "insert") {
+          return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
+        } else if (kind.type === "move") {
+          return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
+        } else if (kind.type === "delete") {
+          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+        }
+        return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+      });
+
+      const bulkSql = "SELECT treecrdt_append_ops(?1)";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bulkStmt: any = await db.prepare(bulkSql);
+      try {
+        await db.bind(bulkStmt, 1, JSON.stringify(payload));
+        await db.step(bulkStmt);
+        await db.finalize(bulkStmt);
+        return;
+      } catch {
+        await db.finalize(bulkStmt);
+        // Fallback to per-op inserts inside one transaction.
+      }
+
+      await db.exec("BEGIN");
+      try {
+        for (const op of ops) {
+          const { meta, kind } = op;
+          const { id, lamport } = meta;
+          const { replica, counter } = id;
+          const { sql, params } = buildAppendOp(kind, {
+            replica: serializeReplica(replica),
+            counter,
+            lamport,
+            serializeNodeId,
+          });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const stmt: any = await db.prepare(sql);
+          let idx = 1;
+          for (const p of params) {
+            await db.bind(stmt, idx++, p);
+          }
+          await db.step(stmt);
+          await db.finalize(stmt);
+        }
+        await db.exec("COMMIT");
+      } catch (err) {
+        await db.exec("ROLLBACK");
+        throw err;
+      }
+    },
     opsSince: (lamport, root) => opsSince(db, { lamport, root }),
   };
 }

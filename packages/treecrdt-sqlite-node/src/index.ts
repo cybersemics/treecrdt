@@ -68,6 +68,79 @@ export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
       }, {});
       db.prepare(sql).get(bindings);
     },
+    appendOps: async (
+      ops: Operation[],
+      serializeNodeId,
+      serializeReplica
+    ) => {
+      if (ops.length === 0) return;
+      // Prefer the extension bulk entrypoint when available.
+      const payload = ops.map((op) => {
+        const { meta, kind } = op;
+        const { id, lamport } = meta;
+        const { replica, counter } = id;
+        const serReplica = serializeReplica(replica);
+        const serialize = (val: string) =>
+          Array.from(serializeNodeId(val));
+        const base = {
+          replica: Array.from(serReplica),
+          counter,
+          lamport,
+          kind: kind.type,
+          position: "position" in kind ? kind.position ?? null : null,
+        };
+        if (kind.type === "insert") {
+          return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
+        } else if (kind.type === "move") {
+          return {
+            ...base,
+            parent: null,
+            node: serialize(kind.node),
+            new_parent: serialize(kind.newParent),
+          };
+        } else if (kind.type === "delete") {
+          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+        }
+        return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+      });
+
+      try {
+        db.prepare("SELECT treecrdt_append_ops(?1)").get({ 1: JSON.stringify(payload) });
+        return;
+      } catch {
+        // Fallback to transactional single-row inserts.
+      }
+
+      const { sql } = buildAppendOp(ops[0].kind, {
+        replica: Buffer.alloc(0),
+        counter: 0,
+        lamport: 0,
+        serializeNodeId,
+      });
+      const stmt = db.prepare(sql);
+      const runMany = db.transaction((batch: Operation[]) => {
+        for (const op of batch) {
+          const { meta, kind } = op;
+          const { id, lamport } = meta;
+          const { replica, counter } = id;
+          const bindParams = buildAppendOp(kind, {
+            replica: serializeReplica(replica),
+            counter,
+            lamport,
+            serializeNodeId,
+          }).params;
+          const bindings = bindParams.reduce<Record<number, unknown>>(
+            (acc, val, idx) => {
+              acc[idx + 1] = val;
+              return acc;
+            },
+            {}
+          );
+          stmt.run(bindings);
+        }
+      });
+      runMany(ops);
+    },
     opsSince: async (lamport: number, root?: string) => {
       const { sql, params } = buildOpsSince({
         lamport,

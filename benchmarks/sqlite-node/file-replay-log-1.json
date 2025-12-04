@@ -2,11 +2,11 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "replay-log-1",
-  "timestamp": "2025-12-04T06:30:32.746Z",
+  "timestamp": "2025-12-04T08:54:19.695Z",
   "name": "replay-log-1",
   "totalOps": 1,
-  "durationMs": 0.45704100000148173,
-  "opsPerSec": 2187.987510960194,
+  "durationMs": 0.8247079999999869,
+  "opsPerSec": 1212.5503814683693,
   "extra": {
     "count": 1
   },

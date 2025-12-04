@@ -103,6 +103,8 @@ mod ffi {
         pub fn sqlite3_bind_null(stmt: *mut sqlite3_stmt, idx: c_int) -> c_int;
 
         pub fn sqlite3_step(stmt: *mut sqlite3_stmt) -> c_int;
+        pub fn sqlite3_reset(stmt: *mut sqlite3_stmt) -> c_int;
+        pub fn sqlite3_clear_bindings(stmt: *mut sqlite3_stmt) -> c_int;
         pub fn sqlite3_finalize(stmt: *mut sqlite3_stmt) -> c_int;
 
         pub fn sqlite3_value_blob(val: *mut sqlite3_value) -> *const c_void;
@@ -288,6 +290,30 @@ unsafe fn sqlite_step(stmt: *mut sqlite3_stmt) -> c_int {
     #[cfg(feature = "static-link")]
     {
         unsafe { ffi::sqlite3_step(stmt) }
+    }
+}
+
+unsafe fn sqlite_reset(stmt: *mut sqlite3_stmt) -> c_int {
+    #[cfg(feature = "ext-sqlite")]
+    {
+        let api = api().expect("api table");
+        unsafe { (api.reset.unwrap())(stmt) }
+    }
+    #[cfg(feature = "static-link")]
+    {
+        unsafe { ffi::sqlite3_reset(stmt) }
+    }
+}
+
+unsafe fn sqlite_clear_bindings(stmt: *mut sqlite3_stmt) -> c_int {
+    #[cfg(feature = "ext-sqlite")]
+    {
+        let api = api().expect("api table");
+        unsafe { (api.clear_bindings.unwrap())(stmt) }
+    }
+    #[cfg(feature = "static-link")]
+    {
+        unsafe { ffi::sqlite3_clear_bindings(stmt) }
     }
 }
 
@@ -578,6 +604,20 @@ pub extern "C" fn sqlite3_treecrdt_init(
             None,
         )
     };
+    let _rc_append_batch = {
+        let name = CString::new("treecrdt_append_ops").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            1,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_append_ops),
+            None,
+            None,
+            None,
+        )
+    };
 
     let rc_since = {
         let name = CString::new("treecrdt_ops_since").expect("static name");
@@ -722,6 +762,160 @@ unsafe extern "C" fn treecrdt_append_op(
         };
         sqlite_result_error_code(ctx, rc);
     }
+}
+
+#[derive(serde::Deserialize)]
+struct JsonAppendOp {
+    replica: Vec<u8>,
+    counter: u64,
+    lamport: Lamport,
+    kind: String,
+    parent: Option<Vec<u8>>,
+    node: Vec<u8>,
+    new_parent: Option<Vec<u8>>,
+    position: Option<u64>,
+}
+
+/// Batch append: accepts a single JSON array argument with fields matching the ops table.
+unsafe extern "C" fn treecrdt_append_ops(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    argv: *mut *mut sqlite3_value,
+) {
+    if argc != 1 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_append_ops expects a single JSON array argument\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
+    let args = unsafe { std::slice::from_raw_parts(argv, argc as usize) };
+    let json_ptr = unsafe { sqlite_value_text(args[0]) };
+    let json_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
+    if json_ptr.is_null() || json_len == 0 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_append_ops expects non-empty JSON\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
+    let json_bytes = unsafe { std::slice::from_raw_parts(json_ptr as *const u8, json_len) };
+    let json_str = match std::str::from_utf8(json_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_append_ops invalid UTF-8\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+    };
+    let ops: Vec<JsonAppendOp> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_append_ops failed to parse JSON array\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+    };
+    if ops.is_empty() {
+        sqlite_result_int(ctx, 0);
+        return;
+    }
+
+    let db = unsafe { sqlite_context_db_handle(ctx) };
+    let begin = CString::new("BEGIN").expect("static");
+    let commit = CString::new("COMMIT").expect("static");
+    let rollback = CString::new("ROLLBACK").expect("static");
+
+    if unsafe { sqlite_exec(db, begin.as_ptr(), None, null_mut(), null_mut()) } != SQLITE_OK as c_int {
+        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+        return;
+    }
+
+    let insert_sql = CString::new(
+        "INSERT OR IGNORE INTO ops (replica,counter,lamport,kind,parent,node,new_parent,position) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+    )
+    .expect("static sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let prep_rc = unsafe { sqlite_prepare_v2(db, insert_sql.as_ptr(), -1, &mut stmt, null_mut()) };
+    if prep_rc != SQLITE_OK as c_int {
+        unsafe { sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut()) };
+        sqlite_result_error_code(ctx, prep_rc);
+        return;
+    }
+
+    let mut inserted: i64 = 0;
+    let mut err_rc: c_int = SQLITE_OK as c_int;
+    for op in ops {
+        unsafe {
+            sqlite_clear_bindings(stmt);
+            sqlite_reset(stmt);
+        }
+        let mut bind_err = false;
+        unsafe {
+            bind_err |= sqlite_bind_blob(stmt, 1, op.replica.as_ptr() as *const c_void, op.replica.len() as c_int, None) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 2, op.counter as i64) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 3, op.lamport as i64) != SQLITE_OK as c_int;
+        }
+        let kind_cstr = CString::new(op.kind).unwrap_or_else(|_| CString::new("insert").unwrap());
+        unsafe {
+            bind_err |= sqlite_bind_text(stmt, 4, kind_cstr.as_ptr(), -1, None) != SQLITE_OK as c_int;
+        }
+        unsafe {
+            if let Some(parent) = op.parent {
+                bind_err |= sqlite_bind_blob(stmt, 5, parent.as_ptr() as *const c_void, parent.len() as c_int, None) != SQLITE_OK as c_int;
+            } else {
+                bind_err |= sqlite_bind_null(stmt, 5) != SQLITE_OK as c_int;
+            }
+            bind_err |= sqlite_bind_blob(stmt, 6, op.node.as_ptr() as *const c_void, op.node.len() as c_int, None) != SQLITE_OK as c_int;
+            if let Some(newp) = op.new_parent {
+                bind_err |= sqlite_bind_blob(stmt, 7, newp.as_ptr() as *const c_void, newp.len() as c_int, None) != SQLITE_OK as c_int;
+            } else {
+                bind_err |= sqlite_bind_null(stmt, 7) != SQLITE_OK as c_int;
+            }
+            if let Some(pos) = op.position {
+                bind_err |= sqlite_bind_int64(stmt, 8, pos as i64) != SQLITE_OK as c_int;
+            } else {
+                bind_err |= sqlite_bind_null(stmt, 8) != SQLITE_OK as c_int;
+            }
+        }
+
+        if bind_err {
+            err_rc = SQLITE_ERROR as c_int;
+            break;
+        }
+
+        let step_rc = unsafe { sqlite_step(stmt) };
+        if step_rc == SQLITE_DONE as c_int {
+            inserted += 1;
+        } else {
+            err_rc = step_rc;
+            break;
+        }
+    }
+
+    unsafe { sqlite_finalize(stmt) };
+
+    if err_rc == SQLITE_OK as c_int {
+        let commit_rc =
+            unsafe { sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut()) };
+        if commit_rc == SQLITE_OK as c_int {
+            sqlite_result_int(ctx, inserted as c_int);
+            return;
+        } else {
+            err_rc = commit_rc;
+        }
+    }
+
+    unsafe {
+        sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+    }
+    sqlite_result_error_code(ctx, err_rc);
 }
 
 unsafe fn bind_blob(stmt: *mut sqlite3_stmt, idx: c_int, val: *mut sqlite3_value) -> bool {

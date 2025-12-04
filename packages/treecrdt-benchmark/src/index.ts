@@ -88,6 +88,8 @@ export function makeInsertMoveWorkload(opts: {
     name: `insert-move-${opts.count}`,
     totalOps: opts.count * 2,
     run: async (adapter) => {
+      // Pre-build ops so we can batch when supported.
+      const ops: Operation[] = [];
       for (let i = 0; i < opts.count; i++) {
         const nodeHex = (i + 1).toString(16).padStart(32, "0");
         const parentHex = "0".padStart(32, "0");
@@ -96,7 +98,7 @@ export function makeInsertMoveWorkload(opts: {
           i + 1,
           i + 1
         );
-        await adapter.appendOp(insert, serializeNodeId, serializeReplica);
+        ops.push(insert);
       }
       for (let i = 0; i < opts.count; i++) {
         const nodeHex = (i + 1).toString(16).padStart(32, "0");
@@ -106,7 +108,14 @@ export function makeInsertMoveWorkload(opts: {
           opts.count + i + 1,
           opts.count + i + 1
         );
-        await adapter.appendOp(mv, serializeNodeId, serializeReplica);
+        ops.push(mv);
+      }
+      if (adapter.appendOps) {
+        await adapter.appendOps(ops, serializeNodeId, serializeReplica);
+      } else {
+        for (const op of ops) {
+          await adapter.appendOp(op, serializeNodeId, serializeReplica);
+        }
       }
       await adapter.opsSince(0);
     },
@@ -134,6 +143,7 @@ export function makeInsertChainWorkload(opts: {
     totalOps: opts.count,
     run: async (adapter) => {
       let parentHex = "0".padStart(32, "0");
+      const ops: Operation[] = [];
       for (let i = 0; i < opts.count; i++) {
         const nodeHex = (i + 1).toString(16).padStart(32, "0");
         const insert = mkOp(
@@ -141,8 +151,15 @@ export function makeInsertChainWorkload(opts: {
           i + 1,
           i + 1
         );
-        await adapter.appendOp(insert, serializeNodeId, serializeReplica);
+        ops.push(insert);
         parentHex = nodeHex;
+      }
+      if (adapter.appendOps) {
+        await adapter.appendOps(ops, serializeNodeId, serializeReplica);
+      } else {
+        for (const op of ops) {
+          await adapter.appendOp(op, serializeNodeId, serializeReplica);
+        }
       }
       await adapter.opsSince(0);
     },
@@ -182,8 +199,12 @@ export function makeReplayLogWorkload(opts: {
     name: `replay-log-${opts.count}`,
     totalOps: ops.length,
     run: async (adapter) => {
-      for (const op of ops) {
-        await adapter.appendOp(op, serializeNodeId, serializeReplica);
+      if (adapter.appendOps) {
+        await adapter.appendOps(ops, serializeNodeId, serializeReplica);
+      } else {
+        for (const op of ops) {
+          await adapter.appendOp(op, serializeNodeId, serializeReplica);
+        }
       }
       await adapter.opsSince(0);
     },

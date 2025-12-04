@@ -2,11 +2,11 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "insert-move-10",
-  "timestamp": "2025-12-04T06:30:17.228Z",
+  "timestamp": "2025-12-04T08:54:19.035Z",
   "name": "insert-move-10",
   "totalOps": 20,
-  "durationMs": 7.671042,
-  "opsPerSec": 2607.207730058055,
+  "durationMs": 0.8117920000000254,
+  "opsPerSec": 24636.85278987644,
   "extra": {
     "count": 20
   },
