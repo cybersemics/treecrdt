@@ -3,9 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use treecrdt_core::{AllowAllAccess, Lamport, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
+use treecrdt_core::{Lamport, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Output {
     implementation: &'static str,
     storage: &'static str,
@@ -20,6 +21,7 @@ struct Output {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Extra {
     count: u64,
 }
@@ -31,55 +33,66 @@ fn hex_id(n: u64) -> NodeId {
 }
 
 fn main() {
-    let mut count: u64 = 200;
-    let mut out_file: Option<PathBuf> = None;
+    let mut counts: Vec<u64> = vec![1, 10, 100, 1_000, 10_000];
+    let mut out_dir: Option<PathBuf> = None;
     for arg in env::args().skip(1) {
         if let Some(val) = arg.strip_prefix("--count=") {
-            count = val.parse().unwrap_or(count);
-        } else if let Some(val) = arg.strip_prefix("--out=") {
-            out_file = Some(PathBuf::from(val));
+            counts = vec![val.parse().unwrap_or(500)];
+        } else if let Some(val) = arg.strip_prefix("--counts=") {
+            let parsed: Vec<u64> = val
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u64>().ok())
+                .collect();
+            if !parsed.is_empty() {
+                counts = parsed;
+            }
+        } else if let Some(val) = arg.strip_prefix("--out-dir=") {
+            out_dir = Some(PathBuf::from(val));
         }
     }
+
+    let out_dir = out_dir.unwrap_or_else(|| PathBuf::from("benchmarks/core"));
+    fs::create_dir_all(&out_dir).expect("mkdirs");
 
     let replica = ReplicaId::new(b"core");
-    let storage = MemoryStorage::default();
-    let mut tree = TreeCrdt::new(replica, storage, AllowAllAccess, LamportClock::default());
+    for count in counts {
+        let storage = MemoryStorage::default();
+        let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default());
 
-    let start = Instant::now();
-    for i in 0..count {
-        let node = hex_id(i + 1);
-        let _ = tree.local_insert(NodeId::ROOT, node, i as usize).unwrap();
-    }
-    for i in 0..count {
-        let node = hex_id(i + 1);
-        let _ = tree.local_move(node, NodeId::ROOT, 0).unwrap();
-    }
-    let _ = tree.operations_since(0 as Lamport).unwrap();
-    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-
-    let output = Output {
-        implementation: "core-memory",
-        storage: "memory",
-        workload: format!("insert-move-{}", count),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        name: format!("insert-move-{}", count),
-        total_ops: count * 2,
-        duration_ms,
-        ops_per_sec: if duration_ms > 0.0 {
-            (count as f64 * 2.0) / duration_ms * 1000.0
-        } else {
-            f64::INFINITY
-        },
-        extra: Extra { count },
-        source_file: out_file.as_ref().map(|p| p.display().to_string()),
-    };
-
-    let json = serde_json::to_string_pretty(&output).expect("serialize");
-    if let Some(path) = out_file {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("mkdirs");
+        let start = Instant::now();
+        for i in 0..count {
+            let node = hex_id(i + 1);
+            let _ = tree.local_insert(NodeId::ROOT, node, i as usize).unwrap();
         }
-        fs::write(&path, &json).expect("write output");
+        for i in 0..count {
+            let node = hex_id(i + 1);
+            let _ = tree.local_move(node, NodeId::ROOT, 0).unwrap();
+        }
+        let _ = tree.operations_since(0 as Lamport).unwrap();
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        let workload_name = format!("insert-move-{}", count);
+        let out_path = out_dir.join(format!("memory-{}.json", workload_name));
+
+        let output = Output {
+            implementation: "core-memory",
+            storage: "memory",
+            workload: workload_name.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            name: workload_name.clone(),
+            total_ops: count * 2,
+            duration_ms,
+            ops_per_sec: if duration_ms > 0.0 {
+                (count as f64 * 2.0) / duration_ms * 1000.0
+            } else {
+                f64::INFINITY
+            },
+            extra: Extra { count },
+            source_file: Some(out_path.display().to_string()),
+        };
+
+        let json = serde_json::to_string_pretty(&output).expect("serialize");
+        fs::write(&out_path, &json).expect("write output");
+        println!("{}", json);
     }
-    println!("{}", json);
 }

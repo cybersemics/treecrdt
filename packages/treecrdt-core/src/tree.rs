@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{Operation, OperationKind};
-use crate::traits::{AccessControl, Clock, Storage};
+use crate::traits::{Clock, Storage};
 
 #[derive(Clone, Debug)]
 struct NodeState {
@@ -35,16 +35,14 @@ impl NodeState {
     }
 }
 
-/// Generic Tree CRDT facade that wires clock, access control, and storage together.
-pub struct TreeCrdt<S, A, C>
+/// Generic Tree CRDT facade that wires clock and storage together.
+pub struct TreeCrdt<S, C>
 where
     S: Storage,
-    A: AccessControl,
     C: Clock,
 {
     replica_id: ReplicaId,
     storage: S,
-    access: A,
     clock: C,
     counter: u64,
     applied: HashSet<OperationId>,
@@ -61,19 +59,17 @@ fn tie_breaker_id(op: &Operation) -> u128 {
     u128::from_be_bytes(bytes)
 }
 
-impl<S, A, C> TreeCrdt<S, A, C>
+impl<S, C> TreeCrdt<S, C>
 where
     S: Storage,
-    A: AccessControl,
     C: Clock,
 {
-    pub fn new(replica_id: ReplicaId, storage: S, access: A, clock: C) -> Self {
+    pub fn new(replica_id: ReplicaId, storage: S, clock: C) -> Self {
         let mut nodes = HashMap::new();
         nodes.insert(NodeId::ROOT, NodeState::new_root());
         Self {
             replica_id,
             storage,
-            access,
             clock,
             counter: 0,
             applied: HashSet::new(),
@@ -122,7 +118,6 @@ where
     /// Apply an operation received from a remote peer.
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
         self.clock.observe(op.meta.lamport);
-        self.access.can_apply(&op)?;
         self.ingest(op)
     }
 
@@ -209,7 +204,6 @@ where
     }
 
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
-        self.access.can_apply(&op)?;
         self.ingest(op.clone())?;
         Ok(op)
     }
@@ -220,10 +214,9 @@ where
     }
 }
 
-impl<S, A, C> TreeCrdt<S, A, C>
+impl<S, C> TreeCrdt<S, C>
 where
     S: Storage,
-    A: AccessControl,
     C: Clock,
 {
     /// Helper primarily for tests to confirm whether a node exists according to storage.
@@ -240,8 +233,12 @@ where
         let idx = match self
             .log
             .binary_search_by(|existing| {
-                (existing.op.meta.lamport, &existing.op.meta.id)
-                    .cmp(&(op.meta.lamport, &op.meta.id))
+                (
+                    existing.op.meta.lamport,
+                    tie_breaker_id(&existing.op),
+                    &existing.op.meta.id,
+                )
+                    .cmp(&(op.meta.lamport, tie_breaker_id(&op), &op.meta.id))
             }) {
             Ok(i) => i,
             Err(i) => i,
@@ -435,7 +432,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{AllowAllAccess, LamportClock, MemoryStorage};
+    use crate::traits::{LamportClock, MemoryStorage};
     use proptest::prelude::*;
 
     #[test]
@@ -443,7 +440,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -468,7 +464,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -489,7 +484,6 @@ mod tests {
         let mut crdt_a = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -509,7 +503,6 @@ mod tests {
         let mut crdt_b = TreeCrdt::new(
             ReplicaId::new(b"b"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
         crdt_b.apply_remote(insert_left.clone()).unwrap();
@@ -537,7 +530,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -553,7 +545,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -570,7 +561,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -593,7 +583,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -633,7 +622,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             replica.clone(),
             storage,
-            AllowAllAccess,
             LamportClock::default(),
         );
         crdt.replay_from_storage().unwrap();
@@ -652,7 +640,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -685,7 +672,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
 
@@ -717,7 +703,6 @@ mod tests {
         let mut crdt = TreeCrdt::new(
             ReplicaId::new(b"a"),
             MemoryStorage::default(),
-            AllowAllAccess,
             LamportClock::default(),
         );
         let root = NodeId::ROOT;
@@ -755,7 +740,6 @@ mod tests {
             let mut crdt = TreeCrdt::new(
                 ReplicaId::new(b"p"),
                 MemoryStorage::default(),
-                AllowAllAccess,
                 LamportClock::default(),
             );
             for op in &perm {
@@ -781,7 +765,6 @@ mod tests {
                 let mut crdt = TreeCrdt::new(
                     ReplicaId::new(b"p"),
                     MemoryStorage::default(),
-                    AllowAllAccess,
                     LamportClock::default(),
                 );
                 for op in &perm {
@@ -818,7 +801,7 @@ mod tests {
         )
     }
 
-    fn parents_snapshot(crdt: &TreeCrdt<MemoryStorage, AllowAllAccess, LamportClock>) -> Vec<(NodeId, Option<NodeId>)> {
+    fn parents_snapshot(crdt: &TreeCrdt<MemoryStorage, LamportClock>) -> Vec<(NodeId, Option<NodeId>)> {
         let mut pairs: Vec<_> = crdt
             .nodes
             .iter()

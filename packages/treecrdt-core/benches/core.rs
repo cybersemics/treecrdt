@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use treecrdt_core::{AllowAllAccess, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
+use treecrdt_core::{LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
 
 fn bench_insert_chain(c: &mut Criterion) {
     let sizes = [100u64, 1_000, 10_000];
@@ -12,7 +12,6 @@ fn bench_insert_chain(c: &mut Criterion) {
                     TreeCrdt::new(
                         ReplicaId::new(b"bench"),
                         MemoryStorage::default(),
-                        AllowAllAccess,
                         LamportClock::default(),
                     )
                 },
@@ -40,7 +39,6 @@ fn bench_move_siblings(c: &mut Criterion) {
                 let mut crdt = TreeCrdt::new(
                     ReplicaId::new(b"bench"),
                     MemoryStorage::default(),
-                    AllowAllAccess,
                     LamportClock::default(),
                 );
                 for i in 0..1_000u64 {

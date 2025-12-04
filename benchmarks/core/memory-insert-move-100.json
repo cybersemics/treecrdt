@@ -1,0 +1,14 @@
+{
+  "implementation": "core-memory",
+  "storage": "memory",
+  "workload": "insert-move-100",
+  "timestamp": "2025-12-04T04:06:49.231346+00:00",
+  "name": "insert-move-100",
+  "totalOps": 200,
+  "durationMs": 1.877583,
+  "opsPerSec": 106519.92481823706,
+  "extra": {
+    "count": 100
+  },
+  "sourceFile": "benchmarks/core/memory-insert-move-100.json"
+}

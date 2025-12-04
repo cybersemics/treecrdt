@@ -12,6 +12,7 @@ type CliOptions = {
   storage: StorageKind;
   outFile?: string;
   workload: "insert-move" | "insert-chain";
+  workloads?: ("insert-move" | "insert-chain")[];
   sizes?: number[];
 };
 
@@ -38,6 +39,15 @@ function parseArgs(): CliOptions {
       if (val === "insert-move" || val === "insert-chain") {
         opts.workload = val;
       }
+    } else if (arg.startsWith("--workloads=")) {
+      const vals = arg
+        .slice("--workloads=".length)
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      opts.workloads = vals.filter((v): v is "insert-move" | "insert-chain" =>
+        v === "insert-move" || v === "insert-chain"
+      );
     }
   }
   return opts;
@@ -67,34 +77,38 @@ async function main() {
     }
   }
 
-  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [opts.count];
-  for (const size of sizes) {
-    const db = new Database(dbPath);
-    loadTreecrdtExtension(db);
-    const adapter = {
-      ...createSqliteNodeAdapter(db),
-      close: async () => {
-        db.close();
-      },
-    };
+  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [1, 10, 100, 1000, 10000];
+  const workloads = opts.workloads && opts.workloads.length > 0 ? opts.workloads : ["insert-move", "insert-chain"];
 
-    const workload = makeWorkload(opts.workload, size);
-    const result = await runBenchmark(() => adapter, workload);
+  for (const workloadName of workloads) {
+    for (const size of sizes) {
+      const db = new Database(dbPath);
+      loadTreecrdtExtension(db);
+      const adapter = {
+        ...createSqliteNodeAdapter(db),
+        close: async () => {
+          db.close();
+        },
+      };
 
-    const outFile =
-      opts.outFile ??
-      path.join(repoRoot, "benchmarks", "sqlite-node", `${opts.storage}-${workload.name}.json`);
-    const payload = await writeResult(result, {
-      implementation: "sqlite-node",
-      storage: opts.storage,
-      workload: workload.name,
-      outFile,
-      extra: { count: size },
-    });
-    console.log(JSON.stringify(payload, null, 2));
+      const workload = makeWorkload(workloadName, size);
+      const result = await runBenchmark(() => adapter, workload);
 
-    if (adapter.close) {
-      await adapter.close();
+      const outFile =
+        opts.outFile ??
+        path.join(repoRoot, "benchmarks", "sqlite-node", `${opts.storage}-${workload.name}.json`);
+      const payload = await writeResult(result, {
+        implementation: "sqlite-node",
+        storage: opts.storage,
+        workload: workload.name,
+        outFile,
+        extra: { count: size },
+      });
+      console.log(JSON.stringify(payload, null, 2));
+
+      if (adapter.close) {
+        await adapter.close();
+      }
     }
   }
 }

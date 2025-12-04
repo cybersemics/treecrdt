@@ -7,6 +7,7 @@ type CliOptions = {
   count: number;
   outFile?: string;
   workload: "insert-move" | "insert-chain";
+  workloads?: ("insert-move" | "insert-chain")[];
   sizes?: number[];
 };
 
@@ -28,6 +29,15 @@ function parseArgs(): CliOptions {
       if (val === "insert-move" || val === "insert-chain") {
         opts.workload = val;
       }
+    } else if (arg.startsWith("--workloads=")) {
+      const vals = arg
+        .slice("--workloads=".length)
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      opts.workloads = vals.filter((v): v is "insert-move" | "insert-chain" =>
+        v === "insert-move" || v === "insert-chain"
+      );
     }
   }
   return opts;
@@ -43,23 +53,27 @@ async function main() {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(__dirname, "../../..");
 
-  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [opts.count];
-  for (const size of sizes) {
-    const workload = makeWorkload(opts.workload, size);
-    const adapterFactory = () => createWasmAdapter();
-    const result = await runBenchmark(adapterFactory, workload);
+  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [1, 10, 100, 1000, 10000];
+  const workloads = opts.workloads && opts.workloads.length > 0 ? opts.workloads : ["insert-move", "insert-chain"];
 
-    const outFile =
-      opts.outFile ?? path.join(repoRoot, "benchmarks", "wasm", `${workload.name}.json`);
+  for (const workloadName of workloads) {
+    for (const size of sizes) {
+      const workload = makeWorkload(workloadName, size);
+      const adapterFactory = () => createWasmAdapter();
+      const result = await runBenchmark(adapterFactory, workload);
 
-    const payload = await writeResult(result, {
-      implementation: "wasm",
-      storage: "memory",
-      workload: workload.name,
-      outFile,
-      extra: { count: size },
-    });
-    console.log(JSON.stringify(payload, null, 2));
+      const outFile =
+        opts.outFile ?? path.join(repoRoot, "benchmarks", "wasm", `${workload.name}.json`);
+
+      const payload = await writeResult(result, {
+        implementation: "wasm",
+        storage: "memory",
+        workload: workload.name,
+        outFile,
+        extra: { count: size },
+      });
+      console.log(JSON.stringify(payload, null, 2));
+    }
   }
 }
 

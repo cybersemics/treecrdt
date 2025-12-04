@@ -220,7 +220,7 @@ fn blob_to_node(data: Vec<u8>) -> rusqlite::Result<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use treecrdt_core::{AllowAllAccess, LamportClock, TreeCrdt};
+    use treecrdt_core::{LamportClock, TreeCrdt};
 
     #[test]
     fn apply_and_load_round_trip() {
@@ -278,7 +278,7 @@ mod tests {
             .apply(Operation::insert(&replica, 2, 2, NodeId::ROOT, child, 0))
             .unwrap();
 
-        let mut crdt = TreeCrdt::new(replica, storage, AllowAllAccess, LamportClock::default());
+        let mut crdt = TreeCrdt::new(replica, storage, LamportClock::default());
         crdt.replay_from_storage().unwrap();
 
         assert_eq!(crdt.parent(child), Some(parent));

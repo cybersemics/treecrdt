@@ -1,13 +1,88 @@
 [
   {
+    "implementation": "core-memory",
+    "storage": "memory",
+    "workload": "insert-move-1",
+    "timestamp": "2025-12-04T04:06:49.228991+00:00",
+    "name": "insert-move-1",
+    "totalOps": 2,
+    "durationMs": 0.014459,
+    "opsPerSec": 138322.1522926897,
+    "extra": {
+      "count": 1
+    },
+    "sourceFile": "benchmarks/core/memory-insert-move-1.json",
+    "relativePath": "benchmarks/core/memory-insert-move-1.json"
+  },
+  {
+    "implementation": "core-memory",
+    "storage": "memory",
+    "workload": "insert-move-10",
+    "timestamp": "2025-12-04T04:06:49.229351+00:00",
+    "name": "insert-move-10",
+    "totalOps": 20,
+    "durationMs": 0.14100000000000001,
+    "opsPerSec": 141843.97163120564,
+    "extra": {
+      "count": 10
+    },
+    "sourceFile": "benchmarks/core/memory-insert-move-10.json",
+    "relativePath": "benchmarks/core/memory-insert-move-10.json"
+  },
+  {
+    "implementation": "core-memory",
+    "storage": "memory",
+    "workload": "insert-move-100",
+    "timestamp": "2025-12-04T04:06:49.231346+00:00",
+    "name": "insert-move-100",
+    "totalOps": 200,
+    "durationMs": 1.877583,
+    "opsPerSec": 106519.92481823706,
+    "extra": {
+      "count": 100
+    },
+    "sourceFile": "benchmarks/core/memory-insert-move-100.json",
+    "relativePath": "benchmarks/core/memory-insert-move-100.json"
+  },
+  {
+    "implementation": "core-memory",
+    "storage": "memory",
+    "workload": "insert-move-1000",
+    "timestamp": "2025-12-04T04:06:49.266694+00:00",
+    "name": "insert-move-1000",
+    "totalOps": 2000,
+    "durationMs": 35.157041,
+    "opsPerSec": 56887.608942971056,
+    "extra": {
+      "count": 1000
+    },
+    "sourceFile": "benchmarks/core/memory-insert-move-1000.json",
+    "relativePath": "benchmarks/core/memory-insert-move-1000.json"
+  },
+  {
+    "implementation": "core-memory",
+    "storage": "memory",
+    "workload": "insert-move-10000",
+    "timestamp": "2025-12-04T04:06:50.889351+00:00",
+    "name": "insert-move-10000",
+    "totalOps": 20000,
+    "durationMs": 1622.093875,
+    "opsPerSec": 12329.742629722956,
+    "extra": {
+      "count": 10000
+    },
+    "sourceFile": "benchmarks/core/memory-insert-move-10000.json",
+    "relativePath": "benchmarks/core/memory-insert-move-10000.json"
+  },
+  {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T02:17:42.503Z",
+    "timestamp": "2025-12-04T04:06:42.914Z",
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 0.43941599999999426,
-    "opsPerSec": 2275.747810730636,
+    "durationMs": 0.1252919999999449,
+    "opsPerSec": 7981.355553430704,
     "extra": {
       "count": 1
     },
@@ -18,11 +93,11 @@
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T02:17:42.506Z",
+    "timestamp": "2025-12-04T04:06:42.916Z",
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 0.3514160000000004,
-    "opsPerSec": 28456.302501878086,
+    "durationMs": 0.2407500000000482,
+    "opsPerSec": 41536.86396676219,
     "extra": {
       "count": 10
     },
@@ -33,11 +108,11 @@
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T02:17:42.508Z",
+    "timestamp": "2025-12-04T04:06:42.918Z",
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 1.8040410000000122,
-    "opsPerSec": 55431.11270752678,
+    "durationMs": 1.437082999999916,
+    "opsPerSec": 69585.4032091437,
     "extra": {
       "count": 100
     },
@@ -48,11 +123,11 @@
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T02:17:42.529Z",
+    "timestamp": "2025-12-04T04:06:42.932Z",
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 20.219250000000017,
-    "opsPerSec": 49457.818662907834,
+    "durationMs": 12.699957999999924,
+    "opsPerSec": 78740.4178816974,
     "extra": {
       "count": 1000
     },
@@ -63,11 +138,11 @@
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-10000",
-    "timestamp": "2025-12-04T02:17:42.708Z",
+    "timestamp": "2025-12-04T04:06:43.096Z",
     "name": "insert-chain-10000",
     "totalOps": 10000,
-    "durationMs": 176.995583,
-    "opsPerSec": 56498.58505226088,
+    "durationMs": 162.31066699999997,
+    "opsPerSec": 61610.24524654317,
     "extra": {
       "count": 10000
     },
@@ -77,564 +152,87 @@
   {
     "implementation": "sqlite-node",
     "storage": "memory",
-    "workload": "insert-chain-100000",
-    "timestamp": "2025-12-04T03:18:12.583Z",
-    "name": "insert-chain-100000",
-    "totalOps": 100000,
-    "durationMs": 1455.816833,
-    "opsPerSec": 68689.9599820742,
+    "workload": "insert-move-1",
+    "timestamp": "2025-12-04T04:06:42.561Z",
+    "name": "insert-move-1",
+    "totalOps": 2,
+    "durationMs": 0.4572909999999979,
+    "opsPerSec": 4373.582685860883,
     "extra": {
-      "count": 100000
+      "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-100000.json",
-    "relativePath": "benchmarks/sqlite-node/memory-insert-chain-100000.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-1.json",
+    "relativePath": "benchmarks/sqlite-node/memory-insert-move-1.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
-    "workload": "insert-move-500",
-    "timestamp": "2025-12-04T02:10:46.295Z",
-    "name": "insert-move-500",
-    "totalOps": 1000,
-    "durationMs": 25.447000000000003,
-    "opsPerSec": 39297.36314693284,
+    "workload": "insert-move-10",
+    "timestamp": "2025-12-04T04:06:42.564Z",
+    "name": "insert-move-10",
+    "totalOps": 20,
+    "durationMs": 0.6702499999999816,
+    "opsPerSec": 29839.612085043715,
     "extra": {
-      "count": 500
+      "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-500.json",
-    "relativePath": "benchmarks/sqlite-node/memory-insert-move-500.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-10.json",
+    "relativePath": "benchmarks/sqlite-node/memory-insert-move-10.json"
   },
   {
-    "0": {
-      "implementation": "sqlite-node",
-      "storage": "memory",
-      "workload": "insert-chain-1",
-      "timestamp": "2025-12-04T02:17:42.503Z",
-      "name": "insert-chain-1",
-      "totalOps": 1,
-      "durationMs": 0.43941599999999426,
-      "opsPerSec": 2275.747810730636,
-      "extra": {
-        "count": 1
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-1.json",
-      "relativePath": "benchmarks/sqlite-node/memory-insert-chain-1.json"
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "insert-move-100",
+    "timestamp": "2025-12-04T04:06:42.568Z",
+    "name": "insert-move-100",
+    "totalOps": 200,
+    "durationMs": 3.3450420000000065,
+    "opsPerSec": 59789.98171024447,
+    "extra": {
+      "count": 100
     },
-    "1": {
-      "implementation": "sqlite-node",
-      "storage": "memory",
-      "workload": "insert-chain-10",
-      "timestamp": "2025-12-04T02:17:42.506Z",
-      "name": "insert-chain-10",
-      "totalOps": 10,
-      "durationMs": 0.3514160000000004,
-      "opsPerSec": 28456.302501878086,
-      "extra": {
-        "count": 10
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-10.json",
-      "relativePath": "benchmarks/sqlite-node/memory-insert-chain-10.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-100.json",
+    "relativePath": "benchmarks/sqlite-node/memory-insert-move-100.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "insert-move-1000",
+    "timestamp": "2025-12-04T04:06:42.604Z",
+    "name": "insert-move-1000",
+    "totalOps": 2000,
+    "durationMs": 34.51120900000001,
+    "opsPerSec": 57952.18591153962,
+    "extra": {
+      "count": 1000
     },
-    "2": {
-      "implementation": "sqlite-node",
-      "storage": "memory",
-      "workload": "insert-chain-100",
-      "timestamp": "2025-12-04T02:17:42.508Z",
-      "name": "insert-chain-100",
-      "totalOps": 100,
-      "durationMs": 1.8040410000000122,
-      "opsPerSec": 55431.11270752678,
-      "extra": {
-        "count": 100
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-100.json",
-      "relativePath": "benchmarks/sqlite-node/memory-insert-chain-100.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-1000.json",
+    "relativePath": "benchmarks/sqlite-node/memory-insert-move-1000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "insert-move-10000",
+    "timestamp": "2025-12-04T04:06:42.911Z",
+    "name": "insert-move-10000",
+    "totalOps": 20000,
+    "durationMs": 305.90062500000005,
+    "opsPerSec": 65380.70983019402,
+    "extra": {
+      "count": 10000
     },
-    "3": {
-      "implementation": "sqlite-node",
-      "storage": "memory",
-      "workload": "insert-chain-1000",
-      "timestamp": "2025-12-04T02:17:42.529Z",
-      "name": "insert-chain-1000",
-      "totalOps": 1000,
-      "durationMs": 20.219250000000017,
-      "opsPerSec": 49457.818662907834,
-      "extra": {
-        "count": 1000
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-1000.json",
-      "relativePath": "benchmarks/sqlite-node/memory-insert-chain-1000.json"
-    },
-    "4": {
-      "implementation": "sqlite-node",
-      "storage": "memory",
-      "workload": "insert-chain-10000",
-      "timestamp": "2025-12-04T02:17:42.708Z",
-      "name": "insert-chain-10000",
-      "totalOps": 10000,
-      "durationMs": 176.995583,
-      "opsPerSec": 56498.58505226088,
-      "extra": {
-        "count": 10000
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-10000.json",
-      "relativePath": "benchmarks/sqlite-node/memory-insert-chain-10000.json"
-    },
-    "5": {
-      "implementation": "sqlite-node",
-      "storage": "memory",
-      "workload": "insert-move-500",
-      "timestamp": "2025-12-04T02:10:46.295Z",
-      "name": "insert-move-500",
-      "totalOps": 1000,
-      "durationMs": 25.447000000000003,
-      "opsPerSec": 39297.36314693284,
-      "extra": {
-        "count": 500
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-500.json",
-      "relativePath": "benchmarks/sqlite-node/memory-insert-move-500.json"
-    },
-    "6": {
-      "0": {
-        "implementation": "sqlite-node",
-        "storage": "memory",
-        "workload": "insert-move-500",
-        "timestamp": "2025-12-04T02:10:46.295Z",
-        "name": "insert-move-500",
-        "totalOps": 1000,
-        "durationMs": 25.447000000000003,
-        "opsPerSec": 39297.36314693284,
-        "extra": {
-          "count": 500
-        },
-        "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-500.json",
-        "relativePath": "benchmarks/sqlite-node/memory-insert-move-500.json"
-      },
-      "1": {
-        "0": {
-          "implementation": "sqlite-node",
-          "storage": "memory",
-          "workload": "insert-move-500",
-          "timestamp": "2025-12-04T01:33:53.737Z",
-          "name": "insert-move-500",
-          "totalOps": 1000,
-          "durationMs": 21.177707999999996,
-          "opsPerSec": 47219.46303159909,
-          "extra": {
-            "count": 500
-          },
-          "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-500.json",
-          "relativePath": "benchmarks/sqlite-node/memory-insert-move-500.json"
-        },
-        "1": {
-          "0": {
-            "implementation": "sqlite-node",
-            "storage": "memory",
-            "workload": "insert-move-500",
-            "timestamp": "2025-12-04T01:27:24.518Z",
-            "name": "insert-move-500",
-            "totalOps": 1000,
-            "durationMs": 20.56604200000001,
-            "opsPerSec": 48623.84312936828,
-            "extra": {
-              "count": 500
-            },
-            "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-500.json",
-            "relativePath": "benchmarks/sqlite-node/memory-insert-move-500.json"
-          },
-          "1": {
-            "implementation": "wa-sqlite",
-            "storage": "memory",
-            "workload": "insert-move-1",
-            "timestamp": "2025-12-04T01:26:08.180Z",
-            "name": "insert-move-1",
-            "totalOps": 2,
-            "durationMs": 1.9541249999999764,
-            "opsPerSec": 1023.4759802980997,
-            "extra": {
-              "count": 1
-            },
-            "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-1.json",
-            "relativePath": "benchmarks/wa-sqlite/memory-insert-move-1.json"
-          },
-          "2": {
-            "implementation": "wa-sqlite",
-            "storage": "memory",
-            "workload": "insert-move-200",
-            "timestamp": "2025-12-04T01:27:21.630Z",
-            "name": "insert-move-200",
-            "totalOps": 400,
-            "durationMs": 28.44958300000002,
-            "opsPerSec": 14059.960035266588,
-            "extra": {
-              "count": 200
-            },
-            "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-200.json",
-            "relativePath": "benchmarks/wa-sqlite/memory-insert-move-200.json"
-          },
-          "relativePath": "benchmarks/summary.json"
-        },
-        "2": {
-          "implementation": "wa-sqlite",
-          "storage": "memory",
-          "workload": "insert-move-1",
-          "timestamp": "2025-12-04T01:26:08.180Z",
-          "name": "insert-move-1",
-          "totalOps": 2,
-          "durationMs": 1.9541249999999764,
-          "opsPerSec": 1023.4759802980997,
-          "extra": {
-            "count": 1
-          },
-          "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-1.json",
-          "relativePath": "benchmarks/wa-sqlite/memory-insert-move-1.json"
-        },
-        "3": {
-          "implementation": "wa-sqlite",
-          "storage": "memory",
-          "workload": "insert-move-200",
-          "timestamp": "2025-12-04T01:27:21.630Z",
-          "name": "insert-move-200",
-          "totalOps": 400,
-          "durationMs": 28.44958300000002,
-          "opsPerSec": 14059.960035266588,
-          "extra": {
-            "count": 200
-          },
-          "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-200.json",
-          "relativePath": "benchmarks/wa-sqlite/memory-insert-move-200.json"
-        },
-        "4": {
-          "implementation": "wa-sqlite",
-          "storage": "memory",
-          "workload": "insert-move-500",
-          "timestamp": "2025-12-04T01:33:49.565Z",
-          "name": "insert-move-500",
-          "totalOps": 1000,
-          "durationMs": 101.64949999999999,
-          "opsPerSec": 9837.7266981146,
-          "extra": {
-            "count": 500
-          },
-          "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-500.json",
-          "relativePath": "benchmarks/wa-sqlite/memory-insert-move-500.json"
-        },
-        "relativePath": "benchmarks/summary.json"
-      },
-      "2": {
-        "implementation": "wa-sqlite",
-        "storage": "memory",
-        "workload": "insert-move-1",
-        "timestamp": "2025-12-04T01:26:08.180Z",
-        "name": "insert-move-1",
-        "totalOps": 2,
-        "durationMs": 1.9541249999999764,
-        "opsPerSec": 1023.4759802980997,
-        "extra": {
-          "count": 1
-        },
-        "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-1.json",
-        "relativePath": "benchmarks/wa-sqlite/memory-insert-move-1.json"
-      },
-      "3": {
-        "implementation": "wa-sqlite",
-        "storage": "memory",
-        "workload": "insert-move-200",
-        "timestamp": "2025-12-04T01:27:21.630Z",
-        "name": "insert-move-200",
-        "totalOps": 400,
-        "durationMs": 28.44958300000002,
-        "opsPerSec": 14059.960035266588,
-        "extra": {
-          "count": 200
-        },
-        "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-200.json",
-        "relativePath": "benchmarks/wa-sqlite/memory-insert-move-200.json"
-      },
-      "4": {
-        "implementation": "wa-sqlite",
-        "storage": "memory",
-        "workload": "insert-move-500",
-        "timestamp": "2025-12-04T02:10:42.133Z",
-        "name": "insert-move-500",
-        "totalOps": 1000,
-        "durationMs": 102.047166,
-        "opsPerSec": 9799.39021530495,
-        "extra": {
-          "count": 500
-        },
-        "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-500.json",
-        "relativePath": "benchmarks/wa-sqlite/memory-insert-move-500.json"
-      },
-      "5": {
-        "implementation": "wasm",
-        "storage": "memory",
-        "workload": "insert-move-100",
-        "timestamp": "2025-12-04T02:10:08.255Z",
-        "name": "insert-move-100",
-        "totalOps": 200,
-        "durationMs": 6.287417000000005,
-        "opsPerSec": 31809.56504077904,
-        "extra": {
-          "count": 100
-        },
-        "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-100.json",
-        "relativePath": "benchmarks/wasm/insert-move-100.json"
-      },
-      "6": {
-        "implementation": "wasm",
-        "storage": "memory",
-        "workload": "insert-move-500",
-        "timestamp": "2025-12-04T02:10:50.767Z",
-        "name": "insert-move-500",
-        "totalOps": 1000,
-        "durationMs": 14.844208000000009,
-        "opsPerSec": 67366.34248186224,
-        "extra": {
-          "count": 500
-        },
-        "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-500.json",
-        "relativePath": "benchmarks/wasm/insert-move-500.json"
-      },
-      "relativePath": "benchmarks/summary.json"
-    },
-    "7": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-chain-1",
-      "timestamp": "2025-12-04T02:17:11.356Z",
-      "name": "insert-chain-1",
-      "totalOps": 1,
-      "durationMs": 1.5458750000000236,
-      "opsPerSec": 646.8828333468002,
-      "extra": {
-        "count": 1
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-chain-1.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-chain-1.json"
-    },
-    "8": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-chain-10",
-      "timestamp": "2025-12-04T02:17:11.576Z",
-      "name": "insert-chain-10",
-      "totalOps": 10,
-      "durationMs": 1.4413339999999835,
-      "opsPerSec": 6938.017142452834,
-      "extra": {
-        "count": 10
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-chain-10.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-chain-10.json"
-    },
-    "9": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-chain-100",
-      "timestamp": "2025-12-04T02:17:11.614Z",
-      "name": "insert-chain-100",
-      "totalOps": 100,
-      "durationMs": 11.894541000000004,
-      "opsPerSec": 8407.21806751517,
-      "extra": {
-        "count": 100
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-chain-100.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-chain-100.json"
-    },
-    "10": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-chain-1000",
-      "timestamp": "2025-12-04T02:17:11.878Z",
-      "name": "insert-chain-1000",
-      "totalOps": 1000,
-      "durationMs": 148.94329099999993,
-      "opsPerSec": 6713.964712918828,
-      "extra": {
-        "count": 1000
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-chain-1000.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-chain-1000.json"
-    },
-    "11": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-chain-10000",
-      "timestamp": "2025-12-04T02:17:28.257Z",
-      "name": "insert-chain-10000",
-      "totalOps": 10000,
-      "durationMs": 550.835959,
-      "opsPerSec": 18154.225112961445,
-      "extra": {
-        "count": 10000
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-chain-10000.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-chain-10000.json"
-    },
-    "12": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-move-1",
-      "timestamp": "2025-12-04T01:26:08.180Z",
-      "name": "insert-move-1",
-      "totalOps": 2,
-      "durationMs": 1.9541249999999764,
-      "opsPerSec": 1023.4759802980997,
-      "extra": {
-        "count": 1
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-1.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-move-1.json"
-    },
-    "13": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-move-200",
-      "timestamp": "2025-12-04T01:27:21.630Z",
-      "name": "insert-move-200",
-      "totalOps": 400,
-      "durationMs": 28.44958300000002,
-      "opsPerSec": 14059.960035266588,
-      "extra": {
-        "count": 200
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-200.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-move-200.json"
-    },
-    "14": {
-      "implementation": "wa-sqlite",
-      "storage": "memory",
-      "workload": "insert-move-500",
-      "timestamp": "2025-12-04T02:10:42.133Z",
-      "name": "insert-move-500",
-      "totalOps": 1000,
-      "durationMs": 102.047166,
-      "opsPerSec": 9799.39021530495,
-      "extra": {
-        "count": 500
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-500.json",
-      "relativePath": "benchmarks/wa-sqlite/memory-insert-move-500.json"
-    },
-    "15": {
-      "implementation": "wasm",
-      "storage": "memory",
-      "workload": "insert-chain-1",
-      "timestamp": "2025-12-04T02:17:52.742Z",
-      "name": "insert-chain-1",
-      "totalOps": 1,
-      "durationMs": 2.0864170000000115,
-      "opsPerSec": 479.2905732650733,
-      "extra": {
-        "count": 1
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-1.json",
-      "relativePath": "benchmarks/wasm/insert-chain-1.json"
-    },
-    "16": {
-      "implementation": "wasm",
-      "storage": "memory",
-      "workload": "insert-chain-10",
-      "timestamp": "2025-12-04T02:17:52.745Z",
-      "name": "insert-chain-10",
-      "totalOps": 10,
-      "durationMs": 0.42833400000000665,
-      "opsPerSec": 23346.26716534257,
-      "extra": {
-        "count": 10
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-10.json",
-      "relativePath": "benchmarks/wasm/insert-chain-10.json"
-    },
-    "17": {
-      "implementation": "wasm",
-      "storage": "memory",
-      "workload": "insert-chain-100",
-      "timestamp": "2025-12-04T02:17:52.747Z",
-      "name": "insert-chain-100",
-      "totalOps": 100,
-      "durationMs": 2.113332999999983,
-      "opsPerSec": 47318.61945088673,
-      "extra": {
-        "count": 100
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-100.json",
-      "relativePath": "benchmarks/wasm/insert-chain-100.json"
-    },
-    "18": {
-      "implementation": "wasm",
-      "storage": "memory",
-      "workload": "insert-chain-1000",
-      "timestamp": "2025-12-04T02:17:52.759Z",
-      "name": "insert-chain-1000",
-      "totalOps": 1000,
-      "durationMs": 10.777708000000018,
-      "opsPerSec": 92784.10585998418,
-      "extra": {
-        "count": 1000
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-1000.json",
-      "relativePath": "benchmarks/wasm/insert-chain-1000.json"
-    },
-    "19": {
-      "implementation": "wasm",
-      "storage": "memory",
-      "workload": "insert-chain-10000",
-      "timestamp": "2025-12-04T02:17:52.822Z",
-      "name": "insert-chain-10000",
-      "totalOps": 10000,
-      "durationMs": 62.937667000000005,
-      "opsPerSec": 158887.36390562425,
-      "extra": {
-        "count": 10000
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-10000.json",
-      "relativePath": "benchmarks/wasm/insert-chain-10000.json"
-    },
-    "20": {
-      "implementation": "wasm",
-      "storage": "memory",
-      "workload": "insert-move-100",
-      "timestamp": "2025-12-04T02:10:08.255Z",
-      "name": "insert-move-100",
-      "totalOps": 200,
-      "durationMs": 6.287417000000005,
-      "opsPerSec": 31809.56504077904,
-      "extra": {
-        "count": 100
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-100.json",
-      "relativePath": "benchmarks/wasm/insert-move-100.json"
-    },
-    "21": {
-      "implementation": "wasm",
-      "storage": "memory",
-      "workload": "insert-move-500",
-      "timestamp": "2025-12-04T02:10:50.767Z",
-      "name": "insert-move-500",
-      "totalOps": 1000,
-      "durationMs": 14.844208000000009,
-      "opsPerSec": 67366.34248186224,
-      "extra": {
-        "count": 500
-      },
-      "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-500.json",
-      "relativePath": "benchmarks/wasm/insert-move-500.json"
-    },
-    "relativePath": "benchmarks/summary.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-10000.json",
+    "relativePath": "benchmarks/sqlite-node/memory-insert-move-10000.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "memory",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T02:17:11.356Z",
+    "timestamp": "2025-12-04T04:06:39.705Z",
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 1.5458750000000236,
-    "opsPerSec": 646.8828333468002,
+    "durationMs": 0.1974159999999756,
+    "opsPerSec": 5065.445556591783,
     "extra": {
       "count": 1
     },
@@ -645,11 +243,11 @@
     "implementation": "wa-sqlite",
     "storage": "memory",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T02:17:11.576Z",
+    "timestamp": "2025-12-04T04:06:39.714Z",
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 1.4413339999999835,
-    "opsPerSec": 6938.017142452834,
+    "durationMs": 0.5618750000001,
+    "opsPerSec": 17797.552836481813,
     "extra": {
       "count": 10
     },
@@ -660,11 +258,11 @@
     "implementation": "wa-sqlite",
     "storage": "memory",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T02:17:11.614Z",
+    "timestamp": "2025-12-04T04:06:39.722Z",
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 11.894541000000004,
-    "opsPerSec": 8407.21806751517,
+    "durationMs": 2.7907920000000104,
+    "opsPerSec": 35832.12220760258,
     "extra": {
       "count": 100
     },
@@ -675,11 +273,11 @@
     "implementation": "wa-sqlite",
     "storage": "memory",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T02:17:11.878Z",
+    "timestamp": "2025-12-04T04:06:39.770Z",
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 148.94329099999993,
-    "opsPerSec": 6713.964712918828,
+    "durationMs": 38.64466700000003,
+    "opsPerSec": 25876.79174464097,
     "extra": {
       "count": 1000
     },
@@ -690,11 +288,11 @@
     "implementation": "wa-sqlite",
     "storage": "memory",
     "workload": "insert-chain-10000",
-    "timestamp": "2025-12-04T02:17:28.257Z",
+    "timestamp": "2025-12-04T04:06:40.070Z",
     "name": "insert-chain-10000",
     "totalOps": 10000,
-    "durationMs": 550.835959,
-    "opsPerSec": 18154.225112961445,
+    "durationMs": 294.18450000000007,
+    "opsPerSec": 33992.27355622066,
     "extra": {
       "count": 10000
     },
@@ -704,27 +302,12 @@
   {
     "implementation": "wa-sqlite",
     "storage": "memory",
-    "workload": "insert-chain-100000",
-    "timestamp": "2025-12-04T03:18:04.240Z",
-    "name": "insert-chain-100000",
-    "totalOps": 100000,
-    "durationMs": 2751.1114580000003,
-    "opsPerSec": 36348.94533596901,
-    "extra": {
-      "count": 100000
-    },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-chain-100000.json",
-    "relativePath": "benchmarks/wa-sqlite/memory-insert-chain-100000.json"
-  },
-  {
-    "implementation": "wa-sqlite",
-    "storage": "memory",
     "workload": "insert-move-1",
-    "timestamp": "2025-12-04T01:26:08.180Z",
+    "timestamp": "2025-12-04T04:06:38.563Z",
     "name": "insert-move-1",
     "totalOps": 2,
-    "durationMs": 1.9541249999999764,
-    "opsPerSec": 1023.4759802980997,
+    "durationMs": 3.0182920000000024,
+    "opsPerSec": 662.6264125538545,
     "extra": {
       "count": 1
     },
@@ -734,42 +317,72 @@
   {
     "implementation": "wa-sqlite",
     "storage": "memory",
-    "workload": "insert-move-200",
-    "timestamp": "2025-12-04T01:27:21.630Z",
-    "name": "insert-move-200",
-    "totalOps": 400,
-    "durationMs": 28.44958300000002,
-    "opsPerSec": 14059.960035266588,
+    "workload": "insert-move-10",
+    "timestamp": "2025-12-04T04:06:38.800Z",
+    "name": "insert-move-10",
+    "totalOps": 20,
+    "durationMs": 2.3175840000000107,
+    "opsPerSec": 8629.676421652854,
     "extra": {
-      "count": 200
+      "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-200.json",
-    "relativePath": "benchmarks/wa-sqlite/memory-insert-move-200.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-10.json",
+    "relativePath": "benchmarks/wa-sqlite/memory-insert-move-10.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "memory",
-    "workload": "insert-move-500",
-    "timestamp": "2025-12-04T02:10:42.133Z",
-    "name": "insert-move-500",
-    "totalOps": 1000,
-    "durationMs": 102.047166,
-    "opsPerSec": 9799.39021530495,
+    "workload": "insert-move-100",
+    "timestamp": "2025-12-04T04:06:38.848Z",
+    "name": "insert-move-100",
+    "totalOps": 200,
+    "durationMs": 18.336791000000005,
+    "opsPerSec": 10907.03384250821,
     "extra": {
-      "count": 500
+      "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-500.json",
-    "relativePath": "benchmarks/wa-sqlite/memory-insert-move-500.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-100.json",
+    "relativePath": "benchmarks/wa-sqlite/memory-insert-move-100.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "memory",
+    "workload": "insert-move-1000",
+    "timestamp": "2025-12-04T04:06:39.047Z",
+    "name": "insert-move-1000",
+    "totalOps": 2000,
+    "durationMs": 98.91191600000002,
+    "opsPerSec": 20220.01070123846,
+    "extra": {
+      "count": 1000
+    },
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-1000.json",
+    "relativePath": "benchmarks/wa-sqlite/memory-insert-move-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "memory",
+    "workload": "insert-move-10000",
+    "timestamp": "2025-12-04T04:06:39.699Z",
+    "name": "insert-move-10000",
+    "totalOps": 20000,
+    "durationMs": 604.780583,
+    "opsPerSec": 33069.84477046281,
+    "extra": {
+      "count": 10000
+    },
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-10000.json",
+    "relativePath": "benchmarks/wa-sqlite/memory-insert-move-10000.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T02:17:52.742Z",
+    "timestamp": "2025-12-04T04:06:46.323Z",
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 2.0864170000000115,
-    "opsPerSec": 479.2905732650733,
+    "durationMs": 0.10941700000000765,
+    "opsPerSec": 9139.347633365292,
     "extra": {
       "count": 1
     },
@@ -780,11 +393,11 @@
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T02:17:52.745Z",
+    "timestamp": "2025-12-04T04:06:46.324Z",
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 0.42833400000000665,
-    "opsPerSec": 23346.26716534257,
+    "durationMs": 0.1798750000000382,
+    "opsPerSec": 55594.16261291383,
     "extra": {
       "count": 10
     },
@@ -795,11 +408,11 @@
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T02:17:52.747Z",
+    "timestamp": "2025-12-04T04:06:46.325Z",
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 2.113332999999983,
-    "opsPerSec": 47318.61945088673,
+    "durationMs": 0.7951250000000414,
+    "opsPerSec": 125766.38893255123,
     "extra": {
       "count": 100
     },
@@ -810,11 +423,11 @@
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T02:17:52.759Z",
+    "timestamp": "2025-12-04T04:06:46.346Z",
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 10.777708000000018,
-    "opsPerSec": 92784.10585998418,
+    "durationMs": 19.94008299999996,
+    "opsPerSec": 50150.242604306215,
     "extra": {
       "count": 1000
     },
@@ -825,11 +438,11 @@
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-10000",
-    "timestamp": "2025-12-04T02:17:52.822Z",
+    "timestamp": "2025-12-04T04:06:48.102Z",
     "name": "insert-chain-10000",
     "totalOps": 10000,
-    "durationMs": 62.937667000000005,
-    "opsPerSec": 158887.36390562425,
+    "durationMs": 1755.022167,
+    "opsPerSec": 5697.933728719679,
     "extra": {
       "count": 10000
     },
@@ -839,27 +452,42 @@
   {
     "implementation": "wasm",
     "storage": "memory",
-    "workload": "insert-chain-100000",
-    "timestamp": "2025-12-04T03:18:21.985Z",
-    "name": "insert-chain-100000",
-    "totalOps": 100000,
-    "durationMs": 515.593,
-    "opsPerSec": 193951.43068272845,
+    "workload": "insert-move-1",
+    "timestamp": "2025-12-04T04:06:46.029Z",
+    "name": "insert-move-1",
+    "totalOps": 2,
+    "durationMs": 1.5932080000000042,
+    "opsPerSec": 1255.3288710576364,
     "extra": {
-      "count": 100000
+      "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-100000.json",
-    "relativePath": "benchmarks/wasm/insert-chain-100000.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-1.json",
+    "relativePath": "benchmarks/wasm/insert-move-1.json"
+  },
+  {
+    "implementation": "wasm",
+    "storage": "memory",
+    "workload": "insert-move-10",
+    "timestamp": "2025-12-04T04:06:46.031Z",
+    "name": "insert-move-10",
+    "totalOps": 20,
+    "durationMs": 0.5218750000000085,
+    "opsPerSec": 38323.35329341255,
+    "extra": {
+      "count": 10
+    },
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-10.json",
+    "relativePath": "benchmarks/wasm/insert-move-10.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-move-100",
-    "timestamp": "2025-12-04T02:10:08.255Z",
+    "timestamp": "2025-12-04T04:06:46.035Z",
     "name": "insert-move-100",
     "totalOps": 200,
-    "durationMs": 6.287417000000005,
-    "opsPerSec": 31809.56504077904,
+    "durationMs": 2.914749999999998,
+    "opsPerSec": 68616.51942705212,
     "extra": {
       "count": 100
     },
@@ -869,16 +497,31 @@
   {
     "implementation": "wasm",
     "storage": "memory",
-    "workload": "insert-move-500",
-    "timestamp": "2025-12-04T02:10:50.767Z",
-    "name": "insert-move-500",
-    "totalOps": 1000,
-    "durationMs": 14.844208000000009,
-    "opsPerSec": 67366.34248186224,
+    "workload": "insert-move-1000",
+    "timestamp": "2025-12-04T04:06:46.053Z",
+    "name": "insert-move-1000",
+    "totalOps": 2000,
+    "durationMs": 17.581500000000005,
+    "opsPerSec": 113755.93663794325,
     "extra": {
-      "count": 500
+      "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-500.json",
-    "relativePath": "benchmarks/wasm/insert-move-500.json"
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-1000.json",
+    "relativePath": "benchmarks/wasm/insert-move-1000.json"
+  },
+  {
+    "implementation": "wasm",
+    "storage": "memory",
+    "workload": "insert-move-10000",
+    "timestamp": "2025-12-04T04:06:46.322Z",
+    "name": "insert-move-10000",
+    "totalOps": 20000,
+    "durationMs": 267.912958,
+    "opsPerSec": 74651.11112692056,
+    "extra": {
+      "count": 10000
+    },
+    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-10000.json",
+    "relativePath": "benchmarks/wasm/insert-move-10000.json"
   }
 ]

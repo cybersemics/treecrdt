@@ -1,0 +1,14 @@
+{
+  "implementation": "core-memory",
+  "storage": "memory",
+  "workload": "insert-move-10000",
+  "timestamp": "2025-12-04T04:06:50.889351+00:00",
+  "name": "insert-move-10000",
+  "totalOps": 20000,
+  "durationMs": 1622.093875,
+  "opsPerSec": 12329.742629722956,
+  "extra": {
+    "count": 10000
+  },
+  "sourceFile": "benchmarks/core/memory-insert-move-10000.json"
+}

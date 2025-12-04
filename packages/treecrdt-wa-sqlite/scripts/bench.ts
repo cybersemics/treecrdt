@@ -12,6 +12,7 @@ type CliOptions = {
   storage: StorageKind;
   outFile?: string;
   workload: "insert-move" | "insert-chain";
+  workloads?: ("insert-move" | "insert-chain")[];
   sizes?: number[];
 };
 
@@ -38,6 +39,15 @@ function parseArgs(): CliOptions {
       if (val === "insert-move" || val === "insert-chain") {
         opts.workload = val;
       }
+    } else if (arg.startsWith("--workloads=")) {
+      const vals = arg
+        .slice("--workloads=".length)
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      opts.workloads = vals.filter((v): v is "insert-move" | "insert-chain" =>
+        v === "insert-move" || v === "insert-chain"
+      );
     }
   }
   return opts;
@@ -114,38 +124,42 @@ async function main() {
     }
   }
 
-  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [opts.count];
-  for (const size of sizes) {
-    const { adapter, sqlite3, handle } = await createAdapter(filename);
-    const workload = makeWorkload(opts.workload, size);
-    let result;
-    try {
-      result = await runBenchmark(() => adapter, workload);
-    } catch (err) {
-      const msg = sqlite3.errmsg ? sqlite3.errmsg(handle) : String(err);
-      console.error(`Benchmark failed: ${msg}`);
-      throw err;
-    }
+  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [1, 10, 100, 1000, 10000];
+  const workloads = opts.workloads && opts.workloads.length > 0 ? opts.workloads : ["insert-move", "insert-chain"];
 
-    const outFile =
-      opts.outFile ??
-      path.join(
-        repoRoot,
-        "benchmarks",
-        "wa-sqlite",
-        `${opts.storage}-${workload.name}.json`
-      );
-    const payload = await writeResult(result, {
-      implementation: "wa-sqlite",
-      storage: opts.storage,
-      workload: workload.name,
-      outFile,
-      extra: { count: size },
-    });
-    console.log(JSON.stringify(payload, null, 2));
+  for (const workloadName of workloads) {
+    for (const size of sizes) {
+      const { adapter, sqlite3, handle } = await createAdapter(filename);
+      const workload = makeWorkload(workloadName, size);
+      let result;
+      try {
+        result = await runBenchmark(() => adapter, workload);
+      } catch (err) {
+        const msg = sqlite3.errmsg ? sqlite3.errmsg(handle) : String(err);
+        console.error(`Benchmark failed: ${msg}`);
+        throw err;
+      }
 
-    if (adapter.close) {
-      await adapter.close();
+      const outFile =
+        opts.outFile ??
+        path.join(
+          repoRoot,
+          "benchmarks",
+          "wa-sqlite",
+          `${opts.storage}-${workload.name}.json`
+        );
+      const payload = await writeResult(result, {
+        implementation: "wa-sqlite",
+        storage: opts.storage,
+        workload: workload.name,
+        outFile,
+        extra: { count: size },
+      });
+      console.log(JSON.stringify(payload, null, 2));
+
+      if (adapter.close) {
+        await adapter.close();
+      }
     }
   }
 }

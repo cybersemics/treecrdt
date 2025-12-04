@@ -12,8 +12,5 @@ pub mod tree;
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use ops::{Operation, OperationKind, OperationMetadata};
-pub use traits::{
-    AccessControl, AllowAllAccess, Clock, IndexProvider, LamportClock, MemoryStorage, Snapshot,
-    Storage,
-};
+pub use traits::{Clock, IndexProvider, LamportClock, MemoryStorage, Snapshot, Storage};
 pub use tree::TreeCrdt;

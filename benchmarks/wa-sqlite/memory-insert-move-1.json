@@ -2,11 +2,11 @@
   "implementation": "wa-sqlite",
   "storage": "memory",
   "workload": "insert-move-1",
-  "timestamp": "2025-12-04T01:26:08.180Z",
+  "timestamp": "2025-12-04T04:06:38.563Z",
   "name": "insert-move-1",
   "totalOps": 2,
-  "durationMs": 1.9541249999999764,
-  "opsPerSec": 1023.4759802980997,
+  "durationMs": 3.0182920000000024,
+  "opsPerSec": 662.6264125538545,
   "extra": {
     "count": 1
   },

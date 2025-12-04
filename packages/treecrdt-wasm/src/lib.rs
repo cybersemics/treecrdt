@@ -4,8 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use treecrdt_core::{
-    AllowAllAccess, Lamport, LamportClock, MemoryStorage, NodeId, Operation, OperationKind,
-    ReplicaId, TreeCrdt,
+    Lamport, LamportClock, MemoryStorage, NodeId, Operation, OperationKind, ReplicaId, TreeCrdt,
 };
 use wasm_bindgen::prelude::*;
 
@@ -120,7 +119,7 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
 
 #[wasm_bindgen]
 pub struct WasmTree {
-    inner: TreeCrdt<MemoryStorage, AllowAllAccess, LamportClock>,
+    inner: TreeCrdt<MemoryStorage, LamportClock>,
 }
 
 #[wasm_bindgen]
@@ -133,7 +132,6 @@ impl WasmTree {
             inner: TreeCrdt::new(
                 replica,
                 MemoryStorage::default(),
-                AllowAllAccess,
                 LamportClock::default(),
             ),
         }

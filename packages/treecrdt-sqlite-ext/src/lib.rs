@@ -15,15 +15,14 @@ pub mod extension;
 pub use extension::*;
 
 #[cfg(feature = "rusqlite-storage")]
-use treecrdt_core::{AllowAllAccess, LamportClock, ReplicaId, TreeCrdt};
+use treecrdt_core::{LamportClock, ReplicaId, TreeCrdt};
 
 /// Temporary helper to ensure the extension crate links and can be used in tests/examples.
 #[cfg(feature = "rusqlite-storage")]
-pub fn demo_instance_with_sqlite() -> TreeCrdt<SqliteStorage, AllowAllAccess, LamportClock> {
+pub fn demo_instance_with_sqlite() -> TreeCrdt<SqliteStorage, LamportClock> {
     TreeCrdt::new(
         ReplicaId::new(b"sqlite-ext"),
         SqliteStorage::new_in_memory().expect("in-memory sqlite"),
-        AllowAllAccess,
         LamportClock::default(),
     )
 }
