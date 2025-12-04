@@ -2,11 +2,11 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-chain-10",
-  "timestamp": "2025-12-04T04:06:46.324Z",
+  "timestamp": "2025-12-04T05:54:29.819Z",
   "name": "insert-chain-10",
   "totalOps": 10,
-  "durationMs": 0.1798750000000382,
-  "opsPerSec": 55594.16261291383,
+  "durationMs": 0.10624999999993179,
+  "opsPerSec": 94117.64705888394,
   "extra": {
     "count": 10
   },

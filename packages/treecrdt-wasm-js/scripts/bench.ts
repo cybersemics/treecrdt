@@ -1,13 +1,19 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBenchmark, makeInsertMoveWorkload, makeInsertChainWorkload, writeResult } from "@treecrdt/benchmark";
+import {
+  runBenchmark,
+  makeInsertMoveWorkload,
+  makeInsertChainWorkload,
+  makeReplayLogWorkload,
+  writeResult,
+} from "@treecrdt/benchmark";
 import { createWasmAdapter } from "../dist/index.js";
 
 type CliOptions = {
   count: number;
   outFile?: string;
-  workload: "insert-move" | "insert-chain";
-  workloads?: ("insert-move" | "insert-chain")[];
+  workload: "insert-move" | "insert-chain" | "replay-log";
+  workloads?: ("insert-move" | "insert-chain" | "replay-log")[];
   sizes?: number[];
 };
 
@@ -26,7 +32,7 @@ function parseArgs(): CliOptions {
       opts.outFile = arg.slice("--out=".length);
     } else if (arg.startsWith("--workload=")) {
       const val = arg.slice("--workload=".length);
-      if (val === "insert-move" || val === "insert-chain") {
+      if (val === "insert-move" || val === "insert-chain" || val === "replay-log") {
         opts.workload = val;
       }
     } else if (arg.startsWith("--workloads=")) {
@@ -35,16 +41,17 @@ function parseArgs(): CliOptions {
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
-      opts.workloads = vals.filter((v): v is "insert-move" | "insert-chain" =>
-        v === "insert-move" || v === "insert-chain"
+      opts.workloads = vals.filter((v): v is "insert-move" | "insert-chain" | "replay-log" =>
+        v === "insert-move" || v === "insert-chain" || v === "replay-log"
       );
     }
   }
   return opts;
 }
 
-function makeWorkload(name: "insert-move" | "insert-chain", count: number) {
+function makeWorkload(name: "insert-move" | "insert-chain" | "replay-log", count: number) {
   if (name === "insert-chain") return makeInsertChainWorkload({ count });
+  if (name === "replay-log") return makeReplayLogWorkload({ count });
   return makeInsertMoveWorkload({ count });
 }
 

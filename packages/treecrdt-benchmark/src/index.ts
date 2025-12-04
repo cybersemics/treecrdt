@@ -17,6 +17,8 @@ export type BenchmarkWorkload = {
   cleanup?: () => Promise<void> | void;
 };
 
+export type WorkloadName = "insert-move" | "insert-chain" | "replay-log";
+
 const defaultSerializeNodeId: SerializeNodeId = (id) => {
   const clean = id.startsWith("0x") ? id.slice(2) : id;
   if (clean.length % 2 === 0) {
@@ -145,6 +147,75 @@ export function makeInsertChainWorkload(opts: {
       await adapter.opsSince(0);
     },
   };
+}
+
+// Simulate initial sync: apply a pre-built log of inserts onto an empty adapter.
+export function makeReplayLogWorkload(opts: {
+  count: number;
+  serializeNodeId?: SerializeNodeId;
+  serializeReplica?: SerializeReplica;
+  replica?: Uint8Array;
+}): BenchmarkWorkload {
+  const serializeNodeId = opts.serializeNodeId ?? defaultSerializeNodeId;
+  const serializeReplica = opts.serializeReplica ?? defaultSerializeReplica;
+  const replica = opts.replica ?? defaultSerializeReplica("bench");
+
+  const mkOp = (kind: Operation["kind"], counter: number, lamport: number): Operation => ({
+    meta: { id: { replica, counter }, lamport },
+    kind,
+  });
+
+  const ops: Operation[] = [];
+  let parentHex = "0".padStart(32, "0");
+  for (let i = 0; i < opts.count; i++) {
+    const nodeHex = (i + 1).toString(16).padStart(32, "0");
+    const insert = mkOp(
+      { type: "insert", parent: parentHex, node: nodeHex, position: 0 },
+      i + 1,
+      i + 1
+    );
+    ops.push(insert);
+    parentHex = nodeHex;
+  }
+
+  return {
+    name: `replay-log-${opts.count}`,
+    totalOps: ops.length,
+    run: async (adapter) => {
+      for (const op of ops) {
+        await adapter.appendOp(op, serializeNodeId, serializeReplica);
+      }
+      await adapter.opsSince(0);
+    },
+  };
+}
+
+export function makeWorkload(name: WorkloadName, count: number): BenchmarkWorkload {
+  if (name === "insert-chain") return makeInsertChainWorkload({ count });
+  if (name === "replay-log") return makeReplayLogWorkload({ count });
+  return makeInsertMoveWorkload({ count });
+}
+
+export function buildWorkloads(names: WorkloadName[], sizes: number[]): BenchmarkWorkload[] {
+  const result: BenchmarkWorkload[] = [];
+  for (const name of names) {
+    for (const size of sizes) {
+      result.push(makeWorkload(name, size));
+    }
+  }
+  return result;
+}
+
+export async function runWorkloads(
+  adapterFactory: () => Promise<TreecrdtAdapter> | TreecrdtAdapter,
+  workloads: BenchmarkWorkload[]
+): Promise<BenchmarkResult[]> {
+  const results: BenchmarkResult[] = [];
+  for (const workload of workloads) {
+    const res = await runBenchmark(adapterFactory, workload);
+    results.push(res);
+  }
+  return results;
 }
 
 export type BenchmarkOutput = BenchmarkResult & {

@@ -2,11 +2,11 @@
   "implementation": "core-memory",
   "storage": "memory",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-04T04:06:49.231346+00:00",
+  "timestamp": "2025-12-04T05:54:33.396660+00:00",
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 1.877583,
-  "opsPerSec": 106519.92481823706,
+  "durationMs": 1.6407500000000002,
+  "opsPerSec": 121895.47463050432,
   "extra": {
     "count": 100
   },

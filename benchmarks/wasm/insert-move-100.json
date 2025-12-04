@@ -2,11 +2,11 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-04T04:06:46.035Z",
+  "timestamp": "2025-12-04T05:54:29.494Z",
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 2.914749999999998,
-  "opsPerSec": 68616.51942705212,
+  "durationMs": 4.897917000000007,
+  "opsPerSec": 40833.68501344545,
   "extra": {
     "count": 100
   },

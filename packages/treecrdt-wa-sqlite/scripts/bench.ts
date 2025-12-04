@@ -2,22 +2,24 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBenchmark, makeInsertMoveWorkload, makeInsertChainWorkload, writeResult } from "@treecrdt/benchmark";
+import {
+  buildWorkloads,
+  runWorkloads,
+  writeResult,
+  type WorkloadName,
+} from "@treecrdt/benchmark";
 import { createWaSqliteAdapter } from "../dist/index.js";
-
-type StorageKind = "memory" | "file";
 
 type CliOptions = {
   count: number;
-  storage: StorageKind;
   outFile?: string;
-  workload: "insert-move" | "insert-chain";
-  workloads?: ("insert-move" | "insert-chain")[];
+  workload: WorkloadName;
+  workloads?: WorkloadName[];
   sizes?: number[];
 };
 
 function parseArgs(): CliOptions {
-  const opts: CliOptions = { count: 500, storage: "memory", workload: "insert-move" };
+  const opts: CliOptions = { count: 500, workload: "insert-move" };
   for (const arg of process.argv.slice(2)) {
     if (arg.startsWith("--count=")) {
       opts.count = Number(arg.slice("--count=".length)) || opts.count;
@@ -27,17 +29,12 @@ function parseArgs(): CliOptions {
         .split(",")
         .map((s) => Number(s.trim()))
         .filter((n) => Number.isFinite(n) && n > 0);
-    } else if (arg.startsWith("--storage=")) {
-      const val = arg.slice("--storage=".length);
-      if (val === "file" || val === "memory") {
-        opts.storage = val;
-      }
     } else if (arg.startsWith("--out=")) {
       opts.outFile = arg.slice("--out=".length);
     } else if (arg.startsWith("--workload=")) {
       const val = arg.slice("--workload=".length);
-      if (val === "insert-move" || val === "insert-chain") {
-        opts.workload = val;
+      if (val === "insert-move" || val === "insert-chain" || val === "replay-log") {
+        opts.workload = val as WorkloadName;
       }
     } else if (arg.startsWith("--workloads=")) {
       const vals = arg
@@ -45,17 +42,12 @@ function parseArgs(): CliOptions {
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
-      opts.workloads = vals.filter((v): v is "insert-move" | "insert-chain" =>
-        v === "insert-move" || v === "insert-chain"
+      opts.workloads = vals.filter((v): v is WorkloadName =>
+        v === "insert-move" || v === "insert-chain" || v === "replay-log"
       );
     }
   }
   return opts;
-}
-
-function makeWorkload(name: "insert-move" | "insert-chain", count: number) {
-  if (name === "insert-chain") return makeInsertChainWorkload({ count });
-  return makeInsertMoveWorkload({ count });
 }
 
 type AdapterBundle = {
@@ -76,6 +68,7 @@ async function createAdapter(filename: string): Promise<AdapterBundle> {
     locateFile: (f: string) => (f.endsWith(".wasm") ? wasmPath : f),
   });
   const sqlite3 = SQLite.Factory(module);
+
   const handle = await sqlite3.open_v2(filename);
 
   // Probe the extension registration to fail fast with a clearer message.
@@ -113,54 +106,46 @@ async function main() {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(__dirname, "../../..");
 
-  const filename =
-    opts.storage === "memory"
-      ? ":memory:"
-      : path.join(repoRoot, "tmp", "wa-sqlite-bench", "bench.db");
-  if (opts.storage === "file") {
-    await fsPromises.mkdir(path.dirname(filename), { recursive: true });
-    if (fs.existsSync(filename)) {
-      await fsPromises.rm(filename);
-    }
+  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [1, 10, 100, 1000, 10000];
+  const workloads =
+    opts.workloads && opts.workloads.length > 0
+      ? opts.workloads
+      : (["insert-move", "insert-chain", "replay-log"] as WorkloadName[]);
+  const workloadDefs = buildWorkloads(workloads, sizes);
+
+  // wa-sqlite is browser-first; in Node we only exercise the in-memory runtime.
+  const filename = ":memory:";
+  const { adapter, sqlite3, handle } = await createAdapter(filename);
+  let results;
+  try {
+    results = await runWorkloads(() => adapter, workloadDefs);
+  } catch (err) {
+    const msg = sqlite3.errmsg ? sqlite3.errmsg(handle) : String(err);
+    console.error(`Benchmark failed: ${msg}`);
+    throw err;
   }
 
-  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [1, 10, 100, 1000, 10000];
-  const workloads = opts.workloads && opts.workloads.length > 0 ? opts.workloads : ["insert-move", "insert-chain"];
+  for (const result of results) {
+    const outFile =
+      opts.outFile ??
+      path.join(
+        repoRoot,
+        "benchmarks",
+        "wa-sqlite",
+        `memory-${result.name}.json`
+      );
+    const payload = await writeResult(result, {
+      implementation: "wa-sqlite",
+      storage: "memory",
+      workload: result.name,
+      outFile,
+      extra: { count: result.totalOps },
+    });
+    console.log(JSON.stringify(payload, null, 2));
+  }
 
-  for (const workloadName of workloads) {
-    for (const size of sizes) {
-      const { adapter, sqlite3, handle } = await createAdapter(filename);
-      const workload = makeWorkload(workloadName, size);
-      let result;
-      try {
-        result = await runBenchmark(() => adapter, workload);
-      } catch (err) {
-        const msg = sqlite3.errmsg ? sqlite3.errmsg(handle) : String(err);
-        console.error(`Benchmark failed: ${msg}`);
-        throw err;
-      }
-
-      const outFile =
-        opts.outFile ??
-        path.join(
-          repoRoot,
-          "benchmarks",
-          "wa-sqlite",
-          `${opts.storage}-${workload.name}.json`
-        );
-      const payload = await writeResult(result, {
-        implementation: "wa-sqlite",
-        storage: opts.storage,
-        workload: workload.name,
-        outFile,
-        extra: { count: size },
-      });
-      console.log(JSON.stringify(payload, null, 2));
-
-      if (adapter.close) {
-        await adapter.close();
-      }
-    }
+  if (adapter.close) {
+    await adapter.close();
   }
 }
 

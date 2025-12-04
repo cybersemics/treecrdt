@@ -8,9 +8,11 @@
     "postbuild:wa-sqlite": "mkdir -p public/wa-sqlite && cp ../../../vendor/wa-sqlite/dist/wa-sqlite.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite.wasm ../../../vendor/wa-sqlite/dist/wa-sqlite-async.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite-async.wasm public/wa-sqlite/",
     "build": "pnpm run build:wa-sqlite && pnpm run postbuild:wa-sqlite && vite build",
     "dev": "vite",
-    "test:e2e": "pnpm run build:wa-sqlite && pnpm run postbuild:wa-sqlite && playwright test"
+    "test:e2e": "pnpm run build:wa-sqlite && pnpm run postbuild:wa-sqlite && playwright test",
+    "bench": "pnpm -C ../../treecrdt-benchmark run build && pnpm run build && playwright test tests/bench-opfs.spec.ts --reporter=line"
   },
   "dependencies": {
+    "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"

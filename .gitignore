@@ -6,3 +6,4 @@ package-lock.json
 *.log
 .DS_Store
 .turbo/
+tmp/
