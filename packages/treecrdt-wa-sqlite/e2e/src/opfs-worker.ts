@@ -90,21 +90,28 @@ async function runWaSqliteBenchInWorker(
   workloads: WorkloadName[] = defaultWorkloads
 ): Promise<BenchPayload[]> {
   const workloadDefs = buildWorkloads(workloads, sizes);
-  const results = await runWorkloads(
-    async () => createAdapter(storage),
-    workloadDefs
-  );
+  const results: BenchPayload[] = [];
 
-  return results.map((result, idx) => {
-    const workload = workloadDefs[idx];
-    return {
+  for (const workload of workloadDefs) {
+    // Per-workload isolation: open a fresh adapter, run the workload, then close.
+    const adapter = await createAdapter(storage);
+    // Warm-up to reduce first-write effects: a tiny opsSince(0).
+    await adapter.opsSince(0);
+    const res = await runWorkloads(async () => adapter, [workload]);
+    if (adapter.close) {
+      await adapter.close();
+    }
+    const [result] = res;
+    results.push({
       ...result,
       implementation: "wa-sqlite",
       storage,
       workload: workload.name,
       extra: { count: workload.totalOps ?? result.totalOps },
-    };
-  });
+    });
+  }
+
+  return results;
 }
 
 self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {

@@ -6,7 +6,7 @@ import { writeResult } from "@treecrdt/benchmark";
 import type { BenchResult } from "../src/bench.js";
 
 test("wa-sqlite OPFS benchmarks", async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await page.goto("/");
 
   const results = await page.evaluate(async () => {
@@ -36,7 +36,7 @@ test("wa-sqlite OPFS benchmarks", async ({ page }) => {
 });
 
 test("wa-sqlite memory (browser) benchmarks", async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await page.goto("/");
 
   const results = await page.evaluate(async () => {

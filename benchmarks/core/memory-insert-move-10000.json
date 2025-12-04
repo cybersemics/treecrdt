@@ -1,12 +1,12 @@
 {
-  "implementation": "core-memory",
+  "implementation": "core-inmem-crdt",
   "storage": "memory",
   "workload": "insert-move-10000",
-  "timestamp": "2025-12-04T05:54:35.345413+00:00",
+  "timestamp": "2025-12-04T06:34:11.872017+00:00",
   "name": "insert-move-10000",
   "totalOps": 20000,
-  "durationMs": 1914.6527089999997,
-  "opsPerSec": 10445.758599451574,
+  "durationMs": 1789.604875,
+  "opsPerSec": 11175.651273301319,
   "extra": {
     "count": 10000
   },

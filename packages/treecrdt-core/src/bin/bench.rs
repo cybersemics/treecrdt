@@ -75,7 +75,7 @@ fn main() {
         let out_path = out_dir.join(format!("memory-{}.json", workload_name));
 
         let output = Output {
-            implementation: "core-memory",
+        implementation: "core-inmem-crdt",
             storage: "memory",
             workload: workload_name.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),

@@ -2,11 +2,11 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "replay-log-100",
-  "timestamp": "2025-12-04T05:53:57.917Z",
+  "timestamp": "2025-12-04T06:30:14.506Z",
   "name": "replay-log-100",
   "totalOps": 100,
-  "durationMs": 39.5,
-  "opsPerSec": 2531.6455696202534,
+  "durationMs": 29.200000047683716,
+  "opsPerSec": 3424.657528654096,
   "extra": {
     "count": 100
   },
