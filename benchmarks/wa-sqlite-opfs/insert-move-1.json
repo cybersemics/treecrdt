@@ -2,11 +2,11 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "insert-move-1",
-  "timestamp": "2025-12-04T09:18:30.827Z",
+  "timestamp": "2025-12-04T09:33:40.872Z",
   "name": "insert-move-1",
   "totalOps": 2,
-  "durationMs": 8.900000095367432,
-  "opsPerSec": 224.71909871563108,
+  "durationMs": 11.899999856948853,
+  "opsPerSec": 168.06722891111008,
   "extra": {
     "mode": "batch",
     "count": 2

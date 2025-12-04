@@ -2,11 +2,11 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "insert-chain-10",
-  "timestamp": "2025-12-04T09:18:34.067Z",
+  "timestamp": "2025-12-04T09:33:43.969Z",
   "name": "insert-chain-10",
   "totalOps": 10,
-  "durationMs": 0.6449170000000777,
-  "opsPerSec": 15505.871298165184,
+  "durationMs": 0.8182500000000346,
+  "opsPerSec": 12221.203788572659,
   "extra": {
     "mode": "batch",
     "count": 10

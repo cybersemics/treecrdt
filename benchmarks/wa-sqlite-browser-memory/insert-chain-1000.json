@@ -2,11 +2,11 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "insert-chain-1000",
-  "timestamp": "2025-12-04T09:18:30.516Z",
+  "timestamp": "2025-12-04T09:33:40.593Z",
   "name": "insert-chain-1000",
   "totalOps": 1000,
-  "durationMs": 23.5,
-  "opsPerSec": 42553.1914893617,
+  "durationMs": 18.40000009536743,
+  "opsPerSec": 54347.82580527106,
   "extra": {
     "mode": "batch",
     "count": 1000
