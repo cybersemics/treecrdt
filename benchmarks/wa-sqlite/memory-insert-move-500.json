@@ -1,0 +1,14 @@
+{
+  "implementation": "wa-sqlite",
+  "storage": "memory",
+  "workload": "insert-move-500",
+  "timestamp": "2025-12-04T02:10:42.133Z",
+  "name": "insert-move-500",
+  "totalOps": 1000,
+  "durationMs": 102.047166,
+  "opsPerSec": 9799.39021530495,
+  "extra": {
+    "count": 500
+  },
+  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite/memory-insert-move-500.json"
+}

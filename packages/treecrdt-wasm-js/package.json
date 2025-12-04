@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/wa-sqlite",
+  "name": "@treecrdt/wasm",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -7,11 +7,12 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "src"
+    "pkg"
   ],
   "scripts": {
+    "build:wasm": "wasm-pack build ../../packages/treecrdt-wasm --target nodejs --out-dir $(pwd)/pkg --release",
     "build:ts": "tsc -p tsconfig.json",
-    "build": "pnpm run build:ts",
+    "build": "pnpm run build:wasm && pnpm run build:ts",
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "@treecrdt/benchmark": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^20.19.25",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }

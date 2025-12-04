@@ -10,6 +10,10 @@
       "import": "./dist/src/index.js",
       "types": "./dist/src/index.d.ts"
     },
+    "./adapter": {
+      "import": "./dist/src/adapter.js",
+      "types": "./dist/src/adapter.d.ts"
+    },
     "./sqlite": {
       "import": "./dist/src/sqlite.js",
       "types": "./dist/src/sqlite.d.ts"

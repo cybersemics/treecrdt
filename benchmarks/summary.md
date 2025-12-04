@@ -1,0 +1,27 @@
+Implementation | Storage | Workload | TotalOps | Duration (ms) | Ops/s | File
+--- | --- | --- | --- | --- | --- | ---
+sqlite-node | memory | insert-chain-1 | 1 | 0.44 | 2275.75 | benchmarks/sqlite-node/memory-insert-chain-1.json
+sqlite-node | memory | insert-chain-10 | 10 | 0.35 | 28456.30 | benchmarks/sqlite-node/memory-insert-chain-10.json
+sqlite-node | memory | insert-chain-100 | 100 | 1.80 | 55431.11 | benchmarks/sqlite-node/memory-insert-chain-100.json
+sqlite-node | memory | insert-chain-1000 | 1000 | 20.22 | 49457.82 | benchmarks/sqlite-node/memory-insert-chain-1000.json
+sqlite-node | memory | insert-chain-10000 | 10000 | 177.00 | 56498.59 | benchmarks/sqlite-node/memory-insert-chain-10000.json
+sqlite-node | memory | insert-chain-100000 | 100000 | 1455.82 | 68689.96 | benchmarks/sqlite-node/memory-insert-chain-100000.json
+sqlite-node | memory | insert-move-500 | 1000 | 25.45 | 39297.36 | benchmarks/sqlite-node/memory-insert-move-500.json
+- | - | - | - | - | - | benchmarks/summary.json
+wa-sqlite | memory | insert-chain-1 | 1 | 1.55 | 646.88 | benchmarks/wa-sqlite/memory-insert-chain-1.json
+wa-sqlite | memory | insert-chain-10 | 10 | 1.44 | 6938.02 | benchmarks/wa-sqlite/memory-insert-chain-10.json
+wa-sqlite | memory | insert-chain-100 | 100 | 11.89 | 8407.22 | benchmarks/wa-sqlite/memory-insert-chain-100.json
+wa-sqlite | memory | insert-chain-1000 | 1000 | 148.94 | 6713.96 | benchmarks/wa-sqlite/memory-insert-chain-1000.json
+wa-sqlite | memory | insert-chain-10000 | 10000 | 550.84 | 18154.23 | benchmarks/wa-sqlite/memory-insert-chain-10000.json
+wa-sqlite | memory | insert-chain-100000 | 100000 | 2751.11 | 36348.95 | benchmarks/wa-sqlite/memory-insert-chain-100000.json
+wa-sqlite | memory | insert-move-1 | 2 | 1.95 | 1023.48 | benchmarks/wa-sqlite/memory-insert-move-1.json
+wa-sqlite | memory | insert-move-200 | 400 | 28.45 | 14059.96 | benchmarks/wa-sqlite/memory-insert-move-200.json
+wa-sqlite | memory | insert-move-500 | 1000 | 102.05 | 9799.39 | benchmarks/wa-sqlite/memory-insert-move-500.json
+wasm | memory | insert-chain-1 | 1 | 2.09 | 479.29 | benchmarks/wasm/insert-chain-1.json
+wasm | memory | insert-chain-10 | 10 | 0.43 | 23346.27 | benchmarks/wasm/insert-chain-10.json
+wasm | memory | insert-chain-100 | 100 | 2.11 | 47318.62 | benchmarks/wasm/insert-chain-100.json
+wasm | memory | insert-chain-1000 | 1000 | 10.78 | 92784.11 | benchmarks/wasm/insert-chain-1000.json
+wasm | memory | insert-chain-10000 | 10000 | 62.94 | 158887.36 | benchmarks/wasm/insert-chain-10000.json
+wasm | memory | insert-chain-100000 | 100000 | 515.59 | 193951.43 | benchmarks/wasm/insert-chain-100000.json
+wasm | memory | insert-move-100 | 200 | 6.29 | 31809.57 | benchmarks/wasm/insert-move-100.json
+wasm | memory | insert-move-500 | 1000 | 14.84 | 67366.34 | benchmarks/wasm/insert-move-500.json

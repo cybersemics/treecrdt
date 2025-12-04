@@ -14,18 +14,21 @@
     "copy:ext": "node ./scripts/copy-ext.mjs",
     "build:ts": "tsc -p tsconfig.json",
     "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
-    "test": "pnpm run build && vitest run"
+    "test": "pnpm run build && vitest run",
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
   },
   "peerDependencies": {
     "better-sqlite3": "^9.0.0"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/benchmark": "workspace:*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^20.19.25",
     "better-sqlite3": "^9.0.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"
   }

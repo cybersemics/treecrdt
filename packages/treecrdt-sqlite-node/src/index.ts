@@ -1,5 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildAppendOp, buildOpsSince } from "@treecrdt/interface/sqlite";
+import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
 
 export type LoadOptions = {
   extensionPath?: string;
@@ -46,4 +48,39 @@ export function loadTreecrdtExtension(
   const entrypoint = opts.entrypoint ?? "sqlite3_treecrdt_init";
   db.loadExtension(path, entrypoint);
   return path;
+}
+
+export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
+  return {
+    appendOp: async (op: Operation, serializeNodeId, serializeReplica) => {
+      const { meta, kind } = op;
+      const { id, lamport } = meta;
+      const { replica, counter } = id;
+      const { sql, params } = buildAppendOp(kind, {
+        replica: serializeReplica(replica),
+        counter,
+        lamport,
+        serializeNodeId,
+      });
+      const bindings = params.reduce<Record<number, unknown>>((acc, val, idx) => {
+        acc[idx + 1] = val;
+        return acc;
+      }, {});
+      db.prepare(sql).get(bindings);
+    },
+    opsSince: async (lamport: number, root?: string) => {
+      const { sql, params } = buildOpsSince({
+        lamport,
+        root,
+        serializeNodeId: (id) => Buffer.from(id),
+      });
+      const bindings = params.reduce<Record<number, unknown>>((acc, val, idx) => {
+        acc[idx + 1] = val;
+        return acc;
+      }, {});
+      const row = db.prepare(sql).get(bindings);
+      const json = row?.ops ?? row?.["treecrdt_ops_since(0)"] ?? Object.values(row ?? {})[0];
+      return JSON.parse(json);
+    },
+  };
 }

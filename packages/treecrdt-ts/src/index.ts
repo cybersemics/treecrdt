@@ -73,3 +73,5 @@ export interface SyncProtocol {
   push(ops: Operation[]): Promise<void> | void;
   pull(since: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
 }
+
+export * from "./adapter.js";

@@ -1,5 +1,5 @@
 import type { Database } from "wa-sqlite";
-import type { Operation } from "@treecrdt/interface";
+import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
 import { buildAppendOp, buildOpsSince } from "@treecrdt/interface/sqlite";
 
 export type LoadOptions = {
@@ -91,4 +91,12 @@ export async function opsSince(
   }
   await db.finalize(stmt);
   return result;
+}
+
+export function createWaSqliteAdapter(db: Database): TreecrdtAdapter {
+  return {
+    appendOp: (op, serializeNodeId, serializeReplica) =>
+      appendOp(db, op, serializeNodeId, serializeReplica),
+    opsSince: (lamport, root) => opsSince(db, { lamport, root }),
+  };
 }
