@@ -72,7 +72,7 @@ jobs:
     - run: emcc -v
 
     - name: Install Playwright browsers
-      run: pnpm exec playwright install --with-deps chromium
+      run: pnpm -C packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
 
     - name: Build project
       run: pnpm run build
