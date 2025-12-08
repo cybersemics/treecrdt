@@ -5,7 +5,7 @@ on:
   pull_request:
 
 env:
-  EM_VERSION: 3.1.61
+  EM_VERSION: 4.0.21
   EM_CACHE_FOLDER: 'emsdk-cache'
 
 jobs:
