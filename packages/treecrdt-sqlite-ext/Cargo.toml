@@ -1,0 +1,28 @@
+[package]
+name = "treecrdt-sqlite-ext"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "SQLite / wa-sqlite extension harness for TreeCRDT."
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+treecrdt-core = { path = "../treecrdt-core" }
+rusqlite = { version = "0.31", features = ["bundled", "load_extension"], optional = true }
+sqlite3ext-sys = { version = "0.0.1", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+
+[features]
+default = ["rusqlite-storage"]
+rusqlite-storage = ["dep:rusqlite"]
+# Native loadable extension using sqlite3ext API table.
+ext-sqlite = ["dep:sqlite3ext-sys", "dep:serde", "dep:serde_json"]
+# Static-link extension for wasm/emscripten builds (no bundled SQLite C).
+static-link = ["dep:serde", "dep:serde_json"]
+wasm-ext = ["static-link"]
+
+[dev-dependencies]
+tempfile = "3.10"

@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "main.tsx", "tests/**/*", "vite.config.ts", "playwright.config.ts", "index.html"]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "@treecrdt/interface",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    },
+    "./adapter": {
+      "import": "./dist/src/adapter.js",
+      "types": "./dist/src/adapter.d.ts"
+    },
+    "./sqlite": {
+      "import": "./dist/src/sqlite.js",
+      "types": "./dist/src/sqlite.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"TODO: add linting\"",
+    "test": "echo \"TODO: add tests\""
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

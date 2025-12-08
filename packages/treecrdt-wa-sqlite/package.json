@@ -1,0 +1,25 @@
+{
+  "name": "@treecrdt/wa-sqlite",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "pnpm run build:ts",
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
+  },
+  "dependencies": {
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/benchmark": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  }
+}

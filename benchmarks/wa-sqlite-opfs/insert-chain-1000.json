@@ -1,0 +1,15 @@
+{
+  "implementation": "wa-sqlite",
+  "storage": "browser-opfs-coop-sync",
+  "workload": "insert-chain-1000",
+  "timestamp": "2025-12-04T09:33:40.878Z",
+  "name": "insert-chain-1000",
+  "totalOps": 1000,
+  "durationMs": 20.90000009536743,
+  "opsPerSec": 47846.88973382607,
+  "extra": {
+    "mode": "batch",
+    "count": 1000
+  },
+  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-chain-1000.json"
+}

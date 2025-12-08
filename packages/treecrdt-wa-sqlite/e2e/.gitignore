@@ -1,0 +1,4 @@
+node_modules
+dist
+public/wa-sqlite/wa-sqlite*.wasm
+public/wa-sqlite/wa-sqlite*.mjs
