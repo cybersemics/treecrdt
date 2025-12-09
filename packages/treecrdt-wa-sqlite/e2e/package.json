@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:wa-sqlite": "echo \"using existing wa-sqlite dist\"",
+    "build:wa-sqlite": "pnpm -C .. run build:ts",
     "postbuild:wa-sqlite": "mkdir -p public/wa-sqlite && cp ../../../vendor/wa-sqlite/dist/wa-sqlite.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite.wasm ../../../vendor/wa-sqlite/dist/wa-sqlite-async.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite-async.wasm ../../../vendor/wa-sqlite/src/sqlite-api.js ../../../vendor/wa-sqlite/src/sqlite-constants.js public/wa-sqlite/",
     "build": "pnpm run build:wa-sqlite && pnpm run postbuild:wa-sqlite && vite build",
     "dev": "vite",
