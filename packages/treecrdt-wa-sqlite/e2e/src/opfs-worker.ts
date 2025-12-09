@@ -1,12 +1,7 @@
 /// <reference lib="webworker" />
 
-import SQLiteESMFactory from "wa-sqlite";
-import * as SQLite from "wa-sqlite/sqlite-api";
-import { OPFSCoopSyncVFS } from "../../../../vendor/wa-sqlite/src/examples/OPFSCoopSyncVFS.js";
-import sqliteWasmUrl from "/wa-sqlite/wa-sqlite-async.wasm?url";
 import { buildWorkloads, runWorkloads, type BenchmarkResult, type WorkloadName } from "@treecrdt/benchmark";
-import { createWaSqliteAdapter, loadTreecrdtExtension } from "@treecrdt/wa-sqlite";
-import type { Database } from "wa-sqlite";
+import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
 
 type StorageKind = "browser-opfs-coop-sync" | "browser-memory";
@@ -16,6 +11,7 @@ type WorkerRequest = {
   storage?: StorageKind;
   sizes?: number[];
   workloads?: WorkloadName[];
+  baseUrl?: string;
 };
 
 type WorkerResponse =
@@ -32,60 +28,72 @@ type BenchPayload = BenchmarkResult & {
 const defaultSizes = [1, 10, 100, 1_000];
 const defaultWorkloads: WorkloadName[] = ["insert-move", "insert-chain", "replay-log"];
 
-async function createAdapter(storage: StorageKind): Promise<TreecrdtAdapter & { close: () => Promise<void> }> {
-  const module = await SQLiteESMFactory({
-    locateFile: (file: string) => (file.endsWith(".wasm") ? sqliteWasmUrl : file),
-  });
-
-  const sqlite3 = SQLite.Factory(module);
-  if (storage === "browser-opfs-coop-sync") {
-    const vfs = await OPFSCoopSyncVFS.create("opfs", module, {});
-    sqlite3.vfs_register(vfs, true);
+async function createAdapter(
+  storage: StorageKind,
+  baseUrl?: string
+): Promise<TreecrdtAdapter & { close: () => Promise<void> }> {
+  const clientStorage = storage === "browser-opfs-coop-sync" ? "opfs" : "memory";
+  let client: TreecrdtClient | null = null;
+  const effectiveBase =
+    baseUrl ??
+    (typeof self !== "undefined" && "location" in self ? new URL("/", (self as any).location.href).href : "/");
+  try {
+    console.info(`[opfs-worker] creating client storage=${clientStorage} base=${effectiveBase}`);
+    client = await createTreecrdtClient({ storage: clientStorage, baseUrl: effectiveBase });
+    // sanity check to ensure DB is valid
+    await client.opsSince(0);
+  } catch (err) {
+    if (client?.close) {
+      await client.close();
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`createAdapter failed (${clientStorage}) base=${effectiveBase}:`, err);
+    throw new Error(
+      JSON.stringify({
+        where: "createAdapter",
+        storage: clientStorage,
+        base: effectiveBase,
+        message: reason,
+      })
+    );
   }
-
-  const filename = storage === "browser-opfs-coop-sync" ? "/treecrdt-opfs-bench.db" : ":memory:";
-  const handle = await sqlite3.open_v2(filename);
-  const db = makeDbAdapter(sqlite3, handle);
-  await loadTreecrdtExtension({ db });
-
-  const adapter = createWaSqliteAdapter(db);
-  return Object.assign(adapter, {
-    close: async () => {
-      try {
-        await sqlite3.close(handle);
-      } catch {
-        /* ignore */
+  return {
+    appendOp: (op, serializeNodeId, serializeReplica) =>
+      client.append({
+        ...op,
+        meta: {
+          ...op.meta,
+          id: {
+            replica: serializeReplica(op.meta.id.replica),
+            counter: op.meta.id.counter,
+          },
+        },
+      }),
+    appendOps: async (ops, serializeNodeId, serializeReplica) => {
+      if (client.appendMany) {
+        await client.appendMany(
+          ops.map((op) => ({
+            ...op,
+            meta: { ...op.meta, id: { replica: serializeReplica(op.meta.id.replica), counter: op.meta.id.counter } },
+          }))
+        );
+        return;
+      }
+      for (const op of ops) {
+        await client.append({
+          ...op,
+          meta: { ...op.meta, id: { replica: serializeReplica(op.meta.id.replica), counter: op.meta.id.counter } },
+        });
       }
     },
-  });
-}
-
-function makeDbAdapter(sqlite3: ReturnType<typeof SQLite.Factory>, handle: number): Database {
-  const prepare: Database["prepare"] = async (sql) => {
-    const iter = sqlite3.statements(handle, sql, { unscoped: true });
-    const { value } = await iter.next();
-    if (iter.return) {
-      await iter.return();
-    }
-    if (!value) {
-      throw new Error(`Failed to prepare statement: ${sql}`);
-    }
-    return value;
+    opsSince: async (lamport) => client.opsSince(lamport),
+    close: async () => client.close(),
   };
-
-  const db: Database = {
-    prepare,
-    bind: async (stmt, index, value) => sqlite3.bind(stmt, index, value),
-    step: async (stmt) => sqlite3.step(stmt),
-    column_text: async (stmt, index) => sqlite3.column_text(stmt, index),
-    finalize: async (stmt) => sqlite3.finalize(stmt),
-    exec: async (sql) => sqlite3.exec(handle, sql),
-  };
-  return db;
 }
 
 async function runWaSqliteBenchInWorker(
   storage: StorageKind,
+  baseUrl: string | undefined,
   sizes: number[] = defaultSizes,
   workloads: WorkloadName[] = defaultWorkloads
 ): Promise<BenchPayload[]> {
@@ -93,26 +101,37 @@ async function runWaSqliteBenchInWorker(
   const results: BenchPayload[] = [];
 
   for (const workload of workloadDefs) {
+    console.info(`[opfs-worker] workload ${workload.name} start`);
     // Per-workload isolation: open a fresh adapter, run the workload, then close.
-    const adapter = await createAdapter(storage);
-    // Warm-up to reduce first-write effects: a tiny opsSince(0).
-    await adapter.opsSince(0);
-    const res = await runWorkloads(async () => adapter, [workload]);
-    if (adapter.close) {
-      await adapter.close();
+    const adapter = await createAdapter(storage, baseUrl);
+    try {
+      // Warm-up to reduce first-write effects: a tiny opsSince(0).
+      await adapter.opsSince(0);
+      const res = await runWorkloads(async () => adapter, [workload]);
+      const [result] = res;
+      const mergedExtra =
+        result.extra && workload.totalOps
+          ? { ...result.extra, count: workload.totalOps }
+          : result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined);
+      results.push({
+        ...result,
+        implementation: "wa-sqlite",
+        storage,
+        workload: workload.name,
+        extra: mergedExtra,
+      });
+      console.info(`[opfs-worker] workload ${workload.name} done`);
+    } catch (err) {
+      console.error(`[opfs-worker] workload ${workload.name} failed`, err);
+      if (adapter.close) {
+        try {
+          await adapter.close();
+        } catch {
+          // ignore cleanup errors on failure
+        }
+      }
+      throw err;
     }
-    const [result] = res;
-    const mergedExtra =
-      result.extra && workload.totalOps
-        ? { ...result.extra, count: workload.totalOps }
-        : result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined);
-    results.push({
-      ...result,
-      implementation: "wa-sqlite",
-      storage,
-      workload: workload.name,
-      extra: mergedExtra,
-    });
   }
 
   return results;
@@ -122,10 +141,11 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   if (ev.data?.type !== "run") return;
   const storage: StorageKind = ev.data.storage ?? "browser-opfs-coop-sync";
   try {
-    const results = await runWaSqliteBenchInWorker(storage, ev.data.sizes, ev.data.workloads);
+    const results = await runWaSqliteBenchInWorker(storage, ev.data.baseUrl, ev.data.sizes, ev.data.workloads);
     const response: WorkerResponse = { ok: true, results };
     self.postMessage(response);
   } catch (err) {
+    console.error("[opfs-worker] bench failed", err);
     const response: WorkerResponse = { ok: false, error: err instanceof Error ? err.message : String(err) };
     self.postMessage(response);
   }

@@ -1,35 +1,22 @@
-import type { Database } from "wa-sqlite";
 import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
 import { buildAppendOp, buildOpsSince } from "@treecrdt/interface/sqlite";
 
-export type LoadOptions = {
-  db: Database;
-  extensionUrl?: string; // optional; baked-in wa-sqlite build does not need it
-  entrypoint?: string; // defaults to sqlite3_treecrdt_init
+// Minimal wa-sqlite surface needed by the adapter. Exported so consumers
+// don't need to import types from wa-sqlite directly.
+export type Database = {
+  prepare(sql: string): Promise<number> | number;
+  bind(stmt: number, index: number, value: unknown): Promise<void> | void;
+  step(stmt: number): Promise<number> | number;
+  column_text(stmt: number, index: number): Promise<string> | string;
+  finalize(stmt: number): Promise<void> | void;
+  exec(sql: string): Promise<void> | void;
+  close?(): Promise<void> | void;
 };
 
 export type OpsSinceFilter = {
   lamport: number;
   root?: string; // node id as hex string or other canonical encoding
 };
-
-/**
-  Load the TreeCRDT SQLite extension into a wa-sqlite database.
-  Expects the extension wasm to export `sqlite3_treecrdt_init`.
-*/
-export async function loadTreecrdtExtension({
-  db,
-  extensionUrl,
-  entrypoint = "sqlite3_treecrdt_init",
-}: LoadOptions): Promise<void> {
-  // Our wa-sqlite build already links and auto-registers the extension; nothing to do.
-  // If a future build exposes loadExtension and an external wasm URL is provided,
-  // we could call it here.
-  void db;
-  void extensionUrl;
-  void entrypoint;
-  return Promise.resolve();
-}
 
 /**
   Append an operation by calling the extension function.

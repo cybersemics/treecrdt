@@ -5,20 +5,46 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client.js",
+      "types": "./dist/client.d.ts"
+    },
+    "./opfs": {
+      "import": "./dist/opfs.js",
+      "types": "./dist/opfs.d.ts"
+    },
+    "./worker": {
+      "import": "./dist/worker.js",
+      "types": "./dist/worker.d.ts"
+    },
+    "./vite-plugin": {
+      "import": "./dist/vite-plugin.js",
+      "types": "./dist/vite-plugin.d.ts"
+    }
+  },
   "files": [
     "dist",
-    "src"
+    "src",
+    "dist/vendor/OPFSCoopSyncVFS.js"
   ],
   "scripts": {
-    "build:ts": "tsc -p tsconfig.json",
+    "prep:opfs": "node ./scripts/copy-opfs-vfs.mjs",
+    "build:ts": "pnpm run prep:opfs && tsc -p tsconfig.json",
     "build": "pnpm run build:ts",
-    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
+    "postinstall": "pnpm run prep:opfs"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/benchmark": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^20.19.25",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }
