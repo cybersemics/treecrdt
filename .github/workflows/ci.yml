@@ -9,7 +9,7 @@ on:
 env:
   EM_VERSION: 4.0.21
   EM_CACHE_FOLDER: 'emsdk-cache'
-  PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+  PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
 
 jobs:
   build-and-test:
@@ -82,7 +82,7 @@ jobs:
     - name: Cache Playwright browsers
       uses: actions/cache@v4
       with:
-        path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+        path: ~/.cache/ms-playwright
         key: ${{ runner.os }}-playwright-${{ hashFiles('**/pnpm-lock.yaml') }}
         restore-keys: |
           ${{ runner.os }}-playwright-
