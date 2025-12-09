@@ -43,6 +43,11 @@ async function copyFile(from, to, transform) {
 
 async function main() {
   try {
+    // Clean target vendor folders so stale copies are never reused.
+    for (const dir of targetDirs) {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+
     for (const { src, name, transform } of sources) {
       await Promise.all(
         targetDirs.map((dir) => copyFile(src, path.join(dir, name), transform)),
