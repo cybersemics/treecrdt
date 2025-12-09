@@ -30,7 +30,7 @@
   "files": [
     "dist",
     "src",
-    "dist/vendor/OPFSCoopSyncVFS.js"
+    "dist/vendor"
   ],
   "scripts": {
     "prep:opfs": "node ./scripts/copy-opfs-vfs.mjs",

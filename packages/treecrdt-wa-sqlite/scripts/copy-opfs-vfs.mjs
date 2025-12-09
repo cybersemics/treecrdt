@@ -6,23 +6,53 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
 
-const source = path.join(repoRoot, "vendor/wa-sqlite/src/examples/OPFSCoopSyncVFS.js");
-const targets = [
-  path.join(repoRoot, "packages/treecrdt-wa-sqlite/src/vendor/OPFSCoopSyncVFS.js"),
-  path.join(repoRoot, "packages/treecrdt-wa-sqlite/dist/vendor/OPFSCoopSyncVFS.js"),
+const sources = [
+  {
+    src: path.join(repoRoot, "vendor/wa-sqlite/src/examples/OPFSCoopSyncVFS.js"),
+    name: "OPFSCoopSyncVFS.js",
+    transform: (content) =>
+      content
+        .replace("../FacadeVFS.js", "./FacadeVFS.js")
+        .replace("../VFS.js", "./VFS.js"),
+  },
+  {
+    src: path.join(repoRoot, "vendor/wa-sqlite/src/FacadeVFS.js"),
+    name: "FacadeVFS.js",
+  },
+  {
+    src: path.join(repoRoot, "vendor/wa-sqlite/src/VFS.js"),
+    name: "VFS.js",
+  },
+  {
+    src: path.join(repoRoot, "vendor/wa-sqlite/src/sqlite-constants.js"),
+    name: "sqlite-constants.js",
+  },
 ];
 
-async function copyFile(from, to) {
+const targetDirs = [
+  path.join(repoRoot, "packages/treecrdt-wa-sqlite/src/vendor"),
+  path.join(repoRoot, "packages/treecrdt-wa-sqlite/dist/vendor"),
+];
+
+async function copyFile(from, to, transform) {
   await fs.mkdir(path.dirname(to), { recursive: true });
-  await fs.copyFile(from, to);
+  const content = await fs.readFile(from, "utf8");
+  const data = transform ? transform(content) : content;
+  await fs.writeFile(to, data, "utf8");
 }
 
 async function main() {
   try {
-    await Promise.all(targets.map((t) => copyFile(source, t)));
-    console.info(`[copy-opfs-vfs] copied OPFSCoopSyncVFS.js to ${targets.length} target(s)`);
+    for (const { src, name, transform } of sources) {
+      await Promise.all(
+        targetDirs.map((dir) => copyFile(src, path.join(dir, name), transform)),
+      );
+    }
+    console.info(
+      `[copy-opfs-vfs] copied ${sources.length} files to ${targetDirs.length} target directories`,
+    );
   } catch (err) {
-    console.error("[copy-opfs-vfs] failed to copy OPFSCoopSyncVFS.js", err);
+    console.error("[copy-opfs-vfs] failed to copy OPFS VFS artifacts", err);
     process.exit(1);
   }
 }
