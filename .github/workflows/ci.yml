@@ -9,6 +9,7 @@ on:
 env:
   EM_VERSION: 4.0.21
   EM_CACHE_FOLDER: 'emsdk-cache'
+  PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
 
 jobs:
   build-and-test:
@@ -81,14 +82,12 @@ jobs:
     - name: Cache Playwright browsers
       uses: actions/cache@v4
       with:
-        path: ~/.cache/ms-playwright
+        path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
         key: ${{ runner.os }}-playwright-${{ hashFiles('**/pnpm-lock.yaml') }}
         restore-keys: |
           ${{ runner.os }}-playwright-
 
     - name: Install Playwright browsers (chromium only)
-      env:
-        PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
       run: pnpm -C packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
 
     - name: Build project
