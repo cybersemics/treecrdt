@@ -78,7 +78,17 @@ jobs:
         actions-cache-folder: ${{env.EM_CACHE_FOLDER}}
     - run: emcc -v
 
-    - name: Install Playwright browsers
+    - name: Cache Playwright browsers
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: ${{ runner.os }}-playwright-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-playwright-
+
+    - name: Install Playwright browsers (chromium only)
+      env:
+        PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
       run: pnpm -C packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
 
     - name: Build project
@@ -89,4 +99,3 @@ jobs:
 
     - name: Run native node tests
       run: pnpm run test:native-node
-
