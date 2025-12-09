@@ -867,14 +867,26 @@ unsafe extern "C" fn treecrdt_append_ops(
             bind_err |= sqlite_bind_text(stmt, 4, kind_cstr.as_ptr(), -1, None) != SQLITE_OK as c_int;
         }
         unsafe {
-            if let Some(parent) = op.parent {
-                bind_err |= sqlite_bind_blob(stmt, 5, parent.as_ptr() as *const c_void, parent.len() as c_int, None) != SQLITE_OK as c_int;
+            if let Some(parent) = op.parent.as_ref() {
+                bind_err |= sqlite_bind_blob(
+                    stmt,
+                    5,
+                    parent.as_ptr() as *const c_void,
+                    parent.len() as c_int,
+                    None,
+                ) != SQLITE_OK as c_int;
             } else {
                 bind_err |= sqlite_bind_null(stmt, 5) != SQLITE_OK as c_int;
             }
             bind_err |= sqlite_bind_blob(stmt, 6, op.node.as_ptr() as *const c_void, op.node.len() as c_int, None) != SQLITE_OK as c_int;
-            if let Some(newp) = op.new_parent {
-                bind_err |= sqlite_bind_blob(stmt, 7, newp.as_ptr() as *const c_void, newp.len() as c_int, None) != SQLITE_OK as c_int;
+            if let Some(newp) = op.new_parent.as_ref() {
+                bind_err |= sqlite_bind_blob(
+                    stmt,
+                    7,
+                    newp.as_ptr() as *const c_void,
+                    newp.len() as c_int,
+                    None,
+                ) != SQLITE_OK as c_int;
             } else {
                 bind_err |= sqlite_bind_null(stmt, 7) != SQLITE_OK as c_int;
             }
