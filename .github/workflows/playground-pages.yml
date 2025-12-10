@@ -34,7 +34,7 @@ jobs:
           version: 8
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
 
       - name: Build playground (with dependencies)
         run: pnpm --filter @treecrdt/playground... run build
