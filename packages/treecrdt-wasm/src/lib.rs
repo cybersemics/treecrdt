@@ -53,13 +53,11 @@ fn node_to_hex(id: NodeId) -> String {
 
 fn op_to_js(op: &Operation) -> JsOp {
     let (kind, parent, node, new_parent, position) = match &op.kind {
-        OperationKind::Insert { parent, node, position } => (
-            "insert",
-            Some(*parent),
-            *node,
-            None,
-            Some(*position),
-        ),
+        OperationKind::Insert {
+            parent,
+            node,
+            position,
+        } => ("insert", Some(*parent), *node, None, Some(*position)),
         OperationKind::Move {
             node,
             new_parent,
@@ -91,11 +89,7 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
             &replica,
             counter,
             lamport,
-            js.parent
-                .as_deref()
-                .map(hex_to_node)
-                .transpose()?
-                .unwrap_or(NodeId::ROOT),
+            js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
             hex_to_node(&js.node)?,
             js.position.unwrap_or(0),
         ),
@@ -104,11 +98,7 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
             counter,
             lamport,
             hex_to_node(&js.node)?,
-            js.new_parent
-                .as_deref()
-                .map(hex_to_node)
-                .transpose()?
-                .unwrap_or(NodeId::ROOT),
+            js.new_parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
             js.position.unwrap_or(0),
         ),
         "delete" => Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?),
@@ -130,11 +120,7 @@ impl WasmTree {
         let replica_bytes = hex_to_bytes(&replica_hex).unwrap_or_else(|_| b"wasm".to_vec());
         let replica = ReplicaId::new(replica_bytes);
         WasmTree {
-            inner: TreeCrdt::new(
-                replica,
-                MemoryStorage::default(),
-                LamportClock::default(),
-            ),
+            inner: TreeCrdt::new(replica, MemoryStorage::default(), LamportClock::default()),
         }
     }
 

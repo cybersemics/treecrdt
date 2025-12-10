@@ -40,10 +40,8 @@ fn main() {
         if let Some(val) = arg.strip_prefix("--count=") {
             counts = vec![val.parse().unwrap_or(500)];
         } else if let Some(val) = arg.strip_prefix("--counts=") {
-            let parsed: Vec<u64> = val
-                .split(',')
-                .filter_map(|s| s.trim().parse::<u64>().ok())
-                .collect();
+            let parsed: Vec<u64> =
+                val.split(',').filter_map(|s| s.trim().parse::<u64>().ok()).collect();
             if !parsed.is_empty() {
                 counts = parsed;
             }

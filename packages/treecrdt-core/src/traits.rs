@@ -86,18 +86,11 @@ impl Storage for MemoryStorage {
     }
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
-        Ok(self
-            .ops
-            .iter().filter(|&op| op.meta.lamport > lamport).cloned()
-            .collect())
+        Ok(self.ops.iter().filter(|&op| op.meta.lamport > lamport).cloned().collect())
     }
 
     fn latest_lamport(&self) -> Lamport {
-        self.ops
-            .iter()
-            .map(|op| op.meta.lamport)
-            .max()
-            .unwrap_or_default()
+        self.ops.iter().map(|op| op.meta.lamport).max().unwrap_or_default()
     }
 
     fn snapshot(&self) -> Result<Snapshot> {
