@@ -7,6 +7,7 @@ import type { BenchResult } from "../src/bench.js";
 
 test("wa-sqlite OPFS benchmarks", async ({ page }) => {
   test.setTimeout(180_000);
+  page.on("console", (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
   await page.goto("/");
 
   const results = await page.evaluate(async () => {
@@ -37,6 +38,7 @@ test("wa-sqlite OPFS benchmarks", async ({ page }) => {
 
 test("wa-sqlite memory (browser) benchmarks", async ({ page }) => {
   test.setTimeout(180_000);
+  page.on("console", (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
   await page.goto("/");
 
   const results = await page.evaluate(async () => {

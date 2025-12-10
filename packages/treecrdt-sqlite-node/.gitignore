@@ -1,6 +1,3 @@
 node_modules
 dist
 native/*
-!native/libtreecrdt_sqlite_ext.dylib
-!native/libtreecrdt_sqlite_ext.so
-!native/treecrdt_sqlite_ext.dll

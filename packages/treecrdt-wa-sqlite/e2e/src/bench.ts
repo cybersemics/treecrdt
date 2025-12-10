@@ -18,6 +18,7 @@ type WorkerRequest = {
   storage: StorageKind;
   sizes?: number[];
   workloads?: WorkloadName[];
+  baseUrl?: string;
 };
 
 type WorkerResponse =
@@ -31,6 +32,14 @@ export async function runWaSqliteBench(
   sizes?: number[],
   workloads?: WorkloadName[]
 ): Promise<BenchResult[]> {
+  // Use absolute base URL so workers resolve wa-sqlite assets correctly.
+  const baseUrl =
+    typeof window !== "undefined"
+      ? new URL("/", window.location.href).href
+      : typeof import.meta !== "undefined" && (import.meta as any).env?.BASE_URL
+        ? (import.meta as any).env.BASE_URL
+        : "/";
+  console.info(`[bench] starting run storage=${storage} baseUrl=${baseUrl}`);
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./opfs-worker.ts", import.meta.url), { type: "module" });
     const timeout = setTimeout(() => {
@@ -53,7 +62,7 @@ export async function runWaSqliteBench(
       reject(err);
     };
 
-    const message: WorkerRequest = { type: "run", storage, sizes, workloads };
+    const message: WorkerRequest = { type: "run", storage, sizes, workloads, baseUrl };
     worker.postMessage(message);
   });
 }

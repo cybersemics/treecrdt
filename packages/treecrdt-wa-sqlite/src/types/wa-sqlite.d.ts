@@ -1,14 +1,9 @@
+import type { Database as AdapterDatabase } from "../index.js";
+
 declare module "wa-sqlite" {
   export type Statement = unknown;
 
-  export interface Database {
-    prepare(sql: string): Promise<Statement>;
-    bind(stmt: Statement, index: number, value: unknown): Promise<void>;
-    step(stmt: Statement): Promise<number>;
-    column_text(stmt: Statement, index: number): Promise<string>;
-    finalize(stmt: Statement): Promise<void>;
-    exec(sql: string): Promise<void>;
-  }
+  export interface Database extends AdapterDatabase {}
 
   export type ModuleFactoryOptions = {
     locateFile?: (path: string, prefix?: string) => string | URL;

@@ -1,4 +1,8 @@
 packages:
-  - "packages/*"
-  - "packages/treecrdt-wasm-js"
-  - "packages/treecrdt-wa-sqlite/e2e"
+  - packages/*
+  - packages/treecrdt-wasm-js
+  - packages/treecrdt-wa-sqlite/e2e
+  - examples/*
+
+onlyBuiltDependencies:
+  - esbuild

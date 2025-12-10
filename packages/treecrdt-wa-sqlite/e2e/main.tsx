@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./src/App.js";
-import "./src/bench.ts";
+import "./src/bench";
 
 const container = document.getElementById("root");
 if (!container) {
