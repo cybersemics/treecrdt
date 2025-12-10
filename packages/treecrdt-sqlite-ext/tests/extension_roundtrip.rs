@@ -23,8 +23,7 @@ fn append_and_fetch_ops_via_extension() {
     let conn = Connection::open_in_memory().unwrap();
     unsafe {
         conn.load_extension_enable().unwrap();
-        conn.load_extension(ext_path, Some("sqlite3_treecrdt_init"))
-            .unwrap();
+        conn.load_extension(ext_path, Some("sqlite3_treecrdt_init")).unwrap();
     }
 
     let replica = b"r1".to_vec();
@@ -48,9 +47,8 @@ fn append_and_fetch_ops_via_extension() {
         )
         .unwrap();
 
-    let json: String = conn
-        .query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0))
-        .unwrap();
+    let json: String =
+        conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0)).unwrap();
 
     let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
     assert_eq!(ops.len(), 2);

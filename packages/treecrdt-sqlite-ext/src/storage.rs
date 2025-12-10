@@ -98,9 +98,7 @@ impl Storage for SqliteStorage {
     }
 
     fn load_since(&self, lamport: Lamport) -> treecrdt_core::Result<Vec<Operation>> {
-        let l: i64 = lamport
-            .try_into()
-            .map_err(|_| Error::Storage("lamport overflow".into()))?;
+        let l: i64 = lamport.try_into().map_err(|_| Error::Storage("lamport overflow".into()))?;
         let mut stmt = self
             .conn
             .prepare(
@@ -268,9 +266,7 @@ mod tests {
         let child = NodeId(3);
 
         // Persist operations out of order.
-        storage
-            .apply(Operation::move_node(&replica, 3, 3, child, parent, 0))
-            .unwrap();
+        storage.apply(Operation::move_node(&replica, 3, 3, child, parent, 0)).unwrap();
         storage
             .apply(Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, 0))
             .unwrap();

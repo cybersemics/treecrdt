@@ -7,9 +7,9 @@
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
-use std::ptr::null_mut;
 #[cfg(feature = "ext-sqlite")]
 use std::ptr::null;
+use std::ptr::null_mut;
 
 use treecrdt_core::Lamport;
 
@@ -858,13 +858,20 @@ unsafe extern "C" fn treecrdt_append_ops(
         }
         let mut bind_err = false;
         unsafe {
-            bind_err |= sqlite_bind_blob(stmt, 1, op.replica.as_ptr() as *const c_void, op.replica.len() as c_int, None) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                1,
+                op.replica.as_ptr() as *const c_void,
+                op.replica.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
             bind_err |= sqlite_bind_int64(stmt, 2, op.counter as i64) != SQLITE_OK as c_int;
             bind_err |= sqlite_bind_int64(stmt, 3, op.lamport as i64) != SQLITE_OK as c_int;
         }
         let kind_cstr = CString::new(op.kind).unwrap_or_else(|_| CString::new("insert").unwrap());
         unsafe {
-            bind_err |= sqlite_bind_text(stmt, 4, kind_cstr.as_ptr(), -1, None) != SQLITE_OK as c_int;
+            bind_err |=
+                sqlite_bind_text(stmt, 4, kind_cstr.as_ptr(), -1, None) != SQLITE_OK as c_int;
         }
         unsafe {
             if let Some(parent) = op.parent.as_ref() {
@@ -878,7 +885,13 @@ unsafe extern "C" fn treecrdt_append_ops(
             } else {
                 bind_err |= sqlite_bind_null(stmt, 5) != SQLITE_OK as c_int;
             }
-            bind_err |= sqlite_bind_blob(stmt, 6, op.node.as_ptr() as *const c_void, op.node.len() as c_int, None) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                6,
+                op.node.as_ptr() as *const c_void,
+                op.node.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
             if let Some(newp) = op.new_parent.as_ref() {
                 bind_err |= sqlite_bind_blob(
                     stmt,

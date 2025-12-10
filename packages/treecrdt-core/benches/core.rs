@@ -42,8 +42,7 @@ fn bench_move_siblings(c: &mut Criterion) {
                     LamportClock::default(),
                 );
                 for i in 0..1_000u64 {
-                    crdt.local_insert(NodeId::ROOT, NodeId(i as u128 + 1), i as usize)
-                        .unwrap();
+                    crdt.local_insert(NodeId::ROOT, NodeId(i as u128 + 1), i as usize).unwrap();
                 }
                 crdt
             },

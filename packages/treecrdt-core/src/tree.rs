@@ -230,16 +230,14 @@ where
         }
 
         self.applied.insert(op.meta.id.clone());
-        let idx = match self
-            .log
-            .binary_search_by(|existing| {
-                (
-                    existing.op.meta.lamport,
-                    tie_breaker_id(&existing.op),
-                    &existing.op.meta.id,
-                )
-                    .cmp(&(op.meta.lamport, tie_breaker_id(&op), &op.meta.id))
-            }) {
+        let idx = match self.log.binary_search_by(|existing| {
+            (
+                existing.op.meta.lamport,
+                tie_breaker_id(&existing.op),
+                &existing.op.meta.id,
+            )
+                .cmp(&(op.meta.lamport, tie_breaker_id(&op), &op.meta.id))
+        }) {
             Ok(i) => i,
             Err(i) => i,
         };
@@ -250,7 +248,10 @@ where
 
         // apply new op
         let snapshot = Self::apply_forward(&mut self.nodes, &op);
-        let new_entry = LogEntry { op: op.clone(), snapshot };
+        let new_entry = LogEntry {
+            op: op.clone(),
+            snapshot,
+        };
         self.log.insert(idx, new_entry);
 
         // redo suffix
@@ -337,12 +338,10 @@ where
         Self::detach(nodes, node_id);
         if let Some(parent) = entry.snapshot.parent {
             Self::ensure_node(nodes, parent);
-            let pos = entry.snapshot.position.unwrap_or_else(|| {
-                nodes
-                    .get(&parent)
-                    .map(|p| p.children.len())
-                    .unwrap_or(0)
-            });
+            let pos = entry
+                .snapshot
+                .position
+                .unwrap_or_else(|| nodes.get(&parent).map(|p| p.children.len()).unwrap_or(0));
             Self::attach(nodes, node_id, parent, pos);
         } else if let Some(entry_state) = nodes.get_mut(&node_id) {
             entry_state.parent = None;
@@ -352,7 +351,12 @@ where
         }
     }
 
-    fn apply_insert(nodes: &mut HashMap<NodeId, NodeState>, parent: NodeId, node: NodeId, position: usize) {
+    fn apply_insert(
+        nodes: &mut HashMap<NodeId, NodeState>,
+        parent: NodeId,
+        node: NodeId,
+        position: usize,
+    ) {
         if parent == node {
             return;
         }
@@ -365,7 +369,12 @@ where
         Self::attach(nodes, node, parent, position);
     }
 
-    fn apply_move(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId, new_parent: NodeId, position: usize) {
+    fn apply_move(
+        nodes: &mut HashMap<NodeId, NodeState>,
+        node: NodeId,
+        new_parent: NodeId,
+        position: usize,
+    ) {
         if node == NodeId::ROOT {
             return;
         }
@@ -400,7 +409,12 @@ where
         }
     }
 
-    fn attach(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId, parent: NodeId, position: usize) {
+    fn attach(
+        nodes: &mut HashMap<NodeId, NodeState>,
+        node: NodeId,
+        parent: NodeId,
+        position: usize,
+    ) {
         if let Some(parent_entry) = nodes.get_mut(&parent) {
             let idx = position.min(parent_entry.children.len());
             parent_entry.children.insert(idx, node);
@@ -617,11 +631,7 @@ mod tests {
         storage.apply(node_insert.clone()).unwrap();
         storage.apply(parent_insert.clone()).unwrap();
 
-        let mut crdt = TreeCrdt::new(
-            replica.clone(),
-            storage,
-            LamportClock::default(),
-        );
+        let mut crdt = TreeCrdt::new(replica.clone(), storage, LamportClock::default());
         crdt.replay_from_storage().unwrap();
 
         assert_eq!(crdt.parent(node), Some(parent));
@@ -799,12 +809,10 @@ mod tests {
         )
     }
 
-    fn parents_snapshot(crdt: &TreeCrdt<MemoryStorage, LamportClock>) -> Vec<(NodeId, Option<NodeId>)> {
-        let mut pairs: Vec<_> = crdt
-            .nodes
-            .iter()
-            .map(|(id, state)| (*id, state.parent))
-            .collect();
+    fn parents_snapshot(
+        crdt: &TreeCrdt<MemoryStorage, LamportClock>,
+    ) -> Vec<(NodeId, Option<NodeId>)> {
+        let mut pairs: Vec<_> = crdt.nodes.iter().map(|(id, state)| (*id, state.parent)).collect();
         pairs.sort_by_key(|(id, _)| id.0);
         pairs
     }
