@@ -112,7 +112,7 @@ impl Storage for SqliteStorage {
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let rows = stmt
-            .query_map([l], |row| row_to_operation(row))
+            .query_map([l], row_to_operation)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let mut ops = Vec::new();

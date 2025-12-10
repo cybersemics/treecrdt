@@ -88,9 +88,7 @@ impl Storage for MemoryStorage {
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         Ok(self
             .ops
-            .iter()
-            .cloned()
-            .filter(|op| op.meta.lamport > lamport)
+            .iter().filter(|&op| op.meta.lamport > lamport).cloned()
             .collect())
     }
 

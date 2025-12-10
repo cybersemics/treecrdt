@@ -344,10 +344,8 @@ where
                     .unwrap_or(0)
             });
             Self::attach(nodes, node_id, parent, pos);
-        } else {
-            if let Some(entry_state) = nodes.get_mut(&node_id) {
-                entry_state.parent = None;
-            }
+        } else if let Some(entry_state) = nodes.get_mut(&node_id) {
+            entry_state.parent = None;
         }
         if let Some(node_state) = nodes.get_mut(&node_id) {
             node_state.tombstone = entry.snapshot.tombstone;
@@ -648,7 +646,7 @@ mod tests {
         let b = NodeId(2);
         let x = NodeId(3);
 
-        let ops = vec![
+        let ops = [
             Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, 0),
             Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, 1),
             Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, 2),
@@ -783,8 +781,8 @@ mod tests {
 
     fn small_ops() -> impl Strategy<Value = Vec<Operation>> {
         // Generate up to 5 operations with lamports 1..=5 over a small node set.
-        let nodes = vec![NodeId::ROOT, NodeId(1), NodeId(2), NodeId(3)];
-        let replicas = vec![ReplicaId::new(b"a"), ReplicaId::new(b"b")];
+        let nodes = [NodeId::ROOT, NodeId(1), NodeId(2), NodeId(3)];
+        let replicas = [ReplicaId::new(b"a"), ReplicaId::new(b"b")];
         prop::collection::vec(
             (0usize..5).prop_map(move |i| {
                 let lamport = (i + 1) as Lamport;
@@ -824,7 +822,7 @@ mod tests {
         }
         heap_permute(k - 1, items, res);
         for i in 0..(k - 1) {
-            if k % 2 == 0 {
+            if k.is_multiple_of(2) {
                 items.swap(i, k - 1);
             } else {
                 items.swap(0, k - 1);
