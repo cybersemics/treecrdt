@@ -12,3 +12,7 @@ license = "MIT"
 version = "0.0.1"
 authors = ["Cybersemics Institute"]
 description = "Workspace for TreeCRDT core, SQLite extension, and bindings."
+
+# Workspace-wide lint configuration
+# Note: Lint levels can be configured here, but Clippy-specific settings
+# are in .clippy.toml. For strict linting, use command-line flags in CI.

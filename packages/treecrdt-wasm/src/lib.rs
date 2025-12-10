@@ -3,6 +3,7 @@
 //! Exposes a small wasm-bindgen surface that matches the JS adapter needs.
 
 use serde::{Deserialize, Serialize};
+use serde_wasm_bindgen::to_value;
 use treecrdt_core::{
     Lamport, LamportClock, MemoryStorage, NodeId, Operation, OperationKind, ReplicaId, TreeCrdt,
 };
@@ -22,7 +23,7 @@ struct JsOp {
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let clean = hex.trim_start_matches("0x");
-    if clean.len() % 2 != 0 {
+    if !clean.len().is_multiple_of(2) {
         return Err("hex length must be even".into());
     }
     (0..clean.len())
@@ -152,6 +153,6 @@ impl WasmTree {
             .operations_since(lamport)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         let mapped: Vec<JsOp> = ops.iter().map(op_to_js).collect();
-        JsValue::from_serde(&mapped).map_err(|e| JsValue::from_str(&e.to_string()))
+        to_value(&mapped).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
