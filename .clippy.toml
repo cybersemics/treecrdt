@@ -1,49 +1,19 @@
 # Clippy linting configuration for the entire workspace
 # See: https://rust-lang.github.io/rust-clippy/
+#
+# IMPORTANT: This file only configures lint-specific thresholds and settings.
+# Lint levels (allow/deny/warn) must be specified via:
+# - Command-line flags: cargo clippy -- -D clippy::unwrap_used
+# - Or in CI workflow (see .github/workflows/ci.yml)
+#
+# All field names must use kebab-case (with hyphens), not snake_case.
 
-# Allow some lints that might be too strict for general use
-# but can be enabled per-package if needed
-allow = [
-    # "clippy::too_many_arguments",  # Uncomment if you want to allow many args
-    # "clippy::type_complexity",      # Uncomment if you want to allow complex types
-]
+# Complexity thresholds
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 1000
+type-complexity-threshold = 300
 
-# Deny specific lints (these are generally good practices)
-deny = [
-    "clippy::unwrap_used",           # Prefer expect or proper error handling
-    "clippy::expect_used",           # Can be too strict, comment out if needed
-    "clippy::panic",                 # Avoid panics in library code
-    "clippy::todo",                  # Remove TODOs before committing
-    "clippy::unimplemented",         # Remove unimplemented! before committing
-]
-
-# Warn about these (default behavior)
-warn = [
-    "clippy::all",
-    "clippy::pedantic",
-    "clippy::nursery",
-    "clippy::cargo",
-]
-
-# Specific lint configurations
-[clippy::cognitive_complexity]
-max = 25
-
-[clippy::cyclomatic_complexity]
-max = 15
-
-[clippy::too_many_lines]
-max_lines = 1000
-
-[clippy::too_many_arguments]
-max_args = 7
-
-[clippy::type_complexity]
-max = 300
-
-[clippy::large_enum_variant]
-max_size = 200
-
-[clippy::too_large]
-max_size = 200
-
+# Size thresholds
+enum-variant-size-threshold = 200
+too-large-for-stack = 200
