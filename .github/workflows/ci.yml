@@ -14,7 +14,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+      PLAYWRIGHT_BROWSERS_PATH: $HOME/.cache/ms-playwright
 
     steps:
     - name: Checkout code
@@ -69,6 +69,10 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
+    - name: Detect Playwright version
+      id: pw-version
+      run: echo "PLAYWRIGHT_VERSION=$(node -p \"require('./packages/treecrdt-wa-sqlite/e2e/package.json').devDependencies['@playwright/test']\")" >> $GITHUB_ENV
+
     - name: Setup Emscripten
       uses: actions/cache@v4
       with:
@@ -84,11 +88,13 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-        key: ${{ runner.os }}-playwright-${{ hashFiles('**/pnpm-lock.yaml') }}
+        key: ${{ runner.os }}-playwright-${{ env.PLAYWRIGHT_VERSION }}
         restore-keys: |
           ${{ runner.os }}-playwright-
 
     - name: Install Playwright browsers (chromium only)
+      env:
+        PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
       run: pnpm -C packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
 
     - name: Build project
