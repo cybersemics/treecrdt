@@ -116,8 +116,11 @@ export default function App() {
     setError(null);
     try {
       const support = detectOpfsSupport();
-      const baseUrl =
-        typeof window !== "undefined" ? new URL("/", window.location.href).href : import.meta.env.BASE_URL ?? "/";
+      const resolvedBase =
+        typeof window !== "undefined"
+          ? new URL(import.meta.env.BASE_URL ?? "./", window.location.href).href
+          : import.meta.env.BASE_URL ?? "./";
+      const baseUrl = resolvedBase.endsWith("/") ? resolvedBase : `${resolvedBase}/`;
       const filename = storageMode === "opfs" ? `/treecrdt-playground-${keyOverride ?? sessionKey}.db` : undefined;
       const c = await createTreecrdtClient({
         storage: storageMode,
