@@ -116,6 +116,11 @@ export default function App() {
     setError(null);
     try {
       const support = detectOpfsSupport();
+      if (storageMode === "opfs" && !support.available) {
+        setStatus("error");
+        setError("OPFS not available in this environment (missing cross-origin isolation). Try Memory.");
+        return;
+      }
       const resolvedBase =
         typeof window !== "undefined"
           ? new URL(import.meta.env.BASE_URL ?? "./", window.location.href).href
