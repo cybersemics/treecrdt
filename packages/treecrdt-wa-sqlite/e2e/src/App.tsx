@@ -9,6 +9,16 @@ export default function App() {
   const [ops, setOps] = useState<ViewOp[]>([]);
 
   useEffect(() => {
+    // Expose a small helper for e2e tests to assert client mode.
+    if (typeof window !== "undefined") {
+      (window as any).__createTreecrdtClient = async (storage: "memory" | "opfs", baseUrl?: string) => {
+        const c = await createTreecrdtClient({ storage, baseUrl, preferWorker: storage === "opfs" });
+        const summary = { mode: c.mode, storage: c.storage };
+        if (c.close) await c.close();
+        return summary;
+      };
+    }
+
     (async () => {
       try {
         const c = await createTreecrdtClient({ storage: "memory" });
