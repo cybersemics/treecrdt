@@ -6,6 +6,9 @@ import { treecrdt } from "@treecrdt/wa-sqlite/vite-plugin";
 export default defineConfig({
   plugins: [treecrdt(), react()],
   base: "./",
+  worker: {
+    format: "es",
+  },
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
