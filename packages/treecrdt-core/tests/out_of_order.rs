@@ -74,4 +74,3 @@ fn replay_rebuilds_state_and_advanced_clock() {
     crdt.apply_remote(move_first).unwrap();
     assert_eq!(crdt.children(parent).unwrap(), &[node]);
 }
-

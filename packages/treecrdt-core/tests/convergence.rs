@@ -48,4 +48,3 @@ fn permutations_converge() {
         }
     }
 }
-

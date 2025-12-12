@@ -45,4 +45,3 @@ fn cycles_are_blocked() {
     assert_eq!(crdt.parent(b), Some(a));
     crdt.validate_invariants().unwrap();
 }
-

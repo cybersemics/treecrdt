@@ -165,11 +165,7 @@ where
     /// Returns all nodes in the tree with their parent relationships.
     /// Returns a vector of (node_id, parent_id) pairs, sorted by node_id.
     pub fn nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
-        let mut pairs: Vec<_> = self
-            .nodes
-            .iter()
-            .map(|(id, state)| (*id, state.parent))
-            .collect();
+        let mut pairs: Vec<_> = self.nodes.iter().map(|(id, state)| (*id, state.parent)).collect();
         pairs.sort_by_key(|(id, _)| id.0);
         pairs
     }

@@ -108,4 +108,3 @@ fn same_lamport_orders_by_op_id() {
     // ReplicaId "b" > "a" so move_b wins at equal lamport
     assert_eq!(crdt.parent(x), Some(b));
 }
-
