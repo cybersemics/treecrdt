@@ -75,6 +75,9 @@ jobs:
     - name: Run Clippy linter
       run: cargo clippy --workspace --all-targets -- -D warnings -D clippy::panic -D clippy::todo -D clippy::unimplemented
 
+    - name: Run Rust tests
+      run: cargo test --workspace --all-targets
+
     - name: Detect Playwright version
       id: pw-version
       shell: bash
