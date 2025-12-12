@@ -15,8 +15,8 @@ self.onmessage = async (ev: MessageEvent) => {
 
   try {
     if (method === "init") {
-      await handleInit(params as { baseUrl: string; filename?: string; storage: "memory" | "opfs" });
-      respond(true, { storage });
+      const result = await handleInit(params as { baseUrl: string; filename?: string; storage: "memory" | "opfs" });
+      respond(true, result);
       return;
     }
     if (method === "append") {
@@ -58,12 +58,17 @@ self.onmessage = async (ev: MessageEvent) => {
   }
 };
 
-async function handleInit(opts: { baseUrl: string; filename?: string; storage: "memory" | "opfs" }) {
+async function handleInit(opts: {
+  baseUrl: string;
+  filename?: string;
+  storage: "memory" | "opfs";
+}): Promise<{ storage: "memory" | "opfs"; opfsError?: string }> {
   if (db) {
     if (db.close) await db.close();
     db = null;
   }
   storage = opts.storage;
+  let opfsError: string | undefined;
   const base = opts.baseUrl;
   const sqliteModule = await import(/* @vite-ignore */ `${base}wa-sqlite/wa-sqlite-async.mjs`);
   const sqliteApi = await import(/* @vite-ignore */ `${base}wa-sqlite/sqlite-api.js`);
@@ -77,7 +82,8 @@ async function handleInit(opts: { baseUrl: string; filename?: string; storage: "
     try {
       const vfs = await createOpfsVfs(module, { name: "opfs" });
       sqlite3.vfs_register(vfs, true);
-    } catch {
+    } catch (err) {
+      opfsError = err instanceof Error ? err.message : String(err);
       storage = "memory";
     }
   }
@@ -85,6 +91,7 @@ async function handleInit(opts: { baseUrl: string; filename?: string; storage: "
   const filename = storage === "opfs" ? opts.filename ?? "/treecrdt.db" : ":memory:";
   const handle = await sqlite3.open_v2(filename);
   db = makeDbAdapter(sqlite3, handle);
+  return opfsError ? { storage, opfsError } : { storage };
 }
 
 async function ensureDb() {

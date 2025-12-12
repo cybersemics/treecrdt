@@ -24,6 +24,7 @@ export default defineConfig({
         __dirname,
         path.resolve(__dirname, "../../../vendor"),
         path.resolve(__dirname, "./public"),
+        path.resolve(__dirname, "../dist"),
       ],
     },
   },
