@@ -11,7 +11,6 @@ Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared Typ
 - `packages/treecrdt-sqlite-node`: TreeCRDT bundled for Node.js use
 - `packages/treecrdt-wa-sqlite`: TreeCRDT bunlded for browser use
 - `packages/treecrdt-benchmark`: Benchmark utilities
-- `packages/treecrdt-benchmark`: Benchmark utilities
 
 ## Quick start
 ```
