@@ -11,9 +11,9 @@ struct JsonOp {
     counter: u64,
     lamport: u64,
     kind: String,
-    parent: Option<u128>,
-    node: u128,
-    new_parent: Option<u128>,
+    parent: Option<String>,
+    node: String,
+    new_parent: Option<String>,
     position: Option<u64>,
 }
 
@@ -54,9 +54,9 @@ fn append_and_fetch_ops_via_extension() {
     assert_eq!(ops.len(), 2);
     assert_eq!(ops[0].kind, "insert");
     assert_eq!(ops[1].kind, "move");
-    assert_eq!(ops[0].parent, Some(0));
-    assert_eq!(ops[0].node, 1);
-    assert_eq!(ops[1].new_parent, Some(0));
+    assert_eq!(ops[0].parent.as_deref(), Some("00000000000000000000000000000000"));
+    assert_eq!(ops[0].node, "00000000000000000000000000000001");
+    assert_eq!(ops[1].new_parent.as_deref(), Some("00000000000000000000000000000000"));
 
     // With root filter we still see the same ops when filtering by root.
     let json_filtered: String = conn
@@ -81,13 +81,52 @@ fn find_extension() -> Option<PathBuf> {
         .unwrap_or_else(|_| manifest.join("..").join("..").join("target"));
 
     let (name, alt_name) = extension_filenames();
-    let candidates = [
+    let deps_dir = target_dir.join("debug").join("deps");
+    let mut candidates = vec![
         target_dir.join("debug").join(&name),
-        target_dir.join("debug").join("deps").join(&name),
+        deps_dir.join(&name),
         target_dir.join("debug").join(&alt_name),
-        target_dir.join("debug").join("deps").join(&alt_name),
+        deps_dir.join(&alt_name),
     ];
-    candidates.into_iter().find(|p| p.exists())
+
+    // When built via `cargo rustc -- --crate-type=cdylib`, Cargo places the extension under
+    // `target/debug/deps` with a hash suffix (e.g., `libtreecrdt_sqlite_ext-<hash>.dylib`).
+    let name_stem = PathBuf::from(&name)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let alt_stem = PathBuf::from(&alt_name)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let ext = PathBuf::from(&name)
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    if let Ok(entries) = std::fs::read_dir(&deps_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some(&ext) {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if stem.starts_with(&name_stem) || stem.starts_with(&alt_stem) {
+                candidates.push(path);
+            }
+        }
+    }
+
+    candidates
+        .into_iter()
+        .filter(|p| p.exists())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
 fn extension_filenames() -> (String, String) {

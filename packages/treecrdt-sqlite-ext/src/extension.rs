@@ -982,9 +982,9 @@ struct JsonOp {
     counter: u64,
     lamport: Lamport,
     kind: String,
-    parent: Option<u128>,
-    node: u128,
-    new_parent: Option<u128>,
+    parent: Option<String>,
+    node: String,
+    new_parent: Option<String>,
     position: Option<u64>,
 }
 
@@ -1097,9 +1097,9 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
         .unwrap_or("")
         .to_string();
 
-        let parent = column_node(stmt, 4)?;
-        let node = column_node(stmt, 5)?.unwrap_or(0);
-        let new_parent = column_node(stmt, 6)?;
+        let parent = column_node(stmt, 4)?.map(|id| format!("{:032x}", id));
+        let node = format!("{:032x}", column_node(stmt, 5)?.unwrap_or(0));
+        let new_parent = column_node(stmt, 6)?.map(|id| format!("{:032x}", id));
         let position = column_int_opt(stmt, 7);
 
         Ok(JsonOp {
