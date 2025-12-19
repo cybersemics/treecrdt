@@ -26,6 +26,7 @@ pub struct NodeId(pub u128);
 
 impl NodeId {
     pub const ROOT: NodeId = NodeId(0);
+    pub const TRASH: NodeId = NodeId(u128::MAX);
 }
 
 /// Globally unique identifier for an operation.

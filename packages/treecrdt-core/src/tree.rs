@@ -9,14 +9,12 @@ use crate::traits::{Clock, Storage};
 struct NodeState {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
-    tombstone: bool,
 }
 
 #[derive(Clone)]
 struct NodeSnapshot {
     parent: Option<NodeId>,
     position: Option<usize>,
-    tombstone: bool,
 }
 
 #[derive(Clone)]
@@ -30,7 +28,6 @@ impl NodeState {
         Self {
             parent: None,
             children: Vec::new(),
-            tombstone: false,
         }
     }
 }
@@ -111,7 +108,7 @@ where
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let op = Operation::delete(&replica, counter, lamport, node);
+        let op = Operation::move_node(&replica, counter, lamport, node, NodeId::TRASH, 0);
         self.commit_local(op)
     }
 
@@ -154,7 +151,11 @@ where
 
     /// Whether the node is tombstoned.
     pub fn is_tombstoned(&self, node: NodeId) -> bool {
-        self.nodes.get(&node).map(|n| n.tombstone).unwrap_or(false)
+        self.nodes
+            .get(&node)
+            .and_then(|n| n.parent)
+            .map(|p| p == NodeId::TRASH)
+            .unwrap_or(false)
     }
 
     /// Current Lamport time as observed by this replica.
@@ -165,7 +166,12 @@ where
     /// Returns all nodes in the tree with their parent relationships.
     /// Returns a vector of (node_id, parent_id) pairs, sorted by node_id.
     pub fn nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
-        let mut pairs: Vec<_> = self.nodes.iter().map(|(id, state)| (*id, state.parent)).collect();
+        let mut pairs: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|(id, state)| **id != NodeId::TRASH && state.parent != Some(NodeId::TRASH))
+            .map(|(id, state)| (*id, state.parent))
+            .collect();
         pairs.sort_by_key(|(id, _)| id.0);
         pairs
     }
@@ -200,11 +206,17 @@ where
     }
 
     fn has_cycle_from(&self, start: NodeId) -> bool {
+        if start == NodeId::ROOT || start == NodeId::TRASH {
+            return false;
+        }
         let mut visited = HashSet::new();
         let mut current = Some(start);
         while let Some(n) = current {
             if !visited.insert(n) {
                 return true;
+            }
+            if n == NodeId::ROOT || n == NodeId::TRASH {
+                return false;
             }
             current = self.nodes.get(&n).and_then(|s| s.parent);
         }
@@ -284,7 +296,6 @@ where
         nodes.entry(id).or_insert(NodeState {
             parent: None,
             children: Vec::new(),
-            tombstone: false,
         });
     }
 
@@ -326,12 +337,7 @@ where
                 .get(&p)
                 .and_then(|pnode| pnode.children.iter().position(|c| c == &node_id))
         });
-        let tombstone = nodes.get(&node_id).map(|n| n.tombstone).unwrap_or(false);
-        NodeSnapshot {
-            parent,
-            position,
-            tombstone,
-        }
+        NodeSnapshot { parent, position }
     }
 
     fn undo_entry(nodes: &mut HashMap<NodeId, NodeState>, entry: &LogEntry) {
@@ -353,9 +359,6 @@ where
             Self::attach(nodes, node_id, parent, pos);
         } else if let Some(entry_state) = nodes.get_mut(&node_id) {
             entry_state.parent = None;
-        }
-        if let Some(node_state) = nodes.get_mut(&node_id) {
-            node_state.tombstone = entry.snapshot.tombstone;
         }
     }
 
@@ -388,7 +391,9 @@ where
         }
         Self::ensure_node(nodes, node);
         Self::ensure_node(nodes, new_parent);
-        if Self::introduces_cycle(nodes, node, new_parent) || node == new_parent {
+        if new_parent != NodeId::TRASH
+            && (Self::introduces_cycle(nodes, node, new_parent) || node == new_parent)
+        {
             return;
         }
         Self::detach(nodes, node);
@@ -396,7 +401,7 @@ where
     }
 
     fn apply_delete(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId) {
-        if node == NodeId::ROOT {
+        if node == NodeId::ROOT || node == NodeId::TRASH {
             return;
         }
         if !nodes.contains_key(&node) {
@@ -404,15 +409,16 @@ where
         }
         Self::detach(nodes, node);
         if let Some(entry) = nodes.get_mut(&node) {
-            entry.parent = None;
-            entry.tombstone = true;
+            entry.parent = Some(NodeId::TRASH);
         }
     }
 
     fn detach(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId) {
         if let Some(parent) = nodes.get(&node).and_then(|n| n.parent) {
-            if let Some(p) = nodes.get_mut(&parent) {
-                p.children.retain(|c| c != &node);
+            if parent != NodeId::TRASH {
+                if let Some(p) = nodes.get_mut(&parent) {
+                    p.children.retain(|c| c != &node);
+                }
             }
         }
     }
@@ -423,13 +429,14 @@ where
         parent: NodeId,
         position: usize,
     ) {
-        if let Some(parent_entry) = nodes.get_mut(&parent) {
-            let idx = position.min(parent_entry.children.len());
-            parent_entry.children.insert(idx, node);
+        if parent != NodeId::TRASH {
+            if let Some(parent_entry) = nodes.get_mut(&parent) {
+                let idx = position.min(parent_entry.children.len());
+                parent_entry.children.insert(idx, node);
+            }
         }
         if let Some(entry) = nodes.get_mut(&node) {
             entry.parent = Some(parent);
-            entry.tombstone = false;
         }
     }
 
@@ -438,10 +445,16 @@ where
         node: NodeId,
         potential_parent: NodeId,
     ) -> bool {
+        if potential_parent == NodeId::TRASH {
+            return false;
+        }
         let mut current = Some(potential_parent);
         while let Some(n) = current {
             if n == node {
                 return true;
+            }
+            if n == NodeId::TRASH {
+                return false;
             }
             current = nodes.get(&n).and_then(|state| state.parent);
         }
