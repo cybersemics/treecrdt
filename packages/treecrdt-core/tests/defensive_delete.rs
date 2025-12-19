@@ -595,7 +595,10 @@ fn defensive_delete_insert_delete_sequence() {
         0,
     );
     crdt.apply_remote(insert_child).unwrap();
-    assert!(!crdt.is_tombstoned(parent), "Parent should be restored after first insert");
+    assert!(
+        !crdt.is_tombstoned(parent),
+        "Parent should be restored after first insert"
+    );
     assert_eq!(crdt.parent(child), Some(parent));
 
     // Second delete should stay
