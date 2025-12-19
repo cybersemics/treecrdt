@@ -356,3 +356,314 @@ fn concurrent_deletes_then_insert() {
     crdt_a.validate_invariants().unwrap();
     crdt_b.validate_invariants().unwrap();
 }
+
+#[test]
+#[should_panic(expected = "Parent should be restored")]
+fn defensive_delete_parent_then_insert_child_restores_parent() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    let parent_op = crdt_a.local_insert(root, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    let delete_op = crdt_a.local_delete(parent).unwrap();
+    assert!(crdt_a.is_tombstoned(parent));
+
+    // Client B inserts child after deletion - should restore parent
+    let insert_child = Operation::insert(
+        &ReplicaId::new(b"b"),
+        1,
+        delete_op.meta.lamport + 1,
+        parent,
+        child,
+        0,
+    );
+    crdt_b.apply_remote(insert_child.clone()).unwrap();
+
+    crdt_b.apply_remote(delete_op.clone()).unwrap();
+    crdt_a.apply_remote(insert_child).unwrap();
+
+    assert!(!crdt_a.is_tombstoned(parent), "Parent should be restored");
+    assert!(!crdt_b.is_tombstoned(parent), "Parent should be restored");
+    assert_eq!(crdt_a.parent(child), Some(parent));
+    assert_eq!(crdt_b.parent(child), Some(parent));
+    assert_eq!(crdt_a.children(parent).unwrap(), &[child]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[child]);
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Parent should be restored")]
+fn defensive_delete_parent_then_move_child_restores_parent() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+    let other_parent = NodeId(3);
+
+    let parent_op = crdt_a.local_insert(root, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    let other_parent_op = crdt_a.local_insert(root, other_parent, 1).unwrap();
+    crdt_b.apply_remote(other_parent_op).unwrap();
+
+    let child_op = crdt_a.local_insert(other_parent, child, 0).unwrap();
+    crdt_b.apply_remote(child_op).unwrap();
+
+    let delete_op = crdt_a.local_delete(parent).unwrap();
+    assert!(crdt_a.is_tombstoned(parent));
+
+    // Client B moves child after deletion - should restore parent
+    let move_op = Operation::move_node(
+        &ReplicaId::new(b"b"),
+        1,
+        delete_op.meta.lamport + 1,
+        child,
+        parent,
+        0,
+    );
+    crdt_b.apply_remote(move_op.clone()).unwrap();
+
+    crdt_b.apply_remote(delete_op.clone()).unwrap();
+    crdt_a.apply_remote(move_op).unwrap();
+
+    assert!(!crdt_a.is_tombstoned(parent), "Parent should be restored");
+    assert!(!crdt_b.is_tombstoned(parent), "Parent should be restored");
+    assert_eq!(crdt_a.parent(child), Some(parent));
+    assert_eq!(crdt_b.parent(child), Some(parent));
+    assert_eq!(crdt_a.children(parent).unwrap(), &[child]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[child]);
+    assert_eq!(crdt_a.children(other_parent).unwrap(), &[]);
+    assert_eq!(crdt_b.children(other_parent).unwrap(), &[]);
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Parent should be restored")]
+fn defensive_delete_parent_then_multiple_children_restores_parent() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child1 = NodeId(2);
+    let child2 = NodeId(3);
+
+    let parent_op = crdt_a.local_insert(root, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    let delete_op = crdt_a.local_delete(parent).unwrap();
+
+    // Client B inserts children after deletion - should restore parent
+    let insert_child1 = Operation::insert(
+        &ReplicaId::new(b"b"),
+        1,
+        delete_op.meta.lamport + 1,
+        parent,
+        child1,
+        0,
+    );
+    let insert_child2 = Operation::insert(
+        &ReplicaId::new(b"b"),
+        2,
+        delete_op.meta.lamport + 2,
+        parent,
+        child2,
+        1,
+    );
+
+    crdt_b.apply_remote(insert_child1.clone()).unwrap();
+    crdt_b.apply_remote(insert_child2.clone()).unwrap();
+
+    crdt_b.apply_remote(delete_op.clone()).unwrap();
+    crdt_a.apply_remote(insert_child1).unwrap();
+    crdt_a.apply_remote(insert_child2).unwrap();
+
+    assert!(!crdt_a.is_tombstoned(parent), "Parent should be restored");
+    assert!(!crdt_b.is_tombstoned(parent), "Parent should be restored");
+    assert_eq!(crdt_a.parent(child1), Some(parent));
+    assert_eq!(crdt_a.parent(child2), Some(parent));
+    assert_eq!(crdt_b.parent(child1), Some(parent));
+    assert_eq!(crdt_b.parent(child2), Some(parent));
+    assert_eq!(crdt_a.children(parent).unwrap(), &[child1, child2]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[child1, child2]);
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
+fn defensive_delete_insert_then_delete_no_restoration() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    let parent_op = crdt_a.local_insert(root, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    let child_op = crdt_b.local_insert(parent, child, 0).unwrap();
+
+    // Delete happens after insert - no restoration
+    crdt_a.apply_remote(child_op.clone()).unwrap();
+    let delete_op = crdt_a.local_delete(parent).unwrap();
+
+    crdt_b.apply_remote(delete_op).unwrap();
+
+    assert!(crdt_a.is_tombstoned(parent));
+    assert!(crdt_b.is_tombstoned(parent));
+    assert_eq!(crdt_a.parent(child), Some(parent));
+    assert_eq!(crdt_b.parent(child), Some(parent));
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Parent should be restored after first insert")]
+fn defensive_delete_insert_delete_sequence() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    crdt.local_insert(root, parent, 0).unwrap();
+
+    let delete1_op = crdt.local_delete(parent).unwrap();
+    assert!(crdt.is_tombstoned(parent));
+
+    // Insert should restore parent
+    let insert_child = Operation::insert(
+        &ReplicaId::new(b"b"),
+        1,
+        delete1_op.meta.lamport + 1,
+        parent,
+        child,
+        0,
+    );
+    crdt.apply_remote(insert_child).unwrap();
+    assert!(!crdt.is_tombstoned(parent), "Parent should be restored after first insert");
+    assert_eq!(crdt.parent(child), Some(parent));
+
+    // Second delete should stay
+    let _delete2_op = crdt.local_delete(parent).unwrap();
+    assert!(crdt.is_tombstoned(parent));
+    assert_eq!(crdt.parent(child), Some(parent));
+
+    crdt.validate_invariants().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Parent should be restored")]
+fn defensive_delete_multiple_deletes_then_insert_restores_parent() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    let parent_op = crdt_a.local_insert(root, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    // Both clients delete concurrently
+    let delete_a_op = crdt_a.local_delete(parent).unwrap();
+    let delete_a = Operation::delete(
+        &ReplicaId::new(b"a"),
+        delete_a_op.meta.id.counter,
+        delete_a_op.meta.lamport,
+        parent,
+    );
+    let delete_b = Operation::delete(&ReplicaId::new(b"b"), 1, delete_a_op.meta.lamport, parent);
+
+    crdt_a.apply_remote(delete_a.clone()).unwrap();
+    crdt_b.apply_remote(delete_b.clone()).unwrap();
+
+    assert!(crdt_a.is_tombstoned(parent));
+    assert!(crdt_b.is_tombstoned(parent));
+
+    crdt_a.apply_remote(delete_b).unwrap();
+    crdt_b.apply_remote(delete_a.clone()).unwrap();
+
+    // Insert after all deletes - should restore parent
+    let insert_child = Operation::insert(
+        &ReplicaId::new(b"a"),
+        3,
+        delete_a_op.meta.lamport + 1,
+        parent,
+        child,
+        0,
+    );
+    crdt_a.apply_remote(insert_child.clone()).unwrap();
+    crdt_b.apply_remote(insert_child).unwrap();
+
+    assert!(!crdt_a.is_tombstoned(parent), "Parent should be restored");
+    assert!(!crdt_b.is_tombstoned(parent), "Parent should be restored");
+    assert_eq!(crdt_a.parent(child), Some(parent));
+    assert_eq!(crdt_b.parent(child), Some(parent));
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
