@@ -52,7 +52,12 @@ fn delete_marks_tombstone_and_removes_from_parent() {
     crdt.local_delete(child).unwrap();
 
     assert!(crdt.is_tombstoned(child));
+    assert_eq!(crdt.parent(child), Some(NodeId::TRASH));
     assert!(crdt.children(NodeId::ROOT).unwrap().is_empty());
+
+    crdt.local_move(child, NodeId::ROOT, 0).unwrap();
+    assert!(!crdt.is_tombstoned(child));
+    assert_eq!(crdt.parent(child), Some(NodeId::ROOT));
 }
 
 #[test]
