@@ -8,7 +8,7 @@ package treecrdt.sync.v0;
 // - NodeId.bytes MUST be exactly 16 bytes (big-endian u128). ROOT is 16 zero bytes.
 // - TRASH is 16 bytes of 0xFF (big-endian u128::MAX).
 // - ReplicaId.bytes is opaque (may be any length).
-// - OpRef.bytes MUST be exactly 16 bytes, as defined in docs/sync/v0.md.
+// - OpRef.bytes MUST be exactly 16 bytes (IBLT item width); derivation from opId is TBD.
 
 message NodeId {
   bytes bytes = 1;
@@ -31,4 +31,3 @@ message OperationMetadata {
   OperationId id = 1;
   uint64 lamport = 2;
 }
-
