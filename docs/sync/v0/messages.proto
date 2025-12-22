@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package treecrdt.sync.v0;
+
+import "docs/sync/v0/filters.proto";
+import "docs/sync/v0/ops.proto";
+import "docs/sync/v0/types.proto";
+
+message Capability {
+  string name = 1;
+  string value = 2;
+}
+
+message FilterSpec {
+  string id = 1;
+  Filter filter = 2;
+}
+
+message Hello {
+  repeated Capability capabilities = 1;
+  repeated FilterSpec filters = 2;
+  uint64 max_lamport = 3;
+}
+
+message RejectedFilter {
+  string id = 1;
+  ErrorCode reason = 2;
+  string message = 3;
+}
+
+message HelloAck {
+  repeated Capability capabilities = 1;
+  repeated string accepted_filters = 2;
+  repeated RejectedFilter rejected_filters = 3;
+  uint64 max_lamport = 4;
+}
+
+message IbltParams {
+  uint32 k = 1;
+  uint32 cells_total = 2;
+  bytes seed = 3;
+}
+
+message IbltCell {
+  sint32 count = 1;
+  bytes key_sum = 2;
+  bytes value_sum = 3;
+}
+
+message IbltCells {
+  string filter_id = 1;
+  uint32 round = 2;
+  IbltParams iblt = 3;
+  uint32 start_index = 4;
+  repeated IbltCell cells = 5;
+  uint32 batch_index = 6;
+  bool done = 7;
+}
+
+message IbltDecoded {
+  repeated OpRef sender_missing = 1;
+  repeated OpRef receiver_missing = 2;
+}
+
+message IbltNeedMore {
+  uint32 cells_received = 1;
+  uint32 suggested_cells_total = 2;
+}
+
+message IbltFailed {
+  IbltFailureReason reason = 1;
+}
+
+message IbltStatus {
+  string filter_id = 1;
+  uint32 round = 2;
+
+  oneof payload {
+    IbltDecoded decoded = 3;
+    IbltNeedMore need_more = 4;
+    IbltFailed failed = 5;
+  }
+}
+
+enum IbltFailureReason {
+  IBLT_FAILURE_REASON_UNSPECIFIED = 0;
+  MAX_CELLS_EXCEEDED = 1;
+  DECODE_FAILED = 2;
+}
+
+message OpsBatch {
+  string filter_id = 1;
+  repeated Operation ops = 2;
+  bool done = 3;
+}
+
+message Subscribe {
+  string subscription_id = 1;
+  Filter filter = 2;
+}
+
+message SubscribeAck {
+  string subscription_id = 1;
+  uint64 current_lamport = 2;
+}
+
+message Unsubscribe {
+  string subscription_id = 1;
+}
+
+message SyncError {
+  ErrorCode code = 1;
+  string message = 2;
+  string filter_id = 3;
+  string subscription_id = 4;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  UNSUPPORTED_VERSION = 1;
+  FILTER_NOT_SUPPORTED = 2;
+  TOO_MANY_FILTERS = 3;
+  IBLT_DECODE_FAILED = 4;
+  RATE_LIMITED = 5;
+  DOC_NOT_FOUND = 6;
+}
+

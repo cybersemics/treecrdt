@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package treecrdt.sync.v0;
+
+import "docs/sync/v0/types.proto";
+
+// Full sync: all operations for the document.
+message FullSyncFilter {}
+
+// Immediate-children sync: operations required to maintain the view of the
+// direct children of `parent`.
+//
+// Note: `MoveOp` does not include the previous parent, so efficient evaluation
+// typically requires a materialized tree and/or a per-parent op index built at ingest time.
+message ChildrenFilter {
+  NodeId parent = 1;
+}
+
+message Filter {
+  oneof kind {
+    FullSyncFilter all = 1;
+    ChildrenFilter children = 2;
+  }
+}
