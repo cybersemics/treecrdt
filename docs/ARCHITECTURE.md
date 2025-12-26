@@ -30,3 +30,4 @@
 - Transport-agnostic: push/pull batches with causal metadata + optional subtree filters.
 - Progress hooks for UI, resumable checkpoints via lamport/head.
 - Access control enforced at responder using subtree filters and ACL callbacks.
+- Draft protocol: [`sync/v0.md`](sync/v0.md)
