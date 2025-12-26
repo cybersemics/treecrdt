@@ -1,0 +1,36 @@
+{
+  "implementation": "sqlite-node",
+  "storage": "file",
+  "workload": "sync-one-missing-100",
+  "timestamp": "2025-12-25T17:06:02.459Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
+  "name": "sync-one-missing-100",
+  "totalOps": 1,
+  "durationMs": 24.128625000001193,
+  "opsPerSec": 41.44454978267309,
+  "extra": {
+    "opsPerPeer": 100,
+    "missingCounter": 50,
+    "missingNode": "00000000000000000000000000000032",
+    "codewordsPerMessage": 2048,
+    "maxCodewords": 200000,
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      24.128625000001193,
+      25.007416000000376,
+      23.527749999997468
+    ],
+    "p95Ms": 24.919536900000455,
+    "minMs": 23.527749999997468,
+    "maxMs": 25.007416000000376,
+    "count": 1
+  },
+  "sourceFile": "benchmarks/sqlite-node-sync/file-sync-one-missing-100.json"
+}

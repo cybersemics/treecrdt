@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  envInt,
   runBenchmark,
   makeInsertMoveWorkload,
   makeInsertChainWorkload,
@@ -59,6 +60,8 @@ async function main() {
   const opts = parseArgs();
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(__dirname, "../../..");
+  const iterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 3);
+  const warmupIterations = Math.max(0, envInt("BENCH_WARMUP") ?? (iterations > 1 ? 1 : 0));
 
   const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [1, 10, 100, 1000, 10000];
   const workloads = opts.workloads && opts.workloads.length > 0 ? opts.workloads : ["insert-move", "insert-chain"];
@@ -66,6 +69,8 @@ async function main() {
   for (const workloadName of workloads) {
     for (const size of sizes) {
       const workload = makeWorkload(workloadName, size);
+      workload.iterations = iterations;
+      workload.warmupIterations = warmupIterations;
       const adapterFactory = () => createWasmAdapter();
       const result = await runBenchmark(adapterFactory, workload);
 

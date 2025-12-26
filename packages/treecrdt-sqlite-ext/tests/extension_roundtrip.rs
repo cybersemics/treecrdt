@@ -25,6 +25,8 @@ fn append_and_fetch_ops_via_extension() {
         conn.load_extension_enable().unwrap();
         conn.load_extension(ext_path, Some("sqlite3_treecrdt_init")).unwrap();
     }
+    conn.query_row("SELECT treecrdt_set_doc_id('treecrdt-sqlite-ext-test')", [], |row| row.get::<_, i64>(0))
+        .unwrap();
 
     let replica = b"r1".to_vec();
     let parent = node_bytes(0);

@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildAppendOp, buildOpsSince } from "@treecrdt/interface/sqlite";
 import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
+import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
 
 export type LoadOptions = {
   extensionPath?: string;
@@ -51,6 +52,15 @@ export function loadTreecrdtExtension(
 }
 
 export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
+  const stmtCache = new Map<string, any>();
+  const prepare = (sql: string) => {
+    const cached = stmtCache.get(sql);
+    if (cached) return cached;
+    const stmt = db.prepare(sql);
+    stmtCache.set(sql, stmt);
+    return stmt;
+  };
+
   return {
     appendOp: async (op: Operation, serializeNodeId, serializeReplica) => {
       const { meta, kind } = op;
@@ -66,7 +76,7 @@ export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
         acc[idx + 1] = val;
         return acc;
       }, {});
-      db.prepare(sql).get(bindings);
+      prepare(sql).get(bindings);
     },
     appendOps: async (
       ops: Operation[],
@@ -105,30 +115,23 @@ export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
       });
 
       try {
-        db.prepare("SELECT treecrdt_append_ops(?1)").get({ 1: JSON.stringify(payload) });
+        prepare("SELECT treecrdt_append_ops(?1)").get({ 1: JSON.stringify(payload) });
         return;
       } catch {
         // Fallback to transactional single-row inserts.
       }
 
-      const { sql } = buildAppendOp(ops[0].kind, {
-        replica: Buffer.alloc(0),
-        counter: 0,
-        lamport: 0,
-        serializeNodeId,
-      });
-      const stmt = db.prepare(sql);
       const runMany = db.transaction((batch: Operation[]) => {
         for (const op of batch) {
           const { meta, kind } = op;
           const { id, lamport } = meta;
           const { replica, counter } = id;
-          const bindParams = buildAppendOp(kind, {
+          const { sql, params: bindParams } = buildAppendOp(kind, {
             replica: serializeReplica(replica),
             counter,
             lamport,
             serializeNodeId,
-          }).params;
+          });
           const bindings = bindParams.reduce<Record<number, unknown>>(
             (acc, val, idx) => {
               acc[idx + 1] = val;
@@ -136,7 +139,7 @@ export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
             },
             {}
           );
-          stmt.run(bindings);
+          prepare(sql).get(bindings);
         }
       });
       runMany(ops);
@@ -145,13 +148,13 @@ export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
       const { sql, params } = buildOpsSince({
         lamport,
         root,
-        serializeNodeId: (id) => Buffer.from(id),
+        serializeNodeId: nodeIdToBytes16,
       });
       const bindings = params.reduce<Record<number, unknown>>((acc, val, idx) => {
         acc[idx + 1] = val;
         return acc;
       }, {});
-      const row = db.prepare(sql).get(bindings);
+      const row = prepare(sql).get(bindings);
       const json = row?.ops ?? row?.["treecrdt_ops_since(0)"] ?? Object.values(row ?? {})[0];
       return JSON.parse(json);
     },

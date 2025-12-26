@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "packages/treecrdt-core",
+  "packages/treecrdt-riblt-wasm",
   "packages/treecrdt-sqlite-ext",
   "packages/treecrdt-wasm",
 ]

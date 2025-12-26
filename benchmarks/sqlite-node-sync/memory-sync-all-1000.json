@@ -1,0 +1,36 @@
+{
+  "implementation": "sqlite-node",
+  "storage": "memory",
+  "workload": "sync-all-1000",
+  "timestamp": "2025-12-25T17:05:46.891Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
+  "name": "sync-all-1000",
+  "totalOps": 1000,
+  "durationMs": 57.9135839999999,
+  "opsPerSec": 17267.106107610292,
+  "extra": {
+    "opsPerPeer": 1000,
+    "shared": 500,
+    "unique": 500,
+    "codewordsPerMessage": 2048,
+    "maxCodewords": 200000,
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      57.00341700000001,
+      59.76045799999997,
+      57.9135839999999
+    ],
+    "p95Ms": 59.57577059999996,
+    "minMs": 57.00341700000001,
+    "maxMs": 59.76045799999997,
+    "count": 1000
+  },
+  "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-all-1000.json"
+}

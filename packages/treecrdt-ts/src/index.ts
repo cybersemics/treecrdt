@@ -75,3 +75,4 @@ export interface SyncProtocol {
 }
 
 export * from "./adapter.js";
+export * from "./ids.js";

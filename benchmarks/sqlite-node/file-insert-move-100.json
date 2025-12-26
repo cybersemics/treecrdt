@@ -2,14 +2,31 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-04T09:33:43.635Z",
+  "timestamp": "2025-12-25T17:05:41.589Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 2.5791250000000048,
-  "opsPerSec": 77545.67925168405,
+  "durationMs": 10.425332999999966,
+  "opsPerSec": 19184.039493031123,
   "extra": {
     "mode": "batch",
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      11.61062499999997,
+      10.425332999999966,
+      2.176290999999992
+    ],
+    "p95Ms": 11.49209579999997,
+    "minMs": 2.176290999999992,
+    "maxMs": 11.61062499999997,
     "count": 200
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-move-100.json"
+  "sourceFile": "benchmarks/sqlite-node/file-insert-move-100.json"
 }

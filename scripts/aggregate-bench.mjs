@@ -22,7 +22,7 @@ async function walk(dir) {
     const full = path.join(dir, item.name);
     if (item.isDirectory()) {
       entries.push(...(await walk(full)));
-    } else if (item.isFile() && item.name.endsWith(".json")) {
+    } else if (item.isFile() && item.name.endsWith(".json") && item.name !== "summary.json") {
       entries.push(full);
     }
   }
@@ -30,18 +30,22 @@ async function walk(dir) {
 }
 
 function toMarkdown(rows) {
-  const header = ["Implementation", "Storage", "Workload", "Mode", "TotalOps", "Duration (ms)", "Ops/s", "File"];
+  const header = ["Implementation", "Storage", "Workload", "Mode", "Iterations", "TotalOps", "Median (ms)", "P95 (ms)", "Ops/s", "File"];
   const lines = [header.join(" | "), header.map(() => "---").join(" | ")];
   for (const row of rows) {
     const mode = row.extra?.mode ?? "-";
+    const iterations = row.extra?.iterations ?? 1;
+    const p95Ms = row.extra?.p95Ms;
     lines.push(
       [
         row.implementation ?? "-",
         row.storage ?? "-",
         row.workload ?? row.name ?? "-",
         mode,
+        iterations,
         row.totalOps ?? "-",
         row.durationMs?.toFixed?.(2) ?? "-",
+        typeof p95Ms === "number" ? p95Ms.toFixed(2) : "-",
         row.opsPerSec?.toFixed?.(2) ?? "-",
         row.relativePath ?? "-",
       ].join(" | ")
@@ -68,6 +72,17 @@ async function main() {
       console.warn(`Skipping ${file}: ${err}`);
     }
   }
+  rows.sort((a, b) => {
+    const byImplementation = String(a.implementation ?? "").localeCompare(String(b.implementation ?? ""));
+    if (byImplementation) return byImplementation;
+    const byStorage = String(a.storage ?? "").localeCompare(String(b.storage ?? ""));
+    if (byStorage) return byStorage;
+    const byWorkload = String(a.workload ?? a.name ?? "").localeCompare(String(b.workload ?? b.name ?? ""));
+    if (byWorkload) return byWorkload;
+    const byMode = String(a.extra?.mode ?? "").localeCompare(String(b.extra?.mode ?? ""));
+    if (byMode) return byMode;
+    return String(a.relativePath ?? "").localeCompare(String(b.relativePath ?? ""));
+  });
   await fs.mkdir(benchRoot, { recursive: true });
   const summaryJson = path.join(benchRoot, "summary.json");
   const summaryMd = path.join(benchRoot, "summary.md");

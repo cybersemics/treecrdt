@@ -1,8 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Operation, OperationKind } from "@treecrdt/interface";
+import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
+import { SyncPeer, treecrdtSyncV0ProtobufCodec, type Filter } from "@treecrdt/sync";
+import type { DuplexTransport } from "@treecrdt/sync/transport";
+
+import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceMessage } from "./sync-v0";
 
 const ROOT_ID = "00000000000000000000000000000000"; // 16-byte zero, hex-encoded
 
@@ -28,12 +33,15 @@ type DerivedTree = {
 type Status = "booting" | "ready" | "error";
 type StorageMode = "memory" | "opfs";
 
+type PeerInfo = { id: string; lastSeen: number };
+
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const clientRef = useRef<TreecrdtClient | null>(null);
   const [ops, setOps] = useState<Operation[]>([]);
   const [status, setStatus] = useState<Status>("booting");
   const [error, setError] = useState<string | null>(null);
+  const [docId, setDocId] = useState<string>(() => initialDocId());
   const [storage, setStorage] = useState<StorageMode>(() => initialStorage());
   const [sessionKey, setSessionKey] = useState<string>(() =>
     initialStorage() === "opfs" ? ensureOpfsKey() : makeSessionKey()
@@ -41,12 +49,19 @@ export default function App() {
   const [parentChoice, setParentChoice] = useState(ROOT_ID);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [nodeCount, setNodeCount] = useState(1);
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
   const replicaId = useMemo(pickReplicaId, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
+
+  const syncConnRef = useRef<
+    Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>
+  >(new Map());
 
   const { root, index, childrenByParent } = useMemo(() => rebuildTree(ops), [ops]);
 
@@ -101,6 +116,95 @@ export default function App() {
   }, [storage]);
 
   useEffect(() => {
+    persistDocId(docId);
+  }, [docId]);
+
+  useEffect(() => {
+    if (!client || status !== "ready") return;
+    if (!docId) return;
+    if (typeof BroadcastChannel === "undefined") {
+      setSyncError("BroadcastChannel is not available in this environment.");
+      return;
+    }
+
+    const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
+    const backend = createPlaygroundBackend(client, docId);
+    const connections = new Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>();
+    const lastSeen = new Map<string, number>();
+    syncConnRef.current = connections;
+
+    const updatePeers = () => {
+      setPeers(
+        Array.from(lastSeen.entries())
+          .map(([id, ts]) => ({ id, lastSeen: ts }))
+          .sort((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1))
+      );
+    };
+
+    const ensureConnection = (peerId: string) => {
+      if (!peerId || peerId === replicaId) return;
+      if (connections.has(peerId)) return;
+
+      const transport = createBroadcastDuplex<Operation>(
+        channel,
+        replicaId,
+        peerId,
+        treecrdtSyncV0ProtobufCodec
+      );
+      const peer = new SyncPeer<Operation>(backend);
+      const detach = peer.attach(transport);
+      connections.set(peerId, { transport, peer, detach });
+    };
+
+    const onPresence = (ev: MessageEvent<any>) => {
+      const data = ev.data as unknown;
+      if (!data || typeof data !== "object") return;
+      const msg = data as Partial<PresenceMessage>;
+      if (msg.t !== "presence") return;
+      if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
+      if (msg.peer_id === replicaId) return;
+      lastSeen.set(msg.peer_id, msg.ts);
+      ensureConnection(msg.peer_id);
+      updatePeers();
+    };
+
+    channel.addEventListener("message", onPresence);
+
+    const sendPresence = () => {
+      const msg: PresenceMessage = { t: "presence", peer_id: replicaId, ts: Date.now() };
+      channel.postMessage(msg);
+    };
+
+    sendPresence();
+    const interval = window.setInterval(sendPresence, 1000);
+    const pruneInterval = window.setInterval(() => {
+      const now = Date.now();
+      for (const [id, ts] of lastSeen) {
+        if (now - ts > 5000) {
+          lastSeen.delete(id);
+          const conn = connections.get(id);
+          if (conn) {
+            conn.detach();
+            connections.delete(id);
+          }
+        }
+      }
+      updatePeers();
+    }, 2000);
+
+    return () => {
+      window.clearInterval(interval);
+      window.clearInterval(pruneInterval);
+      channel.removeEventListener("message", onPresence);
+      channel.close();
+
+      for (const conn of connections.values()) conn.detach();
+      connections.clear();
+      setPeers([]);
+    };
+  }, [client, docId, replicaId, status]);
+
+  useEffect(() => {
     counterRef.current = Math.max(counterRef.current, findMaxCounter(ops));
     lamportRef.current = Math.max(lamportRef.current, headLamport);
   }, [ops, headLamport]);
@@ -126,6 +230,7 @@ export default function App() {
         baseUrl,
         preferWorker: storageMode === "opfs",
         filename,
+        docId,
       });
       clientRef.current = c;
       setClient(c);
@@ -163,7 +268,7 @@ export default function App() {
     const active = nextClient ?? client;
     if (!active) return;
     try {
-      const fetched = await active.opsSince(0);
+      const fetched = await active.ops.all();
       const sorted = [...fetched].sort(
         (a, b) => a.meta.lamport - b.meta.lamport || a.meta.id.counter - b.meta.id.counter
       );
@@ -189,7 +294,7 @@ export default function App() {
         },
         kind,
       };
-      await client.append(op);
+      await client.ops.append(op);
       await refreshOps(undefined, { preserveParent: true });
     } catch (err) {
       console.error("Failed to append op", err);
@@ -217,13 +322,7 @@ export default function App() {
         };
         ops.push(op);
       }
-      if (client.appendMany) {
-        await client.appendMany(ops);
-      } else {
-        for (const op of ops) {
-          await client.append(op);
-        }
-      }
+      await client.ops.appendMany(ops);
       await refreshOps(undefined, { preserveParent: true });
     } catch (err) {
       console.error("Failed to add nodes", err);
@@ -257,6 +356,28 @@ export default function App() {
     if (nodeId === ROOT_ID) return;
     const position = childrenByParent[ROOT_ID]?.length ?? 0;
     await appendOperation({ type: "move", node: nodeId, newParent: ROOT_ID, position });
+  };
+
+  const handleSync = async (filter: Filter) => {
+    const connections = syncConnRef.current;
+    if (connections.size === 0) {
+      setSyncError("No peers discovered yet.");
+      return;
+    }
+
+    setSyncBusy(true);
+    setSyncError(null);
+    try {
+      for (const conn of connections.values()) {
+        await conn.peer.syncOnce(conn.transport, filter, { maxCodewords: 50_000, codewordsPerMessage: 512 });
+      }
+      await refreshOps(undefined, { preserveParent: true });
+    } catch (err) {
+      console.error("Sync failed", err);
+      setSyncError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncBusy(false);
+    }
   };
 
   const handleReset = async () => {
@@ -450,6 +571,67 @@ export default function App() {
         </section>
 
         <aside className="space-y-3 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 shadow-inner shadow-black/30 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Sync</div>
+              <span className="text-[10px] text-slate-500">v0 draft</span>
+            </div>
+            <div className="text-xs text-slate-400">
+              Doc: <span className="font-mono text-slate-200">{docId}</span>
+            </div>
+            <label className="block text-xs text-slate-400">
+              <span className="mb-1 block">Doc ID</span>
+              <input
+                className="w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 font-mono text-xs text-slate-100 outline-none focus:border-accent"
+                value={docId}
+                readOnly
+                disabled
+                title="Doc ID is part of opRef hashing; change via ?doc=... and reset session."
+              />
+            </label>
+            <div className="text-xs text-slate-400">
+              Peer: <span className="font-mono text-slate-200">{replicaId}</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                onClick={() => void handleSync({ all: {} })}
+                disabled={status !== "ready" || busy || syncBusy}
+              >
+                Sync all
+              </button>
+              <button
+                className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                onClick={() => void handleSync({ children: { parent: hexToBytes16(parentChoice) } })}
+                disabled={status !== "ready" || busy || syncBusy}
+                title={`children(parent=${parentChoice})`}
+              >
+                Sync children
+              </button>
+            </div>
+            <div className="text-xs text-slate-400">
+              Peers: <span className="font-mono text-slate-200">{peers.length}</span>
+            </div>
+            {peers.length === 0 ? (
+              <div className="text-xs text-slate-500">
+                Open another playground tab with a different `?replica=` and the same `?doc=`.
+              </div>
+            ) : (
+              <div className="max-h-32 overflow-auto pr-1 text-xs">
+                {peers.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between gap-2 py-1">
+                    <span className="font-mono text-slate-200">{p.id}</span>
+                    <span className="text-[10px] text-slate-500">{Math.max(0, Date.now() - p.lastSeen)}ms</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {syncError && (
+              <div className="rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
+                {syncError}
+              </div>
+            )}
+          </div>
           <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Operations</div>
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span>Ops: {ops.length}</span>
@@ -695,6 +877,8 @@ function findMaxCounter(ops: Operation[]): number {
 
 function pickReplicaId(): string {
   if (typeof window === "undefined") return `replica-${Math.random().toString(16).slice(2, 6)}`;
+  const override = new URLSearchParams(window.location.search).get("replica");
+  if (override && override.trim()) return override.trim();
   const key = "treecrdt-playground-replica";
   const existing = window.localStorage.getItem(key);
   if (existing) return existing;
@@ -707,6 +891,28 @@ function initialStorage(): StorageMode {
   if (typeof window === "undefined") return "memory";
   const param = new URLSearchParams(window.location.search).get("storage");
   return param === "opfs" ? "opfs" : "memory";
+}
+
+function initialDocId(): string {
+  if (typeof window === "undefined") return "treecrdt-playground";
+  const param = new URLSearchParams(window.location.search).get("doc");
+  if (param && param.trim()) return param.trim();
+  const key = "treecrdt-playground-doc";
+  const existing = window.localStorage.getItem(key);
+  if (existing) return existing;
+  const next = "treecrdt-playground";
+  window.localStorage.setItem(key, next);
+  return next;
+}
+
+function persistDocId(docId: string) {
+  if (typeof window === "undefined") return;
+  const key = "treecrdt-playground-doc";
+  window.localStorage.setItem(key, docId);
+  const url = new URL(window.location.href);
+  if (docId) url.searchParams.set("doc", docId);
+  else url.searchParams.delete("doc");
+  window.history.replaceState({}, "", url);
 }
 
 function persistStorage(mode: StorageMode) {
@@ -724,13 +930,6 @@ function makeNodeId(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   return bytesToHex(bytes);
-}
-
-function bytesToHex(bytes: number[] | Uint8Array): string {
-  const view = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-  return Array.from(view)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 function makeSessionKey(): string {

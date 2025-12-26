@@ -2,14 +2,29 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-04T09:33:40.592Z",
+  "timestamp": "2025-12-26T06:42:31.887Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 10,
-  "opsPerSec": 20000,
+  "durationMs": 50.69999980926514,
+  "opsPerSec": 3944.7731903827566,
   "extra": {
     "mode": "batch",
+    "iterations": 1,
+    "warmupIterations": 0,
+    "samplesMs": [
+      50.69999980926514
+    ],
+    "p95Ms": 50.69999980926514,
+    "minMs": 50.69999980926514,
+    "maxMs": 50.69999980926514,
     "count": 200
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-move-100.json"
+  "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-move-100.json"
 }

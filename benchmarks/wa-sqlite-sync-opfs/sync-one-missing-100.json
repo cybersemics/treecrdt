@@ -1,0 +1,36 @@
+{
+  "implementation": "wa-sqlite",
+  "storage": "browser-opfs-coop-sync",
+  "workload": "sync-one-missing-100",
+  "timestamp": "2025-12-26T06:43:02.481Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
+  "name": "sync-one-missing-100",
+  "totalOps": 1,
+  "durationMs": 34.69999980926514,
+  "opsPerSec": 28.818443962440405,
+  "extra": {
+    "opsPerPeer": 100,
+    "missingCounter": 50,
+    "missingNode": "00000000000000000000000000000032",
+    "codewordsPerMessage": 2048,
+    "maxCodewords": 200000,
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      34.90000009536743,
+      34.69999980926514,
+      28.09999990463257
+    ],
+    "p95Ms": 34.880000066757205,
+    "minMs": 28.09999990463257,
+    "maxMs": 34.90000009536743,
+    "count": 1
+  },
+  "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-one-missing-100.json"
+}

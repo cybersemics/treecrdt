@@ -12,6 +12,7 @@
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.13",
     "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"

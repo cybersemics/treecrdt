@@ -2,14 +2,29 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "replay-log-100",
-  "timestamp": "2025-12-04T09:33:40.879Z",
+  "timestamp": "2025-12-26T06:42:30.112Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "replay-log-100",
   "totalOps": 100,
-  "durationMs": 7.1000001430511475,
-  "opsPerSec": 14084.50675847819,
+  "durationMs": 23.399999618530273,
+  "opsPerSec": 4273.504343171476,
   "extra": {
     "mode": "batch",
+    "iterations": 1,
+    "warmupIterations": 0,
+    "samplesMs": [
+      23.399999618530273
+    ],
+    "p95Ms": 23.399999618530273,
+    "minMs": 23.399999618530273,
+    "maxMs": 23.399999618530273,
     "count": 100
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/replay-log-100.json"
+  "sourceFile": "benchmarks/wa-sqlite-opfs/replay-log-100.json"
 }

@@ -1,0 +1,16 @@
+[package]
+name = "treecrdt-riblt-wasm"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "WASM bridge for Rateless IBLT (riblt) used by TreeCRDT sync."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+riblt = { git = "https://github.com/Intersubjective/riblt-rust", rev = "23cd9ce6467743bee8c1c734630e461dbed310e5" }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+

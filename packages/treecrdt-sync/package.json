@@ -1,0 +1,38 @@
+{
+  "name": "@treecrdt/sync",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./transport": {
+      "import": "./dist/transport.js",
+      "types": "./dist/transport.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "pnpm -C ../treecrdt-ts run build && pnpm -C ../treecrdt-riblt-wasm-js run build && tsc -p tsconfig.json",
+    "test": "pnpm -C ../treecrdt-riblt-wasm-js run build && pnpm -C ../treecrdt-benchmark run build && pnpm run build && vitest run"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.10.2",
+    "@noble/hashes": "^1.8.0",
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/riblt-wasm": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.25",
+    "@treecrdt/benchmark": "workspace:*",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  }
+}

@@ -4,7 +4,8 @@ import Database from "better-sqlite3";
 import { fileURLToPath } from "node:url";
 import {
   buildWorkloads,
-  runWorkloads,
+  envInt,
+  runBenchmark,
   writeResult,
   type WorkloadName,
 } from "@treecrdt/benchmark";
@@ -77,35 +78,41 @@ async function main() {
       ? opts.workloads
       : (["insert-move", "insert-chain", "replay-log"] as WorkloadName[]);
   const workloadDefs = buildWorkloads(workloads, sizes);
+  const iterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 3);
+  const warmupIterations = Math.max(0, envInt("BENCH_WARMUP") ?? (iterations > 1 ? 1 : 0));
+  for (const w of workloadDefs) {
+    w.iterations = iterations;
+    w.warmupIterations = warmupIterations;
+  }
   const storages =
     opts.storages && opts.storages.length > 0 ? opts.storages : (opts.storage ? [opts.storage, "file"] : ["memory", "file"]);
 
   for (const workload of workloadDefs) {
     for (const storage of storages) {
-      const dbPath =
-        storage === "memory"
-          ? ":memory:"
-          : path.join(repoRoot, "tmp", "sqlite-node-bench", `${workload.name}.db`);
-      if (storage === "file") {
-        await fs.mkdir(path.dirname(dbPath), { recursive: true });
-        // remove stale db to avoid reusing data across runs
-        try {
-          await fs.rm(dbPath);
-        } catch {
-          // ignore
+      const adapterFactory = async () => {
+        const dbPath =
+          storage === "memory"
+            ? ":memory:"
+            : path.join(repoRoot, "tmp", "sqlite-node-bench", `${workload.name}-${crypto.randomUUID()}.db`);
+        if (storage === "file") {
+          await fs.mkdir(path.dirname(dbPath), { recursive: true });
         }
-      }
 
-      const db = new Database(dbPath);
-      loadTreecrdtExtension(db);
-      const adapter = {
-        ...createSqliteNodeAdapter(db),
-        close: async () => {
-          db.close();
-        },
+        const db = new Database(dbPath);
+        loadTreecrdtExtension(db);
+        db.prepare("SELECT treecrdt_set_doc_id(?)").get("treecrdt-sqlite-node-bench");
+        return {
+          ...createSqliteNodeAdapter(db),
+          close: async () => {
+            db.close();
+            if (storage === "file") {
+              await fs.rm(dbPath).catch(() => {});
+            }
+          },
+        };
       };
 
-      const [result] = await runWorkloads(() => adapter, [workload]);
+      const result = await runBenchmark(adapterFactory, workload);
 
       const outFile =
         opts.outFile ??
@@ -118,10 +125,6 @@ async function main() {
         extra: { count: result.totalOps },
       });
       console.log(JSON.stringify(payload, null, 2));
-
-      if (adapter.close) {
-        await adapter.close();
-      }
     }
   }
 }

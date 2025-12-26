@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package treecrdt.sync.v0;
 
-import "docs/sync/v0/types.proto";
+import "sync/v0/types.proto";
 
 // Full sync: all operations for the document.
 message FullSyncFilter {}

@@ -1,3 +1,4 @@
 node_modules
 dist
 public/wa-sqlite/
+public/base-path/

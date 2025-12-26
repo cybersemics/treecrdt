@@ -1,16 +1,40 @@
-import { createWaSqliteAdapter, opsSince as opsSinceRaw, appendOp as appendOpRaw, type Database } from "./index.js";
+import {
+  createWaSqliteAdapter,
+  opsSince as opsSinceRaw,
+  appendOp as appendOpRaw,
+  opRefsAll as opRefsAllRaw,
+  opRefsChildren as opRefsChildrenRaw,
+  opsByOpRefs as opsByOpRefsRaw,
+  setDocId as setDocIdRaw,
+  type Database,
+} from "./index.js";
 import { createOpfsVfs, detectOpfsSupport } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
+import { decodeNodeId, decodeReplicaId, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 
 export type StorageMode = "memory" | "opfs";
 export type ClientMode = "direct" | "worker";
 
+export type TreecrdtOpsApi = {
+  append: (op: Operation) => Promise<void>;
+  appendMany: (ops: Operation[]) => Promise<void>;
+  all: () => Promise<Operation[]>;
+  since: (lamport: number, root?: string) => Promise<Operation[]>;
+  children: (parent: string) => Promise<Operation[]>;
+  get: (opRefs: Uint8Array[]) => Promise<Operation[]>;
+};
+
+export type TreecrdtOpRefsApi = {
+  all: () => Promise<Uint8Array[]>;
+  children: (parent: string) => Promise<Uint8Array[]>;
+};
+
 export type TreecrdtClient = {
   mode: ClientMode;
   storage: StorageMode;
-  append: (op: Operation) => Promise<void>;
-  appendMany?: (ops: Operation[]) => Promise<void>;
-  opsSince: (lamport: number) => Promise<Operation[]>;
+  docId: string;
+  ops: TreecrdtOpsApi;
+  opRefs: TreecrdtOpRefsApi;
   close: () => Promise<void>;
 };
 
@@ -19,14 +43,13 @@ export type ClientOptions = {
   baseUrl?: string; // where wa-sqlite assets live; defaults to import.meta.env.BASE_URL + wa-sqlite/
   filename?: string; // only for opfs; defaults to /treecrdt-playground.db
   preferWorker?: boolean; // when true (default for opfs), use a worker instead of main-thread SQLite
+  docId?: string; // used for v0 sync opRef derivation inside the extension
 };
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<TreecrdtClient> {
   const storage = opts.storage === "memory" ? "memory" : opts.storage === "opfs" ? "opfs" : "auto";
   const requireOpfs = opts.storage === "opfs";
+  const docId = opts.docId ?? "treecrdt";
   const rawBase =
     opts.baseUrl ??
     (typeof import.meta !== "undefined" && (import.meta as any).env?.BASE_URL ? (import.meta as any).env.BASE_URL : "/");
@@ -39,7 +62,7 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
   // If OPFS requested, default to worker path to avoid main-thread sync handles.
   if (shouldUseOpfs) {
     if (preferWorker) {
-      return createWorkerClient({ baseUrl, filename: opts.filename, storage: "opfs", requireOpfs });
+      return createWorkerClient({ baseUrl, filename: opts.filename, storage: "opfs", requireOpfs, docId });
     }
     if (!support.available) {
       throw new Error(`OPFS unavailable in this environment: ${support.reason ?? "unknown reason"}`);
@@ -47,7 +70,13 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
   }
 
   // Direct path.
-  return createDirectClient({ baseUrl, filename: opts.filename, storage: shouldUseOpfs ? "opfs" : "memory", requireOpfs });
+  return createDirectClient({
+    baseUrl,
+    filename: opts.filename,
+    storage: shouldUseOpfs ? "opfs" : "memory",
+    requireOpfs,
+    docId,
+  });
 }
 
 // --- Worker client
@@ -65,7 +94,7 @@ type WorkerResp = {
   error?: string;
 };
 
-type WorkerInit = { baseUrl: string; filename?: string; storage: StorageMode };
+type WorkerInit = { baseUrl: string; filename?: string; storage: StorageMode; docId: string };
 
 type WorkerProxy = {
   postMessage(msg: WorkerReq, transfer?: Transferable[]): void;
@@ -78,6 +107,7 @@ async function createWorkerClient(opts: {
   baseUrl: string;
   filename?: string;
   storage: StorageMode;
+  docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
   // Keep the URL inline so Vite detects and bundles the worker properly.
@@ -116,6 +146,7 @@ async function createWorkerClient(opts: {
     baseUrl: opts.baseUrl,
     filename: opts.filename,
     storage: opts.storage,
+    docId: opts.docId,
   } satisfies WorkerInit)) as { storage?: StorageMode; opfsError?: string } | undefined;
   const effectiveStorage: StorageMode = initResult?.storage === "opfs" ? "opfs" : "memory";
   if (opts.requireOpfs && effectiveStorage !== "opfs") {
@@ -132,12 +163,27 @@ async function createWorkerClient(opts: {
     throw new Error(`OPFS requested but could not be initialized${reason}`);
   }
 
+  const opsSinceImpl = (lamport: number, root?: string) =>
+    call("opsSince", { lamport, root }).then((rows) => parseOps(rows as any[]));
+  const opRefsAllImpl = () => call("opRefsAll").then((rows) => parseOpRefs(rows as any[]));
+  const opRefsChildrenImpl = (parent: string) =>
+    call("opRefsChildren", { parent }).then((rows) => parseOpRefs(rows as any[]));
+  const opsByOpRefsImpl = (opRefs: Uint8Array[]) =>
+    call("opsByOpRefs", { opRefs: opRefs.map((r) => Array.from(r)) }).then((rows) => parseOps(rows as any[]));
+
   return {
     mode: "worker",
     storage: effectiveStorage,
-    append: (op) => call("append", { op }),
-    appendMany: (ops) => call("appendMany", { ops }),
-    opsSince: (lamport) => call("opsSince", { lamport }).then((rows) => parseOps(rows as any[])),
+    docId: opts.docId,
+    ops: {
+      append: (op) => call("append", { op }),
+      appendMany: (ops) => call("appendMany", { ops }),
+      all: () => opsSinceImpl(0),
+      since: opsSinceImpl,
+      children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),
+      get: opsByOpRefsImpl,
+    },
+    opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
     close: async () => {
       try {
         if (!terminalError) await call("close");
@@ -156,6 +202,7 @@ async function createDirectClient(opts: {
   baseUrl: string;
   filename?: string;
   storage: StorageMode;
+  docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
   const { baseUrl, filename: filenameOpt, storage, requireOpfs } = opts;
@@ -184,6 +231,7 @@ async function createDirectClient(opts: {
   const filename = finalStorage === "opfs" ? filenameOpt ?? "/treecrdt.db" : ":memory:";
   const handle = await sqlite3.open_v2(filename);
   const db = makeDbAdapter(sqlite3, handle);
+  await setDocIdRaw(db, opts.docId);
   const adapter = createWaSqliteAdapter(db);
   const wrapError = (stage: string, err: unknown) =>
     new Error(
@@ -196,33 +244,66 @@ async function createDirectClient(opts: {
       })
     );
 
+  const appendImpl = async (op: Operation) => {
+    try {
+      await appendOpRaw(db, op, nodeIdToBytes16, encodeReplica);
+    } catch (err) {
+      throw wrapError("append", err);
+    }
+  };
+  const appendManyImpl = async (ops: Operation[]) => {
+    try {
+      await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
+    } catch (err) {
+      throw wrapError("appendMany", err);
+    }
+  };
+  const opsSinceImpl = async (lamport: number, root?: string) => {
+    try {
+      const rows = await opsSinceRaw(db, { lamport, root });
+      return parseOps(rows as any[]);
+    } catch (err) {
+      throw wrapError("opsSince", err);
+    }
+  };
+  const opRefsAllImpl = async () => {
+    try {
+      const rows = await opRefsAllRaw(db);
+      return parseOpRefs(rows as any[]);
+    } catch (err) {
+      throw wrapError("opRefsAll", err);
+    }
+  };
+  const opRefsChildrenImpl = async (parent: string) => {
+    try {
+      const rows = await opRefsChildrenRaw(db, nodeIdToBytes16(parent));
+      return parseOpRefs(rows as any[]);
+    } catch (err) {
+      throw wrapError("opRefsChildren", err);
+    }
+  };
+  const opsByOpRefsImpl = async (opRefs: Uint8Array[]) => {
+    try {
+      const rows = await opsByOpRefsRaw(db, opRefs);
+      return parseOps(rows as any[]);
+    } catch (err) {
+      throw wrapError("opsByOpRefs", err);
+    }
+  };
+
   return {
     mode: "direct",
     storage: finalStorage,
-    append: async (op) => {
-      try {
-        await appendOpRaw(db, op, encodeNodeId, encodeReplica);
-      } catch (err) {
-        throw wrapError("append", err);
-      }
+    docId: opts.docId,
+    ops: {
+      append: appendImpl,
+      appendMany: appendManyImpl,
+      all: () => opsSinceImpl(0),
+      since: opsSinceImpl,
+      children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),
+      get: opsByOpRefsImpl,
     },
-    appendMany: adapter.appendOps
-      ? async (ops) => {
-          try {
-            await adapter.appendOps!(ops, encodeNodeId, encodeReplica);
-          } catch (err) {
-            throw wrapError("appendMany", err);
-          }
-        }
-      : undefined,
-    opsSince: async (lamport) => {
-      try {
-        const rows = await opsSinceRaw(db, { lamport });
-        return parseOps(rows as any[]);
-      } catch (err) {
-        throw wrapError("opsSince", err);
-      }
-    },
+    opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
     close: async () => {
       if (db.close) await db.close();
     },
@@ -231,43 +312,17 @@ async function createDirectClient(opts: {
 
 // --- helpers
 
-function encodeNodeId(id: string): Uint8Array {
-  // treat id as hex string
-  const clean = id.startsWith("0x") ? id.slice(2) : id;
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < clean.length; i += 2) {
-    bytes[i / 2] = parseInt(clean.slice(i, i + 2), 16);
-  }
-  return bytes;
+function encodeReplica(replica: Operation["meta"]["id"]["replica"]): Uint8Array {
+  return replicaIdToBytes(replica);
 }
 
-function encodeReplica(replica: Operation["meta"]["id"]["replica"]): Uint8Array {
-  return typeof replica === "string" ? encoder.encode(replica) : replica;
+function parseOpRefs(raw: any[]): Uint8Array[] {
+  return raw.map((val) => (val instanceof Uint8Array ? val : Uint8Array.from(val)));
 }
 
 function parseOps(raw: any[]): Operation[] {
-  const decodeNode = (val: any) => {
-    if (val === null || val === undefined) return "";
-    if (typeof val === "number") {
-      return BigInt(val).toString(16).padStart(32, "0");
-    }
-    if (typeof val === "string") {
-      const clean = val.trim();
-      const looksHex = /^[0-9a-fA-F]{32}$/.test(clean);
-      if (looksHex) return clean.toLowerCase();
-      if (/^\d+$/.test(clean)) {
-        return BigInt(clean).toString(16).padStart(32, "0");
-      }
-      return clean;
-    }
-    const bytes = val instanceof Uint8Array ? val : Uint8Array.from(val);
-    return bytesToHex(bytes);
-  };
-  const decodeReplica = (val: any) => {
-    if (val === null || val === undefined) return "";
-    if (typeof val === "string") return val;
-    return decoder.decode(val instanceof Uint8Array ? val : Uint8Array.from(val));
-  };
+  const decodeNode = decodeNodeId;
+  const decodeReplica = decodeReplicaId;
   return raw.map((row) => {
     const replica = decodeReplica(row.replica);
     const base = { meta: { id: { replica, counter: row.counter }, lamport: row.lamport } } as Operation;
@@ -288,13 +343,6 @@ function parseOps(raw: any[]): Operation[] {
     }
     return { ...base, kind: { type: "tombstone", node: decodeNode(row.node) } } as Operation;
   });
-}
-
-function bytesToHex(bytes: Uint8Array | number[]): string {
-  const view = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-  return Array.from(view)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 function makeDbAdapter(sqlite3: any, handle: number): Database {

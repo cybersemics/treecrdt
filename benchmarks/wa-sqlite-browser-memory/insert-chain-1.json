@@ -2,14 +2,29 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "insert-chain-1",
-  "timestamp": "2025-12-04T09:33:40.593Z",
+  "timestamp": "2025-12-26T06:42:31.889Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-chain-1",
   "totalOps": 1,
-  "durationMs": 0.7999999523162842,
-  "opsPerSec": 1250.0000745058105,
+  "durationMs": 1.0999999046325684,
+  "opsPerSec": 909.0909879069752,
   "extra": {
     "mode": "batch",
+    "iterations": 1,
+    "warmupIterations": 0,
+    "samplesMs": [
+      1.0999999046325684
+    ],
+    "p95Ms": 1.0999999046325684,
+    "minMs": 1.0999999046325684,
+    "maxMs": 1.0999999046325684,
     "count": 1
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-chain-1.json"
+  "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-chain-1.json"
 }

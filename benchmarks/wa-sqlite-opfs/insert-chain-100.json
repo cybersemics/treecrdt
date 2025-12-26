@@ -2,14 +2,29 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "insert-chain-100",
-  "timestamp": "2025-12-04T09:33:40.877Z",
+  "timestamp": "2025-12-26T06:42:30.082Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-chain-100",
   "totalOps": 100,
-  "durationMs": 7.300000190734863,
-  "opsPerSec": 13698.629779067634,
+  "durationMs": 27.59999990463257,
+  "opsPerSec": 3623.1884183164557,
   "extra": {
     "mode": "batch",
+    "iterations": 1,
+    "warmupIterations": 0,
+    "samplesMs": [
+      27.59999990463257
+    ],
+    "p95Ms": 27.59999990463257,
+    "minMs": 27.59999990463257,
+    "maxMs": 27.59999990463257,
     "count": 100
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-chain-100.json"
+  "sourceFile": "benchmarks/wa-sqlite-opfs/insert-chain-100.json"
 }

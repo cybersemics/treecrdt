@@ -2,14 +2,31 @@
   "implementation": "sqlite-node",
   "storage": "memory",
   "workload": "replay-log-1000",
-  "timestamp": "2025-12-04T09:33:44.148Z",
+  "timestamp": "2025-12-25T17:05:44.781Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "replay-log-1000",
   "totalOps": 1000,
-  "durationMs": 5.742959000000042,
-  "opsPerSec": 174126.26487495255,
+  "durationMs": 25.349459000000024,
+  "opsPerSec": 39448.573636226276,
   "extra": {
     "mode": "batch",
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      52.64833399999998,
+      25.349459000000024,
+      7.218417000000045
+    ],
+    "p95Ms": 49.91844649999998,
+    "minMs": 7.218417000000045,
+    "maxMs": 52.64833399999998,
     "count": 1000
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-replay-log-1000.json"
+  "sourceFile": "benchmarks/sqlite-node/memory-replay-log-1000.json"
 }

@@ -1,4 +1,5 @@
 import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
+import { bytesToHex, normalizeNodeId } from "@treecrdt/interface/ids";
 import { WasmTree } from "../pkg/treecrdt_wasm.js";
 
 type LoadOptions = {
@@ -32,15 +33,7 @@ type JsOp = {
 };
 
 function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function normalizeHex(id: string): string {
-  const clean = id.startsWith("0x") ? id.slice(2) : id;
-  const padded = clean.length % 2 === 0 ? clean : `0${clean}`;
-  return padded.toLowerCase();
+  return bytesToHex(bytes);
 }
 
 function toJsOp(
@@ -59,29 +52,29 @@ function toJsOp(
       return {
         ...base,
         kind: "insert",
-        parent: normalizeHex(op.kind.parent),
-        node: normalizeHex(op.kind.node),
+        parent: normalizeNodeId(op.kind.parent),
+        node: normalizeNodeId(op.kind.node),
         position: op.kind.position,
       };
     case "move":
       return {
         ...base,
         kind: "move",
-        node: normalizeHex(op.kind.node),
-        new_parent: normalizeHex(op.kind.newParent),
+        node: normalizeNodeId(op.kind.node),
+        new_parent: normalizeNodeId(op.kind.newParent),
         position: op.kind.position,
       };
     case "delete":
       return {
         ...base,
         kind: "delete",
-        node: normalizeHex(op.kind.node),
+        node: normalizeNodeId(op.kind.node),
       };
     case "tombstone":
       return {
         ...base,
         kind: "tombstone",
-        node: normalizeHex(op.kind.node),
+        node: normalizeNodeId(op.kind.node),
       };
     default:
       throw new Error("unknown op kind");

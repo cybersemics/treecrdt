@@ -2,14 +2,31 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "replay-log-100",
-  "timestamp": "2025-12-04T09:33:44.142Z",
+  "timestamp": "2025-12-25T17:05:44.679Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "replay-log-100",
   "totalOps": 100,
-  "durationMs": 1.2148750000000064,
-  "opsPerSec": 82312.9951641111,
+  "durationMs": 3.8292089999999916,
+  "opsPerSec": 26115.05404902167,
   "extra": {
     "mode": "batch",
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      1.0292090000002645,
+      4.436708000000181,
+      3.8292089999999916
+    ],
+    "p95Ms": 4.375958100000162,
+    "minMs": 1.0292090000002645,
+    "maxMs": 4.436708000000181,
     "count": 100
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-replay-log-100.json"
+  "sourceFile": "benchmarks/sqlite-node/file-replay-log-100.json"
 }

@@ -37,11 +37,13 @@ async function createAdapter(
   const effectiveBase =
     baseUrl ??
     (typeof self !== "undefined" && "location" in self ? new URL("/", (self as any).location.href).href : "/");
+  const filename = clientStorage === "opfs" ? `/bench-${crypto.randomUUID()}.db` : undefined;
+  const docId = `bench-${crypto.randomUUID()}`;
   try {
     console.info(`[opfs-worker] creating client storage=${clientStorage} base=${effectiveBase}`);
-    client = await createTreecrdtClient({ storage: clientStorage, baseUrl: effectiveBase });
+    client = await createTreecrdtClient({ storage: clientStorage, baseUrl: effectiveBase, filename, docId });
     // sanity check to ensure DB is valid
-    await client.opsSince(0);
+    await client.ops.all();
   } catch (err) {
     if (client?.close) {
       await client.close();
@@ -59,7 +61,7 @@ async function createAdapter(
   }
   return {
     appendOp: (op, serializeNodeId, serializeReplica) =>
-      client.append({
+      client.ops.append({
         ...op,
         meta: {
           ...op.meta,
@@ -70,23 +72,14 @@ async function createAdapter(
         },
       }),
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      if (client.appendMany) {
-        await client.appendMany(
-          ops.map((op) => ({
-            ...op,
-            meta: { ...op.meta, id: { replica: serializeReplica(op.meta.id.replica), counter: op.meta.id.counter } },
-          }))
-        );
-        return;
-      }
-      for (const op of ops) {
-        await client.append({
+      await client.ops.appendMany(
+        ops.map((op) => ({
           ...op,
           meta: { ...op.meta, id: { replica: serializeReplica(op.meta.id.replica), counter: op.meta.id.counter } },
-        });
-      }
+        }))
+      );
     },
-    opsSince: async (lamport) => client.opsSince(lamport),
+    opsSince: async (lamport, root) => client.ops.since(lamport, root),
     close: async () => client.close(),
   };
 }
