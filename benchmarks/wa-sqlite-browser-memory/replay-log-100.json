@@ -2,14 +2,29 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "replay-log-100",
-  "timestamp": "2025-12-04T09:33:40.596Z",
+  "timestamp": "2025-12-26T06:42:31.903Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "replay-log-100",
   "totalOps": 100,
-  "durationMs": 2.0999999046325684,
-  "opsPerSec": 47619.04978157451,
+  "durationMs": 6.699999809265137,
+  "opsPerSec": 14925.373559222251,
   "extra": {
     "mode": "batch",
+    "iterations": 1,
+    "warmupIterations": 0,
+    "samplesMs": [
+      6.699999809265137
+    ],
+    "p95Ms": 6.699999809265137,
+    "minMs": 6.699999809265137,
+    "maxMs": 6.699999809265137,
     "count": 100
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/replay-log-100.json"
+  "sourceFile": "benchmarks/wa-sqlite-browser-memory/replay-log-100.json"
 }

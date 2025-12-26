@@ -2,14 +2,29 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "insert-move-1000",
-  "timestamp": "2025-12-04T09:33:40.874Z",
+  "timestamp": "2025-12-26T06:42:30.073Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-move-1000",
   "totalOps": 2000,
-  "durationMs": 63.89999985694885,
-  "opsPerSec": 31298.904608409142,
+  "durationMs": 581.5999999046326,
+  "opsPerSec": 3438.789546643653,
   "extra": {
     "mode": "batch",
+    "iterations": 1,
+    "warmupIterations": 0,
+    "samplesMs": [
+      581.5999999046326
+    ],
+    "p95Ms": 581.5999999046326,
+    "minMs": 581.5999999046326,
+    "maxMs": 581.5999999046326,
     "count": 2000
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-move-1000.json"
+  "sourceFile": "benchmarks/wa-sqlite-opfs/insert-move-1000.json"
 }

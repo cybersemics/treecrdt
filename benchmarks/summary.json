@@ -3,11 +3,11 @@
     "implementation": "core-inmem-crdt",
     "storage": "memory",
     "workload": "insert-move-1",
-    "timestamp": "2025-12-04T09:33:52.316741+00:00",
+    "timestamp": "2025-12-25T17:06:22.177481+00:00",
     "name": "insert-move-1",
     "totalOps": 2,
-    "durationMs": 0.013667,
-    "opsPerSec": 146337.8941977025,
+    "durationMs": 0.017875000000000002,
+    "opsPerSec": 111888.11188811187,
     "extra": {
       "count": 1,
       "mode": "sequential"
@@ -19,11 +19,11 @@
     "implementation": "core-inmem-crdt",
     "storage": "memory",
     "workload": "insert-move-10",
-    "timestamp": "2025-12-04T09:33:52.317097+00:00",
+    "timestamp": "2025-12-25T17:06:22.177830+00:00",
     "name": "insert-move-10",
     "totalOps": 20,
-    "durationMs": 0.13366699999999998,
-    "opsPerSec": 149625.5620310174,
+    "durationMs": 0.119375,
+    "opsPerSec": 167539.26701570684,
     "extra": {
       "count": 10,
       "mode": "sequential"
@@ -35,11 +35,11 @@
     "implementation": "core-inmem-crdt",
     "storage": "memory",
     "workload": "insert-move-100",
-    "timestamp": "2025-12-04T09:33:52.318834+00:00",
+    "timestamp": "2025-12-25T17:06:22.180874+00:00",
     "name": "insert-move-100",
     "totalOps": 200,
-    "durationMs": 1.6032920000000002,
-    "opsPerSec": 124743.34057676331,
+    "durationMs": 2.941042,
+    "opsPerSec": 68003.10910214816,
     "extra": {
       "count": 100,
       "mode": "sequential"
@@ -51,11 +51,11 @@
     "implementation": "core-inmem-crdt",
     "storage": "memory",
     "workload": "insert-move-1000",
-    "timestamp": "2025-12-04T09:33:52.351742+00:00",
+    "timestamp": "2025-12-25T17:06:22.440455+00:00",
     "name": "insert-move-1000",
     "totalOps": 2000,
-    "durationMs": 32.726375000000004,
-    "opsPerSec": 61112.78746882292,
+    "durationMs": 255.082834,
+    "opsPerSec": 7840.590323690696,
     "extra": {
       "count": 1000,
       "mode": "sequential"
@@ -67,11 +67,11 @@
     "implementation": "core-inmem-crdt",
     "storage": "memory",
     "workload": "insert-move-10000",
-    "timestamp": "2025-12-04T09:33:54.202368+00:00",
+    "timestamp": "2025-12-25T17:06:26.398813+00:00",
     "name": "insert-move-10000",
     "totalOps": 20000,
-    "durationMs": 1849.482291,
-    "opsPerSec": 10813.83698417905,
+    "durationMs": 3956.229,
+    "opsPerSec": 5055.3190930049805,
     "extra": {
       "count": 10000,
       "mode": "sequential"
@@ -83,1024 +83,3572 @@
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T09:33:43.966Z",
+    "timestamp": "2025-12-25T17:05:43.354Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 0.6317910000000211,
-    "opsPerSec": 1582.8019075928062,
+    "durationMs": 1.585124999999607,
+    "opsPerSec": 630.8650737325119,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.5615829999997004,
+        1.585124999999607,
+        1.837999999999738
+      ],
+      "p95Ms": 1.8127124999997248,
+      "minMs": 0.5615829999997004,
+      "maxMs": 1.837999999999738,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-chain-1.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-chain-1.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-chain-1.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T09:33:43.969Z",
+    "timestamp": "2025-12-25T17:05:43.376Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 0.8182500000000346,
-    "opsPerSec": 12221.203788572659,
+    "durationMs": 0.6740420000000995,
+    "opsPerSec": 14835.87076176043,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        1.021792000000005,
+        0.6740420000000995,
+        0.531083999999737
+      ],
+      "p95Ms": 0.9870170000000144,
+      "minMs": 0.531083999999737,
+      "maxMs": 1.021792000000005,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-chain-10.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-chain-10.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-chain-10.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T09:33:43.974Z",
+    "timestamp": "2025-12-25T17:05:43.411Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 1.5134580000000142,
-    "opsPerSec": 66073.8520659305,
+    "durationMs": 1.7192909999998847,
+    "opsPerSec": 58163.51042377742,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        1.19204099999979,
+        1.915625000000091,
+        1.7192909999998847
+      ],
+      "p95Ms": 1.8959916000000705,
+      "minMs": 1.19204099999979,
+      "maxMs": 1.915625000000091,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-chain-100.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-chain-100.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-chain-100.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T09:33:43.993Z",
+    "timestamp": "2025-12-25T17:05:43.695Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 9.471499999999992,
-    "opsPerSec": 105579.89758749944,
+    "durationMs": 7.467250000000149,
+    "opsPerSec": 133918.10907629714,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        8.704749999999876,
+        7.467250000000149,
+        6.439875000000029
+      ],
+      "p95Ms": 8.580999999999904,
+      "minMs": 6.439875000000029,
+      "maxMs": 8.704749999999876,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-chain-1000.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-chain-1000.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-chain-1000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-chain-10000",
-    "timestamp": "2025-12-04T09:33:44.129Z",
+    "timestamp": "2025-12-25T17:05:44.506Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10000",
     "totalOps": 10000,
-    "durationMs": 68.05445800000007,
-    "opsPerSec": 146941.14528103347,
+    "durationMs": 71.39066700000012,
+    "opsPerSec": 140074.332125234,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        105.33366699999988,
+        70.8327919999997,
+        71.39066700000012
+      ],
+      "p95Ms": 101.93936699999989,
+      "minMs": 70.8327919999997,
+      "maxMs": 105.33366699999988,
       "count": 10000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-chain-10000.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-chain-10000.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-chain-10000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-move-1",
-    "timestamp": "2025-12-04T09:33:43.622Z",
+    "timestamp": "2025-12-25T17:05:41.418Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1",
     "totalOps": 2,
-    "durationMs": 0.6344160000000159,
-    "opsPerSec": 3152.5056114599097,
+    "durationMs": 2.811333999999988,
+    "opsPerSec": 711.4060442480362,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        1.0678749999999582,
+        2.811333999999988,
+        4.499124999999992
+      ],
+      "p95Ms": 4.330345899999991,
+      "minMs": 1.0678749999999582,
+      "maxMs": 4.499124999999992,
       "count": 2
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-move-1.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-move-1.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-move-1.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-move-10",
-    "timestamp": "2025-12-04T09:33:43.626Z",
+    "timestamp": "2025-12-25T17:05:41.466Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10",
     "totalOps": 20,
-    "durationMs": 0.8767919999999947,
-    "opsPerSec": 22810.427102437203,
+    "durationMs": 2.480790999999954,
+    "opsPerSec": 8061.944758748469,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        2.480790999999954,
+        2.5622079999999983,
+        0.9254159999999843
+      ],
+      "p95Ms": 2.554066299999994,
+      "minMs": 0.9254159999999843,
+      "maxMs": 2.5622079999999983,
       "count": 20
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-move-10.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-move-10.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-move-10.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-move-100",
-    "timestamp": "2025-12-04T09:33:43.635Z",
+    "timestamp": "2025-12-25T17:05:41.589Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-100",
     "totalOps": 200,
-    "durationMs": 2.5791250000000048,
-    "opsPerSec": 77545.67925168405,
+    "durationMs": 10.425332999999966,
+    "opsPerSec": 19184.039493031123,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        11.61062499999997,
+        10.425332999999966,
+        2.176290999999992
+      ],
+      "p95Ms": 11.49209579999997,
+      "minMs": 2.176290999999992,
+      "maxMs": 11.61062499999997,
       "count": 200
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-move-100.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-move-100.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-move-100.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-move-1000",
-    "timestamp": "2025-12-04T09:33:43.667Z",
+    "timestamp": "2025-12-25T17:05:41.854Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1000",
     "totalOps": 2000,
-    "durationMs": 14.217583000000019,
-    "opsPerSec": 140670.88618367814,
+    "durationMs": 27.889832999999953,
+    "opsPerSec": 71710.71981678782,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        50.39524999999992,
+        24.26454100000001,
+        27.889832999999953
+      ],
+      "p95Ms": 48.14470829999992,
+      "minMs": 24.26454100000001,
+      "maxMs": 50.39524999999992,
       "count": 2000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-move-1000.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-move-1000.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-move-1000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "insert-move-10000",
-    "timestamp": "2025-12-04T09:33:43.962Z",
+    "timestamp": "2025-12-25T17:05:43.325Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10000",
     "totalOps": 20000,
-    "durationMs": 158.55808399999995,
-    "opsPerSec": 126136.74115789647,
+    "durationMs": 160.81204200000002,
+    "opsPerSec": 124368.7957149378,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        223.90391599999998,
+        155.88637499999982,
+        160.81204200000002
+      ],
+      "p95Ms": 217.5947286,
+      "minMs": 155.88637499999982,
+      "maxMs": 223.90391599999998,
       "count": 20000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-move-10000.json",
+    "sourceFile": "benchmarks/sqlite-node/file-insert-move-10000.json",
     "relativePath": "benchmarks/sqlite-node/file-insert-move-10000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "replay-log-1",
-    "timestamp": "2025-12-04T09:33:44.133Z",
+    "timestamp": "2025-12-25T17:05:44.556Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1",
     "totalOps": 1,
-    "durationMs": 0.5706670000000713,
-    "opsPerSec": 1752.3354250375,
+    "durationMs": 1.0705830000001697,
+    "opsPerSec": 934.0705017731848,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.6021249999998872,
+        1.0705830000001697,
+        1.512250000000222
+      ],
+      "p95Ms": 1.4680833000002167,
+      "minMs": 0.6021249999998872,
+      "maxMs": 1.512250000000222,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-replay-log-1.json",
+    "sourceFile": "benchmarks/sqlite-node/file-replay-log-1.json",
     "relativePath": "benchmarks/sqlite-node/file-replay-log-1.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "replay-log-10",
-    "timestamp": "2025-12-04T09:33:44.136Z",
+    "timestamp": "2025-12-25T17:05:44.617Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-10",
     "totalOps": 10,
-    "durationMs": 0.9295829999999796,
-    "opsPerSec": 10757.511701483589,
+    "durationMs": 2.3143749999999272,
+    "opsPerSec": 4320.820955981772,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.7597089999999298,
+        2.3143749999999272,
+        3.318250000000262
+      ],
+      "p95Ms": 3.2178625000002286,
+      "minMs": 0.7597089999999298,
+      "maxMs": 3.318250000000262,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-replay-log-10.json",
+    "sourceFile": "benchmarks/sqlite-node/file-replay-log-10.json",
     "relativePath": "benchmarks/sqlite-node/file-replay-log-10.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "replay-log-100",
-    "timestamp": "2025-12-04T09:33:44.142Z",
+    "timestamp": "2025-12-25T17:05:44.679Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-100",
     "totalOps": 100,
-    "durationMs": 1.2148750000000064,
-    "opsPerSec": 82312.9951641111,
+    "durationMs": 3.8292089999999916,
+    "opsPerSec": 26115.05404902167,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        1.0292090000002645,
+        4.436708000000181,
+        3.8292089999999916
+      ],
+      "p95Ms": 4.375958100000162,
+      "minMs": 1.0292090000002645,
+      "maxMs": 4.436708000000181,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-replay-log-100.json",
+    "sourceFile": "benchmarks/sqlite-node/file-replay-log-100.json",
     "relativePath": "benchmarks/sqlite-node/file-replay-log-100.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "replay-log-1000",
-    "timestamp": "2025-12-04T09:33:44.157Z",
+    "timestamp": "2025-12-25T17:05:44.849Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1000",
     "totalOps": 1000,
-    "durationMs": 6.634458999999993,
-    "opsPerSec": 150728.19049752227,
+    "durationMs": 15.617959000000155,
+    "opsPerSec": 64028.85293782562,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        15.617959000000155,
+        16.135999999999967,
+        6.333042000000205
+      ],
+      "p95Ms": 16.084195899999987,
+      "minMs": 6.333042000000205,
+      "maxMs": 16.135999999999967,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-replay-log-1000.json",
+    "sourceFile": "benchmarks/sqlite-node/file-replay-log-1000.json",
     "relativePath": "benchmarks/sqlite-node/file-replay-log-1000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "file",
     "workload": "replay-log-10000",
-    "timestamp": "2025-12-04T09:33:44.286Z",
+    "timestamp": "2025-12-25T17:05:45.497Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-10000",
     "totalOps": 10000,
-    "durationMs": 61.96850000000006,
-    "opsPerSec": 161372.31012530543,
+    "durationMs": 72.17816700000003,
+    "opsPerSec": 138546.0509131521,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        65.44183300000077,
+        72.17816700000003,
+        76.86466699999983
+      ],
+      "p95Ms": 76.39601699999986,
+      "minMs": 65.44183300000077,
+      "maxMs": 76.86466699999983,
       "count": 10000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-replay-log-10000.json",
+    "sourceFile": "benchmarks/sqlite-node/file-replay-log-10000.json",
     "relativePath": "benchmarks/sqlite-node/file-replay-log-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-all-100",
+    "timestamp": "2025-12-25T17:05:55.673Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-100",
+    "totalOps": 100,
+    "durationMs": 28.754541999998764,
+    "opsPerSec": 3477.7114516379465,
+    "extra": {
+      "opsPerPeer": 100,
+      "shared": 50,
+      "unique": 50,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        27.95062500000131,
+        28.754541999998764,
+        29.860624999999345
+      ],
+      "p95Ms": 29.750016699999286,
+      "minMs": 27.95062500000131,
+      "maxMs": 29.860624999999345,
+      "count": 100
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-all-100.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-all-100.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-all-1000",
+    "timestamp": "2025-12-25T17:05:56.179Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-1000",
+    "totalOps": 1000,
+    "durationMs": 55.75712500000009,
+    "opsPerSec": 17934.92759893912,
+    "extra": {
+      "opsPerPeer": 1000,
+      "shared": 500,
+      "unique": 500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        55.75712500000009,
+        69.81341699999939,
+        54.63716700000077
+      ],
+      "p95Ms": 68.40778779999945,
+      "minMs": 54.63716700000077,
+      "maxMs": 69.81341699999939,
+      "count": 1000
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-all-1000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-all-1000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-all-10000",
+    "timestamp": "2025-12-25T17:05:59.054Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-10000",
+    "totalOps": 10000,
+    "durationMs": 591.9987920000003,
+    "opsPerSec": 16891.92636055243,
+    "extra": {
+      "opsPerPeer": 10000,
+      "shared": 5000,
+      "unique": 5000,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        591.9987920000003,
+        560.0770000000011,
+        602.673084
+      ],
+      "p95Ms": 601.6056548,
+      "minMs": 560.0770000000011,
+      "maxMs": 602.673084,
+      "count": 10000
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-all-10000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-all-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-children-100",
+    "timestamp": "2025-12-25T17:05:59.220Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-100",
+    "totalOps": 50,
+    "durationMs": 28.103415999999925,
+    "opsPerSec": 1779.1431475803558,
+    "extra": {
+      "opsPerPeer": 100,
+      "targetCount": 50,
+      "otherCount": 50,
+      "sharedTarget": 25,
+      "uniqueTarget": 25,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        30.02245799999946,
+        26.508750000000873,
+        28.103415999999925
+      ],
+      "p95Ms": 29.830553799999507,
+      "minMs": 26.508750000000873,
+      "maxMs": 30.02245799999946,
+      "count": 50
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-children-100.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-children-100.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-children-1000",
+    "timestamp": "2025-12-25T17:05:59.741Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-1000",
+    "totalOps": 500,
+    "durationMs": 56.35595899999862,
+    "opsPerSec": 8872.1762325083,
+    "extra": {
+      "opsPerPeer": 1000,
+      "targetCount": 500,
+      "otherCount": 500,
+      "sharedTarget": 250,
+      "uniqueTarget": 250,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        68.92962499999885,
+        56.35595899999862,
+        54.836332999999286
+      ],
+      "p95Ms": 67.67225839999882,
+      "minMs": 54.836332999999286,
+      "maxMs": 68.92962499999885,
+      "count": 500
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-children-1000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-children-1000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-children-10000",
+    "timestamp": "2025-12-25T17:06:02.204Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-10000",
+    "totalOps": 5000,
+    "durationMs": 373.6322909999999,
+    "opsPerSec": 13382.140999156845,
+    "extra": {
+      "opsPerPeer": 10000,
+      "targetCount": 5000,
+      "otherCount": 5000,
+      "sharedTarget": 2500,
+      "uniqueTarget": 2500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        443.100457999999,
+        373.6322909999999,
+        287.42275000000154
+      ],
+      "p95Ms": 436.15364129999904,
+      "minMs": 287.42275000000154,
+      "maxMs": 443.100457999999,
+      "count": 5000
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-children-10000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-children-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-one-missing-100",
+    "timestamp": "2025-12-25T17:06:02.459Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-100",
+    "totalOps": 1,
+    "durationMs": 24.128625000001193,
+    "opsPerSec": 41.44454978267309,
+    "extra": {
+      "opsPerPeer": 100,
+      "missingCounter": 50,
+      "missingNode": "00000000000000000000000000000032",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        24.128625000001193,
+        25.007416000000376,
+        23.527749999997468
+      ],
+      "p95Ms": 24.919536900000455,
+      "minMs": 23.527749999997468,
+      "maxMs": 25.007416000000376,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-one-missing-100.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-one-missing-100.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-one-missing-1000",
+    "timestamp": "2025-12-25T17:06:02.841Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-1000",
+    "totalOps": 1,
+    "durationMs": 33.86420799999905,
+    "opsPerSec": 29.52970286504347,
+    "extra": {
+      "opsPerPeer": 1000,
+      "missingCounter": 500,
+      "missingNode": "000000000000000000000000000001f4",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        34.903040999997756,
+        33.86420799999905,
+        32.23425000000134
+      ],
+      "p95Ms": 34.799157699997885,
+      "minMs": 32.23425000000134,
+      "maxMs": 34.903040999997756,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-one-missing-1000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-one-missing-1000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-one-missing-10000",
+    "timestamp": "2025-12-25T17:06:03.691Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-10000",
+    "totalOps": 1,
+    "durationMs": 71.2670840000028,
+    "opsPerSec": 14.031723256699555,
+    "extra": {
+      "opsPerPeer": 10000,
+      "missingCounter": 5000,
+      "missingNode": "00000000000000000000000000001388",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        64.28687499999796,
+        71.2670840000028,
+        90.79950000000099
+      ],
+      "p95Ms": 88.84625840000116,
+      "minMs": 64.28687499999796,
+      "maxMs": 90.79950000000099,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-one-missing-10000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-one-missing-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "file",
+    "workload": "sync-root-children-fanout10-1110",
+    "timestamp": "2025-12-25T17:06:03.936Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-root-children-fanout10-1110",
+    "totalOps": 2,
+    "durationMs": 34.645415999999386,
+    "opsPerSec": 57.72769476920223,
+    "extra": {
+      "treeSize": 1110,
+      "fanout": 10,
+      "rootChildren": 10,
+      "movedNode": "0000000000000000000000000000000a",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        36.00591599999825,
+        34.645415999999386,
+        32.08141700000124
+      ],
+      "p95Ms": 35.86986599999836,
+      "minMs": 32.08141700000124,
+      "maxMs": 36.00591599999825,
+      "count": 2
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/file-sync-root-children-fanout10-1110.json",
+    "relativePath": "benchmarks/sqlite-node-sync/file-sync-root-children-fanout10-1110.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T09:33:43.963Z",
+    "timestamp": "2025-12-25T17:05:43.328Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 0.2431250000000773,
-    "opsPerSec": 4113.110539844451,
+    "durationMs": 0.07208300000002055,
+    "opsPerSec": 13872.896522060888,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.10004200000003038,
+        0.07208300000002055,
+        0.06295900000031907
+      ],
+      "p95Ms": 0.0972461000000294,
+      "minMs": 0.06295900000031907,
+      "maxMs": 0.10004200000003038,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-1.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-chain-1.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-chain-1.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T09:33:43.966Z",
+    "timestamp": "2025-12-25T17:05:43.356Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 0.15712500000006457,
-    "opsPerSec": 63643.595863140115,
+    "durationMs": 0.130207999999584,
+    "opsPerSec": 76800.1966087487,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.130207999999584,
+        0.12883400000009715,
+        0.20800000000008367
+      ],
+      "p95Ms": 0.2002208000000337,
+      "minMs": 0.12883400000009715,
+      "maxMs": 0.20800000000008367,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-10.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-chain-10.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-chain-10.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T09:33:43.970Z",
+    "timestamp": "2025-12-25T17:05:43.380Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 1.0600000000000591,
-    "opsPerSec": 94339.62264150417,
+    "durationMs": 0.5411669999998594,
+    "opsPerSec": 184785.84244794303,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.5262080000002243,
+        0.7127500000001419,
+        0.5411669999998594
+      ],
+      "p95Ms": 0.6955917000001136,
+      "minMs": 0.5262080000002243,
+      "maxMs": 0.7127500000001419,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-100.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-chain-100.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-chain-100.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T09:33:43.980Z",
+    "timestamp": "2025-12-25T17:05:43.643Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 5.607541000000083,
-    "opsPerSec": 178331.28638738176,
+    "durationMs": 20.699291999999787,
+    "opsPerSec": 48310.831114417364,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        139.00683299999992,
+        20.699291999999787,
+        9.835292000000209
+      ],
+      "p95Ms": 127.1760788999999,
+      "minMs": 9.835292000000209,
+      "maxMs": 139.00683299999992,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-1000.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-chain-1000.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-chain-1000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-chain-10000",
-    "timestamp": "2025-12-04T09:33:44.058Z",
+    "timestamp": "2025-12-25T17:05:44.032Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10000",
     "totalOps": 10000,
-    "durationMs": 64.448666,
-    "opsPerSec": 155162.24959567044,
+    "durationMs": 80.93545799999993,
+    "opsPerSec": 123555.24076975025,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        80.93545799999993,
+        94.04725000000008,
+        75.3715830000001
+      ],
+      "p95Ms": 92.73607080000006,
+      "minMs": 75.3715830000001,
+      "maxMs": 94.04725000000008,
       "count": 10000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-chain-10000.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-chain-10000.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-chain-10000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-move-1",
-    "timestamp": "2025-12-04T09:33:43.617Z",
+    "timestamp": "2025-12-25T17:05:41.364Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1",
     "totalOps": 2,
-    "durationMs": 0.4322919999999897,
-    "opsPerSec": 4626.502456672915,
+    "durationMs": 0.4792499999999791,
+    "opsPerSec": 4173.187271779003,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.4792499999999791,
+        0.12983400000001666,
+        1.619874999999979
+      ],
+      "p95Ms": 1.5058124999999791,
+      "minMs": 0.12983400000001666,
+      "maxMs": 1.619874999999979,
       "count": 2
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-1.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-move-1.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-move-1.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-move-10",
-    "timestamp": "2025-12-04T09:33:43.623Z",
+    "timestamp": "2025-12-25T17:05:41.424Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10",
     "totalOps": 20,
-    "durationMs": 0.48091700000000515,
-    "opsPerSec": 41587.217752751065,
+    "durationMs": 0.1935839999999871,
+    "opsPerSec": 103314.32349781661,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.2515000000000214,
+        0.1935839999999871,
+        0.17854099999999562
+      ],
+      "p95Ms": 0.24570840000001792,
+      "minMs": 0.17854099999999562,
+      "maxMs": 0.2515000000000214,
       "count": 20
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-10.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-move-10.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-move-10.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-move-100",
-    "timestamp": "2025-12-04T09:33:43.628Z",
+    "timestamp": "2025-12-25T17:05:41.479Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-100",
     "totalOps": 200,
-    "durationMs": 1.7050420000000202,
-    "opsPerSec": 117299.16330506676,
+    "durationMs": 1.793375000000026,
+    "opsPerSec": 111521.57245417,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        1.793375000000026,
+        2.438541999999984,
+        1.6260829999999942
+      ],
+      "p95Ms": 2.374025299999988,
+      "minMs": 1.6260829999999942,
+      "maxMs": 2.438541999999984,
       "count": 200
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-100.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-move-100.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-move-100.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-move-1000",
-    "timestamp": "2025-12-04T09:33:43.651Z",
+    "timestamp": "2025-12-25T17:05:41.688Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1000",
     "totalOps": 2000,
-    "durationMs": 13.103959000000003,
-    "opsPerSec": 152625.63016260962,
+    "durationMs": 23.210458000000017,
+    "opsPerSec": 86168.05407286657,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        23.210458000000017,
+        20.427083999999923,
+        26.851499999999987
+      ],
+      "p95Ms": 26.48739579999999,
+      "minMs": 20.427083999999923,
+      "maxMs": 26.851499999999987,
       "count": 2000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-1000.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-move-1000.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-move-1000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "insert-move-10000",
-    "timestamp": "2025-12-04T09:33:43.798Z",
+    "timestamp": "2025-12-25T17:05:42.578Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10000",
     "totalOps": 20000,
-    "durationMs": 129.36420900000002,
-    "opsPerSec": 154602.26715412448,
+    "durationMs": 150.67283399999997,
+    "opsPerSec": 132737.92938679314,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        176.82716700000014,
+        135.73637499999995,
+        150.67283399999997
+      ],
+      "p95Ms": 174.2117337000001,
+      "minMs": 135.73637499999995,
+      "maxMs": 176.82716700000014,
       "count": 20000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-insert-move-10000.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-insert-move-10000.json",
     "relativePath": "benchmarks/sqlite-node/memory-insert-move-10000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "replay-log-1",
-    "timestamp": "2025-12-04T09:33:44.130Z",
+    "timestamp": "2025-12-25T17:05:44.508Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1",
     "totalOps": 1,
-    "durationMs": 0.20716700000002675,
-    "opsPerSec": 4827.023608971848,
+    "durationMs": 0.05208300000003874,
+    "opsPerSec": 19200.122880772156,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.059707999999773165,
+        0.05208300000003874,
+        0.046832999999878666
+      ],
+      "p95Ms": 0.05894549999979972,
+      "minMs": 0.046832999999878666,
+      "maxMs": 0.059707999999773165,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-replay-log-1.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-replay-log-1.json",
     "relativePath": "benchmarks/sqlite-node/memory-replay-log-1.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "replay-log-10",
-    "timestamp": "2025-12-04T09:33:44.134Z",
+    "timestamp": "2025-12-25T17:05:44.560Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-10",
     "totalOps": 10,
-    "durationMs": 0.12837500000000546,
-    "opsPerSec": 77896.78675754294,
+    "durationMs": 0.12487499999997453,
+    "opsPerSec": 80080.0800800964,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.14708399999972244,
+        0.10654199999999037,
+        0.12487499999997453
+      ],
+      "p95Ms": 0.14486309999974764,
+      "minMs": 0.10654199999999037,
+      "maxMs": 0.14708399999972244,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-replay-log-10.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-replay-log-10.json",
     "relativePath": "benchmarks/sqlite-node/memory-replay-log-10.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "replay-log-100",
-    "timestamp": "2025-12-04T09:33:44.138Z",
+    "timestamp": "2025-12-25T17:05:44.642Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-100",
     "totalOps": 100,
-    "durationMs": 0.8754580000000942,
-    "opsPerSec": 114225.92517286864,
+    "durationMs": 1.4599999999995816,
+    "opsPerSec": 68493.15068495114,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.5362919999997757,
+        6.815667000000303,
+        1.4599999999995816
+      ],
+      "p95Ms": 6.280100300000231,
+      "minMs": 0.5362919999997757,
+      "maxMs": 6.815667000000303,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-replay-log-100.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-replay-log-100.json",
     "relativePath": "benchmarks/sqlite-node/memory-replay-log-100.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "replay-log-1000",
-    "timestamp": "2025-12-04T09:33:44.148Z",
+    "timestamp": "2025-12-25T17:05:44.781Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1000",
     "totalOps": 1000,
-    "durationMs": 5.742959000000042,
-    "opsPerSec": 174126.26487495255,
+    "durationMs": 25.349459000000024,
+    "opsPerSec": 39448.573636226276,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        52.64833399999998,
+        25.349459000000024,
+        7.218417000000045
+      ],
+      "p95Ms": 49.91844649999998,
+      "minMs": 7.218417000000045,
+      "maxMs": 52.64833399999998,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-replay-log-1000.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-replay-log-1000.json",
     "relativePath": "benchmarks/sqlite-node/memory-replay-log-1000.json"
   },
   {
     "implementation": "sqlite-node",
     "storage": "memory",
     "workload": "replay-log-10000",
-    "timestamp": "2025-12-04T09:33:44.219Z",
+    "timestamp": "2025-12-25T17:05:45.182Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-10000",
     "totalOps": 10000,
-    "durationMs": 59.29141699999991,
-    "opsPerSec": 168658.47547546407,
+    "durationMs": 80.148416,
+    "opsPerSec": 124768.5294242122,
     "extra": {
       "mode": "batch",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        77.83504100000027,
+        80.148416,
+        81.19537500000024
+      ],
+      "p95Ms": 81.09067910000022,
+      "minMs": 77.83504100000027,
+      "maxMs": 81.19537500000024,
       "count": 10000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/memory-replay-log-10000.json",
+    "sourceFile": "benchmarks/sqlite-node/memory-replay-log-10000.json",
     "relativePath": "benchmarks/sqlite-node/memory-replay-log-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-all-100",
+    "timestamp": "2025-12-25T17:05:46.600Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-100",
+    "totalOps": 100,
+    "durationMs": 33.43479100000002,
+    "opsPerSec": 2990.8965185396237,
+    "extra": {
+      "opsPerPeer": 100,
+      "shared": 50,
+      "unique": 50,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        41.11824999999999,
+        33.43479100000002,
+        28.74604099999999
+      ],
+      "p95Ms": 40.34990409999999,
+      "minMs": 28.74604099999999,
+      "maxMs": 41.11824999999999,
+      "count": 100
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-all-100.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-all-100.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-all-1000",
+    "timestamp": "2025-12-25T17:05:46.891Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-1000",
+    "totalOps": 1000,
+    "durationMs": 57.9135839999999,
+    "opsPerSec": 17267.106107610292,
+    "extra": {
+      "opsPerPeer": 1000,
+      "shared": 500,
+      "unique": 500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        57.00341700000001,
+        59.76045799999997,
+        57.9135839999999
+      ],
+      "p95Ms": 59.57577059999996,
+      "minMs": 57.00341700000001,
+      "maxMs": 59.76045799999997,
+      "count": 1000
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-all-1000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-all-1000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-all-10000",
+    "timestamp": "2025-12-25T17:05:49.897Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-10000",
+    "totalOps": 10000,
+    "durationMs": 494.75774999999976,
+    "opsPerSec": 20211.911789153386,
+    "extra": {
+      "opsPerPeer": 10000,
+      "shared": 5000,
+      "unique": 5000,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        567.8995829999999,
+        484.4996249999999,
+        494.75774999999976
+      ],
+      "p95Ms": 560.5853996999999,
+      "minMs": 484.4996249999999,
+      "maxMs": 567.8995829999999,
+      "count": 10000
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-all-10000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-all-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-children-100",
+    "timestamp": "2025-12-25T17:05:50.095Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-100",
+    "totalOps": 50,
+    "durationMs": 32.35337499999969,
+    "opsPerSec": 1545.4338225919394,
+    "extra": {
+      "opsPerPeer": 100,
+      "targetCount": 50,
+      "otherCount": 50,
+      "sharedTarget": 25,
+      "uniqueTarget": 25,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        32.35337499999969,
+        60.23608400000012,
+        30.997583999999733
+      ],
+      "p95Ms": 57.447813100000076,
+      "minMs": 30.997583999999733,
+      "maxMs": 60.23608400000012,
+      "count": 50
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-children-100.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-children-100.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-children-1000",
+    "timestamp": "2025-12-25T17:05:50.371Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-1000",
+    "totalOps": 500,
+    "durationMs": 41.04137499999979,
+    "opsPerSec": 12182.827695222262,
+    "extra": {
+      "opsPerPeer": 1000,
+      "targetCount": 500,
+      "otherCount": 500,
+      "sharedTarget": 250,
+      "uniqueTarget": 250,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        41.04137499999979,
+        49.84770800000024,
+        39.649499999999534
+      ],
+      "p95Ms": 48.9670747000002,
+      "minMs": 39.649499999999534,
+      "maxMs": 49.84770800000024,
+      "count": 500
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-children-1000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-children-1000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-children-10000",
+    "timestamp": "2025-12-25T17:05:53.732Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-10000",
+    "totalOps": 5000,
+    "durationMs": 610.5994170000004,
+    "opsPerSec": 8188.674703565917,
+    "extra": {
+      "opsPerPeer": 10000,
+      "targetCount": 5000,
+      "otherCount": 5000,
+      "sharedTarget": 2500,
+      "uniqueTarget": 2500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        799.3564580000002,
+        610.5994170000004,
+        395.93475000000035
+      ],
+      "p95Ms": 780.4807539000002,
+      "minMs": 395.93475000000035,
+      "maxMs": 799.3564580000002,
+      "count": 5000
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-children-10000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-children-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-one-missing-100",
+    "timestamp": "2025-12-25T17:05:54.115Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-100",
+    "totalOps": 1,
+    "durationMs": 42.1077920000007,
+    "opsPerSec": 23.748573660665546,
+    "extra": {
+      "opsPerPeer": 100,
+      "missingCounter": 50,
+      "missingNode": "00000000000000000000000000000032",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        92.11770799999977,
+        42.1077920000007,
+        34.36712500000067
+      ],
+      "p95Ms": 87.11671639999986,
+      "minMs": 34.36712500000067,
+      "maxMs": 92.11770799999977,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-one-missing-100.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-one-missing-100.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-one-missing-1000",
+    "timestamp": "2025-12-25T17:05:54.315Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-1000",
+    "totalOps": 1,
+    "durationMs": 34.31066699999974,
+    "opsPerSec": 29.14545496885874,
+    "extra": {
+      "opsPerPeer": 1000,
+      "missingCounter": 500,
+      "missingNode": "000000000000000000000000000001f4",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        32.641083999998955,
+        34.31066699999974,
+        42.0893329999999
+      ],
+      "p95Ms": 41.31146639999988,
+      "minMs": 32.641083999998955,
+      "maxMs": 42.0893329999999,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-one-missing-1000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-one-missing-1000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-one-missing-10000",
+    "timestamp": "2025-12-25T17:05:55.335Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-10000",
+    "totalOps": 1,
+    "durationMs": 72.13966699999946,
+    "opsPerSec": 13.861999113469812,
+    "extra": {
+      "opsPerPeer": 10000,
+      "missingCounter": 5000,
+      "missingNode": "00000000000000000000000000001388",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        97.31716699999924,
+        72.13966699999946,
+        70.6346250000006
+      ],
+      "p95Ms": 94.79941699999927,
+      "minMs": 70.6346250000006,
+      "maxMs": 97.31716699999924,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-one-missing-10000.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-one-missing-10000.json"
+  },
+  {
+    "implementation": "sqlite-node",
+    "storage": "memory",
+    "workload": "sync-root-children-fanout10-1110",
+    "timestamp": "2025-12-25T17:05:55.514Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-root-children-fanout10-1110",
+    "totalOps": 2,
+    "durationMs": 25.32891600000039,
+    "opsPerSec": 78.961136749791,
+    "extra": {
+      "treeSize": 1110,
+      "fanout": 10,
+      "rootChildren": 10,
+      "movedNode": "0000000000000000000000000000000a",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        24.472583999999188,
+        25.32891600000039,
+        26.608416000000943
+      ],
+      "p95Ms": 26.480466000000888,
+      "minMs": 24.472583999999188,
+      "maxMs": 26.608416000000943,
+      "count": 2
+    },
+    "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-root-children-fanout10-1110.json",
+    "relativePath": "benchmarks/sqlite-node-sync/memory-sync-root-children-fanout10-1110.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T09:33:40.593Z",
+    "timestamp": "2025-12-25T17:04:52.263Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 0.7999999523162842,
-    "opsPerSec": 1250.0000745058105,
+    "durationMs": 0.5,
+    "opsPerSec": 2000,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        0.5
+      ],
+      "p95Ms": 0.5,
+      "minMs": 0.5,
+      "maxMs": 0.5,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-chain-1.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-chain-1.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-chain-1.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T09:33:40.593Z",
+    "timestamp": "2025-12-25T17:04:52.264Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 0.6000001430511475,
-    "opsPerSec": 16666.66269302463,
+    "durationMs": 0.5,
+    "opsPerSec": 20000,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        0.5
+      ],
+      "p95Ms": 0.5,
+      "minMs": 0.5,
+      "maxMs": 0.5,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-chain-10.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-chain-10.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-chain-10.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T09:33:40.593Z",
+    "timestamp": "2025-12-25T17:04:52.268Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 2,
-    "opsPerSec": 50000,
+    "durationMs": 15,
+    "opsPerSec": 6666.666666666667,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        15
+      ],
+      "p95Ms": 15,
+      "minMs": 15,
+      "maxMs": 15,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-chain-100.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-chain-100.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-chain-100.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T09:33:40.593Z",
+    "timestamp": "2025-12-25T17:04:52.273Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 18.40000009536743,
-    "opsPerSec": 54347.82580527106,
+    "durationMs": 40.299999713897705,
+    "opsPerSec": 24813.895957799323,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        40.299999713897705
+      ],
+      "p95Ms": 40.299999713897705,
+      "minMs": 40.299999713897705,
+      "maxMs": 40.299999713897705,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-chain-1000.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-chain-1000.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-chain-1000.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-move-1",
-    "timestamp": "2025-12-04T09:33:40.591Z",
+    "timestamp": "2025-12-25T17:04:52.245Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1",
     "totalOps": 2,
-    "durationMs": 5.1000001430511475,
-    "opsPerSec": 392.1568517453946,
+    "durationMs": 4.5,
+    "opsPerSec": 444.4444444444444,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        4.5
+      ],
+      "p95Ms": 4.5,
+      "minMs": 4.5,
+      "maxMs": 4.5,
       "count": 2
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-move-1.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-move-1.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-move-1.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-move-10",
-    "timestamp": "2025-12-04T09:33:40.591Z",
+    "timestamp": "2025-12-25T17:04:52.260Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10",
     "totalOps": 20,
-    "durationMs": 6.799999952316284,
-    "opsPerSec": 2941.17649121268,
+    "durationMs": 7.900000095367432,
+    "opsPerSec": 2531.6455390586666,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        7.900000095367432
+      ],
+      "p95Ms": 7.900000095367432,
+      "minMs": 7.900000095367432,
+      "maxMs": 7.900000095367432,
       "count": 20
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-move-10.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-move-10.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-move-10.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-move-100",
-    "timestamp": "2025-12-04T09:33:40.592Z",
+    "timestamp": "2025-12-25T17:04:52.262Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-100",
     "totalOps": 200,
-    "durationMs": 10,
-    "opsPerSec": 20000,
+    "durationMs": 16.5,
+    "opsPerSec": 12121.212121212122,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        16.5
+      ],
+      "p95Ms": 16.5,
+      "minMs": 16.5,
+      "maxMs": 16.5,
       "count": 200
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-move-100.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-move-100.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-move-100.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "insert-move-1000",
-    "timestamp": "2025-12-04T09:33:40.592Z",
+    "timestamp": "2025-12-25T17:04:52.262Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1000",
     "totalOps": 2000,
-    "durationMs": 48.799999952316284,
-    "opsPerSec": 40983.60659742317,
+    "durationMs": 68.39999961853027,
+    "opsPerSec": 29239.76624494277,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        68.39999961853027
+      ],
+      "p95Ms": 68.39999961853027,
+      "minMs": 68.39999961853027,
+      "maxMs": 68.39999961853027,
       "count": 2000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/insert-move-1000.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-move-1000.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/insert-move-1000.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "replay-log-1",
-    "timestamp": "2025-12-04T09:33:40.594Z",
+    "timestamp": "2025-12-25T17:04:52.276Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1",
     "totalOps": 1,
     "durationMs": 0.40000009536743164,
     "opsPerSec": 2499.999403953694,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        0.40000009536743164
+      ],
+      "p95Ms": 0.40000009536743164,
+      "minMs": 0.40000009536743164,
+      "maxMs": 0.40000009536743164,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/replay-log-1.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/replay-log-1.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/replay-log-1.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "replay-log-10",
-    "timestamp": "2025-12-04T09:33:40.595Z",
+    "timestamp": "2025-12-25T17:04:52.277Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-10",
     "totalOps": 10,
-    "durationMs": 5,
-    "opsPerSec": 2000,
+    "durationMs": 0.40000009536743164,
+    "opsPerSec": 24999.994039536945,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        0.40000009536743164
+      ],
+      "p95Ms": 0.40000009536743164,
+      "minMs": 0.40000009536743164,
+      "maxMs": 0.40000009536743164,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/replay-log-10.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/replay-log-10.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/replay-log-10.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "replay-log-100",
-    "timestamp": "2025-12-04T09:33:40.596Z",
+    "timestamp": "2025-12-25T17:04:52.278Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-100",
     "totalOps": 100,
-    "durationMs": 2.0999999046325684,
-    "opsPerSec": 47619.04978157451,
+    "durationMs": 2.4000000953674316,
+    "opsPerSec": 41666.66501098216,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        2.4000000953674316
+      ],
+      "p95Ms": 2.4000000953674316,
+      "minMs": 2.4000000953674316,
+      "maxMs": 2.4000000953674316,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/replay-log-100.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/replay-log-100.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/replay-log-100.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-memory",
     "workload": "replay-log-1000",
-    "timestamp": "2025-12-04T09:33:40.596Z",
+    "timestamp": "2025-12-25T17:04:52.278Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1000",
     "totalOps": 1000,
-    "durationMs": 18,
-    "opsPerSec": 55555.555555555555,
+    "durationMs": 29.5,
+    "opsPerSec": 33898.30508474576,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        29.5
+      ],
+      "p95Ms": 29.5,
+      "minMs": 29.5,
+      "maxMs": 29.5,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-browser-memory/replay-log-1000.json",
+    "sourceFile": "benchmarks/wa-sqlite-browser-memory/replay-log-1000.json",
     "relativePath": "benchmarks/wa-sqlite-browser-memory/replay-log-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-all-100",
+    "timestamp": "2025-12-25T17:05:37.172Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-100",
+    "totalOps": 100,
+    "durationMs": 31.299999713897705,
+    "opsPerSec": 3194.8882081170877,
+    "extra": {
+      "opsPerPeer": 100,
+      "shared": 50,
+      "unique": 50,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        34.60000038146973,
+        31.299999713897705,
+        27.5
+      ],
+      "p95Ms": 34.270000314712526,
+      "minMs": 27.5,
+      "maxMs": 34.60000038146973,
+      "count": 100
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-100.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-100.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-all-1000",
+    "timestamp": "2025-12-25T17:05:37.173Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-1000",
+    "totalOps": 1000,
+    "durationMs": 62.700000286102295,
+    "opsPerSec": 15948.96324460869,
+    "extra": {
+      "opsPerPeer": 1000,
+      "shared": 500,
+      "unique": 500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        63.59999990463257,
+        62.700000286102295,
+        57.90000009536743
+      ],
+      "p95Ms": 63.50999994277954,
+      "minMs": 57.90000009536743,
+      "maxMs": 63.59999990463257,
+      "count": 1000
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-1000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-all-10000",
+    "timestamp": "2025-12-25T17:05:37.173Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-10000",
+    "totalOps": 10000,
+    "durationMs": 546,
+    "opsPerSec": 18315.018315018315,
+    "extra": {
+      "opsPerPeer": 10000,
+      "shared": 5000,
+      "unique": 5000,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        546,
+        536.8000001907349,
+        549.7000002861023
+      ],
+      "p95Ms": 549.3300002574921,
+      "minMs": 536.8000001907349,
+      "maxMs": 549.7000002861023,
+      "count": 10000
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-10000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-10000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-children-100",
+    "timestamp": "2025-12-25T17:05:37.174Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-100",
+    "totalOps": 50,
+    "durationMs": 22.09999990463257,
+    "opsPerSec": 2262.443448677078,
+    "extra": {
+      "opsPerPeer": 100,
+      "targetCount": 50,
+      "otherCount": 50,
+      "sharedTarget": 25,
+      "uniqueTarget": 25,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        22.09999990463257,
+        21.800000190734863,
+        22.199999809265137
+      ],
+      "p95Ms": 22.18999981880188,
+      "minMs": 21.800000190734863,
+      "maxMs": 22.199999809265137,
+      "count": 50
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-children-100.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-children-100.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-children-1000",
+    "timestamp": "2025-12-25T17:05:37.174Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-1000",
+    "totalOps": 500,
+    "durationMs": 40.10000038146973,
+    "opsPerSec": 12468.827811559095,
+    "extra": {
+      "opsPerPeer": 1000,
+      "targetCount": 500,
+      "otherCount": 500,
+      "sharedTarget": 250,
+      "uniqueTarget": 250,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        39.299999713897705,
+        40.10000038146973,
+        40.80000019073486
+      ],
+      "p95Ms": 40.73000020980835,
+      "minMs": 39.299999713897705,
+      "maxMs": 40.80000019073486,
+      "count": 500
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-children-1000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-children-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-children-10000",
+    "timestamp": "2025-12-25T17:05:37.174Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-10000",
+    "totalOps": 5000,
+    "durationMs": 302.09999990463257,
+    "opsPerSec": 16550.810994963285,
+    "extra": {
+      "opsPerPeer": 10000,
+      "targetCount": 5000,
+      "otherCount": 5000,
+      "sharedTarget": 2500,
+      "uniqueTarget": 2500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        302.09999990463257,
+        310.59999990463257,
+        298.7000002861023
+      ],
+      "p95Ms": 309.7499999046326,
+      "minMs": 298.7000002861023,
+      "maxMs": 310.59999990463257,
+      "count": 5000
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-children-10000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-children-10000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-one-missing-100",
+    "timestamp": "2025-12-25T17:05:37.175Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-100",
+    "totalOps": 1,
+    "durationMs": 20.100000381469727,
+    "opsPerSec": 49.75124283688592,
+    "extra": {
+      "opsPerPeer": 100,
+      "missingCounter": 50,
+      "missingNode": "00000000000000000000000000000032",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        20.59999990463257,
+        20.100000381469727,
+        19.90000009536743
+      ],
+      "p95Ms": 20.549999952316284,
+      "minMs": 19.90000009536743,
+      "maxMs": 20.59999990463257,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-one-missing-100.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-one-missing-100.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-one-missing-1000",
+    "timestamp": "2025-12-25T17:05:37.176Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-1000",
+    "totalOps": 1,
+    "durationMs": 23.40000009536743,
+    "opsPerSec": 42.73504256087473,
+    "extra": {
+      "opsPerPeer": 1000,
+      "missingCounter": 500,
+      "missingNode": "000000000000000000000000000001f4",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        23.40000009536743,
+        23.799999713897705,
+        23.199999809265137
+      ],
+      "p95Ms": 23.759999752044678,
+      "minMs": 23.199999809265137,
+      "maxMs": 23.799999713897705,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-one-missing-1000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-one-missing-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-one-missing-10000",
+    "timestamp": "2025-12-25T17:05:37.176Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-10000",
+    "totalOps": 1,
+    "durationMs": 66.69999980926514,
+    "opsPerSec": 14.992503790998398,
+    "extra": {
+      "opsPerPeer": 10000,
+      "missingCounter": 5000,
+      "missingNode": "00000000000000000000000000001388",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        66.69999980926514,
+        68.69999980926514,
+        63.30000019073486
+      ],
+      "p95Ms": 68.49999980926513,
+      "minMs": 63.30000019073486,
+      "maxMs": 68.69999980926514,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-one-missing-10000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-one-missing-10000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-memory",
+    "workload": "sync-root-children-fanout10-1110",
+    "timestamp": "2025-12-25T17:05:37.176Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-root-children-fanout10-1110",
+    "totalOps": 2,
+    "durationMs": 22.09999990463257,
+    "opsPerSec": 90.49773794708311,
+    "extra": {
+      "treeSize": 1110,
+      "fanout": 10,
+      "rootChildren": 10,
+      "movedNode": "0000000000000000000000000000000a",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        22.09999990463257,
+        23,
+        21.800000190734863
+      ],
+      "p95Ms": 22.90999999046326,
+      "minMs": 21.800000190734863,
+      "maxMs": 23,
+      "count": 2
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-root-children-fanout10-1110.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-browser-memory/sync-root-children-fanout10-1110.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T09:33:40.876Z",
+    "timestamp": "2025-12-25T17:04:50.894Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 5.400000095367432,
-    "opsPerSec": 185.18518191469718,
+    "durationMs": 6.5,
+    "opsPerSec": 153.84615384615387,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        6.5
+      ],
+      "p95Ms": 6.5,
+      "minMs": 6.5,
+      "maxMs": 6.5,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-chain-1.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-chain-1.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-chain-1.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T09:33:40.877Z",
+    "timestamp": "2025-12-25T17:04:50.895Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 8.299999952316284,
-    "opsPerSec": 1204.819284030152,
+    "durationMs": 6.200000286102295,
+    "opsPerSec": 1612.9031513781786,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        6.200000286102295
+      ],
+      "p95Ms": 6.200000286102295,
+      "minMs": 6.200000286102295,
+      "maxMs": 6.200000286102295,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-chain-10.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-chain-10.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-chain-10.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T09:33:40.877Z",
+    "timestamp": "2025-12-25T17:04:50.895Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 7.300000190734863,
-    "opsPerSec": 13698.629779067634,
+    "durationMs": 11.099999904632568,
+    "opsPerSec": 9009.009086411357,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        11.099999904632568
+      ],
+      "p95Ms": 11.099999904632568,
+      "minMs": 11.099999904632568,
+      "maxMs": 11.099999904632568,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-chain-100.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-chain-100.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-chain-100.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T09:33:40.878Z",
+    "timestamp": "2025-12-25T17:04:50.896Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 20.90000009536743,
-    "opsPerSec": 47846.88973382607,
+    "durationMs": 50.30000019073486,
+    "opsPerSec": 19880.715630378818,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        50.30000019073486
+      ],
+      "p95Ms": 50.30000019073486,
+      "minMs": 50.30000019073486,
+      "maxMs": 50.30000019073486,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-chain-1000.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-chain-1000.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-chain-1000.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-move-1",
-    "timestamp": "2025-12-04T09:33:40.872Z",
+    "timestamp": "2025-12-25T17:04:50.892Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1",
     "totalOps": 2,
-    "durationMs": 11.899999856948853,
-    "opsPerSec": 168.06722891111008,
+    "durationMs": 11.300000190734863,
+    "opsPerSec": 176.9911474550104,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        11.300000190734863
+      ],
+      "p95Ms": 11.300000190734863,
+      "minMs": 11.300000190734863,
+      "maxMs": 11.300000190734863,
       "count": 2
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-move-1.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-move-1.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-move-1.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-move-10",
-    "timestamp": "2025-12-04T09:33:40.872Z",
+    "timestamp": "2025-12-25T17:04:50.893Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10",
     "totalOps": 20,
-    "durationMs": 6.200000047683716,
-    "opsPerSec": 3225.8064268034777,
+    "durationMs": 10,
+    "opsPerSec": 2000,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        10
+      ],
+      "p95Ms": 10,
+      "minMs": 10,
+      "maxMs": 10,
       "count": 20
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-move-10.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-move-10.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-move-10.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-move-100",
-    "timestamp": "2025-12-04T09:33:40.873Z",
+    "timestamp": "2025-12-25T17:04:50.893Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-100",
     "totalOps": 200,
-    "durationMs": 25.700000047683716,
-    "opsPerSec": 7782.101152876284,
+    "durationMs": 18.09999990463257,
+    "opsPerSec": 11049.723815126177,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        18.09999990463257
+      ],
+      "p95Ms": 18.09999990463257,
+      "minMs": 18.09999990463257,
+      "maxMs": 18.09999990463257,
       "count": 200
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-move-100.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-move-100.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-move-100.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "insert-move-1000",
-    "timestamp": "2025-12-04T09:33:40.874Z",
+    "timestamp": "2025-12-25T17:04:50.893Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1000",
     "totalOps": 2000,
-    "durationMs": 63.89999985694885,
-    "opsPerSec": 31298.904608409142,
+    "durationMs": 73,
+    "opsPerSec": 27397.260273972603,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        73
+      ],
+      "p95Ms": 73,
+      "minMs": 73,
+      "maxMs": 73,
       "count": 2000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/insert-move-1000.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/insert-move-1000.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/insert-move-1000.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "replay-log-1",
-    "timestamp": "2025-12-04T09:33:40.878Z",
+    "timestamp": "2025-12-25T17:04:50.896Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1",
     "totalOps": 1,
-    "durationMs": 5.599999904632568,
-    "opsPerSec": 178.57143161248192,
+    "durationMs": 9.799999713897705,
+    "opsPerSec": 102.0408193055217,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        9.799999713897705
+      ],
+      "p95Ms": 9.799999713897705,
+      "minMs": 9.799999713897705,
+      "maxMs": 9.799999713897705,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/replay-log-1.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/replay-log-1.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/replay-log-1.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "replay-log-10",
-    "timestamp": "2025-12-04T09:33:40.879Z",
+    "timestamp": "2025-12-25T17:04:50.897Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-10",
     "totalOps": 10,
-    "durationMs": 5.5,
-    "opsPerSec": 1818.181818181818,
+    "durationMs": 61.40000009536743,
+    "opsPerSec": 162.86644925843396,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        61.40000009536743
+      ],
+      "p95Ms": 61.40000009536743,
+      "minMs": 61.40000009536743,
+      "maxMs": 61.40000009536743,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/replay-log-10.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/replay-log-10.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/replay-log-10.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "replay-log-100",
-    "timestamp": "2025-12-04T09:33:40.879Z",
+    "timestamp": "2025-12-25T17:04:50.897Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-100",
     "totalOps": 100,
-    "durationMs": 7.1000001430511475,
-    "opsPerSec": 14084.50675847819,
+    "durationMs": 18,
+    "opsPerSec": 5555.555555555556,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        18
+      ],
+      "p95Ms": 18,
+      "minMs": 18,
+      "maxMs": 18,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/replay-log-100.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/replay-log-100.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/replay-log-100.json"
   },
   {
     "implementation": "wa-sqlite",
     "storage": "browser-opfs-coop-sync",
     "workload": "replay-log-1000",
-    "timestamp": "2025-12-04T09:33:40.880Z",
+    "timestamp": "2025-12-25T17:04:50.898Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "replay-log-1000",
     "totalOps": 1000,
-    "durationMs": 20.799999952316284,
-    "opsPerSec": 48076.92318713877,
+    "durationMs": 39.40000009536743,
+    "opsPerSec": 25380.710598464637,
     "extra": {
       "mode": "batch",
+      "iterations": 1,
+      "warmupIterations": 0,
+      "samplesMs": [
+        39.40000009536743
+      ],
+      "p95Ms": 39.40000009536743,
+      "minMs": 39.40000009536743,
+      "maxMs": 39.40000009536743,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wa-sqlite-opfs/replay-log-1000.json",
+    "sourceFile": "benchmarks/wa-sqlite-opfs/replay-log-1000.json",
     "relativePath": "benchmarks/wa-sqlite-opfs/replay-log-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-all-100",
+    "timestamp": "2025-12-25T17:05:25.674Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-100",
+    "totalOps": 100,
+    "durationMs": 60.10000038146973,
+    "opsPerSec": 1663.8935002541598,
+    "extra": {
+      "opsPerPeer": 100,
+      "shared": 50,
+      "unique": 50,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        66.90000009536743,
+        59.200000286102295,
+        60.10000038146973
+      ],
+      "p95Ms": 66.22000012397767,
+      "minMs": 59.200000286102295,
+      "maxMs": 66.90000009536743,
+      "count": 100
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-all-100.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-all-100.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-all-1000",
+    "timestamp": "2025-12-25T17:05:25.674Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-1000",
+    "totalOps": 1000,
+    "durationMs": 357.7999997138977,
+    "opsPerSec": 2794.8574645042345,
+    "extra": {
+      "opsPerPeer": 1000,
+      "shared": 500,
+      "unique": 500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        357.7999997138977,
+        362,
+        219.80000019073486
+      ],
+      "p95Ms": 361.5799999713897,
+      "minMs": 219.80000019073486,
+      "maxMs": 362,
+      "count": 1000
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-all-1000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-all-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-all-10000",
+    "timestamp": "2025-12-25T17:05:25.675Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-all-10000",
+    "totalOps": 10000,
+    "durationMs": 2997.6000003814697,
+    "opsPerSec": 3336.002134616832,
+    "extra": {
+      "opsPerPeer": 10000,
+      "shared": 5000,
+      "unique": 5000,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        2397.3999996185303,
+        3600.699999809265,
+        2997.6000003814697
+      ],
+      "p95Ms": 3540.3899998664856,
+      "minMs": 2397.3999996185303,
+      "maxMs": 3600.699999809265,
+      "count": 10000
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-all-10000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-all-10000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-children-100",
+    "timestamp": "2025-12-25T17:05:25.676Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-100",
+    "totalOps": 50,
+    "durationMs": 41.40000009536743,
+    "opsPerSec": 1207.729465816955,
+    "extra": {
+      "opsPerPeer": 100,
+      "targetCount": 50,
+      "otherCount": 50,
+      "sharedTarget": 25,
+      "uniqueTarget": 25,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        38.80000019073486,
+        41.40000009536743,
+        41.90000009536743
+      ],
+      "p95Ms": 41.850000095367434,
+      "minMs": 38.80000019073486,
+      "maxMs": 41.90000009536743,
+      "count": 50
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-children-100.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-children-100.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-children-1000",
+    "timestamp": "2025-12-25T17:05:25.682Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-1000",
+    "totalOps": 500,
+    "durationMs": 145.69999980926514,
+    "opsPerSec": 3431.7089955699835,
+    "extra": {
+      "opsPerPeer": 1000,
+      "targetCount": 500,
+      "otherCount": 500,
+      "sharedTarget": 250,
+      "uniqueTarget": 250,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        133.5,
+        159.59999990463257,
+        145.69999980926514
+      ],
+      "p95Ms": 158.20999989509582,
+      "minMs": 133.5,
+      "maxMs": 159.59999990463257,
+      "count": 500
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-children-1000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-children-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-children-10000",
+    "timestamp": "2025-12-25T17:05:25.682Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-children-10000",
+    "totalOps": 5000,
+    "durationMs": 1393.7999997138977,
+    "opsPerSec": 3587.3152540008173,
+    "extra": {
+      "opsPerPeer": 10000,
+      "targetCount": 5000,
+      "otherCount": 5000,
+      "sharedTarget": 2500,
+      "uniqueTarget": 2500,
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        1168.9000000953674,
+        1393.7999997138977,
+        1871.0999999046326
+      ],
+      "p95Ms": 1823.369999885559,
+      "minMs": 1168.9000000953674,
+      "maxMs": 1871.0999999046326,
+      "count": 5000
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-children-10000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-children-10000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-one-missing-100",
+    "timestamp": "2025-12-25T17:05:25.683Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-100",
+    "totalOps": 1,
+    "durationMs": 41.700000286102295,
+    "opsPerSec": 23.980815183190256,
+    "extra": {
+      "opsPerPeer": 100,
+      "missingCounter": 50,
+      "missingNode": "00000000000000000000000000000032",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        54.60000038146973,
+        41.700000286102295,
+        30.5
+      ],
+      "p95Ms": 53.31000037193298,
+      "minMs": 30.5,
+      "maxMs": 54.60000038146973,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-one-missing-100.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-one-missing-100.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-one-missing-1000",
+    "timestamp": "2025-12-25T17:05:25.683Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-1000",
+    "totalOps": 1,
+    "durationMs": 35.5,
+    "opsPerSec": 28.169014084507044,
+    "extra": {
+      "opsPerPeer": 1000,
+      "missingCounter": 500,
+      "missingNode": "000000000000000000000000000001f4",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        38.799999713897705,
+        34.40000009536743,
+        35.5
+      ],
+      "p95Ms": 38.46999974250794,
+      "minMs": 34.40000009536743,
+      "maxMs": 38.799999713897705,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-one-missing-1000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-one-missing-1000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-one-missing-10000",
+    "timestamp": "2025-12-25T17:05:25.684Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-one-missing-10000",
+    "totalOps": 1,
+    "durationMs": 90.7999997138977,
+    "opsPerSec": 11.013215893732449,
+    "extra": {
+      "opsPerPeer": 10000,
+      "missingCounter": 5000,
+      "missingNode": "00000000000000000000000000001388",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        82.10000038146973,
+        91.5,
+        90.7999997138977
+      ],
+      "p95Ms": 91.42999997138978,
+      "minMs": 82.10000038146973,
+      "maxMs": 91.5,
+      "count": 1
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-one-missing-10000.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-one-missing-10000.json"
+  },
+  {
+    "implementation": "wa-sqlite",
+    "storage": "browser-opfs-coop-sync",
+    "workload": "sync-root-children-fanout10-1110",
+    "timestamp": "2025-12-25T17:05:25.686Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
+    "name": "sync-root-children-fanout10-1110",
+    "totalOps": 2,
+    "durationMs": 31.40000009536743,
+    "opsPerSec": 63.69426732247266,
+    "extra": {
+      "treeSize": 1110,
+      "fanout": 10,
+      "rootChildren": 10,
+      "movedNode": "0000000000000000000000000000000a",
+      "codewordsPerMessage": 2048,
+      "maxCodewords": 200000,
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        31.200000286102295,
+        31.40000009536743,
+        34.39999961853027
+      ],
+      "p95Ms": 34.09999966621399,
+      "minMs": 31.200000286102295,
+      "maxMs": 34.39999961853027,
+      "count": 2
+    },
+    "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-root-children-fanout10-1110.json",
+    "relativePath": "benchmarks/wa-sqlite-sync-opfs/sync-root-children-fanout10-1110.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-1",
-    "timestamp": "2025-12-04T09:33:47.923Z",
+    "timestamp": "2025-12-25T17:06:10.434Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1",
     "totalOps": 1,
-    "durationMs": 0.12166700000000219,
-    "opsPerSec": 8219.15556395721,
+    "durationMs": 0.014083000000027823,
+    "opsPerSec": 71007.5978128257,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.014083000000027823,
+        0.012249999999994543,
+        0.051292000000103144
+      ],
+      "p95Ms": 0.04757110000009561,
+      "minMs": 0.012249999999994543,
+      "maxMs": 0.051292000000103144,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-1.json",
+    "sourceFile": "benchmarks/wasm/insert-chain-1.json",
     "relativePath": "benchmarks/wasm/insert-chain-1.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-10",
-    "timestamp": "2025-12-04T09:33:47.924Z",
+    "timestamp": "2025-12-25T17:06:10.435Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10",
     "totalOps": 10,
-    "durationMs": 0.17270800000000008,
-    "opsPerSec": 57901.19739676214,
+    "durationMs": 0.05995900000016263,
+    "opsPerSec": 166780.63343239343,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.0723329999998441,
+        0.05995900000016263,
+        0.05841699999996308
+      ],
+      "p95Ms": 0.07109559999987596,
+      "minMs": 0.05841699999996308,
+      "maxMs": 0.0723329999998441,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-10.json",
+    "sourceFile": "benchmarks/wasm/insert-chain-10.json",
     "relativePath": "benchmarks/wasm/insert-chain-10.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-100",
-    "timestamp": "2025-12-04T09:33:47.925Z",
+    "timestamp": "2025-12-25T17:06:10.441Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-100",
     "totalOps": 100,
-    "durationMs": 0.8160419999999817,
-    "opsPerSec": 122542.71226236179,
+    "durationMs": 0.7518750000001546,
+    "opsPerSec": 133000.83125516798,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.7518750000001546,
+        0.665749999999889,
+        3.110834000000068
+      ],
+      "p95Ms": 2.874938100000077,
+      "minMs": 0.665749999999889,
+      "maxMs": 3.110834000000068,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-100.json",
+    "sourceFile": "benchmarks/wasm/insert-chain-100.json",
     "relativePath": "benchmarks/wasm/insert-chain-100.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-1000",
-    "timestamp": "2025-12-04T09:33:47.948Z",
+    "timestamp": "2025-12-25T17:06:10.589Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-1000",
     "totalOps": 1000,
-    "durationMs": 22.48204199999998,
-    "opsPerSec": 44479.94537151033,
+    "durationMs": 41.80150000000003,
+    "opsPerSec": 23922.58651005345,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        41.80150000000003,
+        59.33441700000003,
+        20.752624999999853
+      ],
+      "p95Ms": 57.581125300000025,
+      "minMs": 20.752624999999853,
+      "maxMs": 59.33441700000003,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-1000.json",
+    "sourceFile": "benchmarks/wasm/insert-chain-1000.json",
     "relativePath": "benchmarks/wasm/insert-chain-1000.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-chain-10000",
-    "timestamp": "2025-12-04T09:33:50.213Z",
+    "timestamp": "2025-12-25T17:06:20.371Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-chain-10000",
     "totalOps": 10000,
-    "durationMs": 2264.2926660000003,
-    "opsPerSec": 4416.390226474372,
+    "durationMs": 2343.234209,
+    "opsPerSec": 4267.60584221225,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        2343.234209,
+        2241.9278749999994,
+        2851.5355
+      ],
+      "p95Ms": 2800.7053708999997,
+      "minMs": 2241.9278749999994,
+      "maxMs": 2851.5355,
       "count": 10000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-10000.json",
+    "sourceFile": "benchmarks/wasm/insert-chain-10000.json",
     "relativePath": "benchmarks/wasm/insert-chain-10000.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-move-1",
-    "timestamp": "2025-12-04T09:33:47.567Z",
+    "timestamp": "2025-12-25T17:06:08.779Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1",
     "totalOps": 2,
-    "durationMs": 1.9056660000000107,
-    "opsPerSec": 1049.501853945019,
+    "durationMs": 0.04870799999997644,
+    "opsPerSec": 41061.01667079263,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.15100000000001046,
+        0.04870799999997644,
+        0.04512500000001296
+      ],
+      "p95Ms": 0.14077080000000705,
+      "minMs": 0.04512500000001296,
+      "maxMs": 0.15100000000001046,
       "count": 1
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-1.json",
+    "sourceFile": "benchmarks/wasm/insert-move-1.json",
     "relativePath": "benchmarks/wasm/insert-move-1.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-move-10",
-    "timestamp": "2025-12-04T09:33:47.570Z",
+    "timestamp": "2025-12-25T17:06:08.783Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10",
     "totalOps": 20,
-    "durationMs": 0.7488749999999982,
-    "opsPerSec": 26706.726756801934,
+    "durationMs": 0.3248749999999916,
+    "opsPerSec": 61562.13928434173,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        0.3248749999999916,
+        0.33054200000000833,
+        0.3102909999999781
+      ],
+      "p95Ms": 0.32997530000000663,
+      "minMs": 0.3102909999999781,
+      "maxMs": 0.33054200000000833,
       "count": 10
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-10.json",
+    "sourceFile": "benchmarks/wasm/insert-move-10.json",
     "relativePath": "benchmarks/wasm/insert-move-10.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-move-100",
-    "timestamp": "2025-12-04T09:33:47.574Z",
+    "timestamp": "2025-12-25T17:06:08.814Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-100",
     "totalOps": 200,
-    "durationMs": 3.2541669999999954,
-    "opsPerSec": 61459.66079798617,
+    "durationMs": 6.319874999999996,
+    "opsPerSec": 31646.195533930677,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        6.319874999999996,
+        12.792416000000003,
+        1.8913750000000107
+      ],
+      "p95Ms": 12.145161900000002,
+      "minMs": 1.8913750000000107,
+      "maxMs": 12.792416000000003,
       "count": 100
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-100.json",
+    "sourceFile": "benchmarks/wasm/insert-move-100.json",
     "relativePath": "benchmarks/wasm/insert-move-100.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-move-1000",
-    "timestamp": "2025-12-04T09:33:47.596Z",
+    "timestamp": "2025-12-25T17:06:09.132Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-1000",
     "totalOps": 2000,
-    "durationMs": 20.94512500000002,
-    "opsPerSec": 95487.6134661406,
+    "durationMs": 31.221666999999968,
+    "opsPerSec": 64058.078641348715,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        31.221666999999968,
+        19.448000000000036,
+        46.49591600000002
+      ],
+      "p95Ms": 44.968491100000016,
+      "minMs": 19.448000000000036,
+      "maxMs": 46.49591600000002,
       "count": 1000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-1000.json",
+    "sourceFile": "benchmarks/wasm/insert-move-1000.json",
     "relativePath": "benchmarks/wasm/insert-move-1000.json"
   },
   {
     "implementation": "wasm",
     "storage": "memory",
     "workload": "insert-move-10000",
-    "timestamp": "2025-12-04T09:33:47.922Z",
+    "timestamp": "2025-12-25T17:06:10.424Z",
+    "env": {
+      "node": "v22.18.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro",
+      "cores": 10
+    },
     "name": "insert-move-10000",
     "totalOps": 20000,
-    "durationMs": 324.941709,
-    "opsPerSec": 61549.50086755407,
+    "durationMs": 302.8570420000001,
+    "opsPerSec": 66037.75784087594,
     "extra": {
       "mode": "sequential",
+      "iterations": 3,
+      "warmupIterations": 1,
+      "samplesMs": [
+        292.15033300000005,
+        308.910167,
+        302.8570420000001
+      ],
+      "p95Ms": 308.30485450000003,
+      "minMs": 292.15033300000005,
+      "maxMs": 308.910167,
       "count": 10000
     },
-    "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-10000.json",
+    "sourceFile": "benchmarks/wasm/insert-move-10000.json",
     "relativePath": "benchmarks/wasm/insert-move-10000.json"
   }
 ]

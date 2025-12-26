@@ -1,0 +1,37 @@
+{
+  "implementation": "wa-sqlite",
+  "storage": "browser-memory",
+  "workload": "sync-root-children-fanout10-1110",
+  "timestamp": "2025-12-26T06:43:15.259Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
+  "name": "sync-root-children-fanout10-1110",
+  "totalOps": 2,
+  "durationMs": 24.300000190734863,
+  "opsPerSec": 82.30452610294886,
+  "extra": {
+    "treeSize": 1110,
+    "fanout": 10,
+    "rootChildren": 10,
+    "movedNode": "0000000000000000000000000000000a",
+    "codewordsPerMessage": 2048,
+    "maxCodewords": 200000,
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      24.300000190734863,
+      23.59999990463257,
+      25
+    ],
+    "p95Ms": 24.930000019073486,
+    "minMs": 23.59999990463257,
+    "maxMs": 25,
+    "count": 2
+  },
+  "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-root-children-fanout10-1110.json"
+}

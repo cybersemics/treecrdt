@@ -1,0 +1,36 @@
+{
+  "implementation": "wa-sqlite",
+  "storage": "browser-memory",
+  "workload": "sync-all-10000",
+  "timestamp": "2025-12-26T06:43:15.248Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
+  "name": "sync-all-10000",
+  "totalOps": 10000,
+  "durationMs": 662.2999997138977,
+  "opsPerSec": 15098.897786984493,
+  "extra": {
+    "opsPerPeer": 10000,
+    "shared": 5000,
+    "unique": 5000,
+    "codewordsPerMessage": 2048,
+    "maxCodewords": 200000,
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      623.9000000953674,
+      662.2999997138977,
+      671.2999997138977
+    ],
+    "p95Ms": 670.3999997138977,
+    "minMs": 623.9000000953674,
+    "maxMs": 671.2999997138977,
+    "count": 10000
+  },
+  "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-10000.json"
+}
