@@ -8,7 +8,10 @@ package treecrdt.sync.v0;
 // - NodeId.bytes MUST be exactly 16 bytes (big-endian u128). ROOT is 16 zero bytes.
 // - TRASH is 16 bytes of 0xFF (big-endian u128::MAX).
 // - ReplicaId.bytes is opaque (may be any length).
-// - OpRef.bytes MUST be exactly 16 bytes (IBLT item width); derivation from opId is TBD.
+// - OpRef.bytes MUST be exactly 16 bytes (reconciliation symbol width).
+//   Canonical v0 derivation (from doc_id + opId):
+//     opIdBytes = u32_be(len(replicaId)) || replicaId || u64_be(counter)
+//     opRef = blake3("treecrdt/opref/v0" || utf8(doc_id) || opIdBytes)[0..16]
 
 message NodeId {
   bytes bytes = 1;
