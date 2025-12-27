@@ -1700,9 +1700,9 @@ struct JsonOp {
     counter: u64,
     lamport: Lamport,
     kind: String,
-    parent: Option<u128>,
-    node: u128,
-    new_parent: Option<u128>,
+    parent: Option<[u8; 16]>,
+    node: [u8; 16],
+    new_parent: Option<[u8; 16]>,
     position: Option<u64>,
 }
 
@@ -1815,9 +1815,12 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
         .unwrap_or("")
         .to_string();
 
-        let parent = column_node(stmt, 4)?;
-        let node = column_node(stmt, 5)?.unwrap_or(0);
-        let new_parent = column_node(stmt, 6)?;
+        let parent = column_blob16(stmt, 4)?;
+        let node = match column_blob16(stmt, 5)? {
+            Some(v) => v,
+            None => return Err(SQLITE_ERROR as c_int),
+        };
+        let new_parent = column_blob16(stmt, 6)?;
         let position = column_int_opt(stmt, 7);
 
         Ok(JsonOp {
@@ -1831,22 +1834,6 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             position,
         })
     }
-}
-
-unsafe fn column_node(stmt: *mut sqlite3_stmt, idx: c_int) -> Result<Option<u128>, c_int> {
-    let ty = unsafe { sqlite_column_type(stmt, idx) };
-    if ty == SQLITE_NULL as c_int {
-        return Ok(None);
-    }
-    let ptr = unsafe { sqlite_column_blob(stmt, idx) };
-    let len = unsafe { sqlite_column_bytes(stmt, idx) };
-    if len != 16 {
-        return Err(SQLITE_ERROR as c_int);
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    let mut buf = [0u8; 16];
-    buf.copy_from_slice(bytes);
-    Ok(Some(u128::from_be_bytes(buf)))
 }
 
 unsafe fn column_int_opt(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<u64> {
