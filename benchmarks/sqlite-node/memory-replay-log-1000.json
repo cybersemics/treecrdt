@@ -2,7 +2,7 @@
   "implementation": "sqlite-node",
   "storage": "memory",
   "workload": "replay-log-1000",
-  "timestamp": "2025-12-25T17:05:44.781Z",
+  "timestamp": "2025-12-27T22:08:09.607Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,20 +12,20 @@
   },
   "name": "replay-log-1000",
   "totalOps": 1000,
-  "durationMs": 25.349459000000024,
-  "opsPerSec": 39448.573636226276,
+  "durationMs": 7.81229200000007,
+  "opsPerSec": 128003.40796273244,
   "extra": {
     "mode": "batch",
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      52.64833399999998,
-      25.349459000000024,
-      7.218417000000045
+      8.107291999999688,
+      7.81229200000007,
+      6.562332999999853
     ],
-    "p95Ms": 49.91844649999998,
-    "minMs": 7.218417000000045,
-    "maxMs": 52.64833399999998,
+    "p95Ms": 8.077791999999727,
+    "minMs": 6.562332999999853,
+    "maxMs": 8.107291999999688,
     "count": 1000
   },
   "sourceFile": "benchmarks/sqlite-node/memory-replay-log-1000.json"

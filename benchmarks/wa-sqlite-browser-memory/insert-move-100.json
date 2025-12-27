@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-26T06:42:31.887Z",
+  "timestamp": "2025-12-27T22:07:24.611Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,18 +12,18 @@
   },
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 50.69999980926514,
-  "opsPerSec": 3944.7731903827566,
+  "durationMs": 22.200000286102295,
+  "opsPerSec": 9009.00889290549,
   "extra": {
     "mode": "batch",
     "iterations": 1,
     "warmupIterations": 0,
     "samplesMs": [
-      50.69999980926514
+      22.200000286102295
     ],
-    "p95Ms": 50.69999980926514,
-    "minMs": 50.69999980926514,
-    "maxMs": 50.69999980926514,
+    "p95Ms": 22.200000286102295,
+    "minMs": 22.200000286102295,
+    "maxMs": 22.200000286102295,
     "count": 200
   },
   "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-move-100.json"

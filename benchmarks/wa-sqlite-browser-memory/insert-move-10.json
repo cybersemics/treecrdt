@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "insert-move-10",
-  "timestamp": "2025-12-26T06:42:31.886Z",
+  "timestamp": "2025-12-27T22:07:24.610Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,18 +12,18 @@
   },
   "name": "insert-move-10",
   "totalOps": 20,
-  "durationMs": 6.799999713897705,
-  "opsPerSec": 2941.176594334908,
+  "durationMs": 2.6999998092651367,
+  "opsPerSec": 7407.407930685533,
   "extra": {
     "mode": "batch",
     "iterations": 1,
     "warmupIterations": 0,
     "samplesMs": [
-      6.799999713897705
+      2.6999998092651367
     ],
-    "p95Ms": 6.799999713897705,
-    "minMs": 6.799999713897705,
-    "maxMs": 6.799999713897705,
+    "p95Ms": 2.6999998092651367,
+    "minMs": 2.6999998092651367,
+    "maxMs": 2.6999998092651367,
     "count": 20
   },
   "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-move-10.json"

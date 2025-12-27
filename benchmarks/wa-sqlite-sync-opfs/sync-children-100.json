@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "sync-children-100",
-  "timestamp": "2025-12-26T06:43:02.446Z",
+  "timestamp": "2025-12-27T22:07:52.981Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,8 +12,8 @@
   },
   "name": "sync-children-100",
   "totalOps": 50,
-  "durationMs": 44.5,
-  "opsPerSec": 1123.5955056179776,
+  "durationMs": 48.40000009536743,
+  "opsPerSec": 1033.0578492041307,
   "extra": {
     "opsPerPeer": 100,
     "targetCount": 50,
@@ -25,13 +25,13 @@
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      46.5,
-      43.09999990463257,
-      44.5
+      48.40000009536743,
+      51.40000009536743,
+      47.799999713897705
     ],
-    "p95Ms": 46.3,
-    "minMs": 43.09999990463257,
-    "maxMs": 46.5,
+    "p95Ms": 51.10000009536743,
+    "minMs": 47.799999713897705,
+    "maxMs": 51.40000009536743,
     "count": 50
   },
   "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-children-100.json"

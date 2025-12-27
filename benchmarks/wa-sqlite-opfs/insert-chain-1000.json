@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "insert-chain-1000",
-  "timestamp": "2025-12-26T06:42:30.088Z",
+  "timestamp": "2025-12-27T22:07:23.845Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,18 +12,18 @@
   },
   "name": "insert-chain-1000",
   "totalOps": 1000,
-  "durationMs": 154.30000019073486,
-  "opsPerSec": 6480.88139185917,
+  "durationMs": 42.30000019073486,
+  "opsPerSec": 23640.661831936206,
   "extra": {
     "mode": "batch",
     "iterations": 1,
     "warmupIterations": 0,
     "samplesMs": [
-      154.30000019073486
+      42.30000019073486
     ],
-    "p95Ms": 154.30000019073486,
-    "minMs": 154.30000019073486,
-    "maxMs": 154.30000019073486,
+    "p95Ms": 42.30000019073486,
+    "minMs": 42.30000019073486,
+    "maxMs": 42.30000019073486,
     "count": 1000
   },
   "sourceFile": "benchmarks/wa-sqlite-opfs/insert-chain-1000.json"

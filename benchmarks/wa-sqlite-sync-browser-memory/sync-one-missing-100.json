@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "sync-one-missing-100",
-  "timestamp": "2025-12-26T06:43:15.255Z",
+  "timestamp": "2025-12-27T22:08:03.251Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,8 +12,8 @@
   },
   "name": "sync-one-missing-100",
   "totalOps": 1,
-  "durationMs": 22.300000190734863,
-  "opsPerSec": 44.843048943805705,
+  "durationMs": 25.5,
+  "opsPerSec": 39.21568627450981,
   "extra": {
     "opsPerPeer": 100,
     "missingCounter": 50,
@@ -23,13 +23,13 @@
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      21.59999990463257,
-      28.700000286102295,
-      22.300000190734863
+      25.299999713897705,
+      35,
+      25.5
     ],
-    "p95Ms": 28.060000276565553,
-    "minMs": 21.59999990463257,
-    "maxMs": 28.700000286102295,
+    "p95Ms": 34.05,
+    "minMs": 25.299999713897705,
+    "maxMs": 35,
     "count": 1
   },
   "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-one-missing-100.json"

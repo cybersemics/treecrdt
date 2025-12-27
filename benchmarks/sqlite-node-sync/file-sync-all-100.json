@@ -2,7 +2,7 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "sync-all-100",
-  "timestamp": "2025-12-25T17:05:55.673Z",
+  "timestamp": "2025-12-27T22:08:16.963Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,8 +12,8 @@
   },
   "name": "sync-all-100",
   "totalOps": 100,
-  "durationMs": 28.754541999998764,
-  "opsPerSec": 3477.7114516379465,
+  "durationMs": 26.645708000000013,
+  "opsPerSec": 3752.949630762296,
   "extra": {
     "opsPerPeer": 100,
     "shared": 50,
@@ -23,13 +23,13 @@
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      27.95062500000131,
-      28.754541999998764,
-      29.860624999999345
+      26.7993749999996,
+      25.77129199999945,
+      26.645708000000013
     ],
-    "p95Ms": 29.750016699999286,
-    "minMs": 27.95062500000131,
-    "maxMs": 29.860624999999345,
+    "p95Ms": 26.78400829999964,
+    "minMs": 25.77129199999945,
+    "maxMs": 26.7993749999996,
     "count": 100
   },
   "sourceFile": "benchmarks/sqlite-node-sync/file-sync-all-100.json"

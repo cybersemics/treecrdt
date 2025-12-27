@@ -2,7 +2,7 @@
   "implementation": "sqlite-node",
   "storage": "memory",
   "workload": "insert-chain-10000",
-  "timestamp": "2025-12-25T17:05:44.032Z",
+  "timestamp": "2025-12-27T22:08:09.179Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,20 +12,20 @@
   },
   "name": "insert-chain-10000",
   "totalOps": 10000,
-  "durationMs": 80.93545799999993,
-  "opsPerSec": 123555.24076975025,
+  "durationMs": 103.61633299999994,
+  "opsPerSec": 96509.88131378868,
   "extra": {
     "mode": "batch",
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      80.93545799999993,
-      94.04725000000008,
-      75.3715830000001
+      67.66487499999994,
+      177.50912499999959,
+      103.61633299999994
     ],
-    "p95Ms": 92.73607080000006,
-    "minMs": 75.3715830000001,
-    "maxMs": 94.04725000000008,
+    "p95Ms": 170.1198457999996,
+    "minMs": 67.66487499999994,
+    "maxMs": 177.50912499999959,
     "count": 10000
   },
   "sourceFile": "benchmarks/sqlite-node/memory-insert-chain-10000.json"

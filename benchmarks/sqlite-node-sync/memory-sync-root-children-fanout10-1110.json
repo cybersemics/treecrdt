@@ -2,7 +2,7 @@
   "implementation": "sqlite-node",
   "storage": "memory",
   "workload": "sync-root-children-fanout10-1110",
-  "timestamp": "2025-12-25T17:05:55.514Z",
+  "timestamp": "2025-12-27T22:08:16.763Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,8 +12,8 @@
   },
   "name": "sync-root-children-fanout10-1110",
   "totalOps": 2,
-  "durationMs": 25.32891600000039,
-  "opsPerSec": 78.961136749791,
+  "durationMs": 22.66162499999973,
+  "opsPerSec": 88.25492434898308,
   "extra": {
     "treeSize": 1110,
     "fanout": 10,
@@ -24,13 +24,13 @@
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      24.472583999999188,
-      25.32891600000039,
-      26.608416000000943
+      30.987959000000046,
+      22.66162499999973,
+      22.35924999999952
     ],
-    "p95Ms": 26.480466000000888,
-    "minMs": 24.472583999999188,
-    "maxMs": 26.608416000000943,
+    "p95Ms": 30.155325600000015,
+    "minMs": 22.35924999999952,
+    "maxMs": 30.987959000000046,
     "count": 2
   },
   "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-root-children-fanout10-1110.json"

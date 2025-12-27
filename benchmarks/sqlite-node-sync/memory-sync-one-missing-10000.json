@@ -2,7 +2,7 @@
   "implementation": "sqlite-node",
   "storage": "memory",
   "workload": "sync-one-missing-10000",
-  "timestamp": "2025-12-25T17:05:55.335Z",
+  "timestamp": "2025-12-27T22:08:16.554Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,8 +12,8 @@
   },
   "name": "sync-one-missing-10000",
   "totalOps": 1,
-  "durationMs": 72.13966699999946,
-  "opsPerSec": 13.861999113469812,
+  "durationMs": 62.10737499999959,
+  "opsPerSec": 16.10114740801727,
   "extra": {
     "opsPerPeer": 10000,
     "missingCounter": 5000,
@@ -23,13 +23,13 @@
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      97.31716699999924,
-      72.13966699999946,
-      70.6346250000006
+      60.39037499999995,
+      62.10737499999959,
+      80.78545899999972
     ],
-    "p95Ms": 94.79941699999927,
-    "minMs": 70.6346250000006,
-    "maxMs": 97.31716699999924,
+    "p95Ms": 78.9176505999997,
+    "minMs": 60.39037499999995,
+    "maxMs": 80.78545899999972,
     "count": 1
   },
   "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-one-missing-10000.json"

@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-opfs-coop-sync",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-26T06:42:30.068Z",
+  "timestamp": "2025-12-27T22:07:23.840Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,18 +12,18 @@
   },
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 75.40000009536743,
-  "opsPerSec": 2652.519890544244,
+  "durationMs": 27.90000009536743,
+  "opsPerSec": 7168.458756858871,
   "extra": {
     "mode": "batch",
     "iterations": 1,
     "warmupIterations": 0,
     "samplesMs": [
-      75.40000009536743
+      27.90000009536743
     ],
-    "p95Ms": 75.40000009536743,
-    "minMs": 75.40000009536743,
-    "maxMs": 75.40000009536743,
+    "p95Ms": 27.90000009536743,
+    "minMs": 27.90000009536743,
+    "maxMs": 27.90000009536743,
     "count": 200
   },
   "sourceFile": "benchmarks/wa-sqlite-opfs/insert-move-100.json"

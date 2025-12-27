@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "insert-chain-100",
-  "timestamp": "2025-12-26T06:42:31.896Z",
+  "timestamp": "2025-12-27T22:07:24.618Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,18 +12,18 @@
   },
   "name": "insert-chain-100",
   "totalOps": 100,
-  "durationMs": 16.59999990463257,
-  "opsPerSec": 6024.0964201507595,
+  "durationMs": 2.5,
+  "opsPerSec": 40000,
   "extra": {
     "mode": "batch",
     "iterations": 1,
     "warmupIterations": 0,
     "samplesMs": [
-      16.59999990463257
+      2.5
     ],
-    "p95Ms": 16.59999990463257,
-    "minMs": 16.59999990463257,
-    "maxMs": 16.59999990463257,
+    "p95Ms": 2.5,
+    "minMs": 2.5,
+    "maxMs": 2.5,
     "count": 100
   },
   "sourceFile": "benchmarks/wa-sqlite-browser-memory/insert-chain-100.json"

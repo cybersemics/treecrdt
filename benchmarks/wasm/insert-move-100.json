@@ -2,7 +2,7 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-move-100",
-  "timestamp": "2025-12-25T17:06:08.814Z",
+  "timestamp": "2025-12-27T22:08:27.485Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,20 +12,20 @@
   },
   "name": "insert-move-100",
   "totalOps": 200,
-  "durationMs": 6.319874999999996,
-  "opsPerSec": 31646.195533930677,
+  "durationMs": 2.182666999999981,
+  "opsPerSec": 91631.01838255755,
   "extra": {
     "mode": "sequential",
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      6.319874999999996,
-      12.792416000000003,
-      1.8913750000000107
+      3.1955409999999915,
+      2.182666999999981,
+      1.7887920000000008
     ],
-    "p95Ms": 12.145161900000002,
-    "minMs": 1.8913750000000107,
-    "maxMs": 12.792416000000003,
+    "p95Ms": 3.0942535999999903,
+    "minMs": 1.7887920000000008,
+    "maxMs": 3.1955409999999915,
     "count": 100
   },
   "sourceFile": "benchmarks/wasm/insert-move-100.json"

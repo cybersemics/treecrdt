@@ -2,7 +2,7 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "sync-children-10000",
-  "timestamp": "2025-12-25T17:06:02.204Z",
+  "timestamp": "2025-12-27T22:08:21.966Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,8 +12,8 @@
   },
   "name": "sync-children-10000",
   "totalOps": 5000,
-  "durationMs": 373.6322909999999,
-  "opsPerSec": 13382.140999156845,
+  "durationMs": 282.75395799999933,
+  "opsPerSec": 17683.218425540173,
   "extra": {
     "opsPerPeer": 10000,
     "targetCount": 5000,
@@ -25,13 +25,13 @@
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      443.100457999999,
-      373.6322909999999,
-      287.42275000000154
+      310.9169160000001,
+      282.75395799999933,
+      256.9194589999988
     ],
-    "p95Ms": 436.15364129999904,
-    "minMs": 287.42275000000154,
-    "maxMs": 443.100457999999,
+    "p95Ms": 308.10062020000004,
+    "minMs": 256.9194589999988,
+    "maxMs": 310.9169160000001,
     "count": 5000
   },
   "sourceFile": "benchmarks/sqlite-node-sync/file-sync-children-10000.json"

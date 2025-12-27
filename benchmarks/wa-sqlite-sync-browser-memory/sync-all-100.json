@@ -2,7 +2,7 @@
   "implementation": "wa-sqlite",
   "storage": "browser-memory",
   "workload": "sync-all-100",
-  "timestamp": "2025-12-26T06:43:15.246Z",
+  "timestamp": "2025-12-27T22:08:03.235Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,8 +12,8 @@
   },
   "name": "sync-all-100",
   "totalOps": 100,
-  "durationMs": 34.200000286102295,
-  "opsPerSec": 2923.976583726421,
+  "durationMs": 34.09999990463257,
+  "opsPerSec": 2932.551327849557,
   "extra": {
     "opsPerPeer": 100,
     "shared": 50,
@@ -23,13 +23,13 @@
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      34.200000286102295,
-      34.60000038146973,
-      31.300000190734863
+      35.299999713897705,
+      34,
+      34.09999990463257
     ],
-    "p95Ms": 34.560000371932986,
-    "minMs": 31.300000190734863,
-    "maxMs": 34.60000038146973,
+    "p95Ms": 35.17999973297119,
+    "minMs": 34,
+    "maxMs": 35.299999713897705,
     "count": 100
   },
   "sourceFile": "benchmarks/wa-sqlite-sync-browser-memory/sync-all-100.json"

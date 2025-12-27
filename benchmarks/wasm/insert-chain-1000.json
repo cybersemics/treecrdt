@@ -2,7 +2,7 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-chain-1000",
-  "timestamp": "2025-12-25T17:06:10.589Z",
+  "timestamp": "2025-12-27T22:08:29.092Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,20 +12,20 @@
   },
   "name": "insert-chain-1000",
   "totalOps": 1000,
-  "durationMs": 41.80150000000003,
-  "opsPerSec": 23922.58651005345,
+  "durationMs": 20.89412500000003,
+  "opsPerSec": 47860.343517615525,
   "extra": {
     "mode": "sequential",
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      41.80150000000003,
-      59.33441700000003,
-      20.752624999999853
+      21.091957999999977,
+      20.198957999999948,
+      20.89412500000003
     ],
-    "p95Ms": 57.581125300000025,
-    "minMs": 20.752624999999853,
-    "maxMs": 59.33441700000003,
+    "p95Ms": 21.072174699999984,
+    "minMs": 20.198957999999948,
+    "maxMs": 21.091957999999977,
     "count": 1000
   },
   "sourceFile": "benchmarks/wasm/insert-chain-1000.json"

@@ -2,7 +2,7 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "insert-move-10000",
-  "timestamp": "2025-12-25T17:05:43.325Z",
+  "timestamp": "2025-12-27T22:08:08.589Z",
   "env": {
     "node": "v22.18.0",
     "platform": "darwin",
@@ -12,20 +12,20 @@
   },
   "name": "insert-move-10000",
   "totalOps": 20000,
-  "durationMs": 160.81204200000002,
-  "opsPerSec": 124368.7957149378,
+  "durationMs": 194.683542,
+  "opsPerSec": 102730.82046144403,
   "extra": {
     "mode": "batch",
     "iterations": 3,
     "warmupIterations": 1,
     "samplesMs": [
-      223.90391599999998,
-      155.88637499999982,
-      160.81204200000002
+      194.683542,
+      188.15274999999997,
+      197.853292
     ],
-    "p95Ms": 217.5947286,
-    "minMs": 155.88637499999982,
-    "maxMs": 223.90391599999998,
+    "p95Ms": 197.53631700000003,
+    "minMs": 188.15274999999997,
+    "maxMs": 197.853292,
     "count": 20000
   },
   "sourceFile": "benchmarks/sqlite-node/file-insert-move-10000.json"
