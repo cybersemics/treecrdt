@@ -105,7 +105,7 @@ export default function App() {
     if (!conn) return;
 
     if (liveAllSubsRef.current.has(peerId)) return;
-    const sub = conn.peer.subscribe(conn.transport, { all: {} }, { intervalMs: 500, maxCodewords: 200_000, codewordsPerMessage: 1024 });
+    const sub = conn.peer.subscribe(conn.transport, { all: {} }, { maxCodewords: 200_000, codewordsPerMessage: 1024 });
     liveAllSubsRef.current.set(peerId, sub);
     void sub.done.catch((err) => {
       console.error("Live sync(all) failed", err);
@@ -146,7 +146,7 @@ export default function App() {
     const sub = conn.peer.subscribe(
       conn.transport,
       { children: { parent: hexToBytes16(parentId) } },
-      { intervalMs: 500, maxCodewords: 200_000, codewordsPerMessage: 1024 }
+      { maxCodewords: 200_000, codewordsPerMessage: 1024 }
     );
     byParent.set(parentId, sub);
     liveChildSubsRef.current.set(peerId, byParent);
@@ -489,6 +489,7 @@ export default function App() {
         kind,
       };
       await client.ops.append(op);
+      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
       await refreshOps(undefined, { preserveParent: true });
     } catch (err) {
       console.error("Failed to append op", err);
@@ -568,6 +569,7 @@ export default function App() {
         }
       }
       await client.ops.appendMany(ops);
+      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
       await refreshOps(undefined, { preserveParent: true });
       if (normalizedCount > 1) {
         const inserted = ops.flatMap((op) => (op.kind.type === "insert" ? [op.kind.node] : []));

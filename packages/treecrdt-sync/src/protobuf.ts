@@ -8,7 +8,20 @@ import {
 } from "@treecrdt/interface/ids";
 
 import type { WireCodec } from "./transport.js";
-import type { Bytes, Filter, Hello, HelloAck, OpRef, OpsBatch, RibltCodewords, RibltStatus, SyncMessage } from "./types.js";
+import type {
+  Bytes,
+  Filter,
+  Hello,
+  HelloAck,
+  OpRef,
+  OpsBatch,
+  RibltCodewords,
+  RibltStatus,
+  Subscribe,
+  SubscribeAck,
+  SyncMessage,
+  Unsubscribe,
+} from "./types.js";
 
 import { SyncMessageSchema } from "./gen/sync/v0_pb.js";
 import {
@@ -24,7 +37,10 @@ import {
   RibltFailedSchema,
   RibltFailureReason,
   RibltStatusSchema,
+  SubscribeAckSchema,
+  SubscribeSchema,
   SyncErrorSchema,
+  UnsubscribeSchema,
 } from "./gen/sync/v0/messages_pb.js";
 import { ChildrenFilterSchema, FilterSchema, FullSyncFilterSchema } from "./gen/sync/v0/filters_pb.js";
 import { DeleteOpSchema, InsertOpSchema, MoveOpSchema, OperationSchema, TombstoneOpSchema } from "./gen/sync/v0/ops_pb.js";
@@ -260,6 +276,43 @@ function fromProtoOpsBatch(batch: any): OpsBatch<Operation> {
   };
 }
 
+function toProtoSubscribe(sub: Subscribe) {
+  return create(SubscribeSchema, {
+    subscriptionId: sub.subscriptionId,
+    filter: toProtoFilter(sub.filter),
+  });
+}
+
+function fromProtoSubscribe(sub: any): Subscribe {
+  if (!sub.filter) throw new Error("Subscribe.filter missing");
+  return {
+    subscriptionId: sub.subscriptionId,
+    filter: fromProtoFilter(sub.filter),
+  };
+}
+
+function toProtoSubscribeAck(ack: SubscribeAck) {
+  return create(SubscribeAckSchema, {
+    subscriptionId: ack.subscriptionId,
+    currentLamport: ack.currentLamport,
+  });
+}
+
+function fromProtoSubscribeAck(ack: any): SubscribeAck {
+  return {
+    subscriptionId: ack.subscriptionId,
+    currentLamport: ack.currentLamport,
+  };
+}
+
+function toProtoUnsubscribe(msg: Unsubscribe) {
+  return create(UnsubscribeSchema, { subscriptionId: msg.subscriptionId });
+}
+
+function fromProtoUnsubscribe(msg: any): Unsubscribe {
+  return { subscriptionId: msg.subscriptionId };
+}
+
 function toProtoRibltCodewords(msg: RibltCodewords) {
   return create(RibltCodewordsSchema, {
     filterId: msg.filterId,
@@ -387,6 +440,21 @@ export function encodeTreecrdtSyncV0(msg: SyncMessage<Operation>): Uint8Array {
       const proto = create(SyncMessageSchema, { ...base, payload: { case: "opsBatch", value: toProtoOpsBatch(msg.payload.value) } });
       return toBinary(SyncMessageSchema, proto);
     }
+    case "subscribe": {
+      const proto = create(SyncMessageSchema, { ...base, payload: { case: "subscribe", value: toProtoSubscribe(msg.payload.value) } });
+      return toBinary(SyncMessageSchema, proto);
+    }
+    case "subscribeAck": {
+      const proto = create(SyncMessageSchema, {
+        ...base,
+        payload: { case: "subscribeAck", value: toProtoSubscribeAck(msg.payload.value) },
+      });
+      return toBinary(SyncMessageSchema, proto);
+    }
+    case "unsubscribe": {
+      const proto = create(SyncMessageSchema, { ...base, payload: { case: "unsubscribe", value: toProtoUnsubscribe(msg.payload.value) } });
+      return toBinary(SyncMessageSchema, proto);
+    }
     case "error": {
       const err = msg.payload.value;
       const protoErr = create(SyncErrorSchema, {
@@ -423,6 +491,12 @@ export function decodeTreecrdtSyncV0(bytes: Uint8Array): SyncMessage<Operation> 
       return { ...base, payload: { case: "ribltStatus", value: fromProtoRibltStatus(msg.payload.value) } };
     case "opsBatch":
       return { ...base, payload: { case: "opsBatch", value: fromProtoOpsBatch(msg.payload.value) } };
+    case "subscribe":
+      return { ...base, payload: { case: "subscribe", value: fromProtoSubscribe(msg.payload.value) } };
+    case "subscribeAck":
+      return { ...base, payload: { case: "subscribeAck", value: fromProtoSubscribeAck(msg.payload.value) } };
+    case "unsubscribe":
+      return { ...base, payload: { case: "unsubscribe", value: fromProtoUnsubscribe(msg.payload.value) } };
     case "error": {
       const err = msg.payload.value;
       return {

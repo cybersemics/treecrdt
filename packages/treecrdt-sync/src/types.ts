@@ -70,6 +70,20 @@ export type OpsBatch<Op> = {
   done: boolean;
 };
 
+export type Subscribe = {
+  subscriptionId: string;
+  filter: Filter;
+};
+
+export type SubscribeAck = {
+  subscriptionId: string;
+  currentLamport: bigint;
+};
+
+export type Unsubscribe = {
+  subscriptionId: string;
+};
+
 export type SyncError = {
   code: ErrorCode;
   message: string;
@@ -83,6 +97,9 @@ export type SyncMessagePayload<Op> =
   | { case: "ribltCodewords"; value: RibltCodewords }
   | { case: "ribltStatus"; value: RibltStatus }
   | { case: "opsBatch"; value: OpsBatch<Op> }
+  | { case: "subscribe"; value: Subscribe }
+  | { case: "subscribeAck"; value: SubscribeAck }
+  | { case: "unsubscribe"; value: Unsubscribe }
   | { case: "error"; value: SyncError };
 
 export type SyncMessage<Op> = {

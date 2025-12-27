@@ -358,7 +358,7 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
   expect(setHex(aChildrenA)).toEqual(setHex(bChildrenA));
 });
 
-test("subscribe keeps peers converging (polling syncOnce)", async () => {
+test("subscribe keeps peers converging (push deltas)", async () => {
   const docId = "doc-subscribe";
   const root = "0".repeat(32);
 
@@ -375,11 +375,12 @@ test("subscribe keeps peers converging (polling syncOnce)", async () => {
   pa.attach(ta);
   pb.attach(tb);
 
-  const sub = pa.subscribe(ta, { all: {} }, { intervalMs: 25, maxCodewords: 10_000, codewordsPerMessage: 256 });
+  const sub = pa.subscribe(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
   try {
     await waitUntil(() => b.hasOp("a", 1), { message: "expected b to receive a:1 via subscription" });
 
     await b.applyOps([makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 })]);
+    await pb.notifyLocalUpdate();
     await waitUntil(() => a.hasOp("b", 1), { message: "expected a to receive b:1 via subscription" });
   } finally {
     sub.stop();
