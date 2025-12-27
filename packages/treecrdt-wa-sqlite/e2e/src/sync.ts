@@ -220,6 +220,38 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
       await subChildren.done;
     }
 
+    // Subscribe to "children(non-root)" and verify that we can pull grandchildren on demand.
+    const parent = nodeIdFromInt(10);
+    const parentInsert = makeOp("b", 4, 4, { type: "insert", parent: root, node: parent, position: 0 });
+    await b.ops.append(parentInsert);
+    await pa.syncOnce(ta, { children: { parent: hexToBytes(root) } }, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
+    await waitUntil(async () => hasOp(await a.ops.all(), "b", 4), {
+      message: "expected children(ROOT) to deliver parent insert before subscribing to children(parent)",
+    });
+
+    const subGrandChildren = pa.subscribe(
+      ta,
+      { children: { parent: hexToBytes(parent) } },
+      { intervalMs: 50, maxCodewords: 200_000, codewordsPerMessage: 1024 }
+    );
+    try {
+      const outside = makeOp("b", 5, 5, { type: "insert", parent: nodeIdFromInt(11), node: nodeIdFromInt(12), position: 0 });
+      await b.ops.append(outside);
+      await sleep(250);
+      if (hasOp(await a.ops.all(), "b", 5)) {
+        throw new Error("subscription(children(non-root)) should not deliver ops outside filter");
+      }
+
+      const inside = makeOp("b", 6, 6, { type: "insert", parent, node: nodeIdFromInt(13), position: 0 });
+      await b.ops.append(inside);
+      await waitUntil(async () => hasOp(await a.ops.all(), "b", 6), {
+        message: "expected subscription(children(non-root)) to deliver child insert under parent to A",
+      });
+    } finally {
+      subGrandChildren.stop();
+      await subGrandChildren.done;
+    }
+
     return { ok: true };
   } finally {
     await Promise.allSettled([a.close(), b.close()]);

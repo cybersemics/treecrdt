@@ -1,15 +1,30 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Operation, OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
-import { SyncPeer, treecrdtSyncV0ProtobufCodec, type Filter } from "@treecrdt/sync";
+import { SyncPeer, treecrdtSyncV0ProtobufCodec, type Filter, type SyncSubscription } from "@treecrdt/sync";
 import type { DuplexTransport } from "@treecrdt/sync/transport";
+import {
+  MdAdd,
+  MdChevronRight,
+  MdDeleteOutline,
+  MdExpandMore,
+  MdGroup,
+  MdHome,
+  MdKeyboardArrowDown,
+  MdKeyboardArrowUp,
+  MdOpenInNew,
+  MdOutlineRssFeed,
+  MdSync,
+} from "react-icons/md";
+import { IoMdGitBranch } from "react-icons/io";
 
 import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceMessage } from "./sync-v0";
+import { useVirtualizer } from "./virtualizer";
 
 const ROOT_ID = "00000000000000000000000000000000"; // 16-byte zero, hex-encoded
+const MAX_COMPOSER_NODE_COUNT = 100_000;
 
 type DisplayNode = {
   id: string;
@@ -53,6 +68,11 @@ export default function App() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [nodeCount, setNodeCount] = useState(1);
+  const [fanout, setFanout] = useState(10);
+  const [liveChildrenParents, setLiveChildrenParents] = useState<Set<string>>(() => new Set());
+  const [liveAllEnabled, setLiveAllEnabled] = useState(false);
+  const [showOpsPanel, setShowOpsPanel] = useState(false);
+  const [showPeersPanel, setShowPeersPanel] = useState(false);
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
@@ -62,6 +82,100 @@ export default function App() {
   const syncConnRef = useRef<
     Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>
   >(new Map());
+  const liveChildrenParentsRef = useRef<Set<string>>(new Set());
+  const liveChildSubsRef = useRef<Map<string, Map<string, SyncSubscription>>>(new Map());
+  const liveAllEnabledRef = useRef(false);
+  const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
+  const refreshTimerRef = useRef<number | null>(null);
+
+  const stopLiveAllForPeer = (peerId: string) => {
+    const existing = liveAllSubsRef.current.get(peerId);
+    if (!existing) return;
+    existing.stop();
+    liveAllSubsRef.current.delete(peerId);
+  };
+
+  const stopAllLiveAll = () => {
+    for (const sub of liveAllSubsRef.current.values()) sub.stop();
+    liveAllSubsRef.current.clear();
+  };
+
+  const startLiveAll = (peerId: string) => {
+    const conn = syncConnRef.current.get(peerId);
+    if (!conn) return;
+
+    if (liveAllSubsRef.current.has(peerId)) return;
+    const sub = conn.peer.subscribe(conn.transport, { all: {} }, { intervalMs: 500, maxCodewords: 200_000, codewordsPerMessage: 1024 });
+    liveAllSubsRef.current.set(peerId, sub);
+    void sub.done.catch((err) => {
+      console.error("Live sync(all) failed", err);
+      stopLiveAllForPeer(peerId);
+      setSyncError(err instanceof Error ? err.message : String(err));
+    });
+  };
+
+  const stopLiveChildrenForPeer = (peerId: string) => {
+    const byParent = liveChildSubsRef.current.get(peerId);
+    if (!byParent) return;
+    for (const sub of byParent.values()) sub.stop();
+    liveChildSubsRef.current.delete(peerId);
+  };
+
+  const stopLiveChildren = (peerId: string, parentId: string) => {
+    const byParent = liveChildSubsRef.current.get(peerId);
+    if (!byParent) return;
+    const sub = byParent.get(parentId);
+    if (!sub) return;
+    sub.stop();
+    byParent.delete(parentId);
+    if (byParent.size === 0) liveChildSubsRef.current.delete(peerId);
+  };
+
+  const stopAllLiveChildren = () => {
+    for (const peerId of Array.from(liveChildSubsRef.current.keys())) stopLiveChildrenForPeer(peerId);
+  };
+
+  const startLiveChildren = (peerId: string, parentId: string) => {
+    const conn = syncConnRef.current.get(peerId);
+    if (!conn) return;
+
+    const existing = liveChildSubsRef.current.get(peerId);
+    if (existing?.has(parentId)) return;
+
+    const byParent = existing ?? new Map<string, SyncSubscription>();
+    const sub = conn.peer.subscribe(
+      conn.transport,
+      { children: { parent: hexToBytes16(parentId) } },
+      { intervalMs: 500, maxCodewords: 200_000, codewordsPerMessage: 1024 }
+    );
+    byParent.set(parentId, sub);
+    liveChildSubsRef.current.set(peerId, byParent);
+
+    void sub.done.catch((err) => {
+      console.error("Live sync failed", err);
+      stopLiveChildren(peerId, parentId);
+      setSyncError(err instanceof Error ? err.message : String(err));
+    });
+  };
+
+  const toggleLiveChildren = (parentId: string) => {
+    setLiveChildrenParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  };
+
+  const makeNewReplicaId = () => `replica-${crypto.randomUUID().slice(0, 8)}`;
+
+  const openNewPeerTab = () => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("doc", docId);
+    url.searchParams.set("replica", makeNewReplicaId());
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
+  };
 
   const { root, index, childrenByParent } = useMemo(() => rebuildTree(ops), [ops]);
 
@@ -79,7 +193,7 @@ export default function App() {
   }, [root, collapsed]);
   const treeParentRef = useRef<HTMLDivElement | null>(null);
   const opsParentRef = useRef<HTMLDivElement | null>(null);
-  const treeEstimateSize = React.useCallback(() => 116, []);
+  const treeEstimateSize = React.useCallback(() => 72, []);
   const opsEstimateSize = React.useCallback(() => 96, []);
   const getTreeScrollElement = React.useCallback(() => treeParentRef.current, []);
   const getOpsScrollElement = React.useCallback(() => opsParentRef.current, []);
@@ -127,8 +241,32 @@ export default function App() {
       return;
     }
 
+    const debugSync =
+      typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
+
     const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
-    const backend = createPlaygroundBackend(client, docId);
+    const baseBackend = createPlaygroundBackend(client, docId);
+    const backend = {
+      ...baseBackend,
+      listOpRefs: async (filter: Filter) => {
+        const refs = await baseBackend.listOpRefs(filter);
+        if (debugSync) {
+          const name =
+            "all" in filter
+              ? "all"
+              : `children(${bytesToHex(filter.children.parent)})`;
+          console.debug(`[sync:${replicaId}] listOpRefs(${name}) -> ${refs.length}`);
+        }
+        return refs;
+      },
+      applyOps: async (ops: Operation[]) => {
+        if (debugSync && ops.length > 0) {
+          console.debug(`[sync:${replicaId}] applyOps(${ops.length})`);
+        }
+        await baseBackend.applyOps(ops);
+        scheduleRefreshOps();
+      },
+    };
     const connections = new Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>();
     const lastSeen = new Map<string, number>();
     syncConnRef.current = connections;
@@ -154,6 +292,11 @@ export default function App() {
       const peer = new SyncPeer<Operation>(backend);
       const detach = peer.attach(transport);
       connections.set(peerId, { transport, peer, detach });
+
+      if (liveAllEnabledRef.current) startLiveAll(peerId);
+      for (const parentId of liveChildrenParentsRef.current) {
+        startLiveChildren(peerId, parentId);
+      }
     };
 
     const onPresence = (ev: MessageEvent<any>) => {
@@ -187,6 +330,8 @@ export default function App() {
             conn.detach();
             connections.delete(id);
           }
+          stopLiveAllForPeer(id);
+          stopLiveChildrenForPeer(id);
         }
       }
       updatePeers();
@@ -196,6 +341,13 @@ export default function App() {
       window.clearInterval(interval);
       window.clearInterval(pruneInterval);
       channel.removeEventListener("message", onPresence);
+
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      stopAllLiveAll();
+      stopAllLiveChildren();
       channel.close();
 
       for (const conn of connections.values()) conn.detach();
@@ -273,13 +425,55 @@ export default function App() {
         (a, b) => a.meta.lamport - b.meta.lamport || a.meta.id.counter - b.meta.id.counter
       );
       setOps(sorted);
-      setCollapsed(new Set());
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
       setError("Failed to refresh operations (see console)");
     }
   };
+
+  function scheduleRefreshOps() {
+    if (typeof window === "undefined") return;
+    if (refreshTimerRef.current !== null) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refreshOps(undefined, { preserveParent: true });
+    }, 50);
+  }
+
+  useEffect(() => {
+    liveChildrenParentsRef.current = liveChildrenParents;
+
+    const connections = syncConnRef.current;
+
+    for (const peerId of connections.keys()) {
+      for (const parentId of liveChildrenParents) {
+        startLiveChildren(peerId, parentId);
+      }
+    }
+
+    for (const peerId of Array.from(liveChildSubsRef.current.keys())) {
+      if (!connections.has(peerId)) {
+        stopLiveChildrenForPeer(peerId);
+        continue;
+      }
+      const byParent = liveChildSubsRef.current.get(peerId);
+      if (!byParent) continue;
+      for (const parentId of Array.from(byParent.keys())) {
+        if (!liveChildrenParents.has(parentId)) stopLiveChildren(peerId, parentId);
+      }
+    }
+  }, [liveChildrenParents]);
+
+  useEffect(() => {
+    liveAllEnabledRef.current = liveAllEnabled;
+    const connections = syncConnRef.current;
+    if (liveAllEnabled) {
+      for (const peerId of connections.keys()) startLiveAll(peerId);
+    } else {
+      stopAllLiveAll();
+    }
+  }, [liveAllEnabled]);
 
   const appendOperation = async (kind: OperationKind) => {
     if (!client) return;
@@ -304,26 +498,87 @@ export default function App() {
     }
   };
 
-  const handleAddNodes = async (parentId: string, count: number) => {
+  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
     if (!client) return;
-    if (count <= 0) return;
+    const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
+    if (normalizedCount <= 0) return;
     setBusy(true);
     try {
       const ops: Operation[] = [];
       lamportRef.current = Math.max(lamportRef.current, headLamport);
-      const basePosition = (childrenByParent[parentId] ?? []).length;
-      for (let i = 0; i < count; i++) {
-        counterRef.current += 1;
-        lamportRef.current += 1;
-        const nodeId = makeNodeId();
-        const op: Operation = {
-          meta: { id: { replica: replicaId, counter: counterRef.current }, lamport: lamportRef.current },
-          kind: { type: "insert", parent: parentId, node: nodeId, position: basePosition + i },
+      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
+
+      if (fanoutLimit <= 0) {
+        const basePosition = (childrenByParent[parentId] ?? []).length;
+        for (let i = 0; i < normalizedCount; i++) {
+          counterRef.current += 1;
+          lamportRef.current += 1;
+          const nodeId = makeNodeId();
+          const op: Operation = {
+            meta: { id: { replica: replicaId, counter: counterRef.current }, lamport: lamportRef.current },
+            kind: { type: "insert", parent: parentId, node: nodeId, position: basePosition + i },
+          };
+          ops.push(op);
+        }
+      } else {
+        const expanded = new Set<string>();
+        const queue: string[] = [parentId];
+        const childCountByParent = new Map<string, number>();
+
+        const getChildCount = (id: string) => {
+          const existing = childCountByParent.get(id);
+          if (typeof existing === "number") return existing;
+          return (childrenByParent[id] ?? []).length;
         };
-        ops.push(op);
+
+        const setChildCount = (id: string, nextCount: number) => {
+          childCountByParent.set(id, nextCount);
+        };
+
+        const ensureExpanded = (id: string) => {
+          if (expanded.has(id)) return;
+          expanded.add(id);
+          for (const childId of childrenByParent[id] ?? []) {
+            queue.push(childId);
+          }
+        };
+
+        for (let i = 0; i < normalizedCount; i++) {
+          while (queue.length > 0) {
+            const candidate = queue[0];
+            ensureExpanded(candidate);
+            const childCount = getChildCount(candidate);
+            if (childCount < fanoutLimit) break;
+            queue.shift();
+          }
+
+          const targetParent = queue[0] ?? parentId;
+          const position = getChildCount(targetParent);
+
+          counterRef.current += 1;
+          lamportRef.current += 1;
+          const nodeId = makeNodeId();
+          ops.push({
+            meta: { id: { replica: replicaId, counter: counterRef.current }, lamport: lamportRef.current },
+            kind: { type: "insert", parent: targetParent, node: nodeId, position },
+          });
+
+          setChildCount(targetParent, position + 1);
+          queue.push(nodeId);
+        }
       }
       await client.ops.appendMany(ops);
       await refreshOps(undefined, { preserveParent: true });
+      if (normalizedCount > 1) {
+        const inserted = ops.flatMap((op) => (op.kind.type === "insert" ? [op.kind.node] : []));
+        setCollapsed((prev) => {
+          const next = new Set(prev);
+          // Keep the chosen parent expanded so the user sees immediate children.
+          next.delete(parentId);
+          for (const id of inserted) next.add(id);
+          return next;
+        });
+      }
     } catch (err) {
       console.error("Failed to add nodes", err);
       setError("Failed to add nodes (see console)");
@@ -333,7 +588,7 @@ export default function App() {
   };
 
   const handleInsert = async (parentId: string) => {
-    await handleAddNodes(parentId, 1);
+    await handleAddNodes(parentId, 1, { fanout: 0 });
   };
 
   const handleDelete = async (nodeId: string) => {
@@ -369,7 +624,7 @@ export default function App() {
     setSyncError(null);
     try {
       for (const conn of connections.values()) {
-        await conn.peer.syncOnce(conn.transport, filter, { maxCodewords: 50_000, codewordsPerMessage: 512 });
+        await conn.peer.syncOnce(conn.transport, filter, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
       }
       await refreshOps(undefined, { preserveParent: true });
     } catch (err) {
@@ -381,6 +636,10 @@ export default function App() {
   };
 
   const handleReset = async () => {
+    stopAllLiveAll();
+    stopAllLiveChildren();
+    setLiveChildrenParents(new Set());
+    setLiveAllEnabled(false);
     await resetAndInit(storage, { resetKey: true });
   };
 
@@ -402,7 +661,7 @@ export default function App() {
   };
 
   const expandAll = () => setCollapsed(new Set());
-  const collapseAll = () => setCollapsed(new Set(nodeList.map((n) => n.id)));
+  const collapseAll = () => setCollapsed(new Set(nodeList.filter((n) => n.id !== ROOT_ID).map((n) => n.id)));
 
   const stateBadge = status === "ready" ? "bg-emerald-500/80" : status === "error" ? "bg-rose-500/80" : "bg-amber-400/80";
 
@@ -412,14 +671,10 @@ export default function App() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-lg font-semibold text-slate-50">TreeCRDT</div>
         </div>
-        <div className="flex flex-col  items-left gap-3 text-xs text-slate-400">
+        <div className="flex flex-col items-start gap-3 text-xs text-slate-400">
           <div>
             Replica: <span className="font-mono text-slate-200">{replicaId}</span>
           </div>
-          <p className="max-w-3xl text-sm text-slate-300">
-            Experiment with the TreeCRDT SQLite extension running inside wa-sqlite. Add, reorder, and delete nodes; every action
-            becomes a CRDT operation persisted in the selected storage (in-memory or OPFS). The right rail shows the live log of operations.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -480,14 +735,14 @@ export default function App() {
       </header>
 
       <div className="grid gap-6 md:grid-cols-3">
-        <section className="md:col-span-2 space-y-4">
+        <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} space-y-4`}>
           <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
             <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Composer</div>
             <form
               className="flex flex-col gap-3 md:flex-row md:items-end"
               onSubmit={(e) => {
                 e.preventDefault();
-                void handleAddNodes(parentChoice, nodeCount);
+                void handleAddNodes(parentChoice, nodeCount, { fanout });
               }}
             >
               <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
@@ -511,12 +766,37 @@ export default function App() {
                 <input
                   type="number"
                   min={1}
-                  max={5000}
+                  max={MAX_COMPOSER_NODE_COUNT}
                   value={nodeCount}
-                  onChange={(e) => setNodeCount(Number(e.target.value) || 0)}
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    if (!Number.isFinite(next)) {
+                      setNodeCount(0);
+                      return;
+                    }
+                    setNodeCount(Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(next))));
+                  }}
                   className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
                   disabled={status !== "ready" || busy}
                 />
+              </label>
+              <label className="flex flex-col text-sm text-slate-200">
+                <span>Fanout</span>
+                <select
+                  value={fanout}
+                  onChange={(e) => setFanout(Number(e.target.value) || 0)}
+                  className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                  disabled={status !== "ready" || busy}
+                  title="Fanout > 0 distributes nodes in a k-ary tree; 0 inserts all nodes under the chosen parent."
+                >
+                  <option value={0}>Flat</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={50}>50</option>
+                </select>
               </label>
               <button
                 type="submit"
@@ -529,10 +809,112 @@ export default function App() {
           </div>
 
           <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-            <div className="mb-3 flex items-center justify-between text-sm font-semibold uppercase tracking-wide text-slate-400">
-              <span>Tree</span>
-              <div className="flex items-center gap-2 text-xs text-slate-500">{nodeList.length - 1} nodes</div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Tree</div>
+                <div className="text-xs text-slate-500">{nodeList.length - 1} nodes</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                  onClick={() => void handleSync({ all: {} })}
+                  disabled={status !== "ready" || busy || syncBusy || peers.length === 0}
+                  title="Sync all (one-shot)"
+                >
+                  <MdSync className="text-[18px]" />
+                  <span>Sync</span>
+                </button>
+                <button
+                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition disabled:opacity-50 ${
+                    liveAllEnabled
+                      ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
+                      : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
+                  }`}
+                  onClick={() => setLiveAllEnabled((v) => !v)}
+                  disabled={status !== "ready" || busy}
+                  aria-label="Live sync all"
+                  aria-pressed={liveAllEnabled}
+                  title="Live sync all (polling)"
+                >
+                  <MdOutlineRssFeed className="text-[20px]" />
+                </button>
+                <button
+                  className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
+                    showPeersPanel
+                      ? "border-slate-600 bg-slate-800/90 text-white"
+                      : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
+                  }`}
+                  onClick={() => setShowPeersPanel((v) => !v)}
+                  type="button"
+                  title="Peers"
+                >
+                  <MdGroup className="text-[18px]" />
+                  <span className="font-mono">{peers.length}</span>
+                </button>
+                <button
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                  onClick={openNewPeerTab}
+                  disabled={typeof window === "undefined"}
+                  type="button"
+                  title="Open a new peer tab"
+                >
+                  <MdOpenInNew className="text-[18px]" />
+                </button>
+                <button
+                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
+                    showOpsPanel
+                      ? "border-slate-600 bg-slate-800/90 text-white"
+                      : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
+                  }`}
+                  onClick={() => setShowOpsPanel((v) => !v)}
+                  type="button"
+                  title="Toggle operations panel"
+                >
+                  <IoMdGitBranch className="text-[18px]" />
+                </button>
+              </div>
             </div>
+            {syncError && (
+              <div className="mb-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
+                {syncError}
+              </div>
+            )}
+            {showPeersPanel && (
+              <div className="mb-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Document</div>
+                    <div className="font-mono text-slate-200">{docId}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Replica</div>
+                    <div className="font-mono text-slate-200">{replicaId}</div>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <div className="text-slate-400">Peers</div>
+                  <button
+                    className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                    type="button"
+                    onClick={openNewPeerTab}
+                  >
+                    Create peer
+                  </button>
+                </div>
+                {peers.length === 0 ? (
+                  <div className="mt-2 text-slate-500">Open another tab (same `doc`, different `replica`).</div>
+                ) : (
+                  <div className="mt-2 max-h-32 overflow-auto pr-1">
+                    {peers.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between gap-2 py-1">
+                        <span className="font-mono text-slate-200">{p.id}</span>
+                        <span className="text-[10px] text-slate-500">{Math.max(0, Date.now() - p.lastSeen)}ms</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div ref={treeParentRef} className="max-h-[560px] overflow-auto">
               <div
                 style={{ height: `${treeVirtualizer.getTotalSize()}px`, position: "relative" }}
@@ -544,6 +926,8 @@ export default function App() {
                   return (
                     <div
                       key={item.key}
+                      data-index={item.index}
+                      ref={treeVirtualizer.measureElement}
                       className="absolute left-0 top-0 w-full"
                       style={{ transform: `translateY(${item.start}px)` }}
                     >
@@ -559,6 +943,8 @@ export default function App() {
                         onDelete={handleDelete}
                         onMove={handleMove}
                         onMoveToRoot={handleMoveToRoot}
+                        onToggleLiveChildren={toggleLiveChildren}
+                        liveChildren={liveChildrenParents.has(entry.node.id)}
                         meta={index}
                         childrenByParent={childrenByParent}
                       />
@@ -570,106 +956,49 @@ export default function App() {
           </div>
         </section>
 
-        <aside className="space-y-3 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 shadow-inner shadow-black/30 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Sync</div>
-              <span className="text-[10px] text-slate-500">v0 draft</span>
+        {showOpsPanel && (
+          <aside className="space-y-3 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
+            <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Operations</div>
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span>Ops: {ops.length}</span>
+              <span>Head lamport: {headLamport}</span>
             </div>
-            <div className="text-xs text-slate-400">
-              Doc: <span className="font-mono text-slate-200">{docId}</span>
-            </div>
-            <label className="block text-xs text-slate-400">
-              <span className="mb-1 block">Doc ID</span>
-              <input
-                className="w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 font-mono text-xs text-slate-100 outline-none focus:border-accent"
-                value={docId}
-                readOnly
-                disabled
-                title="Doc ID is part of opRef hashing; change via ?doc=... and reset session."
-              />
-            </label>
-            <div className="text-xs text-slate-400">
-              Peer: <span className="font-mono text-slate-200">{replicaId}</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                onClick={() => void handleSync({ all: {} })}
-                disabled={status !== "ready" || busy || syncBusy}
-              >
-                Sync all
-              </button>
-              <button
-                className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                onClick={() => void handleSync({ children: { parent: hexToBytes16(parentChoice) } })}
-                disabled={status !== "ready" || busy || syncBusy}
-                title={`children(parent=${parentChoice})`}
-              >
-                Sync children
-              </button>
-            </div>
-            <div className="text-xs text-slate-400">
-              Peers: <span className="font-mono text-slate-200">{peers.length}</span>
-            </div>
-            {peers.length === 0 ? (
-              <div className="text-xs text-slate-500">
-                Open another playground tab with a different `?replica=` and the same `?doc=`.
-              </div>
-            ) : (
-              <div className="max-h-32 overflow-auto pr-1 text-xs">
-                {peers.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between gap-2 py-1">
-                    <span className="font-mono text-slate-200">{p.id}</span>
-                    <span className="text-[10px] text-slate-500">{Math.max(0, Date.now() - p.lastSeen)}ms</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {syncError && (
-              <div className="rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
-                {syncError}
-              </div>
-            )}
-          </div>
-          <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Operations</div>
-          <div className="flex items-center justify-between text-xs text-slate-400">
-            <span>Ops: {ops.length}</span>
-            <span>Head lamport: {headLamport}</span>
-          </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 shadow-inner shadow-black/30">
-            <div ref={opsParentRef} className="max-h-[520px] overflow-auto pr-2 text-xs">
-              {ops.length === 0 && <div className="text-slate-500">No operations yet.</div>}
-              {ops.length > 0 && (
-                <div
-                  style={{ height: `${opsVirtualizer.getTotalSize()}px`, position: "relative" }}
-                  className="w-full"
-                >
-                  {opsVirtualizer.getVirtualItems().map((item) => {
-                    const op = ops[item.index];
-                    if (!op) return null;
-                    return (
-                      <div
-                        key={item.key}
-                        className="absolute left-0 top-0 w-full"
-                        style={{ transform: `translateY(${item.start}px)` }}
-                      >
-                        <div className="mb-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-slate-100">
-                          <div className="flex items-center justify-between">
-                            <span className="font-semibold text-accent">{op.kind.type}</span>
-                            <span className="font-mono text-slate-400">lamport {op.meta.lamport}</span>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 shadow-inner shadow-black/30">
+              <div ref={opsParentRef} className="max-h-[520px] overflow-auto pr-2 text-xs">
+                {ops.length === 0 && <div className="text-slate-500">No operations yet.</div>}
+                {ops.length > 0 && (
+                  <div
+                    style={{ height: `${opsVirtualizer.getTotalSize()}px`, position: "relative" }}
+                    className="w-full"
+                  >
+                    {opsVirtualizer.getVirtualItems().map((item) => {
+                      const op = ops[item.index];
+                      if (!op) return null;
+                      return (
+                        <div
+                          key={item.key}
+                          data-index={item.index}
+                          ref={opsVirtualizer.measureElement}
+                          className="absolute left-0 top-0 w-full"
+                          style={{ transform: `translateY(${item.start}px)` }}
+                        >
+                          <div className="mb-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-slate-100">
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-accent">{op.kind.type}</span>
+                              <span className="font-mono text-slate-400">lamport {op.meta.lamport}</span>
+                            </div>
+                            <div className="mt-1 text-slate-300">{renderKind(op.kind)}</div>
+                            <div className="text-[10px] text-slate-500">counter {op.meta.id.counter}</div>
                           </div>
-                          <div className="mt-1 text-slate-300">{renderKind(op.kind)}</div>
-                          <div className="text-[10px] text-slate-500">counter {op.meta.id.counter}</div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        )}
       </div>
     </div>
   );
@@ -679,22 +1008,26 @@ function TreeRow({
   node,
   depth,
   collapsed,
+  liveChildren,
   onToggle,
   onAddChild,
   onDelete,
   onMove,
   onMoveToRoot,
+  onToggleLiveChildren,
   meta,
   childrenByParent,
 }: {
   node: DisplayNode;
   depth: number;
   collapsed: Set<string>;
+  liveChildren: boolean;
   onToggle: (id: string) => void;
   onAddChild: (id: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
   onMoveToRoot: (id: string) => void;
+  onToggleLiveChildren: (id: string) => void;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
@@ -708,59 +1041,85 @@ function TreeRow({
     metaInfo &&
     siblings.indexOf(node.id) !== -1 &&
     siblings.indexOf(node.id) < siblings.length - 1;
+  const hasChildren = (metaInfo?.childCount ?? node.children.length) > 0;
 
   return (
     <div
-      className="rounded-xl border border-slate-800/70 bg-slate-900/60 p-3 shadow-sm shadow-black/30"
+      className="group rounded-lg bg-slate-950/40 px-2 py-2 ring-1 ring-slate-800/50 transition hover:bg-slate-950/55 hover:ring-slate-700/70"
       style={{ paddingLeft: `${depth * 16}px` }}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-2">
           <button
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 text-slate-200 transition hover:border-accent hover:text-white"
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
             onClick={() => onToggle(node.id)}
+            disabled={!hasChildren}
+            aria-label={isCollapsed ? "Expand node" : "Collapse node"}
+            title={isCollapsed ? "Expand" : "Collapse"}
           >
-            {isCollapsed ? "+" : "-"}
+            {isCollapsed ? <MdChevronRight className="text-[22px]" /> : <MdExpandMore className="text-[22px]" />}
           </button>
-          <div>
-            <div className="text-lg font-semibold text-white">{node.label}</div>
-            <div className="font-mono text-[11px] text-slate-500">{node.id}</div>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-white">{node.label}</div>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-1.5">
           <button
-            className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-            onClick={() => onAddChild(node.id)}
+            className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
+              liveChildren
+                ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
+                : "border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white"
+            }`}
+            onClick={() => onToggleLiveChildren(node.id)}
+            aria-label="Live sync children"
+            aria-pressed={liveChildren}
+            title="Live sync children"
           >
-            + Child
+            <MdOutlineRssFeed className="text-[20px]" />
+          </button>
+          <button
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
+            onClick={() => onAddChild(node.id)}
+            aria-label="Add child"
+            title="Add child"
+          >
+            <MdAdd className="text-[22px]" />
           </button>
           {!isRoot && (
             <>
               <button
-                className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                 onClick={() => onMove(node.id, "up")}
                 disabled={!canMoveUp}
+                aria-label="Move up"
+                title="Move up"
               >
-                ↑ Move up
+                <MdKeyboardArrowUp className="text-[22px]" />
               </button>
               <button
-                className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                 onClick={() => onMove(node.id, "down")}
                 disabled={!canMoveDown}
+                aria-label="Move down"
+                title="Move down"
               >
-                ↓ Move down
+                <MdKeyboardArrowDown className="text-[22px]" />
               </button>
               <button
-                className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
                 onClick={() => onMoveToRoot(node.id)}
+                aria-label="Move to root"
+                title="Move to root"
               >
-                ⇱ To root
+                <MdHome className="text-[20px]" />
               </button>
               <button
-                className="rounded-lg border border-rose-400/80 px-3 py-1 text-xs font-semibold text-rose-100 transition hover:bg-rose-500/10"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-rose-400/80 bg-rose-500/10 text-rose-100 transition hover:bg-rose-500/20"
                 onClick={() => onDelete(node.id)}
+                aria-label="Delete"
+                title="Delete"
               >
-                Delete
+                <MdDeleteOutline className="text-[20px]" />
               </button>
             </>
           )}
