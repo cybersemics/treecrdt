@@ -103,6 +103,28 @@ function sleepUntil(ms: number, signal?: AbortSignal): Promise<boolean> {
   });
 }
 
+const yieldToMacrotask: () => Promise<void> = (() => {
+  const setImmediateImpl = (globalThis as any).setImmediate as undefined | ((cb: () => void) => void);
+  if (typeof setImmediateImpl === "function") {
+    return async () => new Promise<void>((resolve) => setImmediateImpl(resolve));
+  }
+
+  if (typeof MessageChannel !== "undefined") {
+    const queue: Array<() => void> = [];
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      queue.shift()?.();
+    };
+    return async () =>
+      new Promise<void>((resolve) => {
+        queue.push(resolve);
+        channel.port2.postMessage(null);
+      });
+  }
+
+  return async () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+})();
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
@@ -172,6 +194,7 @@ export class SyncPeer<Op> {
             value: { filterId, round, startIndex, codewords },
           },
         });
+        await yieldToMacrotask();
       }
 
       if (!session.done) throw new Error("riblt: max codewords exceeded");
@@ -352,25 +375,9 @@ export class SyncPeer<Op> {
 
     try {
       for (const cw of msg.codewords) {
+        if (session.expectedIndex >= BigInt(this.maxCodewords)) break;
         session.decoder.addCodeword(cw as any);
         session.expectedIndex += 1n;
-        if (session.expectedIndex > BigInt(this.maxCodewords)) break;
-      }
-      if (session.expectedIndex > BigInt(this.maxCodewords)) {
-        await transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: {
-            case: "ribltStatus",
-            value: {
-              filterId: msg.filterId,
-              round: msg.round,
-              payload: { case: "failed", value: { reason: RibltFailureReason.MAX_CODEWORDS_EXCEEDED } },
-            },
-          },
-        });
-        this.responderSessions.delete(msg.filterId);
-        return;
       }
       session.decoder.tryDecode();
     } catch (err: any) {
@@ -396,7 +403,24 @@ export class SyncPeer<Op> {
       return;
     }
 
-    if (!session.decoder.decoded()) return;
+    if (!session.decoder.decoded()) {
+      if (session.expectedIndex >= BigInt(this.maxCodewords)) {
+        await transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: {
+            case: "ribltStatus",
+            value: {
+              filterId: msg.filterId,
+              round: msg.round,
+              payload: { case: "failed", value: { reason: RibltFailureReason.MAX_CODEWORDS_EXCEEDED } },
+            },
+          },
+        });
+        this.responderSessions.delete(msg.filterId);
+      }
+      return;
+    }
 
     const receiverMissing = session.decoder.remoteMissing() as unknown as OpRef[];
     const senderMissing = session.decoder.localMissing() as unknown as OpRef[];

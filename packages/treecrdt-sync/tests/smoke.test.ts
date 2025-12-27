@@ -9,6 +9,7 @@ import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { SyncPeer } from "../dist/sync.js";
 import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from "../dist/transport.js";
+import type { DuplexTransport } from "../dist/transport.js";
 import type { Filter, OpRef, SyncBackend, SyncMessage } from "../dist/types.js";
 
 function opRefFor(docId: string, replica: string, counter: number): OpRef {
@@ -26,6 +27,37 @@ function setHex(opRefs: readonly Uint8Array[]): Set<string> {
 
 async function tick(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
+  const aHandlers = new Set<(msg: M) => void>();
+  const bHandlers = new Set<(msg: M) => void>();
+
+  const a: DuplexTransport<M> = {
+    async send(msg) {
+      setTimeout(() => {
+        for (const h of bHandlers) h(msg);
+      }, 0);
+    },
+    onMessage(handler) {
+      aHandlers.add(handler);
+      return () => aHandlers.delete(handler);
+    },
+  };
+
+  const b: DuplexTransport<M> = {
+    async send(msg) {
+      setTimeout(() => {
+        for (const h of aHandlers) h(msg);
+      }, 0);
+    },
+    onMessage(handler) {
+      bHandlers.add(handler);
+      return () => bHandlers.delete(handler);
+    },
+  };
+
+  return [a, b];
 }
 
 async function waitUntil(
@@ -120,7 +152,7 @@ class MemoryBackend implements SyncBackend<Operation> {
       parentByNodeHex.set(nodeHex, newParentHex);
     }
 
-    return relevant;
+  return relevant;
   }
 
   async getOpsByOpRefs(opRefs: OpRef[]): Promise<Operation[]> {
@@ -143,6 +175,30 @@ class MemoryBackend implements SyncBackend<Operation> {
     }
   }
 }
+
+test("syncOnce does not starve macrotask transports", async () => {
+  const docId = "doc-sync-macrotask";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  await a.applyOps([
+    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 }),
+  ]);
+
+  const [wa, wb] = createMacrotaskDuplex<Uint8Array>();
+  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
+  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+  await waitUntil(() => b.hasOp("a", 1), { message: "expected b to receive a:1 via macrotask duplex" });
+});
 
 test("sync all converges union of opRefs", async () => {
   const docId = "doc-sync-all";
