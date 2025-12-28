@@ -14,11 +14,27 @@ function useVirtualizerBase<TScrollElement extends Element | Window, TItemElemen
   options: VirtualizerOptions<TScrollElement, TItemElement>
 ): Virtualizer<TScrollElement, TItemElement> {
   const rerender = React.useReducer(() => ({}), {})[1];
+  const scheduledRef = React.useRef(false);
+
+  const scheduleRerender = () => {
+    if (scheduledRef.current) return;
+    scheduledRef.current = true;
+    const run = () => {
+      scheduledRef.current = false;
+      rerender();
+    };
+    if (typeof queueMicrotask === "function") queueMicrotask(run);
+    else Promise.resolve().then(run);
+  };
 
   const resolvedOptions: VirtualizerOptions<TScrollElement, TItemElement> = {
     ...options,
     onChange: (instance, sync) => {
-      rerender();
+      // TanStack Virtual's React hook uses `flushSync` while scrolling; this can
+      // produce warnings when React is already rendering. We instead schedule
+      // sync updates in a microtask.
+      if (sync) scheduleRerender();
+      else rerender();
       options.onChange?.(instance, sync);
     },
   };
@@ -50,4 +66,3 @@ export function useVirtualizer<TScrollElement extends Element, TItemElement exte
     ...options,
   });
 }
-
