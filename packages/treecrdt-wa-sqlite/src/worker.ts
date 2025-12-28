@@ -6,6 +6,11 @@ import {
   opRefsAll as opRefsAllRaw,
   opRefsChildren as opRefsChildrenRaw,
   opsByOpRefs as opsByOpRefsRaw,
+  treeChildren as treeChildrenRaw,
+  treeDump as treeDumpRaw,
+  treeNodeCount as treeNodeCountRaw,
+  headLamport as headLamportRaw,
+  replicaMaxCounter as replicaMaxCounterRaw,
   setDocId as setDocIdRaw,
   type Database,
 } from "./index.js";
@@ -77,6 +82,40 @@ self.onmessage = async (ev: MessageEvent) => {
       const opRefs = raw.map((r) => Uint8Array.from(r));
       const rows = await opsByOpRefsRaw(db!, opRefs);
       respond(true, rows);
+      return;
+    }
+    if (method === "treeChildren") {
+      await ensureDb();
+      const parent = (params as any).parent as string;
+      const rows = await treeChildrenRaw(db!, nodeIdToBytes16(parent));
+      respond(true, rows);
+      return;
+    }
+    if (method === "treeDump") {
+      await ensureDb();
+      const rows = await treeDumpRaw(db!);
+      respond(true, rows);
+      return;
+    }
+    if (method === "treeNodeCount") {
+      await ensureDb();
+      const v = await treeNodeCountRaw(db!);
+      respond(true, v);
+      return;
+    }
+    if (method === "headLamport") {
+      await ensureDb();
+      const v = await headLamportRaw(db!);
+      respond(true, v);
+      return;
+    }
+    if (method === "replicaMaxCounter") {
+      await ensureDb();
+      const rawReplica = (params as any).replica as number[] | string;
+      const replica =
+        typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
+      const v = await replicaMaxCounterRaw(db!, replica);
+      respond(true, v);
       return;
     }
     if (method === "close") {

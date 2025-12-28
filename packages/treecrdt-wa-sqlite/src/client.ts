@@ -5,6 +5,11 @@ import {
   opRefsAll as opRefsAllRaw,
   opRefsChildren as opRefsChildrenRaw,
   opsByOpRefs as opsByOpRefsRaw,
+  treeChildren as treeChildrenRaw,
+  treeDump as treeDumpRaw,
+  treeNodeCount as treeNodeCountRaw,
+  headLamport as headLamportRaw,
+  replicaMaxCounter as replicaMaxCounterRaw,
   setDocId as setDocIdRaw,
   type Database,
 } from "./index.js";
@@ -29,12 +34,32 @@ export type TreecrdtOpRefsApi = {
   children: (parent: string) => Promise<Uint8Array[]>;
 };
 
+export type TreeNodeRow = {
+  node: string;
+  parent: string | null;
+  pos: number | null;
+  tombstone: boolean;
+};
+
+export type TreecrdtTreeApi = {
+  children: (parent: string) => Promise<string[]>;
+  dump: () => Promise<TreeNodeRow[]>;
+  nodeCount: () => Promise<number>;
+};
+
+export type TreecrdtMetaApi = {
+  headLamport: () => Promise<number>;
+  replicaMaxCounter: (replica: Operation["meta"]["id"]["replica"]) => Promise<number>;
+};
+
 export type TreecrdtClient = {
   mode: ClientMode;
   storage: StorageMode;
   docId: string;
   ops: TreecrdtOpsApi;
   opRefs: TreecrdtOpRefsApi;
+  tree: TreecrdtTreeApi;
+  meta: TreecrdtMetaApi;
   close: () => Promise<void>;
 };
 
@@ -170,6 +195,13 @@ async function createWorkerClient(opts: {
     call("opRefsChildren", { parent }).then((rows) => parseOpRefs(rows as any[]));
   const opsByOpRefsImpl = (opRefs: Uint8Array[]) =>
     call("opsByOpRefs", { opRefs: opRefs.map((r) => Array.from(r)) }).then((rows) => parseOps(rows as any[]));
+  const treeChildrenImpl = (parent: string) =>
+    call("treeChildren", { parent }).then((rows) => parseNodeIds(rows as any[]));
+  const treeDumpImpl = () => call("treeDump").then((rows) => parseTreeRows(rows as any[]));
+  const treeNodeCountImpl = () => call("treeNodeCount").then((v) => Number(v));
+  const headLamportImpl = () => call("headLamport").then((v) => Number(v));
+  const replicaMaxCounterImpl = (replica: Operation["meta"]["id"]["replica"]) =>
+    call("replicaMaxCounter", { replica: Array.from(encodeReplica(replica)) }).then((v) => Number(v));
 
   return {
     mode: "worker",
@@ -184,6 +216,8 @@ async function createWorkerClient(opts: {
       get: opsByOpRefsImpl,
     },
     opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
+    tree: { children: treeChildrenImpl, dump: treeDumpImpl, nodeCount: treeNodeCountImpl },
+    meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     close: async () => {
       try {
         if (!terminalError) await call("close");
@@ -290,6 +324,43 @@ async function createDirectClient(opts: {
       throw wrapError("opsByOpRefs", err);
     }
   };
+  const treeChildrenImpl = async (parent: string) => {
+    try {
+      const rows = await treeChildrenRaw(db, nodeIdToBytes16(parent));
+      return parseNodeIds(rows as any[]);
+    } catch (err) {
+      throw wrapError("treeChildren", err);
+    }
+  };
+  const treeDumpImpl = async () => {
+    try {
+      const rows = await treeDumpRaw(db);
+      return parseTreeRows(rows as any[]);
+    } catch (err) {
+      throw wrapError("treeDump", err);
+    }
+  };
+  const treeNodeCountImpl = async () => {
+    try {
+      return await treeNodeCountRaw(db);
+    } catch (err) {
+      throw wrapError("treeNodeCount", err);
+    }
+  };
+  const headLamportImpl = async () => {
+    try {
+      return await headLamportRaw(db);
+    } catch (err) {
+      throw wrapError("headLamport", err);
+    }
+  };
+  const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) => {
+    try {
+      return await replicaMaxCounterRaw(db, encodeReplica(replica));
+    } catch (err) {
+      throw wrapError("replicaMaxCounter", err);
+    }
+  };
 
   return {
     mode: "direct",
@@ -304,6 +375,8 @@ async function createDirectClient(opts: {
       get: opsByOpRefsImpl,
     },
     opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
+    tree: { children: treeChildrenImpl, dump: treeDumpImpl, nodeCount: treeNodeCountImpl },
+    meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     close: async () => {
       if (db.close) await db.close();
     },
@@ -318,6 +391,22 @@ function encodeReplica(replica: Operation["meta"]["id"]["replica"]): Uint8Array 
 
 function parseOpRefs(raw: any[]): Uint8Array[] {
   return raw.map((val) => (val instanceof Uint8Array ? val : Uint8Array.from(val)));
+}
+
+function parseNodeIds(raw: any[]): string[] {
+  const decodeNode = decodeNodeId;
+  return raw.map((val) => decodeNode(val instanceof Uint8Array ? val : Uint8Array.from(val)));
+}
+
+function parseTreeRows(raw: any[]): TreeNodeRow[] {
+  const decodeNode = decodeNodeId;
+  return raw.map((row) => {
+    const node = decodeNode(row.node);
+    const parent = row.parent ? decodeNode(row.parent) : null;
+    const pos = row.pos === null || row.pos === undefined ? null : Number(row.pos);
+    const tombstone = Boolean(row.tombstone);
+    return { node, parent, pos, tombstone };
+  });
 }
 
 function parseOps(raw: any[]): Operation[] {
