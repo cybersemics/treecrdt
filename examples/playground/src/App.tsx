@@ -45,10 +45,46 @@ type DerivedTree = {
   childrenByParent: Record<string, string[]>;
 };
 
+type CollapseState = {
+  defaultCollapsed: boolean;
+  overrides: Set<string>;
+};
+
 type Status = "booting" | "ready" | "error";
 type StorageMode = "memory" | "opfs";
 
 type PeerInfo = { id: string; lastSeen: number };
+
+const ParentPicker = React.memo(function ParentPicker({
+  nodeList,
+  value,
+  onChange,
+  disabled,
+}: {
+  nodeList: Array<{ id: string; label: string; depth: number }>;
+  value: string;
+  onChange: (next: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
+      <span>Parent</span>
+      <select
+        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+      >
+        {nodeList.map(({ id, label, depth }) => (
+          <option key={id} value={id}>
+            {"".padStart(depth * 2, " ")}
+            {label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+});
 
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
@@ -62,7 +98,10 @@ export default function App() {
     initialStorage() === "opfs" ? ensureOpfsKey() : makeSessionKey()
   );
   const [parentChoice, setParentChoice] = useState(ROOT_ID);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapse, setCollapse] = useState<CollapseState>(() => ({
+    defaultCollapsed: true,
+    overrides: new Set([ROOT_ID]),
+  }));
   const [busy, setBusy] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -179,18 +218,25 @@ export default function App() {
 
   const { root, index, childrenByParent } = useMemo(() => rebuildTree(ops), [ops]);
 
-  const nodeList = useMemo(() => flatten(root), [root]);
+  const nodeList = useMemo(() => flattenForSelect(root), [root]);
   const headLamport = useMemo(() => ops.reduce((max, op) => Math.max(max, op.meta.lamport), 0), [ops]);
   const visibleNodes = useMemo(() => {
     const acc: Array<{ node: DisplayNode; depth: number }> = [];
-    const walk = (n: DisplayNode, depth: number) => {
-      acc.push({ node: n, depth });
-      if (collapsed.has(n.id)) return;
-      for (const child of n.children) walk(child, depth + 1);
+    const isCollapsed = (id: string) => {
+      return collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
     };
-    walk(root, 0);
+    const stack: Array<{ node: DisplayNode; depth: number }> = [{ node: root, depth: 0 }];
+    while (stack.length > 0) {
+      const entry = stack.pop();
+      if (!entry) break;
+      acc.push(entry);
+      if (isCollapsed(entry.node.id)) continue;
+      for (let i = entry.node.children.length - 1; i >= 0; i--) {
+        stack.push({ node: entry.node.children[i]!, depth: entry.depth + 1 });
+      }
+    }
     return acc;
-  }, [root, collapsed]);
+  }, [root, collapse]);
   const treeParentRef = useRef<HTMLDivElement | null>(null);
   const opsParentRef = useRef<HTMLDivElement | null>(null);
   const treeEstimateSize = React.useCallback(() => 72, []);
@@ -405,7 +451,7 @@ export default function App() {
         : sessionKey;
     setSessionKey(nextKey);
     setOps([]);
-    setCollapsed(new Set());
+    setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
     counterRef.current = 0;
     lamportRef.current = 0;
     if (clientRef.current?.close) {
@@ -421,10 +467,8 @@ export default function App() {
     if (!active) return;
     try {
       const fetched = await active.ops.all();
-      const sorted = [...fetched].sort(
-        (a, b) => a.meta.lamport - b.meta.lamport || a.meta.id.counter - b.meta.id.counter
-      );
-      setOps(sorted);
+      fetched.sort((a, b) => a.meta.lamport - b.meta.lamport || a.meta.id.counter - b.meta.id.counter);
+      setOps(fetched);
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
@@ -490,7 +534,7 @@ export default function App() {
       };
       await client.ops.append(op);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      await refreshOps(undefined, { preserveParent: true });
+      setOps((prev) => [...prev, op]);
     } catch (err) {
       console.error("Failed to append op", err);
       setError("Failed to append operation (see console)");
@@ -570,17 +614,22 @@ export default function App() {
       }
       await client.ops.appendMany(ops);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      await refreshOps(undefined, { preserveParent: true });
-      if (normalizedCount > 1) {
-        const inserted = ops.flatMap((op) => (op.kind.type === "insert" ? [op.kind.node] : []));
-        setCollapsed((prev) => {
-          const next = new Set(prev);
-          // Keep the chosen parent expanded so the user sees immediate children.
-          next.delete(parentId);
-          for (const id of inserted) next.add(id);
-          return next;
-        });
-      }
+      setOps((prev) => [...prev, ...ops]);
+      setCollapse((prev) => {
+        const overrides = new Set(prev.overrides);
+        const setExpanded = (id: string) => {
+          if (prev.defaultCollapsed) overrides.add(id);
+          else overrides.delete(id);
+        };
+        // Keep the chosen parent expanded so the user sees immediate children.
+        setExpanded(parentId);
+        let cur = index[parentId]?.parentId ?? null;
+        while (cur) {
+          setExpanded(cur);
+          cur = index[cur]?.parentId ?? null;
+        }
+        return { ...prev, overrides };
+      });
     } catch (err) {
       console.error("Failed to add nodes", err);
       setError("Failed to add nodes (see console)");
@@ -654,18 +703,22 @@ export default function App() {
   };
 
   const toggleCollapse = (id: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+    setCollapse((prev) => {
+      const overrides = new Set(prev.overrides);
+      const currentlyCollapsed = prev.defaultCollapsed ? !overrides.has(id) : overrides.has(id);
+      const nextCollapsed = !currentlyCollapsed;
+      const differsFromDefault = nextCollapsed !== prev.defaultCollapsed;
+      if (differsFromDefault) overrides.add(id);
+      else overrides.delete(id);
+      return { ...prev, overrides };
     });
   };
 
-  const expandAll = () => setCollapsed(new Set());
-  const collapseAll = () => setCollapsed(new Set(nodeList.filter((n) => n.id !== ROOT_ID).map((n) => n.id)));
+  const expandAll = () => setCollapse({ defaultCollapsed: false, overrides: new Set() });
+  const collapseAll = () => setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
 
   const stateBadge = status === "ready" ? "bg-emerald-500/80" : status === "error" ? "bg-rose-500/80" : "bg-amber-400/80";
+  const peerTotal = peers.length + 1;
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
@@ -701,7 +754,7 @@ export default function App() {
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
           <div className="flex items-center gap-2">
-            <span className="font-semibold">Persistent</span>
+            <span className="text-[11px] font-semibold text-slate-200">Memory</span>
             <button
               type="button"
               className={`relative h-7 w-12 rounded-full border border-slate-700 transition ${
@@ -711,9 +764,10 @@ export default function App() {
               disabled={status === "booting"}
               title={
                 opfsSupport.available
-                  ? "Toggle persistent OPFS storage"
+                  ? "Toggle storage (memory ↔ persistent OPFS)"
                   : "Will attempt OPFS via worker; may fall back to memory if browser blocks sync handles."
               }
+              aria-label={storage === "opfs" ? "Switch to in-memory storage" : "Switch to persistent storage (OPFS)"}
             >
               <span
                 className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition ${
@@ -721,13 +775,13 @@ export default function App() {
                 }`}
               />
             </button>
-            <span className="text-[11px] text-slate-400">{storage === "opfs" ? "OPFS" : "Memory"}</span>
+            <span className="text-[11px] font-semibold text-slate-200">Persistent</span>
           </div>
           <span className={`rounded-full px-3 py-1 text-xs font-semibold text-slate-900 ${stateBadge}`}>
             {status === "ready"
               ? storage === "opfs"
-                ? "Persistent (OPFS) ready"
-                : "In-memory ready"
+                ? "Ready (OPFS)"
+                : "Ready (memory)"
               : status === "booting"
                 ? "Starting wasm"
                 : "Error"}
@@ -747,22 +801,7 @@ export default function App() {
                 void handleAddNodes(parentChoice, nodeCount, { fanout });
               }}
             >
-              <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
-                <span>Parent</span>
-                <select
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  value={parentChoice}
-                  onChange={(e) => setParentChoice(e.target.value)}
-                  disabled={status !== "ready"}
-                >
-                  {nodeList.map(({ id, label, depth }) => (
-                    <option key={id} value={id}>
-                      {"".padStart(depth * 2, " ")}
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ParentPicker nodeList={nodeList} value={parentChoice} onChange={setParentChoice} disabled={status !== "ready"} />
               <label className="flex flex-col text-sm text-slate-200">
                 <span>Node count</span>
                 <input
@@ -851,7 +890,7 @@ export default function App() {
                   title="Peers"
                 >
                   <MdGroup className="text-[18px]" />
-                  <span className="font-mono">{peers.length}</span>
+                  <span className="font-mono">{peerTotal}</span>
                 </button>
                 <button
                   className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
@@ -903,16 +942,23 @@ export default function App() {
                     Create peer
                   </button>
                 </div>
-                {peers.length === 0 ? (
-                  <div className="mt-2 text-slate-500">Open another tab (same `doc`, different `replica`).</div>
-                ) : (
-                  <div className="mt-2 max-h-32 overflow-auto pr-1">
-                    {peers.map((p) => (
-                      <div key={p.id} className="flex items-center justify-between gap-2 py-1">
-                        <span className="font-mono text-slate-200">{p.id}</span>
-                        <span className="text-[10px] text-slate-500">{Math.max(0, Date.now() - p.lastSeen)}ms</span>
-                      </div>
-                    ))}
+                <div className="mt-2 max-h-32 overflow-auto pr-1">
+                  <div className="flex items-center justify-between gap-2 py-1">
+                    <span className="font-mono text-slate-200">
+                      {replicaId} <span className="text-[10px] text-slate-500">(you)</span>
+                    </span>
+                    <span className="text-[10px] text-slate-500">—</span>
+                  </div>
+                  {peers.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between gap-2 py-1">
+                      <span className="font-mono text-slate-200">{p.id}</span>
+                      <span className="text-[10px] text-slate-500">{Math.max(0, Date.now() - p.lastSeen)}ms</span>
+                    </div>
+                  ))}
+                </div>
+                {peers.length === 0 && (
+                  <div className="mt-2 text-slate-500">
+                    Only you right now. Open another tab (same `doc`, different `replica`).
                   </div>
                 )}
               </div>
@@ -936,7 +982,7 @@ export default function App() {
                       <TreeRow
                         node={entry.node}
                         depth={entry.depth}
-                        collapsed={collapsed}
+                        collapse={collapse}
                         onToggle={toggleCollapse}
                         onAddChild={(id) => {
                           setParentChoice(id);
@@ -1009,7 +1055,7 @@ export default function App() {
 function TreeRow({
   node,
   depth,
-  collapsed,
+  collapse,
   liveChildren,
   onToggle,
   onAddChild,
@@ -1022,7 +1068,7 @@ function TreeRow({
 }: {
   node: DisplayNode;
   depth: number;
-  collapsed: Set<string>;
+  collapse: CollapseState;
   liveChildren: boolean;
   onToggle: (id: string) => void;
   onAddChild: (id: string) => void;
@@ -1033,7 +1079,7 @@ function TreeRow({
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
-  const isCollapsed = collapsed.has(node.id);
+  const isCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(node.id) : collapse.overrides.has(node.id);
   const isRoot = node.id === ROOT_ID;
   const metaInfo = meta[node.id];
   const siblings = metaInfo?.parentId ? childrenByParent[metaInfo.parentId] ?? [] : [];
@@ -1150,8 +1196,7 @@ function rebuildTree(ops: Operation[]): DerivedTree {
     return next;
   };
 
-  const sortedOps = [...ops].sort((a, b) => a.meta.lamport - b.meta.lamport || a.meta.id.counter - b.meta.id.counter);
-  for (const op of sortedOps) {
+  for (const op of ops) {
     if (op.kind.type === "insert") {
       const parent = ensure(op.kind.parent);
       const node = ensure(op.kind.node);
@@ -1217,9 +1262,18 @@ function rebuildTree(ops: Operation[]): DerivedTree {
   return { root, index, childrenByParent };
 }
 
-function flatten(node: DisplayNode, depth = 0): Array<DisplayNode & { depth: number }> {
-  const self = { ...node, depth };
-  return [self, ...node.children.flatMap((child) => flatten(child, depth + 1))];
+function flattenForSelect(node: DisplayNode): Array<{ id: string; label: string; depth: number }> {
+  const acc: Array<{ id: string; label: string; depth: number }> = [];
+  const stack: Array<{ node: DisplayNode; depth: number }> = [{ node, depth: 0 }];
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    if (!entry) break;
+    acc.push({ id: entry.node.id, label: entry.node.label, depth: entry.depth });
+    for (let i = entry.node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: entry.node.children[i]!, depth: entry.depth + 1 });
+    }
+  }
+  return acc;
 }
 
 function renderKind(kind: OperationKind): string {
