@@ -154,46 +154,53 @@ export function createWaSqliteAdapter(db: Database): TreecrdtAdapter {
       appendOp(db, op, serializeNodeId, serializeReplica),
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
       if (ops.length === 0) return;
-      // Try bulk entrypoint first.
-      const payload = ops.map((op) => {
-        const { meta, kind } = op;
-        const { id, lamport } = meta;
-        const { replica, counter } = id;
-        const serReplica = serializeReplica(replica);
-        const serialize = (val: string) => Array.from(serializeNodeId(val));
-        const base = {
-          replica: Array.from(serReplica),
-          counter,
-          lamport,
-          kind: kind.type,
-          position: "position" in kind ? kind.position ?? null : null,
-        };
-        if (kind.type === "insert") {
-          return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
-        } else if (kind.type === "move") {
-          return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
-        } else if (kind.type === "delete") {
-          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-        }
-        return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-      });
-
       const bulkSql = "SELECT treecrdt_append_ops(?1)";
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const bulkStmt: any = await db.prepare(bulkSql);
-      try {
-        await db.bind(bulkStmt, 1, JSON.stringify(payload));
-        await db.step(bulkStmt);
-        await db.finalize(bulkStmt);
-        return;
-      } catch {
-        await db.finalize(bulkStmt);
-        // Fallback to per-op inserts inside one transaction.
-      }
+      const maxBulkOps = 5_000;
+      const serialize = (val: string) => Array.from(serializeNodeId(val));
 
+      // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
+      let bulkFailedAt: number | null = null;
+      for (let start = 0; start < ops.length; start += maxBulkOps) {
+        const chunk = ops.slice(start, start + maxBulkOps);
+        const payload = chunk.map((op) => {
+          const { meta, kind } = op;
+          const { id, lamport } = meta;
+          const { replica, counter } = id;
+          const serReplica = serializeReplica(replica);
+          const base = {
+            replica: Array.from(serReplica),
+            counter,
+            lamport,
+            kind: kind.type,
+            position: "position" in kind ? kind.position ?? null : null,
+          };
+          if (kind.type === "insert") {
+            return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
+          } else if (kind.type === "move") {
+            return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
+          } else if (kind.type === "delete") {
+            return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+          }
+          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bulkStmt: any = await db.prepare(bulkSql);
+        try {
+          await db.bind(bulkStmt, 1, JSON.stringify(payload));
+          await db.step(bulkStmt);
+          await db.finalize(bulkStmt);
+        } catch {
+          await db.finalize(bulkStmt);
+          bulkFailedAt = start;
+          break;
+        }
+      }
+      if (bulkFailedAt === null) return;
+
+      const remaining = ops.slice(bulkFailedAt);
       await db.exec("BEGIN");
       try {
-        for (const op of ops) {
+        for (const op of remaining) {
           const { meta, kind } = op;
           const { id, lamport } = meta;
           const { replica, counter } = id;
