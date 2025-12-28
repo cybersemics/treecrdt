@@ -86,6 +86,36 @@ const ParentPicker = React.memo(function ParentPicker({
   );
 });
 
+function opKey(op: Operation): string {
+  return `${op.meta.id.replica}\u0000${op.meta.id.counter}`;
+}
+
+function compareOps(a: Operation, b: Operation): number {
+  return (
+    a.meta.lamport - b.meta.lamport ||
+    a.meta.id.replica.localeCompare(b.meta.id.replica) ||
+    a.meta.id.counter - b.meta.id.counter
+  );
+}
+
+function mergeSortedOps(prev: Operation[], next: Operation[]): Operation[] {
+  if (prev.length === 0) return next.slice();
+  if (next.length === 0) return prev;
+  if (compareOps(prev[prev.length - 1]!, next[0]!) <= 0) return [...prev, ...next];
+
+  const out = new Array<Operation>(prev.length + next.length);
+  let i = 0;
+  let j = 0;
+  let k = 0;
+  while (i < prev.length && j < next.length) {
+    if (compareOps(prev[i]!, next[j]!) <= 0) out[k++] = prev[i++]!;
+    else out[k++] = next[j++]!;
+  }
+  while (i < prev.length) out[k++] = prev[i++]!;
+  while (j < next.length) out[k++] = next[j++]!;
+  return out;
+}
+
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const clientRef = useRef<TreecrdtClient | null>(null);
@@ -121,11 +151,29 @@ export default function App() {
   const syncConnRef = useRef<
     Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>
   >(new Map());
+  const knownOpsRef = useRef<Set<string>>(new Set());
   const liveChildrenParentsRef = useRef<Set<string>>(new Set());
   const liveChildSubsRef = useRef<Map<string, Map<string, SyncSubscription>>>(new Map());
   const liveAllEnabledRef = useRef(false);
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
-  const refreshTimerRef = useRef<number | null>(null);
+
+  const ingestOps = React.useCallback(
+    (incoming: Operation[], opts: { assumeSorted?: boolean } = {}) => {
+      if (incoming.length === 0) return;
+      const fresh: Operation[] = [];
+      const known = knownOpsRef.current;
+      for (const op of incoming) {
+        const key = opKey(op);
+        if (known.has(key)) continue;
+        known.add(key);
+        fresh.push(op);
+      }
+      if (fresh.length === 0) return;
+      if (!opts.assumeSorted) fresh.sort(compareOps);
+      setOps((prev) => mergeSortedOps(prev, fresh));
+    },
+    []
+  );
 
   const stopLiveAllForPeer = (peerId: string) => {
     const existing = liveAllSubsRef.current.get(peerId);
@@ -294,6 +342,7 @@ export default function App() {
     const baseBackend = createPlaygroundBackend(client, docId);
     const backend = {
       ...baseBackend,
+      maxLamport: async () => BigInt(lamportRef.current),
       listOpRefs: async (filter: Filter) => {
         const refs = await baseBackend.listOpRefs(filter);
         if (debugSync) {
@@ -310,7 +359,7 @@ export default function App() {
           console.debug(`[sync:${replicaId}] applyOps(${ops.length})`);
         }
         await baseBackend.applyOps(ops);
-        scheduleRefreshOps();
+        ingestOps(ops);
       },
     };
     const connections = new Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>();
@@ -383,23 +432,18 @@ export default function App() {
       updatePeers();
     }, 2000);
 
-    return () => {
-      window.clearInterval(interval);
-      window.clearInterval(pruneInterval);
-      channel.removeEventListener("message", onPresence);
-
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
-      stopAllLiveAll();
-      stopAllLiveChildren();
-      channel.close();
+	    return () => {
+	      window.clearInterval(interval);
+	      window.clearInterval(pruneInterval);
+	      channel.removeEventListener("message", onPresence);
+	      stopAllLiveAll();
+	      stopAllLiveChildren();
+	      channel.close();
 
       for (const conn of connections.values()) conn.detach();
       connections.clear();
       setPeers([]);
-    };
+	  };
   }, [client, docId, replicaId, status]);
 
   useEffect(() => {
@@ -451,6 +495,7 @@ export default function App() {
         : sessionKey;
     setSessionKey(nextKey);
     setOps([]);
+    knownOpsRef.current = new Set();
     setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
     counterRef.current = 0;
     lamportRef.current = 0;
@@ -467,23 +512,15 @@ export default function App() {
     if (!active) return;
     try {
       const fetched = await active.ops.all();
-      fetched.sort((a, b) => a.meta.lamport - b.meta.lamport || a.meta.id.counter - b.meta.id.counter);
+      fetched.sort(compareOps);
       setOps(fetched);
+      knownOpsRef.current = new Set(fetched.map(opKey));
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
       setError("Failed to refresh operations (see console)");
     }
   };
-
-  function scheduleRefreshOps() {
-    if (typeof window === "undefined") return;
-    if (refreshTimerRef.current !== null) return;
-    refreshTimerRef.current = window.setTimeout(() => {
-      refreshTimerRef.current = null;
-      void refreshOps(undefined, { preserveParent: true });
-    }, 50);
-  }
 
   useEffect(() => {
     liveChildrenParentsRef.current = liveChildrenParents;
@@ -534,7 +571,7 @@ export default function App() {
       };
       await client.ops.append(op);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      setOps((prev) => [...prev, op]);
+      ingestOps([op], { assumeSorted: true });
     } catch (err) {
       console.error("Failed to append op", err);
       setError("Failed to append operation (see console)");
@@ -614,7 +651,7 @@ export default function App() {
       }
       await client.ops.appendMany(ops);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      setOps((prev) => [...prev, ...ops]);
+      ingestOps(ops, { assumeSorted: true });
       setCollapse((prev) => {
         const overrides = new Set(prev.overrides);
         const setExpanded = (id: string) => {
@@ -677,7 +714,6 @@ export default function App() {
       for (const conn of connections.values()) {
         await conn.peer.syncOnce(conn.transport, filter, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
       }
-      await refreshOps(undefined, { preserveParent: true });
     } catch (err) {
       console.error("Sync failed", err);
       setSyncError(err instanceof Error ? err.message : String(err));
