@@ -348,12 +348,7 @@ fn defensive_delete_parent_then_insert_child_restores_parent() {
     assert_eq!(crdt_b.parent(child), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent));
 
-    let delete_op = Operation::delete(
-        &ReplicaId::new(b"a"),
-        2,
-        insert_child_lamport,
-        parent,
-    );
+    let delete_op = Operation::delete(&ReplicaId::new(b"a"), 2, insert_child_lamport, parent);
     crdt_a.apply_remote(delete_op.clone()).unwrap();
     assert!(crdt_a.is_tombstoned(parent));
 
@@ -407,12 +402,7 @@ fn defensive_delete_parent_then_move_child_restores_parent() {
     assert_eq!(crdt_b.parent(child), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent));
 
-    let delete_op = Operation::delete(
-        &ReplicaId::new(b"a"),
-        4,
-        move_lamport - 1,
-        parent,
-    );
+    let delete_op = Operation::delete(&ReplicaId::new(b"a"), 4, move_lamport - 1, parent);
     crdt_a.apply_remote(delete_op.clone()).unwrap();
     assert!(crdt_a.is_tombstoned(parent));
 
@@ -465,12 +455,7 @@ fn defensive_delete_parent_then_multiple_children_restores_parent() {
     assert!(!crdt_b.is_tombstoned(parent));
     assert_eq!(crdt_b.children(parent).unwrap(), &[child1, child2]);
 
-    let delete_op = Operation::delete(
-        &ReplicaId::new(b"a"),
-        2,
-        insert_child2_lamport,
-        parent,
-    );
+    let delete_op = Operation::delete(&ReplicaId::new(b"a"), 2, insert_child2_lamport, parent);
     crdt_a.apply_remote(delete_op.clone()).unwrap();
     assert!(crdt_a.is_tombstoned(parent));
 
@@ -522,7 +507,7 @@ fn defensive_delete_insert_then_delete_no_restoration() {
     crdt_a.apply_remote(child_op.clone()).unwrap();
     assert_eq!(crdt_a.parent(child), Some(parent));
     assert!(!crdt_a.is_tombstoned(parent));
-    
+
     let delete_op = crdt_a.local_delete(parent).unwrap();
     assert!(crdt_a.is_tombstoned(parent));
 
@@ -624,12 +609,7 @@ fn defensive_delete_insert_delete_sequence() {
     crdt_b.apply_remote(insert_child_op.clone()).unwrap();
     assert!(!crdt_b.is_tombstoned(parent));
 
-    let delete1_op = Operation::delete(
-        &ReplicaId::new(b"a"),
-        2,
-        insert_lamport,
-        parent,
-    );
+    let delete1_op = Operation::delete(&ReplicaId::new(b"a"), 2, insert_lamport, parent);
     crdt_a.apply_remote(delete1_op.clone()).unwrap();
     assert!(crdt_a.is_tombstoned(parent));
 
@@ -683,18 +663,8 @@ fn defensive_delete_multiple_deletes_then_insert_restores_parent() {
     assert!(!crdt_c.is_tombstoned(parent));
     assert_eq!(crdt_c.children(parent).unwrap(), &[child]);
 
-    let delete_a = Operation::delete(
-        &ReplicaId::new(b"a"),
-        2,
-        insert_lamport,
-        parent,
-    );
-    let delete_b = Operation::delete(
-        &ReplicaId::new(b"b"),
-        1,
-        insert_lamport,
-        parent,
-    );
+    let delete_a = Operation::delete(&ReplicaId::new(b"a"), 2, insert_lamport, parent);
+    let delete_b = Operation::delete(&ReplicaId::new(b"b"), 1, insert_lamport, parent);
 
     crdt_a.apply_remote(delete_a.clone()).unwrap();
     crdt_b.apply_remote(delete_b.clone()).unwrap();
