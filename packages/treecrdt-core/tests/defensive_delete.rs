@@ -540,6 +540,63 @@ fn defensive_delete_insert_then_delete_no_restoration() {
 }
 
 #[test]
+#[should_panic(expected = "Parent should be restored")]
+fn defensive_delete_later_delete_unaware_restores_parent() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    let parent_op = crdt_a.local_insert(root, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    // Client B inserts child first
+    let insert_child_op = crdt_b.local_insert(parent, child, 0).unwrap();
+    let insert_lamport = insert_child_op.meta.lamport;
+    crdt_b.apply_remote(insert_child_op.clone()).unwrap();
+    assert_eq!(crdt_b.parent(child), Some(parent));
+    assert!(!crdt_b.is_tombstoned(parent));
+
+    // Client A deletes parent with higher lamport (later in time) but without awareness of child insert
+    // Even though delete happens later, Client A was unaware of modifications, so defensive delete should restore
+    let delete_op = Operation::delete(
+        &ReplicaId::new(b"a"),
+        2,
+        insert_lamport + 1, // Higher lamport (later in time) but unaware of insert
+        parent,
+    );
+    crdt_a.apply_remote(delete_op.clone()).unwrap();
+    assert!(crdt_a.is_tombstoned(parent));
+
+    // Synchronize: Client A receives the insert, Client B receives the delete
+    crdt_a.apply_remote(insert_child_op.clone()).unwrap();
+    crdt_b.apply_remote(delete_op).unwrap();
+
+    // Defensive delete: parent should be restored because delete was unaware of modifications
+    // even though it happened later in time (higher lamport)
+    assert!(!crdt_a.is_tombstoned(parent), "Parent should be restored");
+    assert!(!crdt_b.is_tombstoned(parent), "Parent should be restored");
+    assert_eq!(crdt_a.parent(child), Some(parent));
+    assert_eq!(crdt_b.parent(child), Some(parent));
+    assert_eq!(crdt_a.children(parent).unwrap(), &[child]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[child]);
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
 #[should_panic(expected = "Parent should be restored after first insert")]
 fn defensive_delete_insert_delete_sequence() {
     let mut crdt_a = TreeCrdt::new(
