@@ -25,6 +25,9 @@ import { useVirtualizer } from "./virtualizer";
 
 const ROOT_ID = "00000000000000000000000000000000"; // 16-byte zero, hex-encoded
 const MAX_COMPOSER_NODE_COUNT = 100_000;
+const PLAYGROUND_SYNC_MAX_CODEWORDS = 2_000_000;
+const PLAYGROUND_SYNC_MAX_OPS_PER_BATCH = 20_000;
+const PLAYGROUND_PEER_TIMEOUT_MS = 30_000;
 
 type DisplayNode = {
   id: string;
@@ -152,6 +155,7 @@ export default function App() {
   const lamportRef = useRef(0);
   const replicaId = useMemo(pickReplicaId, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
+  const showOpsPanelRef = useRef(false);
 
   const syncConnRef = useRef<
     Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>
@@ -167,8 +171,17 @@ export default function App() {
     treeStateRef.current = treeState;
   }, [treeState]);
 
+  useEffect(() => {
+    showOpsPanelRef.current = showOpsPanel;
+    if (!showOpsPanel) {
+      setOps([]);
+      knownOpsRef.current = new Set();
+    }
+  }, [showOpsPanel]);
+
   const ingestOps = React.useCallback(
     (incoming: Operation[], opts: { assumeSorted?: boolean } = {}) => {
+      if (!showOpsPanelRef.current) return;
       if (incoming.length === 0) return;
       const fresh: Operation[] = [];
       const known = knownOpsRef.current;
@@ -320,7 +333,15 @@ export default function App() {
     if (!conn) return;
 
     if (liveAllSubsRef.current.has(peerId)) return;
-    const sub = conn.peer.subscribe(conn.transport, { all: {} }, { maxCodewords: 200_000, codewordsPerMessage: 1024 });
+    const sub = conn.peer.subscribe(
+      conn.transport,
+      { all: {} },
+      {
+        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+        codewordsPerMessage: 1024,
+      }
+    );
     liveAllSubsRef.current.set(peerId, sub);
     void sub.done.catch((err) => {
       console.error("Live sync(all) failed", err);
@@ -361,7 +382,11 @@ export default function App() {
     const sub = conn.peer.subscribe(
       conn.transport,
       { children: { parent: hexToBytes16(parentId) } },
-      { maxCodewords: 200_000, codewordsPerMessage: 1024 }
+      {
+        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+        codewordsPerMessage: 1024,
+      }
     );
     byParent.set(parentId, sub);
     liveChildSubsRef.current.set(peerId, byParent);
@@ -515,13 +540,25 @@ export default function App() {
       if (!peerId || peerId === replicaId) return;
       if (connections.has(peerId)) return;
 
-      const transport = createBroadcastDuplex<Operation>(
+      const rawTransport = createBroadcastDuplex<Operation>(
         channel,
         replicaId,
         peerId,
         treecrdtSyncV0ProtobufCodec
       );
-      const peer = new SyncPeer<Operation>(backend);
+      const transport: DuplexTransport<any> = {
+        ...rawTransport,
+        onMessage(handler) {
+          return rawTransport.onMessage((msg) => {
+            lastSeen.set(peerId, Date.now());
+            return handler(msg);
+          });
+        },
+      };
+      const peer = new SyncPeer<Operation>(backend, {
+        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+      });
       const detach = peer.attach(transport);
       connections.set(peerId, { transport, peer, detach });
 
@@ -555,7 +592,7 @@ export default function App() {
     const pruneInterval = window.setInterval(() => {
       const now = Date.now();
       for (const [id, ts] of lastSeen) {
-        if (now - ts > 5000) {
+        if (now - ts > PLAYGROUND_PEER_TIMEOUT_MS) {
           lastSeen.delete(id);
           const conn = connections.get(id);
           if (conn) {
@@ -569,18 +606,21 @@ export default function App() {
       updatePeers();
     }, 2000);
 
-	    return () => {
-	      window.clearInterval(interval);
-	      window.clearInterval(pruneInterval);
-	      channel.removeEventListener("message", onPresence);
-	      stopAllLiveAll();
-	      stopAllLiveChildren();
-	      channel.close();
+    return () => {
+      window.clearInterval(interval);
+      window.clearInterval(pruneInterval);
+      channel.removeEventListener("message", onPresence);
+      stopAllLiveAll();
+      stopAllLiveChildren();
+      channel.close();
 
-      for (const conn of connections.values()) conn.detach();
+      for (const conn of connections.values()) {
+        conn.detach();
+        (conn.transport as any).close?.();
+      }
       connections.clear();
       setPeers([]);
-	  };
+    };
   }, [client, docId, replicaId, status]);
 
   useEffect(() => {
@@ -867,7 +907,11 @@ export default function App() {
     setSyncError(null);
     try {
       for (const conn of connections.values()) {
-        await conn.peer.syncOnce(conn.transport, filter, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
+        await conn.peer.syncOnce(conn.transport, filter, {
+          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+          codewordsPerMessage: 2048,
+        });
       }
       await refreshMeta();
       await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
