@@ -1,6 +1,10 @@
 import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
-import { buildAppendOp, buildOpsSince } from "@treecrdt/interface/sqlite";
-import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
+import {
+  createTreecrdtSqliteAdapter,
+  treecrdtAppendOp,
+  treecrdtOpsSince,
+  type SqliteRunner,
+} from "@treecrdt/interface/sqlite";
 
 // Minimal wa-sqlite surface needed by the adapter. Exported so consumers
 // don't need to import types from wa-sqlite directly.
@@ -18,6 +22,27 @@ export type OpsSinceFilter = {
   lamport: number;
   root?: string; // node id as hex string or other canonical encoding
 };
+
+function createRunner(db: Database): SqliteRunner {
+  return {
+    exec: (sql) => db.exec(sql),
+    getText: async (sql, params = []) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const stmt: any = await db.prepare(sql);
+      try {
+        let idx = 1;
+        for (const p of params) {
+          await db.bind(stmt, idx++, p);
+        }
+        const row = await db.step(stmt);
+        if (row === 0) return null;
+        return await db.column_text(stmt, 0);
+      } finally {
+        await db.finalize(stmt);
+      }
+    },
+  };
+}
 
 /**
  * Set the document id used by the SQLite extension for v0 sync (`op_ref` derivation).
@@ -179,25 +204,7 @@ export async function appendOp(
   serializeNodeId: (id: string) => Uint8Array,
   serializeReplica: (id: Operation["meta"]["id"]["replica"]) => Uint8Array
 ) {
-  const { meta, kind } = op;
-  const { id, lamport } = meta;
-  const { replica, counter } = id;
-
-  const { sql, params } = buildAppendOp(kind, {
-    replica: serializeReplica(replica),
-    counter,
-    lamport,
-    serializeNodeId,
-  });
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare(sql);
-  let idx = 1;
-  for (const p of params) {
-    await db.bind(stmt, idx++, p);
-  }
-  await db.step(stmt);
-  await db.finalize(stmt);
+  await treecrdtAppendOp(createRunner(db), op, serializeNodeId, serializeReplica);
 }
 
 /**
@@ -208,107 +215,9 @@ export async function opsSince(
   db: Database,
   filter: OpsSinceFilter
 ): Promise<unknown[]> {
-  const { sql, params } = buildOpsSince({
-    lamport: filter.lamport,
-    root: filter.root,
-    serializeNodeId: nodeIdToBytes16,
-  });
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare(sql);
-  let idx = 1;
-  for (const p of params) {
-    await db.bind(stmt, idx++, p);
-  }
-  const row = await db.step(stmt);
-  let result: unknown[] = [];
-  if (row === 0) {
-    // done
-  } else {
-    const json = await db.column_text(stmt, 0);
-    result = JSON.parse(json);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtOpsSince(createRunner(db), filter);
 }
 
 export function createWaSqliteAdapter(db: Database): TreecrdtAdapter {
-  return {
-    appendOp: (op, serializeNodeId, serializeReplica) =>
-      appendOp(db, op, serializeNodeId, serializeReplica),
-    appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      if (ops.length === 0) return;
-      const bulkSql = "SELECT treecrdt_append_ops(?1)";
-      const maxBulkOps = 5_000;
-      const serialize = (val: string) => Array.from(serializeNodeId(val));
-
-      // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
-      let bulkFailedAt: number | null = null;
-      for (let start = 0; start < ops.length; start += maxBulkOps) {
-        const chunk = ops.slice(start, start + maxBulkOps);
-        const payload = chunk.map((op) => {
-          const { meta, kind } = op;
-          const { id, lamport } = meta;
-          const { replica, counter } = id;
-          const serReplica = serializeReplica(replica);
-          const base = {
-            replica: Array.from(serReplica),
-            counter,
-            lamport,
-            kind: kind.type,
-            position: "position" in kind ? kind.position ?? null : null,
-          };
-          if (kind.type === "insert") {
-            return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
-          } else if (kind.type === "move") {
-            return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
-          } else if (kind.type === "delete") {
-            return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-          }
-          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-        });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const bulkStmt: any = await db.prepare(bulkSql);
-        try {
-          await db.bind(bulkStmt, 1, JSON.stringify(payload));
-          await db.step(bulkStmt);
-          await db.finalize(bulkStmt);
-        } catch {
-          await db.finalize(bulkStmt);
-          bulkFailedAt = start;
-          break;
-        }
-      }
-      if (bulkFailedAt === null) return;
-
-      const remaining = ops.slice(bulkFailedAt);
-      await db.exec("BEGIN");
-      try {
-        for (const op of remaining) {
-          const { meta, kind } = op;
-          const { id, lamport } = meta;
-          const { replica, counter } = id;
-          const { sql, params } = buildAppendOp(kind, {
-            replica: serializeReplica(replica),
-            counter,
-            lamport,
-            serializeNodeId,
-          });
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const stmt: any = await db.prepare(sql);
-          let idx = 1;
-          for (const p of params) {
-            await db.bind(stmt, idx++, p);
-          }
-          await db.step(stmt);
-          await db.finalize(stmt);
-        }
-        await db.exec("COMMIT");
-      } catch (err) {
-        await db.exec("ROLLBACK");
-        throw err;
-      }
-    },
-    opsSince: (lamport, root) => opsSince(db, { lamport, root }),
-  };
+  return createTreecrdtSqliteAdapter(createRunner(db));
 }
