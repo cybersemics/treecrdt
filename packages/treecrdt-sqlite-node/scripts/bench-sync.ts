@@ -12,7 +12,8 @@ import {
   writeResult,
 } from "@treecrdt/benchmark";
 import type { Operation } from "@treecrdt/interface";
-import { decodeNodeId, decodeReplicaId, nodeIdToBytes16 } from "@treecrdt/interface/ids";
+import { decodeSqliteOpRefs, decodeSqliteOps } from "@treecrdt/interface/sqlite";
+import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import { SyncPeer, treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync";
 import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from "@treecrdt/sync/transport";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
@@ -34,32 +35,11 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 function parseOpRefs(raw: any): Uint8Array[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((val) => (val instanceof Uint8Array ? val : Uint8Array.from(val)));
+  return decodeSqliteOpRefs(raw);
 }
 
 function parseOps(raw: any): Operation[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((row) => {
-    const replica = decodeReplicaId(row.replica);
-    const base = { meta: { id: { replica, counter: Number(row.counter) }, lamport: Number(row.lamport) } } as Operation;
-    if (row.kind === "insert") {
-      return {
-        ...base,
-        kind: { type: "insert", parent: decodeNodeId(row.parent), node: decodeNodeId(row.node), position: row.position ?? 0 },
-      } as Operation;
-    }
-    if (row.kind === "move") {
-      return {
-        ...base,
-        kind: { type: "move", node: decodeNodeId(row.node), newParent: decodeNodeId(row.new_parent), position: row.position ?? 0 },
-      } as Operation;
-    }
-    if (row.kind === "delete") {
-      return { ...base, kind: { type: "delete", node: decodeNodeId(row.node) } } as Operation;
-    }
-    return { ...base, kind: { type: "tombstone", node: decodeNodeId(row.node) } } as Operation;
-  });
+  return decodeSqliteOps(raw);
 }
 
 function makeBackend(opts: {

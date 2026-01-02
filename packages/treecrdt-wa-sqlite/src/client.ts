@@ -15,7 +15,13 @@ import {
 } from "./index.js";
 import { createOpfsVfs, detectOpfsSupport } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
-import { decodeNodeId, decodeReplicaId, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import {
+  decodeSqliteNodeIds,
+  decodeSqliteOpRefs,
+  decodeSqliteOps,
+  decodeSqliteTreeRows,
+} from "@treecrdt/interface/sqlite";
+import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from "./rpc.js";
 
 export type StorageMode = "memory" | "opfs";
@@ -175,15 +181,15 @@ async function createWorkerClient(opts: {
   }
 
   const opsSinceImpl = (lamport: number, root?: string) =>
-    call("opsSince", { lamport, root }).then((rows) => parseOps(rows as any[]));
-  const opRefsAllImpl = () => call("opRefsAll", undefined).then((rows) => parseOpRefs(rows as any[]));
+    call("opsSince", { lamport, root }).then((rows) => decodeSqliteOps(rows));
+  const opRefsAllImpl = () => call("opRefsAll", undefined).then((rows) => decodeSqliteOpRefs(rows));
   const opRefsChildrenImpl = (parent: string) =>
-    call("opRefsChildren", { parent }).then((rows) => parseOpRefs(rows as any[]));
+    call("opRefsChildren", { parent }).then((rows) => decodeSqliteOpRefs(rows));
   const opsByOpRefsImpl = (opRefs: Uint8Array[]) =>
-    call("opsByOpRefs", { opRefs: opRefs.map((r) => Array.from(r)) }).then((rows) => parseOps(rows as any[]));
+    call("opsByOpRefs", { opRefs: opRefs.map((r) => Array.from(r)) }).then((rows) => decodeSqliteOps(rows));
   const treeChildrenImpl = (parent: string) =>
-    call("treeChildren", { parent }).then((rows) => parseNodeIds(rows as any[]));
-  const treeDumpImpl = () => call("treeDump", undefined).then((rows) => parseTreeRows(rows as any[]));
+    call("treeChildren", { parent }).then((rows) => decodeSqliteNodeIds(rows));
+  const treeDumpImpl = () => call("treeDump", undefined).then((rows) => decodeSqliteTreeRows(rows));
   const treeNodeCountImpl = () => call("treeNodeCount", undefined).then((v) => Number(v));
   const headLamportImpl = () => call("headLamport", undefined).then((v) => Number(v));
   const replicaMaxCounterImpl = (replica: Operation["meta"]["id"]["replica"]) =>
@@ -281,7 +287,7 @@ async function createDirectClient(opts: {
   const opsSinceImpl = async (lamport: number, root?: string) => {
     try {
       const rows = await opsSinceRaw(db, { lamport, root });
-      return parseOps(rows as any[]);
+      return decodeSqliteOps(rows);
     } catch (err) {
       throw wrapError("opsSince", err);
     }
@@ -289,7 +295,7 @@ async function createDirectClient(opts: {
   const opRefsAllImpl = async () => {
     try {
       const rows = await opRefsAllRaw(db);
-      return parseOpRefs(rows as any[]);
+      return decodeSqliteOpRefs(rows);
     } catch (err) {
       throw wrapError("opRefsAll", err);
     }
@@ -297,7 +303,7 @@ async function createDirectClient(opts: {
   const opRefsChildrenImpl = async (parent: string) => {
     try {
       const rows = await opRefsChildrenRaw(db, nodeIdToBytes16(parent));
-      return parseOpRefs(rows as any[]);
+      return decodeSqliteOpRefs(rows);
     } catch (err) {
       throw wrapError("opRefsChildren", err);
     }
@@ -305,7 +311,7 @@ async function createDirectClient(opts: {
   const opsByOpRefsImpl = async (opRefs: Uint8Array[]) => {
     try {
       const rows = await opsByOpRefsRaw(db, opRefs);
-      return parseOps(rows as any[]);
+      return decodeSqliteOps(rows);
     } catch (err) {
       throw wrapError("opsByOpRefs", err);
     }
@@ -313,7 +319,7 @@ async function createDirectClient(opts: {
   const treeChildrenImpl = async (parent: string) => {
     try {
       const rows = await treeChildrenRaw(db, nodeIdToBytes16(parent));
-      return parseNodeIds(rows as any[]);
+      return decodeSqliteNodeIds(rows);
     } catch (err) {
       throw wrapError("treeChildren", err);
     }
@@ -321,7 +327,7 @@ async function createDirectClient(opts: {
   const treeDumpImpl = async () => {
     try {
       const rows = await treeDumpRaw(db);
-      return parseTreeRows(rows as any[]);
+      return decodeSqliteTreeRows(rows);
     } catch (err) {
       throw wrapError("treeDump", err);
     }
@@ -373,51 +379,6 @@ async function createDirectClient(opts: {
 
 function encodeReplica(replica: Operation["meta"]["id"]["replica"]): Uint8Array {
   return replicaIdToBytes(replica);
-}
-
-function parseOpRefs(raw: any[]): Uint8Array[] {
-  return raw.map((val) => (val instanceof Uint8Array ? val : Uint8Array.from(val)));
-}
-
-function parseNodeIds(raw: any[]): string[] {
-  const decodeNode = decodeNodeId;
-  return raw.map((val) => decodeNode(val instanceof Uint8Array ? val : Uint8Array.from(val)));
-}
-
-function parseTreeRows(raw: any[]): TreeNodeRow[] {
-  const decodeNode = decodeNodeId;
-  return raw.map((row) => {
-    const node = decodeNode(row.node);
-    const parent = row.parent ? decodeNode(row.parent) : null;
-    const pos = row.pos === null || row.pos === undefined ? null : Number(row.pos);
-    const tombstone = Boolean(row.tombstone);
-    return { node, parent, pos, tombstone };
-  });
-}
-
-function parseOps(raw: any[]): Operation[] {
-  const decodeNode = decodeNodeId;
-  const decodeReplica = decodeReplicaId;
-  return raw.map((row) => {
-    const replica = decodeReplica(row.replica);
-    const base = { meta: { id: { replica, counter: row.counter }, lamport: row.lamport } } as Operation;
-    if (row.kind === "insert") {
-      return {
-        ...base,
-        kind: { type: "insert", parent: decodeNode(row.parent), node: decodeNode(row.node), position: row.position ?? 0 },
-      } as Operation;
-    }
-    if (row.kind === "move") {
-      return {
-        ...base,
-        kind: { type: "move", node: decodeNode(row.node), newParent: decodeNode(row.new_parent), position: row.position ?? 0 },
-      } as Operation;
-    }
-    if (row.kind === "delete") {
-      return { ...base, kind: { type: "delete", node: decodeNode(row.node) } } as Operation;
-    }
-    return { ...base, kind: { type: "tombstone", node: decodeNode(row.node) } } as Operation;
-  });
 }
 
 function makeDbAdapter(sqlite3: any, handle: number): Database {

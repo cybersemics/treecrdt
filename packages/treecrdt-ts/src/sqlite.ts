@@ -1,5 +1,9 @@
 import type { TreecrdtAdapter } from "./adapter.js";
-import { nodeIdToBytes16 } from "./ids.js";
+import {
+  decodeNodeId,
+  decodeReplicaId,
+  nodeIdToBytes16,
+} from "./ids.js";
 import type { Operation, OperationKind } from "./index.js";
 
 export type SerializeNodeId = (id: string) => Uint8Array;
@@ -299,4 +303,70 @@ export async function treecrdtHeadLamport(runner: SqliteRunner): Promise<number>
  */
 export async function treecrdtReplicaMaxCounter(runner: SqliteRunner, replica: Uint8Array): Promise<number> {
   return sqliteGetNumber(runner, "SELECT treecrdt_replica_max_counter(?1)", [replica]);
+}
+
+// ---- Decoders for extension JSON payloads ----
+
+export function decodeSqliteOpRefs(raw: unknown): Uint8Array[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((val) => (val instanceof Uint8Array ? val : Uint8Array.from(val as any)));
+}
+
+export function decodeSqliteNodeIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((val) => decodeNodeId(val instanceof Uint8Array ? val : (val as any)));
+}
+
+export type SqliteTreeRow = {
+  node: string;
+  parent: string | null;
+  pos: number | null;
+  tombstone: boolean;
+};
+
+export function decodeSqliteTreeRows(raw: unknown): SqliteTreeRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((row: any) => {
+    const node = decodeNodeId(row.node);
+    const parent = row.parent ? decodeNodeId(row.parent) : null;
+    const pos = row.pos === null || row.pos === undefined ? null : Number(row.pos);
+    const tombstone = Boolean(row.tombstone);
+    return { node, parent, pos, tombstone };
+  });
+}
+
+export function decodeSqliteOps(raw: unknown): Operation[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((row: any) => {
+    const replica = decodeReplicaId(row.replica);
+    const counter = Number(row.counter);
+    const lamport = Number(row.lamport);
+    const base = { meta: { id: { replica, counter }, lamport } } as Operation;
+    if (row.kind === "insert") {
+      return {
+        ...base,
+        kind: {
+          type: "insert",
+          parent: decodeNodeId(row.parent),
+          node: decodeNodeId(row.node),
+          position: row.position === null || row.position === undefined ? 0 : Number(row.position),
+        },
+      } as Operation;
+    }
+    if (row.kind === "move") {
+      return {
+        ...base,
+        kind: {
+          type: "move",
+          node: decodeNodeId(row.node),
+          newParent: decodeNodeId(row.new_parent),
+          position: row.position === null || row.position === undefined ? 0 : Number(row.position),
+        },
+      } as Operation;
+    }
+    if (row.kind === "delete") {
+      return { ...base, kind: { type: "delete", node: decodeNodeId(row.node) } } as Operation;
+    }
+    return { ...base, kind: { type: "tombstone", node: decodeNodeId(row.node) } } as Operation;
+  });
 }
