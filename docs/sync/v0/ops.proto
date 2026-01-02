@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package treecrdt.sync.v0;
+
+import "sync/v0/types.proto";
+
+// TreeCRDT operations for Sync Protocol v0.
+//
+// Deletion model:
+// - Deletes/tombstones are explicit op kinds in this repo.
+// - A node is considered tombstoned/deleted if its canonical parent is TRASH.
+
+message InsertOp {
+  NodeId parent = 1;
+  NodeId node = 2;
+  uint32 position = 3;
+}
+
+message MoveOp {
+  NodeId node = 1;
+  NodeId new_parent = 2;
+  uint32 position = 3;
+}
+
+message DeleteOp {
+  NodeId node = 1;
+}
+
+message TombstoneOp {
+  NodeId node = 1;
+}
+
+message Operation {
+  OperationMetadata meta = 1;
+
+  oneof kind {
+    InsertOp insert = 2;
+    MoveOp move = 3;
+    DeleteOp delete = 4;
+    TombstoneOp tombstone = 5;
+  }
+}

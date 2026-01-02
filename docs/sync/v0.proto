@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package treecrdt.sync.v0;
+
+// Canonical envelope for v0 messages. Concrete message definitions live in:
+// - sync/v0/types.proto
+// - sync/v0/ops.proto
+// - sync/v0/filters.proto
+// - sync/v0/messages.proto
+
+import "sync/v0/messages.proto";
+
+// Envelope type for all protocol messages.
+//
+// This corresponds to the examples in docs/sync/v0.md where each message has:
+// - v (protocol version)
+// - doc_id (document identifier)
+// - exactly one payload variant set
+message SyncMessage {
+  uint32 v = 1;
+  string doc_id = 2;
+
+  oneof payload {
+    Hello hello = 10;
+    HelloAck hello_ack = 11;
+    RibltCodewords riblt_codewords = 12;
+    RibltStatus riblt_status = 13;
+    OpsBatch ops_batch = 14;
+    Subscribe subscribe = 15;
+    SubscribeAck subscribe_ack = 16;
+    Unsubscribe unsubscribe = 17;
+    SyncError error = 18;
+  }
+}
