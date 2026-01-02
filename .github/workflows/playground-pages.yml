@@ -46,6 +46,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install wasm-pack
+        shell: bash
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            cargo install wasm-pack --locked
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
