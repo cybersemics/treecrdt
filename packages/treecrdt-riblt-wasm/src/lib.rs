@@ -19,8 +19,8 @@ impl Symbol for Bytes16 {
 
     fn xor(&self, other: &Self) -> Self {
         let mut out = [0u8; 16];
-        for i in 0..16 {
-            out[i] = self.0[i] ^ other.0[i];
+        for (i, out_byte) in out.iter_mut().enumerate() {
+            *out_byte = self.0[i] ^ other.0[i];
         }
         Self(out)
     }
@@ -102,6 +102,12 @@ pub struct RibltEncoder16 {
     inner: Encoder<Bytes16>,
 }
 
+impl Default for RibltEncoder16 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl RibltEncoder16 {
     #[wasm_bindgen(constructor)]
@@ -136,6 +142,12 @@ pub struct RibltDecoder16 {
     codewords_received: u64,
 }
 
+impl Default for RibltDecoder16 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl RibltDecoder16 {
     #[wasm_bindgen(constructor)]
@@ -160,8 +172,7 @@ impl RibltDecoder16 {
 
     #[wasm_bindgen(js_name = addCodeword)]
     pub fn add_codeword(&mut self, codeword: JsValue) -> Result<(), JsValue> {
-        let js: CodewordJs =
-            from_value(codeword).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let js: CodewordJs = from_value(codeword).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let coded = js_to_coded(js)?;
         self.inner.add_coded_symbol(&coded);
         self.codewords_received += 1;

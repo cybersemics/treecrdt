@@ -886,7 +886,10 @@ unsafe extern "C" fn treecrdt_set_doc_id(
     let doc_ptr = unsafe { sqlite_value_text(args[0]) } as *const u8;
     let doc_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
     if doc_ptr.is_null() {
-        sqlite_result_error(ctx, b"treecrdt_set_doc_id: NULL doc_id\0".as_ptr() as *const c_char);
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_set_doc_id: NULL doc_id\0".as_ptr() as *const c_char,
+        );
         return;
     }
     let doc_bytes = unsafe { slice::from_raw_parts(doc_ptr, doc_len) }.to_vec();
@@ -914,13 +917,7 @@ unsafe extern "C" fn treecrdt_set_doc_id(
                 return;
             }
             let bind_rc = unsafe {
-                sqlite_bind_text(
-                    stmt,
-                    1,
-                    doc_ptr as *const c_char,
-                    doc_len as c_int,
-                    None,
-                )
+                sqlite_bind_text(stmt, 1, doc_ptr as *const c_char, doc_len as c_int, None)
             };
             if bind_rc != SQLITE_OK as c_int {
                 unsafe { sqlite_finalize(stmt) };
@@ -1036,7 +1033,10 @@ unsafe extern "C" fn treecrdt_append_op(
     let replica_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
     if replica_ptr.is_null() {
         unsafe { sqlite_finalize(stmt) };
-        sqlite_result_error(ctx, b"treecrdt_append_op: NULL replica\0".as_ptr() as *const c_char);
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_append_op: NULL replica\0".as_ptr() as *const c_char,
+        );
         return;
     }
     let replica = unsafe { slice::from_raw_parts(replica_ptr, replica_len) };
