@@ -37,7 +37,21 @@ if (matches.length === 0) {
   process.exit(1);
 }
 
-const src = path.join(targetRelease, matches[0]);
+const candidates = matches
+  .map((file) => {
+    const fullPath = path.join(targetRelease, file);
+    const stat = fs.statSync(fullPath);
+    return { file, fullPath, mtimeMs: stat.mtimeMs };
+  })
+  .sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
+
+if (candidates.length > 1) {
+  console.warn(
+    `Multiple built extensions found; using newest: ${candidates[0].file}`
+  );
+}
+
+const src = candidates[0].fullPath;
 const destDir = path.resolve(__dirname, "../native");
 fs.mkdirSync(destDir, { recursive: true });
 const destBase = ext === ".dll" ? "treecrdt_sqlite_ext" : "libtreecrdt_sqlite_ext";
