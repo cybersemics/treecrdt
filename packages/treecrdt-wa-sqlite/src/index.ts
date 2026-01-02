@@ -2,7 +2,17 @@ import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
 import {
   createTreecrdtSqliteAdapter,
   treecrdtAppendOp,
+  treecrdtDocId,
+  treecrdtHeadLamport,
+  treecrdtOpRefsAll,
+  treecrdtOpRefsChildren,
+  treecrdtOpsByOpRefs,
   treecrdtOpsSince,
+  treecrdtReplicaMaxCounter,
+  treecrdtSetDocId,
+  treecrdtTreeChildren,
+  treecrdtTreeDump,
+  treecrdtTreeNodeCount,
   type SqliteRunner,
 } from "@treecrdt/interface/sqlite";
 
@@ -50,11 +60,7 @@ function createRunner(db: Database): SqliteRunner {
  * This MUST be stable for the lifetime of the database, since it affects opRef hashes.
  */
 export async function setDocId(db: Database, docId: string): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_set_doc_id(?1)");
-  await db.bind(stmt, 1, docId);
-  await db.step(stmt);
-  await db.finalize(stmt);
+  await treecrdtSetDocId(createRunner(db), docId);
 }
 
 /**
@@ -62,16 +68,7 @@ export async function setDocId(db: Database, docId: string): Promise<void> {
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
 export async function opRefsAll(db: Database): Promise<unknown[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_oprefs_all()");
-  const row = await db.step(stmt);
-  let result: unknown[] = [];
-  if (row !== 0) {
-    const json = await db.column_text(stmt, 0);
-    result = JSON.parse(json);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtOpRefsAll(createRunner(db));
 }
 
 /**
@@ -79,17 +76,7 @@ export async function opRefsAll(db: Database): Promise<unknown[]> {
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
 export async function opRefsChildren(db: Database, parent: Uint8Array): Promise<unknown[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_oprefs_children(?1)");
-  await db.bind(stmt, 1, parent);
-  const row = await db.step(stmt);
-  let result: unknown[] = [];
-  if (row !== 0) {
-    const json = await db.column_text(stmt, 0);
-    result = JSON.parse(json);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtOpRefsChildren(createRunner(db), parent);
 }
 
 /**
@@ -97,18 +84,7 @@ export async function opRefsChildren(db: Database, parent: Uint8Array): Promise<
  * Returns raw JSON-decoded operation rows (same shape as `opsSince`).
  */
 export async function opsByOpRefs(db: Database, opRefs: Uint8Array[]): Promise<unknown[]> {
-  const payload = opRefs.map((r) => Array.from(r));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_ops_by_oprefs(?1)");
-  await db.bind(stmt, 1, JSON.stringify(payload));
-  const row = await db.step(stmt);
-  let result: unknown[] = [];
-  if (row !== 0) {
-    const json = await db.column_text(stmt, 0);
-    result = JSON.parse(json);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtOpsByOpRefs(createRunner(db), opRefs);
 }
 
 /**
@@ -116,17 +92,7 @@ export async function opsByOpRefs(db: Database, opRefs: Uint8Array[]): Promise<u
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
 export async function treeChildren(db: Database, parent: Uint8Array): Promise<unknown[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_tree_children(?1)");
-  await db.bind(stmt, 1, parent);
-  const row = await db.step(stmt);
-  let result: unknown[] = [];
-  if (row !== 0) {
-    const json = await db.column_text(stmt, 0);
-    result = JSON.parse(json);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtTreeChildren(createRunner(db), parent);
 }
 
 /**
@@ -134,65 +100,28 @@ export async function treeChildren(db: Database, parent: Uint8Array): Promise<un
  * Returns raw JSON-decoded rows (array of objects with byte fields).
  */
 export async function treeDump(db: Database): Promise<unknown[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_tree_dump()");
-  const row = await db.step(stmt);
-  let result: unknown[] = [];
-  if (row !== 0) {
-    const json = await db.column_text(stmt, 0);
-    result = JSON.parse(json);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtTreeDump(createRunner(db));
 }
 
 /**
  * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
  */
 export async function treeNodeCount(db: Database): Promise<number> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_tree_node_count()");
-  const row = await db.step(stmt);
-  let result = 0;
-  if (row !== 0) {
-    const val = await db.column_text(stmt, 0);
-    result = Number(val);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtTreeNodeCount(createRunner(db));
 }
 
 /**
  * Fetch the maximum lamport seen in the op log.
  */
 export async function headLamport(db: Database): Promise<number> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_head_lamport()");
-  const row = await db.step(stmt);
-  let result = 0;
-  if (row !== 0) {
-    const val = await db.column_text(stmt, 0);
-    result = Number(val);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtHeadLamport(createRunner(db));
 }
 
 /**
  * Fetch the maximum counter observed for a replica id.
  */
 export async function replicaMaxCounter(db: Database, replica: Uint8Array): Promise<number> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare("SELECT treecrdt_replica_max_counter(?1)");
-  await db.bind(stmt, 1, replica);
-  const row = await db.step(stmt);
-  let result = 0;
-  if (row !== 0) {
-    const val = await db.column_text(stmt, 0);
-    result = Number(val);
-  }
-  await db.finalize(stmt);
-  return result;
+  return treecrdtReplicaMaxCounter(createRunner(db), replica);
 }
 
 /**
@@ -220,4 +149,8 @@ export async function opsSince(
 
 export function createWaSqliteAdapter(db: Database): TreecrdtAdapter {
   return createTreecrdtSqliteAdapter(createRunner(db));
+}
+
+export async function docId(db: Database): Promise<string | null> {
+  return treecrdtDocId(createRunner(db));
 }
