@@ -382,8 +382,8 @@ fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
 fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     let begin = CString::new("SAVEPOINT treecrdt_materialize").expect("static");
     let commit = CString::new("RELEASE treecrdt_materialize").expect("static");
-    let rollback =
-        CString::new("ROLLBACK TO treecrdt_materialize; RELEASE treecrdt_materialize").expect("static");
+    let rollback = CString::new("ROLLBACK TO treecrdt_materialize; RELEASE treecrdt_materialize")
+        .expect("static");
 
     if sqlite_exec(db, begin.as_ptr(), None, null_mut(), null_mut()) != SQLITE_OK as c_int {
         return Err(SQLITE_ERROR as c_int);
@@ -778,14 +778,18 @@ impl MaterializeCtx {
             "SELECT COALESCE(MAX(pos) + 1, 0) FROM tree_nodes WHERE parent = ?1 AND tombstone = 0",
         )
         .expect("max pos sql");
-        let detach_sql = CString::new("UPDATE tree_nodes SET parent = NULL, pos = NULL, tombstone = ?2 WHERE node = ?1")
-            .expect("detach sql");
-        let attach_sql =
-            CString::new("UPDATE tree_nodes SET parent = ?2, pos = ?3, tombstone = 0 WHERE node = ?1")
-                .expect("attach sql");
-        let insert_opref_sql =
-            CString::new("INSERT OR IGNORE INTO oprefs_children(parent, op_ref, seq) VALUES (?1, ?2, ?3)")
-                .expect("insert opref sql");
+        let detach_sql = CString::new(
+            "UPDATE tree_nodes SET parent = NULL, pos = NULL, tombstone = ?2 WHERE node = ?1",
+        )
+        .expect("detach sql");
+        let attach_sql = CString::new(
+            "UPDATE tree_nodes SET parent = ?2, pos = ?3, tombstone = 0 WHERE node = ?1",
+        )
+        .expect("attach sql");
+        let insert_opref_sql = CString::new(
+            "INSERT OR IGNORE INTO oprefs_children(parent, op_ref, seq) VALUES (?1, ?2, ?3)",
+        )
+        .expect("insert opref sql");
 
         let mut ensure_node: *mut sqlite3_stmt = null_mut();
         let mut select_node: *mut sqlite3_stmt = null_mut();
@@ -2300,7 +2304,13 @@ unsafe extern "C" fn treecrdt_append_op(
     if meta.dirty {
         let _ = set_tree_meta_dirty(db, true);
     } else {
-        let _ = update_tree_meta_head(db, meta.head_lamport, &meta.head_replica, meta.head_counter, meta.head_seq);
+        let _ = update_tree_meta_head(
+            db,
+            meta.head_lamport,
+            &meta.head_replica,
+            meta.head_counter,
+            meta.head_seq,
+        );
     }
 
     sqlite_result_int(ctx, 1);
@@ -2387,8 +2397,8 @@ unsafe extern "C" fn treecrdt_append_ops(
     };
     let begin = CString::new("SAVEPOINT treecrdt_append_ops").expect("static");
     let commit = CString::new("RELEASE treecrdt_append_ops").expect("static");
-    let rollback =
-        CString::new("ROLLBACK TO treecrdt_append_ops; RELEASE treecrdt_append_ops").expect("static");
+    let rollback = CString::new("ROLLBACK TO treecrdt_append_ops; RELEASE treecrdt_append_ops")
+        .expect("static");
 
     if sqlite_exec(db, begin.as_ptr(), None, null_mut(), null_mut()) != SQLITE_OK as c_int {
         sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
@@ -2413,7 +2423,8 @@ unsafe extern "C" fn treecrdt_append_ops(
     )
     .expect("update op_ref sql");
     let mut upd_stmt: *mut sqlite3_stmt = null_mut();
-    let upd_prep_rc = sqlite_prepare_v2(db, update_opref_sql.as_ptr(), -1, &mut upd_stmt, null_mut());
+    let upd_prep_rc =
+        sqlite_prepare_v2(db, update_opref_sql.as_ptr(), -1, &mut upd_stmt, null_mut());
     if upd_prep_rc != SQLITE_OK as c_int {
         unsafe { sqlite_finalize(stmt) };
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
@@ -2771,9 +2782,8 @@ unsafe extern "C" fn treecrdt_oprefs_children(
         return;
     }
 
-    let sql =
-        CString::new("SELECT op_ref FROM oprefs_children WHERE parent = ?1 ORDER BY seq")
-            .expect("static sql");
+    let sql = CString::new("SELECT op_ref FROM oprefs_children WHERE parent = ?1 ORDER BY seq")
+        .expect("static sql");
     let mut stmt: *mut sqlite3_stmt = null_mut();
     let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
     if rc != SQLITE_OK as c_int {
@@ -3046,10 +3056,8 @@ unsafe extern "C" fn treecrdt_tree_node_count(
         return;
     }
 
-    let sql = CString::new(
-        "SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node != ?1",
-    )
-    .expect("static sql");
+    let sql = CString::new("SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node != ?1")
+        .expect("static sql");
     let mut stmt: *mut sqlite3_stmt = null_mut();
     let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
     if rc != SQLITE_OK as c_int {
