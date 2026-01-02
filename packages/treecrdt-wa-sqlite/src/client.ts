@@ -16,6 +16,7 @@ import {
 import { createOpfsVfs, detectOpfsSupport } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
 import { decodeNodeId, decodeReplicaId, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from "./rpc.js";
 
 export type StorageMode = "memory" | "opfs";
 export type ClientMode = "direct" | "worker";
@@ -106,23 +107,8 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
 
 // --- Worker client
 
-type WorkerReq = {
-  id: number;
-  method: string;
-  params?: any;
-};
-
-type WorkerResp = {
-  id: number;
-  ok: boolean;
-  result?: any;
-  error?: string;
-};
-
-type WorkerInit = { baseUrl: string; filename?: string; storage: StorageMode; docId: string };
-
 type WorkerProxy = {
-  postMessage(msg: WorkerReq, transfer?: Transferable[]): void;
+  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
   terminate: () => void;
   addEventListener: (type: "message" | "error", fn: (ev: any) => void) => void;
   removeEventListener: (type: "message" | "error", fn: (ev: any) => void) => void;
@@ -141,19 +127,19 @@ async function createWorkerClient(opts: {
   const pending = new Map<number, { resolve: (value: any) => void; reject: (err: Error) => void }>();
   let terminalError: Error | null = null;
 
-  const call = (method: string, params?: any): Promise<any> => {
+  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
     const id = nextId++;
     if (terminalError) return Promise.reject(terminalError);
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({ id, method, params } satisfies WorkerReq);
+      worker.postMessage({ id, method, params } satisfies RpcRequest<M>);
     });
   };
 
-  const onMessage = (ev: MessageEvent<WorkerResp>) => {
-    const handler = pending.get(ev.data.id);
+  const onMessage = (ev: MessageEvent<RpcResponse>) => {
+    const handler = pending.get(ev.data.id as number);
     if (!handler) return;
-    pending.delete(ev.data.id);
+    pending.delete(ev.data.id as number);
     if (ev.data.ok) handler.resolve(ev.data.result);
     else handler.reject(new Error(ev.data.error || "worker error"));
   };
@@ -172,12 +158,12 @@ async function createWorkerClient(opts: {
     filename: opts.filename,
     storage: opts.storage,
     docId: opts.docId,
-  } satisfies WorkerInit)) as { storage?: StorageMode; opfsError?: string } | undefined;
+  })) as { storage?: StorageMode; opfsError?: string } | undefined;
   const effectiveStorage: StorageMode = initResult?.storage === "opfs" ? "opfs" : "memory";
   if (opts.requireOpfs && effectiveStorage !== "opfs") {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : "";
     try {
-      if (!terminalError) await call("close");
+      if (!terminalError) await call("close", undefined);
     } catch {
       // ignore close errors on init failure
     } finally {
@@ -190,16 +176,16 @@ async function createWorkerClient(opts: {
 
   const opsSinceImpl = (lamport: number, root?: string) =>
     call("opsSince", { lamport, root }).then((rows) => parseOps(rows as any[]));
-  const opRefsAllImpl = () => call("opRefsAll").then((rows) => parseOpRefs(rows as any[]));
+  const opRefsAllImpl = () => call("opRefsAll", undefined).then((rows) => parseOpRefs(rows as any[]));
   const opRefsChildrenImpl = (parent: string) =>
     call("opRefsChildren", { parent }).then((rows) => parseOpRefs(rows as any[]));
   const opsByOpRefsImpl = (opRefs: Uint8Array[]) =>
     call("opsByOpRefs", { opRefs: opRefs.map((r) => Array.from(r)) }).then((rows) => parseOps(rows as any[]));
   const treeChildrenImpl = (parent: string) =>
     call("treeChildren", { parent }).then((rows) => parseNodeIds(rows as any[]));
-  const treeDumpImpl = () => call("treeDump").then((rows) => parseTreeRows(rows as any[]));
-  const treeNodeCountImpl = () => call("treeNodeCount").then((v) => Number(v));
-  const headLamportImpl = () => call("headLamport").then((v) => Number(v));
+  const treeDumpImpl = () => call("treeDump", undefined).then((rows) => parseTreeRows(rows as any[]));
+  const treeNodeCountImpl = () => call("treeNodeCount", undefined).then((v) => Number(v));
+  const headLamportImpl = () => call("headLamport", undefined).then((v) => Number(v));
   const replicaMaxCounterImpl = (replica: Operation["meta"]["id"]["replica"]) =>
     call("replicaMaxCounter", { replica: Array.from(encodeReplica(replica)) }).then((v) => Number(v));
 
@@ -220,7 +206,7 @@ async function createWorkerClient(opts: {
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     close: async () => {
       try {
-        if (!terminalError) await call("close");
+        if (!terminalError) await call("close", undefined);
       } finally {
         worker.removeEventListener("error", onError);
         worker.removeEventListener("message", onMessage);

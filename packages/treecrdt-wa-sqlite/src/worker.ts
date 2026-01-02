@@ -17,116 +17,91 @@ import {
 import { createOpfsVfs } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type {
+  RpcMethod,
+  RpcParams,
+  RpcRequest,
+  RpcResponse,
+  RpcResult,
+} from "./rpc.js";
 
 let db: Database | null = null;
 let storage: "memory" | "opfs" = "memory";
 
-self.onmessage = async (ev: MessageEvent) => {
-  const { id, method, params } = ev.data as { id: number; method: string; params?: any };
-  const respond = (ok: boolean, result?: any, error?: string) => {
-    (self as unknown as Worker).postMessage({ id, ok, result, error });
-  };
+type HandlerMap = { [M in RpcMethod]: (params: RpcParams<M>) => Promise<RpcResult<M>> };
 
-  try {
-    if (method === "init") {
-      const result = await handleInit(
-        params as { baseUrl: string; filename?: string; storage: "memory" | "opfs"; docId: string }
-      );
-      respond(true, result);
+function postResponse(resp: RpcResponse) {
+  (self as unknown as Worker).postMessage(resp);
+}
+
+function makeOk<M extends RpcMethod>(id: number, result: RpcResult<M>): RpcResponse<M> {
+  return { id, ok: true, result };
+}
+
+function makeErr(id: number, err: unknown): RpcResponse {
+  return { id, ok: false, error: err instanceof Error ? err.message : String(err) };
+}
+
+function withDb<T>(fn: (db: Database) => Promise<T>): Promise<T> {
+  if (!db) return Promise.reject(new Error("db not initialized"));
+  return fn(db);
+}
+
+const handlers: HandlerMap = {
+  init: (params) => handleInit(params),
+  append: (params) =>
+    withDb(async (db) => {
+      await appendOpRaw(db, params.op, nodeIdToBytes16, replicaIdToBytes);
       return;
-    }
-    if (method === "append") {
-      await ensureDb();
-      await appendOpRaw(db!, (params as any).op as Operation, nodeIdToBytes16, replicaIdToBytes);
-      respond(true, null);
-      return;
-    }
-    if (method === "appendMany") {
-      await ensureDb();
-      const ops = (params as any).ops as Operation[];
-      const adapter = createWaSqliteAdapter(db!);
+    }),
+  appendMany: (params) =>
+    withDb(async (db) => {
+      const adapter = createWaSqliteAdapter(db);
       if (adapter.appendOps) {
-        await adapter.appendOps(ops, nodeIdToBytes16, replicaIdToBytes);
+        await adapter.appendOps(params.ops, nodeIdToBytes16, replicaIdToBytes);
       } else {
-        for (const op of ops) {
-          await appendOpRaw(db!, op, nodeIdToBytes16, replicaIdToBytes);
+        for (const op of params.ops) {
+          await appendOpRaw(db, op, nodeIdToBytes16, replicaIdToBytes);
         }
       }
-      respond(true, null);
       return;
-    }
-    if (method === "opsSince") {
-      await ensureDb();
-      const lamport = (params as any).lamport as number;
-      const root = (params as any).root as string | undefined;
-      const rows = await opsSinceRaw(db!, { lamport, root });
-      respond(true, rows);
-      return;
-    }
-    if (method === "opRefsAll") {
-      await ensureDb();
-      const rows = await opRefsAllRaw(db!);
-      respond(true, rows);
-      return;
-    }
-    if (method === "opRefsChildren") {
-      await ensureDb();
-      const parent = (params as any).parent as string;
-      const rows = await opRefsChildrenRaw(db!, nodeIdToBytes16(parent));
-      respond(true, rows);
-      return;
-    }
-    if (method === "opsByOpRefs") {
-      await ensureDb();
-      const raw = (params as any).opRefs as number[][];
-      const opRefs = raw.map((r) => Uint8Array.from(r));
-      const rows = await opsByOpRefsRaw(db!, opRefs);
-      respond(true, rows);
-      return;
-    }
-    if (method === "treeChildren") {
-      await ensureDb();
-      const parent = (params as any).parent as string;
-      const rows = await treeChildrenRaw(db!, nodeIdToBytes16(parent));
-      respond(true, rows);
-      return;
-    }
-    if (method === "treeDump") {
-      await ensureDb();
-      const rows = await treeDumpRaw(db!);
-      respond(true, rows);
-      return;
-    }
-    if (method === "treeNodeCount") {
-      await ensureDb();
-      const v = await treeNodeCountRaw(db!);
-      respond(true, v);
-      return;
-    }
-    if (method === "headLamport") {
-      await ensureDb();
-      const v = await headLamportRaw(db!);
-      respond(true, v);
-      return;
-    }
-    if (method === "replicaMaxCounter") {
-      await ensureDb();
-      const rawReplica = (params as any).replica as number[] | string;
+    }),
+  opsSince: (params) => withDb((db) => opsSinceRaw(db, params)),
+  opRefsAll: () => withDb((db) => opRefsAllRaw(db)),
+  opRefsChildren: (params) => withDb((db) => opRefsChildrenRaw(db, nodeIdToBytes16(params.parent))),
+  opsByOpRefs: (params) =>
+    withDb((db) => opsByOpRefsRaw(db, params.opRefs.map((r) => Uint8Array.from(r)))),
+  treeChildren: (params) => withDb((db) => treeChildrenRaw(db, nodeIdToBytes16(params.parent))),
+  treeDump: () => withDb((db) => treeDumpRaw(db)),
+  treeNodeCount: () => withDb((db) => treeNodeCountRaw(db)),
+  headLamport: () => withDb((db) => headLamportRaw(db)),
+  replicaMaxCounter: (params) =>
+    withDb((db) => {
       const replica =
-        typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
-      const v = await replicaMaxCounterRaw(db!, replica);
-      respond(true, v);
-      return;
-    }
-    if (method === "close") {
-      if (db?.close) await db.close();
-      db = null;
-      respond(true, null);
-      return;
-    }
-    respond(false, null, "unknown method");
+        typeof params.replica === "string"
+          ? replicaIdToBytes(params.replica)
+          : Uint8Array.from(params.replica);
+      return replicaMaxCounterRaw(db, replica);
+    }),
+  close: async () => {
+    if (db?.close) await db.close();
+    db = null;
+    return;
+  },
+};
+
+self.onmessage = async (ev: MessageEvent<RpcRequest>) => {
+  const { id, method, params } = ev.data;
+  const handler = (handlers as Record<string, (p: unknown) => Promise<unknown>>)[method];
+  if (!handler) {
+    postResponse({ id, ok: false, error: `unknown method: ${method}` });
+    return;
+  }
+  try {
+    const result = await handler(params);
+    postResponse(makeOk(id, result as any));
   } catch (err) {
-    respond(false, null, err instanceof Error ? err.message : String(err));
+    postResponse(makeErr(id, err));
   }
 };
 
