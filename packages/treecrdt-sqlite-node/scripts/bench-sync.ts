@@ -1,22 +1,30 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { fileURLToPath } from "node:url";
 import {
   buildSyncBenchCase,
-  envInt,
-  envIntList,
+  DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS,
+  DEFAULT_SYNC_BENCH_WORKLOADS,
+  SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+  SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
   maxLamport,
   quantile,
+  syncBenchRootChildrenSizesFromEnv,
+  syncBenchSizesFromEnv,
+  syncBenchTiming,
   type SyncBenchWorkload,
-  writeResult,
 } from "@treecrdt/benchmark";
+import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
 import type { Operation } from "@treecrdt/interface";
 import { decodeSqliteOpRefs, decodeSqliteOps } from "@treecrdt/interface/sqlite";
 import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
-import { SyncPeer, treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync";
-import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from "@treecrdt/sync/transport";
-import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
+import {
+  createInMemoryConnectedPeers,
+  makeQueuedSyncBackend,
+  type FlushableSyncBackend,
+} from "@treecrdt/sync/bench";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import type { Filter } from "@treecrdt/sync";
 import { createSqliteNodeAdapter, loadTreecrdtExtension } from "../dist/index.js";
 
 type StorageKind = "memory" | "file";
@@ -46,42 +54,34 @@ function makeBackend(opts: {
   db: Database.Database;
   docId: string;
   initialMaxLamport: number;
-}): SyncBackend<Operation> & { flush: () => Promise<void> } {
+}): FlushableSyncBackend<Operation> {
   const adapter = createSqliteNodeAdapter(opts.db);
-  let maxLamportValue = opts.initialMaxLamport;
-  let lastApply = Promise.resolve();
 
   const fetchJson = (sql: string, param?: unknown): any => {
     const stmt = opts.db.prepare(sql);
-    const row = param === undefined ? stmt.get() : stmt.get(param);
+    const row = (param === undefined ? stmt.get() : stmt.get(param)) as any;
     const json = row?.json ?? Object.values(row ?? {})[0];
     return json ? JSON.parse(String(json)) : [];
   };
 
-  return {
+  return makeQueuedSyncBackend<Operation>({
     docId: opts.docId,
-    maxLamport: async () => BigInt(maxLamportValue),
-    listOpRefs: async (filter: Filter) => {
+    initialMaxLamport: opts.initialMaxLamport,
+    maxLamportFromOps: maxLamport,
+    listOpRefs: async (filter) => {
       if ("all" in filter) {
         return parseOpRefs(fetchJson("SELECT treecrdt_oprefs_all() AS json"));
       }
       const parent = Buffer.from(filter.children.parent);
       return parseOpRefs(fetchJson("SELECT treecrdt_oprefs_children(?) AS json", parent));
     },
-    getOpsByOpRefs: async (opRefs: OpRef[]) => {
+    getOpsByOpRefs: async (opRefs) => {
       if (opRefs.length === 0) return [];
       const payload = opRefs.map((r) => Array.from(r));
       return parseOps(fetchJson("SELECT treecrdt_ops_by_oprefs(?) AS json", JSON.stringify(payload)));
     },
-    applyOps: async (ops: Operation[]) => {
-      if (ops.length === 0) return;
-      const nextMax = maxLamport(ops);
-      if (nextMax > maxLamportValue) maxLamportValue = nextMax;
-      lastApply = lastApply.then(() => adapter.appendOps!(ops, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)));
-      await lastApply;
-    },
-    flush: async () => lastApply,
-  };
+    applyOps: async (ops) => adapter.appendOps!(ops, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
+  });
 }
 
 async function openDb(opts: { storage: StorageKind; dbPath?: string; docId: string }): Promise<Database.Database> {
@@ -89,12 +89,6 @@ async function openDb(opts: { storage: StorageKind; dbPath?: string; docId: stri
   loadTreecrdtExtension(db);
   db.prepare("SELECT treecrdt_set_doc_id(?)").get(opts.docId);
   return db;
-}
-
-function syncBenchTiming() {
-  const iterations = Math.max(1, envInt("SYNC_BENCH_ITERATIONS") ?? envInt("BENCH_ITERATIONS") ?? 3);
-  const warmupIterations = Math.max(0, envInt("SYNC_BENCH_WARMUP") ?? envInt("BENCH_WARMUP") ?? (iterations > 1 ? 1 : 0));
-  return { iterations, warmupIterations };
 }
 
 async function runBenchOnce(
@@ -132,30 +126,35 @@ async function runBenchOnce(
     const backendA = makeBackend({ db: a, docId, initialMaxLamport: maxLamport(opsA) });
     const backendB = makeBackend({ db: b, docId, initialMaxLamport: maxLamport(opsB) });
 
-    const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-    const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-    const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-    const pa = new SyncPeer(backendA, { maxCodewords: 200_000 });
-    const pb = new SyncPeer(backendB, { maxCodewords: 200_000 });
-    pa.attach(ta);
-    pb.attach(tb);
+    const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+      backendA,
+      backendB,
+      codec: treecrdtSyncV0ProtobufCodec,
+      peerOptions: { maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS },
+    });
+    try {
+      const start = performance.now();
+      await pa.syncOnce(ta, filter, {
+        maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+        codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      });
+      await Promise.all([backendA.flush(), backendB.flush()]);
+      const end = performance.now();
 
-    const start = performance.now();
-    await pa.syncOnce(ta, filter, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
-    await Promise.all([backendA.flush(), backendB.flush()]);
-    const end = performance.now();
+      // Sanity check (outside timed region).
+      const countA = (a.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
+      const countB = (b.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
+      if (countA !== bench.expectedFinalOpsA || countB !== bench.expectedFinalOpsB) {
+        throw new Error(
+          `sync bench mismatch: expected a=${bench.expectedFinalOpsA} b=${bench.expectedFinalOpsB}, got a=${countA} b=${countB}`
+        );
+      }
 
-    // Sanity check (outside timed region).
-    const countA = (a.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
-    const countB = (b.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
-    if (countA !== bench.expectedFinalOpsA || countB !== bench.expectedFinalOpsB) {
-      throw new Error(
-        `sync bench mismatch: expected a=${bench.expectedFinalOpsA} b=${bench.expectedFinalOpsB}, got a=${countA} b=${countB}`
-      );
+      const durationMs = end - start;
+      return durationMs;
+    } finally {
+      detach();
     }
-
-    const durationMs = end - start;
-    return durationMs;
   } finally {
     a.close();
     b.close();
@@ -188,8 +187,8 @@ async function runBenchCase(
     opsPerSec,
     extra: {
       ...bench.extra,
-      codewordsPerMessage: 2048,
-      maxCodewords: 200_000,
+      codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       iterations,
       warmupIterations,
       samplesMs,
@@ -201,20 +200,21 @@ async function runBenchCase(
 }
 
 async function main() {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(__dirname, "../..", "..");
+  const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
   const cases: BenchCase[] = [];
-  const sizes = envIntList("SYNC_BENCH_SIZES") ?? [100, 1000, 10_000];
-  const rootChildrenSizes = envIntList("SYNC_BENCH_ROOT_CHILDREN_SIZES") ?? [1110];
+  const sizes = syncBenchSizesFromEnv();
+  const rootChildrenSizes = syncBenchRootChildrenSizesFromEnv();
   for (const storage of ["memory", "file"] as const) {
-    for (const workload of ["sync-all", "sync-children", "sync-one-missing"] as const) {
+    for (const workload of DEFAULT_SYNC_BENCH_WORKLOADS) {
       for (const size of sizes) {
         cases.push({ storage, workload, size });
       }
     }
-    for (const size of rootChildrenSizes) {
-      cases.push({ storage, workload: "sync-root-children-fanout10", size });
+    for (const workload of DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS) {
+      for (const size of rootChildrenSizes) {
+        cases.push({ storage, workload, size });
+      }
     }
   }
 

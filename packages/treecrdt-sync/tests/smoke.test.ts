@@ -8,7 +8,8 @@ import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
 
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { SyncPeer } from "../dist/sync.js";
-import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from "../dist/transport.js";
+import { createInMemoryConnectedPeers } from "../dist/bench.js";
+import { wrapDuplexTransportWithCodec } from "../dist/transport.js";
 import type { DuplexTransport } from "../dist/transport.js";
 import type { Filter, OpRef, SyncBackend, SyncMessage } from "../dist/types.js";
 
@@ -58,6 +59,14 @@ function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
   };
 
   return [a, b];
+}
+
+function createPeers(a: SyncBackend<Operation>, b: SyncBackend<Operation>) {
+  return createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+  });
 }
 
 async function waitUntil(
@@ -216,20 +225,17 @@ test("sync all converges union of opRefs", async () => {
     makeOp("a", 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 }),
   ]);
 
-  const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-  const pa = new SyncPeer(a);
-  const pb = new SyncPeer(b);
-  pa.attach(ta);
-  pb.attach(tb);
+  const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
+  try {
+    await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    await tick();
 
-  await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
-  await tick();
-
-  const aAll = await a.listOpRefs({ all: {} });
-  const bAll = await b.listOpRefs({ all: {} });
-  expect(setHex(aAll)).toEqual(setHex(bAll));
+    const aAll = await a.listOpRefs({ all: {} });
+    const bAll = await b.listOpRefs({ all: {} });
+    expect(setHex(aAll)).toEqual(setHex(bAll));
+  } finally {
+    detach();
+  }
 });
 
 test("sync all transfers a single missing op (hole in the middle)", async () => {
@@ -256,21 +262,18 @@ test("sync all transfers a single missing op (hole in the middle)", async () => 
   await b.applyOps(ops);
   await a.applyOps(ops.filter((op) => op.meta.id.counter !== missingCounter));
 
-  const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-  const pa = new SyncPeer(a);
-  const pb = new SyncPeer(b);
-  pa.attach(ta);
-  pb.attach(tb);
+  const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
+  try {
+    await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    await tick();
 
-  await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
-  await tick();
-
-  expect(a.hasOp("s", missingCounter)).toBe(true);
-  const aAll = await a.listOpRefs({ all: {} });
-  const bAll = await b.listOpRefs({ all: {} });
-  expect(setHex(aAll)).toEqual(setHex(bAll));
+    expect(a.hasOp("s", missingCounter)).toBe(true);
+    const aAll = await a.listOpRefs({ all: {} });
+    const bAll = await b.listOpRefs({ all: {} });
+    expect(setHex(aAll)).toEqual(setHex(bAll));
+  } finally {
+    detach();
+  }
 });
 
 test("sync children(parent) only transfers those children", async () => {
@@ -291,31 +294,28 @@ test("sync children(parent) only transfers those children", async () => {
     makeOp("b", 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), position: 0 }),
   ]);
 
-  const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-  const pa = new SyncPeer(a);
-  const pb = new SyncPeer(b);
-  pa.attach(ta);
-  pb.attach(tb);
+  const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
+  try {
+    await pa.syncOnce(
+      ta,
+      { children: { parent: parentABytes } },
+      { maxCodewords: 10_000, codewordsPerMessage: 256 }
+    );
+    await tick();
 
-  await pa.syncOnce(
-    ta,
-    { children: { parent: parentABytes } },
-    { maxCodewords: 10_000, codewordsPerMessage: 256 }
-  );
-  await tick();
+    // Converges for the filtered view.
+    const aChildrenA = await a.listOpRefs({ children: { parent: parentABytes } });
+    const bChildrenA = await b.listOpRefs({ children: { parent: parentABytes } });
+    expect(setHex(aChildrenA)).toEqual(setHex(bChildrenA));
 
-  // Converges for the filtered view.
-  const aChildrenA = await a.listOpRefs({ children: { parent: parentABytes } });
-  const bChildrenA = await b.listOpRefs({ children: { parent: parentABytes } });
-  expect(setHex(aChildrenA)).toEqual(setHex(bChildrenA));
-
-  // Does not leak ops outside the filter.
-  expect(a.hasOp("b", 1)).toBe(true);
-  expect(a.hasOp("b", 2)).toBe(false);
-  expect(b.hasOp("a", 1)).toBe(true);
-  expect(b.hasOp("a", 2)).toBe(false);
+    // Does not leak ops outside the filter.
+    expect(a.hasOp("b", 1)).toBe(true);
+    expect(a.hasOp("b", 2)).toBe(false);
+    expect(b.hasOp("a", 1)).toBe(true);
+    expect(b.hasOp("a", 2)).toBe(false);
+  } finally {
+    detach();
+  }
 });
 
 test("sync children(parent) includes boundary-crossing moves", async () => {
@@ -336,26 +336,23 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
     makeOp("a", 2, 2, { type: "move", node, newParent: parentBHex, position: 0 }),
   ]);
 
-  const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-  const pa = new SyncPeer(a);
-  const pb = new SyncPeer(b);
-  pa.attach(ta);
-  pb.attach(tb);
+  const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
+  try {
+    await pa.syncOnce(
+      ta,
+      { children: { parent: parentABytes } },
+      { maxCodewords: 10_000, codewordsPerMessage: 256 }
+    );
+    await tick();
 
-  await pa.syncOnce(
-    ta,
-    { children: { parent: parentABytes } },
-    { maxCodewords: 10_000, codewordsPerMessage: 256 }
-  );
-  await tick();
+    expect(b.hasOp("a", 2)).toBe(true);
 
-  expect(b.hasOp("a", 2)).toBe(true);
-
-  const aChildrenA = await a.listOpRefs({ children: { parent: parentABytes } });
-  const bChildrenA = await b.listOpRefs({ children: { parent: parentABytes } });
-  expect(setHex(aChildrenA)).toEqual(setHex(bChildrenA));
+    const aChildrenA = await a.listOpRefs({ children: { parent: parentABytes } });
+    const bChildrenA = await b.listOpRefs({ children: { parent: parentABytes } });
+    expect(setHex(aChildrenA)).toEqual(setHex(bChildrenA));
+  } finally {
+    detach();
+  }
 });
 
 test("subscribe keeps peers converging (push deltas)", async () => {
@@ -367,23 +364,20 @@ test("subscribe keeps peers converging (push deltas)", async () => {
 
   await a.applyOps([makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 })]);
 
-  const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-  const pa = new SyncPeer(a);
-  const pb = new SyncPeer(b);
-  pa.attach(ta);
-  pb.attach(tb);
-
-  const sub = pa.subscribe(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+  const { peerA: pa, peerB: pb, transportA: ta, detach } = createPeers(a, b);
   try {
-    await waitUntil(() => b.hasOp("a", 1), { message: "expected b to receive a:1 via subscription" });
+    const sub = pa.subscribe(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    try {
+      await waitUntil(() => b.hasOp("a", 1), { message: "expected b to receive a:1 via subscription" });
 
-    await b.applyOps([makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 })]);
-    await pb.notifyLocalUpdate();
-    await waitUntil(() => a.hasOp("b", 1), { message: "expected a to receive b:1 via subscription" });
+      await b.applyOps([makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 })]);
+      await pb.notifyLocalUpdate();
+      await waitUntil(() => a.hasOp("b", 1), { message: "expected a to receive b:1 via subscription" });
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
   } finally {
-    sub.stop();
-    await sub.done;
+    detach();
   }
 });

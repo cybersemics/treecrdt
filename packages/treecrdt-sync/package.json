@@ -10,6 +10,14 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./bench": {
+      "import": "./dist/bench.js",
+      "types": "./dist/bench.d.ts"
+    },
+    "./protobuf": {
+      "import": "./dist/protobuf.js",
+      "types": "./dist/protobuf.d.ts"
+    },
     "./transport": {
       "import": "./dist/transport.js",
       "types": "./dist/transport.d.ts"
