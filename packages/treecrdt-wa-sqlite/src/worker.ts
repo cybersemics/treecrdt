@@ -11,11 +11,8 @@ import {
   treeNodeCount as treeNodeCountRaw,
   headLamport as headLamportRaw,
   replicaMaxCounter as replicaMaxCounterRaw,
-  setDocId as setDocIdRaw,
   type Database,
 } from "./index.js";
-import { createOpfsVfs } from "./opfs.js";
-import type { Operation } from "@treecrdt/interface";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type {
   RpcMethod,
@@ -24,7 +21,7 @@ import type {
   RpcResponse,
   RpcResult,
 } from "./rpc.js";
-import { makeDbAdapter } from "./db.js";
+import { openTreecrdtDb } from "./open.js";
 
 let db: Database | null = null;
 let storage: "memory" | "opfs" = "memory";
@@ -116,30 +113,14 @@ async function handleInit(opts: {
     if (db.close) await db.close();
     db = null;
   }
-  storage = opts.storage;
-  let opfsError: string | undefined;
-  const base = opts.baseUrl;
-  const sqliteModule = await import(/* @vite-ignore */ `${base}wa-sqlite/wa-sqlite-async.mjs`);
-  const sqliteApi = await import(/* @vite-ignore */ `${base}wa-sqlite/sqlite-api.js`);
-
-  const module = await sqliteModule.default({
-    locateFile: (file: string) => (file.endsWith(".wasm") ? `${base}wa-sqlite/wa-sqlite-async.wasm` : file),
+  const opened = await openTreecrdtDb({
+    baseUrl: opts.baseUrl,
+    filename: opts.filename,
+    storage: opts.storage,
+    docId: opts.docId,
+    requireOpfs: false,
   });
-  const sqlite3 = sqliteApi.Factory(module);
-
-  if (storage === "opfs") {
-    try {
-      const vfs = await createOpfsVfs(module, { name: "opfs" });
-      sqlite3.vfs_register(vfs, true);
-    } catch (err) {
-      opfsError = err instanceof Error ? err.message : String(err);
-      storage = "memory";
-    }
-  }
-
-  const filename = storage === "opfs" ? opts.filename ?? "/treecrdt.db" : ":memory:";
-  const handle = await sqlite3.open_v2(filename);
-  db = makeDbAdapter(sqlite3, handle);
-  await setDocIdRaw(db, opts.docId);
-  return opfsError ? { storage, opfsError } : { storage };
+  db = opened.db;
+  storage = opened.storage;
+  return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }

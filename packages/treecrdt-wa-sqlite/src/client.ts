@@ -10,10 +10,8 @@ import {
   treeNodeCount as treeNodeCountRaw,
   headLamport as headLamportRaw,
   replicaMaxCounter as replicaMaxCounterRaw,
-  setDocId as setDocIdRaw,
-  type Database,
 } from "./index.js";
-import { createOpfsVfs, detectOpfsSupport } from "./opfs.js";
+import { detectOpfsSupport } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
 import {
   decodeSqliteNodeIds,
@@ -23,7 +21,7 @@ import {
 } from "@treecrdt/interface/sqlite";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from "./rpc.js";
-import { makeDbAdapter } from "./db.js";
+import { openTreecrdtDb } from "./open.js";
 
 export type StorageMode = "memory" | "opfs";
 export type ClientMode = "direct" | "worker";
@@ -232,33 +230,17 @@ async function createDirectClient(opts: {
   docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
-  const { baseUrl, filename: filenameOpt, storage, requireOpfs } = opts;
-  const sqliteModule = await import(/* @vite-ignore */ `${baseUrl}wa-sqlite/wa-sqlite-async.mjs`);
-  const sqliteApi = await import(/* @vite-ignore */ `${baseUrl}wa-sqlite/sqlite-api.js`);
-  const module = await sqliteModule.default({
-    locateFile: (file: string) => (file.endsWith(".wasm") ? `${baseUrl}wa-sqlite/wa-sqlite-async.wasm` : file),
+  const { baseUrl, storage, requireOpfs } = opts;
+  const opened = await openTreecrdtDb({
+    baseUrl,
+    filename: opts.filename,
+    storage,
+    docId: opts.docId,
+    requireOpfs,
   });
-  const sqlite3 = sqliteApi.Factory(module);
-
-  let finalStorage: StorageMode = storage === "opfs" ? "opfs" : "memory";
-  if (storage === "opfs") {
-    try {
-      const vfs = await createOpfsVfs(module, { name: "opfs" });
-      sqlite3.vfs_register(vfs, true);
-    } catch (err) {
-      if (requireOpfs) {
-        throw new Error(
-          `OPFS requested but could not be initialized: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-      finalStorage = "memory";
-    }
-  }
-
-  const filename = finalStorage === "opfs" ? filenameOpt ?? "/treecrdt.db" : ":memory:";
-  const handle = await sqlite3.open_v2(filename);
-  const db = makeDbAdapter(sqlite3, handle);
-  await setDocIdRaw(db, opts.docId);
+  const db = opened.db;
+  const finalStorage: StorageMode = opened.storage;
+  const filename = opened.filename;
   const adapter = createWaSqliteAdapter(db);
   const wrapError = (stage: string, err: unknown) =>
     new Error(
