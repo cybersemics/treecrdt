@@ -94,16 +94,16 @@ importers:
 
   packages/treecrdt-sqlite-node:
     dependencies:
-      '@treecrdt/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+    devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../treecrdt-sync
-    devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -159,13 +159,13 @@ importers:
 
   packages/treecrdt-wa-sqlite:
     dependencies:
-      '@treecrdt/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
     devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25
@@ -218,13 +218,13 @@ importers:
 
   packages/treecrdt-wasm-js:
     dependencies:
-      '@treecrdt/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
     devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25

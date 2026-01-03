@@ -40,11 +40,11 @@
     "postinstall": "pnpm run prep:opfs"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/benchmark": "workspace:*"
+    "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",
+    "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }

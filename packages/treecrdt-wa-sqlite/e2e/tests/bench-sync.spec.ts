@@ -1,8 +1,12 @@
 import { test, expect } from "@playwright/test";
-import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { envIntList, writeResult } from "@treecrdt/benchmark";
+import {
+  DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS,
+  DEFAULT_SYNC_BENCH_WORKLOADS,
+  syncBenchRootChildrenSizesFromEnv,
+  syncBenchSizesFromEnv,
+} from "@treecrdt/benchmark";
+import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
 import type { SyncBenchResult } from "../src/sync.js";
 
 test("wa-sqlite sync OPFS benchmarks", async ({ page }) => {
@@ -11,21 +15,22 @@ test("wa-sqlite sync OPFS benchmarks", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(() => typeof window.runTreecrdtSyncBench === "function");
 
-  const rootChildrenSizes = envIntList("SYNC_BENCH_ROOT_CHILDREN_SIZES") ?? [1110];
-  const sizes = envIntList("SYNC_BENCH_SIZES") ?? [100, 1000, 10_000];
-  const results = await page.evaluate(async ({ rootChildrenSizes, sizes }) => {
+  const rootChildrenSizes = syncBenchRootChildrenSizesFromEnv();
+  const sizes = syncBenchSizesFromEnv();
+  const baseWorkloads = Array.from(DEFAULT_SYNC_BENCH_WORKLOADS);
+  const rootChildrenWorkloads = Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS);
+
+  const results = await page.evaluate(async ({ rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads }) => {
     const runner = window.runTreecrdtSyncBench;
     if (!runner) throw new Error("runTreecrdtSyncBench not available");
-    const base = await runner("browser-opfs-coop-sync", sizes, ["sync-all", "sync-children", "sync-one-missing"]);
-    const rootChildren = await runner("browser-opfs-coop-sync", rootChildrenSizes, ["sync-root-children-fanout10"]);
+    const base = await runner("browser-opfs-coop-sync", sizes, baseWorkloads);
+    const rootChildren = await runner("browser-opfs-coop-sync", rootChildrenSizes, rootChildrenWorkloads);
     return [...base, ...rootChildren];
-  }, { rootChildrenSizes, sizes });
+  }, { rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads });
 
   expect(Array.isArray(results)).toBeTruthy();
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(__dirname, "../../../..");
+  const repoRoot = repoRootFromImportMeta(import.meta.url, 4);
   const outDir = path.join(repoRoot, "benchmarks", "wa-sqlite-sync-opfs");
-  await fs.mkdir(outDir, { recursive: true });
 
   for (const result of results as SyncBenchResult[]) {
     const workloadName = result.workload ?? result.name;
@@ -47,21 +52,22 @@ test("wa-sqlite sync memory (browser) benchmarks", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(() => typeof window.runTreecrdtSyncBench === "function");
 
-  const rootChildrenSizes = envIntList("SYNC_BENCH_ROOT_CHILDREN_SIZES") ?? [1110];
-  const sizes = envIntList("SYNC_BENCH_SIZES") ?? [100, 1000, 10_000];
-  const results = await page.evaluate(async ({ rootChildrenSizes, sizes }) => {
+  const rootChildrenSizes = syncBenchRootChildrenSizesFromEnv();
+  const sizes = syncBenchSizesFromEnv();
+  const baseWorkloads = Array.from(DEFAULT_SYNC_BENCH_WORKLOADS);
+  const rootChildrenWorkloads = Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS);
+
+  const results = await page.evaluate(async ({ rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads }) => {
     const runner = window.runTreecrdtSyncBench;
     if (!runner) throw new Error("runTreecrdtSyncBench not available");
-    const base = await runner("browser-memory", sizes, ["sync-all", "sync-children", "sync-one-missing"]);
-    const rootChildren = await runner("browser-memory", rootChildrenSizes, ["sync-root-children-fanout10"]);
+    const base = await runner("browser-memory", sizes, baseWorkloads);
+    const rootChildren = await runner("browser-memory", rootChildrenSizes, rootChildrenWorkloads);
     return [...base, ...rootChildren];
-  }, { rootChildrenSizes, sizes });
+  }, { rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads });
 
   expect(Array.isArray(results)).toBeTruthy();
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(__dirname, "../../../..");
+  const repoRoot = repoRootFromImportMeta(import.meta.url, 4);
   const outDir = path.join(repoRoot, "benchmarks", "wa-sqlite-sync-browser-memory");
-  await fs.mkdir(outDir, { recursive: true });
 
   for (const result of results as SyncBenchResult[]) {
     const workloadName = result.workload ?? result.name;

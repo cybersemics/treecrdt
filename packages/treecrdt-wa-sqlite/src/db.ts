@@ -4,6 +4,7 @@ export function makeDbAdapter(sqlite3: any, handle: number): Database {
   const prepare = async (sql: string) => {
     const iter = sqlite3.statements(handle, sql, { unscoped: true });
     const { value } = await iter.next();
+    if (iter.return) await iter.return();
     if (!value) {
       throw new Error(`Failed to prepare statement: ${sql}`);
     }
@@ -20,4 +21,3 @@ export function makeDbAdapter(sqlite3: any, handle: number): Database {
     close: async () => sqlite3.close(handle),
   } as unknown as Database;
 }
-
