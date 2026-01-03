@@ -2,11 +2,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { treecrdt as treecrdtWaSqliteAssets } from "@treecrdt/wa-sqlite/vite-plugin";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    treecrdtWaSqliteAssets({ outDirs: ["public/wa-sqlite", "public/base-path/wa-sqlite"] }),
+    react(),
+  ],
   esbuild: {
     target: "esnext",
   },
