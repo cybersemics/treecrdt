@@ -1,9 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { repoRootFromImportMeta } from "./repo-root.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = repoRootFromImportMeta(import.meta.url, 1);
 const benchRoot = path.join(repoRoot, "benchmarks");
 
 async function pathExists(p) {
