@@ -2,14 +2,31 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-move-10",
-  "timestamp": "2025-12-04T09:33:47.570Z",
+  "timestamp": "2025-12-27T22:08:27.472Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-move-10",
   "totalOps": 20,
-  "durationMs": 0.7488749999999982,
-  "opsPerSec": 26706.726756801934,
+  "durationMs": 0.33133399999999824,
+  "opsPerSec": 60362.0515854096,
   "extra": {
     "mode": "sequential",
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      0.33133399999999824,
+      0.3644170000000031,
+      0.3264159999999947
+    ],
+    "p95Ms": 0.3611087000000026,
+    "minMs": 0.3264159999999947,
+    "maxMs": 0.3644170000000031,
     "count": 10
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-move-10.json"
+  "sourceFile": "benchmarks/wasm/insert-move-10.json"
 }

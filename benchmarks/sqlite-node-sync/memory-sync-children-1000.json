@@ -1,0 +1,38 @@
+{
+  "implementation": "sqlite-node",
+  "storage": "memory",
+  "workload": "sync-children-1000",
+  "timestamp": "2025-12-27T22:08:14.255Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
+  "name": "sync-children-1000",
+  "totalOps": 500,
+  "durationMs": 34.09808299999986,
+  "opsPerSec": 14663.580940899288,
+  "extra": {
+    "opsPerPeer": 1000,
+    "targetCount": 500,
+    "otherCount": 500,
+    "sharedTarget": 250,
+    "uniqueTarget": 250,
+    "codewordsPerMessage": 2048,
+    "maxCodewords": 200000,
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      34.09808299999986,
+      34.719040999999834,
+      33.90504199999987
+    ],
+    "p95Ms": 34.65694519999984,
+    "minMs": 33.90504199999987,
+    "maxMs": 34.719040999999834,
+    "count": 500
+  },
+  "sourceFile": "benchmarks/sqlite-node-sync/memory-sync-children-1000.json"
+}

@@ -93,20 +93,23 @@ message OpsBatch {
   bool done = 3;
 }
 
-// Draft/reserved: push-based subscriptions are not implemented in this repo.
-// Live sync is achieved by periodically running catch-up (syncOnce) again.
+// Push-based subscription for live updates.
+//
+// The initiator chooses `subscription_id` (unique within the session) and a `filter`.
+// The responder acks with `SubscribeAck` and then MAY stream incremental `OpsBatch`
+// messages for new operations relevant to the filter.
 message Subscribe {
   string subscription_id = 1;
   Filter filter = 2;
 }
 
-// Draft/reserved: see Subscribe.
+// Acknowledges a Subscribe request.
 message SubscribeAck {
   string subscription_id = 1;
   uint64 current_lamport = 2;
 }
 
-// Draft/reserved: see Subscribe.
+// Stops a previously-established subscription.
 message Unsubscribe {
   string subscription_id = 1;
 }

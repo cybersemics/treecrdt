@@ -7,10 +7,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
+  esbuild: {
+    target: "esnext",
+  },
   worker: {
     format: "es",
   },
   build: {
+    target: "esnext",
     rollupOptions: {
       output: {
         format: "es",
@@ -25,6 +29,7 @@ export default defineConfig({
         path.resolve(__dirname, "../../../vendor"),
         path.resolve(__dirname, "./public"),
         path.resolve(__dirname, "../dist"),
+        path.resolve(__dirname, "../../treecrdt-riblt-wasm-js"),
       ],
     },
   },

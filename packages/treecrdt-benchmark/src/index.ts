@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { TreecrdtAdapter, SerializeNodeId, SerializeReplica, Operation } from "@treecrdt/interface";
+import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import { envInt, quantile } from "./stats.js";
 
 export type BenchmarkResult = {
   name: string;
@@ -13,6 +16,8 @@ export type BenchmarkResult = {
 export type BenchmarkWorkload = {
   name: string;
   totalOps?: number;
+  iterations?: number;
+  warmupIterations?: number;
   prepare?: () => Promise<void> | void;
   run: (adapter: TreecrdtAdapter) => Promise<void | { extra?: Record<string, unknown> }>;
   cleanup?: () => Promise<void> | void;
@@ -20,41 +25,39 @@ export type BenchmarkWorkload = {
 
 export type WorkloadName = "insert-move" | "insert-chain" | "replay-log";
 
-const defaultSerializeNodeId: SerializeNodeId = (id) => {
-  const clean = id.startsWith("0x") ? id.slice(2) : id;
-  if (clean.length % 2 === 0) {
-    const bytes = new Uint8Array(clean.length / 2);
-    for (let i = 0; i < clean.length; i += 2) {
-      bytes[i / 2] = parseInt(clean.slice(i, i + 2), 16);
-    }
-    return bytes;
-  }
-  const encoder = new TextEncoder();
-  return encoder.encode(id);
-};
-const defaultSerializeReplica: SerializeReplica = (replica) =>
-  typeof replica === "string" ? defaultSerializeNodeId(replica) : replica;
+const defaultSerializeNodeId: SerializeNodeId = nodeIdToBytes16;
+const defaultSerializeReplica: SerializeReplica = replicaIdToBytes;
 
 export async function runBenchmark(
   adapterFactory: () => Promise<TreecrdtAdapter> | TreecrdtAdapter,
   workload: BenchmarkWorkload
 ): Promise<BenchmarkResult> {
-  const adapter = await adapterFactory();
   const totalOps = workload.totalOps ?? -1;
-  if (workload.prepare) {
-    await workload.prepare();
-  }
-  const start = performance.now();
-  const runResult = await workload.run(adapter);
-  const end = performance.now();
-  if (workload.cleanup) {
-    await workload.cleanup();
-  }
-  if (adapter.close) {
-    await adapter.close();
+
+  const envIterations = envInt("BENCH_ITERATIONS");
+  const envWarmup = envInt("BENCH_WARMUP");
+  const iterations = Math.max(1, workload.iterations ?? envIterations ?? 1);
+  const warmupIterations = Math.max(0, workload.warmupIterations ?? envWarmup ?? (iterations > 1 ? 1 : 0));
+
+  const samplesMs: number[] = [];
+  let lastExtra: Record<string, unknown> | undefined;
+
+  for (let i = 0; i < warmupIterations + iterations; i += 1) {
+    const adapter = await adapterFactory();
+    try {
+      if (workload.prepare) await workload.prepare();
+      const start = performance.now();
+      const runResult = await workload.run(adapter);
+      const end = performance.now();
+      if (runResult && typeof runResult === "object" && runResult.extra) lastExtra = runResult.extra;
+      if (workload.cleanup) await workload.cleanup();
+      if (i >= warmupIterations) samplesMs.push(end - start);
+    } finally {
+      if (adapter.close) await adapter.close();
+    }
   }
 
-  const durationMs = end - start;
+  const durationMs = quantile(samplesMs, 0.5);
   const opsPerSec =
     totalOps > 0 && durationMs > 0
       ? (totalOps / durationMs) * 1000
@@ -66,7 +69,18 @@ export async function runBenchmark(
     totalOps,
     durationMs,
     opsPerSec,
-    extra: runResult && typeof runResult === "object" ? runResult.extra : undefined,
+    extra:
+      lastExtra || samplesMs.length > 1
+        ? {
+            ...(lastExtra ?? {}),
+            iterations,
+            warmupIterations,
+            samplesMs,
+            p95Ms: quantile(samplesMs, 0.95),
+            minMs: Math.min(...samplesMs),
+            maxMs: Math.max(...samplesMs),
+          }
+        : undefined,
   };
 }
 
@@ -252,6 +266,7 @@ export type BenchmarkOutput = BenchmarkResult & {
   storage: string;
   workload: string;
   timestamp: string;
+  env?: Record<string, unknown>;
   extra?: Record<string, unknown>;
   sourceFile?: string;
 };
@@ -276,11 +291,26 @@ export async function writeResult(
     storage: opts.storage,
     workload,
     timestamp: new Date().toISOString(),
+    env: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      cpu: os.cpus()[0]?.model,
+      cores: os.cpus().length,
+    },
     ...result,
     extra: mergedExtra,
-    sourceFile: path.resolve(opts.outFile),
+    sourceFile: (() => {
+      const abs = path.resolve(opts.outFile);
+      const parts = abs.split(path.sep);
+      const idx = parts.lastIndexOf("benchmarks");
+      return idx === -1 ? abs : parts.slice(idx).join(path.sep);
+    })(),
   };
   await fs.mkdir(path.dirname(opts.outFile), { recursive: true });
   await fs.writeFile(opts.outFile, JSON.stringify(payload, null, 2), "utf-8");
   return payload;
 }
+
+export * from "./sync.js";
+export * from "./stats.js";

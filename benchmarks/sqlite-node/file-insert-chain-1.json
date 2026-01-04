@@ -2,14 +2,31 @@
   "implementation": "sqlite-node",
   "storage": "file",
   "workload": "insert-chain-1",
-  "timestamp": "2025-12-04T09:33:43.966Z",
+  "timestamp": "2025-12-27T22:08:08.612Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-chain-1",
   "totalOps": 1,
-  "durationMs": 0.6317910000000211,
-  "opsPerSec": 1582.8019075928062,
+  "durationMs": 0.530042000000094,
+  "opsPerSec": 1886.6429452757,
   "extra": {
     "mode": "batch",
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      0.530042000000094,
+      0.8186659999998938,
+      0.5066250000002128
+    ],
+    "p95Ms": 0.7898035999999138,
+    "minMs": 0.5066250000002128,
+    "maxMs": 0.8186659999998938,
     "count": 1
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/sqlite-node/file-insert-chain-1.json"
+  "sourceFile": "benchmarks/sqlite-node/file-insert-chain-1.json"
 }

@@ -2,11 +2,11 @@
   "implementation": "core-inmem-crdt",
   "storage": "memory",
   "workload": "insert-move-1000",
-  "timestamp": "2025-12-04T09:33:52.351742+00:00",
+  "timestamp": "2025-12-27T22:08:38.444057+00:00",
   "name": "insert-move-1000",
   "totalOps": 2000,
-  "durationMs": 32.726375000000004,
-  "opsPerSec": 61112.78746882292,
+  "durationMs": 29.362875,
+  "opsPerSec": 68113.22120194293,
   "extra": {
     "count": 1000,
     "mode": "sequential"

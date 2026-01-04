@@ -1,0 +1,36 @@
+{
+  "implementation": "wa-sqlite",
+  "storage": "browser-opfs-coop-sync",
+  "workload": "sync-all-100",
+  "timestamp": "2025-12-27T22:07:52.980Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
+  "name": "sync-all-100",
+  "totalOps": 100,
+  "durationMs": 53.59999990463257,
+  "opsPerSec": 1865.6716451105283,
+  "extra": {
+    "opsPerPeer": 100,
+    "shared": 50,
+    "unique": 50,
+    "codewordsPerMessage": 2048,
+    "maxCodewords": 200000,
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      53.59999990463257,
+      58.700000286102295,
+      48.700000286102295
+    ],
+    "p95Ms": 58.190000247955325,
+    "minMs": 48.700000286102295,
+    "maxMs": 58.700000286102295,
+    "count": 100
+  },
+  "sourceFile": "benchmarks/wa-sqlite-sync-opfs/sync-all-100.json"
+}

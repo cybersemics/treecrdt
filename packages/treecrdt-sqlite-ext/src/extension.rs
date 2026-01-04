@@ -10,6 +10,7 @@ use std::os::raw::{c_char, c_int, c_void};
 #[cfg(feature = "ext-sqlite")]
 use std::ptr::null;
 use std::ptr::null_mut;
+use std::{collections::HashMap, slice};
 
 use treecrdt_core::Lamport;
 
@@ -149,9 +150,61 @@ use ffi::*;
 // Pointer to the SQLite API jump table. The host sets this when the extension loads.
 static mut SQLITE3_API: *const sqlite3_api_routines = null();
 
+const OPREF_V0_DOMAIN: &[u8] = b"treecrdt/opref/v0";
+const OPREF_V0_WIDTH: usize = 16;
+const TRASH_NODE_ID: [u8; 16] = [0xFF; 16];
+
 #[cfg(feature = "ext-sqlite")]
 fn api<'a>() -> Option<&'a sqlite3_api_routines> {
     unsafe { SQLITE3_API.as_ref() }
+}
+
+fn derive_op_ref_v0(doc_id: &[u8], replica: &[u8], counter: u64) -> [u8; OPREF_V0_WIDTH] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(OPREF_V0_DOMAIN);
+    hasher.update(doc_id);
+    hasher.update(&(replica.len() as u32).to_be_bytes());
+    hasher.update(replica);
+    hasher.update(&counter.to_be_bytes());
+    let hash = hasher.finalize();
+    let mut out = [0u8; OPREF_V0_WIDTH];
+    out.copy_from_slice(&hash.as_bytes()[0..OPREF_V0_WIDTH]);
+    out
+}
+
+fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {
+    let sql =
+        CString::new("SELECT value FROM meta WHERE key = 'doc_id' LIMIT 1").expect("doc id sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(rc);
+    }
+
+    let step_rc = unsafe { sqlite_step(stmt) };
+    if step_rc == SQLITE_ROW as c_int {
+        let ptr = unsafe { sqlite_column_text(stmt, 0) } as *const u8;
+        let len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
+        let value = if ptr.is_null() || len == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
+        };
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(finalize_rc);
+        }
+        Ok(Some(value))
+    } else if step_rc == SQLITE_DONE as c_int {
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(finalize_rc);
+        }
+        Ok(None)
+    } else {
+        unsafe { sqlite_finalize(stmt) };
+        Err(step_rc)
+    }
 }
 
 // Wrapper functions to abstract over the two build modes.
@@ -619,6 +672,78 @@ pub extern "C" fn sqlite3_treecrdt_init(
         )
     };
 
+    let rc_set_doc_id = {
+        let name = CString::new("treecrdt_set_doc_id").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            1,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_set_doc_id),
+            None,
+            None,
+            None,
+        )
+    };
+    let rc_doc_id = {
+        let name = CString::new("treecrdt_doc_id").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            0,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_doc_id),
+            None,
+            None,
+            None,
+        )
+    };
+
+    let rc_oprefs_all = {
+        let name = CString::new("treecrdt_oprefs_all").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            0,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_oprefs_all),
+            None,
+            None,
+            None,
+        )
+    };
+    let rc_oprefs_children = {
+        let name = CString::new("treecrdt_oprefs_children").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            1,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_oprefs_children),
+            None,
+            None,
+            None,
+        )
+    };
+    let rc_ops_by_oprefs = {
+        let name = CString::new("treecrdt_ops_by_oprefs").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            1,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_ops_by_oprefs),
+            None,
+            None,
+            None,
+        )
+    };
+
     let rc_since = {
         let name = CString::new("treecrdt_ops_since").expect("static name");
         // -1 allows 1 or 2 args (lamport, optional root node filter)
@@ -635,7 +760,14 @@ pub extern "C" fn sqlite3_treecrdt_init(
         )
     };
 
-    if rc != SQLITE_OK as c_int || rc_append != SQLITE_OK as c_int || rc_since != SQLITE_OK as c_int
+    if rc != SQLITE_OK as c_int
+        || rc_append != SQLITE_OK as c_int
+        || rc_set_doc_id != SQLITE_OK as c_int
+        || rc_doc_id != SQLITE_OK as c_int
+        || rc_oprefs_all != SQLITE_OK as c_int
+        || rc_oprefs_children != SQLITE_OK as c_int
+        || rc_ops_by_oprefs != SQLITE_OK as c_int
+        || rc_since != SQLITE_OK as c_int
     {
         unsafe {
             if !pz_err_msg.is_null() {
@@ -648,6 +780,16 @@ pub extern "C" fn sqlite3_treecrdt_init(
             rc
         } else if rc_append != SQLITE_OK as c_int {
             rc_append
+        } else if rc_set_doc_id != SQLITE_OK as c_int {
+            rc_set_doc_id
+        } else if rc_doc_id != SQLITE_OK as c_int {
+            rc_doc_id
+        } else if rc_oprefs_all != SQLITE_OK as c_int {
+            rc_oprefs_all
+        } else if rc_oprefs_children != SQLITE_OK as c_int {
+            rc_oprefs_children
+        } else if rc_ops_by_oprefs != SQLITE_OK as c_int {
+            rc_ops_by_oprefs
         } else {
             rc_since
         };
@@ -666,7 +808,21 @@ static _TREECRDT_INIT_REF: unsafe extern "C" fn(
 ) -> c_int = sqlite3_treecrdt_init;
 
 fn ensure_schema(db: *mut sqlite3) -> Result<(), c_int> {
-    const SCHEMA: &str = r#"
+    #[cfg(feature = "ext-sqlite")]
+    {
+        if api().is_none() {
+            return Err(SQLITE_ERROR as c_int);
+        }
+    }
+
+    // Core tables.
+    const META: &str = r#"
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"#;
+    const OPS: &str = r#"
 CREATE TABLE IF NOT EXISTS ops (
   replica BLOB NOT NULL,
   counter INTEGER NOT NULL,
@@ -676,24 +832,142 @@ CREATE TABLE IF NOT EXISTS ops (
   node BLOB NOT NULL,
   new_parent BLOB,
   position INTEGER,
+  op_ref BLOB,
   PRIMARY KEY (replica, counter)
 );
-CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
 "#;
 
-    #[cfg(feature = "ext-sqlite")]
-    {
-        if api().is_none() {
-            return Err(SQLITE_ERROR as c_int);
+    let rc_meta = {
+        let sql = CString::new(META).expect("meta schema");
+        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
+    };
+    if rc_meta != SQLITE_OK as c_int {
+        return Err(rc_meta);
+    }
+
+    let rc_ops = {
+        let sql = CString::new(OPS).expect("ops schema");
+        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
+    };
+    if rc_ops != SQLITE_OK as c_int {
+        return Err(rc_ops);
+    }
+
+    // Indexes.
+    const INDEXES: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
+CREATE INDEX IF NOT EXISTS idx_ops_op_ref ON ops(op_ref);
+"#;
+    let rc_idx = {
+        let sql = CString::new(INDEXES).expect("index schema");
+        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
+    };
+    if rc_idx != SQLITE_OK as c_int {
+        return Err(rc_idx);
+    }
+
+    Ok(())
+}
+
+unsafe extern "C" fn treecrdt_set_doc_id(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    argv: *mut *mut sqlite3_value,
+) {
+    if argc != 1 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_set_doc_id expects 1 arg (doc_id)\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
+    let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
+    let doc_ptr = unsafe { sqlite_value_text(args[0]) } as *const u8;
+    let doc_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
+    if doc_ptr.is_null() {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_set_doc_id: NULL doc_id\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+    let doc_bytes = unsafe { slice::from_raw_parts(doc_ptr, doc_len) }.to_vec();
+
+    let db = sqlite_context_db_handle(ctx);
+
+    match load_doc_id(db) {
+        Ok(Some(existing)) => {
+            if existing != doc_bytes {
+                sqlite_result_error(
+                    ctx,
+                    b"treecrdt_set_doc_id: doc_id already set (cannot change)\0".as_ptr()
+                        as *const c_char,
+                );
+                return;
+            }
+        }
+        Ok(None) => {
+            let sql = CString::new("INSERT INTO meta(key,value) VALUES('doc_id', ?1)")
+                .expect("insert doc id sql");
+            let mut stmt: *mut sqlite3_stmt = null_mut();
+            let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+            if rc != SQLITE_OK as c_int {
+                sqlite_result_error_code(ctx, rc);
+                return;
+            }
+            let bind_rc = unsafe {
+                sqlite_bind_text(stmt, 1, doc_ptr as *const c_char, doc_len as c_int, None)
+            };
+            if bind_rc != SQLITE_OK as c_int {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error_code(ctx, bind_rc);
+                return;
+            }
+
+            let step_rc = unsafe { sqlite_step(stmt) };
+            let finalize_rc = unsafe { sqlite_finalize(stmt) };
+            if step_rc != SQLITE_DONE as c_int || finalize_rc != SQLITE_OK as c_int {
+                sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+                return;
+            }
+        }
+        Err(rc) => {
+            sqlite_result_error_code(ctx, rc);
+            return;
         }
     }
-    let sql = CString::new(SCHEMA).expect("static schema");
-    let rc = sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut());
-    if rc == SQLITE_OK as c_int {
-        Ok(())
-    } else {
-        Err(rc)
-    }
+
+    // No backfill/migration: callers must set `doc_id` before appending ops so `op_ref`
+    // is always computed at write time.
+    sqlite_result_int(ctx, 1);
+}
+
+unsafe extern "C" fn treecrdt_doc_id(
+    ctx: *mut sqlite3_context,
+    _argc: c_int,
+    _argv: *mut *mut sqlite3_value,
+) {
+    let db = sqlite_context_db_handle(ctx);
+    let doc = match load_doc_id(db) {
+        Ok(Some(v)) => v,
+        Ok(None) => Vec::new(),
+        Err(rc) => {
+            sqlite_result_error_code(ctx, rc);
+            return;
+        }
+    };
+
+    let cstr = match CString::new(doc) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+            return;
+        }
+    };
+    let len = cstr.as_bytes().len() as c_int;
+    let ptr = cstr.into_raw();
+    sqlite_result_text(ctx, ptr as *const c_char, len, Some(drop_cstring));
 }
 
 /// Append an operation row to the `ops` table. Args:
@@ -721,7 +995,10 @@ unsafe extern "C" fn treecrdt_append_op(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "INSERT OR IGNORE INTO ops (replica,counter,lamport,kind,parent,node,new_parent,position) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        "INSERT INTO ops (replica,counter,lamport,kind,parent,node,new_parent,position,op_ref) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
+         ON CONFLICT(replica, counter) DO UPDATE SET op_ref = excluded.op_ref \
+         WHERE ops.op_ref IS NULL",
     )
     .expect("static sql");
 
@@ -734,6 +1011,46 @@ unsafe extern "C" fn treecrdt_append_op(
 
     let args = unsafe { std::slice::from_raw_parts(argv, argc as usize) };
 
+    let doc_id = match load_doc_id(db) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_append_op: doc_id not set (call treecrdt_set_doc_id)\0".as_ptr()
+                    as *const c_char,
+            );
+            return;
+        }
+        Err(rc) => {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error_code(ctx, rc);
+            return;
+        }
+    };
+
+    let replica_ptr = unsafe { sqlite_value_blob(args[0]) } as *const u8;
+    let replica_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
+    if replica_ptr.is_null() {
+        unsafe { sqlite_finalize(stmt) };
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_append_op: NULL replica\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+    let replica = unsafe { slice::from_raw_parts(replica_ptr, replica_len) };
+    let counter_i64 = unsafe { sqlite_value_int64(args[1]) };
+    if counter_i64 < 0 {
+        unsafe { sqlite_finalize(stmt) };
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_append_op: counter must be >= 0\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+    let op_ref = derive_op_ref_v0(&doc_id, replica, counter_i64 as u64);
+
     let mut bind_err = false;
     bind_err |= unsafe { bind_blob(stmt, 1, args[0]) };
     bind_err |= unsafe { bind_int64(stmt, 2, args[1]) };
@@ -743,6 +1060,15 @@ unsafe extern "C" fn treecrdt_append_op(
     bind_err |= unsafe { bind_blob(stmt, 6, args[5]) };
     bind_err |= unsafe { bind_optional_blob(stmt, 7, args[6]) };
     bind_err |= unsafe { bind_optional_int(stmt, 8, args[7]) };
+    bind_err |= unsafe {
+        sqlite_bind_blob(
+            stmt,
+            9,
+            op_ref.as_ptr() as *const c_void,
+            OPREF_V0_WIDTH as c_int,
+            None,
+        ) != SQLITE_OK as c_int
+    };
 
     if bind_err {
         unsafe { sqlite_finalize(stmt) };
@@ -828,6 +1154,21 @@ unsafe extern "C" fn treecrdt_append_ops(
     }
 
     let db = sqlite_context_db_handle(ctx);
+    let doc_id = match load_doc_id(db) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_append_ops: doc_id not set (call treecrdt_set_doc_id)\0".as_ptr()
+                    as *const c_char,
+            );
+            return;
+        }
+        Err(rc) => {
+            sqlite_result_error_code(ctx, rc);
+            return;
+        }
+    };
     let begin = CString::new("BEGIN").expect("static");
     let commit = CString::new("COMMIT").expect("static");
     let rollback = CString::new("ROLLBACK").expect("static");
@@ -838,7 +1179,10 @@ unsafe extern "C" fn treecrdt_append_ops(
     }
 
     let insert_sql = CString::new(
-        "INSERT OR IGNORE INTO ops (replica,counter,lamport,kind,parent,node,new_parent,position) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        "INSERT INTO ops (replica,counter,lamport,kind,parent,node,new_parent,position,op_ref) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
+         ON CONFLICT(replica, counter) DO UPDATE SET op_ref = excluded.op_ref \
+         WHERE ops.op_ref IS NULL",
     )
     .expect("static sql");
     let mut stmt: *mut sqlite3_stmt = null_mut();
@@ -909,6 +1253,16 @@ unsafe extern "C" fn treecrdt_append_ops(
                 bind_err |= sqlite_bind_null(stmt, 8) != SQLITE_OK as c_int;
             }
         }
+        let op_ref = derive_op_ref_v0(&doc_id, &op.replica, op.counter);
+        unsafe {
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                9,
+                op_ref.as_ptr() as *const c_void,
+                OPREF_V0_WIDTH as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+        }
 
         if bind_err {
             err_rc = SQLITE_ERROR as c_int;
@@ -938,6 +1292,370 @@ unsafe extern "C" fn treecrdt_append_ops(
 
     sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
     sqlite_result_error_code(ctx, err_rc);
+}
+
+unsafe extern "C" fn treecrdt_oprefs_all(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    _argv: *mut *mut sqlite3_value,
+) {
+    if argc != 0 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_oprefs_all expects 0 args\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
+    let db = sqlite_context_db_handle(ctx);
+    let sql = CString::new(
+        "SELECT op_ref FROM ops WHERE op_ref IS NOT NULL ORDER BY lamport, replica, counter",
+    )
+    .expect("static sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        sqlite_result_error_code(ctx, rc);
+        return;
+    }
+
+    let mut refs: Vec<Vec<u8>> = Vec::new();
+    loop {
+        let step_rc = unsafe { sqlite_step(stmt) };
+        if step_rc == SQLITE_ROW as c_int {
+            let ptr = unsafe { sqlite_column_blob(stmt, 0) } as *const u8;
+            let len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
+            if ptr.is_null() || len != OPREF_V0_WIDTH {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error(
+                    ctx,
+                    b"treecrdt_oprefs_all: invalid op_ref (call treecrdt_set_doc_id)\0".as_ptr()
+                        as *const c_char,
+                );
+                return;
+            }
+            refs.push(unsafe { slice::from_raw_parts(ptr, len) }.to_vec());
+        } else if step_rc == SQLITE_DONE as c_int {
+            break;
+        } else {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error_code(ctx, step_rc);
+            return;
+        }
+    }
+
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    if finalize_rc != SQLITE_OK as c_int {
+        sqlite_result_error_code(ctx, finalize_rc);
+        return;
+    }
+
+    let json = match serde_json::to_string(&refs) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+            return;
+        }
+    };
+    if let Ok(cstr) = CString::new(json) {
+        let len = cstr.as_bytes().len() as c_int;
+        let ptr = cstr.into_raw();
+        sqlite_result_text(ctx, ptr as *const c_char, len, Some(drop_cstring));
+    } else {
+        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+    }
+}
+
+unsafe fn column_blob16(stmt: *mut sqlite3_stmt, idx: c_int) -> Result<Option<[u8; 16]>, c_int> {
+    let ty = unsafe { sqlite_column_type(stmt, idx) };
+    if ty == SQLITE_NULL as c_int {
+        return Ok(None);
+    }
+    let ptr = unsafe { sqlite_column_blob(stmt, idx) };
+    let len = unsafe { sqlite_column_bytes(stmt, idx) };
+    if ptr.is_null() || len != 16 {
+        return Err(SQLITE_ERROR as c_int);
+    }
+    let bytes = unsafe { slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let mut out = [0u8; 16];
+    out.copy_from_slice(bytes);
+    Ok(Some(out))
+}
+
+unsafe extern "C" fn treecrdt_oprefs_children(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    argv: *mut *mut sqlite3_value,
+) {
+    if argc != 1 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_oprefs_children expects 1 arg (parent)\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
+    let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
+    let parent_ptr = unsafe { sqlite_value_blob(args[0]) } as *const u8;
+    let parent_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
+    if parent_ptr.is_null() || parent_len != 16 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_oprefs_children: parent must be 16-byte BLOB\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+    let mut parent = [0u8; 16];
+    parent.copy_from_slice(unsafe { slice::from_raw_parts(parent_ptr, parent_len) });
+
+    let db = sqlite_context_db_handle(ctx);
+    let sql = CString::new(
+        "SELECT kind,parent,node,new_parent,op_ref FROM ops ORDER BY lamport, replica, counter",
+    )
+    .expect("static sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        sqlite_result_error_code(ctx, rc);
+        return;
+    }
+
+    let mut parent_by_node: HashMap<[u8; 16], [u8; 16]> = HashMap::new();
+    let mut refs: Vec<Vec<u8>> = Vec::new();
+
+    loop {
+        let step_rc = unsafe { sqlite_step(stmt) };
+        if step_rc == SQLITE_ROW as c_int {
+            let kind_ptr = unsafe { sqlite_column_text(stmt, 0) } as *const u8;
+            let kind_len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
+            let kind = if kind_ptr.is_null() {
+                ""
+            } else {
+                std::str::from_utf8(unsafe { slice::from_raw_parts(kind_ptr, kind_len) })
+                    .unwrap_or("")
+            };
+
+            let node = match unsafe { column_blob16(stmt, 2) } {
+                Ok(Some(v)) => v,
+                _ => {
+                    unsafe { sqlite_finalize(stmt) };
+                    sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+                    return;
+                }
+            };
+            let old_parent = parent_by_node.get(&node).copied();
+
+            let new_parent = if kind == "insert" {
+                match unsafe { column_blob16(stmt, 1) } {
+                    Ok(Some(v)) => v,
+                    _ => {
+                        unsafe { sqlite_finalize(stmt) };
+                        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+                        return;
+                    }
+                }
+            } else if kind == "move" {
+                match unsafe { column_blob16(stmt, 3) } {
+                    Ok(Some(v)) => v,
+                    _ => {
+                        unsafe { sqlite_finalize(stmt) };
+                        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+                        return;
+                    }
+                }
+            } else if kind == "delete" || kind == "tombstone" {
+                TRASH_NODE_ID
+            } else {
+                // Unknown kind; ignore.
+                continue;
+            };
+
+            let op_ref_ptr = unsafe { sqlite_column_blob(stmt, 4) } as *const u8;
+            let op_ref_len = unsafe { sqlite_column_bytes(stmt, 4) } as usize;
+            if op_ref_ptr.is_null() || op_ref_len != OPREF_V0_WIDTH {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error(
+                    ctx,
+                    b"treecrdt_oprefs_children: invalid op_ref (call treecrdt_set_doc_id)\0"
+                        .as_ptr() as *const c_char,
+                );
+                return;
+            }
+            let op_ref = unsafe { slice::from_raw_parts(op_ref_ptr, op_ref_len) }.to_vec();
+
+            let relevant = old_parent == Some(parent) || new_parent == parent;
+            if relevant {
+                refs.push(op_ref);
+            }
+            parent_by_node.insert(node, new_parent);
+        } else if step_rc == SQLITE_DONE as c_int {
+            break;
+        } else {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error_code(ctx, step_rc);
+            return;
+        }
+    }
+
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    if finalize_rc != SQLITE_OK as c_int {
+        sqlite_result_error_code(ctx, finalize_rc);
+        return;
+    }
+
+    let json = match serde_json::to_string(&refs) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+            return;
+        }
+    };
+    if let Ok(cstr) = CString::new(json) {
+        let len = cstr.as_bytes().len() as c_int;
+        let ptr = cstr.into_raw();
+        sqlite_result_text(ctx, ptr as *const c_char, len, Some(drop_cstring));
+    } else {
+        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+    }
+}
+
+unsafe extern "C" fn treecrdt_ops_by_oprefs(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    argv: *mut *mut sqlite3_value,
+) {
+    if argc != 1 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_ops_by_oprefs expects 1 arg (json)\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+    let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
+    let json_ptr = unsafe { sqlite_value_text(args[0]) };
+    let json_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
+    if json_ptr.is_null() || json_len == 0 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_ops_by_oprefs expects non-empty JSON\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+    let json_bytes = unsafe { slice::from_raw_parts(json_ptr as *const u8, json_len) };
+    let json_str = match std::str::from_utf8(json_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_ops_by_oprefs invalid UTF-8\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+    };
+
+    let op_refs: Vec<Vec<u8>> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_ops_by_oprefs failed to parse JSON array\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+    };
+    if op_refs.is_empty() {
+        sqlite_result_text(ctx, b"[]\0".as_ptr() as *const c_char, 2, None);
+        return;
+    }
+
+    let db = sqlite_context_db_handle(ctx);
+    let sql = CString::new(
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position \
+         FROM ops \
+         WHERE op_ref = ?1",
+    )
+    .expect("static sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        sqlite_result_error_code(ctx, rc);
+        return;
+    }
+
+    let mut ops: Vec<JsonOp> = Vec::new();
+    for op_ref in op_refs {
+        if op_ref.len() != OPREF_V0_WIDTH {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_ops_by_oprefs: op_ref must be 16 bytes\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+        unsafe {
+            sqlite_clear_bindings(stmt);
+            sqlite_reset(stmt);
+        }
+        let bind_rc = unsafe {
+            sqlite_bind_blob(
+                stmt,
+                1,
+                op_ref.as_ptr() as *const c_void,
+                op_ref.len() as c_int,
+                None,
+            )
+        };
+        if bind_rc != SQLITE_OK as c_int {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error_code(ctx, bind_rc);
+            return;
+        }
+
+        let step_rc = unsafe { sqlite_step(stmt) };
+        if step_rc == SQLITE_ROW as c_int {
+            match read_row(stmt) {
+                Ok(op) => ops.push(op),
+                Err(rc) => {
+                    unsafe { sqlite_finalize(stmt) };
+                    sqlite_result_error_code(ctx, rc);
+                    return;
+                }
+            }
+        } else if step_rc == SQLITE_DONE as c_int {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_ops_by_oprefs: op_ref not found\0".as_ptr() as *const c_char,
+            );
+            return;
+        } else {
+            unsafe { sqlite_finalize(stmt) };
+            sqlite_result_error_code(ctx, step_rc);
+            return;
+        }
+    }
+
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    if finalize_rc != SQLITE_OK as c_int {
+        sqlite_result_error_code(ctx, finalize_rc);
+        return;
+    }
+
+    let json = match serde_json::to_string(&ops) {
+        Ok(j) => j,
+        Err(_) => {
+            sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+            return;
+        }
+    };
+
+    if let Ok(cstr) = CString::new(json) {
+        let len = cstr.as_bytes().len() as c_int;
+        let ptr = cstr.into_raw();
+        sqlite_result_text(ctx, ptr as *const c_char, len, Some(drop_cstring));
+    } else {
+        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+    }
 }
 
 unsafe fn bind_blob(stmt: *mut sqlite3_stmt, idx: c_int, val: *mut sqlite3_value) -> bool {
@@ -982,9 +1700,9 @@ struct JsonOp {
     counter: u64,
     lamport: Lamport,
     kind: String,
-    parent: Option<u128>,
-    node: u128,
-    new_parent: Option<u128>,
+    parent: Option<[u8; 16]>,
+    node: [u8; 16],
+    new_parent: Option<[u8; 16]>,
     position: Option<u64>,
 }
 
@@ -1097,9 +1815,12 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
         .unwrap_or("")
         .to_string();
 
-        let parent = column_node(stmt, 4)?;
-        let node = column_node(stmt, 5)?.unwrap_or(0);
-        let new_parent = column_node(stmt, 6)?;
+        let parent = column_blob16(stmt, 4)?;
+        let node = match column_blob16(stmt, 5)? {
+            Some(v) => v,
+            None => return Err(SQLITE_ERROR as c_int),
+        };
+        let new_parent = column_blob16(stmt, 6)?;
         let position = column_int_opt(stmt, 7);
 
         Ok(JsonOp {
@@ -1113,22 +1834,6 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             position,
         })
     }
-}
-
-unsafe fn column_node(stmt: *mut sqlite3_stmt, idx: c_int) -> Result<Option<u128>, c_int> {
-    let ty = unsafe { sqlite_column_type(stmt, idx) };
-    if ty == SQLITE_NULL as c_int {
-        return Ok(None);
-    }
-    let ptr = unsafe { sqlite_column_blob(stmt, idx) };
-    let len = unsafe { sqlite_column_bytes(stmt, idx) };
-    if len != 16 {
-        return Err(SQLITE_ERROR as c_int);
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    let mut buf = [0u8; 16];
-    buf.copy_from_slice(bytes);
-    Ok(Some(u128::from_be_bytes(buf)))
 }
 
 unsafe fn column_int_opt(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<u64> {

@@ -1,0 +1,31 @@
+{
+  "name": "@treecrdt/riblt-wasm",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "browser": "./dist/browser.js",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "pkg",
+    "pkg-web"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../packages/treecrdt-riblt-wasm --target nodejs --out-dir $(pwd)/pkg --release && wasm-pack build ../../packages/treecrdt-riblt-wasm --target web --out-dir $(pwd)/pkg-web --release",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "pnpm run build:wasm && pnpm run build:ts",
+    "test": "pnpm run build && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.25",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  }
+}

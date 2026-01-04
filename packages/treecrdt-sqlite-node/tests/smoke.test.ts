@@ -14,6 +14,7 @@ test("load extension and roundtrip ops", async () => {
   const db = new Database(":memory:");
   // If the extension isn't present, this will throw.
   loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
+  db.prepare("SELECT treecrdt_set_doc_id(?)").get("treecrdt-sqlite-node-smoke");
 
   const versionRow: any = db.prepare("select treecrdt_version() as v").get();
   expect(versionRow.v).toBeTruthy();

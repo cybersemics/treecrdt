@@ -2,14 +2,31 @@
   "implementation": "wasm",
   "storage": "memory",
   "workload": "insert-chain-10",
-  "timestamp": "2025-12-04T09:33:47.924Z",
+  "timestamp": "2025-12-27T22:08:29.005Z",
+  "env": {
+    "node": "v22.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 10
+  },
   "name": "insert-chain-10",
   "totalOps": 10,
-  "durationMs": 0.17270800000000008,
-  "opsPerSec": 57901.19739676214,
+  "durationMs": 0.05908299999987321,
+  "opsPerSec": 169253.42315084644,
   "extra": {
     "mode": "sequential",
+    "iterations": 3,
+    "warmupIterations": 1,
+    "samplesMs": [
+      0.06629099999986465,
+      0.05908299999987321,
+      0.05516599999987193
+    ],
+    "p95Ms": 0.0655701999998655,
+    "minMs": 0.05516599999987193,
+    "maxMs": 0.06629099999986465,
     "count": 10
   },
-  "sourceFile": "/Users/admin/git/treecrdt/benchmarks/wasm/insert-chain-10.json"
+  "sourceFile": "benchmarks/wasm/insert-chain-10.json"
 }

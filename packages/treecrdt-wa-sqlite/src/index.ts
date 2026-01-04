@@ -1,5 +1,6 @@
 import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
 import { buildAppendOp, buildOpsSince } from "@treecrdt/interface/sqlite";
+import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
 
 // Minimal wa-sqlite surface needed by the adapter. Exported so consumers
 // don't need to import types from wa-sqlite directly.
@@ -17,6 +18,73 @@ export type OpsSinceFilter = {
   lamport: number;
   root?: string; // node id as hex string or other canonical encoding
 };
+
+/**
+ * Set the document id used by the SQLite extension for v0 sync (`op_ref` derivation).
+ *
+ * This MUST be stable for the lifetime of the database, since it affects opRef hashes.
+ */
+export async function setDocId(db: Database, docId: string): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_set_doc_id(?1)");
+  await db.bind(stmt, 1, docId);
+  await db.step(stmt);
+  await db.finalize(stmt);
+}
+
+/**
+ * Fetch all stored opRefs (16-byte values) from the extension.
+ * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
+ */
+export async function opRefsAll(db: Database): Promise<unknown[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_oprefs_all()");
+  const row = await db.step(stmt);
+  let result: unknown[] = [];
+  if (row !== 0) {
+    const json = await db.column_text(stmt, 0);
+    result = JSON.parse(json);
+  }
+  await db.finalize(stmt);
+  return result;
+}
+
+/**
+ * Fetch opRefs relevant to the `children(parent)` filter from the extension.
+ * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
+ */
+export async function opRefsChildren(db: Database, parent: Uint8Array): Promise<unknown[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_oprefs_children(?1)");
+  await db.bind(stmt, 1, parent);
+  const row = await db.step(stmt);
+  let result: unknown[] = [];
+  if (row !== 0) {
+    const json = await db.column_text(stmt, 0);
+    result = JSON.parse(json);
+  }
+  await db.finalize(stmt);
+  return result;
+}
+
+/**
+ * Fetch operations by opRef (16-byte values) from the extension.
+ * Returns raw JSON-decoded operation rows (same shape as `opsSince`).
+ */
+export async function opsByOpRefs(db: Database, opRefs: Uint8Array[]): Promise<unknown[]> {
+  const payload = opRefs.map((r) => Array.from(r));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_ops_by_oprefs(?1)");
+  await db.bind(stmt, 1, JSON.stringify(payload));
+  const row = await db.step(stmt);
+  let result: unknown[] = [];
+  if (row !== 0) {
+    const json = await db.column_text(stmt, 0);
+    result = JSON.parse(json);
+  }
+  await db.finalize(stmt);
+  return result;
+}
 
 /**
   Append an operation by calling the extension function.
@@ -59,7 +127,7 @@ export async function opsSince(
   const { sql, params } = buildOpsSince({
     lamport: filter.lamport,
     root: filter.root,
-    serializeNodeId: (id: string) => new TextEncoder().encode(id),
+    serializeNodeId: nodeIdToBytes16,
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -86,46 +154,53 @@ export function createWaSqliteAdapter(db: Database): TreecrdtAdapter {
       appendOp(db, op, serializeNodeId, serializeReplica),
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
       if (ops.length === 0) return;
-      // Try bulk entrypoint first.
-      const payload = ops.map((op) => {
-        const { meta, kind } = op;
-        const { id, lamport } = meta;
-        const { replica, counter } = id;
-        const serReplica = serializeReplica(replica);
-        const serialize = (val: string) => Array.from(serializeNodeId(val));
-        const base = {
-          replica: Array.from(serReplica),
-          counter,
-          lamport,
-          kind: kind.type,
-          position: "position" in kind ? kind.position ?? null : null,
-        };
-        if (kind.type === "insert") {
-          return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
-        } else if (kind.type === "move") {
-          return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
-        } else if (kind.type === "delete") {
-          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-        }
-        return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-      });
-
       const bulkSql = "SELECT treecrdt_append_ops(?1)";
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const bulkStmt: any = await db.prepare(bulkSql);
-      try {
-        await db.bind(bulkStmt, 1, JSON.stringify(payload));
-        await db.step(bulkStmt);
-        await db.finalize(bulkStmt);
-        return;
-      } catch {
-        await db.finalize(bulkStmt);
-        // Fallback to per-op inserts inside one transaction.
-      }
+      const maxBulkOps = 5_000;
+      const serialize = (val: string) => Array.from(serializeNodeId(val));
 
+      // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
+      let bulkFailedAt: number | null = null;
+      for (let start = 0; start < ops.length; start += maxBulkOps) {
+        const chunk = ops.slice(start, start + maxBulkOps);
+        const payload = chunk.map((op) => {
+          const { meta, kind } = op;
+          const { id, lamport } = meta;
+          const { replica, counter } = id;
+          const serReplica = serializeReplica(replica);
+          const base = {
+            replica: Array.from(serReplica),
+            counter,
+            lamport,
+            kind: kind.type,
+            position: "position" in kind ? kind.position ?? null : null,
+          };
+          if (kind.type === "insert") {
+            return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
+          } else if (kind.type === "move") {
+            return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
+          } else if (kind.type === "delete") {
+            return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+          }
+          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bulkStmt: any = await db.prepare(bulkSql);
+        try {
+          await db.bind(bulkStmt, 1, JSON.stringify(payload));
+          await db.step(bulkStmt);
+          await db.finalize(bulkStmt);
+        } catch {
+          await db.finalize(bulkStmt);
+          bulkFailedAt = start;
+          break;
+        }
+      }
+      if (bulkFailedAt === null) return;
+
+      const remaining = ops.slice(bulkFailedAt);
       await db.exec("BEGIN");
       try {
-        for (const op of ops) {
+        for (const op of remaining) {
           const { meta, kind } = op;
           const { id, lamport } = meta;
           const { replica, counter } = id;

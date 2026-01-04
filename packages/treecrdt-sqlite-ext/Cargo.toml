@@ -9,6 +9,7 @@ description = "SQLite / wa-sqlite extension harness for TreeCRDT."
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+blake3 = "1.6"
 treecrdt-core = { path = "../treecrdt-core" }
 rusqlite = { version = "0.31", features = ["bundled", "load_extension"], optional = true }
 sqlite3ext-sys = { version = "0.0.1", optional = true }
