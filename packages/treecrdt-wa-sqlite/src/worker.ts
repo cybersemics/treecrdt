@@ -21,128 +21,54 @@ import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 let db: Database | null = null;
 let storage: "memory" | "opfs" = "memory";
 
+const methods = {
+  init,
+  append,
+  appendMany,
+  opsSince,
+  opRefsAll,
+  opRefsChildren,
+  opsByOpRefs,
+  treeChildren,
+  treeDump,
+  treeNodeCount,
+  headLamport,
+  replicaMaxCounter,
+  close,
+} as const;
+
 self.onmessage = async (ev: MessageEvent) => {
-  const { id, method, params } = ev.data as { id: number; method: string; params?: any };
+  const { id, method, params } = ev.data as { id: number; method: string; params?: any[] };
   const respond = (ok: boolean, result?: any, error?: string) => {
     (self as unknown as Worker).postMessage({ id, ok, result, error });
   };
 
   try {
-    if (method === "init") {
-      const result = await handleInit(
-        params as { baseUrl: string; filename?: string; storage: "memory" | "opfs"; docId: string }
-      );
-      respond(true, result);
+    const methodFn = methods[method as keyof typeof methods];
+    if (!methodFn) {
+      respond(false, null, "unknown method");
       return;
     }
-    if (method === "append") {
-      await ensureDb();
-      await appendOpRaw(db!, (params as any).op as Operation, nodeIdToBytes16, replicaIdToBytes);
-      respond(true, null);
-      return;
-    }
-    if (method === "appendMany") {
-      await ensureDb();
-      const ops = (params as any).ops as Operation[];
-      const adapter = createWaSqliteAdapter(db!);
-      if (adapter.appendOps) {
-        await adapter.appendOps(ops, nodeIdToBytes16, replicaIdToBytes);
-      } else {
-        for (const op of ops) {
-          await appendOpRaw(db!, op, nodeIdToBytes16, replicaIdToBytes);
-        }
-      }
-      respond(true, null);
-      return;
-    }
-    if (method === "opsSince") {
-      await ensureDb();
-      const lamport = (params as any).lamport as number;
-      const root = (params as any).root as string | undefined;
-      const rows = await opsSinceRaw(db!, { lamport, root });
-      respond(true, rows);
-      return;
-    }
-    if (method === "opRefsAll") {
-      await ensureDb();
-      const rows = await opRefsAllRaw(db!);
-      respond(true, rows);
-      return;
-    }
-    if (method === "opRefsChildren") {
-      await ensureDb();
-      const parent = (params as any).parent as string;
-      const rows = await opRefsChildrenRaw(db!, nodeIdToBytes16(parent));
-      respond(true, rows);
-      return;
-    }
-    if (method === "opsByOpRefs") {
-      await ensureDb();
-      const raw = (params as any).opRefs as number[][];
-      const opRefs = raw.map((r) => Uint8Array.from(r));
-      const rows = await opsByOpRefsRaw(db!, opRefs);
-      respond(true, rows);
-      return;
-    }
-    if (method === "treeChildren") {
-      await ensureDb();
-      const parent = (params as any).parent as string;
-      const rows = await treeChildrenRaw(db!, nodeIdToBytes16(parent));
-      respond(true, rows);
-      return;
-    }
-    if (method === "treeDump") {
-      await ensureDb();
-      const rows = await treeDumpRaw(db!);
-      respond(true, rows);
-      return;
-    }
-    if (method === "treeNodeCount") {
-      await ensureDb();
-      const v = await treeNodeCountRaw(db!);
-      respond(true, v);
-      return;
-    }
-    if (method === "headLamport") {
-      await ensureDb();
-      const v = await headLamportRaw(db!);
-      respond(true, v);
-      return;
-    }
-    if (method === "replicaMaxCounter") {
-      await ensureDb();
-      const rawReplica = (params as any).replica as number[] | string;
-      const replica =
-        typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
-      const v = await replicaMaxCounterRaw(db!, replica);
-      respond(true, v);
-      return;
-    }
-    if (method === "close") {
-      if (db?.close) await db.close();
-      db = null;
-      respond(true, null);
-      return;
-    }
-    respond(false, null, "unknown method");
+    const result = await (methodFn as (...args: any[]) => Promise<any>)(...(params ?? []));
+    respond(true, result);
   } catch (err) {
     respond(false, null, err instanceof Error ? err.message : String(err));
   }
 };
 
-async function handleInit(opts: {
-  baseUrl: string;
-  filename?: string;
-  storage: "memory" | "opfs";
-  docId: string;
-}): Promise<{ storage: "memory" | "opfs"; opfsError?: string }> {
+async function init(
+  baseUrl: string,
+  filename: string | undefined,
+  storageParam: "memory" | "opfs",
+  docId: string
+): Promise<{ storage: "memory" | "opfs"; opfsError?: string }> {
   if (db) {
     if (db.close) await db.close();
     db = null;
   }
-  storage = opts.storage;
+  storage = storageParam;
   let opfsError: string | undefined;
-  const base = opts.baseUrl;
+  const base = baseUrl;
   const sqliteModule = await import(/* @vite-ignore */ `${base}wa-sqlite/wa-sqlite-async.mjs`);
   const sqliteApi = await import(/* @vite-ignore */ `${base}wa-sqlite/sqlite-api.js`);
 
@@ -161,11 +87,84 @@ async function handleInit(opts: {
     }
   }
 
-  const filename = storage === "opfs" ? opts.filename ?? "/treecrdt.db" : ":memory:";
-  const handle = await sqlite3.open_v2(filename);
+  const dbFilename = storage === "opfs" ? filename ?? "/treecrdt.db" : ":memory:";
+  const handle = await sqlite3.open_v2(dbFilename);
   db = makeDbAdapter(sqlite3, handle);
-  await setDocIdRaw(db, opts.docId);
+  await setDocIdRaw(db, docId);
   return opfsError ? { storage, opfsError } : { storage };
+}
+
+async function append(op: Operation) {
+  await ensureDb();
+  await appendOpRaw(db!, op, nodeIdToBytes16, replicaIdToBytes);
+  return null;
+}
+
+async function appendMany(ops: Operation[]) {
+  await ensureDb();
+  const adapter = createWaSqliteAdapter(db!);
+  if (adapter.appendOps) {
+    await adapter.appendOps(ops, nodeIdToBytes16, replicaIdToBytes);
+  } else {
+    for (const op of ops) {
+      await appendOpRaw(db!, op, nodeIdToBytes16, replicaIdToBytes);
+    }
+  }
+  return null;
+}
+
+async function opsSince(lamport: number, root: string | undefined) {
+  await ensureDb();
+  return await opsSinceRaw(db!, { lamport, root });
+}
+
+async function opRefsAll() {
+  await ensureDb();
+  return await opRefsAllRaw(db!);
+}
+
+async function opRefsChildren(parent: string) {
+  await ensureDb();
+  return await opRefsChildrenRaw(db!, nodeIdToBytes16(parent));
+}
+
+async function opsByOpRefs(opRefs: number[][]) {
+  await ensureDb();
+  const opRefsArray = opRefs.map((r) => Uint8Array.from(r));
+  return await opsByOpRefsRaw(db!, opRefsArray);
+}
+
+async function treeChildren(parent: string) {
+  await ensureDb();
+  return await treeChildrenRaw(db!, nodeIdToBytes16(parent));
+}
+
+async function treeDump() {
+  await ensureDb();
+  return await treeDumpRaw(db!);
+}
+
+async function treeNodeCount() {
+  await ensureDb();
+  return await treeNodeCountRaw(db!);
+}
+
+async function headLamport() {
+  await ensureDb();
+  return await headLamportRaw(db!);
+}
+
+async function replicaMaxCounter(replica: number[] | string) {
+  await ensureDb();
+  const replicaBytes =
+    typeof replica === "string" ? replicaIdToBytes(replica) : Uint8Array.from(replica);
+  return await replicaMaxCounterRaw(db!, replicaBytes);
+}
+
+async function close() {
+  if (db?.close) await db.close();
+  db = null;
+  return null;
 }
 
 async function ensureDb() {
