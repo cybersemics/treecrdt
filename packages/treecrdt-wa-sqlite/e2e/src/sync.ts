@@ -18,7 +18,7 @@ import {
   createInMemoryConnectedPeers,
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
-} from "@treecrdt/sync/bench";
+} from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { Filter } from "@treecrdt/sync";
 

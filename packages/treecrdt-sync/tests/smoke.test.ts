@@ -8,7 +8,7 @@ import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
 
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { SyncPeer } from "../dist/sync.js";
-import { createInMemoryConnectedPeers } from "../dist/bench.js";
+import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
 import { wrapDuplexTransportWithCodec } from "../dist/transport.js";
 import type { DuplexTransport } from "../dist/transport.js";
 import type { Filter, OpRef, SyncBackend, SyncMessage } from "../dist/types.js";

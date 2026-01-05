@@ -10,9 +10,9 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./bench": {
-      "import": "./dist/bench.js",
-      "types": "./dist/bench.d.ts"
+    "./in-memory": {
+      "import": "./dist/in-memory.js",
+      "types": "./dist/in-memory.d.ts"
     },
     "./protobuf": {
       "import": "./dist/protobuf.js",
