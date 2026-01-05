@@ -160,17 +160,17 @@ async function createWorkerClient(opts: {
   worker.addEventListener("error", onError);
 
   // init
-  const initResult = (await call("init", {
-    baseUrl: opts.baseUrl,
-    filename: opts.filename,
-    storage: opts.storage,
-    docId: opts.docId,
-  })) as { storage?: StorageMode; opfsError?: string } | undefined;
+  const initResult = (await call("init", [
+    opts.baseUrl,
+    opts.filename,
+    opts.storage,
+    opts.docId,
+  ])) as { storage?: StorageMode; opfsError?: string } | undefined;
   const effectiveStorage: StorageMode = initResult?.storage === "opfs" ? "opfs" : "memory";
   if (opts.requireOpfs && effectiveStorage !== "opfs") {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : "";
     try {
-      if (!terminalError) await call("close", undefined);
+      if (!terminalError) await call("close", [] as RpcParams<"close">);
     } catch {
       // ignore close errors on init failure
     } finally {
@@ -183,7 +183,7 @@ async function createWorkerClient(opts: {
 
   const closeImpl = async () => {
     try {
-      if (!terminalError) await call("close", undefined);
+      if (!terminalError) await call("close", [] as RpcParams<"close">);
     } finally {
       worker.removeEventListener("error", onError);
       worker.removeEventListener("message", onMessage);
@@ -235,24 +235,34 @@ async function createDirectClient(opts: {
   const call: RpcCall = async (method, params) => {
     try {
       switch (method) {
-        case "append":
-          await appendOpRaw(db, (params as any).op, nodeIdToBytes16, encodeReplica);
+        case "append": {
+          const [op] = params as RpcParams<"append">;
+          await appendOpRaw(db, op, nodeIdToBytes16, encodeReplica);
           return undefined as any;
-        case "appendMany":
-          await adapter.appendOps!((params as any).ops, nodeIdToBytes16, encodeReplica);
+        }
+        case "appendMany": {
+          const [ops] = params as RpcParams<"appendMany">;
+          await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
           return undefined as any;
-        case "opsSince":
-          return (await opsSinceRaw(db, params as any)) as any;
+        }
+        case "opsSince": {
+          const [lamport, root] = params as RpcParams<"opsSince">;
+          return (await opsSinceRaw(db, { lamport, root })) as any;
+        }
         case "opRefsAll":
           return (await opRefsAllRaw(db)) as any;
-        case "opRefsChildren":
-          return (await opRefsChildrenRaw(db, nodeIdToBytes16((params as any).parent))) as any;
+        case "opRefsChildren": {
+          const [parent] = params as RpcParams<"opRefsChildren">;
+          return (await opRefsChildrenRaw(db, nodeIdToBytes16(parent))) as any;
+        }
         case "opsByOpRefs": {
-          const opRefs = (params as any).opRefs as number[][];
+          const [opRefs] = params as RpcParams<"opsByOpRefs">;
           return (await opsByOpRefsRaw(db, opRefs.map((r) => Uint8Array.from(r)))) as any;
         }
-        case "treeChildren":
-          return (await treeChildrenRaw(db, nodeIdToBytes16((params as any).parent))) as any;
+        case "treeChildren": {
+          const [parent] = params as RpcParams<"treeChildren">;
+          return (await treeChildrenRaw(db, nodeIdToBytes16(parent))) as any;
+        }
         case "treeDump":
           return (await treeDumpRaw(db)) as any;
         case "treeNodeCount":
@@ -260,11 +270,14 @@ async function createDirectClient(opts: {
         case "headLamport":
           return (await headLamportRaw(db)) as any;
         case "replicaMaxCounter": {
-          const rawReplica = (params as any).replica as number[] | string;
+          const [rawReplica] = params as RpcParams<"replicaMaxCounter">;
           const replica =
             typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
           return (await replicaMaxCounterRaw(db, replica)) as any;
         }
+        case "close":
+          if (db.close) await db.close();
+          return undefined as any;
         default:
           throw new Error(`unsupported direct method: ${method}`);
       }
@@ -296,30 +309,27 @@ function makeTreecrdtClientFromCall(opts: {
   const call = opts.call;
 
   const opsSinceImpl = async (lamport: number, root?: string) => {
-    const rows = await call("opsSince", { lamport, root });
+    const rows = await call("opsSince", [lamport, root]);
     return decodeSqliteOps(rows);
   };
-  const opRefsAllImpl = async () => decodeSqliteOpRefs(await call("opRefsAll", undefined));
-  const opRefsChildrenImpl = async (parent: string) =>
-    decodeSqliteOpRefs(await call("opRefsChildren", { parent }));
+  const opRefsAllImpl = async () => decodeSqliteOpRefs(await call("opRefsAll", []));
+  const opRefsChildrenImpl = async (parent: string) => decodeSqliteOpRefs(await call("opRefsChildren", [parent]));
   const opsByOpRefsImpl = async (opRefs: Uint8Array[]) =>
-    decodeSqliteOps(
-      await call("opsByOpRefs", { opRefs: opRefs.map((r) => Array.from(r)) })
-    );
-  const treeChildrenImpl = async (parent: string) => decodeSqliteNodeIds(await call("treeChildren", { parent }));
-  const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", undefined));
-  const treeNodeCountImpl = async () => Number(await call("treeNodeCount", undefined));
-  const headLamportImpl = async () => Number(await call("headLamport", undefined));
+    decodeSqliteOps(await call("opsByOpRefs", [opRefs.map((r) => Array.from(r))]));
+  const treeChildrenImpl = async (parent: string) => decodeSqliteNodeIds(await call("treeChildren", [parent]));
+  const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", []));
+  const treeNodeCountImpl = async () => Number(await call("treeNodeCount", []));
+  const headLamportImpl = async () => Number(await call("headLamport", []));
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
-    Number(await call("replicaMaxCounter", { replica: Array.from(encodeReplica(replica)) }));
+    Number(await call("replicaMaxCounter", [Array.from(encodeReplica(replica))]));
 
   return {
     mode: opts.mode,
     storage: opts.storage,
     docId: opts.docId,
     ops: {
-      append: (op) => call("append", { op }),
-      appendMany: (ops) => call("appendMany", { ops }),
+      append: (op) => call("append", [op]).then(() => undefined),
+      appendMany: (ops) => call("appendMany", [ops]).then(() => undefined),
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),

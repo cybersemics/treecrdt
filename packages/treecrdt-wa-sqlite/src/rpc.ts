@@ -12,19 +12,22 @@ export type RpcInitParams = {
 export type RpcInitResult = { storage: RpcStorageMode; opfsError?: string };
 
 export type RpcSchema = {
-  init: { params: RpcInitParams; result: RpcInitResult };
-  append: { params: { op: Operation }; result: void };
-  appendMany: { params: { ops: Operation[] }; result: void };
-  opsSince: { params: { lamport: number; root?: string }; result: unknown[] };
-  opRefsAll: { params?: undefined; result: unknown[] };
-  opRefsChildren: { params: { parent: string }; result: unknown[] };
-  opsByOpRefs: { params: { opRefs: number[][] }; result: unknown[] };
-  treeChildren: { params: { parent: string }; result: unknown[] };
-  treeDump: { params?: undefined; result: unknown[] };
-  treeNodeCount: { params?: undefined; result: number };
-  headLamport: { params?: undefined; result: number };
-  replicaMaxCounter: { params: { replica: number[] | string }; result: number };
-  close: { params?: undefined; result: void };
+  init: {
+    params: [baseUrl: string, filename: string | undefined, storage: RpcStorageMode, docId: string];
+    result: RpcInitResult;
+  };
+  append: { params: [op: Operation]; result: void };
+  appendMany: { params: [ops: Operation[]]; result: void };
+  opsSince: { params: [lamport: number, root?: string]; result: unknown[] };
+  opRefsAll: { params: []; result: unknown[] };
+  opRefsChildren: { params: [parent: string]; result: unknown[] };
+  opsByOpRefs: { params: [opRefs: number[][]]; result: unknown[] };
+  treeChildren: { params: [parent: string]; result: unknown[] };
+  treeDump: { params: []; result: unknown[] };
+  treeNodeCount: { params: []; result: number };
+  headLamport: { params: []; result: number };
+  replicaMaxCounter: { params: [replica: number[] | string]; result: number };
+  close: { params: []; result: void };
 };
 
 export type RpcMethod = keyof RpcSchema;
