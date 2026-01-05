@@ -167,17 +167,17 @@ async function createWorkerClient(opts: {
   worker.addEventListener("error", onError);
 
   // init
-  const initResult = (await call("init", {
-    baseUrl: opts.baseUrl,
-    filename: opts.filename,
-    storage: opts.storage,
-    docId: opts.docId,
-  } satisfies WorkerInit)) as { storage?: StorageMode; opfsError?: string } | undefined;
+  const initResult = (await call("init", [
+    opts.baseUrl,
+    opts.filename,
+    opts.storage,
+    opts.docId,
+  ])) as { storage?: StorageMode; opfsError?: string } | undefined;
   const effectiveStorage: StorageMode = initResult?.storage === "opfs" ? "opfs" : "memory";
   if (opts.requireOpfs && effectiveStorage !== "opfs") {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : "";
     try {
-      if (!terminalError) await call("close");
+      if (!terminalError) await call("close", []);
     } catch {
       // ignore close errors on init failure
     } finally {
@@ -189,27 +189,27 @@ async function createWorkerClient(opts: {
   }
 
   const opsSinceImpl = (lamport: number, root?: string) =>
-    call("opsSince", { lamport, root }).then((rows) => parseOps(rows as any[]));
-  const opRefsAllImpl = () => call("opRefsAll").then((rows) => parseOpRefs(rows as any[]));
+    call("opsSince", [lamport, root]).then((rows) => parseOps(rows as any[]));
+  const opRefsAllImpl = () => call("opRefsAll", []).then((rows) => parseOpRefs(rows as any[]));
   const opRefsChildrenImpl = (parent: string) =>
-    call("opRefsChildren", { parent }).then((rows) => parseOpRefs(rows as any[]));
+    call("opRefsChildren", [parent]).then((rows) => parseOpRefs(rows as any[]));
   const opsByOpRefsImpl = (opRefs: Uint8Array[]) =>
-    call("opsByOpRefs", { opRefs: opRefs.map((r) => Array.from(r)) }).then((rows) => parseOps(rows as any[]));
+    call("opsByOpRefs", [opRefs.map((r) => Array.from(r))]).then((rows) => parseOps(rows as any[]));
   const treeChildrenImpl = (parent: string) =>
-    call("treeChildren", { parent }).then((rows) => parseNodeIds(rows as any[]));
-  const treeDumpImpl = () => call("treeDump").then((rows) => parseTreeRows(rows as any[]));
-  const treeNodeCountImpl = () => call("treeNodeCount").then((v) => Number(v));
-  const headLamportImpl = () => call("headLamport").then((v) => Number(v));
+    call("treeChildren", [parent]).then((rows) => parseNodeIds(rows as any[]));
+  const treeDumpImpl = () => call("treeDump", []).then((rows) => parseTreeRows(rows as any[]));
+  const treeNodeCountImpl = () => call("treeNodeCount", []).then((v) => Number(v));
+  const headLamportImpl = () => call("headLamport", []).then((v) => Number(v));
   const replicaMaxCounterImpl = (replica: Operation["meta"]["id"]["replica"]) =>
-    call("replicaMaxCounter", { replica: Array.from(encodeReplica(replica)) }).then((v) => Number(v));
+    call("replicaMaxCounter", [Array.from(encodeReplica(replica))]).then((v) => Number(v));
 
   return {
     mode: "worker",
     storage: effectiveStorage,
     docId: opts.docId,
     ops: {
-      append: (op) => call("append", { op }),
-      appendMany: (ops) => call("appendMany", { ops }),
+      append: (op) => call("append", [op]),
+      appendMany: (ops) => call("appendMany", [ops]),
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),
@@ -220,7 +220,7 @@ async function createWorkerClient(opts: {
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     close: async () => {
       try {
-        if (!terminalError) await call("close");
+        if (!terminalError) await call("close", []);
       } finally {
         worker.removeEventListener("error", onError);
         worker.removeEventListener("message", onMessage);
