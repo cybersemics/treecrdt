@@ -87,6 +87,90 @@ export async function opsByOpRefs(db: Database, opRefs: Uint8Array[]): Promise<u
 }
 
 /**
+ * Fetch materialized children for a parent node (16-byte id).
+ * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
+ */
+export async function treeChildren(db: Database, parent: Uint8Array): Promise<unknown[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_tree_children(?1)");
+  await db.bind(stmt, 1, parent);
+  const row = await db.step(stmt);
+  let result: unknown[] = [];
+  if (row !== 0) {
+    const json = await db.column_text(stmt, 0);
+    result = JSON.parse(json);
+  }
+  await db.finalize(stmt);
+  return result;
+}
+
+/**
+ * Dump the full materialized tree state.
+ * Returns raw JSON-decoded rows (array of objects with byte fields).
+ */
+export async function treeDump(db: Database): Promise<unknown[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_tree_dump()");
+  const row = await db.step(stmt);
+  let result: unknown[] = [];
+  if (row !== 0) {
+    const json = await db.column_text(stmt, 0);
+    result = JSON.parse(json);
+  }
+  await db.finalize(stmt);
+  return result;
+}
+
+/**
+ * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
+ */
+export async function treeNodeCount(db: Database): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_tree_node_count()");
+  const row = await db.step(stmt);
+  let result = 0;
+  if (row !== 0) {
+    const val = await db.column_text(stmt, 0);
+    result = Number(val);
+  }
+  await db.finalize(stmt);
+  return result;
+}
+
+/**
+ * Fetch the maximum lamport seen in the op log.
+ */
+export async function headLamport(db: Database): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_head_lamport()");
+  const row = await db.step(stmt);
+  let result = 0;
+  if (row !== 0) {
+    const val = await db.column_text(stmt, 0);
+    result = Number(val);
+  }
+  await db.finalize(stmt);
+  return result;
+}
+
+/**
+ * Fetch the maximum counter observed for a replica id.
+ */
+export async function replicaMaxCounter(db: Database, replica: Uint8Array): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stmt: any = await db.prepare("SELECT treecrdt_replica_max_counter(?1)");
+  await db.bind(stmt, 1, replica);
+  const row = await db.step(stmt);
+  let result = 0;
+  if (row !== 0) {
+    const val = await db.column_text(stmt, 0);
+    result = Number(val);
+  }
+  await db.finalize(stmt);
+  return result;
+}
+
+/**
   Append an operation by calling the extension function.
 */
 export async function appendOp(

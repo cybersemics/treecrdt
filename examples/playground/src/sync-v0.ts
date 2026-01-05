@@ -10,15 +10,6 @@ export type PresenceMessage = {
   ts: number;
 };
 
-export type RoutedSyncMessage = {
-  t: "sync";
-  from: string;
-  to: string;
-  bytes: Uint8Array;
-};
-
-export type WireMessage = PresenceMessage | RoutedSyncMessage;
-
 export function hexToBytes16(hex: string): Uint8Array {
   return nodeIdToBytes16(hex);
 }
@@ -61,39 +52,40 @@ export function createBroadcastDuplex<Op>(
   peerId: string,
   codec: WireCodec<SyncMessage<Op>, Uint8Array>
 ): DuplexTransport<SyncMessage<Op>> {
+  const incoming = new BroadcastChannel(`${channel.name}:sync:${peerId}->${selfId}`);
+  const outgoing = new BroadcastChannel(`${channel.name}:sync:${selfId}->${peerId}`);
   const handlers = new Set<(msg: SyncMessage<Op>) => void>();
   let listening = false;
 
-  const onMessage = (ev: MessageEvent<WireMessage>) => {
-    const data = ev.data;
-    if (!data || typeof data !== "object") return;
-    if (data.t !== "sync") return;
-    if (data.to !== selfId) return;
-    if (data.from !== peerId) return;
-
-    const msg = codec.decode(data.bytes);
+  const onMessage = (ev: MessageEvent<any>) => {
+    const bytes = ev.data as unknown;
+    if (!(bytes instanceof Uint8Array)) return;
+    const msg = codec.decode(bytes);
     for (const h of handlers) h(msg);
   };
 
   return {
     async send(msg) {
-      const wire: RoutedSyncMessage = { t: "sync", from: selfId, to: peerId, bytes: codec.encode(msg) };
-      channel.postMessage(wire);
+      outgoing.postMessage(codec.encode(msg));
     },
     onMessage(handler) {
       handlers.add(handler);
       if (!listening) {
-        channel.addEventListener("message", onMessage as any);
+        incoming.addEventListener("message", onMessage as any);
         listening = true;
       }
 
       return () => {
         handlers.delete(handler);
         if (handlers.size === 0 && listening) {
-          channel.removeEventListener("message", onMessage as any);
+          incoming.removeEventListener("message", onMessage as any);
           listening = false;
         }
       };
+    },
+    close() {
+      incoming.close();
+      outgoing.close();
     },
   };
 }

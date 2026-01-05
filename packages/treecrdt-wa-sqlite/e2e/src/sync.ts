@@ -1,5 +1,14 @@
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
-import { buildSyncBenchCase, envInt, makeOp, maxLamport, nodeIdFromInt, quantile, type SyncBenchWorkload } from "@treecrdt/benchmark";
+import {
+  buildFanoutInsertTreeOps,
+  buildSyncBenchCase,
+  envInt,
+  makeOp,
+  maxLamport,
+  nodeIdFromInt,
+  quantile,
+  type SyncBenchWorkload,
+} from "@treecrdt/benchmark";
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import { SyncPeer, treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync";
@@ -136,9 +145,52 @@ async function runChildrenE2e(): Promise<void> {
   }
 }
 
+async function runLargeFanoutAllE2e(): Promise<void> {
+  const size = 100_000;
+  const fanout = 10;
+  const maxCodewords = 2_000_000;
+  const codewordsPerMessage = 4096;
+
+  const docId = `e2e-sync-large-fanout${fanout}-${crypto.randomUUID()}`;
+  const a = await createTreecrdtClient({ storage: "memory", docId });
+  const b = await createTreecrdtClient({ storage: "memory", docId });
+
+  try {
+    const root = "0".repeat(32);
+    const opsA = buildFanoutInsertTreeOps({ replica: "a", size, fanout, root });
+    await a.ops.appendMany(opsA);
+
+    const backendA = makeBackend(a, docId, maxLamport(opsA));
+    const backendB = makeBackend(b, docId, 0);
+
+    const [wa, wb] = createInMemoryDuplex<Uint8Array>();
+    const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
+    const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
+    const pa = new SyncPeer(backendA, { maxCodewords });
+    const pb = new SyncPeer(backendB, { maxCodewords });
+    pa.attach(ta);
+    pb.attach(tb);
+
+    await pb.syncOnce(tb, { all: {} }, { maxCodewords, codewordsPerMessage });
+    await Promise.all([backendA.flush(), backendB.flush()]);
+
+    const [countA, countB] = await Promise.all([a.tree.nodeCount(), b.tree.nodeCount()]);
+    if (countA !== size || countB !== size) {
+      throw new Error(`sync-large-fanout${fanout}: expected nodeCount a=b=${size}, got a=${countA} b=${countB}`);
+    }
+  } finally {
+    await Promise.allSettled([a.close(), b.close()]);
+  }
+}
+
 export async function runTreecrdtSyncE2E(): Promise<{ ok: true }> {
   await runAllE2e();
   await runChildrenE2e();
+  return { ok: true };
+}
+
+export async function runTreecrdtSyncLargeFanoutE2E(): Promise<{ ok: true }> {
+  await runLargeFanoutAllE2e();
   return { ok: true };
 }
 
@@ -379,6 +431,7 @@ export async function runTreecrdtSyncBench(
 declare global {
   interface Window {
     runTreecrdtSyncE2E?: typeof runTreecrdtSyncE2E;
+    runTreecrdtSyncLargeFanoutE2E?: typeof runTreecrdtSyncLargeFanoutE2E;
     runTreecrdtSyncSubscribeE2E?: typeof runTreecrdtSyncSubscribeE2E;
     runTreecrdtSyncBench?: typeof runTreecrdtSyncBench;
   }
@@ -386,6 +439,7 @@ declare global {
 
 if (typeof window !== "undefined") {
   window.runTreecrdtSyncE2E = runTreecrdtSyncE2E;
+  window.runTreecrdtSyncLargeFanoutE2E = runTreecrdtSyncLargeFanoutE2E;
   window.runTreecrdtSyncSubscribeE2E = runTreecrdtSyncSubscribeE2E;
   window.runTreecrdtSyncBench = runTreecrdtSyncBench;
 }

@@ -25,6 +25,9 @@ import { useVirtualizer } from "./virtualizer";
 
 const ROOT_ID = "00000000000000000000000000000000"; // 16-byte zero, hex-encoded
 const MAX_COMPOSER_NODE_COUNT = 100_000;
+const PLAYGROUND_SYNC_MAX_CODEWORDS = 2_000_000;
+const PLAYGROUND_SYNC_MAX_OPS_PER_BATCH = 20_000;
+const PLAYGROUND_PEER_TIMEOUT_MS = 30_000;
 
 type DisplayNode = {
   id: string;
@@ -39,8 +42,7 @@ type NodeMeta = {
   deleted: boolean;
 };
 
-type DerivedTree = {
-  root: DisplayNode;
+type TreeState = {
   index: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 };
@@ -120,8 +122,14 @@ export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const clientRef = useRef<TreecrdtClient | null>(null);
   const [ops, setOps] = useState<Operation[]>([]);
+  const [treeState, setTreeState] = useState<TreeState>(() => ({
+    index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0, deleted: false } },
+    childrenByParent: { [ROOT_ID]: [] },
+  }));
   const [status, setStatus] = useState<Status>("booting");
   const [error, setError] = useState<string | null>(null);
+  const [headLamport, setHeadLamport] = useState(0);
+  const [totalNodes, setTotalNodes] = useState<number | null>(null);
   const [docId, setDocId] = useState<string>(() => initialDocId());
   const [storage, setStorage] = useState<StorageMode>(() => initialStorage());
   const [sessionKey, setSessionKey] = useState<string>(() =>
@@ -147,6 +155,7 @@ export default function App() {
   const lamportRef = useRef(0);
   const replicaId = useMemo(pickReplicaId, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
+  const showOpsPanelRef = useRef(false);
 
   const syncConnRef = useRef<
     Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>
@@ -157,8 +166,22 @@ export default function App() {
   const liveAllEnabledRef = useRef(false);
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
 
+  const treeStateRef = useRef<TreeState>(treeState);
+  useEffect(() => {
+    treeStateRef.current = treeState;
+  }, [treeState]);
+
+  useEffect(() => {
+    showOpsPanelRef.current = showOpsPanel;
+    if (!showOpsPanel) {
+      setOps([]);
+      knownOpsRef.current = new Set();
+    }
+  }, [showOpsPanel]);
+
   const ingestOps = React.useCallback(
     (incoming: Operation[], opts: { assumeSorted?: boolean } = {}) => {
+      if (!showOpsPanelRef.current) return;
       if (incoming.length === 0) return;
       const fresh: Operation[] = [];
       const known = knownOpsRef.current;
@@ -174,6 +197,124 @@ export default function App() {
     },
     []
   );
+
+  const childrenLoadInFlightRef = useRef<Set<string>>(new Set());
+
+  const ensureChildrenLoaded = React.useCallback(
+    async (parentId: string, opts: { force?: boolean; nextClient?: TreecrdtClient } = {}) => {
+      const active = opts.nextClient ?? clientRef.current ?? client;
+      if (!active) return;
+
+      const current = treeStateRef.current.childrenByParent;
+      const loaded = Object.prototype.hasOwnProperty.call(current, parentId);
+      if (loaded && !opts.force) return;
+
+      if (childrenLoadInFlightRef.current.has(parentId)) return;
+      childrenLoadInFlightRef.current.add(parentId);
+      try {
+        const children = await active.tree.children(parentId);
+        setTreeState((prev) => applyChildrenLoaded(prev, parentId, children));
+      } catch (err) {
+        console.error("Failed to load children", err);
+        setError("Failed to load tree children (see console)");
+      } finally {
+        childrenLoadInFlightRef.current.delete(parentId);
+      }
+    },
+    [client]
+  );
+
+  const refreshParents = React.useCallback(
+    async (parentIds: Iterable<string>, opts: { nextClient?: TreecrdtClient } = {}) => {
+      const active = opts.nextClient ?? clientRef.current ?? client;
+      if (!active) return;
+
+      const loadedChildren = treeStateRef.current.childrenByParent;
+      const unique = new Set<string>();
+      for (const id of parentIds) {
+        if (Object.prototype.hasOwnProperty.call(loadedChildren, id)) unique.add(id);
+      }
+      const ids = Array.from(unique);
+      if (ids.length === 0) return;
+
+      try {
+        const results = await Promise.all(ids.map(async (id) => [id, await active.tree.children(id)] as const));
+        setTreeState((prev) => {
+          let next = prev;
+          for (const [id, children] of results) next = applyChildrenLoaded(next, id, children);
+          return next;
+        });
+      } catch (err) {
+        console.error("Failed to refresh tree parents", err);
+      }
+    },
+    [client]
+  );
+
+  const refreshNodeCount = React.useCallback(
+    async (nextClient?: TreecrdtClient) => {
+      const active = nextClient ?? clientRef.current ?? client;
+      if (!active) return;
+      try {
+        const count = await active.tree.nodeCount();
+        setTotalNodes(Number.isFinite(count) ? count : null);
+      } catch (err) {
+        console.error("Failed to refresh node count", err);
+      }
+    },
+    [client]
+  );
+
+  const refreshMeta = React.useCallback(
+    async (nextClient?: TreecrdtClient) => {
+      const active = nextClient ?? clientRef.current ?? client;
+      if (!active) return;
+      try {
+        const [lamport, counter] = await Promise.all([
+          active.meta.headLamport(),
+          active.meta.replicaMaxCounter(replicaId),
+        ]);
+        lamportRef.current = Math.max(lamportRef.current, lamport);
+        setHeadLamport(lamportRef.current);
+        counterRef.current = Math.max(counterRef.current, counter);
+      } catch (err) {
+        console.error("Failed to refresh meta", err);
+      }
+    },
+    [client, replicaId]
+  );
+
+  const refreshParentsScheduledRef = useRef(false);
+  const refreshParentsQueueRef = useRef<Set<string>>(new Set());
+  const scheduleRefreshParents = React.useCallback(
+    (parentIds: Iterable<string>) => {
+      const loadedChildren = treeStateRef.current.childrenByParent;
+      const queue = refreshParentsQueueRef.current;
+      for (const id of parentIds) {
+        if (Object.prototype.hasOwnProperty.call(loadedChildren, id)) queue.add(id);
+      }
+      if (queue.size === 0) return;
+      if (refreshParentsScheduledRef.current) return;
+      refreshParentsScheduledRef.current = true;
+      queueMicrotask(() => {
+        refreshParentsScheduledRef.current = false;
+        const ids = Array.from(refreshParentsQueueRef.current);
+        refreshParentsQueueRef.current.clear();
+        void refreshParents(ids);
+      });
+    },
+    [refreshParents]
+  );
+
+  const refreshNodeCountQueuedRef = useRef(false);
+  const scheduleRefreshNodeCount = React.useCallback(() => {
+    if (refreshNodeCountQueuedRef.current) return;
+    refreshNodeCountQueuedRef.current = true;
+    queueMicrotask(() => {
+      refreshNodeCountQueuedRef.current = false;
+      void refreshNodeCount();
+    });
+  }, [refreshNodeCount]);
 
   const stopLiveAllForPeer = (peerId: string) => {
     const existing = liveAllSubsRef.current.get(peerId);
@@ -192,7 +333,15 @@ export default function App() {
     if (!conn) return;
 
     if (liveAllSubsRef.current.has(peerId)) return;
-    const sub = conn.peer.subscribe(conn.transport, { all: {} }, { maxCodewords: 200_000, codewordsPerMessage: 1024 });
+    const sub = conn.peer.subscribe(
+      conn.transport,
+      { all: {} },
+      {
+        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+        codewordsPerMessage: 1024,
+      }
+    );
     liveAllSubsRef.current.set(peerId, sub);
     void sub.done.catch((err) => {
       console.error("Live sync(all) failed", err);
@@ -233,7 +382,11 @@ export default function App() {
     const sub = conn.peer.subscribe(
       conn.transport,
       { children: { parent: hexToBytes16(parentId) } },
-      { maxCodewords: 200_000, codewordsPerMessage: 1024 }
+      {
+        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+        codewordsPerMessage: 1024,
+      }
     );
     byParent.set(parentId, sub);
     liveChildSubsRef.current.set(peerId, byParent);
@@ -264,27 +417,28 @@ export default function App() {
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
-  const { root, index, childrenByParent } = useMemo(() => rebuildTree(ops), [ops]);
+  const { index, childrenByParent } = treeState;
 
-  const nodeList = useMemo(() => flattenForSelect(root), [root]);
-  const headLamport = useMemo(() => ops.reduce((max, op) => Math.max(max, op.meta.lamport), 0), [ops]);
+  const nodeList = useMemo(() => flattenForSelectState(childrenByParent), [childrenByParent]);
   const visibleNodes = useMemo(() => {
     const acc: Array<{ node: DisplayNode; depth: number }> = [];
     const isCollapsed = (id: string) => {
       return collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
     };
-    const stack: Array<{ node: DisplayNode; depth: number }> = [{ node: root, depth: 0 }];
+    const stack: Array<{ id: string; depth: number }> = [{ id: ROOT_ID, depth: 0 }];
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
-      acc.push(entry);
-      if (isCollapsed(entry.node.id)) continue;
-      for (let i = entry.node.children.length - 1; i >= 0; i--) {
-        stack.push({ node: entry.node.children[i]!, depth: entry.depth + 1 });
+      const label = entry.id === ROOT_ID ? "Root" : entry.id.slice(0, 6);
+      acc.push({ node: { id: entry.id, label, children: [] }, depth: entry.depth });
+      if (isCollapsed(entry.id)) continue;
+      const kids = childrenByParent[entry.id] ?? [];
+      for (let i = kids.length - 1; i >= 0; i--) {
+        stack.push({ id: kids[i]!, depth: entry.depth + 1 });
       }
     }
     return acc;
-  }, [root, collapse]);
+  }, [childrenByParent, collapse]);
   const treeParentRef = useRef<HTMLDivElement | null>(null);
   const opsParentRef = useRef<HTMLDivElement | null>(null);
   const treeEstimateSize = React.useCallback(() => 72, []);
@@ -360,6 +514,14 @@ export default function App() {
         }
         await baseBackend.applyOps(ops);
         ingestOps(ops);
+        if (ops.length > 0) {
+          let max = 0;
+          for (const op of ops) max = Math.max(max, op.meta.lamport);
+          lamportRef.current = Math.max(lamportRef.current, max);
+          setHeadLamport(lamportRef.current);
+        }
+        scheduleRefreshParents(parentsAffectedByOps(treeStateRef.current, ops));
+        scheduleRefreshNodeCount();
       },
     };
     const connections = new Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>();
@@ -378,13 +540,25 @@ export default function App() {
       if (!peerId || peerId === replicaId) return;
       if (connections.has(peerId)) return;
 
-      const transport = createBroadcastDuplex<Operation>(
+      const rawTransport = createBroadcastDuplex<Operation>(
         channel,
         replicaId,
         peerId,
         treecrdtSyncV0ProtobufCodec
       );
-      const peer = new SyncPeer<Operation>(backend);
+      const transport: DuplexTransport<any> = {
+        ...rawTransport,
+        onMessage(handler) {
+          return rawTransport.onMessage((msg) => {
+            lastSeen.set(peerId, Date.now());
+            return handler(msg);
+          });
+        },
+      };
+      const peer = new SyncPeer<Operation>(backend, {
+        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+      });
       const detach = peer.attach(transport);
       connections.set(peerId, { transport, peer, detach });
 
@@ -418,7 +592,7 @@ export default function App() {
     const pruneInterval = window.setInterval(() => {
       const now = Date.now();
       for (const [id, ts] of lastSeen) {
-        if (now - ts > 5000) {
+        if (now - ts > PLAYGROUND_PEER_TIMEOUT_MS) {
           lastSeen.delete(id);
           const conn = connections.get(id);
           if (conn) {
@@ -432,24 +606,22 @@ export default function App() {
       updatePeers();
     }, 2000);
 
-	    return () => {
-	      window.clearInterval(interval);
-	      window.clearInterval(pruneInterval);
-	      channel.removeEventListener("message", onPresence);
-	      stopAllLiveAll();
-	      stopAllLiveChildren();
-	      channel.close();
+    return () => {
+      window.clearInterval(interval);
+      window.clearInterval(pruneInterval);
+      channel.removeEventListener("message", onPresence);
+      stopAllLiveAll();
+      stopAllLiveChildren();
+      channel.close();
 
-      for (const conn of connections.values()) conn.detach();
+      for (const conn of connections.values()) {
+        conn.detach();
+        (conn.transport as any).close?.();
+      }
       connections.clear();
       setPeers([]);
-	  };
+    };
   }, [client, docId, replicaId, status]);
-
-  useEffect(() => {
-    counterRef.current = Math.max(counterRef.current, findMaxCounter(ops));
-    lamportRef.current = Math.max(lamportRef.current, headLamport);
-  }, [ops, headLamport]);
 
   useEffect(() => {
     return () => {
@@ -477,8 +649,10 @@ export default function App() {
       clientRef.current = c;
       setClient(c);
       setStorage(c.storage);
+      await refreshMeta(c);
+      await ensureChildrenLoaded(ROOT_ID, { nextClient: c, force: true });
+      await refreshNodeCount(c);
       setStatus("ready");
-      await refreshOps(c);
     } catch (err) {
       console.error("Failed to init wa-sqlite", err);
       setError("Failed to initialize wa-sqlite (see console for details)");
@@ -495,10 +669,16 @@ export default function App() {
         : sessionKey;
     setSessionKey(nextKey);
     setOps([]);
+    setTreeState({
+      index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0, deleted: false } },
+      childrenByParent: { [ROOT_ID]: [] },
+    });
     knownOpsRef.current = new Set();
     setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
     counterRef.current = 0;
     lamportRef.current = 0;
+    setHeadLamport(0);
+    setTotalNodes(null);
     if (clientRef.current?.close) {
       await clientRef.current.close();
     }
@@ -521,6 +701,13 @@ export default function App() {
       setError("Failed to refresh operations (see console)");
     }
   };
+
+  useEffect(() => {
+    if (!showOpsPanel) return;
+    if (!client || status !== "ready") return;
+    void refreshOps(undefined, { preserveParent: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showOpsPanel, client, status]);
 
   useEffect(() => {
     liveChildrenParentsRef.current = liveChildrenParents;
@@ -556,39 +743,44 @@ export default function App() {
     }
   }, [liveAllEnabled]);
 
-  const appendOperation = async (kind: OperationKind) => {
-    if (!client) return;
-    setBusy(true);
-    try {
-      counterRef.current += 1;
-      lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
-      const op: Operation = {
+	  const appendOperation = async (kind: OperationKind) => {
+	    if (!client) return;
+	    setBusy(true);
+	    try {
+	      const stateBefore = treeStateRef.current;
+	      counterRef.current += 1;
+	      lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
+	      const op: Operation = {
         meta: {
           id: { replica: replicaId, counter: counterRef.current },
           lamport: lamportRef.current,
         },
         kind,
       };
-      await client.ops.append(op);
-      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestOps([op], { assumeSorted: true });
-    } catch (err) {
-      console.error("Failed to append op", err);
-      setError("Failed to append operation (see console)");
+	      await client.ops.append(op);
+	      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
+	      ingestOps([op], { assumeSorted: true });
+	      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
+	      scheduleRefreshNodeCount();
+	      setHeadLamport(lamportRef.current);
+	    } catch (err) {
+	      console.error("Failed to append op", err);
+	      setError("Failed to append operation (see console)");
     } finally {
       setBusy(false);
     }
   };
 
-  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
-    if (!client) return;
-    const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
-    if (normalizedCount <= 0) return;
-    setBusy(true);
-    try {
-      const ops: Operation[] = [];
-      lamportRef.current = Math.max(lamportRef.current, headLamport);
-      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
+	  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
+	    if (!client) return;
+	    const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
+	    if (normalizedCount <= 0) return;
+	    setBusy(true);
+	    try {
+	      const stateBefore = treeStateRef.current;
+	      const ops: Operation[] = [];
+	      lamportRef.current = Math.max(lamportRef.current, headLamport);
+	      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
 
       if (fanoutLimit <= 0) {
         const basePosition = (childrenByParent[parentId] ?? []).length;
@@ -649,11 +841,14 @@ export default function App() {
           queue.push(nodeId);
         }
       }
-      await client.ops.appendMany(ops);
-      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestOps(ops, { assumeSorted: true });
-      setCollapse((prev) => {
-        const overrides = new Set(prev.overrides);
+	      await client.ops.appendMany(ops);
+	      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
+	      ingestOps(ops, { assumeSorted: true });
+	      scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
+	      scheduleRefreshNodeCount();
+	      setHeadLamport(lamportRef.current);
+	      setCollapse((prev) => {
+	        const overrides = new Set(prev.overrides);
         const setExpanded = (id: string) => {
           if (prev.defaultCollapsed) overrides.add(id);
           else overrides.delete(id);
@@ -712,8 +907,15 @@ export default function App() {
     setSyncError(null);
     try {
       for (const conn of connections.values()) {
-        await conn.peer.syncOnce(conn.transport, filter, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
+        await conn.peer.syncOnce(conn.transport, filter, {
+          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+          codewordsPerMessage: 2048,
+        });
       }
+      await refreshMeta();
+      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      await refreshNodeCount();
     } catch (err) {
       console.error("Sync failed", err);
       setSyncError(err instanceof Error ? err.message : String(err));
@@ -739,6 +941,8 @@ export default function App() {
   };
 
   const toggleCollapse = (id: string) => {
+    const currentlyCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
+    if (currentlyCollapsed) void ensureChildrenLoaded(id);
     setCollapse((prev) => {
       const overrides = new Set(prev.overrides);
       const currentlyCollapsed = prev.defaultCollapsed ? !overrides.has(id) : overrides.has(id);
@@ -887,11 +1091,14 @@ export default function App() {
 
           <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-3">
-                <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Tree</div>
-                <div className="text-xs text-slate-500">{nodeList.length - 1} nodes</div>
-              </div>
-              <div className="flex items-center gap-2">
+	            <div className="flex items-center gap-3">
+	              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Tree</div>
+	              <div className="text-xs text-slate-500">
+	                {totalNodes === null ? "…" : totalNodes} nodes
+	                <span className="text-slate-600"> · {nodeList.length - 1} loaded</span>
+	              </div>
+	            </div>
+	            <div className="flex items-center gap-2">
                 <button
                   className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                   onClick={() => void handleSync({ all: {} })}
@@ -1125,7 +1332,9 @@ function TreeRow({
     metaInfo &&
     siblings.indexOf(node.id) !== -1 &&
     siblings.indexOf(node.id) < siblings.length - 1;
-  const hasChildren = (metaInfo?.childCount ?? node.children.length) > 0;
+  const childrenLoaded = Object.prototype.hasOwnProperty.call(childrenByParent, node.id);
+  const childCount = childrenLoaded ? (childrenByParent[node.id]?.length ?? 0) : null;
+  const toggleDisabled = childrenLoaded && childCount === 0 && isCollapsed;
 
   return (
     <div
@@ -1137,7 +1346,7 @@ function TreeRow({
           <button
             className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
             onClick={() => onToggle(node.id)}
-            disabled={!hasChildren}
+            disabled={toggleDisabled}
             aria-label={isCollapsed ? "Expand node" : "Collapse node"}
             title={isCollapsed ? "Expand" : "Collapse"}
           >
@@ -1213,100 +1422,82 @@ function TreeRow({
   );
 }
 
-function rebuildTree(ops: Operation[]): DerivedTree {
-  type NodeState = { id: string; parentId: string | null; children: string[]; deleted: boolean };
-  const nodes = new Map<string, NodeState>();
-  const ensure = (id: string): NodeState => {
-    if (!nodes.has(id)) {
-      nodes.set(id, { id, parentId: null, children: [], deleted: false });
-    }
-    return nodes.get(id)!;
+function applyChildrenLoaded(state: TreeState, parentId: string, children: string[]): TreeState {
+  const nextChildrenByParent: Record<string, string[]> = { ...state.childrenByParent, [parentId]: children };
+  const nextIndex: Record<string, NodeMeta> = { ...state.index };
+
+  const ensureNode = (id: string): NodeMeta => {
+    const existing = nextIndex[id];
+    if (existing) return existing;
+    const meta: NodeMeta = { parentId: null, order: 0, childCount: 0, deleted: false };
+    nextIndex[id] = meta;
+    return meta;
   };
 
-  ensure(ROOT_ID);
+  ensureNode(ROOT_ID);
+  nextIndex[ROOT_ID] = { ...nextIndex[ROOT_ID]!, parentId: null, deleted: false };
+  if (!Object.prototype.hasOwnProperty.call(nextChildrenByParent, ROOT_ID)) nextChildrenByParent[ROOT_ID] = [];
 
-  const insertAt = (arr: string[], value: string, position: number) => {
-    const next = arr.filter((id) => id !== value);
-    const clamped = Math.max(0, Math.min(position ?? next.length, next.length));
-    next.splice(clamped, 0, value);
-    return next;
+  const parentMeta = ensureNode(parentId);
+  nextIndex[parentId] = {
+    ...parentMeta,
+    parentId: parentId === ROOT_ID ? null : parentMeta.parentId,
+    deleted: false,
+    childCount: children.length,
   };
 
-  for (const op of ops) {
-    if (op.kind.type === "insert") {
-      const parent = ensure(op.kind.parent);
-      const node = ensure(op.kind.node);
-      node.deleted = false;
-      node.parentId = parent.id;
-      parent.children = insertAt(parent.children, node.id, op.kind.position ?? parent.children.length);
-    } else if (op.kind.type === "move") {
-      const node = ensure(op.kind.node);
-      const targetParent = ensure(op.kind.newParent);
-      if (node.parentId) {
-        const currentParent = ensure(node.parentId);
-        currentParent.children = currentParent.children.filter((id) => id !== node.id);
-      }
-      node.parentId = targetParent.id;
-      targetParent.children = insertAt(
-        targetParent.children,
-        node.id,
-        op.kind.position ?? targetParent.children.length
-      );
-    } else if (op.kind.type === "delete" || op.kind.type === "tombstone") {
-      if (op.kind.node === ROOT_ID) continue;
-      const node = ensure(op.kind.node);
-      node.deleted = true;
-      if (node.parentId) {
-        const parent = ensure(node.parentId);
-        parent.children = parent.children.filter((id) => id !== node.id);
+  const newSet = new Set(children);
+  const prevChildren = state.childrenByParent[parentId];
+  if (prevChildren) {
+    for (const childId of prevChildren) {
+      if (newSet.has(childId)) continue;
+      const meta = nextIndex[childId];
+      if (meta && meta.parentId === parentId) {
+        nextIndex[childId] = { ...meta, parentId: null, order: 0 };
       }
     }
   }
 
-  const childrenByParent: Record<string, string[]> = {};
-  const index: Record<string, NodeMeta> = {};
-  const labelFor = (id: string) => {
-    if (id === ROOT_ID) return "Root";
-    return id.slice(0, 6);
-  };
-
-  const build = (id: string, parentId: string | null, order: number): DisplayNode | null => {
-    const node = nodes.get(id);
-    if (!node || node.deleted) return null;
-    const renderedChildren: DisplayNode[] = [];
-    let childOrder = 0;
-    for (const childId of node.children) {
-      const built = build(childId, id, childOrder);
-      if (built) {
-        renderedChildren.push(built);
-        childOrder += 1;
-      }
-    }
-    childrenByParent[id] = renderedChildren.map((c) => c.id);
-    index[id] = { parentId, order, childCount: renderedChildren.length, deleted: node.deleted };
-    return { id, label: labelFor(id), children: renderedChildren };
-  };
-
-  const root = build(ROOT_ID, null, 0) ?? { id: ROOT_ID, label: "Root", children: [] };
-  if (!childrenByParent[ROOT_ID]) {
-    childrenByParent[ROOT_ID] = root.children.map((c) => c.id);
-  }
-  if (!index[ROOT_ID]) {
-    index[ROOT_ID] = { parentId: null, order: 0, childCount: root.children.length, deleted: false };
+  for (let i = 0; i < children.length; i++) {
+    const childId = children[i]!;
+    const existing = ensureNode(childId);
+    const loaded = Object.prototype.hasOwnProperty.call(nextChildrenByParent, childId);
+    const childCount = loaded ? nextChildrenByParent[childId]!.length : existing.childCount;
+    nextIndex[childId] = { ...existing, parentId, order: i, deleted: false, childCount };
   }
 
-  return { root, index, childrenByParent };
+  return { index: nextIndex, childrenByParent: nextChildrenByParent };
 }
 
-function flattenForSelect(node: DisplayNode): Array<{ id: string; label: string; depth: number }> {
+function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<string> {
+  const out = new Set<string>();
+  for (const op of ops) {
+    const kind = op.kind;
+    if (kind.type === "insert") {
+      out.add(kind.parent);
+    } else if (kind.type === "move") {
+      out.add(kind.newParent);
+      const prevParent = state.index[kind.node]?.parentId;
+      if (prevParent) out.add(prevParent);
+    } else {
+      const prevParent = state.index[kind.node]?.parentId;
+      if (prevParent) out.add(prevParent);
+    }
+  }
+  return out;
+}
+
+function flattenForSelectState(childrenByParent: Record<string, string[]>): Array<{ id: string; label: string; depth: number }> {
   const acc: Array<{ id: string; label: string; depth: number }> = [];
-  const stack: Array<{ node: DisplayNode; depth: number }> = [{ node, depth: 0 }];
+  const stack: Array<{ id: string; depth: number }> = [{ id: ROOT_ID, depth: 0 }];
   while (stack.length > 0) {
     const entry = stack.pop();
     if (!entry) break;
-    acc.push({ id: entry.node.id, label: entry.node.label, depth: entry.depth });
-    for (let i = entry.node.children.length - 1; i >= 0; i--) {
-      stack.push({ node: entry.node.children[i]!, depth: entry.depth + 1 });
+    const label = entry.id === ROOT_ID ? "Root" : entry.id.slice(0, 6);
+    acc.push({ id: entry.id, label, depth: entry.depth });
+    const kids = childrenByParent[entry.id] ?? [];
+    for (let i = kids.length - 1; i >= 0; i--) {
+      stack.push({ id: kids[i]!, depth: entry.depth + 1 });
     }
   }
   return acc;
@@ -1320,10 +1511,6 @@ function renderKind(kind: OperationKind): string {
     return `move ${kind.node} to ${kind.newParent} @${kind.position}`;
   }
   return `${kind.type} ${kind.node}`;
-}
-
-function findMaxCounter(ops: Operation[]): number {
-  return ops.reduce((max, op) => Math.max(max, op.meta.id.counter), 0);
 }
 
 function pickReplicaId(): string {
