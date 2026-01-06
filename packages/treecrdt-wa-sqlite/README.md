@@ -4,8 +4,8 @@ Loader + thin helpers to use the TreeCRDT SQLite extension with wa-sqlite in bro
 
 ## Build the patched wa-sqlite (extension baked in)
 ```
-pnpm --filter @treecrdt/wa-sqlite build:wa-sqlite
-# copies dist/wa-sqlite.{mjs,wasm} into public/wa-sqlite/
+pnpm --filter @treecrdt/wa-sqlite-vendor build
+# builds wa-sqlite/dist (example apps copy these into public/wa-sqlite/)
 ```
 
 ## Use in the demo

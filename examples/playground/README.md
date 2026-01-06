@@ -23,15 +23,15 @@ The playground includes a simple sync panel that discovers other open tabs via `
 - Open tab B with the same doc and a different replica: `http://localhost:5193/?doc=demo&replica=replica-b`
 - Make changes in either tab, then click `Sync all` (or `Sync children`) to reconcile and exchange missing ops.
 
-The Vite app uses `@treecrdt/wa-sqlite/vite-plugin` to copy wa-sqlite artifacts from `vendor/wa-sqlite/dist` into `public/wa-sqlite` on startup.
+The Vite app uses `@treecrdt/wa-sqlite/vite-plugin` to copy wa-sqlite artifacts from `@treecrdt/wa-sqlite-vendor` into `public/wa-sqlite` on startup.
 
-If you see `SQLiteError: no such function: treecrdt_set_doc_id`, your `vendor/wa-sqlite/dist` build is stale relative to `packages/treecrdt-sqlite-ext`. Rebuild wa-sqlite and reload:
+If you see `SQLiteError: no such function: treecrdt_set_doc_id`, your wa-sqlite build is stale relative to `packages/treecrdt-sqlite-ext`. Rebuild wa-sqlite and reload:
 
 ```bash
-make -C vendor/wa-sqlite clean-tmp dist
+pnpm --filter @treecrdt/wa-sqlite-vendor rebuild
 ```
 
-The example does not depend on the npm `wa-sqlite` package; it consumes the repo's checked-in wa-sqlite build directly via the copy step above.
+The example does not depend on the npm `wa-sqlite` package; it consumes the repo's git submodule build directly via the copy step above.
 
 ## Building / deploying to GitHub Pages
 ```bash

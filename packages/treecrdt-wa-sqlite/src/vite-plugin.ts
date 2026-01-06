@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,7 +31,15 @@ const defaultFiles = [
 export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
   const outDir = opts.outDir ?? "public/wa-sqlite";
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const vendorRoot = path.resolve(here, "../../../vendor/wa-sqlite");
+  const vendorRoot = (() => {
+    try {
+      const require = createRequire(import.meta.url);
+      const pkgJson = require.resolve("@treecrdt/wa-sqlite-vendor/package.json");
+      return path.resolve(path.dirname(pkgJson), "wa-sqlite");
+    } catch {
+      return path.resolve(here, "../../../wa-sqlite-vendor/wa-sqlite");
+    }
+  })();
 
   const copyOnce = async () => {
     const srcDir = path.join(vendorRoot, "dist");
@@ -39,6 +48,12 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
     for (const file of defaultFiles) {
       const from = file.endsWith(".js") && !file.startsWith("wa-sqlite") ? path.join(srcExtra, file) : path.join(srcDir, file);
       const to = path.join(outDir, file);
+      try {
+        const [fromStat, toStat] = await Promise.all([fs.stat(from), fs.stat(to)]);
+        if (toStat.size === fromStat.size && toStat.mtimeMs >= fromStat.mtimeMs) continue;
+      } catch {
+        // fall through: destination missing or stat failed
+      }
       await fs.copyFile(from, to);
     }
   };

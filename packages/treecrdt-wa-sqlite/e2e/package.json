@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:vendor:wa-sqlite": "make -C ../../../vendor/wa-sqlite clean-tmp dist",
+    "build:vendor:wa-sqlite": "pnpm --filter @treecrdt/wa-sqlite-vendor build",
     "build:wa-sqlite": "pnpm run build:vendor:wa-sqlite && pnpm -C .. run build:ts",
-    "postbuild:wa-sqlite": "mkdir -p public/wa-sqlite public/base-path/wa-sqlite && cp ../../../vendor/wa-sqlite/dist/wa-sqlite.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite.wasm ../../../vendor/wa-sqlite/dist/wa-sqlite-async.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite-async.wasm ../../../vendor/wa-sqlite/src/sqlite-api.js ../../../vendor/wa-sqlite/src/sqlite-constants.js public/wa-sqlite/ && cp ../../../vendor/wa-sqlite/dist/wa-sqlite.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite.wasm ../../../vendor/wa-sqlite/dist/wa-sqlite-async.mjs ../../../vendor/wa-sqlite/dist/wa-sqlite-async.wasm ../../../vendor/wa-sqlite/src/sqlite-api.js ../../../vendor/wa-sqlite/src/sqlite-constants.js public/base-path/wa-sqlite/",
+    "postbuild:wa-sqlite": "mkdir -p public/wa-sqlite public/base-path/wa-sqlite && cp ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite.mjs ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite.wasm ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite-async.mjs ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite-async.wasm ../../../wa-sqlite-vendor/wa-sqlite/src/sqlite-api.js ../../../wa-sqlite-vendor/wa-sqlite/src/sqlite-constants.js public/wa-sqlite/ && cp ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite.mjs ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite.wasm ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite-async.mjs ../../../wa-sqlite-vendor/wa-sqlite/dist/wa-sqlite-async.wasm ../../../wa-sqlite-vendor/wa-sqlite/src/sqlite-api.js ../../../wa-sqlite-vendor/wa-sqlite/src/sqlite-constants.js public/base-path/wa-sqlite/",
     "build": "pnpm -C ../../treecrdt-sync run build && pnpm run build:wa-sqlite && pnpm run postbuild:wa-sqlite && vite build",
     "build:app:path": "vite build --base /base-path/",
     "build:path": "pnpm -C ../../treecrdt-sync run build && pnpm run build:wa-sqlite && pnpm run postbuild:wa-sqlite && vite build --base /base-path/",
@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
+    "@treecrdt/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
     "@types/react": "^18.3.27",
     "@types/react-dom": "^18.3.7",
