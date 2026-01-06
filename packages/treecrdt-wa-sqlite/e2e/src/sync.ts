@@ -2,18 +2,25 @@ import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/c
 import {
   buildFanoutInsertTreeOps,
   buildSyncBenchCase,
-  envInt,
   makeOp,
   maxLamport,
   nodeIdFromInt,
   quantile,
+  SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+  SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+  SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
+  syncBenchTiming,
   type SyncBenchWorkload,
 } from "@treecrdt/benchmark";
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
-import { SyncPeer, treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync";
-import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from "@treecrdt/sync/transport";
-import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
+import {
+  createInMemoryConnectedPeers,
+  makeQueuedSyncBackend,
+  type FlushableSyncBackend,
+} from "@treecrdt/sync/in-memory";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import type { Filter } from "@treecrdt/sync";
 
 export type SyncBenchResult = {
   implementation: string;
@@ -41,27 +48,18 @@ function makeBackend(
   client: TreecrdtClient,
   docId: string,
   initialMaxLamport: number
-): SyncBackend<Operation> & { flush: () => Promise<void> } {
-  let maxLamportValue = initialMaxLamport;
-  let lastApply = Promise.resolve();
-
-  return {
+): FlushableSyncBackend<Operation> {
+  return makeQueuedSyncBackend<Operation>({
     docId,
-    maxLamport: async () => BigInt(maxLamportValue),
-    listOpRefs: async (filter: Filter) => {
+    initialMaxLamport,
+    maxLamportFromOps: maxLamport,
+    listOpRefs: async (filter) => {
       if ("all" in filter) return client.opRefs.all();
       return client.opRefs.children(bytesToHex(filter.children.parent));
     },
-    getOpsByOpRefs: async (opRefs: OpRef[]) => client.ops.get(opRefs),
-    applyOps: async (ops: Operation[]) => {
-      if (ops.length === 0) return;
-      const nextMax = maxLamport(ops);
-      if (nextMax > maxLamportValue) maxLamportValue = nextMax;
-      lastApply = lastApply.then(() => client.ops.appendMany(ops));
-      await lastApply;
-    },
-    flush: async () => lastApply,
-  };
+    getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
+    applyOps: async (ops) => client.ops.appendMany(ops),
+  });
 }
 
 async function runAllE2e(): Promise<void> {
@@ -77,17 +75,21 @@ async function runAllE2e(): Promise<void> {
 
     const backendA = makeBackend(a, docId, maxLamport(aOps));
     const backendB = makeBackend(b, docId, maxLamport(bOps));
-
-    const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-    const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-    const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-    const pa = new SyncPeer(backendA, { maxCodewords: 200_000 });
-    const pb = new SyncPeer(backendB, { maxCodewords: 200_000 });
-    pa.attach(ta);
-    pb.attach(tb);
-
-    await pa.syncOnce(ta, { all: {} }, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
-    await Promise.all([backendA.flush(), backendB.flush()]);
+    const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+      backendA,
+      backendB,
+      codec: treecrdtSyncV0ProtobufCodec,
+      peerOptions: { maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS },
+    });
+    try {
+      await pa.syncOnce(ta, { all: {} }, {
+        maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+        codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      });
+      await Promise.all([backendA.flush(), backendB.flush()]);
+    } finally {
+      detach();
+    }
 
     const finalA = await a.ops.all();
     const finalB = await b.ops.all();
@@ -123,16 +125,21 @@ async function runChildrenE2e(): Promise<void> {
     const backendB = makeBackend(b, docId, maxLamport(bOps));
 
     const filter: Filter = { children: { parent: hexToBytes(parentAHex) } };
-    const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-    const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-    const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-    const pa = new SyncPeer(backendA, { maxCodewords: 200_000 });
-    const pb = new SyncPeer(backendB, { maxCodewords: 200_000 });
-    pa.attach(ta);
-    pb.attach(tb);
-
-    await pa.syncOnce(ta, filter, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
-    await Promise.all([backendA.flush(), backendB.flush()]);
+    const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+      backendA,
+      backendB,
+      codec: treecrdtSyncV0ProtobufCodec,
+      peerOptions: { maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS },
+    });
+    try {
+      await pa.syncOnce(ta, filter, {
+        maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+        codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      });
+      await Promise.all([backendA.flush(), backendB.flush()]);
+    } finally {
+      detach();
+    }
 
     const finalA = await a.ops.all();
     const finalB = await b.ops.all();
@@ -162,17 +169,18 @@ async function runLargeFanoutAllE2e(): Promise<void> {
 
     const backendA = makeBackend(a, docId, maxLamport(opsA));
     const backendB = makeBackend(b, docId, 0);
-
-    const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-    const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-    const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-    const pa = new SyncPeer(backendA, { maxCodewords });
-    const pb = new SyncPeer(backendB, { maxCodewords });
-    pa.attach(ta);
-    pb.attach(tb);
-
-    await pb.syncOnce(tb, { all: {} }, { maxCodewords, codewordsPerMessage });
-    await Promise.all([backendA.flush(), backendB.flush()]);
+    const { peerB: pb, transportB: tb, detach } = createInMemoryConnectedPeers({
+      backendA,
+      backendB,
+      codec: treecrdtSyncV0ProtobufCodec,
+      peerOptions: { maxCodewords },
+    });
+    try {
+      await pb.syncOnce(tb, { all: {} }, { maxCodewords, codewordsPerMessage });
+      await Promise.all([backendA.flush(), backendB.flush()]);
+    } finally {
+      detach();
+    }
 
     const [countA, countB] = await Promise.all([a.tree.nodeCount(), b.tree.nodeCount()]);
     if (countA !== size || countB !== size) {
@@ -223,93 +231,108 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
 
     const backendA = makeBackend(a, docId, 0);
     const backendB = makeBackend(b, docId, 0);
-    const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-    const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-    const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-    const pa = new SyncPeer(backendA, { maxCodewords: 200_000 });
-    const pb = new SyncPeer(backendB, { maxCodewords: 200_000 });
-    pa.attach(ta);
-    pb.attach(tb);
-
-    // Subscribe to "all" and verify that new ops added on B show up on A without manual sync.
-    const subAll = pa.subscribe(ta, { all: {} }, { maxCodewords: 200_000, codewordsPerMessage: 1024 });
-    try {
-      const op1 = makeOp("b", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 });
-      await b.ops.append(op1);
-      await pb.notifyLocalUpdate();
-      await waitUntil(async () => {
-        const opsA = await a.ops.all();
-        return hasOp(opsA, "b", 1);
-      }, { message: "expected subscription(all) to deliver b:1 to A" });
-    } finally {
-      subAll.stop();
-      await subAll.done;
-    }
-
-    // Subscribe to "children(ROOT)" and verify that irrelevant ops do not leak.
-    const subChildren = pa.subscribe(
-      ta,
-      { children: { parent: hexToBytes(root) } },
-      { maxCodewords: 200_000, codewordsPerMessage: 1024 }
-    );
-    try {
-      const otherParent = "a0".repeat(16);
-      const outside = makeOp("b", 2, 2, { type: "insert", parent: otherParent, node: nodeIdFromInt(2), position: 0 });
-      await b.ops.append(outside);
-      await pb.notifyLocalUpdate();
-
-      // Give the subscription loop time to run at least once; we should not see the op.
-      await sleep(250);
-      const opsAfterOutside = await a.ops.all();
-      if (hasOp(opsAfterOutside, "b", 2)) throw new Error("subscription(children) should not deliver ops outside filter");
-
-      const inside = makeOp("b", 3, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), position: 0 });
-      await b.ops.append(inside);
-      await pb.notifyLocalUpdate();
-      await waitUntil(async () => {
-        const opsA = await a.ops.all();
-        return hasOp(opsA, "b", 3);
-      }, { message: "expected subscription(children) to deliver root child insert to A" });
-    } finally {
-      subChildren.stop();
-      await subChildren.done;
-    }
-
-    // Subscribe to "children(non-root)" and verify that we can pull grandchildren on demand.
-    const parent = nodeIdFromInt(10);
-    const parentInsert = makeOp("b", 4, 4, { type: "insert", parent: root, node: parent, position: 0 });
-    await b.ops.append(parentInsert);
-    await pa.syncOnce(ta, { children: { parent: hexToBytes(root) } }, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
-    await waitUntil(async () => hasOp(await a.ops.all(), "b", 4), {
-      message: "expected children(ROOT) to deliver parent insert before subscribing to children(parent)",
+    const { peerA: pa, peerB: pb, transportA: ta, detach } = createInMemoryConnectedPeers({
+      backendA,
+      backendB,
+      codec: treecrdtSyncV0ProtobufCodec,
+      peerOptions: { maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS },
     });
 
-    const subGrandChildren = pa.subscribe(
-      ta,
-      { children: { parent: hexToBytes(parent) } },
-      { maxCodewords: 200_000, codewordsPerMessage: 1024 }
-    );
+    // Subscribe to "all" and verify that new ops added on B show up on A without manual sync.
     try {
-      const outside = makeOp("b", 5, 5, { type: "insert", parent: nodeIdFromInt(11), node: nodeIdFromInt(12), position: 0 });
-      await b.ops.append(outside);
-      await pb.notifyLocalUpdate();
-      await sleep(250);
-      if (hasOp(await a.ops.all(), "b", 5)) {
-        throw new Error("subscription(children(non-root)) should not deliver ops outside filter");
+      const subAll = pa.subscribe(ta, { all: {} }, {
+        maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+        codewordsPerMessage: SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
+      });
+      try {
+        const op1 = makeOp("b", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 });
+        await b.ops.append(op1);
+        await pb.notifyLocalUpdate();
+        await waitUntil(async () => {
+          const opsA = await a.ops.all();
+          return hasOp(opsA, "b", 1);
+        }, { message: "expected subscription(all) to deliver b:1 to A" });
+      } finally {
+        subAll.stop();
+        await subAll.done;
       }
 
-      const inside = makeOp("b", 6, 6, { type: "insert", parent, node: nodeIdFromInt(13), position: 0 });
-      await b.ops.append(inside);
-      await pb.notifyLocalUpdate();
-      await waitUntil(async () => hasOp(await a.ops.all(), "b", 6), {
-        message: "expected subscription(children(non-root)) to deliver child insert under parent to A",
-      });
-    } finally {
-      subGrandChildren.stop();
-      await subGrandChildren.done;
-    }
+      // Subscribe to "children(ROOT)" and verify that irrelevant ops do not leak.
+      const subChildren = pa.subscribe(
+        ta,
+        { children: { parent: hexToBytes(root) } },
+        {
+          maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+          codewordsPerMessage: SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
+        }
+      );
+      try {
+        const otherParent = "a0".repeat(16);
+        const outside = makeOp("b", 2, 2, { type: "insert", parent: otherParent, node: nodeIdFromInt(2), position: 0 });
+        await b.ops.append(outside);
+        await pb.notifyLocalUpdate();
 
-    return { ok: true };
+        // Give the subscription loop time to run at least once; we should not see the op.
+        await sleep(250);
+        const opsAfterOutside = await a.ops.all();
+        if (hasOp(opsAfterOutside, "b", 2)) throw new Error("subscription(children) should not deliver ops outside filter");
+
+        const inside = makeOp("b", 3, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), position: 0 });
+        await b.ops.append(inside);
+        await pb.notifyLocalUpdate();
+        await waitUntil(async () => {
+          const opsA = await a.ops.all();
+          return hasOp(opsA, "b", 3);
+        }, { message: "expected subscription(children) to deliver root child insert to A" });
+      } finally {
+        subChildren.stop();
+        await subChildren.done;
+      }
+
+      // Subscribe to "children(non-root)" and verify that we can pull grandchildren on demand.
+      const parent = nodeIdFromInt(10);
+      const parentInsert = makeOp("b", 4, 4, { type: "insert", parent: root, node: parent, position: 0 });
+      await b.ops.append(parentInsert);
+      await pa.syncOnce(ta, { children: { parent: hexToBytes(root) } }, {
+        maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+        codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      });
+      await waitUntil(async () => hasOp(await a.ops.all(), "b", 4), {
+        message: "expected children(ROOT) to deliver parent insert before subscribing to children(parent)",
+      });
+
+      const subGrandChildren = pa.subscribe(
+        ta,
+        { children: { parent: hexToBytes(parent) } },
+        {
+          maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+          codewordsPerMessage: SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
+        }
+      );
+      try {
+        const outside = makeOp("b", 5, 5, { type: "insert", parent: nodeIdFromInt(11), node: nodeIdFromInt(12), position: 0 });
+        await b.ops.append(outside);
+        await pb.notifyLocalUpdate();
+        await sleep(250);
+        if (hasOp(await a.ops.all(), "b", 5)) {
+          throw new Error("subscription(children(non-root)) should not deliver ops outside filter");
+        }
+
+        const inside = makeOp("b", 6, 6, { type: "insert", parent, node: nodeIdFromInt(13), position: 0 });
+        await b.ops.append(inside);
+        await pb.notifyLocalUpdate();
+        await waitUntil(async () => hasOp(await a.ops.all(), "b", 6), {
+          message: "expected subscription(children(non-root)) to deliver child insert under parent to A",
+        });
+      } finally {
+        subGrandChildren.stop();
+        await subGrandChildren.done;
+      }
+
+      return { ok: true };
+    } finally {
+      detach();
+    }
   } finally {
     await Promise.allSettled([a.close(), b.close()]);
   }
@@ -334,46 +357,41 @@ async function runBenchOnce(
 
     const backendA = makeBackend(a, docId, maxLamport(bench.opsA));
     const backendB = makeBackend(b, docId, maxLamport(bench.opsB));
+    const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+      backendA,
+      backendB,
+      codec: treecrdtSyncV0ProtobufCodec,
+      peerOptions: { maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS },
+    });
+    try {
+      const start = performance.now();
+      await pa.syncOnce(ta, bench.filter as Filter, {
+        maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+        codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      });
+      await Promise.all([backendA.flush(), backendB.flush()]);
+      const end = performance.now();
 
-    const [wa, wb] = createInMemoryDuplex<Uint8Array>();
-    const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
-    const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
-    const pa = new SyncPeer(backendA, { maxCodewords: 200_000 });
-    const pb = new SyncPeer(backendB, { maxCodewords: 200_000 });
-    pa.attach(ta);
-    pb.attach(tb);
-
-    const start = performance.now();
-    await pa.syncOnce(ta, bench.filter as Filter, { maxCodewords: 200_000, codewordsPerMessage: 2048 });
-    await Promise.all([backendA.flush(), backendB.flush()]);
-    const end = performance.now();
-
-    if (workload === "sync-root-children-fanout10") {
-      const finalB = await b.ops.all();
-      if (!hasOp(finalB, "m", 1) || !hasOp(finalB, "m", 2)) {
-        throw new Error("sync-root-children-fanout10: expected B to receive boundary-crossing moves");
+      if (workload === "sync-root-children-fanout10") {
+        const finalB = await b.ops.all();
+        if (!hasOp(finalB, "m", 1) || !hasOp(finalB, "m", 2)) {
+          throw new Error("sync-root-children-fanout10: expected B to receive boundary-crossing moves");
+        }
       }
-    }
-    if (workload === "sync-one-missing") {
-      const [refsA, refsB] = await Promise.all([a.opRefs.all(), b.opRefs.all()]);
-      if (refsA.length !== bench.expectedFinalOpsA || refsB.length !== bench.expectedFinalOpsB) {
-        throw new Error(`sync-one-missing: expected opRefs a=${bench.expectedFinalOpsA} b=${bench.expectedFinalOpsB}, got a=${refsA.length} b=${refsB.length}`);
+      if (workload === "sync-one-missing") {
+        const [refsA, refsB] = await Promise.all([a.opRefs.all(), b.opRefs.all()]);
+        if (refsA.length !== bench.expectedFinalOpsA || refsB.length !== bench.expectedFinalOpsB) {
+          throw new Error(`sync-one-missing: expected opRefs a=${bench.expectedFinalOpsA} b=${bench.expectedFinalOpsB}, got a=${refsA.length} b=${refsB.length}`);
+        }
       }
-    }
 
-    return end - start;
+      return end - start;
+    } finally {
+      detach();
+    }
   } finally {
     await Promise.allSettled([a.close(), b.close()]);
   }
-}
-
-function syncBenchTiming() {
-  const iterations = Math.max(1, envInt("SYNC_BENCH_ITERATIONS") ?? envInt("BENCH_ITERATIONS") ?? 3);
-  const warmupIterations = Math.max(
-    0,
-    envInt("SYNC_BENCH_WARMUP") ?? envInt("BENCH_WARMUP") ?? (iterations > 1 ? 1 : 0)
-  );
-  return { iterations, warmupIterations };
 }
 
 async function runBenchCase(
@@ -402,8 +420,8 @@ async function runBenchCase(
     opsPerSec,
     extra: {
       ...bench.extra,
-      codewordsPerMessage: 2048,
-      maxCodewords: 200_000,
+      codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       iterations,
       warmupIterations,
       samplesMs,

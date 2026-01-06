@@ -3,6 +3,7 @@
 import { buildWorkloads, runWorkloads, type BenchmarkResult, type WorkloadName } from "@treecrdt/benchmark";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
+import { bytesToHex } from "@treecrdt/interface/ids";
 
 type StorageKind = "browser-opfs-coop-sync" | "browser-memory";
 
@@ -60,6 +61,20 @@ async function createAdapter(
     );
   }
   return {
+    setDocId: async (nextDocId) => {
+      if (nextDocId !== client.docId) {
+        throw new Error(`docId is fixed at client creation (expected ${client.docId}, got ${nextDocId})`);
+      }
+    },
+    docId: async () => client.docId,
+    opRefsAll: async () => client.opRefs.all(),
+    opRefsChildren: async (parent) => client.opRefs.children(bytesToHex(parent)),
+    opsByOpRefs: async (opRefs) => client.ops.get(opRefs),
+    treeChildren: async (parent) => client.tree.children(bytesToHex(parent)),
+    treeDump: async () => client.tree.dump(),
+    treeNodeCount: async () => client.tree.nodeCount(),
+    headLamport: async () => client.meta.headLamport(),
+    replicaMaxCounter: async (replica) => client.meta.replicaMaxCounter(replica),
     appendOp: (op, serializeNodeId, serializeReplica) =>
       client.ops.append({
         ...op,

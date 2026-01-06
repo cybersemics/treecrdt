@@ -3,7 +3,8 @@ import type { Operation, OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
-import { SyncPeer, treecrdtSyncV0ProtobufCodec, type Filter, type SyncSubscription } from "@treecrdt/sync";
+import { SyncPeer, type Filter, type SyncSubscription } from "@treecrdt/sync";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { DuplexTransport } from "@treecrdt/sync/transport";
 import {
   MdAdd,

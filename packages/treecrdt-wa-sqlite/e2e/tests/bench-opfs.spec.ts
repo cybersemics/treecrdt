@@ -1,8 +1,6 @@
 import { test, expect } from "@playwright/test";
-import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { writeResult } from "@treecrdt/benchmark";
+import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
 import type { BenchResult } from "../src/bench.js";
 
 test("wa-sqlite OPFS benchmarks", async ({ page }) => {
@@ -18,10 +16,8 @@ test("wa-sqlite OPFS benchmarks", async ({ page }) => {
   });
 
   expect(Array.isArray(results)).toBeTruthy();
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(__dirname, "../../../..");
+  const repoRoot = repoRootFromImportMeta(import.meta.url, 4);
   const outDir = path.join(repoRoot, "benchmarks", "wa-sqlite-opfs");
-  await fs.mkdir(outDir, { recursive: true });
 
   for (const result of results as BenchResult[]) {
     const workloadName = result.workload ?? result.name;
@@ -50,10 +46,8 @@ test("wa-sqlite memory (browser) benchmarks", async ({ page }) => {
   });
 
   expect(Array.isArray(results)).toBeTruthy();
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(__dirname, "../../../..");
+  const repoRoot = repoRootFromImportMeta(import.meta.url, 4);
   const outDir = path.join(repoRoot, "benchmarks", "wa-sqlite-browser-memory");
-  await fs.mkdir(outDir, { recursive: true });
 
   for (const result of results as BenchResult[]) {
     const workloadName = result.workload ?? result.name;

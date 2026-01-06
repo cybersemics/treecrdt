@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { repoRootFromImportMeta } from "../../../scripts/repo-root.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "../../..");
+const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
 const sources = [
   {

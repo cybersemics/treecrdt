@@ -1,21 +1,14 @@
-import {
-  createWaSqliteAdapter,
-  opsSince as opsSinceRaw,
-  appendOp as appendOpRaw,
-  opRefsAll as opRefsAllRaw,
-  opRefsChildren as opRefsChildrenRaw,
-  opsByOpRefs as opsByOpRefsRaw,
-  treeChildren as treeChildrenRaw,
-  treeDump as treeDumpRaw,
-  treeNodeCount as treeNodeCountRaw,
-  headLamport as headLamportRaw,
-  replicaMaxCounter as replicaMaxCounterRaw,
-  setDocId as setDocIdRaw,
-  type Database,
-} from "./index.js";
-import { createOpfsVfs, detectOpfsSupport } from "./opfs.js";
+import { detectOpfsSupport } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
-import { decodeNodeId, decodeReplicaId, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import {
+  decodeSqliteNodeIds,
+  decodeSqliteOpRefs,
+  decodeSqliteOps,
+  decodeSqliteTreeRows,
+} from "@treecrdt/interface/sqlite";
+import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from "./rpc.js";
+import { openTreecrdtDb } from "./open.js";
 
 export type StorageMode = "memory" | "opfs";
 export type ClientMode = "direct" | "worker";
@@ -106,27 +99,14 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
 
 // --- Worker client
 
-type WorkerReq = {
-  id: number;
-  method: string;
-  params?: any;
-};
-
-type WorkerResp = {
-  id: number;
-  ok: boolean;
-  result?: any;
-  error?: string;
-};
-
-type WorkerInit = { baseUrl: string; filename?: string; storage: StorageMode; docId: string };
-
 type WorkerProxy = {
-  postMessage(msg: WorkerReq, transfer?: Transferable[]): void;
+  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
   terminate: () => void;
   addEventListener: (type: "message" | "error", fn: (ev: any) => void) => void;
   removeEventListener: (type: "message" | "error", fn: (ev: any) => void) => void;
 };
+
+type RpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise<RpcResult<M>>;
 
 async function createWorkerClient(opts: {
   baseUrl: string;
@@ -141,19 +121,19 @@ async function createWorkerClient(opts: {
   const pending = new Map<number, { resolve: (value: any) => void; reject: (err: Error) => void }>();
   let terminalError: Error | null = null;
 
-  const call = (method: string, params?: any): Promise<any> => {
+  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
     const id = nextId++;
     if (terminalError) return Promise.reject(terminalError);
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({ id, method, params } satisfies WorkerReq);
+      worker.postMessage({ id, method, params } satisfies RpcRequest<M>);
     });
   };
 
-  const onMessage = (ev: MessageEvent<WorkerResp>) => {
-    const handler = pending.get(ev.data.id);
+  const onMessage = (ev: MessageEvent<RpcResponse>) => {
+    const handler = pending.get(ev.data.id as number);
     if (!handler) return;
-    pending.delete(ev.data.id);
+    pending.delete(ev.data.id as number);
     if (ev.data.ok) handler.resolve(ev.data.result);
     else handler.reject(new Error(ev.data.error || "worker error"));
   };
@@ -177,7 +157,7 @@ async function createWorkerClient(opts: {
   if (opts.requireOpfs && effectiveStorage !== "opfs") {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : "";
     try {
-      if (!terminalError) await call("close", []);
+      if (!terminalError) await call("close", [] as RpcParams<"close">);
     } catch {
       // ignore close errors on init failure
     } finally {
@@ -188,46 +168,23 @@ async function createWorkerClient(opts: {
     throw new Error(`OPFS requested but could not be initialized${reason}`);
   }
 
-  const opsSinceImpl = (lamport: number, root?: string) =>
-    call("opsSince", [lamport, root]).then((rows) => parseOps(rows as any[]));
-  const opRefsAllImpl = () => call("opRefsAll", []).then((rows) => parseOpRefs(rows as any[]));
-  const opRefsChildrenImpl = (parent: string) =>
-    call("opRefsChildren", [parent]).then((rows) => parseOpRefs(rows as any[]));
-  const opsByOpRefsImpl = (opRefs: Uint8Array[]) =>
-    call("opsByOpRefs", [opRefs.map((r) => Array.from(r))]).then((rows) => parseOps(rows as any[]));
-  const treeChildrenImpl = (parent: string) =>
-    call("treeChildren", [parent]).then((rows) => parseNodeIds(rows as any[]));
-  const treeDumpImpl = () => call("treeDump", []).then((rows) => parseTreeRows(rows as any[]));
-  const treeNodeCountImpl = () => call("treeNodeCount", []).then((v) => Number(v));
-  const headLamportImpl = () => call("headLamport", []).then((v) => Number(v));
-  const replicaMaxCounterImpl = (replica: Operation["meta"]["id"]["replica"]) =>
-    call("replicaMaxCounter", [Array.from(encodeReplica(replica))]).then((v) => Number(v));
+  const closeImpl = async () => {
+    try {
+      if (!terminalError) await call("close", [] as RpcParams<"close">);
+    } finally {
+      worker.removeEventListener("error", onError);
+      worker.removeEventListener("message", onMessage);
+      worker.terminate();
+    }
+  };
 
-  return {
+  return makeTreecrdtClientFromCall({
     mode: "worker",
     storage: effectiveStorage,
     docId: opts.docId,
-    ops: {
-      append: (op) => call("append", [op]),
-      appendMany: (ops) => call("appendMany", [ops]),
-      all: () => opsSinceImpl(0),
-      since: opsSinceImpl,
-      children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),
-      get: opsByOpRefsImpl,
-    },
-    opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
-    tree: { children: treeChildrenImpl, dump: treeDumpImpl, nodeCount: treeNodeCountImpl },
-    meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
-    close: async () => {
-      try {
-        if (!terminalError) await call("close", []);
-      } finally {
-        worker.removeEventListener("error", onError);
-        worker.removeEventListener("message", onMessage);
-        worker.terminate();
-      }
-    },
-  };
+    call,
+    close: closeImpl,
+  });
 }
 
 // --- Direct client (main-thread, used for memory or opt-in opfs)
@@ -239,34 +196,18 @@ async function createDirectClient(opts: {
   docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
-  const { baseUrl, filename: filenameOpt, storage, requireOpfs } = opts;
-  const sqliteModule = await import(/* @vite-ignore */ `${baseUrl}wa-sqlite/wa-sqlite-async.mjs`);
-  const sqliteApi = await import(/* @vite-ignore */ `${baseUrl}wa-sqlite/sqlite-api.js`);
-  const module = await sqliteModule.default({
-    locateFile: (file: string) => (file.endsWith(".wasm") ? `${baseUrl}wa-sqlite/wa-sqlite-async.wasm` : file),
+  const { baseUrl, storage, requireOpfs } = opts;
+  const opened = await openTreecrdtDb({
+    baseUrl,
+    filename: opts.filename,
+    storage,
+    docId: opts.docId,
+    requireOpfs,
   });
-  const sqlite3 = sqliteApi.Factory(module);
-
-  let finalStorage: StorageMode = storage === "opfs" ? "opfs" : "memory";
-  if (storage === "opfs") {
-    try {
-      const vfs = await createOpfsVfs(module, { name: "opfs" });
-      sqlite3.vfs_register(vfs, true);
-    } catch (err) {
-      if (requireOpfs) {
-        throw new Error(
-          `OPFS requested but could not be initialized: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-      finalStorage = "memory";
-    }
-  }
-
-  const filename = finalStorage === "opfs" ? filenameOpt ?? "/treecrdt.db" : ":memory:";
-  const handle = await sqlite3.open_v2(filename);
-  const db = makeDbAdapter(sqlite3, handle);
-  await setDocIdRaw(db, opts.docId);
-  const adapter = createWaSqliteAdapter(db);
+  const db = opened.db;
+  const finalStorage: StorageMode = opened.storage;
+  const filename = opened.filename;
+  const adapter = opened.api;
   const wrapError = (stage: string, err: unknown) =>
     new Error(
       JSON.stringify({
@@ -278,97 +219,104 @@ async function createDirectClient(opts: {
       })
     );
 
-  const appendImpl = async (op: Operation) => {
+  const call: RpcCall = async (method, params) => {
     try {
-      await appendOpRaw(db, op, nodeIdToBytes16, encodeReplica);
+      switch (method) {
+        case "append": {
+          const [op] = params as RpcParams<"append">;
+          await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
+          return undefined as any;
+        }
+        case "appendMany": {
+          const [ops] = params as RpcParams<"appendMany">;
+          await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
+          return undefined as any;
+        }
+        case "opsSince": {
+          const [lamport, root] = params as RpcParams<"opsSince">;
+          return (await adapter.opsSince(lamport, root)) as any;
+        }
+        case "opRefsAll":
+          return (await adapter.opRefsAll()) as any;
+        case "opRefsChildren": {
+          const [parent] = params as RpcParams<"opRefsChildren">;
+          return (await adapter.opRefsChildren(nodeIdToBytes16(parent))) as any;
+        }
+        case "opsByOpRefs": {
+          const [opRefs] = params as RpcParams<"opsByOpRefs">;
+          return (await adapter.opsByOpRefs(opRefs.map((r) => Uint8Array.from(r)))) as any;
+        }
+        case "treeChildren": {
+          const [parent] = params as RpcParams<"treeChildren">;
+          return (await adapter.treeChildren(nodeIdToBytes16(parent))) as any;
+        }
+        case "treeDump":
+          return (await adapter.treeDump()) as any;
+        case "treeNodeCount":
+          return (await adapter.treeNodeCount()) as any;
+        case "headLamport":
+          return (await adapter.headLamport()) as any;
+        case "replicaMaxCounter": {
+          const [rawReplica] = params as RpcParams<"replicaMaxCounter">;
+          const replica =
+            typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
+          return (await adapter.replicaMaxCounter(replica)) as any;
+        }
+        case "close":
+          if (db.close) await db.close();
+          return undefined as any;
+        default:
+          throw new Error(`unsupported direct method: ${method}`);
+      }
     } catch (err) {
-      throw wrapError("append", err);
-    }
-  };
-  const appendManyImpl = async (ops: Operation[]) => {
-    try {
-      await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
-    } catch (err) {
-      throw wrapError("appendMany", err);
-    }
-  };
-  const opsSinceImpl = async (lamport: number, root?: string) => {
-    try {
-      const rows = await opsSinceRaw(db, { lamport, root });
-      return parseOps(rows as any[]);
-    } catch (err) {
-      throw wrapError("opsSince", err);
-    }
-  };
-  const opRefsAllImpl = async () => {
-    try {
-      const rows = await opRefsAllRaw(db);
-      return parseOpRefs(rows as any[]);
-    } catch (err) {
-      throw wrapError("opRefsAll", err);
-    }
-  };
-  const opRefsChildrenImpl = async (parent: string) => {
-    try {
-      const rows = await opRefsChildrenRaw(db, nodeIdToBytes16(parent));
-      return parseOpRefs(rows as any[]);
-    } catch (err) {
-      throw wrapError("opRefsChildren", err);
-    }
-  };
-  const opsByOpRefsImpl = async (opRefs: Uint8Array[]) => {
-    try {
-      const rows = await opsByOpRefsRaw(db, opRefs);
-      return parseOps(rows as any[]);
-    } catch (err) {
-      throw wrapError("opsByOpRefs", err);
-    }
-  };
-  const treeChildrenImpl = async (parent: string) => {
-    try {
-      const rows = await treeChildrenRaw(db, nodeIdToBytes16(parent));
-      return parseNodeIds(rows as any[]);
-    } catch (err) {
-      throw wrapError("treeChildren", err);
-    }
-  };
-  const treeDumpImpl = async () => {
-    try {
-      const rows = await treeDumpRaw(db);
-      return parseTreeRows(rows as any[]);
-    } catch (err) {
-      throw wrapError("treeDump", err);
-    }
-  };
-  const treeNodeCountImpl = async () => {
-    try {
-      return await treeNodeCountRaw(db);
-    } catch (err) {
-      throw wrapError("treeNodeCount", err);
-    }
-  };
-  const headLamportImpl = async () => {
-    try {
-      return await headLamportRaw(db);
-    } catch (err) {
-      throw wrapError("headLamport", err);
-    }
-  };
-  const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) => {
-    try {
-      return await replicaMaxCounterRaw(db, encodeReplica(replica));
-    } catch (err) {
-      throw wrapError("replicaMaxCounter", err);
+      throw wrapError(method, err);
     }
   };
 
-  return {
+  return makeTreecrdtClientFromCall({
     mode: "direct",
     storage: finalStorage,
     docId: opts.docId,
+    call,
+    close: async () => {
+      if (db.close) await db.close();
+    },
+  });
+}
+
+// --- helpers
+
+function makeTreecrdtClientFromCall(opts: {
+  mode: ClientMode;
+  storage: StorageMode;
+  docId: string;
+  call: RpcCall;
+  close: () => Promise<void>;
+}): TreecrdtClient {
+  const call = opts.call;
+
+  const opsSinceImpl = async (lamport: number, root?: string) => {
+    const rows = await call("opsSince", [lamport, root]);
+    return decodeSqliteOps(rows);
+  };
+  const opRefsAllImpl = async () => decodeSqliteOpRefs(await call("opRefsAll", []));
+  const opRefsChildrenImpl = async (parent: string) => decodeSqliteOpRefs(await call("opRefsChildren", [parent]));
+  const opsByOpRefsImpl = async (opRefs: Uint8Array[]) =>
+    decodeSqliteOps(await call("opsByOpRefs", [opRefs.map((r) => Array.from(r))]));
+  const treeChildrenImpl = async (parent: string) => decodeSqliteNodeIds(await call("treeChildren", [parent]));
+  const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", []));
+  const treeNodeCountImpl = async () => Number(await call("treeNodeCount", []));
+  const headLamportImpl = async () => Number(await call("headLamport", []));
+  const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
+    Number(await call("replicaMaxCounter", [Array.from(encodeReplica(replica))]));
+
+  return {
+    mode: opts.mode,
+    storage: opts.storage,
+    docId: opts.docId,
     ops: {
-      append: appendImpl,
-      appendMany: appendManyImpl,
+      append: (op) => call("append", [op]).then(() => undefined),
+      appendMany: (ops) => call("appendMany", [ops]).then(() => undefined),
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),
@@ -377,80 +325,10 @@ async function createDirectClient(opts: {
     opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
     tree: { children: treeChildrenImpl, dump: treeDumpImpl, nodeCount: treeNodeCountImpl },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
-    close: async () => {
-      if (db.close) await db.close();
-    },
+    close: opts.close,
   };
 }
-
-// --- helpers
 
 function encodeReplica(replica: Operation["meta"]["id"]["replica"]): Uint8Array {
   return replicaIdToBytes(replica);
-}
-
-function parseOpRefs(raw: any[]): Uint8Array[] {
-  return raw.map((val) => (val instanceof Uint8Array ? val : Uint8Array.from(val)));
-}
-
-function parseNodeIds(raw: any[]): string[] {
-  const decodeNode = decodeNodeId;
-  return raw.map((val) => decodeNode(val instanceof Uint8Array ? val : Uint8Array.from(val)));
-}
-
-function parseTreeRows(raw: any[]): TreeNodeRow[] {
-  const decodeNode = decodeNodeId;
-  return raw.map((row) => {
-    const node = decodeNode(row.node);
-    const parent = row.parent ? decodeNode(row.parent) : null;
-    const pos = row.pos === null || row.pos === undefined ? null : Number(row.pos);
-    const tombstone = Boolean(row.tombstone);
-    return { node, parent, pos, tombstone };
-  });
-}
-
-function parseOps(raw: any[]): Operation[] {
-  const decodeNode = decodeNodeId;
-  const decodeReplica = decodeReplicaId;
-  return raw.map((row) => {
-    const replica = decodeReplica(row.replica);
-    const base = { meta: { id: { replica, counter: row.counter }, lamport: row.lamport } } as Operation;
-    if (row.kind === "insert") {
-      return {
-        ...base,
-        kind: { type: "insert", parent: decodeNode(row.parent), node: decodeNode(row.node), position: row.position ?? 0 },
-      } as Operation;
-    }
-    if (row.kind === "move") {
-      return {
-        ...base,
-        kind: { type: "move", node: decodeNode(row.node), newParent: decodeNode(row.new_parent), position: row.position ?? 0 },
-      } as Operation;
-    }
-    if (row.kind === "delete") {
-      return { ...base, kind: { type: "delete", node: decodeNode(row.node) } } as Operation;
-    }
-    return { ...base, kind: { type: "tombstone", node: decodeNode(row.node) } } as Operation;
-  });
-}
-
-function makeDbAdapter(sqlite3: any, handle: number): Database {
-  const prepare = async (sql: string) => {
-    const iter = sqlite3.statements(handle, sql, { unscoped: true });
-    const { value } = await iter.next();
-    if (!value) {
-      throw new Error(`Failed to prepare statement: ${sql}`);
-    }
-    return value;
-  };
-
-  return {
-    prepare,
-    bind: async (stmt: number, index: number, value: unknown) => sqlite3.bind(stmt, index, value),
-    step: async (stmt: number) => sqlite3.step(stmt),
-    column_text: async (stmt: number, index: number) => sqlite3.column_text(stmt, index),
-    finalize: async (stmt: number) => sqlite3.finalize(stmt),
-    exec: async (sql: string) => sqlite3.exec(handle, sql),
-    close: async () => sqlite3.close(handle),
-  } as unknown as Database;
 }
