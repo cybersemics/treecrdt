@@ -23,7 +23,8 @@
     "build": "pnpm -C ../treecrdt-ts run build && tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "commander": "^14.0.2"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",
