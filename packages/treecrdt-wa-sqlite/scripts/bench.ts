@@ -5,7 +5,7 @@ import {
   runWorkloads,
 } from "@treecrdt/benchmark";
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
-import { createWaSqliteAdapter, setDocId } from "../dist/index.js";
+import { createWaSqliteApi } from "../dist/index.js";
 import { makeDbAdapter } from "../dist/db.js";
 
 async function loadSqlite3(repoRoot: string): Promise<any> {
@@ -45,9 +45,9 @@ async function main() {
   const adapterFactory = async () => {
     const handle = await sqlite3.open_v2(":memory:");
     const db = makeDbAdapter(sqlite3, handle);
-    await setDocId(db, docId);
-    const adapter = createWaSqliteAdapter(db);
-    return { ...adapter, close: () => db.close?.() };
+    const api = createWaSqliteApi(db);
+    await api.setDocId(docId);
+    return { ...api, close: () => db.close?.() };
   };
 
   const results = await runWorkloads(adapterFactory, workloadDefs);

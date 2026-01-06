@@ -1,24 +1,15 @@
 /// <reference lib="webworker" />
 import {
-  createWaSqliteAdapter,
-  opsSince as opsSinceRaw,
-  appendOp as appendOpRaw,
-  opRefsAll as opRefsAllRaw,
-  opRefsChildren as opRefsChildrenRaw,
-  opsByOpRefs as opsByOpRefsRaw,
-  treeChildren as treeChildrenRaw,
-  treeDump as treeDumpRaw,
-  treeNodeCount as treeNodeCountRaw,
-  headLamport as headLamportRaw,
-  replicaMaxCounter as replicaMaxCounterRaw,
   type Database,
 } from "./index.js";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { Operation } from "@treecrdt/interface";
+import type { TreecrdtAdapter } from "@treecrdt/interface";
 import type { RpcMethod, RpcRequest } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
 
 let db: Database | null = null;
+let api: TreecrdtAdapter | null = null;
 let storage: "memory" | "opfs" = "memory";
 
 const methods = {
@@ -65,6 +56,7 @@ async function init(
   if (db) {
     if (db.close) await db.close();
     db = null;
+    api = null;
   }
   const opened = await openTreecrdtDb({
     baseUrl,
@@ -74,82 +66,78 @@ async function init(
     requireOpfs: false,
   });
   db = opened.db;
+  api = opened.api;
   storage = opened.storage;
   return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }
 
 async function append(op: Operation) {
-  await ensureDb();
-  await appendOpRaw(db!, op, nodeIdToBytes16, replicaIdToBytes);
+  const api = ensureApi();
+  await api.appendOp(op, nodeIdToBytes16, replicaIdToBytes);
   return null;
 }
 
 async function appendMany(ops: Operation[]) {
-  await ensureDb();
-  const adapter = createWaSqliteAdapter(db!);
-  if (adapter.appendOps) {
-    await adapter.appendOps(ops, nodeIdToBytes16, replicaIdToBytes);
-  } else {
-    for (const op of ops) {
-      await appendOpRaw(db!, op, nodeIdToBytes16, replicaIdToBytes);
-    }
-  }
+  const api = ensureApi();
+  await api.appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
   return null;
 }
 
 async function opsSince(lamport: number, root: string | undefined) {
-  await ensureDb();
-  return await opsSinceRaw(db!, { lamport, root });
+  const api = ensureApi();
+  return await api.opsSince(lamport, root);
 }
 
 async function opRefsAll() {
-  await ensureDb();
-  return await opRefsAllRaw(db!);
+  const api = ensureApi();
+  return await api.opRefsAll();
 }
 
 async function opRefsChildren(parent: string) {
-  await ensureDb();
-  return await opRefsChildrenRaw(db!, nodeIdToBytes16(parent));
+  const api = ensureApi();
+  return await api.opRefsChildren(nodeIdToBytes16(parent));
 }
 
 async function opsByOpRefs(opRefs: number[][]) {
-  await ensureDb();
+  const api = ensureApi();
   const opRefsArray = opRefs.map((r) => Uint8Array.from(r));
-  return await opsByOpRefsRaw(db!, opRefsArray);
+  return await api.opsByOpRefs(opRefsArray);
 }
 
 async function treeChildren(parent: string) {
-  await ensureDb();
-  return await treeChildrenRaw(db!, nodeIdToBytes16(parent));
+  const api = ensureApi();
+  return await api.treeChildren(nodeIdToBytes16(parent));
 }
 
 async function treeDump() {
-  await ensureDb();
-  return await treeDumpRaw(db!);
+  const api = ensureApi();
+  return await api.treeDump();
 }
 
 async function treeNodeCount() {
-  await ensureDb();
-  return await treeNodeCountRaw(db!);
+  const api = ensureApi();
+  return await api.treeNodeCount();
 }
 
 async function headLamport() {
-  await ensureDb();
-  return await headLamportRaw(db!);
+  const api = ensureApi();
+  return await api.headLamport();
 }
 
 async function replicaMaxCounter(replica: number[] | string) {
-  await ensureDb();
+  const api = ensureApi();
   const replicaBytes = typeof replica === "string" ? replicaIdToBytes(replica) : Uint8Array.from(replica);
-  return await replicaMaxCounterRaw(db!, replicaBytes);
+  return await api.replicaMaxCounter(replicaBytes);
 }
 
 async function close() {
   if (db?.close) await db.close();
   db = null;
+  api = null;
   return null;
 }
 
-async function ensureDb() {
-  if (!db) throw new Error("db not initialized");
+function ensureApi(): TreecrdtAdapter {
+  if (!db || !api) throw new Error("db not initialized");
+  return api;
 }

@@ -1,13 +1,10 @@
-import type { TreecrdtAdapter } from "./adapter.js";
+import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from "./adapter.js";
 import {
   decodeNodeId,
   decodeReplicaId,
   nodeIdToBytes16,
 } from "./ids.js";
 import type { Operation, OperationKind } from "./index.js";
-
-export type SerializeNodeId = (id: string) => Uint8Array;
-export type SerializeReplica = (replica: Operation["meta"]["id"]["replica"]) => Uint8Array;
 
 export type SqlCall = {
   sql: string;
@@ -19,7 +16,7 @@ export type SqliteRunner = {
   getText: (sql: string, params?: SqlCall["params"]) => Promise<string | null> | string | null;
 };
 
-export async function sqliteGetJson<T>(
+async function sqliteGetJson<T>(
   runner: SqliteRunner,
   sql: string,
   params?: SqlCall["params"]
@@ -29,7 +26,7 @@ export async function sqliteGetJson<T>(
   return JSON.parse(text) as T;
 }
 
-export async function sqliteGetJsonOrEmpty<T>(
+async function sqliteGetJsonOrEmpty<T>(
   runner: SqliteRunner,
   sql: string,
   params?: SqlCall["params"]
@@ -39,7 +36,7 @@ export async function sqliteGetJsonOrEmpty<T>(
   return JSON.parse(text) as T;
 }
 
-export async function sqliteGetNumber(
+async function sqliteGetNumber(
   runner: SqliteRunner,
   sql: string,
   params?: SqlCall["params"]
@@ -51,7 +48,7 @@ export async function sqliteGetNumber(
   return value;
 }
 
-export function buildAppendOp(
+function buildAppendOp(
   kind: OperationKind,
   opts: {
     replica: Uint8Array;
@@ -104,7 +101,7 @@ export function buildAppendOp(
   }
 }
 
-export function buildOpsSince(filter: { lamport: number; root?: string; serializeNodeId: SerializeNodeId }): SqlCall {
+function buildOpsSince(filter: { lamport: number; root?: string; serializeNodeId: SerializeNodeId }): SqlCall {
   if (filter.root === undefined) {
     return { sql: "SELECT treecrdt_ops_since(?1)", params: [filter.lamport] };
   }
@@ -114,7 +111,7 @@ export function buildOpsSince(filter: { lamport: number; root?: string; serializ
   };
 }
 
-export function buildAppendOpsPayload(
+function buildAppendOpsPayload(
   ops: Operation[],
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica
@@ -143,7 +140,7 @@ export function buildAppendOpsPayload(
   });
 }
 
-export async function treecrdtAppendOp(
+async function treecrdtAppendOp(
   runner: SqliteRunner,
   op: Operation,
   serializeNodeId: SerializeNodeId,
@@ -163,7 +160,7 @@ export async function treecrdtAppendOp(
   await runner.getText(sql, params);
 }
 
-export async function treecrdtAppendOps(
+async function treecrdtAppendOps(
   runner: SqliteRunner,
   ops: Operation[],
   serializeNodeId: SerializeNodeId,
@@ -202,7 +199,7 @@ export async function treecrdtAppendOps(
   }
 }
 
-export async function treecrdtOpsSince(
+async function treecrdtOpsSince(
   runner: SqliteRunner,
   filter: { lamport: number; root?: string }
 ): Promise<unknown[]> {
@@ -220,6 +217,16 @@ export function createTreecrdtSqliteAdapter(
   opts: { maxBulkOps?: number } = {}
 ): TreecrdtAdapter {
   return {
+    setDocId: (docId) => treecrdtSetDocId(runner, docId),
+    docId: () => treecrdtDocId(runner),
+    opRefsAll: () => treecrdtOpRefsAll(runner),
+    opRefsChildren: (parent) => treecrdtOpRefsChildren(runner, parent),
+    opsByOpRefs: (opRefs) => treecrdtOpsByOpRefs(runner, opRefs),
+    treeChildren: (parent) => treecrdtTreeChildren(runner, parent),
+    treeDump: () => treecrdtTreeDump(runner),
+    treeNodeCount: () => treecrdtTreeNodeCount(runner),
+    headLamport: () => treecrdtHeadLamport(runner),
+    replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(runner, replica),
     appendOp: (op, serializeNodeId, serializeReplica) =>
       treecrdtAppendOp(runner, op, serializeNodeId, serializeReplica),
     appendOps: (ops, serializeNodeId, serializeReplica) =>
@@ -228,18 +235,16 @@ export function createTreecrdtSqliteAdapter(
   };
 }
 
-// ---- TreeCRDT SQLite extension helper functions ----
-
 /**
  * Set the document id used by the SQLite extension for v0 sync (`op_ref` derivation).
  *
  * This MUST be stable for the lifetime of the database, since it affects opRef hashes.
  */
-export async function treecrdtSetDocId(runner: SqliteRunner, docId: string): Promise<void> {
+async function treecrdtSetDocId(runner: SqliteRunner, docId: string): Promise<void> {
   await runner.getText("SELECT treecrdt_set_doc_id(?1)", [docId]);
 }
 
-export async function treecrdtDocId(runner: SqliteRunner): Promise<string | null> {
+async function treecrdtDocId(runner: SqliteRunner): Promise<string | null> {
   return runner.getText("SELECT treecrdt_doc_id()");
 }
 
@@ -247,7 +252,7 @@ export async function treecrdtDocId(runner: SqliteRunner): Promise<string | null
  * Fetch all stored opRefs (16-byte values) from the extension.
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
-export async function treecrdtOpRefsAll(runner: SqliteRunner): Promise<unknown[]> {
+async function treecrdtOpRefsAll(runner: SqliteRunner): Promise<unknown[]> {
   return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_oprefs_all()");
 }
 
@@ -255,7 +260,7 @@ export async function treecrdtOpRefsAll(runner: SqliteRunner): Promise<unknown[]
  * Fetch opRefs relevant to the `children(parent)` filter from the extension.
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
-export async function treecrdtOpRefsChildren(runner: SqliteRunner, parent: Uint8Array): Promise<unknown[]> {
+async function treecrdtOpRefsChildren(runner: SqliteRunner, parent: Uint8Array): Promise<unknown[]> {
   return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_oprefs_children(?1)", [parent]);
 }
 
@@ -263,7 +268,7 @@ export async function treecrdtOpRefsChildren(runner: SqliteRunner, parent: Uint8
  * Fetch operations by opRef (16-byte values) from the extension.
  * Returns raw JSON-decoded operation rows (same shape as `treecrdtOpsSince`).
  */
-export async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): Promise<unknown[]> {
+async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): Promise<unknown[]> {
   const payload = opRefs.map((r) => Array.from(r));
   return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_ops_by_oprefs(?1)", [JSON.stringify(payload)]);
 }
@@ -272,7 +277,7 @@ export async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Arr
  * Fetch materialized children for a parent node (16-byte id).
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
-export async function treecrdtTreeChildren(runner: SqliteRunner, parent: Uint8Array): Promise<unknown[]> {
+async function treecrdtTreeChildren(runner: SqliteRunner, parent: Uint8Array): Promise<unknown[]> {
   return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_tree_children(?1)", [parent]);
 }
 
@@ -280,28 +285,28 @@ export async function treecrdtTreeChildren(runner: SqliteRunner, parent: Uint8Ar
  * Dump the full materialized tree state.
  * Returns raw JSON-decoded rows (array of objects with byte fields).
  */
-export async function treecrdtTreeDump(runner: SqliteRunner): Promise<unknown[]> {
+async function treecrdtTreeDump(runner: SqliteRunner): Promise<unknown[]> {
   return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_tree_dump()");
 }
 
 /**
  * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
  */
-export async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
+async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
   return sqliteGetNumber(runner, "SELECT treecrdt_tree_node_count()");
 }
 
 /**
  * Fetch the maximum lamport seen in the op log.
  */
-export async function treecrdtHeadLamport(runner: SqliteRunner): Promise<number> {
+async function treecrdtHeadLamport(runner: SqliteRunner): Promise<number> {
   return sqliteGetNumber(runner, "SELECT treecrdt_head_lamport()");
 }
 
 /**
  * Fetch the maximum counter observed for a replica id.
  */
-export async function treecrdtReplicaMaxCounter(runner: SqliteRunner, replica: Uint8Array): Promise<number> {
+async function treecrdtReplicaMaxCounter(runner: SqliteRunner, replica: Uint8Array): Promise<number> {
   return sqliteGetNumber(runner, "SELECT treecrdt_replica_max_counter(?1)", [replica]);
 }
 

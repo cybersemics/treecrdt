@@ -1,16 +1,3 @@
-import {
-  createWaSqliteAdapter,
-  opsSince as opsSinceRaw,
-  appendOp as appendOpRaw,
-  opRefsAll as opRefsAllRaw,
-  opRefsChildren as opRefsChildrenRaw,
-  opsByOpRefs as opsByOpRefsRaw,
-  treeChildren as treeChildrenRaw,
-  treeDump as treeDumpRaw,
-  treeNodeCount as treeNodeCountRaw,
-  headLamport as headLamportRaw,
-  replicaMaxCounter as replicaMaxCounterRaw,
-} from "./index.js";
 import { detectOpfsSupport } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
 import {
@@ -220,7 +207,7 @@ async function createDirectClient(opts: {
   const db = opened.db;
   const finalStorage: StorageMode = opened.storage;
   const filename = opened.filename;
-  const adapter = createWaSqliteAdapter(db);
+  const adapter = opened.api;
   const wrapError = (stage: string, err: unknown) =>
     new Error(
       JSON.stringify({
@@ -237,7 +224,7 @@ async function createDirectClient(opts: {
       switch (method) {
         case "append": {
           const [op] = params as RpcParams<"append">;
-          await appendOpRaw(db, op, nodeIdToBytes16, encodeReplica);
+          await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
           return undefined as any;
         }
         case "appendMany": {
@@ -247,33 +234,33 @@ async function createDirectClient(opts: {
         }
         case "opsSince": {
           const [lamport, root] = params as RpcParams<"opsSince">;
-          return (await opsSinceRaw(db, { lamport, root })) as any;
+          return (await adapter.opsSince(lamport, root)) as any;
         }
         case "opRefsAll":
-          return (await opRefsAllRaw(db)) as any;
+          return (await adapter.opRefsAll()) as any;
         case "opRefsChildren": {
           const [parent] = params as RpcParams<"opRefsChildren">;
-          return (await opRefsChildrenRaw(db, nodeIdToBytes16(parent))) as any;
+          return (await adapter.opRefsChildren(nodeIdToBytes16(parent))) as any;
         }
         case "opsByOpRefs": {
           const [opRefs] = params as RpcParams<"opsByOpRefs">;
-          return (await opsByOpRefsRaw(db, opRefs.map((r) => Uint8Array.from(r)))) as any;
+          return (await adapter.opsByOpRefs(opRefs.map((r) => Uint8Array.from(r)))) as any;
         }
         case "treeChildren": {
           const [parent] = params as RpcParams<"treeChildren">;
-          return (await treeChildrenRaw(db, nodeIdToBytes16(parent))) as any;
+          return (await adapter.treeChildren(nodeIdToBytes16(parent))) as any;
         }
         case "treeDump":
-          return (await treeDumpRaw(db)) as any;
+          return (await adapter.treeDump()) as any;
         case "treeNodeCount":
-          return (await treeNodeCountRaw(db)) as any;
+          return (await adapter.treeNodeCount()) as any;
         case "headLamport":
-          return (await headLamportRaw(db)) as any;
+          return (await adapter.headLamport()) as any;
         case "replicaMaxCounter": {
           const [rawReplica] = params as RpcParams<"replicaMaxCounter">;
           const replica =
             typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
-          return (await replicaMaxCounterRaw(db, replica)) as any;
+          return (await adapter.replicaMaxCounter(replica)) as any;
         }
         case "close":
           if (db.close) await db.close();

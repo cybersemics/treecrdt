@@ -1,6 +1,9 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createTreecrdtSqliteAdapter, type SqliteRunner } from "@treecrdt/interface/sqlite";
+import {
+  createTreecrdtSqliteAdapter,
+  type SqliteRunner,
+} from "@treecrdt/interface/sqlite";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
 
 export type LoadOptions = {
@@ -50,7 +53,14 @@ export function loadTreecrdtExtension(
   return path;
 }
 
-export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
+const sqliteRunnerCache = new WeakMap<object, SqliteRunner>();
+
+function createRunner(db: any): SqliteRunner {
+  if (db && (typeof db === "object" || typeof db === "function")) {
+    const cached = sqliteRunnerCache.get(db as object);
+    if (cached) return cached;
+  }
+
   const stmtCache = new Map<string, any>();
   const prepare = (sql: string) => {
     const cached = stmtCache.get(sql);
@@ -77,5 +87,13 @@ export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
     },
   };
 
-  return createTreecrdtSqliteAdapter(runner);
+  if (db && (typeof db === "object" || typeof db === "function")) {
+    sqliteRunnerCache.set(db as object, runner);
+  }
+
+  return runner;
+}
+
+export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {}): TreecrdtAdapter {
+  return createTreecrdtSqliteAdapter(createRunner(db), opts);
 }

@@ -25,7 +25,10 @@ import {
 } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { Filter } from "@treecrdt/sync";
-import { createSqliteNodeAdapter, loadTreecrdtExtension } from "../dist/index.js";
+import {
+  createSqliteNodeApi,
+  loadTreecrdtExtension,
+} from "../dist/index.js";
 
 type StorageKind = "memory" | "file";
 type BenchCase = { storage: StorageKind; workload: SyncBenchWorkload; size: number };
@@ -55,14 +58,7 @@ function makeBackend(opts: {
   docId: string;
   initialMaxLamport: number;
 }): FlushableSyncBackend<Operation> {
-  const adapter = createSqliteNodeAdapter(opts.db);
-
-  const fetchJson = (sql: string, param?: unknown): any => {
-    const stmt = opts.db.prepare(sql);
-    const row = (param === undefined ? stmt.get() : stmt.get(param)) as any;
-    const json = row?.json ?? Object.values(row ?? {})[0];
-    return json ? JSON.parse(String(json)) : [];
-  };
+  const api = createSqliteNodeApi(opts.db);
 
   return makeQueuedSyncBackend<Operation>({
     docId: opts.docId,
@@ -70,24 +66,23 @@ function makeBackend(opts: {
     maxLamportFromOps: maxLamport,
     listOpRefs: async (filter) => {
       if ("all" in filter) {
-        return parseOpRefs(fetchJson("SELECT treecrdt_oprefs_all() AS json"));
+        return parseOpRefs(await api.opRefsAll());
       }
       const parent = Buffer.from(filter.children.parent);
-      return parseOpRefs(fetchJson("SELECT treecrdt_oprefs_children(?) AS json", parent));
+      return parseOpRefs(await api.opRefsChildren(parent));
     },
     getOpsByOpRefs: async (opRefs) => {
       if (opRefs.length === 0) return [];
-      const payload = opRefs.map((r) => Array.from(r));
-      return parseOps(fetchJson("SELECT treecrdt_ops_by_oprefs(?) AS json", JSON.stringify(payload)));
+      return parseOps(await api.opsByOpRefs(opRefs));
     },
-    applyOps: async (ops) => adapter.appendOps!(ops, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
+    applyOps: async (ops) => api.appendOps!(ops, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
   });
 }
 
 async function openDb(opts: { storage: StorageKind; dbPath?: string; docId: string }): Promise<Database.Database> {
   const db = new Database(opts.storage === "memory" ? ":memory:" : opts.dbPath ?? ":memory:");
   loadTreecrdtExtension(db);
-  db.prepare("SELECT treecrdt_set_doc_id(?)").get(opts.docId);
+  await createSqliteNodeApi(db).setDocId(opts.docId);
   return db;
 }
 
@@ -116,11 +111,11 @@ async function runBenchOnce(
     const filter = bench.filter as Filter;
 
     // Seed each peer.
-    const adapterA = createSqliteNodeAdapter(a);
-    const adapterB = createSqliteNodeAdapter(b);
+    const apiA = createSqliteNodeApi(a);
+    const apiB = createSqliteNodeApi(b);
     await Promise.all([
-      adapterA.appendOps!(opsA, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
-      adapterB.appendOps!(opsB, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
+      apiA.appendOps!(opsA, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
+      apiB.appendOps!(opsB, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
     ]);
 
     const backendA = makeBackend({ db: a, docId, initialMaxLamport: maxLamport(opsA) });

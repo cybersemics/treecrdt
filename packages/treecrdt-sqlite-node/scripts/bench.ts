@@ -7,7 +7,7 @@ import {
   runBenchmark,
 } from "@treecrdt/benchmark";
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
-import { createSqliteNodeAdapter, loadTreecrdtExtension } from "../dist/index.js";
+import { createSqliteNodeApi, loadTreecrdtExtension } from "../dist/index.js";
 
 type StorageKind = "memory" | "file";
 
@@ -58,9 +58,10 @@ async function main() {
 
         const db = new Database(dbPath);
         loadTreecrdtExtension(db);
-        db.prepare("SELECT treecrdt_set_doc_id(?)").get("treecrdt-sqlite-node-bench");
+        const api = createSqliteNodeApi(db);
+        await api.setDocId("treecrdt-sqlite-node-bench");
         return {
-          ...createSqliteNodeAdapter(db),
+          ...api,
           close: async () => {
             db.close();
             if (storage === "file") {
