@@ -75,6 +75,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      commander:
+        specifier: ^14.0.2
+        version: 14.0.2
     devDependencies:
       '@types/node':
         specifier: ^20.19.25
@@ -97,16 +100,16 @@ importers:
 
   packages/treecrdt-sqlite-node:
     dependencies:
-      '@treecrdt/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+    devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../treecrdt-sync
-    devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -162,13 +165,13 @@ importers:
 
   packages/treecrdt-wa-sqlite:
     dependencies:
-      '@treecrdt/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
     devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
       '@treecrdt/wa-sqlite-vendor':
         specifier: workspace:*
         version: link:../treecrdt-wa-sqlite-vendor
@@ -229,13 +232,13 @@ importers:
 
   packages/treecrdt-wasm-js:
     dependencies:
-      '@treecrdt/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
     devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25
@@ -1181,6 +1184,10 @@ packages:
   commander@13.1.0:
     resolution: {integrity: sha512-/rFeCpNJQbhSZjGVwO9RFV3xPqbnERS8MmIQzCtD/zl6gpJuV/bMLuN92oG3F7d8oDEHHRrujSXNUr8fpjntKw==}
     engines: {node: '>=18'}
+
+  commander@14.0.2:
+    resolution: {integrity: sha512-TywoWNNRbhoD0BXs1P3ZEScW8W5iKrnbithIl0YH+uCmBd0QpPOA8yc82DS3BIE5Ma6FnBVUsJ7wVUDz4dvOWQ==}
+    engines: {node: '>=20'}
 
   commander@4.1.1:
     resolution: {integrity: sha512-NOKm8xhkzAjzFx8B2v5OAHT+u5pRQc2UCa2Vq9jYL/31o2wi9mxBA7LIFs3sV5VSC49z6pEhfbMULvShKj26WA==}
@@ -2772,6 +2779,8 @@ snapshots:
   chownr@1.1.4: {}
 
   commander@13.1.0: {}
+
+  commander@14.0.2: {}
 
   commander@4.1.1: {}
 

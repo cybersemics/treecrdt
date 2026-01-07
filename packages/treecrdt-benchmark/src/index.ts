@@ -1,9 +1,7 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import type { TreecrdtAdapter, SerializeNodeId, SerializeReplica, Operation } from "@treecrdt/interface";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import { envInt, quantile } from "./stats.js";
+import type { WorkloadName } from "./workloads.js";
 
 export type BenchmarkResult = {
   name: string;
@@ -22,8 +20,6 @@ export type BenchmarkWorkload = {
   run: (adapter: TreecrdtAdapter) => Promise<void | { extra?: Record<string, unknown> }>;
   cleanup?: () => Promise<void> | void;
 };
-
-export type WorkloadName = "insert-move" | "insert-chain" | "replay-log";
 
 const defaultSerializeNodeId: SerializeNodeId = nodeIdToBytes16;
 const defaultSerializeReplica: SerializeReplica = replicaIdToBytes;
@@ -261,56 +257,7 @@ export async function runWorkloads(
   return results;
 }
 
-export type BenchmarkOutput = BenchmarkResult & {
-  implementation: string;
-  storage: string;
-  workload: string;
-  timestamp: string;
-  env?: Record<string, unknown>;
-  extra?: Record<string, unknown>;
-  sourceFile?: string;
-};
-
-export async function writeResult(
-  result: BenchmarkResult,
-  opts: {
-    implementation: string;
-    storage: string;
-    workload?: string;
-    outFile: string;
-    extra?: Record<string, unknown>;
-  }
-): Promise<BenchmarkOutput> {
-  const mergedExtra =
-    result.extra && opts.extra
-      ? { ...result.extra, ...opts.extra }
-      : result.extra ?? opts.extra;
-  const workload = opts.workload ?? result.name;
-  const payload: BenchmarkOutput = {
-    implementation: opts.implementation,
-    storage: opts.storage,
-    workload,
-    timestamp: new Date().toISOString(),
-    env: {
-      node: process.version,
-      platform: process.platform,
-      arch: process.arch,
-      cpu: os.cpus()[0]?.model,
-      cores: os.cpus().length,
-    },
-    ...result,
-    extra: mergedExtra,
-    sourceFile: (() => {
-      const abs = path.resolve(opts.outFile);
-      const parts = abs.split(path.sep);
-      const idx = parts.lastIndexOf("benchmarks");
-      return idx === -1 ? abs : parts.slice(idx).join(path.sep);
-    })(),
-  };
-  await fs.mkdir(path.dirname(opts.outFile), { recursive: true });
-  await fs.writeFile(opts.outFile, JSON.stringify(payload, null, 2), "utf-8");
-  return payload;
-}
-
+export { DEFAULT_BENCH_SIZES, WORKLOAD_NAMES, type WorkloadName } from "./workloads.js";
+export { benchTiming } from "./timing.js";
 export * from "./sync.js";
 export * from "./stats.js";

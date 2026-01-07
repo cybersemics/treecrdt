@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { treecrdt as treecrdtWaSqlite } from "@treecrdt/wa-sqlite/vite-plugin";
+import { treecrdt as treecrdtWaSqliteAssets } from "@treecrdt/wa-sqlite/vite-plugin";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const vendorPkgRoot = (() => {
@@ -16,8 +16,7 @@ const vendorDistRoot = path.join(vendorPkgRoot, "dist");
 
 export default defineConfig({
   plugins: [
-    treecrdtWaSqlite(),
-    treecrdtWaSqlite({ outDir: "public/base-path/wa-sqlite" }),
+    treecrdtWaSqliteAssets({ outDirs: ["public/wa-sqlite", "public/base-path/wa-sqlite"] }),
     react(),
   ],
   esbuild: {

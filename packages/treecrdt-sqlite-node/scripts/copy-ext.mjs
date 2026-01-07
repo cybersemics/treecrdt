@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirnameFromImportMeta, repoRootFromImportMeta } from "../../../scripts/repo-root.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "../../..");
+const scriptDir = dirnameFromImportMeta(import.meta.url);
+const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 const targetRelease = path.join(repoRoot, "target", "release", "deps");
 
 if (!fs.existsSync(targetRelease)) {
@@ -52,7 +52,7 @@ if (candidates.length > 1) {
 }
 
 const src = candidates[0].fullPath;
-const destDir = path.resolve(__dirname, "../native");
+const destDir = path.resolve(scriptDir, "../native");
 fs.mkdirSync(destDir, { recursive: true });
 const destBase = ext === ".dll" ? "treecrdt_sqlite_ext" : "libtreecrdt_sqlite_ext";
 const dest = path.join(destDir, `${destBase}${ext}`);

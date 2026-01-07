@@ -1,11 +1,39 @@
 import type { Operation, OperationKind, ReplicaId } from "@treecrdt/interface";
 import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
+import { envIntList } from "./stats.js";
+import { benchTiming } from "./timing.js";
 
 export type SyncBenchWorkload =
   | "sync-all"
   | "sync-children"
   | "sync-root-children-fanout10"
   | "sync-one-missing";
+
+export const DEFAULT_SYNC_BENCH_SIZES = [100, 1000, 10_000] as const;
+export const DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES = [1110] as const;
+
+export const DEFAULT_SYNC_BENCH_WORKLOADS = ["sync-all", "sync-children", "sync-one-missing"] as const satisfies readonly SyncBenchWorkload[];
+export const DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS = ["sync-root-children-fanout10"] as const satisfies readonly SyncBenchWorkload[];
+
+export const SYNC_BENCH_DEFAULT_MAX_CODEWORDS = 200_000;
+export const SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE = 2048;
+export const SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE = 1024;
+
+export function syncBenchSizesFromEnv(): number[] {
+  return envIntList("SYNC_BENCH_SIZES") ?? Array.from(DEFAULT_SYNC_BENCH_SIZES);
+}
+
+export function syncBenchRootChildrenSizesFromEnv(): number[] {
+  return envIntList("SYNC_BENCH_ROOT_CHILDREN_SIZES") ?? Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES);
+}
+
+export function syncBenchTiming(opts: { defaultIterations?: number } = {}): { iterations: number; warmupIterations: number } {
+  return benchTiming({
+    iterationsEnv: ["SYNC_BENCH_ITERATIONS", "BENCH_ITERATIONS"],
+    warmupEnv: ["SYNC_BENCH_WARMUP", "BENCH_WARMUP"],
+    defaultIterations: opts.defaultIterations ?? 3,
+  });
+}
 
 export type SyncFilter =
   | { all: Record<string, never> }

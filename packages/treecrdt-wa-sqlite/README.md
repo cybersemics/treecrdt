@@ -14,10 +14,11 @@ The demo imports the local wa-sqlite build and uses the auto-registered TreeCRDT
 ```ts
 import * as SQLite from "wa-sqlite";
 import sqliteWasm from "/wa-sqlite/wa-sqlite.wasm?url";
-import { appendOp, opsSince } from "@treecrdt/wa-sqlite";
+import { createWaSqliteApi } from "@treecrdt/wa-sqlite";
 
 const module = await SQLite.Factory({ wasm: sqliteWasm });
 const db = await module.open(":memory:");
+const api = createWaSqliteApi(db);
 ```
 See `src/index.ts` and `src/ui/App.tsx` for helpers and a simple insert+move demo.
 

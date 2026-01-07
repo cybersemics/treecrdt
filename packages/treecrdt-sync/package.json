@@ -10,6 +10,14 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./in-memory": {
+      "import": "./dist/in-memory.js",
+      "types": "./dist/in-memory.d.ts"
+    },
+    "./protobuf": {
+      "import": "./dist/protobuf.js",
+      "types": "./dist/protobuf.d.ts"
+    },
     "./transport": {
       "import": "./dist/transport.js",
       "types": "./dist/transport.d.ts"

@@ -13,6 +13,8 @@ type Plugin = {
 export type WaSqlitePluginOptions = {
   /** Destination directory (relative to project root) where wa-sqlite assets are copied. Defaults to public/wa-sqlite. */
   outDir?: string;
+  /** Multiple destination directories (relative to project root). Useful for apps served from a base path. */
+  outDirs?: string[];
 };
 
 const defaultFiles = [
@@ -29,7 +31,8 @@ const defaultFiles = [
  * This removes the need for ad-hoc copy scripts in example apps.
  */
 export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
-  const outDir = opts.outDir ?? "public/wa-sqlite";
+  const outDirsRaw = opts.outDirs ?? (opts.outDir ? [opts.outDir] : ["public/wa-sqlite"]);
+  const outDirs = Array.from(new Set(outDirsRaw.filter((d) => typeof d === "string" && d.length > 0)));
   const here = path.dirname(fileURLToPath(import.meta.url));
   const vendorPkgRoot = (() => {
     try {
@@ -43,21 +46,35 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
   const vendorWaSqliteRoot = path.join(vendorPkgRoot, "wa-sqlite");
   const vendorDistRoot = path.join(vendorPkgRoot, "dist");
 
+  let copied: Promise<void> | null = null;
   const copyOnce = async () => {
-    const srcDir = vendorDistRoot;
-    const srcExtra = path.join(vendorWaSqliteRoot, "src");
-    await fs.mkdir(outDir, { recursive: true });
-    for (const file of defaultFiles) {
-      const from = file.endsWith(".js") && !file.startsWith("wa-sqlite") ? path.join(srcExtra, file) : path.join(srcDir, file);
-      const to = path.join(outDir, file);
-      try {
-        const [fromStat, toStat] = await Promise.all([fs.stat(from), fs.stat(to)]);
-        if (toStat.size === fromStat.size && toStat.mtimeMs >= fromStat.mtimeMs) continue;
-      } catch {
-        // fall through: destination missing or stat failed
+    if (copied) return copied;
+    copied = (async () => {
+      const srcDir = vendorDistRoot;
+      const srcExtra = path.join(vendorWaSqliteRoot, "src");
+      await Promise.all(outDirs.map((dir) => fs.mkdir(dir, { recursive: true })));
+      for (const file of defaultFiles) {
+        const from =
+          file.endsWith(".js") && !file.startsWith("wa-sqlite")
+            ? path.join(srcExtra, file)
+            : path.join(srcDir, file);
+        const fromStat = await fs.stat(from);
+
+        await Promise.all(
+          outDirs.map(async (dir) => {
+            const to = path.join(dir, file);
+            try {
+              const toStat = await fs.stat(to);
+              if (toStat.size === fromStat.size && toStat.mtimeMs >= fromStat.mtimeMs) return;
+            } catch {
+              // destination missing or stat failed; copy below
+            }
+            await fs.copyFile(from, to);
+          })
+        );
       }
-      await fs.copyFile(from, to);
-    }
+    })();
+    return copied;
   };
 
   return {
