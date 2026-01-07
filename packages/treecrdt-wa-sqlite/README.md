@@ -2,10 +2,11 @@
 
 Loader + thin helpers to use the TreeCRDT SQLite extension with wa-sqlite in browser/Node.
 
-## Build the patched wa-sqlite (extension baked in)
+## Build wa-sqlite (extension baked in)
+The vendor package builds upstream wa-sqlite with TreeCRDT baked in via Makefile overrides.
 ```
-pnpm --filter @treecrdt/wa-sqlite build:wa-sqlite
-# copies dist/wa-sqlite.{mjs,wasm} into public/wa-sqlite/
+pnpm --filter @treecrdt/wa-sqlite-vendor build
+# builds packages/treecrdt-wa-sqlite-vendor/dist (example apps copy these into public/wa-sqlite/)
 ```
 
 ## Use in the demo

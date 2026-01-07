@@ -43,6 +43,7 @@
     "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
+    "@treecrdt/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
