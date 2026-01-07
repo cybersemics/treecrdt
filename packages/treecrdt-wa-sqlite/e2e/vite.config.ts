@@ -3,16 +3,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { treecrdt as treecrdtWaSqlite } from "@treecrdt/wa-sqlite/vite-plugin";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const vendorRoot = (() => {
+const vendorPkgRoot = (() => {
   const require = createRequire(import.meta.url);
   const pkgJson = require.resolve("@treecrdt/wa-sqlite-vendor/package.json");
-  return path.join(path.dirname(pkgJson), "wa-sqlite");
+  return path.dirname(pkgJson);
 })();
+const vendorWaSqliteRoot = path.join(vendorPkgRoot, "wa-sqlite");
+const vendorDistRoot = path.join(vendorPkgRoot, "dist");
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    treecrdtWaSqlite(),
+    treecrdtWaSqlite({ outDir: "public/base-path/wa-sqlite" }),
+    react(),
+  ],
   esbuild: {
     target: "esnext",
   },
@@ -32,7 +39,8 @@ export default defineConfig({
     fs: {
       allow: [
         __dirname,
-        vendorRoot,
+        vendorWaSqliteRoot,
+        vendorDistRoot,
         path.resolve(__dirname, "./public"),
         path.resolve(__dirname, "../dist"),
         path.resolve(__dirname, "../../treecrdt-riblt-wasm-js"),
@@ -45,16 +53,17 @@ export default defineConfig({
         find: "wa-sqlite/sqlite-api",
         replacement: path.resolve(
           __dirname,
-          vendorRoot,
-          "src/sqlite-api.js"
+          vendorWaSqliteRoot,
+          "src",
+          "sqlite-api.js"
         ),
       },
       {
         find: "wa-sqlite",
         replacement: path.resolve(
           __dirname,
-          vendorRoot,
-          "dist/wa-sqlite-async.mjs"
+          vendorDistRoot,
+          "wa-sqlite-async.mjs"
         ),
       },
     ],

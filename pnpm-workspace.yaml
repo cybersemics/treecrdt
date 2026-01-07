@@ -3,7 +3,6 @@ packages:
   - packages/treecrdt-wasm-js
   - packages/treecrdt-wa-sqlite/e2e
   - examples/*
-  - wa-sqlite-vendor
 
 onlyBuiltDependencies:
   - better-sqlite3

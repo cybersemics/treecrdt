@@ -13,7 +13,7 @@ const vendorRoot = (() => {
     const pkgJson = require.resolve("@treecrdt/wa-sqlite-vendor/package.json");
     return path.join(path.dirname(pkgJson), "wa-sqlite");
   } catch {
-    return path.join(repoRoot, "wa-sqlite-vendor/wa-sqlite");
+    return path.join(repoRoot, "packages/treecrdt-wa-sqlite-vendor/wa-sqlite");
   }
 })();
 

@@ -31,19 +31,21 @@ const defaultFiles = [
 export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
   const outDir = opts.outDir ?? "public/wa-sqlite";
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const vendorRoot = (() => {
+  const vendorPkgRoot = (() => {
     try {
       const require = createRequire(import.meta.url);
       const pkgJson = require.resolve("@treecrdt/wa-sqlite-vendor/package.json");
-      return path.resolve(path.dirname(pkgJson), "wa-sqlite");
+      return path.dirname(pkgJson);
     } catch {
-      return path.resolve(here, "../../../wa-sqlite-vendor/wa-sqlite");
+      return path.resolve(here, "../../treecrdt-wa-sqlite-vendor");
     }
   })();
+  const vendorWaSqliteRoot = path.join(vendorPkgRoot, "wa-sqlite");
+  const vendorDistRoot = path.join(vendorPkgRoot, "dist");
 
   const copyOnce = async () => {
-    const srcDir = path.join(vendorRoot, "dist");
-    const srcExtra = path.join(vendorRoot, "src");
+    const srcDir = vendorDistRoot;
+    const srcExtra = path.join(vendorWaSqliteRoot, "src");
     await fs.mkdir(outDir, { recursive: true });
     for (const file of defaultFiles) {
       const from = file.endsWith(".js") && !file.startsWith("wa-sqlite") ? path.join(srcExtra, file) : path.join(srcDir, file);

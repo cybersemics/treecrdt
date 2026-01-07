@@ -41,10 +41,10 @@
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",
-    "@treecrdt/benchmark": "workspace:*",
-    "@treecrdt/wa-sqlite-vendor": "workspace:*"
+    "@treecrdt/benchmark": "workspace:*"
   },
   "devDependencies": {
+    "@treecrdt/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"

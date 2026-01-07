@@ -60,20 +60,22 @@ type AdapterBundle = {
 async function createAdapter(filename: string): Promise<AdapterBundle> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(__dirname, "../../..");
-  const vendorRoot = (() => {
+  const vendorPkgRoot = (() => {
     try {
       const require = createRequire(import.meta.url);
       const pkgJson = require.resolve("@treecrdt/wa-sqlite-vendor/package.json");
-      return path.join(path.dirname(pkgJson), "wa-sqlite");
+      return path.dirname(pkgJson);
     } catch {
-      return path.join(repoRoot, "wa-sqlite-vendor/wa-sqlite");
+      return path.join(repoRoot, "packages/treecrdt-wa-sqlite-vendor");
     }
   })();
+  const vendorWaSqliteRoot = path.join(vendorPkgRoot, "wa-sqlite");
+  const vendorDistRoot = path.join(vendorPkgRoot, "dist");
 
-  const wasmPath = path.join(vendorRoot, "dist/wa-sqlite-async.wasm");
+  const wasmPath = path.join(vendorDistRoot, "wa-sqlite-async.wasm");
   const wasmBinary = fs.readFileSync(wasmPath);
-  const mod = await import(path.join(vendorRoot, "dist/wa-sqlite-async.mjs"));
-  const SQLite = await import(path.join(vendorRoot, "src/sqlite-api.js"));
+  const mod = await import(path.join(vendorDistRoot, "wa-sqlite-async.mjs"));
+  const SQLite = await import(path.join(vendorWaSqliteRoot, "src/sqlite-api.js"));
   const module = await mod.default({
     wasmBinary,
     locateFile: (f: string) => (f.endsWith(".wasm") ? wasmPath : f),
