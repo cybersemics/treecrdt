@@ -128,8 +128,7 @@ where
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
         self.clock.observe(op.meta.lamport);
-        self.version_vector
-            .observe(&op.meta.id.replica, op.meta.lamport);
+        self.version_vector.observe(&op.meta.id.replica, op.meta.lamport);
         self.ingest(op)
     }
 
@@ -145,8 +144,7 @@ where
         self.version_vector = VersionVector::new();
         for op in ops {
             self.clock.observe(op.meta.lamport);
-            self.version_vector
-                .observe(&op.meta.id.replica, op.meta.lamport);
+            self.version_vector.observe(&op.meta.id.replica, op.meta.lamport);
             self.applied.insert(op.meta.id.clone());
             let snapshot = Self::snapshot(&mut self.nodes, &op);
             self.log.push(LogEntry { op, snapshot });
@@ -251,8 +249,7 @@ where
     }
 
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
-        self.version_vector
-            .observe(&self.replica_id, op.meta.lamport);
+        self.version_vector.observe(&self.replica_id, op.meta.lamport);
         self.ingest(op.clone())?;
         Ok(op)
     }
@@ -361,13 +358,8 @@ where
         };
         Self::ensure_node(nodes, node_id);
         let parent = nodes.get(&node_id).and_then(|n| n.parent);
-        let position = parent.and_then(|p| {
-            nodes
-                .get(&p)?
-                .children
-                .iter()
-                .position(|c| c == &node_id)
-        });
+        let position =
+            parent.and_then(|p| nodes.get(&p)?.children.iter().position(|c| c == &node_id));
         NodeSnapshot { parent, position }
     }
 
@@ -382,9 +374,10 @@ where
         Self::detach(nodes, node_id);
         if let Some(parent) = entry.snapshot.parent {
             Self::ensure_node(nodes, parent);
-            let pos = entry.snapshot.position.unwrap_or_else(|| {
-                nodes.get(&parent).map(|p| p.children.len()).unwrap_or(0)
-            });
+            let pos = entry
+                .snapshot
+                .position
+                .unwrap_or_else(|| nodes.get(&parent).map(|p| p.children.len()).unwrap_or(0));
             Self::attach(nodes, node_id, parent, pos);
         } else if let Some(state) = nodes.get_mut(&node_id) {
             state.parent = None;
@@ -426,12 +419,12 @@ where
         {
             return;
         }
-        
+
         let old_parent = nodes.get(&node).and_then(|n| n.parent);
-        
+
         Self::detach(nodes, node);
         Self::attach(nodes, node, new_parent, position);
-        
+
         Self::update_last_change(nodes, op, node);
         if let Some(old_p) = old_parent {
             if old_p != NodeId::TRASH {
@@ -447,33 +440,33 @@ where
         if node == NodeId::ROOT || node == NodeId::TRASH {
             return;
         }
-        
+
         let Some(mut state) = nodes.get(&node).cloned() else {
             return;
         };
-        
+
         let mut delete_vv = Self::operation_version_vector(op);
         if let Some(known_state) = &op.meta.known_state {
             delete_vv.merge(known_state);
         }
-        
+
         if let Some(existing) = &mut state.deleted_at {
             existing.merge(&delete_vv);
         } else {
             state.deleted_at = Some(delete_vv);
         }
-        
+
         Self::detach(nodes, node);
         state.parent = Some(NodeId::TRASH);
         nodes.insert(node, state);
     }
-    
+
     fn operation_version_vector(op: &Operation) -> VersionVector {
         let mut vv = VersionVector::new();
         vv.observe(&op.meta.id.replica, op.meta.lamport);
         vv
     }
-    
+
     fn update_last_change(nodes: &mut HashMap<NodeId, NodeState>, op: &Operation, node: NodeId) {
         let Some(state) = nodes.get_mut(&node) else {
             return;
@@ -483,7 +476,7 @@ where
             state.last_change.merge(known_state);
         }
     }
-    
+
     fn calculate_subtree_version_vector(
         nodes: &HashMap<NodeId, NodeState>,
         node: NodeId,
@@ -491,13 +484,13 @@ where
         let Some(state) = nodes.get(&node) else {
             return VersionVector::new();
         };
-        
+
         let mut subtree_vv = state.last_change.clone();
         for &child_id in &state.children {
             let child_vv = Self::calculate_subtree_version_vector(nodes, child_id);
             subtree_vv.merge(&child_vv);
         }
-        
+
         subtree_vv
     }
 

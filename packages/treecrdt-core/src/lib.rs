@@ -14,5 +14,5 @@ pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use ops::{Operation, OperationKind, OperationMetadata};
 pub use traits::{Clock, IndexProvider, LamportClock, MemoryStorage, Snapshot, Storage};
-pub use version_vector::VersionVector;
 pub use tree::TreeCrdt;
+pub use version_vector::VersionVector;
