@@ -193,6 +193,7 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
         meta: treecrdt_core::OperationMetadata {
             id: op_id,
             lamport: lamport as u64,
+            known_state: None,
         },
         kind,
     })
