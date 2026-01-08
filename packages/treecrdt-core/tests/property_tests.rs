@@ -16,7 +16,7 @@ proptest! {
                 match i % 3 {
                     0 => Operation::insert(&replica, (i + 1) as u64, lamport, parent, node, 0),
                     1 => Operation::move_node(&replica, (i + 1) as u64, lamport, node, parent, 0),
-                    _ => Operation::delete(&replica, (i + 1) as u64, lamport, node),
+                    _ => Operation::delete(&replica, (i + 1) as u64, lamport, node, None),
                 }
             }),
             1..=5,
