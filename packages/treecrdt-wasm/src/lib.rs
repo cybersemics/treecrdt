@@ -101,7 +101,7 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
             js.new_parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
             js.position.unwrap_or(0),
         ),
-        "delete" => Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?),
+        "delete" => Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, None),
         "tombstone" => Operation::tombstone(&replica, counter, lamport, hex_to_node(&js.node)?),
         _ => return Err("unknown kind".into()),
     };
