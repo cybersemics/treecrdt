@@ -4,11 +4,14 @@ use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{Operation, OperationKind};
 use crate::traits::{Clock, Storage};
+use crate::version_vector::VersionVector;
 
 #[derive(Clone, Debug)]
 struct NodeState {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
+    last_change: VersionVector,
+    deleted_at: Option<VersionVector>,
 }
 
 #[derive(Clone)]
@@ -28,6 +31,17 @@ impl NodeState {
         Self {
             parent: None,
             children: Vec::new(),
+            last_change: VersionVector::new(),
+            deleted_at: None,
+        }
+    }
+
+    fn new() -> Self {
+        Self {
+            parent: None,
+            children: Vec::new(),
+            last_change: VersionVector::new(),
+            deleted_at: None,
         }
     }
 }
@@ -43,8 +57,9 @@ where
     clock: C,
     counter: u64,
     applied: HashSet<OperationId>,
-    log: Vec<LogEntry>, // ordered by (lamport, id)
+    log: Vec<LogEntry>,
     nodes: HashMap<NodeId, NodeState>,
+    version_vector: VersionVector,
 }
 
 fn tie_breaker_id(op: &Operation) -> u128 {
@@ -72,10 +87,10 @@ where
             applied: HashSet::new(),
             log: Vec::new(),
             nodes,
+            version_vector: VersionVector::new(),
         }
     }
 
-    /// Create an insert operation and persist it to storage.
     pub fn local_insert(
         &mut self,
         parent: NodeId,
@@ -89,7 +104,6 @@ where
         self.commit_local(op)
     }
 
-    /// Create a move operation and persist it to storage.
     pub fn local_move(
         &mut self,
         node: NodeId,
@@ -103,34 +117,36 @@ where
         self.commit_local(op)
     }
 
-    /// Create a delete operation and persist it to storage.
     pub fn local_delete(&mut self, node: NodeId) -> Result<Operation> {
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let op = Operation::move_node(&replica, counter, lamport, node, NodeId::TRASH, 0);
+        let known_state = Some(self.version_vector.clone());
+        let op = Operation::delete(&replica, counter, lamport, node, known_state);
         self.commit_local(op)
     }
 
-    /// Apply an operation received from a remote peer.
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
         self.clock.observe(op.meta.lamport);
+        self.version_vector
+            .observe(&op.meta.id.replica, op.meta.lamport);
         self.ingest(op)
     }
 
-    /// Pull operations newer than the provided Lamport timestamp.
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         self.storage.load_since(lamport)
     }
 
-    /// Replay the operation log from storage to rebuild materialized state.
     pub fn replay_from_storage(&mut self) -> Result<()> {
         let mut ops = self.storage.load_since(0)?;
         ops.sort_by(|a, b| (a.meta.lamport, &a.meta.id).cmp(&(b.meta.lamport, &b.meta.id)));
         self.applied.clear();
         self.log.clear();
+        self.version_vector = VersionVector::new();
         for op in ops {
             self.clock.observe(op.meta.lamport);
+            self.version_vector
+                .observe(&op.meta.id.replica, op.meta.lamport);
             self.applied.insert(op.meta.id.clone());
             let snapshot = Self::snapshot(&mut self.nodes, &op);
             self.log.push(LogEntry { op, snapshot });
@@ -139,47 +155,59 @@ where
         Ok(())
     }
 
-    /// Returns children of a node in the current materialized state.
-    pub fn children(&self, parent: NodeId) -> Option<&[NodeId]> {
+    pub fn children(&self, parent: NodeId) -> Option<Vec<NodeId>> {
+        self.nodes.get(&parent).map(|n| {
+            n.children
+                .iter()
+                .filter(|&&child_id| !self.is_tombstoned(child_id))
+                .copied()
+                .collect()
+        })
+    }
+
+    pub fn children_slice(&self, parent: NodeId) -> Option<&[NodeId]> {
         self.nodes.get(&parent).map(|n| n.children.as_slice())
     }
 
-    /// Current parent of a node.
     pub fn parent(&self, node: NodeId) -> Option<NodeId> {
-        self.nodes.get(&node).and_then(|n| n.parent)
+        self.nodes.get(&node).and_then(|n| {
+            if self.is_tombstoned(node) {
+                n.parent
+            } else {
+                n.parent.filter(|&p| p != NodeId::TRASH)
+            }
+        })
     }
 
-    /// Whether the node is tombstoned.
     pub fn is_tombstoned(&self, node: NodeId) -> bool {
         self.nodes
             .get(&node)
-            .and_then(|n| n.parent)
-            .map(|p| p == NodeId::TRASH)
+            .and_then(|state| state.deleted_at.as_ref())
+            .map(|deleted_vv| {
+                let subtree_vv = Self::calculate_subtree_version_vector(&self.nodes, node);
+                deleted_vv.is_aware_of(&subtree_vv)
+            })
             .unwrap_or(false)
     }
 
-    /// Current Lamport time as observed by this replica.
     pub fn lamport(&self) -> Lamport {
         self.clock.now()
     }
 
-    /// Returns all nodes in the tree with their parent relationships.
-    /// Returns a vector of (node_id, parent_id) pairs, sorted by node_id.
     pub fn nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
         let mut pairs: Vec<_> = self
             .nodes
             .iter()
-            .filter(|(id, state)| **id != NodeId::TRASH && state.parent != Some(NodeId::TRASH))
+            .filter(|(id, _)| {
+                **id != NodeId::TRASH && **id != NodeId::ROOT && !self.is_tombstoned(**id)
+            })
             .map(|(id, state)| (*id, state.parent))
             .collect();
         pairs.sort_by_key(|(id, _)| id.0);
         pairs
     }
 
-    /// Validate invariants: unique parent for each node, children parent pointers consistent,
-    /// and no cycles. Intended for tests and debugging.
     pub fn validate_invariants(&self) -> Result<()> {
-        // parent consistency / duplicate child detection
         for (pid, pstate) in &self.nodes {
             let mut seen = HashSet::new();
             for child in &pstate.children {
@@ -196,7 +224,6 @@ where
             }
         }
 
-        // acyclic check
         for node in self.nodes.keys() {
             if self.has_cycle_from(*node) {
                 return Err(Error::InvalidOperation("cycle detected".into()));
@@ -224,6 +251,8 @@ where
     }
 
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
+        self.version_vector
+            .observe(&self.replica_id, op.meta.lamport);
         self.ingest(op.clone())?;
         Ok(op)
     }
@@ -239,7 +268,6 @@ where
     S: Storage,
     C: Clock,
 {
-    /// Helper primarily for tests to confirm whether a node exists according to storage.
     pub fn is_known(&self, node: NodeId) -> bool {
         self.nodes.contains_key(&node)
     }
@@ -261,20 +289,19 @@ where
             Ok(i) => i,
             Err(i) => i,
         };
-        // undo suffix
         for entry in self.log.iter().rev().take(self.log.len() - idx) {
             Self::undo_entry(&mut self.nodes, entry);
         }
 
-        // apply new op
         let snapshot = Self::apply_forward(&mut self.nodes, &op);
-        let new_entry = LogEntry {
-            op: op.clone(),
-            snapshot,
-        };
-        self.log.insert(idx, new_entry);
+        self.log.insert(
+            idx,
+            LogEntry {
+                op: op.clone(),
+                snapshot,
+            },
+        );
 
-        // redo suffix
         for entry in self.log.iter().skip(idx + 1) {
             Self::apply_forward_with_snapshot(&mut self.nodes, entry);
         }
@@ -284,7 +311,7 @@ where
     }
 
     fn rebuild_materialized(&mut self) {
-        let mut nodes: HashMap<NodeId, NodeState> = HashMap::new();
+        let mut nodes = HashMap::new();
         nodes.insert(NodeId::ROOT, NodeState::new_root());
         for entry in &self.log {
             Self::apply_forward_with_snapshot(&mut nodes, entry);
@@ -293,9 +320,12 @@ where
     }
 
     fn ensure_node(nodes: &mut HashMap<NodeId, NodeState>, id: NodeId) {
-        nodes.entry(id).or_insert(NodeState {
-            parent: None,
-            children: Vec::new(),
+        nodes.entry(id).or_insert_with(|| {
+            if id == NodeId::ROOT {
+                NodeState::new_root()
+            } else {
+                NodeState::new()
+            }
         });
     }
 
@@ -306,15 +336,14 @@ where
                 parent,
                 node,
                 position,
-            } => Self::apply_insert(nodes, *parent, *node, *position),
+            } => Self::apply_insert(nodes, op, *parent, *node, *position),
             OperationKind::Move {
                 node,
                 new_parent,
                 position,
-            } => Self::apply_move(nodes, *node, *new_parent, *position),
-            OperationKind::Delete { node } | OperationKind::Tombstone { node } => {
-                Self::apply_delete(nodes, *node)
-            }
+            } => Self::apply_move(nodes, op, *node, *new_parent, *position),
+            OperationKind::Delete { node } => Self::apply_delete(nodes, op, *node),
+            OperationKind::Tombstone { node } => Self::apply_delete(nodes, op, *node),
         }
         snapshot
     }
@@ -334,8 +363,10 @@ where
         let parent = nodes.get(&node_id).and_then(|n| n.parent);
         let position = parent.and_then(|p| {
             nodes
-                .get(&p)
-                .and_then(|pnode| pnode.children.iter().position(|c| c == &node_id))
+                .get(&p)?
+                .children
+                .iter()
+                .position(|c| c == &node_id)
         });
         NodeSnapshot { parent, position }
     }
@@ -348,40 +379,39 @@ where
             | OperationKind::Tombstone { node } => *node,
         };
         Self::ensure_node(nodes, node_id);
-        // detach current
         Self::detach(nodes, node_id);
         if let Some(parent) = entry.snapshot.parent {
             Self::ensure_node(nodes, parent);
-            let pos = entry
-                .snapshot
-                .position
-                .unwrap_or_else(|| nodes.get(&parent).map(|p| p.children.len()).unwrap_or(0));
+            let pos = entry.snapshot.position.unwrap_or_else(|| {
+                nodes.get(&parent).map(|p| p.children.len()).unwrap_or(0)
+            });
             Self::attach(nodes, node_id, parent, pos);
-        } else if let Some(entry_state) = nodes.get_mut(&node_id) {
-            entry_state.parent = None;
+        } else if let Some(state) = nodes.get_mut(&node_id) {
+            state.parent = None;
         }
     }
 
     fn apply_insert(
         nodes: &mut HashMap<NodeId, NodeState>,
+        op: &Operation,
         parent: NodeId,
         node: NodeId,
         position: usize,
     ) {
-        if parent == node {
+        if parent == node || Self::introduces_cycle(nodes, node, parent) {
             return;
         }
         Self::ensure_node(nodes, parent);
         Self::ensure_node(nodes, node);
-        if Self::introduces_cycle(nodes, node, parent) {
-            return;
-        }
         Self::detach(nodes, node);
         Self::attach(nodes, node, parent, position);
+        Self::update_last_change(nodes, op, node);
+        Self::update_last_change(nodes, op, parent);
     }
 
     fn apply_move(
         nodes: &mut HashMap<NodeId, NodeState>,
+        op: &Operation,
         node: NodeId,
         new_parent: NodeId,
         position: usize,
@@ -396,29 +426,85 @@ where
         {
             return;
         }
+        
+        let old_parent = nodes.get(&node).and_then(|n| n.parent);
+        
         Self::detach(nodes, node);
         Self::attach(nodes, node, new_parent, position);
+        
+        Self::update_last_change(nodes, op, node);
+        if let Some(old_p) = old_parent {
+            if old_p != NodeId::TRASH {
+                Self::update_last_change(nodes, op, old_p);
+            }
+        }
+        if new_parent != NodeId::TRASH {
+            Self::update_last_change(nodes, op, new_parent);
+        }
     }
 
-    fn apply_delete(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId) {
+    fn apply_delete(nodes: &mut HashMap<NodeId, NodeState>, op: &Operation, node: NodeId) {
         if node == NodeId::ROOT || node == NodeId::TRASH {
             return;
         }
-        if !nodes.contains_key(&node) {
+        
+        let Some(mut state) = nodes.get(&node).cloned() else {
             return;
+        };
+        
+        let mut delete_vv = Self::operation_version_vector(op);
+        if let Some(known_state) = &op.meta.known_state {
+            delete_vv.merge(known_state);
         }
+        
+        if let Some(existing) = &mut state.deleted_at {
+            existing.merge(&delete_vv);
+        } else {
+            state.deleted_at = Some(delete_vv);
+        }
+        
         Self::detach(nodes, node);
-        if let Some(entry) = nodes.get_mut(&node) {
-            entry.parent = Some(NodeId::TRASH);
+        state.parent = Some(NodeId::TRASH);
+        nodes.insert(node, state);
+    }
+    
+    fn operation_version_vector(op: &Operation) -> VersionVector {
+        let mut vv = VersionVector::new();
+        vv.observe(&op.meta.id.replica, op.meta.lamport);
+        vv
+    }
+    
+    fn update_last_change(nodes: &mut HashMap<NodeId, NodeState>, op: &Operation, node: NodeId) {
+        let Some(state) = nodes.get_mut(&node) else {
+            return;
+        };
+        state.last_change.merge(&Self::operation_version_vector(op));
+        if let Some(known_state) = &op.meta.known_state {
+            state.last_change.merge(known_state);
         }
+    }
+    
+    fn calculate_subtree_version_vector(
+        nodes: &HashMap<NodeId, NodeState>,
+        node: NodeId,
+    ) -> VersionVector {
+        let Some(state) = nodes.get(&node) else {
+            return VersionVector::new();
+        };
+        
+        let mut subtree_vv = state.last_change.clone();
+        for &child_id in &state.children {
+            let child_vv = Self::calculate_subtree_version_vector(nodes, child_id);
+            subtree_vv.merge(&child_vv);
+        }
+        
+        subtree_vv
     }
 
     fn detach(nodes: &mut HashMap<NodeId, NodeState>, node: NodeId) {
-        if let Some(parent) = nodes.get(&node).and_then(|n| n.parent) {
-            if parent != NodeId::TRASH {
-                if let Some(p) = nodes.get_mut(&parent) {
-                    p.children.retain(|c| c != &node);
-                }
+        if let Some(Some(parent)) = nodes.get(&node).map(|n| n.parent) {
+            if let Some(parent_state) = nodes.get_mut(&parent) {
+                parent_state.children.retain(|c| c != &node);
             }
         }
     }
@@ -429,14 +515,15 @@ where
         parent: NodeId,
         position: usize,
     ) {
-        if parent != NodeId::TRASH {
-            if let Some(parent_entry) = nodes.get_mut(&parent) {
-                let idx = position.min(parent_entry.children.len());
-                parent_entry.children.insert(idx, node);
-            }
+        if parent == NodeId::TRASH {
+            return;
         }
-        if let Some(entry) = nodes.get_mut(&node) {
-            entry.parent = Some(parent);
+        if let Some(parent_state) = nodes.get_mut(&parent) {
+            let idx = position.min(parent_state.children.len());
+            parent_state.children.insert(idx, node);
+        }
+        if let Some(node_state) = nodes.get_mut(&node) {
+            node_state.parent = Some(parent);
         }
     }
 
@@ -445,7 +532,7 @@ where
         node: NodeId,
         potential_parent: NodeId,
     ) -> bool {
-        if potential_parent == NodeId::TRASH {
+        if potential_parent == NodeId::TRASH || potential_parent == NodeId::ROOT {
             return false;
         }
         let mut current = Some(potential_parent);
@@ -453,7 +540,7 @@ where
             if n == node {
                 return true;
             }
-            if n == NodeId::TRASH {
+            if n == NodeId::TRASH || n == NodeId::ROOT {
                 return false;
             }
             current = nodes.get(&n).and_then(|state| state.parent);
