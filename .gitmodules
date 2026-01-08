@@ -1,6 +1,3 @@
-[submodule "vendor/vendor/wa-sqlite"]
-	path = vendor/vendor/wa-sqlite
-	url = https://github.com/marcus-pousette/wa-sqlite
-[submodule "vendor/wa-sqlite"]
-	path = vendor/wa-sqlite
+[submodule "wa-sqlite-vendor/wa-sqlite"]
+	path = packages/treecrdt-wa-sqlite-vendor/wa-sqlite
 	url = https://github.com/marcus-pousette/wa-sqlite

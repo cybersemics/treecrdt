@@ -1,7 +1,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildAppendOp, buildOpsSince } from "@treecrdt/interface/sqlite";
-import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
+import {
+  createTreecrdtSqliteAdapter,
+  type SqliteRunner,
+} from "@treecrdt/interface/sqlite";
+import type { TreecrdtAdapter } from "@treecrdt/interface";
 
 export type LoadOptions = {
   extensionPath?: string;
@@ -50,110 +53,47 @@ export function loadTreecrdtExtension(
   return path;
 }
 
-export function createSqliteNodeAdapter(db: any): TreecrdtAdapter {
-  return {
-    appendOp: async (op: Operation, serializeNodeId, serializeReplica) => {
-      const { meta, kind } = op;
-      const { id, lamport } = meta;
-      const { replica, counter } = id;
-      const { sql, params } = buildAppendOp(kind, {
-        replica: serializeReplica(replica),
-        counter,
-        lamport,
-        serializeNodeId,
-      });
-      const bindings = params.reduce<Record<number, unknown>>((acc, val, idx) => {
-        acc[idx + 1] = val;
-        return acc;
-      }, {});
-      db.prepare(sql).get(bindings);
-    },
-    appendOps: async (
-      ops: Operation[],
-      serializeNodeId,
-      serializeReplica
-    ) => {
-      if (ops.length === 0) return;
-      // Prefer the extension bulk entrypoint when available.
-      const payload = ops.map((op) => {
-        const { meta, kind } = op;
-        const { id, lamport } = meta;
-        const { replica, counter } = id;
-        const serReplica = serializeReplica(replica);
-        const serialize = (val: string) =>
-          Array.from(serializeNodeId(val));
-        const base = {
-          replica: Array.from(serReplica),
-          counter,
-          lamport,
-          kind: kind.type,
-          position: "position" in kind ? kind.position ?? null : null,
-        };
-        if (kind.type === "insert") {
-          return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
-        } else if (kind.type === "move") {
-          return {
-            ...base,
-            parent: null,
-            node: serialize(kind.node),
-            new_parent: serialize(kind.newParent),
-          };
-        } else if (kind.type === "delete") {
-          return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-        }
-        return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-      });
+const sqliteRunnerCache = new WeakMap<object, SqliteRunner>();
 
-      try {
-        db.prepare("SELECT treecrdt_append_ops(?1)").get({ 1: JSON.stringify(payload) });
-        return;
-      } catch {
-        // Fallback to transactional single-row inserts.
-      }
+function createRunner(db: any): SqliteRunner {
+  if (db && (typeof db === "object" || typeof db === "function")) {
+    const cached = sqliteRunnerCache.get(db as object);
+    if (cached) return cached;
+  }
 
-      const { sql } = buildAppendOp(ops[0].kind, {
-        replica: Buffer.alloc(0),
-        counter: 0,
-        lamport: 0,
-        serializeNodeId,
-      });
-      const stmt = db.prepare(sql);
-      const runMany = db.transaction((batch: Operation[]) => {
-        for (const op of batch) {
-          const { meta, kind } = op;
-          const { id, lamport } = meta;
-          const { replica, counter } = id;
-          const bindParams = buildAppendOp(kind, {
-            replica: serializeReplica(replica),
-            counter,
-            lamport,
-            serializeNodeId,
-          }).params;
-          const bindings = bindParams.reduce<Record<number, unknown>>(
-            (acc, val, idx) => {
-              acc[idx + 1] = val;
-              return acc;
-            },
-            {}
-          );
-          stmt.run(bindings);
-        }
-      });
-      runMany(ops);
-    },
-    opsSince: async (lamport: number, root?: string) => {
-      const { sql, params } = buildOpsSince({
-        lamport,
-        root,
-        serializeNodeId: (id) => Buffer.from(id),
-      });
-      const bindings = params.reduce<Record<number, unknown>>((acc, val, idx) => {
-        acc[idx + 1] = val;
-        return acc;
-      }, {});
-      const row = db.prepare(sql).get(bindings);
-      const json = row?.ops ?? row?.["treecrdt_ops_since(0)"] ?? Object.values(row ?? {})[0];
-      return JSON.parse(json);
+  const stmtCache = new Map<string, any>();
+  const prepare = (sql: string) => {
+    const cached = stmtCache.get(sql);
+    if (cached) return cached;
+    const stmt = db.prepare(sql);
+    stmtCache.set(sql, stmt);
+    return stmt;
+  };
+
+  const toBindings = (params: unknown[]) =>
+    params.reduce<Record<number, unknown>>((acc, val, idx) => {
+      acc[idx + 1] = val;
+      return acc;
+    }, {});
+
+  const runner: SqliteRunner = {
+    exec: (sql) => db.exec(sql),
+    getText: (sql, params = []) => {
+      const row = prepare(sql).get(toBindings(params));
+      if (row === undefined || row === null) return null;
+      const val = Object.values(row as Record<string, unknown>)[0];
+      if (val === undefined || val === null) return null;
+      return String(val);
     },
   };
+
+  if (db && (typeof db === "object" || typeof db === "function")) {
+    sqliteRunnerCache.set(db as object, runner);
+  }
+
+  return runner;
+}
+
+export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {}): TreecrdtAdapter {
+  return createTreecrdtSqliteAdapter(createRunner(db), opts);
 }

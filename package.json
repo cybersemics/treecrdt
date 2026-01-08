@@ -7,9 +7,10 @@
   ],
   "scripts": {
     "lint": "echo \"TODO: add linting\"",
+    "proto:generate": "buf generate",
     "build:ext:wasm": "cargo build -p treecrdt-sqlite-ext --target wasm32-unknown-emscripten --release --no-default-features --features static-link",
     "build:ext:native": "cargo rustc -p treecrdt-sqlite-ext --release --no-default-features --features \"ext-sqlite rusqlite-storage\" -- --crate-type=cdylib",
-    "build": "pnpm -C packages/treecrdt-ts run build && pnpm -C packages/treecrdt-benchmark run build && pnpm run build:ext:wasm && (cd vendor/wa-sqlite && make clean-tmp dist) && pnpm -C packages/treecrdt-wa-sqlite run build:ts && pnpm -C packages/treecrdt-wa-sqlite/e2e run build && pnpm -C packages/treecrdt-sqlite-node run build",
+    "build": "pnpm -C packages/treecrdt-ts run build && pnpm -C packages/treecrdt-benchmark run build && pnpm --filter @treecrdt/wa-sqlite-vendor build && pnpm -C packages/treecrdt-wa-sqlite run build:ts && pnpm -C packages/treecrdt-wa-sqlite/e2e run build && pnpm -C packages/treecrdt-sqlite-node run build",
     "test:browser": "pnpm -C packages/treecrdt-wa-sqlite/e2e test:e2e",
     "test:native-node": "pnpm -C packages/treecrdt-sqlite-node run test",
     "benchmark": "rm -rf benchmarks && mkdir -p benchmarks && pnpm -C packages/treecrdt-benchmark run build && pnpm -C packages/treecrdt-wa-sqlite/e2e run bench && pnpm -C packages/treecrdt-sqlite-node run benchmark && pnpm -C packages/treecrdt-wasm-js run benchmark && pnpm run benchmark:core && pnpm run benchmark:aggregate",
@@ -17,5 +18,9 @@
     "benchmark:aggregate": "node scripts/aggregate-bench.mjs",
     "test": "pnpm run test:browser && pnpm run test:native-node",
     "playground": "pnpm --filter @treecrdt/playground dev"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.61.0",
+    "@bufbuild/protoc-gen-es": "^2.10.2"
   }
 }

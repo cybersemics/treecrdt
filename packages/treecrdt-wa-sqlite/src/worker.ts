@@ -1,133 +1,143 @@
 /// <reference lib="webworker" />
-import { createWaSqliteAdapter, opsSince as opsSinceRaw, appendOp as appendOpRaw, type Database } from "./index.js";
-import { createOpfsVfs } from "./opfs.js";
+import {
+  type Database,
+} from "./index.js";
+import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { Operation } from "@treecrdt/interface";
+import type { TreecrdtAdapter } from "@treecrdt/interface";
+import type { RpcMethod, RpcRequest } from "./rpc.js";
+import { openTreecrdtDb } from "./open.js";
 
-const encoder = new TextEncoder();
 let db: Database | null = null;
+let api: TreecrdtAdapter | null = null;
 let storage: "memory" | "opfs" = "memory";
 
-self.onmessage = async (ev: MessageEvent) => {
-  const { id, method, params } = ev.data as { id: number; method: string; params?: any };
+const methods = {
+  init,
+  append,
+  appendMany,
+  opsSince,
+  opRefsAll,
+  opRefsChildren,
+  opsByOpRefs,
+  treeChildren,
+  treeDump,
+  treeNodeCount,
+  headLamport,
+  replicaMaxCounter,
+  close,
+} as const;
+
+self.onmessage = async (ev: MessageEvent<RpcRequest>) => {
+  const { id, method, params } = ev.data;
   const respond = (ok: boolean, result?: any, error?: string) => {
     (self as unknown as Worker).postMessage({ id, ok, result, error });
   };
 
   try {
-    if (method === "init") {
-      const result = await handleInit(params as { baseUrl: string; filename?: string; storage: "memory" | "opfs" });
-      respond(true, result);
+    const methodFn = (methods as Record<RpcMethod, (...args: any[]) => Promise<any>>)[method];
+    if (!methodFn) {
+      respond(false, null, `unknown method: ${method}`);
       return;
     }
-    if (method === "append") {
-      await ensureDb();
-      await appendOpRaw(db!, (params as any).op as Operation, encodeNodeId, encodeReplica);
-      respond(true, null);
-      return;
-    }
-    if (method === "appendMany") {
-      await ensureDb();
-      const ops = (params as any).ops as Operation[];
-      const adapter = createWaSqliteAdapter(db!);
-      if (adapter.appendOps) {
-        await adapter.appendOps(ops, encodeNodeId, encodeReplica);
-      } else {
-        for (const op of ops) {
-          await appendOpRaw(db!, op, encodeNodeId, encodeReplica);
-        }
-      }
-      respond(true, null);
-      return;
-    }
-    if (method === "opsSince") {
-      await ensureDb();
-      const lamport = (params as any).lamport as number;
-      const rows = await opsSinceRaw(db!, { lamport });
-      respond(true, rows);
-      return;
-    }
-    if (method === "close") {
-      if (db?.close) await db.close();
-      db = null;
-      respond(true, null);
-      return;
-    }
-    respond(false, null, "unknown method");
+    const result = await methodFn(...(params ?? []));
+    respond(true, result);
   } catch (err) {
     respond(false, null, err instanceof Error ? err.message : String(err));
   }
 };
 
-async function handleInit(opts: {
-  baseUrl: string;
-  filename?: string;
-  storage: "memory" | "opfs";
-}): Promise<{ storage: "memory" | "opfs"; opfsError?: string }> {
+async function init(
+  baseUrl: string,
+  filename: string | undefined,
+  storageParam: "memory" | "opfs",
+  docId: string
+): Promise<{ storage: "memory" | "opfs"; opfsError?: string }> {
   if (db) {
     if (db.close) await db.close();
     db = null;
+    api = null;
   }
-  storage = opts.storage;
-  let opfsError: string | undefined;
-  const base = opts.baseUrl;
-  const sqliteModule = await import(/* @vite-ignore */ `${base}wa-sqlite/wa-sqlite-async.mjs`);
-  const sqliteApi = await import(/* @vite-ignore */ `${base}wa-sqlite/sqlite-api.js`);
-
-  const module = await sqliteModule.default({
-    locateFile: (file: string) => (file.endsWith(".wasm") ? `${base}wa-sqlite/wa-sqlite-async.wasm` : file),
+  const opened = await openTreecrdtDb({
+    baseUrl,
+    filename,
+    storage: storageParam,
+    docId,
+    requireOpfs: false,
   });
-  const sqlite3 = sqliteApi.Factory(module);
-
-  if (storage === "opfs") {
-    try {
-      const vfs = await createOpfsVfs(module, { name: "opfs" });
-      sqlite3.vfs_register(vfs, true);
-    } catch (err) {
-      opfsError = err instanceof Error ? err.message : String(err);
-      storage = "memory";
-    }
-  }
-
-  const filename = storage === "opfs" ? opts.filename ?? "/treecrdt.db" : ":memory:";
-  const handle = await sqlite3.open_v2(filename);
-  db = makeDbAdapter(sqlite3, handle);
-  return opfsError ? { storage, opfsError } : { storage };
+  db = opened.db;
+  api = opened.api;
+  storage = opened.storage;
+  return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }
 
-async function ensureDb() {
-  if (!db) throw new Error("db not initialized");
+async function append(op: Operation) {
+  const api = ensureApi();
+  await api.appendOp(op, nodeIdToBytes16, replicaIdToBytes);
+  return null;
 }
 
-function encodeNodeId(id: string): Uint8Array {
-  const clean = id.startsWith("0x") ? id.slice(2) : id;
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < clean.length; i += 2) {
-    out[i / 2] = parseInt(clean.slice(i, i + 2), 16);
-  }
-  return out;
+async function appendMany(ops: Operation[]) {
+  const api = ensureApi();
+  await api.appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
+  return null;
 }
 
-function encodeReplica(replica: Operation["meta"]["id"]["replica"]): Uint8Array {
-  return typeof replica === "string" ? encoder.encode(replica) : replica;
+async function opsSince(lamport: number, root: string | undefined) {
+  const api = ensureApi();
+  return await api.opsSince(lamport, root);
 }
 
-function makeDbAdapter(sqlite3: any, handle: number): Database {
-  const prepare = async (sql: string) => {
-    const iter = sqlite3.statements(handle, sql, { unscoped: true });
-    const { value } = await iter.next();
-    if (!value) {
-      throw new Error(`Failed to prepare statement: ${sql}`);
-    }
-    return value;
-  };
+async function opRefsAll() {
+  const api = ensureApi();
+  return await api.opRefsAll();
+}
 
-  return {
-    prepare,
-    bind: async (stmt: number, index: number, value: unknown) => sqlite3.bind(stmt, index, value),
-    step: async (stmt: number) => sqlite3.step(stmt),
-    column_text: async (stmt: number, index: number) => sqlite3.column_text(stmt, index),
-    finalize: async (stmt: number) => sqlite3.finalize(stmt),
-    exec: async (sql: string) => sqlite3.exec(handle, sql),
-    close: async () => sqlite3.close(handle),
-  } as unknown as Database;
+async function opRefsChildren(parent: string) {
+  const api = ensureApi();
+  return await api.opRefsChildren(nodeIdToBytes16(parent));
+}
+
+async function opsByOpRefs(opRefs: number[][]) {
+  const api = ensureApi();
+  const opRefsArray = opRefs.map((r) => Uint8Array.from(r));
+  return await api.opsByOpRefs(opRefsArray);
+}
+
+async function treeChildren(parent: string) {
+  const api = ensureApi();
+  return await api.treeChildren(nodeIdToBytes16(parent));
+}
+
+async function treeDump() {
+  const api = ensureApi();
+  return await api.treeDump();
+}
+
+async function treeNodeCount() {
+  const api = ensureApi();
+  return await api.treeNodeCount();
+}
+
+async function headLamport() {
+  const api = ensureApi();
+  return await api.headLamport();
+}
+
+async function replicaMaxCounter(replica: number[] | string) {
+  const api = ensureApi();
+  const replicaBytes = typeof replica === "string" ? replicaIdToBytes(replica) : Uint8Array.from(replica);
+  return await api.replicaMaxCounter(replicaBytes);
+}
+
+async function close() {
+  if (db?.close) await db.close();
+  db = null;
+  api = null;
+  return null;
+}
+
+function ensureApi(): TreecrdtAdapter {
+  if (!db || !api) throw new Error("db not initialized");
+  return api;
 }

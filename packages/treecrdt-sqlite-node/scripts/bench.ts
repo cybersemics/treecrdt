@@ -1,111 +1,77 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { fileURLToPath } from "node:url";
 import {
+  benchTiming,
   buildWorkloads,
-  runWorkloads,
-  writeResult,
-  type WorkloadName,
+  runBenchmark,
 } from "@treecrdt/benchmark";
-import { createSqliteNodeAdapter, loadTreecrdtExtension } from "../dist/index.js";
+import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
+import { createSqliteNodeApi, loadTreecrdtExtension } from "../dist/index.js";
 
 type StorageKind = "memory" | "file";
 
-type CliOptions = {
-  count: number;
-  storage: StorageKind;
-  storages?: StorageKind[];
-  outFile?: string;
-  workload: WorkloadName;
-  workloads?: WorkloadName[];
-  sizes?: number[];
-};
-
-function parseArgs(): CliOptions {
-  const opts: CliOptions = { count: 500, storage: "memory", workload: "insert-move" };
-  for (const arg of process.argv.slice(2)) {
-    if (arg.startsWith("--count=")) {
-      opts.count = Number(arg.slice("--count=".length)) || opts.count;
-    } else if (arg.startsWith("--sizes=")) {
-      opts.sizes = arg
-        .slice("--sizes=".length)
-        .split(",")
-        .map((s) => Number(s.trim()))
-        .filter((n) => Number.isFinite(n) && n > 0);
-    } else if (arg.startsWith("--storage=")) {
+function parseStorages(argv: string[]): StorageKind[] {
+  let storage: StorageKind = "memory";
+  let storages: StorageKind[] | undefined;
+  for (const arg of argv) {
+    if (arg.startsWith("--storage=")) {
       const val = arg.slice("--storage=".length);
-      if (val === "memory" || val === "file") {
-        opts.storage = val;
-      }
+      if (val === "memory" || val === "file") storage = val;
     } else if (arg.startsWith("--storages=")) {
       const vals = arg
         .slice("--storages=".length)
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
-      opts.storages = vals.filter((v): v is StorageKind => v === "memory" || v === "file");
-    } else if (arg.startsWith("--out=")) {
-      opts.outFile = arg.slice("--out=".length);
-    } else if (arg.startsWith("--workload=")) {
-      const val = arg.slice("--workload=".length);
-      if (val === "insert-move" || val === "insert-chain" || val === "replay-log") {
-        opts.workload = val;
-      }
-    } else if (arg.startsWith("--workloads=")) {
-      const vals = arg
-        .slice("--workloads=".length)
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      opts.workloads = vals.filter((v): v is "insert-move" | "insert-chain" | "replay-log" =>
-        v === "insert-move" || v === "insert-chain" || v === "replay-log"
-      );
+      const parsed = vals.filter((v): v is StorageKind => v === "memory" || v === "file");
+      if (parsed.length > 0) storages = parsed;
     }
   }
-  return opts;
+  if (storages && storages.length > 0) return storages;
+  return Array.from(new Set<StorageKind>([storage, "file"]));
 }
 
 async function main() {
-  const opts = parseArgs();
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(__dirname, "../..", "..");
+  const argv = process.argv.slice(2);
+  const opts = parseBenchCliArgs({ argv });
+  const storages = parseStorages(argv);
+  const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const sizes = opts.sizes && opts.sizes.length > 0 ? opts.sizes : [1, 10, 100, 1000, 10000];
-  const workloads =
-    opts.workloads && opts.workloads.length > 0
-      ? opts.workloads
-      : (["insert-move", "insert-chain", "replay-log"] as WorkloadName[]);
-  const workloadDefs = buildWorkloads(workloads, sizes);
-  const storages =
-    opts.storages && opts.storages.length > 0 ? opts.storages : (opts.storage ? [opts.storage, "file"] : ["memory", "file"]);
+  const workloadDefs = buildWorkloads(opts.workloads, opts.sizes);
+  const timing = benchTiming({ defaultIterations: 3 });
+  for (const w of workloadDefs) {
+    w.iterations = timing.iterations;
+    w.warmupIterations = timing.warmupIterations;
+  }
 
   for (const workload of workloadDefs) {
     for (const storage of storages) {
-      const dbPath =
-        storage === "memory"
-          ? ":memory:"
-          : path.join(repoRoot, "tmp", "sqlite-node-bench", `${workload.name}.db`);
-      if (storage === "file") {
-        await fs.mkdir(path.dirname(dbPath), { recursive: true });
-        // remove stale db to avoid reusing data across runs
-        try {
-          await fs.rm(dbPath);
-        } catch {
-          // ignore
+      const adapterFactory = async () => {
+        const dbPath =
+          storage === "memory"
+            ? ":memory:"
+            : path.join(repoRoot, "tmp", "sqlite-node-bench", `${workload.name}-${crypto.randomUUID()}.db`);
+        if (storage === "file") {
+          await fs.mkdir(path.dirname(dbPath), { recursive: true });
         }
-      }
 
-      const db = new Database(dbPath);
-      loadTreecrdtExtension(db);
-      const adapter = {
-        ...createSqliteNodeAdapter(db),
-        close: async () => {
-          db.close();
-        },
+        const db = new Database(dbPath);
+        loadTreecrdtExtension(db);
+        const api = createSqliteNodeApi(db);
+        await api.setDocId("treecrdt-sqlite-node-bench");
+        return {
+          ...api,
+          close: async () => {
+            db.close();
+            if (storage === "file") {
+              await fs.rm(dbPath).catch(() => {});
+            }
+          },
+        };
       };
 
-      const [result] = await runWorkloads(() => adapter, [workload]);
+      const result = await runBenchmark(adapterFactory, workload);
 
       const outFile =
         opts.outFile ??
@@ -118,10 +84,6 @@ async function main() {
         extra: { count: result.totalOps },
       });
       console.log(JSON.stringify(payload, null, 2));
-
-      if (adapter.close) {
-        await adapter.close();
-      }
     }
   }
 }

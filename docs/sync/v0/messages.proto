@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package treecrdt.sync.v0;
+
+import "sync/v0/filters.proto";
+import "sync/v0/ops.proto";
+import "sync/v0/types.proto";
+
+message Capability {
+  string name = 1;
+  string value = 2;
+}
+
+message FilterSpec {
+  string id = 1;
+  Filter filter = 2;
+}
+
+message Hello {
+  repeated Capability capabilities = 1;
+  repeated FilterSpec filters = 2;
+  uint64 max_lamport = 3;
+}
+
+message RejectedFilter {
+  string id = 1;
+  ErrorCode reason = 2;
+  string message = 3;
+}
+
+message HelloAck {
+  repeated Capability capabilities = 1;
+  repeated string accepted_filters = 2;
+  repeated RejectedFilter rejected_filters = 3;
+  uint64 max_lamport = 4;
+}
+
+// Reconciliation via RIBLT (rateless IBLT codewords).
+//
+// Each codeword is the triple (count, key_sum, value_sum).
+// - count: signed count
+// - key_sum: XOR of 64-bit symbol hashes (8 bytes)
+// - value_sum: XOR of 16-byte OpRef values (16 bytes)
+//
+// Implementations MUST agree on:
+// - OpRef derivation (see docs/sync/v0.md and OpRef comments in docs/sync/v0/types.proto)
+// - symbol hash function used by RIBLT (see docs/sync/v0.md; v0 in this repo uses a SplitMix64-based non-linear hash)
+message RibltCodeword {
+  sint32 count = 1;
+  bytes key_sum = 2;   // MUST be 8 bytes
+  bytes value_sum = 3; // MUST be 16 bytes (OpRef width)
+}
+
+message RibltCodewords {
+  string filter_id = 1;
+  uint32 round = 2;
+  // Codewords are streamed in order; start_index MUST equal the receiver's next expected index.
+  uint64 start_index = 3;
+  repeated RibltCodeword codewords = 4;
+}
+
+message RibltDecoded {
+  repeated OpRef sender_missing = 1;
+  repeated OpRef receiver_missing = 2;
+  uint64 codewords_received = 3;
+}
+
+message RibltFailed {
+  RibltFailureReason reason = 1;
+  string message = 2;
+}
+
+message RibltStatus {
+  string filter_id = 1;
+  uint32 round = 2;
+
+  oneof payload {
+    RibltDecoded decoded = 3;
+    RibltFailed failed = 4;
+  }
+}
+
+enum RibltFailureReason {
+  RIBLT_FAILURE_REASON_UNSPECIFIED = 0;
+  MAX_CODEWORDS_EXCEEDED = 1;
+  DECODE_FAILED = 2;
+  OUT_OF_ORDER = 3;
+}
+
+message OpsBatch {
+  string filter_id = 1;
+  repeated Operation ops = 2;
+  bool done = 3;
+}
+
+// Push-based subscription for live updates.
+//
+// The initiator chooses `subscription_id` (unique within the session) and a `filter`.
+// The responder acks with `SubscribeAck` and then MAY stream incremental `OpsBatch`
+// messages for new operations relevant to the filter.
+message Subscribe {
+  string subscription_id = 1;
+  Filter filter = 2;
+}
+
+// Acknowledges a Subscribe request.
+message SubscribeAck {
+  string subscription_id = 1;
+  uint64 current_lamport = 2;
+}
+
+// Stops a previously-established subscription.
+message Unsubscribe {
+  string subscription_id = 1;
+}
+
+message SyncError {
+  ErrorCode code = 1;
+  string message = 2;
+  string filter_id = 3;
+  string subscription_id = 4;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  UNSUPPORTED_VERSION = 1;
+  FILTER_NOT_SUPPORTED = 2;
+  TOO_MANY_FILTERS = 3;
+  RECONCILIATION_DECODE_FAILED = 4;
+  RATE_LIMITED = 5;
+  DOC_NOT_FOUND = 6;
+}

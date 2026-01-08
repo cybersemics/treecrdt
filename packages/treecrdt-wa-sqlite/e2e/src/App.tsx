@@ -45,16 +45,16 @@ export default function App() {
       node: childId,
       position: 0,
     });
-    await client.append(insertOp);
+    await client.ops.append(insertOp);
 
     const moveOp = makeOp("move", replica, 2, 2, {
       node: childId,
       newParent: rootId,
       position: 0,
     });
-    await client.append(moveOp);
+    await client.ops.append(moveOp);
 
-    const raw = await client.opsSince(0);
+    const raw = await client.ops.all();
     setOps(raw.map((r) => ({ ...r, asText: JSON.stringify(r) })));
   };
 

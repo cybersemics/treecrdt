@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirnameFromImportMeta, repoRootFromImportMeta } from "../../../scripts/repo-root.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "../../..");
+const scriptDir = dirnameFromImportMeta(import.meta.url);
+const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 const targetRelease = path.join(repoRoot, "target", "release", "deps");
 
 if (!fs.existsSync(targetRelease)) {
@@ -37,8 +37,22 @@ if (matches.length === 0) {
   process.exit(1);
 }
 
-const src = path.join(targetRelease, matches[0]);
-const destDir = path.resolve(__dirname, "../native");
+const candidates = matches
+  .map((file) => {
+    const fullPath = path.join(targetRelease, file);
+    const stat = fs.statSync(fullPath);
+    return { file, fullPath, mtimeMs: stat.mtimeMs };
+  })
+  .sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
+
+if (candidates.length > 1) {
+  console.warn(
+    `Multiple built extensions found; using newest: ${candidates[0].file}`
+  );
+}
+
+const src = candidates[0].fullPath;
+const destDir = path.resolve(scriptDir, "../native");
 fs.mkdirSync(destDir, { recursive: true });
 const destBase = ext === ".dll" ? "treecrdt_sqlite_ext" : "libtreecrdt_sqlite_ext";
 const dest = path.join(destDir, `${destBase}${ext}`);

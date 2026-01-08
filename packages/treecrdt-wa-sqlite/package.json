@@ -34,17 +34,18 @@
   ],
   "scripts": {
     "prep:opfs": "node ./scripts/copy-opfs-vfs.mjs",
-    "build:ts": "pnpm run prep:opfs && tsc -p tsconfig.json",
+    "build:ts": "pnpm -C ../treecrdt-ts run build && pnpm run prep:opfs && tsc -p tsconfig.json",
     "build": "pnpm run build:ts",
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
     "postinstall": "pnpm run prep:opfs"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/benchmark": "workspace:*"
+    "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
+    "@treecrdt/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
+    "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }
