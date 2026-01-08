@@ -2,6 +2,8 @@ use treecrdt_core::{LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
 
 #[test]
 fn defensive_delete_parent_then_insert_child_restores_parent() {
+    // this test test time agnosticism of defensive deletes
+    
     let mut crdt_a = TreeCrdt::new(
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
