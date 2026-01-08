@@ -121,14 +121,15 @@ where
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let known_state = Some(self.version_vector.clone());
+        let known_state = Some(Self::calculate_subtree_version_vector(&self.nodes, node));
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
         self.commit_local(op)
     }
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
         self.clock.observe(op.meta.lamport);
-        self.version_vector.observe(&op.meta.id.replica, op.meta.lamport);
+        self.version_vector
+            .observe(&op.meta.id.replica, op.meta.id.counter);
         self.ingest(op)
     }
 
@@ -144,7 +145,8 @@ where
         self.version_vector = VersionVector::new();
         for op in ops {
             self.clock.observe(op.meta.lamport);
-            self.version_vector.observe(&op.meta.id.replica, op.meta.lamport);
+            self.version_vector
+                .observe(&op.meta.id.replica, op.meta.id.counter);
             self.applied.insert(op.meta.id.clone());
             let snapshot = Self::snapshot(&mut self.nodes, &op);
             self.log.push(LogEntry { op, snapshot });
@@ -170,7 +172,7 @@ where
     pub fn parent(&self, node: NodeId) -> Option<NodeId> {
         self.nodes.get(&node).and_then(|n| {
             if self.is_tombstoned(node) {
-                n.parent
+                Some(NodeId::TRASH)
             } else {
                 n.parent.filter(|&p| p != NodeId::TRASH)
             }
@@ -249,7 +251,8 @@ where
     }
 
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
-        self.version_vector.observe(&self.replica_id, op.meta.lamport);
+        self.version_vector
+            .observe(&self.replica_id, op.meta.id.counter);
         self.ingest(op.clone())?;
         Ok(op)
     }
@@ -441,29 +444,27 @@ where
             return;
         }
 
-        let Some(mut state) = nodes.get(&node).cloned() else {
-            return;
-        };
+        Self::ensure_node(nodes, node);
 
         let mut delete_vv = Self::operation_version_vector(op);
         if let Some(known_state) = &op.meta.known_state {
             delete_vv.merge(known_state);
         }
 
+        let Some(state) = nodes.get_mut(&node) else {
+            return;
+        };
+
         if let Some(existing) = &mut state.deleted_at {
             existing.merge(&delete_vv);
         } else {
             state.deleted_at = Some(delete_vv);
         }
-
-        Self::detach(nodes, node);
-        state.parent = Some(NodeId::TRASH);
-        nodes.insert(node, state);
     }
 
     fn operation_version_vector(op: &Operation) -> VersionVector {
         let mut vv = VersionVector::new();
-        vv.observe(&op.meta.id.replica, op.meta.lamport);
+        vv.observe(&op.meta.id.replica, op.meta.id.counter);
         vv
     }
 
@@ -508,15 +509,15 @@ where
         parent: NodeId,
         position: usize,
     ) {
+        if let Some(node_state) = nodes.get_mut(&node) {
+            node_state.parent = Some(parent);
+        }
         if parent == NodeId::TRASH {
             return;
         }
         if let Some(parent_state) = nodes.get_mut(&parent) {
             let idx = position.min(parent_state.children.len());
             parent_state.children.insert(idx, node);
-        }
-        if let Some(node_state) = nodes.get_mut(&node) {
-            node_state.parent = Some(parent);
         }
     }
 
