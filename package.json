@@ -7,6 +7,10 @@
   ],
   "scripts": {
     "lint": "echo \"TODO: add linting\"",
+    "fmt": "cargo fmt --all",
+    "fmt:check": "cargo fmt --check --all",
+    "clippy": "cargo clippy --workspace --all-targets -- -D warnings -D clippy::panic -D clippy::todo -D clippy::unimplemented",
+    "clippy:fix": "cargo clippy --fix --workspace --all-targets -- -D warnings -D clippy::panic -D clippy::todo -D clippy::unimplemented",
     "proto:generate": "buf generate",
     "build:ext:wasm": "cargo build -p treecrdt-sqlite-ext --target wasm32-unknown-emscripten --release --no-default-features --features static-link",
     "build:ext:native": "cargo rustc -p treecrdt-sqlite-ext --release --no-default-features --features \"ext-sqlite rusqlite-storage\" -- --crate-type=cdylib",

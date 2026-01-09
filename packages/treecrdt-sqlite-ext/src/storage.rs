@@ -193,6 +193,7 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
         meta: treecrdt_core::OperationMetadata {
             id: op_id,
             lamport: lamport as u64,
+            known_state: None,
         },
         kind,
     })
@@ -226,7 +227,7 @@ mod tests {
         let replica = ReplicaId::new(b"r1");
         let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), 0);
         let mov = Operation::move_node(&replica, 2, 2, NodeId(1), NodeId::ROOT, 0);
-        let del = Operation::delete(&replica, 3, 3, NodeId(1));
+        let del = Operation::delete(&replica, 3, 3, NodeId(1), None);
 
         storage.apply(insert.clone()).unwrap();
         storage.apply(mov.clone()).unwrap();

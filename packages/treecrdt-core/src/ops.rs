@@ -1,4 +1,5 @@
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
+use crate::version_vector::VersionVector;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct OperationMetadata {
     pub id: OperationId,
     pub lamport: Lamport,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub known_state: Option<VersionVector>,
 }
 
 /// The CRDT tree mutations.
@@ -54,6 +57,7 @@ impl Operation {
             meta: OperationMetadata {
                 id: OperationId::new(replica, counter),
                 lamport,
+                known_state: None,
             },
             kind: OperationKind::Insert {
                 parent,
@@ -75,6 +79,7 @@ impl Operation {
             meta: OperationMetadata {
                 id: OperationId::new(replica, counter),
                 lamport,
+                known_state: None,
             },
             kind: OperationKind::Move {
                 node,
@@ -84,11 +89,18 @@ impl Operation {
         }
     }
 
-    pub fn delete(replica: &ReplicaId, counter: u64, lamport: Lamport, node: NodeId) -> Self {
+    pub fn delete(
+        replica: &ReplicaId,
+        counter: u64,
+        lamport: Lamport,
+        node: NodeId,
+        known_state: Option<VersionVector>,
+    ) -> Self {
         Self {
             meta: OperationMetadata {
                 id: OperationId::new(replica, counter),
                 lamport,
+                known_state,
             },
             kind: OperationKind::Delete { node },
         }
@@ -99,6 +111,7 @@ impl Operation {
             meta: OperationMetadata {
                 id: OperationId::new(replica, counter),
                 lamport,
+                known_state: None,
             },
             kind: OperationKind::Tombstone { node },
         }
