@@ -1,4 +1,4 @@
-# Defensive Deletion (Fenton Deletion)
+# Defensive Deletion
 
 Defensive deletion is a CRDT deletion strategy that prevents accidental permanent deletion when a delete operation was unaware of concurrent modifications to a node's subtree. This approach ensures that nodes are only permanently deleted when the delete operation had full awareness of all subtree modifications at the time of deletion.
 
