@@ -34,15 +34,22 @@ When a delete operation is created:
    - This snapshot travels with the delete operation to other replicas
 
 **Example - Capturing awareness**:
-```
-Before delete:
-  ROOT
-    └── parent (no children)
-        └── Subtree VV: empty
 
-After delete with known_state:
-  parent.deleted_at = delete's VV (awareness: empty)
-  parent is TOMBSTONED (hidden from queries)
+```mermaid
+flowchart TD
+    subgraph Before["Before delete"]
+        ROOT1[ROOT]
+        P1[parent<br/>no children<br/>Subtree VV: empty]
+        ROOT1 --> P1
+    end
+    
+    subgraph After["After delete with known_state"]
+        ROOT2[ROOT]
+        P2[parent<br/>deleted_at = delete's VV<br/>awareness: empty<br/>TOMBSTONED]
+        ROOT2 --> P2
+    end
+    
+    Before --> After
 ```
 
 ### Phase 2: Tombstone - Marking as Deleted
@@ -83,20 +90,36 @@ Tombstone status is checked **dynamically** whenever the node is accessed:
    - **Delete unaware of current subtree** → Node is restored (delete was premature)
 
 **Example - Awareness check**:
-```
-State 1: Delete happens
-  parent.deleted_at = {} (empty - knew nothing)
-  Current subtree = {}
 
-State 2: Child inserted
-  Current subtree = {B:1} (has child operation)
-  
-Check: {} aware of {B:1}? NO → ✅ RESTORE parent
-
-Final state:
-  ROOT
-    └── parent (visible again)
-        └── child
+```mermaid
+flowchart TD
+    subgraph State1["State 1: Delete happens"]
+        ROOT1[ROOT]
+        P1[parent<br/>deleted_at = {}<br/>Current subtree = {}]
+        ROOT1 --> P1
+    end
+    
+    subgraph State2["State 2: Child inserted"]
+        ROOT2[ROOT]
+        P2[parent<br/>deleted_at = {}<br/>Current subtree = {B:1}]
+        C2[child]
+        ROOT2 --> P2
+        P2 --> C2
+    end
+    
+    subgraph Final["Final state: Check awareness"]
+        ROOT3[ROOT]
+        P3[parent<br/>✅ RESTORED<br/>visible again]
+        C3[child]
+        ROOT3 --> P3
+        P3 --> C3
+    end
+    
+    State1 --> State2
+    State2 --> Final
+    Check["Check: {} aware of {B:1}?<br/>NO → RESTORE"] 
+    State2 -.-> Check
+    Check -.-> Final
 ```
 
 ### Key Insight
@@ -105,68 +128,72 @@ The tombstone status depends on **causal awareness**, not timestamps. A delete w
 
 ## Example: Concurrent Delete and Insert
 
-**Initial State** (both clients):
-```
-ROOT
-  └── parent
-```
-
-**Client A's view** (before sync):
-```
-Client A deletes parent (thinks it's empty):
-  ROOT
-    └── parent (TOMBSTONED, deleted_at = {})
-```
-
-**Client B's view** (before sync):
-```
-Client B inserts child:
-  ROOT
-    └── parent
-        └── child
-```
-
-**After Sync - Client A receives insert**:
-```
-Before check:
-  ROOT
-    └── parent (deleted_at = {})
-        └── child (newly received)
-
-Awareness check:
-  deleted_at: {}
-  current subtree: {B:1} (has child)
-  {} aware of {B:1}? NO
-  
-After check:
-  ROOT
-    └── parent (✅ RESTORED - visible)
-        └── child
-```
-
-**After Sync - Client B receives delete**:
-```
-Before check:
-  ROOT
-    └── parent (received delete, deleted_at = {})
-        └── child
-
-Awareness check:
-  deleted_at: {}
-  current subtree: {B:1} (has child)
-  {} aware of {B:1}? NO
-  
-After check:
-  ROOT
-    └── parent (✅ RESTORED - visible)
-        └── child
-```
-
-**Final converged state** (both clients agree):
-```
-ROOT
-  └── parent (visible)
-      └── child
+```mermaid
+flowchart TD
+    subgraph Initial["Initial State (both clients)"]
+        ROOT1[ROOT]
+        P1[parent]
+        ROOT1 --> P1
+    end
+    
+    subgraph ClientA["Client A's view (before sync)"]
+        ROOT2[ROOT]
+        P2[parent<br/>TOMBSTONED<br/>deleted_at = {}]
+        ROOT2 --> P2
+    end
+    
+    subgraph ClientB["Client B's view (before sync)"]
+        ROOT3[ROOT]
+        P3[parent]
+        C3[child]
+        ROOT3 --> P3
+        P3 --> C3
+    end
+    
+    subgraph AfterA["After Sync - Client A receives insert"]
+        ROOT4[ROOT]
+        P4[parent<br/>deleted_at = {}<br/>child newly received]
+        C4[child]
+        ROOT4 --> P4
+        P4 --> C4
+        CheckA["Awareness check:<br/>{} aware of {B:1}? NO"]
+        P4A[parent<br/>✅ RESTORED<br/>visible]
+        C4A[child]
+        ROOT4A[ROOT]
+        ROOT4A --> P4A
+        P4A --> C4A
+        CheckA --> P4A
+    end
+    
+    subgraph AfterB["After Sync - Client B receives delete"]
+        ROOT5[ROOT]
+        P5[parent<br/>deleted_at = {}<br/>received delete]
+        C5[child]
+        ROOT5 --> P5
+        P5 --> C5
+        CheckB["Awareness check:<br/>{} aware of {B:1}? NO"]
+        P5A[parent<br/>✅ RESTORED<br/>visible]
+        C5A[child]
+        ROOT5A[ROOT]
+        ROOT5A --> P5A
+        P5A --> C5A
+        CheckB --> P5A
+    end
+    
+    subgraph Final["Final converged state (both clients agree)"]
+        ROOT6[ROOT]
+        P6[parent<br/>visible]
+        C6[child]
+        ROOT6 --> P6
+        P6 --> C6
+    end
+    
+    Initial --> ClientA
+    Initial --> ClientB
+    ClientA --> AfterA
+    ClientB --> AfterB
+    AfterA --> Final
+    AfterB --> Final
 ```
 
 ## Corner Cases and Scenarios
@@ -175,23 +202,35 @@ ROOT
 
 **Scenario**: Parent is deleted without knowledge of a concurrent child insert.
 
-**Client A deletes, Client B inserts**:
-```
-Client A:                    Client B:
-ROOT                         ROOT
-  └── parent (deleted)         └── parent
-                                  └── child
-```
-
-**After sync and merge**:
-```
-Both clients:
-ROOT
-  └── parent (✅ RESTORED)
-      └── child
-
-Reason: Delete knew empty {}, current has child {B:1}
-        → Delete was unaware → restore
+```mermaid
+flowchart LR
+    subgraph Before["Before sync"]
+        subgraph ClientA["Client A"]
+            ROOT1[ROOT]
+            P1[parent<br/>deleted]
+            ROOT1 --> P1
+        end
+        
+        subgraph ClientB["Client B"]
+            ROOT2[ROOT]
+            P2[parent]
+            C2[child]
+            ROOT2 --> P2
+            P2 --> C2
+        end
+    end
+    
+    subgraph After["After sync and merge"]
+        ROOT3[ROOT]
+        P3[parent<br/>✅ RESTORED]
+        C3[child]
+        ROOT3 --> P3
+        P3 --> C3
+    end
+    
+    Before --> After
+    Reason["Reason: Delete knew empty {},<br/>current has child {B:1}<br/>→ Delete was unaware → restore"]
+    After -.-> Reason
 ```
 
 **Result**: Parent is restored because delete was unaware of the child.
@@ -200,29 +239,36 @@ Reason: Delete knew empty {}, current has child {B:1}
 
 **Scenario**: Child is inserted, then parent is deleted with full awareness.
 
-**Client A receives insert, then deletes**:
-```
-Client A state:
-  1. Receives insert from B
-     ROOT
-       └── parent
-           └── child
-  
-  2. Deletes parent (aware of child)
-     ROOT
-       └── parent (TOMBSTONED, deleted_at = {B:1})
-           └── child
-```
-
-**After sync with Client B**:
-```
-Both clients:
-ROOT
-  └── parent (❌ STAYS TOMBSTONED)
-      └── child (hidden)
-
-Reason: Delete knew {B:1}, current has {B:1}
-        → Delete was aware → permanent delete
+```mermaid
+flowchart TD
+    subgraph State1["Client A state: 1. Receives insert from B"]
+        ROOT1[ROOT]
+        P1[parent]
+        C1[child]
+        ROOT1 --> P1
+        P1 --> C1
+    end
+    
+    subgraph State2["Client A state: 2. Deletes parent (aware of child)"]
+        ROOT2[ROOT]
+        P2[parent<br/>TOMBSTONED<br/>deleted_at = {B:1}]
+        C2[child]
+        ROOT2 --> P2
+        P2 --> C2
+    end
+    
+    subgraph Final["After sync with Client B"]
+        ROOT3[ROOT]
+        P3[parent<br/>❌ STAYS TOMBSTONED]
+        C3[child<br/>hidden]
+        ROOT3 --> P3
+        P3 --> C3
+        Reason["Reason: Delete knew {B:1},<br/>current has {B:1}<br/>→ Delete was aware → permanent delete"]
+    end
+    
+    State1 --> State2
+    State2 --> Final
+    Final -.-> Reason
 ```
 
 **Result**: Parent remains tombstoned because delete happened with full awareness.
@@ -231,35 +277,65 @@ Reason: Delete knew {B:1}, current has {B:1}
 
 **Scenario**: Parent is deleted while a child is concurrently moved into it.
 
-**Before merge**:
-```
-Client A (deletes parent):    Client B (moves child):
-ROOT                           ROOT
-  └── parent (deleted)           ├── parent
-  └── other_parent               └── other_parent
-      └── child                       └── (child moved to parent)
-```
-
-**Client B's move operation**:
-```
-Before move:                   After move:
-ROOT                           ROOT
-  ├── parent                    ├── parent
-  └── other_parent                  └── child (moved here)
-      └── child                └── other_parent
-```
-
-**After sync and merge**:
-```
-Both clients:
-ROOT
-  ├── parent (✅ RESTORED - child moved into it)
-  │   └── child
-  └── other_parent
-
-Reason: Delete knew parent was empty, 
-        but child was moved into it after delete
-        → Delete was unaware → restore
+```mermaid
+flowchart TD
+    subgraph Before["Before merge"]
+        subgraph ClientA["Client A (deletes parent)"]
+            ROOT1[ROOT]
+            P1[parent<br/>deleted]
+            OP1[other_parent]
+            C1[child]
+            ROOT1 --> P1
+            ROOT1 --> OP1
+            OP1 --> C1
+        end
+        
+        subgraph ClientB["Client B (moves child)"]
+            ROOT2[ROOT]
+            P2[parent]
+            OP2[other_parent]
+            C2[child<br/>moved to parent]
+            ROOT2 --> P2
+            ROOT2 --> OP2
+        end
+    end
+    
+    subgraph Move["Client B's move operation"]
+        subgraph BeforeMove["Before move"]
+            ROOT3[ROOT]
+            P3[parent]
+            OP3[other_parent]
+            C3[child]
+            ROOT3 --> P3
+            ROOT3 --> OP3
+            OP3 --> C3
+        end
+        
+        subgraph AfterMove["After move"]
+            ROOT4[ROOT]
+            P4[parent]
+            C4[child<br/>moved here]
+            OP4[other_parent]
+            ROOT4 --> P4
+            P4 --> C4
+            ROOT4 --> OP4
+        end
+    end
+    
+    subgraph After["After sync and merge"]
+        ROOT5[ROOT]
+        P5[parent<br/>✅ RESTORED<br/>child moved into it]
+        C5[child]
+        OP5[other_parent]
+        ROOT5 --> P5
+        P5 --> C5
+        ROOT5 --> OP5
+        Reason["Reason: Delete knew parent was empty,<br/>but child was moved into it after delete<br/>→ Delete was unaware → restore"]
+    end
+    
+    Before --> Move
+    Move --> After
+    After -.-> Reason
 ```
 
 **Result**: Parent is restored because delete was unaware of the move operation.
@@ -268,43 +344,57 @@ Reason: Delete knew parent was empty,
 
 **Scenario**: Multiple children are inserted, delete sees some but not all.
 
-**Client A's view** (saw only child2):
-```
-Client A deletes parent:
-ROOT
-  └── parent (TOMBSTONED, deleted_at = {B:2})
-      └── child2 (only one seen)
-```
-
-**Client B's view** (has all children):
-```
-ROOT
-  └── parent
-      ├── child1
-      ├── child2
-      └── child3
-```
-
-**After sync - Client A receives missing children**:
-```
-Before check:
-ROOT
-  └── parent (deleted_at = {B:2})
-      ├── child1 (newly received)
-      ├── child2
-      └── child3 (newly received)
-
-Awareness check:
-  deleted_at: {B:2} (only knew child2)
-  current subtree: {B:1, B:2, B:3} (has all children)
-  {B:2} aware of {B:1, B:2, B:3}? NO (missing B:1, B:3)
-
-After check:
-ROOT
-  └── parent (✅ RESTORED)
-      ├── child1
-      ├── child2
-      └── child3
+```mermaid
+flowchart TD
+    subgraph ClientA["Client A's view (saw only child2)"]
+        ROOT1[ROOT]
+        P1[parent<br/>TOMBSTONED<br/>deleted_at = {B:2}]
+        C1[child2<br/>only one seen]
+        ROOT1 --> P1
+        P1 --> C1
+    end
+    
+    subgraph ClientB["Client B's view (has all children)"]
+        ROOT2[ROOT]
+        P2[parent]
+        C21[child1]
+        C22[child2]
+        C23[child3]
+        ROOT2 --> P2
+        P2 --> C21
+        P2 --> C22
+        P2 --> C23
+    end
+    
+    subgraph BeforeCheck["After sync - Before check"]
+        ROOT3[ROOT]
+        P3[parent<br/>deleted_at = {B:2}]
+        C31[child1<br/>newly received]
+        C32[child2]
+        C33[child3<br/>newly received]
+        ROOT3 --> P3
+        P3 --> C31
+        P3 --> C32
+        P3 --> C33
+    end
+    
+    subgraph AfterCheck["After check"]
+        ROOT4[ROOT]
+        P4[parent<br/>✅ RESTORED]
+        C41[child1]
+        C42[child2]
+        C43[child3]
+        ROOT4 --> P4
+        P4 --> C41
+        P4 --> C42
+        P4 --> C43
+        Check["Awareness check:<br/>deleted_at: {B:2} (only knew child2)<br/>current: {B:1, B:2, B:3}<br/>{B:2} aware of {B:1, B:2, B:3}? NO"]
+    end
+    
+    ClientA --> BeforeCheck
+    ClientB --> BeforeCheck
+    BeforeCheck --> Check
+    Check --> AfterCheck
 ```
 
 **Key Insight**: Even if delete saw some children, unawareness of others triggers restoration.
@@ -313,51 +403,86 @@ ROOT
 
 **Scenario**: Delete a parent while a grandchild is moved to a different subtree. This demonstrates that subtree version vectors include all descendants recursively.
 
-**Client A deletes parent** (thinks subtree is unchanged):
-```
-Before delete:
-ROOT
-  └── parent
-      └── child
-          └── grandchild
-
-After delete:
-ROOT
-  └── parent (TOMBSTONED, deleted_at = old subtree VV)
-      └── child
-          └── grandchild
-```
-
-**Client B moves grandchild**:
-```
-Before move:                  After move:
-ROOT                          ROOT
-  ├── parent                   ├── parent
-  │   └── child                │   └── child
-  │       └── grandchild       └── other_parent
-  └── other_parent                 └── grandchild
-```
-
-**After sync - Client A receives move**:
-```
-Before check:
-ROOT
-  ├── parent (deleted_at = old VV, didn't know about move)
-  │   └── child
-  └── other_parent
-      └── grandchild (moved here)
-
-Awareness check:
-  deleted_at: old subtree VV (no grandchild move)
-  current subtree VV: includes grandchild move operation
-  old VV aware of current? NO (grandchild was moved)
-  
-After check:
-ROOT
-  ├── parent (✅ RESTORED - grandchild modification triggered it)
-  │   └── child
-  └── other_parent
-      └── grandchild
+```mermaid
+flowchart TD
+    subgraph Delete["Client A deletes parent"]
+        subgraph BeforeDelete["Before delete"]
+            ROOT1[ROOT]
+            P1[parent]
+            C1[child]
+            GC1[grandchild]
+            ROOT1 --> P1
+            P1 --> C1
+            C1 --> GC1
+        end
+        
+        subgraph AfterDelete["After delete"]
+            ROOT2[ROOT]
+            P2[parent<br/>TOMBSTONED<br/>deleted_at = old subtree VV]
+            C2[child]
+            GC2[grandchild]
+            ROOT2 --> P2
+            P2 --> C2
+            C2 --> GC2
+        end
+    end
+    
+    subgraph Move["Client B moves grandchild"]
+        subgraph BeforeMove["Before move"]
+            ROOT3[ROOT]
+            P3[parent]
+            C3[child]
+            GC3[grandchild]
+            OP3[other_parent]
+            ROOT3 --> P3
+            P3 --> C3
+            C3 --> GC3
+            ROOT3 --> OP3
+        end
+        
+        subgraph AfterMove["After move"]
+            ROOT4[ROOT]
+            P4[parent]
+            C4[child]
+            OP4[other_parent]
+            GC4[grandchild<br/>moved here]
+            ROOT4 --> P4
+            P4 --> C4
+            ROOT4 --> OP4
+            OP4 --> GC4
+        end
+    end
+    
+    subgraph Sync["After sync - Client A receives move"]
+        subgraph BeforeCheck["Before check"]
+            ROOT5[ROOT]
+            P5[parent<br/>deleted_at = old VV<br/>didn't know about move]
+            C5[child]
+            OP5[other_parent]
+            GC5[grandchild<br/>moved here]
+            ROOT5 --> P5
+            P5 --> C5
+            ROOT5 --> OP5
+            OP5 --> GC5
+        end
+        
+        subgraph AfterCheck["After check"]
+            ROOT6[ROOT]
+            P6[parent<br/>✅ RESTORED<br/>grandchild modification triggered it]
+            C6[child]
+            OP6[other_parent]
+            GC6[grandchild]
+            ROOT6 --> P6
+            P6 --> C6
+            ROOT6 --> OP6
+            OP6 --> GC6
+            Check["Awareness check:<br/>old VV aware of current? NO<br/>(grandchild was moved)"]
+        end
+    end
+    
+    Delete --> Move
+    Move --> Sync
+    Sync -.-> Check
 ```
 
 **Key Point**: Subtree version vectors include **all descendants** recursively. When calculating parent's subtree version vector:
@@ -388,30 +513,49 @@ Result: Even though delete has higher lamport (6 > 5),
 
 **Scenario**: Multiple clients delete the same node concurrently without seeing an insert.
 
-**Before merge**:
-```
-Client A deletes:             Client B deletes:            Client C inserts:
-ROOT                           ROOT                         ROOT
-  └── parent (deleted)           └── parent (deleted)         └── parent
-      deleted_at = {A:1}            deleted_at = {B:1}             └── child
-```
-
-**After merge - all clients sync**:
-```
-All clients:
-ROOT
-  └── parent (deleted_at = {A:1, B:1} merged)
-      └── child
-
-Awareness check:
-  deleted_at: {A:1, B:1} (both deletes combined)
-  current subtree: {C:1} (has child)
-  {A:1, B:1} aware of {C:1}? NO (neither delete saw child)
-  
-Result:
-ROOT
-  └── parent (✅ RESTORED)
-      └── child
+```mermaid
+flowchart LR
+    subgraph Before["Before merge"]
+        subgraph ClientA["Client A deletes"]
+            ROOT1[ROOT]
+            P1[parent<br/>deleted<br/>deleted_at = {A:1}]
+            ROOT1 --> P1
+        end
+        
+        subgraph ClientB["Client B deletes"]
+            ROOT2[ROOT]
+            P2[parent<br/>deleted<br/>deleted_at = {B:1}]
+            ROOT2 --> P2
+        end
+        
+        subgraph ClientC["Client C inserts"]
+            ROOT3[ROOT]
+            P3[parent]
+            C3[child]
+            ROOT3 --> P3
+            P3 --> C3
+        end
+    end
+    
+    subgraph After["After merge - all clients sync"]
+        ROOT4[ROOT]
+        P4[parent<br/>deleted_at = {A:1, B:1} merged]
+        C4[child]
+        ROOT4 --> P4
+        P4 --> C4
+        
+        Check["Awareness check:<br/>deleted_at: {A:1, B:1}<br/>current: {C:1}<br/>{A:1, B:1} aware of {C:1}? NO"]
+        
+        ROOT5[ROOT]
+        P5[parent<br/>✅ RESTORED]
+        C5[child]
+        ROOT5 --> P5
+        P5 --> C5
+    end
+    
+    Before --> After
+    After --> Check
+    Check --> P5
 ```
 
 **Mechanism**: Delete awareness merges (union semantics), but if the merged awareness is insufficient, restoration occurs.
@@ -442,26 +586,39 @@ Result: ✅ RESTORE (delete was unaware of B:1)
 
 A node's tombstone status can change over time. Here's an example showing the state changes:
 
-**Example lifecycle**:
-
-```
-1. Initial state:
-   ROOT
-     └── parent (visible)
-
-2. Delete without awareness:
-   ROOT
-     └── parent (TOMBSTONED, deleted_at = {})
-
-3. New operation reveals unawareness:
-   ROOT
-     └── parent (✅ RESTORED - visible again)
-         └── child
-
-4. Delete again with awareness:
-   ROOT
-     └── parent (❌ STAYS TOMBSTONED - permanent delete)
-         └── child (hidden)
+```mermaid
+flowchart TD
+    subgraph State1["1. Initial state"]
+        ROOT1[ROOT]
+        P1[parent<br/>visible]
+        ROOT1 --> P1
+    end
+    
+    subgraph State2["2. Delete without awareness"]
+        ROOT2[ROOT]
+        P2[parent<br/>TOMBSTONED<br/>deleted_at = {}]
+        ROOT2 --> P2
+    end
+    
+    subgraph State3["3. New operation reveals unawareness"]
+        ROOT3[ROOT]
+        P3[parent<br/>✅ RESTORED<br/>visible again]
+        C3[child]
+        ROOT3 --> P3
+        P3 --> C3
+    end
+    
+    subgraph State4["4. Delete again with awareness"]
+        ROOT4[ROOT]
+        P4[parent<br/>❌ STAYS TOMBSTONED<br/>permanent delete]
+        C4[child<br/>hidden]
+        ROOT4 --> P4
+        P4 --> C4
+    end
+    
+    State1 --> State2
+    State2 --> State3
+    State3 --> State4
 ```
 
 ## Key Properties
