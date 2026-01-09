@@ -207,18 +207,12 @@ impl VersionVector {
     }
 
     pub fn observe(&mut self, replica: &ReplicaId, counter: u64) {
-        self.entries
-            .entry(replica.clone())
-            .or_default()
-            .observe(counter);
+        self.entries.entry(replica.clone()).or_default().observe(counter);
     }
 
     pub fn merge(&mut self, other: &VersionVector) {
         for (replica, other_replica) in &other.entries {
-            self.entries
-                .entry(replica.clone())
-                .or_default()
-                .union(other_replica);
+            self.entries.entry(replica.clone()).or_default().union(other_replica);
         }
     }
 
@@ -259,9 +253,6 @@ impl VersionVector {
 
     /// Get the contiguous frontier for each replica.
     pub fn frontiers(&self) -> HashMap<ReplicaId, u64> {
-        self.entries
-            .iter()
-            .map(|(replica, v)| (replica.clone(), v.frontier))
-            .collect()
+        self.entries.iter().map(|(replica, v)| (replica.clone(), v.frontier)).collect()
     }
 }

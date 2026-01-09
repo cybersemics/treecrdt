@@ -128,8 +128,7 @@ where
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
         self.clock.observe(op.meta.lamport);
-        self.version_vector
-            .observe(&op.meta.id.replica, op.meta.id.counter);
+        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
         self.ingest(op)
     }
 
@@ -145,8 +144,7 @@ where
         self.version_vector = VersionVector::new();
         for op in ops {
             self.clock.observe(op.meta.lamport);
-            self.version_vector
-                .observe(&op.meta.id.replica, op.meta.id.counter);
+            self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
             self.applied.insert(op.meta.id.clone());
             let snapshot = Self::snapshot(&mut self.nodes, &op);
             self.log.push(LogEntry { op, snapshot });
@@ -251,8 +249,7 @@ where
     }
 
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
-        self.version_vector
-            .observe(&self.replica_id, op.meta.id.counter);
+        self.version_vector.observe(&self.replica_id, op.meta.id.counter);
         self.ingest(op.clone())?;
         Ok(op)
     }
