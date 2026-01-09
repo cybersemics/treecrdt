@@ -113,56 +113,49 @@ The system maintains a global version vector tracking all operations observed:
 
 When an operation is observed from a replica with counter C:
 
-```mermaid
-flowchart TD
-    A[Observe operation<br/>counter C] --> B{C <= frontier?}
-    B -->|Yes| C[Already seen, ignore]
-    B -->|No| D{C == frontier + 1?}
-    D -->|Yes| E[Extend frontier<br/>Fills gap]
-    D -->|No| F[Add to ranges<br/>or merge with existing]
-    E --> G[Absorb adjacent ranges]
-    F --> G
-```
-
 **Process**:
 - If C ≤ frontier: Already seen, ignore
 - If C = frontier + 1: Extend frontier (fills a gap), then absorb any adjacent ranges
 - If C > frontier + 1: Add to ranges, merging with adjacent ranges if they connect
 
+**Example**:
+```
+Initial: frontier = 2, ranges = []
+
+Observe counter 3:
+  → frontier = 3 (extends contiguous range)
+
+Observe counter 5:
+  → frontier = 3, ranges = [(5,5)]
+
+Observe counter 4:
+  → frontier = 5 (fills gap, merges with range 5)
+  → ranges = [] (all contiguous now)
+```
+
 ### Merging Version Vectors
 
 When merging two version vectors (e.g., when syncing with another replica):
 
-```mermaid
-flowchart TD
-    A[Merge VV1 and VV2] --> B[For each replica]
-    B --> C[Collect all ranges<br/>from both vectors]
-    C --> D[Sort ranges by start]
-    D --> E[Merge overlapping<br/>and adjacent ranges]
-    E --> F{First range<br/>starts at 1?}
-    F -->|Yes| G[Make it frontier]
-    F -->|No| H[All are ranges]
-    G --> I[Remaining as ranges]
-    H --> I
-```
+**Process**: Collect all ranges from both vectors, sort, merge overlapping/adjacent ranges. The largest contiguous range starting at 1 becomes the new frontier.
 
-**Result**: A merged version vector containing the union of all observed operations from both vectors.
+**Example**:
+```
+Client A's VV for replica B:
+  frontier = 2, ranges = [(5,5)]
+
+Client B's VV for replica B:
+  frontier = 3, ranges = [(7,8)]
+
+After merge:
+  Collect: [1,2], [5], [1,2,3], [7,8]
+  Sort and merge: [1,2,3], [5], [7,8]
+  Result: frontier = 3, ranges = [(5,5), (7,8)]
+```
 
 ### Calculating Subtree Version Vectors
 
 This is critical for defensive deletion. When calculating what operations affect a subtree:
-
-```mermaid
-graph TD
-    Start([Calculate Subtree VV]) --> GetState[Get node state]
-    GetState --> Init[subtree_vv = node.last_change]
-    Init --> Loop{For each child}
-    Loop --> Recursive[Recursively calculate<br/>child's subtree VV]
-    Recursive --> Merge[Merge child VV<br/>into subtree_vv]
-    Merge --> Next{More children?}
-    Next -->|Yes| Loop
-    Next -->|No| Return[Return subtree_vv]
-```
 
 **Process**:
 1. Start with the node's own `last_change` version vector
@@ -189,22 +182,6 @@ Calculation:
 ## Awareness Check
 
 The critical operation for defensive deletion is checking if one version vector is aware of another:
-
-```mermaid
-flowchart TD
-    Start([Check: A aware of B?]) --> ForEach{For each replica<br/>in B}
-    ForEach --> GetSelf[Get A's version<br/>for this replica<br/>or default empty]
-    GetSelf --> CheckFrontier{A.frontier >=<br/>B.frontier?}
-    CheckFrontier -->|No| False[Return FALSE]
-    CheckFrontier -->|Yes| ForRange{For each range<br/>in B.ranges}
-    ForRange --> Contains{A contains<br/>this entire range?}
-    Contains -->|No| False
-    Contains -->|Yes| MoreRanges{More ranges?}
-    MoreRanges -->|Yes| ForRange
-    MoreRanges -->|No| MoreReplicas{More replicas?}
-    MoreReplicas -->|Yes| ForEach
-    MoreReplicas -->|No| True[Return TRUE]
-```
 
 **Definition**: Version vector A is **aware of** version vector B if A has observed all operations that B has observed.
 

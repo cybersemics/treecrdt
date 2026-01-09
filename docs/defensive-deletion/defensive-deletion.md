@@ -33,15 +33,16 @@ When a delete operation is created:
    - This captures "what we knew about this subtree when we deleted it"
    - This snapshot travels with the delete operation to other replicas
 
-```mermaid
-flowchart TD
-    A[Delete Request] --> B[Calculate Subtree<br/>Version Vector]
-    B --> C[Start with node's<br/>version vector]
-    C --> D[For each child]
-    D --> E[Recursively get child's<br/>subtree version vector]
-    E --> F[Merge into parent<br/>subtree version vector]
-    F --> G[Continue for all<br/>descendants]
-    G --> H[Store as known_state<br/>in delete operation]
+**Example - Capturing awareness**:
+```
+Before delete:
+  ROOT
+    └── parent (no children)
+        └── Subtree VV: empty
+
+After delete with known_state:
+  parent.deleted_at = delete's VV (awareness: empty)
+  parent is TOMBSTONED (hidden from queries)
 ```
 
 ### Phase 2: Tombstone - Marking as Deleted
@@ -59,12 +60,15 @@ When a delete operation is applied (locally or remotely):
 3. **Multiple Deletes**: If multiple delete operations target the same node, their version vectors are merged
    - The node remains tombstoned only if **ALL** deletes combined were aware
 
-```mermaid
-graph LR
-    A[Delete 1<br/>known_state: X] --> D[Node]
-    B[Delete 2<br/>known_state: Y] --> D
-    C[Delete 3<br/>known_state: Z] --> D
-    D --> E[Merged deleted_at<br/>= X ∪ Y ∪ Z]
+**Example - Multiple deletes**:
+```
+Node: parent
+
+Client A delete → known_state: {A:1}
+Client B delete → known_state: {B:1}
+
+After merge:
+  parent.deleted_at = {A:1, B:1} (combined awareness)
 ```
 
 ### Phase 3: Validate - Dynamic Restoration
@@ -78,87 +82,91 @@ Tombstone status is checked **dynamically** whenever the node is accessed:
    - **Delete aware of current subtree** → Node stays tombstoned (permanent delete)
    - **Delete unaware of current subtree** → Node is restored (delete was premature)
 
-```mermaid
-flowchart TD
-    A[Check if Tombstoned] --> B[Get deleted_at<br/>Version Vector]
-    B --> C[Calculate Current<br/>Subtree Version Vector]
-    C --> D{deleted_at aware of<br/>current subtree?}
-    D -->|Yes| E[TOMBSTONED<br/>Permanent Delete]
-    D -->|No| F[RESTORED<br/>Delete Was Unaware]
-    
-    G[New Operation on Subtree] --> C
+**Example - Awareness check**:
+```
+State 1: Delete happens
+  parent.deleted_at = {} (empty - knew nothing)
+  Current subtree = {}
+
+State 2: Child inserted
+  Current subtree = {B:1} (has child operation)
+  
+Check: {} aware of {B:1}? NO → ✅ RESTORE parent
+
+Final state:
+  ROOT
+    └── parent (visible again)
+        └── child
 ```
 
 ### Key Insight
 
 The tombstone status depends on **causal awareness**, not timestamps. A delete with a higher timestamp can still be restored if it was causally unaware of earlier operations. This ensures correctness even with network partitions, delays, and out-of-order delivery.
 
-## Complete Operation Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant User
-    participant System
-    participant Tree
-    
-    User->>System: Delete node
-    System->>System: Calculate subtree VV
-    System->>System: Create delete op with known_state
-    System->>Tree: Apply delete (store deleted_at)
-    Tree->>System: Node tombstoned
-    
-    Note over System,Tree: Later: New operation on subtree
-    
-    System->>System: Apply new operation
-    System->>System: Recalculate subtree VV
-    System->>System: Check: deleted_at aware of current?
-    alt Delete was unaware
-        System->>Tree: Remove tombstone
-        Tree->>User: Node restored (visible again)
-    else Delete was aware
-        Tree->>User: Node stays tombstoned
-    end
-```
-
 ## Example: Concurrent Delete and Insert
 
-```mermaid
-sequenceDiagram
-    participant A as Client A
-    participant B as Client B
-    participant Tree as Tree State
-    
-    Note over Tree: Initial: ROOT → parent
-    
-    B->>B: Insert child into parent
-    Note over B: parent.last_change updated
-    
-    A->>A: Delete parent
-    Note over A: Calculate subtree VV: empty
-    Note over A: Create delete with known_state: empty
-    Note over A: parent.deleted_at = delete's VV
-    Note over A: Status: TOMBSTONED
-    
-    rect rgb(200, 220, 255)
-        Note over A,B: Network: Operations sync
-    end
-    
-    A->>A: Receive insert from B
-    Note over A: Apply insert operation
-    Note over A: parent.last_change updated
-    
-    A->>A: Check tombstone status
-    Note over A: Current subtree VV: includes child
-    Note over A: deleted_at VV: empty
-    Note over A: Awareness check: FALSE
-    A->>A: ✅ RESTORE parent
-    
-    B->>B: Receive delete from A
-    Note over B: Same awareness check
-    B->>B: ✅ RESTORE parent
-    
-    Note over A,B: Final: Both agree parent is restored
+**Initial State** (both clients):
+```
+ROOT
+  └── parent
+```
+
+**Client A's view** (before sync):
+```
+Client A deletes parent (thinks it's empty):
+  ROOT
+    └── parent (TOMBSTONED, deleted_at = {})
+```
+
+**Client B's view** (before sync):
+```
+Client B inserts child:
+  ROOT
+    └── parent
+        └── child
+```
+
+**After Sync - Client A receives insert**:
+```
+Before check:
+  ROOT
+    └── parent (deleted_at = {})
+        └── child (newly received)
+
+Awareness check:
+  deleted_at: {}
+  current subtree: {B:1} (has child)
+  {} aware of {B:1}? NO
+  
+After check:
+  ROOT
+    └── parent (✅ RESTORED - visible)
+        └── child
+```
+
+**After Sync - Client B receives delete**:
+```
+Before check:
+  ROOT
+    └── parent (received delete, deleted_at = {})
+        └── child
+
+Awareness check:
+  deleted_at: {}
+  current subtree: {B:1} (has child)
+  {} aware of {B:1}? NO
+  
+After check:
+  ROOT
+    └── parent (✅ RESTORED - visible)
+        └── child
+```
+
+**Final converged state** (both clients agree):
+```
+ROOT
+  └── parent (visible)
+      └── child
 ```
 
 ## Corner Cases and Scenarios
@@ -167,23 +175,23 @@ sequenceDiagram
 
 **Scenario**: Parent is deleted without knowledge of a concurrent child insert.
 
-```mermaid
-sequenceDiagram
-    participant A as Client A
-    participant B as Client B
-    
-    B->>B: Insert child into parent
-    A->>A: Delete parent (unaware of child)
-    
-    Note over A,B: Sync operations
-    
-    A->>A: Receives child insert
-    A->>A: Check: Delete knew empty,<br/>current has child
-    A->>A: ✅ RESTORE parent
-    
-    B->>B: Receives delete
-    B->>B: Same check
-    B->>B: ✅ RESTORE parent
+**Client A deletes, Client B inserts**:
+```
+Client A:                    Client B:
+ROOT                         ROOT
+  └── parent (deleted)         └── parent
+                                  └── child
+```
+
+**After sync and merge**:
+```
+Both clients:
+ROOT
+  └── parent (✅ RESTORED)
+      └── child
+
+Reason: Delete knew empty {}, current has child {B:1}
+        → Delete was unaware → restore
 ```
 
 **Result**: Parent is restored because delete was unaware of the child.
@@ -192,20 +200,29 @@ sequenceDiagram
 
 **Scenario**: Child is inserted, then parent is deleted with full awareness.
 
-```mermaid
-sequenceDiagram
-    participant A as Client A
-    participant B as Client B
-    
-    B->>A: Insert child into parent
-    A->>A: Receives and applies insert
-    A->>A: Delete parent (aware of child)
-    
-    Note over A,B: Sync
-    
-    B->>B: Receives delete
-    B->>B: Check: Delete knew child,<br/>current has child
-    B->>B: ❌ STAYS TOMBSTONED
+**Client A receives insert, then deletes**:
+```
+Client A state:
+  1. Receives insert from B
+     ROOT
+       └── parent
+           └── child
+  
+  2. Deletes parent (aware of child)
+     ROOT
+       └── parent (TOMBSTONED, deleted_at = {B:1})
+           └── child
+```
+
+**After sync with Client B**:
+```
+Both clients:
+ROOT
+  └── parent (❌ STAYS TOMBSTONED)
+      └── child (hidden)
+
+Reason: Delete knew {B:1}, current has {B:1}
+        → Delete was aware → permanent delete
 ```
 
 **Result**: Parent remains tombstoned because delete happened with full awareness.
@@ -214,30 +231,35 @@ sequenceDiagram
 
 **Scenario**: Parent is deleted while a child is concurrently moved into it.
 
-```mermaid
-graph LR
-    subgraph Before Delete
-        ROOT1[ROOT]
-        P1[parent]
-        OP1[other_parent]
-        C1[child]
-        ROOT1 --> P1
-        ROOT1 --> OP1
-        OP1 --> C1
-    end
-    
-    subgraph After Move
-        ROOT2[ROOT]
-        P2[parent]
-        OP2[other_parent]
-        C2[child]
-        ROOT2 --> P2
-        ROOT2 --> OP2
-        P2 --> C2
-    end
-    
-    Before Delete --> After Move
-    Note[Delete unaware of move] --> Restore[✅ RESTORE]
+**Before merge**:
+```
+Client A (deletes parent):    Client B (moves child):
+ROOT                           ROOT
+  └── parent (deleted)           ├── parent
+  └── other_parent               └── other_parent
+      └── child                       └── (child moved to parent)
+```
+
+**Client B's move operation**:
+```
+Before move:                   After move:
+ROOT                           ROOT
+  ├── parent                    ├── parent
+  └── other_parent                  └── child (moved here)
+      └── child                └── other_parent
+```
+
+**After sync and merge**:
+```
+Both clients:
+ROOT
+  ├── parent (✅ RESTORED - child moved into it)
+  │   └── child
+  └── other_parent
+
+Reason: Delete knew parent was empty, 
+        but child was moved into it after delete
+        → Delete was unaware → restore
 ```
 
 **Result**: Parent is restored because delete was unaware of the move operation.
@@ -246,22 +268,43 @@ graph LR
 
 **Scenario**: Multiple children are inserted, delete sees some but not all.
 
-```mermaid
-graph TD
-    ROOT[ROOT] --> P[parent]
-    
-    B1[Client B: insert child1]
-    B2[Client B: insert child2]
-    B3[Client B: insert child3]
-    
-    A[Client A: delete parent<br/>saw child2 only]
-    
-    B1 --> P
-    B2 --> P
-    B3 --> P
-    A --> P
-    
-    Note[Delete unaware of child1 and child3] --> Restore[✅ RESTORE]
+**Client A's view** (saw only child2):
+```
+Client A deletes parent:
+ROOT
+  └── parent (TOMBSTONED, deleted_at = {B:2})
+      └── child2 (only one seen)
+```
+
+**Client B's view** (has all children):
+```
+ROOT
+  └── parent
+      ├── child1
+      ├── child2
+      └── child3
+```
+
+**After sync - Client A receives missing children**:
+```
+Before check:
+ROOT
+  └── parent (deleted_at = {B:2})
+      ├── child1 (newly received)
+      ├── child2
+      └── child3 (newly received)
+
+Awareness check:
+  deleted_at: {B:2} (only knew child2)
+  current subtree: {B:1, B:2, B:3} (has all children)
+  {B:2} aware of {B:1, B:2, B:3}? NO (missing B:1, B:3)
+
+After check:
+ROOT
+  └── parent (✅ RESTORED)
+      ├── child1
+      ├── child2
+      └── child3
 ```
 
 **Key Insight**: Even if delete saw some children, unawareness of others triggers restoration.
@@ -270,48 +313,59 @@ graph TD
 
 **Scenario**: Delete a parent while a grandchild is moved to a different subtree. This demonstrates that subtree version vectors include all descendants recursively.
 
-```mermaid
-graph LR
-    subgraph Before Delete
-        P1[parent]
-        C1[child]
-        GC1[grandchild]
-        OP1[other_parent]
-        P1 --> C1
-        C1 --> GC1
-    end
-    
-    subgraph After Move
-        P2[parent]
-        C2[child]
-        GC2[grandchild]
-        OP2[other_parent]
-        P2 --> C2
-        OP2 --> GC2
-    end
-    
-    Before Delete --> After Move
-    
-    Note[Delete unaware of grandchild move<br/>Subtree VV includes all descendants] --> Restore[✅ RESTORE]
+**Client A deletes parent** (thinks subtree is unchanged):
+```
+Before delete:
+ROOT
+  └── parent
+      └── child
+          └── grandchild
+
+After delete:
+ROOT
+  └── parent (TOMBSTONED, deleted_at = old subtree VV)
+      └── child
+          └── grandchild
 ```
 
-**Key Point**: Subtree version vectors include **all descendants** recursively:
-- When calculating parent's subtree version vector, we include:
-  - Parent's own operations
-  - Child's subtree version vector (which includes grandchild)
-  - All descendants' operations
+**Client B moves grandchild**:
+```
+Before move:                  After move:
+ROOT                          ROOT
+  ├── parent                   ├── parent
+  │   └── child                │   └── child
+  │       └── grandchild       └── other_parent
+  └── other_parent                 └── grandchild
+```
+
+**After sync - Client A receives move**:
+```
+Before check:
+ROOT
+  ├── parent (deleted_at = old VV, didn't know about move)
+  │   └── child
+  └── other_parent
+      └── grandchild (moved here)
+
+Awareness check:
+  deleted_at: old subtree VV (no grandchild move)
+  current subtree VV: includes grandchild move operation
+  old VV aware of current? NO (grandchild was moved)
+  
+After check:
+ROOT
+  ├── parent (✅ RESTORED - grandchild modification triggered it)
+  │   └── child
+  └── other_parent
+      └── grandchild
+```
+
+**Key Point**: Subtree version vectors include **all descendants** recursively. When calculating parent's subtree version vector:
+- Includes parent's own operations
+- Includes child's subtree VV (which includes grandchild)
+- Includes all descendants' operations
 
 Therefore, any modification to any descendant (child, grandchild, great-grandchild, etc.) can trigger restoration of ancestor nodes if the delete was unaware.
-
-```mermaid
-flowchart TD
-    A[Calculate Subtree VV for parent] --> B[Start with parent's<br/>last_change VV]
-    B --> C[For each child]
-    C --> D[Recursively calculate<br/>child's subtree VV]
-    D --> E[Child's subtree includes<br/>grandchildren recursively]
-    E --> F[Merge child's subtree VV<br/>into parent's]
-    F --> G[Result: All descendants<br/>included in parent's<br/>subtree VV]
-```
 
 ### 6. Later Delete Unaware (Lamport Edge Case)
 
@@ -334,19 +388,30 @@ Result: Even though delete has higher lamport (6 > 5),
 
 **Scenario**: Multiple clients delete the same node concurrently without seeing an insert.
 
-```mermaid
-graph TD
-    A[Client A: delete] 
-    B[Client B: delete]
-    C[Client C: insert child]
-    
-    A --> Merge[Merge delete awareness<br/>Union semantics]
-    B --> Merge
-    C --> Check
-    
-    Merge --> Check{All deletes aware<br/>of child?}
-    Check -->|No| Restore[✅ RESTORE]
-    Check -->|Yes| Tombstone[❌ STAY TOMBSTONED]
+**Before merge**:
+```
+Client A deletes:             Client B deletes:            Client C inserts:
+ROOT                           ROOT                         ROOT
+  └── parent (deleted)           └── parent (deleted)         └── parent
+      deleted_at = {A:1}            deleted_at = {B:1}             └── child
+```
+
+**After merge - all clients sync**:
+```
+All clients:
+ROOT
+  └── parent (deleted_at = {A:1, B:1} merged)
+      └── child
+
+Awareness check:
+  deleted_at: {A:1, B:1} (both deletes combined)
+  current subtree: {C:1} (has child)
+  {A:1, B:1} aware of {C:1}? NO (neither delete saw child)
+  
+Result:
+ROOT
+  └── parent (✅ RESTORED)
+      └── child
 ```
 
 **Mechanism**: Delete awareness merges (union semantics), but if the merged awareness is insufficient, restoration occurs.
@@ -375,24 +440,28 @@ Result: ✅ RESTORE (delete was unaware of B:1)
 
 ## State Transitions
 
-A node's tombstone status can change over time:
+A node's tombstone status can change over time. Here's an example showing the state changes:
 
-```mermaid
-stateDiagram-v2
-    [*] --> Exists: Insert node
-    
-    Exists --> Tombstoned: Delete with awareness
-    Exists --> Tombstoned: Delete without awareness (temporarily)
-    
-    Tombstoned --> Restored: New operation reveals unawareness
-    Restored --> Exists: Effectively same state
-    
-    Tombstoned --> Tombstoned: New operation, delete was aware
-    Restored --> Tombstoned: Delete again with awareness
-    
-    Exists --> [*]: Node persists in structure
-    Tombstoned --> [*]: Node persists, hidden
-    Restored --> [*]: Node persists, visible
+**Example lifecycle**:
+
+```
+1. Initial state:
+   ROOT
+     └── parent (visible)
+
+2. Delete without awareness:
+   ROOT
+     └── parent (TOMBSTONED, deleted_at = {})
+
+3. New operation reveals unawareness:
+   ROOT
+     └── parent (✅ RESTORED - visible again)
+         └── child
+
+4. Delete again with awareness:
+   ROOT
+     └── parent (❌ STAYS TOMBSTONED - permanent delete)
+         └── child (hidden)
 ```
 
 ## Key Properties
