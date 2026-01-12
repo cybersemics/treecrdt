@@ -161,6 +161,19 @@ type InitiatorSubscription = {
   failed: Pending<unknown>;
 };
 
+export type SyncPeerAttachErrorContext<Op> = {
+  transport: DuplexTransport<SyncMessage<Op>>;
+  message: SyncMessage<Op>;
+};
+
+export type SyncPeerAttachOptions<Op> = {
+  /**
+   * Called when processing an incoming message throws.
+   * Errors are otherwise best-effort swallowed to avoid unhandled promise rejections.
+   */
+  onError?: (err: unknown, ctx: SyncPeerAttachErrorContext<Op>) => void;
+};
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
@@ -190,8 +203,16 @@ export class SyncPeer<Op> {
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
   }
 
-  attach(transport: DuplexTransport<SyncMessage<Op>>): () => void {
-    return transport.onMessage((msg) => void this.handleMessage(transport, msg));
+  attach(transport: DuplexTransport<SyncMessage<Op>>, opts: SyncPeerAttachOptions<Op> = {}): () => void {
+    return transport.onMessage((msg) => {
+      void this.handleMessage(transport, msg).catch((err) => {
+        try {
+          opts.onError?.(err, { transport, message: msg });
+        } catch {
+          // ignore user callback failures
+        }
+      });
+    });
   }
 
   notifyLocalUpdate(): Promise<void> {
@@ -373,6 +394,11 @@ export class SyncPeer<Op> {
         await yieldToMacrotask();
       }
 
+      if (!session.done) {
+        // The responder may still be processing the last streamed codewords; give it a brief grace
+        // period to deliver its final ribltStatus before declaring timeout.
+        await Promise.race([session.status.promise.catch(() => undefined), sleepUntil(1_000)]);
+      }
       if (!session.done) throw new Error("riblt: max codewords exceeded");
 
       const status = await session.status.promise;

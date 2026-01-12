@@ -9,7 +9,7 @@ import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { SyncPeer } from "../dist/sync.js";
 import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
-import { wrapDuplexTransportWithCodec } from "../dist/transport.js";
+import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from "../dist/transport.js";
 import type { DuplexTransport } from "../dist/transport.js";
 import type { Filter, OpRef, SyncBackend, SyncMessage } from "../dist/types.js";
 
@@ -286,6 +286,56 @@ test("syncOnce does not starve macrotask transports", async () => {
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
 
   await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 via macrotask duplex" });
+});
+
+test("attach onError is called when message handling fails", async () => {
+  const docId = "doc-attach-onerror";
+  const root = "0".repeat(32);
+
+  const failingBackend: SyncBackend<Operation> = {
+    docId,
+    maxLamport: async () => 0n,
+    listOpRefs: async () => [],
+    getOpsByOpRefs: async () => [],
+    applyOps: async () => {
+      throw new Error("boom");
+    },
+  };
+
+  const [ta, tb] = createInMemoryDuplex<SyncMessage<Operation>>();
+  const peer = new SyncPeer(failingBackend);
+
+  let called = false;
+  let seenErr: unknown;
+  let seenType: string | undefined;
+  const detach = peer.attach(ta, {
+    onError: (err, ctx) => {
+      called = true;
+      seenErr = err;
+      seenType = ctx.message.payload.case;
+    },
+  });
+
+  try {
+    await tb.send({
+      v: 0,
+      docId,
+      payload: {
+        case: "opsBatch",
+        value: {
+          filterId: "f",
+          ops: [makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 })],
+          done: true,
+        },
+      },
+    });
+
+    await waitUntil(() => called, { message: "expected attach onError callback to be called" });
+    expect(seenType).toBe("opsBatch");
+    expect(seenErr instanceof Error && seenErr.message).toMatch(/boom/);
+  } finally {
+    detach();
+  }
 });
 
 test("sync all converges union of opRefs", async () => {
