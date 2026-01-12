@@ -19,7 +19,7 @@
   "scripts": {
     "dev": "pnpm --filter @treecrdt/sync-server-core build && tsx src/cli.ts",
     "build": "pnpm -C ../../treecrdt-sync run build && pnpm -C ../../treecrdt-sqlite-node run build && tsc -p tsconfig.json",
-    "test:e2e": "pnpm --filter @treecrdt/sync-server-core build && tsx scripts/e2e-subscribe.ts"
+    "test:e2e": "pnpm --filter @treecrdt/sync-server-core build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",
@@ -34,6 +34,7 @@
     "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
+    "vitest": "^1.6.0",
     "ws": "^8.18.3"
   }
 }
