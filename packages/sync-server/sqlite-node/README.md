@@ -49,9 +49,16 @@ WebSocket endpoint:
 
 - `ws://localhost:8787/sync?docId=YOUR_DOC_ID`
 
+## Tests
+
+E2E:
+
+```sh
+pnpm -C packages/sync-server/sqlite-node test:e2e
+```
+
 Notes:
 
 - One `docId` per WebSocket connection.
 - Storage is one SQLite file per `docId` under `TREECRDT_DB_DIR`.
 - The database must keep a stable `treecrdt_set_doc_id(docId)` value for opRef hashing; this server enforces it.
-

@@ -88,6 +88,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
 
   packages/sync-server/sqlite-node:
     dependencies:
@@ -122,6 +125,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
       ws:
         specifier: ^8.18.3
         version: 8.19.0
