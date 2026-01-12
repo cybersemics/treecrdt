@@ -1,0 +1,39 @@
+{
+  "name": "@treecrdt/sync-server-sqlite-node",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "scripts"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter @treecrdt/sync-server-core build && tsx src/cli.ts",
+    "build": "pnpm -C ../../treecrdt-sync run build && pnpm -C ../../treecrdt-sqlite-node run build && tsc -p tsconfig.json",
+    "test:e2e": "pnpm --filter @treecrdt/sync-server-core build && tsx scripts/e2e-subscribe.ts"
+  },
+  "dependencies": {
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sqlite-node": "workspace:*",
+    "@treecrdt/sync": "workspace:*",
+    "@treecrdt/sync-server-core": "workspace:*",
+    "better-sqlite3": "^12.6.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.19.25",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "ws": "^8.18.3"
+  }
+}
