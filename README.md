@@ -22,5 +22,11 @@ pnpm test
 ## Playground
 - Live demo (GitHub Pages): https://cybersemics.github.io/treecrdt/
 
+## Reference sync server (local)
+```
+pnpm sync-server:setup
+pnpm sync-server
+```
+
 ## Contribute
 Contributions are welcome!
