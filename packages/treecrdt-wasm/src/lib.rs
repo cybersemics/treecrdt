@@ -21,6 +21,7 @@ struct JsOp {
     position: Option<usize>,
     #[serde(default)]
     known_state: Option<Vec<u8>>,
+    payload: Option<String>, // hex
 }
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
@@ -54,19 +55,27 @@ fn node_to_hex(id: NodeId) -> String {
 }
 
 fn op_to_js(op: &Operation) -> JsOp {
-    let (kind, parent, node, new_parent, position) = match &op.kind {
+    let (kind, parent, node, new_parent, position, payload) = match &op.kind {
         OperationKind::Insert {
             parent,
             node,
             position,
-        } => ("insert", Some(*parent), *node, None, Some(*position)),
+        } => ("insert", Some(*parent), *node, None, Some(*position), None),
         OperationKind::Move {
             node,
             new_parent,
             position,
-        } => ("move", None, *node, Some(*new_parent), Some(*position)),
-        OperationKind::Delete { node } => ("delete", None, *node, None, None),
-        OperationKind::Tombstone { node } => ("tombstone", None, *node, None, None),
+        } => ("move", None, *node, Some(*new_parent), Some(*position), None),
+        OperationKind::Delete { node } => ("delete", None, *node, None, None, None),
+        OperationKind::Tombstone { node } => ("tombstone", None, *node, None, None, None),
+        OperationKind::Payload { node, payload } => (
+            "payload",
+            None,
+            *node,
+            None,
+            None,
+            payload.as_deref().map(bytes_to_hex),
+        ),
     };
     let known_state = op.meta.known_state.as_ref().and_then(|vv| serde_json::to_vec(vv).ok());
     JsOp {
@@ -79,6 +88,7 @@ fn op_to_js(op: &Operation) -> JsOp {
         new_parent: new_parent.map(node_to_hex),
         position,
         known_state,
+        payload,
     }
 }
 
@@ -116,6 +126,13 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
             Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, Some(vv))
         }
         "tombstone" => Operation::tombstone(&replica, counter, lamport, hex_to_node(&js.node)?),
+        "payload" => Operation::payload(
+            &replica,
+            counter,
+            lamport,
+            hex_to_node(&js.node)?,
+            js.payload.as_deref().map(hex_to_bytes).transpose()?,
+        ),
         _ => return Err("unknown kind".into()),
     };
     Ok(op)

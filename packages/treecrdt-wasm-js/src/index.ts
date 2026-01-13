@@ -119,6 +119,7 @@ type JsOp = {
   new_parent?: string | null;
   position?: number | null;
   known_state?: number[] | null;
+  payload?: string | null;
 };
 
 function toHex(bytes: Uint8Array): string {
@@ -164,6 +165,13 @@ function toJsOp(
         ...base,
         kind: "tombstone",
         node: normalizeNodeId(op.kind.node),
+      };
+    case "payload":
+      return {
+        ...base,
+        kind: "payload",
+        node: normalizeNodeId(op.kind.node),
+        payload: op.kind.payload === null ? null : toHex(op.kind.payload),
       };
     default:
       throw new Error("unknown op kind");

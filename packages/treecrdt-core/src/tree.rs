@@ -1,10 +1,16 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
 use crate::traits::{Clock, MemoryNodeStore, NodeStore, Storage};
 use crate::version_vector::VersionVector;
+
+#[derive(Clone, Debug, Default)]
+struct PayloadState {
+    payload: Option<Vec<u8>>,
+    last_writer: Option<(Lamport, OperationId)>,
+}
 
 #[derive(Clone)]
 struct NodeSnapshot {
@@ -33,6 +39,7 @@ where
     log: Vec<LogEntry>,
     nodes: N,
     version_vector: VersionVector,
+    payloads: HashMap<NodeId, PayloadState>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +84,7 @@ where
             log: Vec::new(),
             nodes: MemoryNodeStore::default(),
             version_vector: VersionVector::new(),
+            payloads: HashMap::new(),
         }
     }
 }
@@ -97,6 +105,7 @@ where
             log: Vec::new(),
             nodes,
             version_vector: VersionVector::new(),
+            payloads: HashMap::new(),
         }
     }
 
@@ -135,6 +144,26 @@ where
         self.commit_local(op)
     }
 
+    pub fn local_set_payload(
+        &mut self,
+        node: NodeId,
+        payload: impl Into<Vec<u8>>,
+    ) -> Result<Operation> {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let op = Operation::set_payload(&replica, counter, lamport, node, payload);
+        self.commit_local(op)
+    }
+
+    pub fn local_clear_payload(&mut self, node: NodeId) -> Result<Operation> {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let op = Operation::clear_payload(&replica, counter, lamport, node);
+        self.commit_local(op)
+    }
+
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
         self.clock.observe(op.meta.lamport);
         self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
@@ -161,6 +190,7 @@ where
             OperationKind::Insert { parent, .. } => parents.push(parent),
             OperationKind::Move { new_parent, .. } => parents.push(new_parent),
             OperationKind::Delete { .. } | OperationKind::Tombstone { .. } => {}
+            OperationKind::Payload { .. } => {}
         }
         parents.sort();
         parents.dedup();
@@ -185,11 +215,12 @@ where
         self.log.clear();
         self.version_vector = VersionVector::new();
         self.nodes.reset()?;
+        self.payloads.clear();
         for op in ops {
             self.clock.observe(op.meta.lamport);
             self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
             self.applied.insert(op.meta.id.clone());
-            let snapshot = Self::apply_forward(&mut self.nodes, &op)?;
+            let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
             self.log.push(LogEntry { op, snapshot });
         }
         Ok(())
@@ -217,6 +248,10 @@ where
             return Ok(Some(NodeId::TRASH));
         }
         Ok(self.nodes.parent(node)?.filter(|&p| p != NodeId::TRASH))
+    }
+
+    pub fn payload(&self, node: NodeId) -> Option<&[u8]> {
+        self.payloads.get(&node)?.payload.as_deref()
     }
 
     pub fn is_tombstoned(&self, node: NodeId) -> Result<bool> {
@@ -370,7 +405,7 @@ where
             Self::undo_entry(&mut self.nodes, entry)?;
         }
 
-        let snapshot = Self::apply_forward(&mut self.nodes, &op)?;
+        let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         self.log.insert(
             idx,
             LogEntry {
@@ -380,14 +415,18 @@ where
         );
 
         for entry in self.log.iter_mut().skip(idx + 1) {
-            entry.snapshot = Self::apply_forward(&mut self.nodes, &entry.op)?;
+            entry.snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &entry.op)?;
         }
 
         self.storage.apply(op)?;
         Ok(Some(self.log[idx].snapshot.clone()))
     }
 
-    fn apply_forward(nodes: &mut N, op: &Operation) -> Result<NodeSnapshot> {
+    fn apply_forward(
+        nodes: &mut N,
+        payloads: &mut HashMap<NodeId, PayloadState>,
+        op: &Operation,
+    ) -> Result<NodeSnapshot> {
         let snapshot = Self::snapshot(nodes, op)?;
         match &op.kind {
             OperationKind::Insert {
@@ -402,6 +441,9 @@ where
             } => Self::apply_move(nodes, op, *node, *new_parent, *position)?,
             OperationKind::Delete { node } => Self::apply_delete(nodes, op, *node)?,
             OperationKind::Tombstone { node } => Self::apply_delete(nodes, op, *node)?,
+            OperationKind::Payload { node, payload } => {
+                Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?
+            }
         }
         Ok(snapshot)
     }
@@ -411,7 +453,8 @@ where
             OperationKind::Insert { node, .. }
             | OperationKind::Move { node, .. }
             | OperationKind::Delete { node }
-            | OperationKind::Tombstone { node } => *node,
+            | OperationKind::Tombstone { node }
+            | OperationKind::Payload { node, .. } => *node,
         };
         nodes.ensure_node(node_id)?;
         let parent = nodes.parent(node_id)?;
@@ -427,7 +470,8 @@ where
             OperationKind::Insert { node, .. }
             | OperationKind::Move { node, .. }
             | OperationKind::Delete { node }
-            | OperationKind::Tombstone { node } => *node,
+            | OperationKind::Tombstone { node }
+            | OperationKind::Payload { node, .. } => *node,
         };
         nodes.ensure_node(node_id)?;
         nodes.detach(node_id)?;
@@ -509,6 +553,36 @@ where
         }
 
         nodes.merge_deleted_at(node, &delete_vv)?;
+        Ok(())
+    }
+
+    fn apply_payload(
+        nodes: &mut N,
+        payloads: &mut HashMap<NodeId, PayloadState>,
+        op: &Operation,
+        node: NodeId,
+        payload: Option<&[u8]>,
+    ) -> Result<()> {
+        nodes.ensure_node(node)?;
+
+        let state = payloads.entry(node).or_default();
+        if let Some((lamport, id)) = &state.last_writer {
+            if cmp_op_key(
+                op.meta.lamport,
+                op.meta.id.replica.as_bytes(),
+                op.meta.id.counter,
+                *lamport,
+                id.replica.as_bytes(),
+                id.counter,
+            ) != std::cmp::Ordering::Greater
+            {
+                return Ok(());
+            }
+        }
+
+        state.payload = payload.map(|bytes| bytes.to_vec());
+        state.last_writer = Some((op.meta.lamport, op.meta.id.clone()));
+        Self::update_last_change(nodes, op, node)?;
         Ok(())
     }
 

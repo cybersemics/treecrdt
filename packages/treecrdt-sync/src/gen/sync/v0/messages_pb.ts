@@ -340,8 +340,11 @@ export const OpsBatchSchema: GenMessage<OpsBatch> = /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 10);
 
 /**
- * Draft/reserved: push-based subscriptions are not implemented in this repo.
- * Live sync is achieved by periodically running catch-up (syncOnce) again.
+ * Push-based subscription for live updates.
+ *
+ * The initiator chooses `subscription_id` (unique within the session) and a `filter`.
+ * The responder acks with `SubscribeAck` and then MAY stream incremental `OpsBatch`
+ * messages for new operations relevant to the filter.
  *
  * @generated from message treecrdt.sync.v0.Subscribe
  */
@@ -365,7 +368,7 @@ export const SubscribeSchema: GenMessage<Subscribe> = /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 11);
 
 /**
- * Draft/reserved: see Subscribe.
+ * Acknowledges a Subscribe request.
  *
  * @generated from message treecrdt.sync.v0.SubscribeAck
  */
@@ -389,7 +392,7 @@ export const SubscribeAckSchema: GenMessage<SubscribeAck> = /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 12);
 
 /**
- * Draft/reserved: see Subscribe.
+ * Stops a previously-established subscription.
  *
  * @generated from message treecrdt.sync.v0.Unsubscribe
  */

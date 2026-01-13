@@ -36,6 +36,14 @@ pub enum OperationKind {
     Tombstone {
         node: NodeId,
     },
+    /// Update the node payload (application data) as an opaque byte string.
+    ///
+    /// Merge semantics are last-writer-wins per node, ordered by
+    /// `(lamport, replica, counter)` (see `OperationMetadata`).
+    ///
+    /// - `payload = Some(bytes)` sets the payload
+    /// - `payload = None` clears the payload
+    Payload { node: NodeId, payload: Option<Vec<u8>> },
 }
 
 /// Full operation envelope.
@@ -117,6 +125,37 @@ impl Operation {
             },
             kind: OperationKind::Tombstone { node },
         }
+    }
+
+    pub fn payload(
+        replica: &ReplicaId,
+        counter: u64,
+        lamport: Lamport,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            meta: OperationMetadata {
+                id: OperationId::new(replica, counter),
+                lamport,
+                known_state: None,
+            },
+            kind: OperationKind::Payload { node, payload },
+        }
+    }
+
+    pub fn set_payload(
+        replica: &ReplicaId,
+        counter: u64,
+        lamport: Lamport,
+        node: NodeId,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self::payload(replica, counter, lamport, node, Some(payload.into()))
+    }
+
+    pub fn clear_payload(replica: &ReplicaId, counter: u64, lamport: Lamport, node: NodeId) -> Self {
+        Self::payload(replica, counter, lamport, node, None)
     }
 }
 

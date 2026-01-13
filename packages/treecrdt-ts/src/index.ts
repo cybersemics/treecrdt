@@ -35,6 +35,20 @@ export type OperationKind =
   | {
       type: "tombstone";
       node: NodeId;
+    }
+  | {
+      /**
+       * Update opaque application payload for a node.
+       *
+       * Merge semantics are last-writer-wins per node, ordered by
+       * `(lamport, replica, counter)`.
+       */
+      type: "payload";
+      node: NodeId;
+      /**
+       * `payload = Uint8Array` sets the value, `payload = null` clears it.
+       */
+      payload: Uint8Array | null;
     };
 
 export type Operation = {
@@ -67,6 +81,7 @@ export interface TreeCRDT {
   insert(parent: NodeId, node: NodeId, position: number): Promise<Operation> | Operation;
   move(node: NodeId, newParent: NodeId, position: number): Promise<Operation> | Operation;
   delete(node: NodeId): Promise<Operation> | Operation;
+  setPayload(node: NodeId, payload: Uint8Array | null): Promise<Operation> | Operation;
   applyRemote(op: Operation): Promise<void> | void;
   operationsSince(lamport: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
   snapshot(): Promise<Snapshot> | Snapshot;

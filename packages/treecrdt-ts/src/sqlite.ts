@@ -123,6 +123,11 @@ function buildAppendOp(
         sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
         params: [...base, "tombstone", opts.serializeNodeId(kind.node), opts.knownState],
       };
+    case "payload":
+      return {
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
+        params: [...base, "payload", opts.serializeNodeId(kind.node), kind.payload],
+      };
     default:
       throw new Error("unsupported operation kind");
   }
@@ -164,6 +169,14 @@ function buildAppendOpsPayload(
       return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
     } else if (kind.type === "delete") {
       return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+    } else if (kind.type === "payload") {
+      return {
+        ...base,
+        parent: null,
+        node: serialize(kind.node),
+        new_parent: null,
+        payload: kind.payload === null ? null : Array.from(kind.payload),
+      };
     }
     return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
   });
@@ -416,6 +429,17 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
     if (row.kind === "delete") {
       return { ...base, kind: { type: "delete", node: decodeNodeId(row.node) } } as Operation;
     }
-    return { ...base, kind: { type: "tombstone", node: decodeNodeId(row.node) } } as Operation;
+    if (row.kind === "tombstone") {
+      return { ...base, kind: { type: "tombstone", node: decodeNodeId(row.node) } } as Operation;
+    }
+    if (row.kind === "payload") {
+      const rawPayload = row.payload;
+      if (rawPayload === null || rawPayload === undefined) {
+        return { ...base, kind: { type: "payload", node: decodeNodeId(row.node), payload: null } } as Operation;
+      }
+      const bytes = rawPayload instanceof Uint8Array ? rawPayload : Uint8Array.from(rawPayload as any);
+      return { ...base, kind: { type: "payload", node: decodeNodeId(row.node), payload: bytes } } as Operation;
+    }
+    throw new Error(`unknown op kind from sqlite: ${String(row.kind)}`);
   });
 }
