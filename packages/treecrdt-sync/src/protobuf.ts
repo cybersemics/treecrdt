@@ -1,4 +1,4 @@
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import type { Operation } from "@treecrdt/interface";
 import {
   nodeIdFromBytes16,
@@ -162,22 +162,22 @@ function toProtoOperation(op: Operation) {
   });
 
   switch (op.kind.type) {
-    case "insert":
-      const insertOp: any = {
+    case "insert": {
+      const insertOp = {
         parent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.parent) }),
         node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
         position: op.kind.position,
-      };
-      if (op.kind.payload !== undefined) insertOp.payload = op.kind.payload;
+        ...(op.kind.payload !== undefined ? { payload: op.kind.payload } : {}),
+      } satisfies MessageInitShape<typeof InsertOpSchema>;
+
       return create(OperationSchema, {
         meta,
         kind: {
           case: "insert",
-          value: create(InsertOpSchema, {
-            ...insertOp,
-          }),
+          value: create(InsertOpSchema, insertOp),
         },
       });
+    }
     case "move":
       return create(OperationSchema, {
         meta,
