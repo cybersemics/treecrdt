@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file sync/v0/ops.proto.
  */
 export const file_sync_v0_ops: GenFile = /*@__PURE__*/
-  fileDesc("ChFzeW5jL3YwL29wcy5wcm90bxIQdHJlZWNyZHQuc3luYy52MCJuCghJbnNlcnRPcBIoCgZwYXJlbnQYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBImCgRub2RlGAIgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSEAoIcG9zaXRpb24YAyABKA0icAoGTW92ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBIsCgpuZXdfcGFyZW50GAIgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSEAoIcG9zaXRpb24YAyABKA0iMgoIRGVsZXRlT3ASJgoEbm9kZRgBIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkIjUKC1RvbWJzdG9uZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZCKAAgoJT3BlcmF0aW9uEjEKBG1ldGEYASABKAsyIy50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbk1ldGFkYXRhEiwKBmluc2VydBgCIAEoCzIaLnRyZWVjcmR0LnN5bmMudjAuSW5zZXJ0T3BIABIoCgRtb3ZlGAMgASgLMhgudHJlZWNyZHQuc3luYy52MC5Nb3ZlT3BIABIsCgZkZWxldGUYBCABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkRlbGV0ZU9wSAASMgoJdG9tYnN0b25lGAUgASgLMh0udHJlZWNyZHQuc3luYy52MC5Ub21ic3RvbmVPcEgAQgYKBGtpbmRiBnByb3RvMw", [file_sync_v0_types]);
+  fileDesc("ChFzeW5jL3YwL29wcy5wcm90bxIQdHJlZWNyZHQuc3luYy52MCJuCghJbnNlcnRPcBIoCgZwYXJlbnQYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBImCgRub2RlGAIgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSEAoIcG9zaXRpb24YAyABKA0icAoGTW92ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBIsCgpuZXdfcGFyZW50GAIgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSEAoIcG9zaXRpb24YAyABKA0iMgoIRGVsZXRlT3ASJgoEbm9kZRgBIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkIjUKC1RvbWJzdG9uZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZCIOCgxDbGVhclBheWxvYWQigAEKCVBheWxvYWRPcBImCgRub2RlGAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSLwoFY2xlYXIYAiABKAsyHi50cmVlY3JkdC5zeW5jLnYwLkNsZWFyUGF5bG9hZEgAEhEKB3BheWxvYWQYAyABKAxIAEIHCgV2YWx1ZSKwAgoJT3BlcmF0aW9uEjEKBG1ldGEYASABKAsyIy50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbk1ldGFkYXRhEiwKBmluc2VydBgCIAEoCzIaLnRyZWVjcmR0LnN5bmMudjAuSW5zZXJ0T3BIABIoCgRtb3ZlGAMgASgLMhgudHJlZWNyZHQuc3luYy52MC5Nb3ZlT3BIABIsCgZkZWxldGUYBCABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkRlbGV0ZU9wSAASMgoJdG9tYnN0b25lGAUgASgLMh0udHJlZWNyZHQuc3luYy52MC5Ub21ic3RvbmVPcEgAEi4KB3BheWxvYWQYBiABKAsyGy50cmVlY3JkdC5zeW5jLnYwLlBheWxvYWRPcEgAQgYKBGtpbmRiBnByb3RvMw", [file_sync_v0_types]);
 
 /**
  * @generated from message treecrdt.sync.v0.InsertOp
@@ -103,6 +103,55 @@ export const TombstoneOpSchema: GenMessage<TombstoneOp> = /*@__PURE__*/
   messageDesc(file_sync_v0_ops, 3);
 
 /**
+ * Empty message: the oneof discriminant is the signal.
+ *
+ * @generated from message treecrdt.sync.v0.ClearPayload
+ */
+export type ClearPayload = Message<"treecrdt.sync.v0.ClearPayload"> & {
+};
+
+/**
+ * Describes the message treecrdt.sync.v0.ClearPayload.
+ * Use `create(ClearPayloadSchema)` to create a new message.
+ */
+export const ClearPayloadSchema: GenMessage<ClearPayload> = /*@__PURE__*/
+  messageDesc(file_sync_v0_ops, 4);
+
+/**
+ * @generated from message treecrdt.sync.v0.PayloadOp
+ */
+export type PayloadOp = Message<"treecrdt.sync.v0.PayloadOp"> & {
+  /**
+   * @generated from field: treecrdt.sync.v0.NodeId node = 1;
+   */
+  node?: NodeId;
+
+  /**
+   * @generated from oneof treecrdt.sync.v0.PayloadOp.value
+   */
+  value: {
+    /**
+     * @generated from field: treecrdt.sync.v0.ClearPayload clear = 2;
+     */
+    value: ClearPayload;
+    case: "clear";
+  } | {
+    /**
+     * @generated from field: bytes payload = 3;
+     */
+    value: Uint8Array;
+    case: "payload";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message treecrdt.sync.v0.PayloadOp.
+ * Use `create(PayloadOpSchema)` to create a new message.
+ */
+export const PayloadOpSchema: GenMessage<PayloadOp> = /*@__PURE__*/
+  messageDesc(file_sync_v0_ops, 5);
+
+/**
  * @generated from message treecrdt.sync.v0.Operation
  */
 export type Operation = Message<"treecrdt.sync.v0.Operation"> & {
@@ -138,6 +187,12 @@ export type Operation = Message<"treecrdt.sync.v0.Operation"> & {
      */
     value: TombstoneOp;
     case: "tombstone";
+  } | {
+    /**
+     * @generated from field: treecrdt.sync.v0.PayloadOp payload = 6;
+     */
+    value: PayloadOp;
+    case: "payload";
   } | { case: undefined; value?: undefined };
 };
 
@@ -146,5 +201,5 @@ export type Operation = Message<"treecrdt.sync.v0.Operation"> & {
  * Use `create(OperationSchema)` to create a new message.
  */
 export const OperationSchema: GenMessage<Operation> = /*@__PURE__*/
-  messageDesc(file_sync_v0_ops, 4);
+  messageDesc(file_sync_v0_ops, 6);
 
