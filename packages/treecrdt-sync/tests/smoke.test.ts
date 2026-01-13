@@ -138,30 +138,76 @@ class MemoryBackend implements SyncBackend<Operation> {
     });
 
     const parentByNodeHex = new Map<string, string>();
-    const relevant: OpRef[] = [];
+    const latestPayloadByNodeHex = new Map<string, OpRef>();
+    const relevantByHex = new Map<string, OpRef>();
+
+    const add = (ref: OpRef) => {
+      const hex = bytesToHex(ref);
+      if (!relevantByHex.has(hex)) relevantByHex.set(hex, ref);
+    };
+
     for (const { opRef, op } of entries) {
-      const nodeHex =
-        op.kind.type === "insert"
-          ? op.kind.node
-          : op.kind.type === "move"
-            ? op.kind.node
-            : op.kind.node;
-      const oldParentHex = parentByNodeHex.get(nodeHex);
-      const newParentHex =
-        op.kind.type === "insert"
-          ? op.kind.parent
-          : op.kind.type === "move"
-            ? op.kind.newParent
-            : TRASH_HEX;
+      switch (op.kind.type) {
+        case "insert": {
+          const nodeHex = op.kind.node;
+          const oldParentHex = parentByNodeHex.get(nodeHex);
+          const newParentHex = op.kind.parent;
 
-      if (oldParentHex === targetParentHex || newParentHex === targetParentHex) {
-        relevant.push(opRef);
+          if (oldParentHex === targetParentHex || newParentHex === targetParentHex) {
+            add(opRef);
+          }
+          if (oldParentHex !== newParentHex && newParentHex === targetParentHex) {
+            const payloadRef = latestPayloadByNodeHex.get(nodeHex);
+            if (payloadRef) add(payloadRef);
+          }
+
+          parentByNodeHex.set(nodeHex, newParentHex);
+          break;
+        }
+        case "move": {
+          const nodeHex = op.kind.node;
+          const oldParentHex = parentByNodeHex.get(nodeHex);
+          const newParentHex = op.kind.newParent;
+
+          if (oldParentHex === targetParentHex || newParentHex === targetParentHex) {
+            add(opRef);
+          }
+          if (oldParentHex !== newParentHex && newParentHex === targetParentHex) {
+            const payloadRef = latestPayloadByNodeHex.get(nodeHex);
+            if (payloadRef) add(payloadRef);
+          }
+
+          parentByNodeHex.set(nodeHex, newParentHex);
+          break;
+        }
+        case "delete":
+        case "tombstone": {
+          const nodeHex = op.kind.node;
+          const oldParentHex = parentByNodeHex.get(nodeHex);
+          const newParentHex = TRASH_HEX;
+
+          if (oldParentHex === targetParentHex || newParentHex === targetParentHex) {
+            add(opRef);
+          }
+
+          parentByNodeHex.set(nodeHex, newParentHex);
+          break;
+        }
+        case "payload": {
+          const nodeHex = op.kind.node;
+          const parentHex = parentByNodeHex.get(nodeHex);
+          if (parentHex === targetParentHex) add(opRef);
+          latestPayloadByNodeHex.set(nodeHex, opRef);
+          break;
+        }
+        default: {
+          const _exhaustive: never = op.kind;
+          throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
+        }
       }
-
-      parentByNodeHex.set(nodeHex, newParentHex);
     }
 
-  return relevant;
+    return Array.from(relevantByHex.values());
   }
 
   async getOpsByOpRefs(opRefs: OpRef[]): Promise<Operation[]> {
@@ -350,6 +396,51 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
     const aChildrenA = await a.listOpRefs({ children: { parent: parentABytes } });
     const bChildrenA = await b.listOpRefs({ children: { parent: parentABytes } });
     expect(setHex(aChildrenA)).toEqual(setHex(bChildrenA));
+  } finally {
+    detach();
+  }
+});
+
+test("sync children(parent) includes latest payload when node moves into parent", async () => {
+  const docId = "doc-sync-children-payload";
+  const parentAHex = "a0".repeat(16);
+  const parentBHex = "b0".repeat(16);
+  const parentBBytes = nodeIdToBytes16(parentBHex);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  const node = nodeIdFromInt(0x10);
+  const payload = new Uint8Array([1, 2, 3]);
+
+  await a.applyOps([
+    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node, position: 0 }),
+    makeOp("a", 2, 2, { type: "payload", node, payload }),
+    makeOp("a", 3, 3, { type: "move", node, newParent: parentBHex, position: 0 }),
+  ]);
+
+  const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
+  try {
+    await pa.syncOnce(
+      ta,
+      { children: { parent: parentBBytes } },
+      { maxCodewords: 10_000, codewordsPerMessage: 256 }
+    );
+    await tick();
+
+    expect(b.hasOp("a", 1)).toBe(false);
+    expect(b.hasOp("a", 2)).toBe(true);
+    expect(b.hasOp("a", 3)).toBe(true);
+
+    const aChildrenB = await a.listOpRefs({ children: { parent: parentBBytes } });
+    const bChildrenB = await b.listOpRefs({ children: { parent: parentBBytes } });
+    expect(setHex(aChildrenB)).toEqual(setHex(bChildrenB));
+
+    const ops = await b.getOpsByOpRefs(bChildrenB);
+    const payloadOps = ops.filter((op) => op.kind.type === "payload" && op.kind.payload !== null);
+    expect(payloadOps.length).toBe(1);
+    expect(payloadOps[0]?.kind.type).toBe("payload");
+    expect(payloadOps[0]?.kind.payload).toEqual(payload);
   } finally {
     detach();
   }

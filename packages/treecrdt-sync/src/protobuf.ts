@@ -1,4 +1,4 @@
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import type { Operation } from "@treecrdt/interface";
 import {
   nodeIdFromBytes16,
@@ -43,7 +43,15 @@ import {
   UnsubscribeSchema,
 } from "./gen/sync/v0/messages_pb.js";
 import { ChildrenFilterSchema, FilterSchema, FullSyncFilterSchema } from "./gen/sync/v0/filters_pb.js";
-import { DeleteOpSchema, InsertOpSchema, MoveOpSchema, OperationSchema, TombstoneOpSchema } from "./gen/sync/v0/ops_pb.js";
+import {
+  ClearPayloadSchema,
+  DeleteOpSchema,
+  InsertOpSchema,
+  MoveOpSchema,
+  OperationSchema,
+  PayloadOpSchema,
+  TombstoneOpSchema,
+} from "./gen/sync/v0/ops_pb.js";
 import { NodeIdSchema, OpRefSchema, OperationIdSchema, OperationMetadataSchema, ReplicaIdSchema } from "./gen/sync/v0/types_pb.js";
 
 function u64ToNumber(v: bigint, field: string): number {
@@ -153,18 +161,22 @@ function toProtoOperation(op: Operation) {
   });
 
   switch (op.kind.type) {
-    case "insert":
+    case "insert": {
+      const insertOp = {
+        parent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.parent) }),
+        node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
+        position: op.kind.position,
+        ...(op.kind.payload !== undefined ? { payload: op.kind.payload } : {}),
+      } satisfies MessageInitShape<typeof InsertOpSchema>;
+
       return create(OperationSchema, {
         meta,
         kind: {
           case: "insert",
-          value: create(InsertOpSchema, {
-            parent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.parent) }),
-            node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
-            position: op.kind.position,
-          }),
+          value: create(InsertOpSchema, insertOp),
         },
       });
+    }
     case "move":
       return create(OperationSchema, {
         meta,
@@ -191,6 +203,20 @@ function toProtoOperation(op: Operation) {
         kind: {
           case: "tombstone",
           value: create(TombstoneOpSchema, { node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }) }),
+        },
+      });
+    case "payload":
+      return create(OperationSchema, {
+        meta,
+        kind: {
+          case: "payload",
+          value: create(PayloadOpSchema, {
+            node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
+            value:
+              op.kind.payload === null
+                ? { case: "clear", value: create(ClearPayloadSchema, {}) }
+                : { case: "payload", value: op.kind.payload },
+          }),
         },
       });
     default: {
@@ -221,6 +247,7 @@ function fromProtoOperation(op: any): Operation {
       const parentBytes = op.kind.value?.parent?.bytes as Uint8Array | undefined;
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
       if (!parentBytes || !nodeBytes) throw new Error("InsertOp missing node ids");
+      const payloadBytes = op.kind.value?.payload as Uint8Array | undefined;
       return {
         meta: outMeta,
         kind: {
@@ -228,6 +255,7 @@ function fromProtoOperation(op: any): Operation {
           parent: nodeIdFromBytes16(parentBytes),
           node: nodeIdFromBytes16(nodeBytes),
           position: op.kind.value.position ?? 0,
+          ...(payloadBytes !== undefined ? { payload: payloadBytes } : {}),
         },
       };
     }
@@ -254,6 +282,21 @@ function fromProtoOperation(op: any): Operation {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
       if (!nodeBytes) throw new Error("TombstoneOp missing node id");
       return { meta: outMeta, kind: { type: "tombstone", node: nodeIdFromBytes16(nodeBytes) } };
+    }
+    case "payload": {
+      const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
+      if (!nodeBytes) throw new Error("PayloadOp missing node id");
+      const value = op.kind.value?.value as { case?: string; value?: any } | undefined;
+      if (!value || !value.case) throw new Error("PayloadOp missing value");
+      if (value.case === "clear") {
+        return { meta: outMeta, kind: { type: "payload", node: nodeIdFromBytes16(nodeBytes), payload: null } };
+      }
+      if (value.case === "payload") {
+        const payload = value.value as Uint8Array | undefined;
+        if (!payload) throw new Error("PayloadOp missing payload bytes");
+        return { meta: outMeta, kind: { type: "payload", node: nodeIdFromBytes16(nodeBytes), payload } };
+      }
+      throw new Error(`PayloadOp: unknown value case: ${String(value.case)}`);
     }
     default:
       throw new Error("Operation: missing kind");

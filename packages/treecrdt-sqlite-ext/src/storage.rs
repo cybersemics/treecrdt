@@ -38,6 +38,7 @@ impl SqliteStorage {
                     node BLOB NOT NULL,
                     new_parent BLOB,
                     position INTEGER,
+                    payload BLOB,
                     PRIMARY KEY (replica, counter)
                 );
                 CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);",
@@ -49,19 +50,23 @@ impl SqliteStorage {
 
 impl Storage for SqliteStorage {
     fn apply(&mut self, op: Operation) -> treecrdt_core::Result<()> {
-        let (kind, parent, node, new_parent, position) = match op.kind {
+        let (kind, parent, node, new_parent, position, payload) = match op.kind {
             OperationKind::Insert {
                 parent,
                 node,
                 position,
-            } => ("insert", Some(parent), node, None, Some(position)),
+                payload,
+            } => ("insert", Some(parent), node, None, Some(position), payload),
             OperationKind::Move {
                 node,
                 new_parent,
                 position,
-            } => ("move", None, node, Some(new_parent), Some(position)),
-            OperationKind::Delete { node } => ("delete", None, node, None, None),
-            OperationKind::Tombstone { node } => ("tombstone", None, node, None, None),
+            } => ("move", None, node, Some(new_parent), Some(position), None),
+            OperationKind::Delete { node } => ("delete", None, node, None, None, None),
+            OperationKind::Tombstone { node } => ("tombstone", None, node, None, None, None),
+            OperationKind::Payload { node, payload } => {
+                ("payload", None, node, None, None, payload)
+            }
         };
 
         let lamport: i64 = op
@@ -78,8 +83,8 @@ impl Storage for SqliteStorage {
 
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO ops (replica, counter, lamport, kind, parent, node, new_parent, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT OR IGNORE INTO ops (replica, counter, lamport, kind, parent, node, new_parent, position, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     op.meta.id.replica.as_bytes(),
                     counter,
@@ -91,6 +96,7 @@ impl Storage for SqliteStorage {
                     position
                         .map(|p| i64::try_from(p).map_err(|_| Error::Storage("position overflow".into())))
                         .transpose()?,
+                    payload,
                 ],
             )
             .map_err(|e| Error::Storage(e.to_string()))?;
@@ -102,7 +108,7 @@ impl Storage for SqliteStorage {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT replica, counter, lamport, kind, parent, node, new_parent, position
+                "SELECT replica, counter, lamport, kind, parent, node, new_parent, position, payload
                  FROM ops
                  WHERE lamport > ?
                  ORDER BY lamport ASC, replica ASC, counter ASC",
@@ -145,6 +151,7 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
     let node: Vec<u8> = row.get(5)?;
     let new_parent: Option<Vec<u8>> = row.get(6)?;
     let position: Option<i64> = row.get(7)?;
+    let payload: Option<Vec<u8>> = row.get(8)?;
 
     let op_id = OperationId {
         replica: ReplicaId::new(replica),
@@ -162,6 +169,7 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
             })?)?,
             node: blob_to_node(node)?,
             position: position.unwrap_or(0) as usize,
+            payload,
         },
         "move" => OperationKind::Move {
             node: blob_to_node(node)?,
@@ -179,6 +187,10 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
         },
         "tombstone" => OperationKind::Tombstone {
             node: blob_to_node(node)?,
+        },
+        "payload" => OperationKind::Payload {
+            node: blob_to_node(node)?,
+            payload,
         },
         other => {
             return Err(rusqlite::Error::InvalidColumnType(

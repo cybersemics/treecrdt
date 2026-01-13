@@ -155,3 +155,95 @@ test("materialized tree: out-of-order ops rebuild correctly", async () => {
   const headLamportRow: any = db.prepare("SELECT treecrdt_head_lamport() AS v").get();
   expect(headLamportRow.v).toBe(2);
 });
+
+test("materialized tree: reindexes latest payload across moves for children(parent)", async () => {
+  const Database = await loadSqlite();
+  const { loadTreecrdtExtension, defaultExtensionPath } = await loadTreecrdt();
+
+  const docId = "treecrdt-materialized-tree-payload-move";
+  const db = new Database(":memory:");
+  loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
+  db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
+
+  const replica = Buffer.from("r1");
+  const root = Buffer.alloc(16, 0);
+  const p1 = makeNodeId(1);
+  const p2 = makeNodeId(2);
+  const child = makeNodeId(3);
+
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 1, 1, "insert", root, p1);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 2, 2, "insert", root, p2);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 3, 3, "insert", p1, child);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(
+    replica,
+    4,
+    4,
+    "payload",
+    child,
+    Buffer.from("hi"),
+  );
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?)").get(replica, 5, 5, "move", child, p2, 0);
+
+  const refsRow: any = db.prepare("SELECT treecrdt_oprefs_children(?) AS v").get(p2);
+  const refs = JSON.parse(refsRow.v) as number[][];
+  expect(refs.length).toBe(2);
+
+  const opsRow: any = db.prepare("SELECT treecrdt_ops_by_oprefs(?) AS v").get(JSON.stringify(refs));
+  const ops = JSON.parse(opsRow.v) as Array<{ kind: string; payload?: number[] | null }>;
+  expect(new Set(ops.map((op) => op.kind))).toEqual(new Set(["move", "payload"]));
+
+  const payloadOp = ops.find((op) => op.kind === "payload");
+  expect(payloadOp).toBeTruthy();
+  expect(Buffer.from(payloadOp?.payload ?? []).toString()).toBe("hi");
+});
+
+test("materialized tree: payload persists across reopen", async () => {
+  const Database = await loadSqlite();
+  const { loadTreecrdtExtension, defaultExtensionPath } = await loadTreecrdt();
+
+  const dir = mkdtempSync(join(tmpdir(), "treecrdt-payload-reopen-"));
+  const path = join(dir, "db.sqlite");
+  const docId = "treecrdt-materialized-tree-payload-reopen";
+  const replica = Buffer.from("r1");
+  const root = Buffer.alloc(16, 0);
+  const n1 = makeNodeId(1);
+
+  try {
+    {
+      const db = new Database(path);
+      loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
+      db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
+      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
+      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(
+        replica,
+        2,
+        2,
+        "payload",
+        n1,
+        Buffer.from("hello"),
+      );
+      db.close();
+    }
+
+    {
+      const db = new Database(path);
+      loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
+      db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
+
+      const refsRow: any = db.prepare("SELECT treecrdt_oprefs_children(?) AS v").get(root);
+      const refs = JSON.parse(refsRow.v) as number[][];
+      expect(refs.length).toBe(2);
+
+      const opsRow: any = db.prepare("SELECT treecrdt_ops_by_oprefs(?) AS v").get(JSON.stringify(refs));
+      const ops = JSON.parse(opsRow.v) as Array<{ kind: string; payload?: number[] | null }>;
+      expect(new Set(ops.map((op) => op.kind))).toEqual(new Set(["insert", "payload"]));
+
+      const payloadOp = ops.find((op) => op.kind === "payload");
+      expect(Buffer.from(payloadOp?.payload ?? []).toString()).toBe("hello");
+
+      db.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

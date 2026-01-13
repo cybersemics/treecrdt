@@ -12,6 +12,8 @@ struct NodeState {
     children: Vec<NodeId>,
     last_change: VersionVector,
     deleted_at: Option<VersionVector>,
+    payload: Option<Vec<u8>>,
+    payload_last_writer: Option<(Lamport, OperationId)>,
 }
 
 #[derive(Clone)]
@@ -33,6 +35,8 @@ impl NodeState {
             children: Vec::new(),
             last_change: VersionVector::new(),
             deleted_at: None,
+            payload: None,
+            payload_last_writer: None,
         }
     }
 
@@ -42,6 +46,8 @@ impl NodeState {
             children: Vec::new(),
             last_change: VersionVector::new(),
             deleted_at: None,
+            payload: None,
+            payload_last_writer: None,
         }
     }
 }
@@ -104,6 +110,22 @@ where
         self.commit_local(op)
     }
 
+    pub fn local_insert_with_payload(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        position: usize,
+        payload: impl Into<Vec<u8>>,
+    ) -> Result<Operation> {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let op = Operation::insert_with_payload(
+            &replica, counter, lamport, parent, node, position, payload,
+        );
+        self.commit_local(op)
+    }
+
     pub fn local_move(
         &mut self,
         node: NodeId,
@@ -123,6 +145,26 @@ where
         let lamport = self.clock.tick();
         let known_state = Some(Self::calculate_subtree_version_vector(&self.nodes, node));
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
+        self.commit_local(op)
+    }
+
+    pub fn local_set_payload(
+        &mut self,
+        node: NodeId,
+        payload: impl Into<Vec<u8>>,
+    ) -> Result<Operation> {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let op = Operation::set_payload(&replica, counter, lamport, node, payload);
+        self.commit_local(op)
+    }
+
+    pub fn local_clear_payload(&mut self, node: NodeId) -> Result<Operation> {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let op = Operation::clear_payload(&replica, counter, lamport, node);
         self.commit_local(op)
     }
 
@@ -175,6 +217,10 @@ where
                 n.parent.filter(|&p| p != NodeId::TRASH)
             }
         })
+    }
+
+    pub fn payload(&self, node: NodeId) -> Option<&[u8]> {
+        self.nodes.get(&node)?.payload.as_deref()
     }
 
     pub fn is_tombstoned(&self, node: NodeId) -> bool {
@@ -333,7 +379,8 @@ where
                 parent,
                 node,
                 position,
-            } => Self::apply_insert(nodes, op, *parent, *node, *position),
+                payload,
+            } => Self::apply_insert(nodes, op, *parent, *node, *position, payload.as_deref()),
             OperationKind::Move {
                 node,
                 new_parent,
@@ -341,6 +388,9 @@ where
             } => Self::apply_move(nodes, op, *node, *new_parent, *position),
             OperationKind::Delete { node } => Self::apply_delete(nodes, op, *node),
             OperationKind::Tombstone { node } => Self::apply_delete(nodes, op, *node),
+            OperationKind::Payload { node, payload } => {
+                Self::apply_payload(nodes, op, *node, payload.as_deref())
+            }
         }
         snapshot
     }
@@ -354,7 +404,8 @@ where
             OperationKind::Insert { node, .. }
             | OperationKind::Move { node, .. }
             | OperationKind::Delete { node }
-            | OperationKind::Tombstone { node } => *node,
+            | OperationKind::Tombstone { node }
+            | OperationKind::Payload { node, .. } => *node,
         };
         Self::ensure_node(nodes, node_id);
         let parent = nodes.get(&node_id).and_then(|n| n.parent);
@@ -368,7 +419,8 @@ where
             OperationKind::Insert { node, .. }
             | OperationKind::Move { node, .. }
             | OperationKind::Delete { node }
-            | OperationKind::Tombstone { node } => *node,
+            | OperationKind::Tombstone { node }
+            | OperationKind::Payload { node, .. } => *node,
         };
         Self::ensure_node(nodes, node_id);
         Self::detach(nodes, node_id);
@@ -390,6 +442,7 @@ where
         parent: NodeId,
         node: NodeId,
         position: usize,
+        payload: Option<&[u8]>,
     ) {
         if parent == node || Self::introduces_cycle(nodes, node, parent) {
             return;
@@ -398,6 +451,9 @@ where
         Self::ensure_node(nodes, node);
         Self::detach(nodes, node);
         Self::attach(nodes, node, parent, position);
+        if payload.is_some() {
+            Self::apply_payload(nodes, op, node, payload);
+        }
         Self::update_last_change(nodes, op, node);
         Self::update_last_change(nodes, op, parent);
     }
@@ -457,6 +513,28 @@ where
         } else {
             state.deleted_at = Some(delete_vv);
         }
+    }
+
+    fn apply_payload(
+        nodes: &mut HashMap<NodeId, NodeState>,
+        op: &Operation,
+        node: NodeId,
+        payload: Option<&[u8]>,
+    ) {
+        Self::ensure_node(nodes, node);
+        let Some(state) = nodes.get_mut(&node) else {
+            return;
+        };
+
+        if let Some((lamport, id)) = &state.payload_last_writer {
+            if (op.meta.lamport, &op.meta.id) <= (*lamport, id) {
+                return;
+            }
+        }
+
+        state.payload = payload.map(|p| p.to_vec());
+        state.payload_last_writer = Some((op.meta.lamport, op.meta.id.clone()));
+        Self::update_last_change(nodes, op, node);
     }
 
     fn operation_version_vector(op: &Operation) -> VersionVector {
