@@ -110,6 +110,22 @@ where
         self.commit_local(op)
     }
 
+    pub fn local_insert_with_payload(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        position: usize,
+        payload: impl Into<Vec<u8>>,
+    ) -> Result<Operation> {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let op = Operation::insert_with_payload(
+            &replica, counter, lamport, parent, node, position, payload,
+        );
+        self.commit_local(op)
+    }
+
     pub fn local_move(
         &mut self,
         node: NodeId,
@@ -132,7 +148,11 @@ where
         self.commit_local(op)
     }
 
-    pub fn local_set_payload(&mut self, node: NodeId, payload: impl Into<Vec<u8>>) -> Result<Operation> {
+    pub fn local_set_payload(
+        &mut self,
+        node: NodeId,
+        payload: impl Into<Vec<u8>>,
+    ) -> Result<Operation> {
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
@@ -359,7 +379,8 @@ where
                 parent,
                 node,
                 position,
-            } => Self::apply_insert(nodes, op, *parent, *node, *position),
+                payload,
+            } => Self::apply_insert(nodes, op, *parent, *node, *position, payload.as_deref()),
             OperationKind::Move {
                 node,
                 new_parent,
@@ -421,6 +442,7 @@ where
         parent: NodeId,
         node: NodeId,
         position: usize,
+        payload: Option<&[u8]>,
     ) {
         if parent == node || Self::introduces_cycle(nodes, node, parent) {
             return;
@@ -429,6 +451,9 @@ where
         Self::ensure_node(nodes, node);
         Self::detach(nodes, node);
         Self::attach(nodes, node, parent, position);
+        if payload.is_some() {
+            Self::apply_payload(nodes, op, node, payload);
+        }
         Self::update_last_change(nodes, op, node);
         Self::update_last_change(nodes, op, parent);
     }

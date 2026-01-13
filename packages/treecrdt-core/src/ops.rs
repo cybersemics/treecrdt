@@ -22,6 +22,11 @@ pub enum OperationKind {
         parent: NodeId,
         node: NodeId,
         position: usize,
+        /// Optional application payload to initialize alongside insert.
+        ///
+        /// When present, this is treated like a `Payload` op at the same `(lamport, replica, counter)`,
+        /// with last-writer-wins ordering per node.
+        payload: Option<Vec<u8>>,
     },
     Move {
         node: NodeId,
@@ -41,7 +46,10 @@ pub enum OperationKind {
     ///
     /// - `payload = Some(bytes)` sets the payload
     /// - `payload = None` clears the payload
-    Payload { node: NodeId, payload: Option<Vec<u8>> },
+    Payload {
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+    },
 }
 
 /// Full operation envelope.
@@ -61,6 +69,38 @@ impl Operation {
         node: NodeId,
         position: usize,
     ) -> Self {
+        Self::insert_with_optional_payload(replica, counter, lamport, parent, node, position, None)
+    }
+
+    pub fn insert_with_payload(
+        replica: &ReplicaId,
+        counter: u64,
+        lamport: Lamport,
+        parent: NodeId,
+        node: NodeId,
+        position: usize,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self::insert_with_optional_payload(
+            replica,
+            counter,
+            lamport,
+            parent,
+            node,
+            position,
+            Some(payload.into()),
+        )
+    }
+
+    pub fn insert_with_optional_payload(
+        replica: &ReplicaId,
+        counter: u64,
+        lamport: Lamport,
+        parent: NodeId,
+        node: NodeId,
+        position: usize,
+        payload: Option<Vec<u8>>,
+    ) -> Self {
         Self {
             meta: OperationMetadata {
                 id: OperationId::new(replica, counter),
@@ -71,6 +111,7 @@ impl Operation {
                 parent,
                 node,
                 position,
+                payload,
             },
         }
     }
@@ -152,7 +193,12 @@ impl Operation {
         Self::payload(replica, counter, lamport, node, Some(payload.into()))
     }
 
-    pub fn clear_payload(replica: &ReplicaId, counter: u64, lamport: Lamport, node: NodeId) -> Self {
+    pub fn clear_payload(
+        replica: &ReplicaId,
+        counter: u64,
+        lamport: Lamport,
+        node: NodeId,
+    ) -> Self {
         Self::payload(replica, counter, lamport, node, None)
     }
 }

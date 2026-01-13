@@ -66,13 +66,27 @@ function buildAppendOp(
 
   switch (kind.type) {
     case "insert":
+      if (kind.payload !== undefined) {
+        return {
+          sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)",
+          params: [
+            ...base,
+            "insert",
+            opts.serializeNodeId(kind.parent),
+            opts.serializeNodeId(kind.node),
+            kind.position,
+            kind.payload,
+          ],
+        };
+      }
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,NULL)",
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7)",
         params: [
           ...base,
           "insert",
           opts.serializeNodeId(kind.parent),
           opts.serializeNodeId(kind.node),
+          kind.position,
         ],
       };
     case "move":
@@ -135,7 +149,14 @@ function buildAppendOpsPayload(
       position: "position" in kind ? kind.position ?? null : null,
     };
     if (kind.type === "insert") {
-      return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
+      const payload = kind.payload ? Array.from(kind.payload) : undefined;
+      return {
+        ...base,
+        parent: serialize(kind.parent),
+        node: serialize(kind.node),
+        new_parent: null,
+        ...(payload ? { payload } : {}),
+      };
     } else if (kind.type === "move") {
       return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
     } else if (kind.type === "delete") {
@@ -361,6 +382,13 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
     const lamport = Number(row.lamport);
     const base = { meta: { id: { replica, counter }, lamport } } as Operation;
     if (row.kind === "insert") {
+      const rawPayload = row.payload;
+      const payload =
+        rawPayload === null || rawPayload === undefined
+          ? undefined
+          : rawPayload instanceof Uint8Array
+            ? rawPayload
+            : Uint8Array.from(rawPayload as any);
       return {
         ...base,
         kind: {
@@ -368,6 +396,7 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
           parent: decodeNodeId(row.parent),
           node: decodeNodeId(row.node),
           position: row.position === null || row.position === undefined ? 0 : Number(row.position),
+          ...(payload ? { payload } : {}),
         },
       } as Operation;
     }

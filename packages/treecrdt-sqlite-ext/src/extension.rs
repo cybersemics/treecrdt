@@ -544,6 +544,10 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
                     continue;
                 }
 
+                if kind == "insert" && payload.is_some() {
+                    payload_by_node.insert(node, PayloadStateRow { payload, op_ref });
+                }
+
                 if let Some(op) = old_parent {
                     if !old_tombstone {
                         if let Some(children) = children_by_parent.get_mut(&op) {
@@ -882,10 +886,9 @@ impl MaterializeCtx {
         let select_node_sql =
             CString::new("SELECT parent,pos,tombstone FROM tree_nodes WHERE node = ?1 LIMIT 1")
                 .expect("select node sql");
-        let select_payload_opref_sql = CString::new(
-            "SELECT op_ref FROM tree_payload WHERE node = ?1 LIMIT 1",
-        )
-        .expect("select payload opref sql");
+        let select_payload_opref_sql =
+            CString::new("SELECT op_ref FROM tree_payload WHERE node = ?1 LIMIT 1")
+                .expect("select payload opref sql");
         let upsert_payload_sql = CString::new(
             "INSERT INTO tree_payload(node,payload,op_ref) VALUES (?1,?2,?3) \
              ON CONFLICT(node) DO UPDATE SET payload = excluded.payload, op_ref = excluded.op_ref",
@@ -1054,6 +1057,39 @@ fn materialize_inserted_op(
                 Some(sqlite_column_int64(ctx.select_node, 1))
             };
             old_tombstone = sqlite_column_int64(ctx.select_node, 2) != 0;
+        }
+    }
+
+    // Insert ops may carry an initial payload (application data). When present, treat it like a
+    // payload update at the same op key, with LWW semantics provided by canonical op ordering.
+    if kind == "insert" {
+        if let Some(payload) = payload {
+            unsafe {
+                sqlite_clear_bindings(ctx.upsert_payload);
+                sqlite_reset(ctx.upsert_payload);
+                sqlite_bind_blob(
+                    ctx.upsert_payload,
+                    1,
+                    node.as_ptr() as *const c_void,
+                    node.len() as c_int,
+                    None,
+                );
+                sqlite_bind_blob(
+                    ctx.upsert_payload,
+                    2,
+                    payload.as_ptr() as *const c_void,
+                    payload.len() as c_int,
+                    None,
+                );
+                sqlite_bind_blob(
+                    ctx.upsert_payload,
+                    3,
+                    op_ref.as_ptr() as *const c_void,
+                    op_ref.len() as c_int,
+                    None,
+                );
+                sqlite_step(ctx.upsert_payload);
+            }
         }
     }
 
@@ -2132,7 +2168,8 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
             unsafe { sqlite_finalize(stmt) };
         } else {
             // Column missing (or another prepare error). Attempt to add the column.
-            let alter = CString::new("ALTER TABLE ops ADD COLUMN payload BLOB").expect("alter ops add payload");
+            let alter = CString::new("ALTER TABLE ops ADD COLUMN payload BLOB")
+                .expect("alter ops add payload");
             let alter_rc = sqlite_exec(db, alter.as_ptr(), None, null_mut(), null_mut());
             if alter_rc != SQLITE_OK as c_int {
                 return Err(alter_rc);
@@ -2381,12 +2418,13 @@ unsafe extern "C" fn treecrdt_append_op(
         std::str::from_utf8(unsafe { slice::from_raw_parts(kind_ptr, kind_len) }).unwrap_or("")
     };
 
-    // Only `kind = "payload"` is allowed to pass the optional 9th argument.
-    if kind != "payload" && argc != 8 {
+    // Only `kind = "payload"` and `kind = "insert"` are allowed to pass the optional 9th argument.
+    if kind != "payload" && kind != "insert" && argc != 8 {
         unsafe { sqlite_finalize(stmt) };
         sqlite_result_error(
             ctx,
-            b"treecrdt_append_op: only kind=payload accepts the payload arg\0".as_ptr() as *const c_char,
+            b"treecrdt_append_op: only kind=payload or kind=insert accepts the payload arg\0"
+                .as_ptr() as *const c_char,
         );
         return;
     }

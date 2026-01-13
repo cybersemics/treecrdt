@@ -55,7 +55,8 @@ impl Storage for SqliteStorage {
                 parent,
                 node,
                 position,
-            } => ("insert", Some(parent), node, None, Some(position), None),
+                payload,
+            } => ("insert", Some(parent), node, None, Some(position), payload),
             OperationKind::Move {
                 node,
                 new_parent,
@@ -63,7 +64,9 @@ impl Storage for SqliteStorage {
             } => ("move", None, node, Some(new_parent), Some(position), None),
             OperationKind::Delete { node } => ("delete", None, node, None, None, None),
             OperationKind::Tombstone { node } => ("tombstone", None, node, None, None, None),
-            OperationKind::Payload { node, payload } => ("payload", None, node, None, None, payload),
+            OperationKind::Payload { node, payload } => {
+                ("payload", None, node, None, None, payload)
+            }
         };
 
         let lamport: i64 = op
@@ -166,6 +169,7 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
             })?)?,
             node: blob_to_node(node)?,
             position: position.unwrap_or(0) as usize,
+            payload,
         },
         "move" => OperationKind::Move {
             node: blob_to_node(node)?,

@@ -63,3 +63,71 @@ fn payload_clear_is_last_writer_wins() {
     assert_eq!(b.payload(node), None);
 }
 
+#[test]
+fn payload_can_arrive_before_insert() {
+    let mut tree = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let node = NodeId(1);
+    let insert = Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, 0);
+    let payload = Operation::set_payload(&ReplicaId::new(b"a"), 2, 2, node, b"hello");
+
+    // Receive payload first, then receive the earlier insert (out of order by lamport).
+    tree.apply_remote(payload).unwrap();
+    tree.apply_remote(insert).unwrap();
+
+    assert_eq!(tree.parent(node), Some(NodeId::ROOT));
+    assert_eq!(tree.payload(node), Some(&b"hello"[..]));
+    assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
+}
+
+#[test]
+fn insert_with_payload_sets_value() {
+    let mut tree = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let node = NodeId(1);
+    let insert = Operation::insert_with_payload(
+        &ReplicaId::new(b"a"),
+        1,
+        1,
+        NodeId::ROOT,
+        node,
+        0,
+        b"hello",
+    );
+
+    tree.apply_remote(insert).unwrap();
+
+    assert_eq!(tree.parent(node), Some(NodeId::ROOT));
+    assert_eq!(tree.payload(node), Some(&b"hello"[..]));
+    assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
+}
+
+#[test]
+fn insert_payload_does_not_override_newer_payload() {
+    let mut tree = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let node = NodeId(1);
+    let insert =
+        Operation::insert_with_payload(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, 0, b"old");
+    let payload = Operation::set_payload(&ReplicaId::new(b"a"), 2, 2, node, b"new");
+
+    // Receive payload first, then receive the earlier insert-with-payload (out of order by lamport).
+    tree.apply_remote(payload).unwrap();
+    tree.apply_remote(insert).unwrap();
+
+    assert_eq!(tree.parent(node), Some(NodeId::ROOT));
+    assert_eq!(tree.payload(node), Some(&b"new"[..]));
+    assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
+}
