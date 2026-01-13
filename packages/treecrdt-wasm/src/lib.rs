@@ -60,12 +60,27 @@ fn op_to_js(op: &Operation) -> JsOp {
             parent,
             node,
             position,
-        } => ("insert", Some(*parent), *node, None, Some(*position), None),
+            payload,
+        } => (
+            "insert",
+            Some(*parent),
+            *node,
+            None,
+            Some(*position),
+            payload.as_deref().map(bytes_to_hex),
+        ),
         OperationKind::Move {
             node,
             new_parent,
             position,
-        } => ("move", None, *node, Some(*new_parent), Some(*position), None),
+        } => (
+            "move",
+            None,
+            *node,
+            Some(*new_parent),
+            Some(*position),
+            None,
+        ),
         OperationKind::Delete { node } => ("delete", None, *node, None, None, None),
         OperationKind::Tombstone { node } => ("tombstone", None, *node, None, None, None),
         OperationKind::Payload { node, payload } => (
@@ -99,14 +114,19 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
     let lamport = js.lamport;
 
     let op = match js.kind.as_str() {
-        "insert" => Operation::insert(
-            &replica,
-            counter,
-            lamport,
-            js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
-            hex_to_node(&js.node)?,
-            js.position.unwrap_or(0),
-        ),
+        "insert" => {
+            let parent = js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT);
+            let node = hex_to_node(&js.node)?;
+            let position = js.position.unwrap_or(0);
+            if let Some(payload_hex) = js.payload.as_deref() {
+                let payload = hex_to_bytes(payload_hex)?;
+                Operation::insert_with_payload(
+                    &replica, counter, lamport, parent, node, position, payload,
+                )
+            } else {
+                Operation::insert(&replica, counter, lamport, parent, node, position)
+            }
+        }
         "move" => Operation::move_node(
             &replica,
             counter,

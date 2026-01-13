@@ -21,6 +21,13 @@ export type OperationKind =
       parent: NodeId;
       node: NodeId;
       position: number;
+      /**
+       * Optional application payload to initialize alongside insert.
+       *
+       * When present, this is treated like a `payload` op at the same `(lamport, replica, counter)`,
+       * with last-writer-wins ordering per node.
+       */
+      payload?: Uint8Array;
     }
   | {
       type: "move";
@@ -78,7 +85,7 @@ export interface StorageAdapter {
 }
 
 export interface TreeCRDT {
-  insert(parent: NodeId, node: NodeId, position: number): Promise<Operation> | Operation;
+  insert(parent: NodeId, node: NodeId, position: number, payload?: Uint8Array): Promise<Operation> | Operation;
   move(node: NodeId, newParent: NodeId, position: number): Promise<Operation> | Operation;
   delete(node: NodeId): Promise<Operation> | Operation;
   setPayload(node: NodeId, payload: Uint8Array | null): Promise<Operation> | Operation;

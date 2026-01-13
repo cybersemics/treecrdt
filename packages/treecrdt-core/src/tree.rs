@@ -122,6 +122,20 @@ where
         self.commit_local(op)
     }
 
+    pub fn local_insert_with_payload(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        position: usize,
+        payload: impl Into<Vec<u8>>,
+    ) -> Result<Operation> {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let op = Operation::insert_with_payload(&replica, counter, lamport, parent, node, position, payload);
+        self.commit_local(op)
+    }
+
     pub fn local_move(
         &mut self,
         node: NodeId,
@@ -433,7 +447,13 @@ where
                 parent,
                 node,
                 position,
-            } => Self::apply_insert(nodes, op, *parent, *node, *position)?,
+                payload,
+            } => {
+                Self::apply_insert(nodes, op, *parent, *node, *position)?;
+                if payload.is_some() {
+                    Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?;
+                }
+            }
             OperationKind::Move {
                 node,
                 new_parent,

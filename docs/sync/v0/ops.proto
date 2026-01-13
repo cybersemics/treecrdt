@@ -14,6 +14,7 @@ message InsertOp {
   NodeId parent = 1;
   NodeId node = 2;
   uint32 position = 3;
+  optional bytes payload = 4;
 }
 
 message MoveOp {

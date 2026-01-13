@@ -163,14 +163,18 @@ function toProtoOperation(op: Operation) {
 
   switch (op.kind.type) {
     case "insert":
+      const insertOp: any = {
+        parent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.parent) }),
+        node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
+        position: op.kind.position,
+      };
+      if (op.kind.payload !== undefined) insertOp.payload = op.kind.payload;
       return create(OperationSchema, {
         meta,
         kind: {
           case: "insert",
           value: create(InsertOpSchema, {
-            parent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.parent) }),
-            node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
-            position: op.kind.position,
+            ...insertOp,
           }),
         },
       });
@@ -246,6 +250,7 @@ function fromProtoOperation(op: any): Operation {
       const parentBytes = op.kind.value?.parent?.bytes as Uint8Array | undefined;
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
       if (!parentBytes || !nodeBytes) throw new Error("InsertOp missing node ids");
+      const payloadBytes = op.kind.value?.payload as Uint8Array | undefined;
       return {
         meta: outMeta,
         kind: {
@@ -253,6 +258,7 @@ function fromProtoOperation(op: any): Operation {
           parent: nodeIdFromBytes16(parentBytes),
           node: nodeIdFromBytes16(nodeBytes),
           position: op.kind.value.position ?? 0,
+          ...(payloadBytes !== undefined ? { payload: payloadBytes } : {}),
         },
       };
     }

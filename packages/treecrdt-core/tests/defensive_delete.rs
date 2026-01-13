@@ -209,6 +209,82 @@ fn defensive_delete_insert_then_delete_no_restoration() {
 }
 
 #[test]
+fn defensive_delete_parent_then_payload_change_restores_parent() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let parent = NodeId(1);
+
+    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    // Client B sets payload first, then Client A deletes without awareness.
+    // Defensive delete: parent should be restored because delete was unaware of modifications.
+    let set_payload_op = crdt_b.local_set_payload(parent, b"hello".to_vec()).unwrap();
+    assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
+
+    let delete_op = crdt_a.local_delete(parent).unwrap();
+    assert!(crdt_a.is_tombstoned(parent));
+
+    crdt_a.apply_remote(set_payload_op.clone()).unwrap();
+    crdt_b.apply_remote(delete_op).unwrap();
+    assert!(!crdt_a.is_tombstoned(parent), "Parent should be restored");
+    assert!(!crdt_b.is_tombstoned(parent), "Parent should be restored");
+    assert_eq!(crdt_a.payload(parent), Some(&b"hello"[..]));
+    assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
+fn defensive_delete_parent_then_payload_change_no_restoration_when_aware() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let parent = NodeId(1);
+
+    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    let set_payload_op = crdt_b.local_set_payload(parent, b"hello".to_vec()).unwrap();
+    crdt_a.apply_remote(set_payload_op).unwrap();
+
+    // Client A deletes with full awareness of payload.
+    let delete_op = crdt_a.local_delete(parent).unwrap();
+    assert!(crdt_a.is_tombstoned(parent));
+
+    crdt_b.apply_remote(delete_op).unwrap();
+
+    // Parent should stay tombstoned because delete happened with full awareness.
+    assert!(crdt_a.is_tombstoned(parent));
+    assert!(crdt_b.is_tombstoned(parent));
+    assert_eq!(crdt_a.payload(parent), Some(&b"hello"[..]));
+    assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
+
+    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
 fn defensive_delete_later_delete_unaware_restores_parent() {
     let mut crdt_a = TreeCrdt::new(
         ReplicaId::new(b"a"),

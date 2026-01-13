@@ -90,13 +90,27 @@ function buildAppendOp(
 
   switch (kind.type) {
     case "insert":
+      if (kind.payload !== undefined) {
+        return {
+          sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)",
+          params: [
+            ...base,
+            "insert",
+            opts.serializeNodeId(kind.parent),
+            opts.serializeNodeId(kind.node),
+            kind.position,
+            kind.payload,
+          ],
+        };
+      }
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,NULL,NULL)",
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)",
         params: [
           ...base,
           "insert",
           opts.serializeNodeId(kind.parent),
           opts.serializeNodeId(kind.node),
+          kind.position,
         ],
       };
     case "move":
@@ -164,7 +178,14 @@ function buildAppendOpsPayload(
       ...(knownState && knownState.length > 0 ? { known_state: Array.from(knownState) } : {}),
     };
     if (kind.type === "insert") {
-      return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
+      const payload = kind.payload ? Array.from(kind.payload) : undefined;
+      return {
+        ...base,
+        parent: serialize(kind.parent),
+        node: serialize(kind.node),
+        new_parent: null,
+        ...(payload ? { payload } : {}),
+      };
     } else if (kind.type === "move") {
       return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
     } else if (kind.type === "delete") {
