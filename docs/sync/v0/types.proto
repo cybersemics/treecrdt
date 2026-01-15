@@ -33,4 +33,7 @@ message OperationId {
 message OperationMetadata {
   OperationId id = 1;
   uint64 lamport = 2;
+  // Optional defensive-deletion awareness payload for delete operations.
+  // When present, this is the JSON-encoded `VersionVector` blob stored by the SQLite extension.
+  bytes known_state = 3;
 }

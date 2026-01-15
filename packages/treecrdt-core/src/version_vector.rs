@@ -193,9 +193,85 @@ impl ReplicaVersion {
 ///
 /// This represents causal knowledge without assuming "contiguous time" (i.e. it can represent holes).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct VersionVector {
     entries: HashMap<ReplicaId, ReplicaVersion>,
+}
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use super::{ReplicaVersion, VersionVector};
+    use crate::ids::ReplicaId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct VersionVectorEntry {
+        replica: Vec<u8>,
+        frontier: u64,
+        ranges: Vec<(u64, u64)>,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct VersionVectorRepr {
+        entries: Vec<VersionVectorEntry>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum VersionVectorWire {
+        Repr(VersionVectorRepr),
+        Legacy {
+            entries: HashMap<ReplicaId, ReplicaVersion>,
+        },
+    }
+
+    impl Serialize for VersionVector {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut entries: Vec<VersionVectorEntry> = self
+                .entries
+                .iter()
+                .map(|(replica, version)| VersionVectorEntry {
+                    replica: replica.0.clone(),
+                    frontier: version.frontier,
+                    ranges: version.ranges.clone(),
+                })
+                .collect();
+            entries.sort_by(|a, b| a.replica.cmp(&b.replica));
+            VersionVectorRepr { entries }.serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for VersionVector {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let wire = VersionVectorWire::deserialize(deserializer)?;
+            match wire {
+                VersionVectorWire::Repr(repr) => {
+                    let mut entries: HashMap<ReplicaId, ReplicaVersion> = HashMap::new();
+                    for entry in repr.entries {
+                        let replica = ReplicaId(entry.replica);
+                        let incoming = ReplicaVersion {
+                            frontier: entry.frontier,
+                            ranges: entry.ranges,
+                        };
+
+                        if let Some(existing) = entries.get_mut(&replica) {
+                            existing.union(&incoming);
+                        } else {
+                            entries.insert(replica, incoming);
+                        }
+                    }
+                    Ok(VersionVector { entries })
+                }
+                VersionVectorWire::Legacy { entries } => Ok(VersionVector { entries }),
+            }
+        }
+    }
 }
 
 impl VersionVector {

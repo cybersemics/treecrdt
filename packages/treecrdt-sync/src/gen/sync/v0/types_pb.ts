@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file sync/v0/types.proto.
  */
 export const file_sync_v0_types: GenFile = /*@__PURE__*/
-  fileDesc("ChNzeW5jL3YwL3R5cGVzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIhcKBk5vZGVJZBINCgVieXRlcxgBIAEoDCIaCglSZXBsaWNhSWQSDQoFYnl0ZXMYASABKAwiFgoFT3BSZWYSDQoFYnl0ZXMYASABKAwiTAoLT3BlcmF0aW9uSWQSLAoHcmVwbGljYRgBIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUmVwbGljYUlkEg8KB2NvdW50ZXIYAiABKAQiTwoRT3BlcmF0aW9uTWV0YWRhdGESKQoCaWQYASABKAsyHS50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbklkEg8KB2xhbXBvcnQYAiABKARiBnByb3RvMw");
+  fileDesc("ChNzeW5jL3YwL3R5cGVzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIhcKBk5vZGVJZBINCgVieXRlcxgBIAEoDCIaCglSZXBsaWNhSWQSDQoFYnl0ZXMYASABKAwiFgoFT3BSZWYSDQoFYnl0ZXMYASABKAwiTAoLT3BlcmF0aW9uSWQSLAoHcmVwbGljYRgBIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUmVwbGljYUlkEg8KB2NvdW50ZXIYAiABKAQiZAoRT3BlcmF0aW9uTWV0YWRhdGESKQoCaWQYASABKAsyHS50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbklkEg8KB2xhbXBvcnQYAiABKAQSEwoLa25vd25fc3RhdGUYAyABKAxiBnByb3RvMw");
 
 /**
  * @generated from message treecrdt.sync.v0.NodeId
@@ -98,6 +98,14 @@ export type OperationMetadata = Message<"treecrdt.sync.v0.OperationMetadata"> & 
    * @generated from field: uint64 lamport = 2;
    */
   lamport: bigint;
+
+  /**
+   * Optional defensive-deletion awareness payload for delete operations.
+   * When present, this is the JSON-encoded `VersionVector` blob stored by the SQLite extension.
+   *
+   * @generated from field: bytes known_state = 3;
+   */
+  knownState: Uint8Array;
 };
 
 /**

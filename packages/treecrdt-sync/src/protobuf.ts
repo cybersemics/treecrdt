@@ -150,6 +150,7 @@ function toProtoOperation(op: Operation) {
       counter: u64FromNumber(op.meta.id.counter, "OperationId.counter"),
     }),
     lamport: u64FromNumber(op.meta.lamport, "OperationMetadata.lamport"),
+    knownState: op.meta.knownState ?? new Uint8Array(),
   });
 
   switch (op.kind.type) {
@@ -211,9 +212,11 @@ function fromProtoOperation(op: any): Operation {
   if (counter === undefined) throw new Error("Operation.meta.id.counter missing");
   if (lamport === undefined) throw new Error("Operation.meta.lamport missing");
 
+  const knownState = (meta?.knownState as Uint8Array | undefined) ?? undefined;
   const outMeta = {
     id: { replica: replicaIdFromBytes(replica), counter: u64ToNumber(counter, "OperationId.counter") },
     lamport: u64ToNumber(lamport, "OperationMetadata.lamport"),
+    ...(knownState && knownState.length > 0 ? { knownState } : {}),
   };
 
   switch (op.kind.case) {

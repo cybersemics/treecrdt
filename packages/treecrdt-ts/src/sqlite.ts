@@ -122,12 +122,14 @@ function buildAppendOpsPayload(
     const { id, lamport } = meta;
     const { replica, counter } = id;
     const serReplica = serializeReplica(replica);
+    const knownState = meta.knownState;
     const base = {
       replica: Array.from(serReplica),
       counter,
       lamport,
       kind: kind.type,
       position: "position" in kind ? kind.position ?? null : null,
+      ...(knownState && knownState.length > 0 ? { known_state: Array.from(knownState) } : {}),
     };
     if (kind.type === "insert") {
       return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
@@ -146,6 +148,12 @@ async function treecrdtAppendOp(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica
 ): Promise<void> {
+  if (op.meta.knownState && op.meta.knownState.length > 0) {
+    const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
+    await runner.getText("SELECT treecrdt_append_ops(?1)", [JSON.stringify(payload)]);
+    return;
+  }
+
   const { meta, kind } = op;
   const { id, lamport } = meta;
   const { replica, counter } = id;
@@ -346,7 +354,9 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
     const replica = decodeReplicaId(row.replica);
     const counter = Number(row.counter);
     const lamport = Number(row.lamport);
-    const base = { meta: { id: { replica, counter }, lamport } } as Operation;
+    const knownState =
+      row.known_state && (row.known_state instanceof Uint8Array ? row.known_state : Uint8Array.from(row.known_state));
+    const base = { meta: { id: { replica, counter }, lamport, ...(knownState ? { knownState } : {}) } } as Operation;
     if (row.kind === "insert") {
       return {
         ...base,

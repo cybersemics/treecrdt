@@ -18,7 +18,7 @@ fn applies_insert_after_parent_arrives_out_of_order() {
     let parent_op = Operation::insert(&replica, 2, 2, NodeId::ROOT, parent, 0);
     crdt.apply_remote(parent_op).unwrap();
 
-    assert_eq!(crdt.parent(child), Some(parent));
+    assert_eq!(crdt.parent(child).unwrap(), Some(parent));
     assert_eq!(crdt.children(parent).unwrap(), &[child]);
 }
 
@@ -44,7 +44,7 @@ fn move_applied_after_insert_when_delivered_out_of_order() {
     crdt.apply_remote(parent_insert).unwrap();
     crdt.apply_remote(node_insert).unwrap();
 
-    assert_eq!(crdt.parent(node), Some(parent));
+    assert_eq!(crdt.parent(node).unwrap(), Some(parent));
     assert_eq!(crdt.children(parent).unwrap(), &[node]);
 }
 
@@ -66,7 +66,7 @@ fn replay_rebuilds_state_and_advanced_clock() {
     let mut crdt = TreeCrdt::new(replica.clone(), storage, LamportClock::default());
     crdt.replay_from_storage().unwrap();
 
-    assert_eq!(crdt.parent(node), Some(parent));
+    assert_eq!(crdt.parent(node).unwrap(), Some(parent));
     assert_eq!(crdt.children(parent).unwrap(), &[node]);
     assert_eq!(crdt.lamport(), 5);
 

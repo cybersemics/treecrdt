@@ -40,7 +40,7 @@ fn permutations_converge() {
             crdt.apply_remote(op.clone()).unwrap();
         }
         crdt.validate_invariants().unwrap();
-        let snapshot = crdt.nodes();
+        let snapshot = crdt.nodes().unwrap();
         if let Some(base) = &baseline {
             assert_eq!(snapshot, *base);
         } else {

@@ -278,7 +278,7 @@ mod tests {
         let mut crdt = TreeCrdt::new(replica, storage, LamportClock::default());
         crdt.replay_from_storage().unwrap();
 
-        assert_eq!(crdt.parent(child), Some(parent));
+        assert_eq!(crdt.parent(child).unwrap(), Some(parent));
         assert_eq!(crdt.children(parent).unwrap(), &[child]);
     }
 }

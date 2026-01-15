@@ -10,6 +10,9 @@ export type OperationId = {
 export type OperationMetadata = {
   id: OperationId;
   lamport: Lamport;
+  // Optional defensive-deletion awareness payload for delete operations.
+  // This is carried end-to-end as an opaque blob (JSON-encoded VersionVector in v0).
+  knownState?: Uint8Array;
 };
 
 export type OperationKind =

@@ -15,12 +15,12 @@ fn inserts_and_moves_nodes() {
     crdt.local_insert(root, a, 0).unwrap();
     crdt.local_insert(a, b, 0).unwrap();
 
-    assert_eq!(crdt.parent(a), Some(root));
-    assert_eq!(crdt.parent(b), Some(a));
+    assert_eq!(crdt.parent(a).unwrap(), Some(root));
+    assert_eq!(crdt.parent(b).unwrap(), Some(a));
 
     // move b under root
     crdt.local_move(b, root, 0).unwrap();
-    assert_eq!(crdt.parent(b), Some(root));
+    assert_eq!(crdt.parent(b).unwrap(), Some(root));
     assert_eq!(crdt.children(root).unwrap(), &[b, a]);
 }
 
@@ -51,13 +51,13 @@ fn delete_marks_tombstone_and_removes_from_parent() {
     crdt.local_insert(NodeId::ROOT, child, 0).unwrap();
     crdt.local_delete(child).unwrap();
 
-    assert!(crdt.is_tombstoned(child));
-    assert_eq!(crdt.parent(child), Some(NodeId::TRASH));
+    assert!(crdt.is_tombstoned(child).unwrap());
+    assert_eq!(crdt.parent(child).unwrap(), Some(NodeId::TRASH));
     assert!(crdt.children(NodeId::ROOT).unwrap().is_empty());
 
     crdt.local_move(child, NodeId::ROOT, 0).unwrap();
-    assert!(!crdt.is_tombstoned(child));
-    assert_eq!(crdt.parent(child), Some(NodeId::ROOT));
+    assert!(!crdt.is_tombstoned(child).unwrap());
+    assert_eq!(crdt.parent(child).unwrap(), Some(NodeId::ROOT));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn prevents_cycle_on_move() {
 
     crdt.apply_remote(Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, 0))
         .unwrap();
-    assert_eq!(crdt.parent(a), Some(root));
+    assert_eq!(crdt.parent(a).unwrap(), Some(root));
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn cycles_are_blocked() {
 
     let bad_move = Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, 0);
     crdt.apply_remote(bad_move).unwrap();
-    assert_eq!(crdt.parent(a), Some(root));
-    assert_eq!(crdt.parent(b), Some(a));
+    assert_eq!(crdt.parent(a).unwrap(), Some(root));
+    assert_eq!(crdt.parent(b).unwrap(), Some(a));
     crdt.validate_invariants().unwrap();
 }

@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId};
 use crate::ops::Operation;
+use crate::version_vector::VersionVector;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,30 @@ pub trait Storage {
 pub trait IndexProvider {
     fn children_of(&self, node: NodeId) -> Result<Vec<NodeId>>;
     fn exists(&self, node: NodeId) -> bool;
+}
+
+/// Storage for materialized node state (parent/children ordering + causal metadata).
+///
+/// This is the seam used by SQLite/wa-sqlite adapters so the core CRDT owns all tree logic
+/// while embedders can decide how to persist and index node state.
+pub trait NodeStore {
+    fn reset(&mut self) -> Result<()>;
+    fn ensure_node(&mut self, node: NodeId) -> Result<()>;
+    fn exists(&self, node: NodeId) -> Result<bool>;
+
+    fn parent(&self, node: NodeId) -> Result<Option<NodeId>>;
+    fn children(&self, parent: NodeId) -> Result<Vec<NodeId>>;
+
+    fn detach(&mut self, node: NodeId) -> Result<()>;
+    fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()>;
+
+    fn last_change(&self, node: NodeId) -> Result<VersionVector>;
+    fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
+
+    fn deleted_at(&self, node: NodeId) -> Result<Option<VersionVector>>;
+    fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
+
+    fn all_nodes(&self) -> Result<Vec<NodeId>>;
 }
 
 /// Lightweight snapshot to expose to storage adapters.
@@ -115,5 +142,149 @@ impl IndexProvider for MemoryStorage {
             crate::ops::OperationKind::Delete { node: n } => n == node,
             crate::ops::OperationKind::Tombstone { node: n } => n == node,
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MemoryNodeState {
+    parent: Option<NodeId>,
+    children: Vec<NodeId>,
+    last_change: VersionVector,
+    deleted_at: Option<VersionVector>,
+}
+
+impl MemoryNodeState {
+    fn new_root() -> Self {
+        Self {
+            parent: None,
+            children: Vec::new(),
+            last_change: VersionVector::new(),
+            deleted_at: None,
+        }
+    }
+
+    fn new() -> Self {
+        Self {
+            parent: None,
+            children: Vec::new(),
+            last_change: VersionVector::new(),
+            deleted_at: None,
+        }
+    }
+}
+
+/// In-memory [`NodeStore`] implementation used by default.
+#[derive(Clone, Debug)]
+pub struct MemoryNodeStore {
+    nodes: HashMap<NodeId, MemoryNodeState>,
+}
+
+impl Default for MemoryNodeStore {
+    fn default() -> Self {
+        let mut nodes = HashMap::new();
+        nodes.insert(NodeId::ROOT, MemoryNodeState::new_root());
+        Self { nodes }
+    }
+}
+
+impl MemoryNodeStore {
+    fn get_state(&self, node: NodeId) -> Result<&MemoryNodeState> {
+        self.nodes.get(&node).ok_or_else(|| {
+            Error::InconsistentState(format!("node {} missing from store", node.0))
+        })
+    }
+
+    fn get_state_mut(&mut self, node: NodeId) -> Result<&mut MemoryNodeState> {
+        self.nodes.get_mut(&node).ok_or_else(|| {
+            Error::InconsistentState(format!("node {} missing from store", node.0))
+        })
+    }
+}
+
+impl NodeStore for MemoryNodeStore {
+    fn reset(&mut self) -> Result<()> {
+        self.nodes.clear();
+        self.nodes.insert(NodeId::ROOT, MemoryNodeState::new_root());
+        Ok(())
+    }
+
+    fn ensure_node(&mut self, node: NodeId) -> Result<()> {
+        self.nodes.entry(node).or_insert_with(|| {
+            if node == NodeId::ROOT {
+                MemoryNodeState::new_root()
+            } else {
+                MemoryNodeState::new()
+            }
+        });
+        Ok(())
+    }
+
+    fn exists(&self, node: NodeId) -> Result<bool> {
+        Ok(self.nodes.contains_key(&node))
+    }
+
+    fn parent(&self, node: NodeId) -> Result<Option<NodeId>> {
+        Ok(self.nodes.get(&node).and_then(|s| s.parent))
+    }
+
+    fn children(&self, parent: NodeId) -> Result<Vec<NodeId>> {
+        Ok(self.get_state(parent)?.children.clone())
+    }
+
+    fn detach(&mut self, node: NodeId) -> Result<()> {
+        let Some(parent) = self.nodes.get(&node).and_then(|s| s.parent) else {
+            return Ok(());
+        };
+
+        if parent != NodeId::TRASH {
+            if let Some(parent_state) = self.nodes.get_mut(&parent) {
+                parent_state.children.retain(|c| *c != node);
+            }
+        }
+
+        self.get_state_mut(node)?.parent = None;
+        Ok(())
+    }
+
+    fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()> {
+        self.ensure_node(parent)?;
+        self.ensure_node(node)?;
+        self.get_state_mut(node)?.parent = Some(parent);
+
+        if parent == NodeId::TRASH {
+            return Ok(());
+        }
+
+        let parent_state = self.get_state_mut(parent)?;
+        let idx = position.min(parent_state.children.len());
+        parent_state.children.insert(idx, node);
+        Ok(())
+    }
+
+    fn last_change(&self, node: NodeId) -> Result<VersionVector> {
+        Ok(self.get_state(node)?.last_change.clone())
+    }
+
+    fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()> {
+        self.get_state_mut(node)?.last_change.merge(delta);
+        Ok(())
+    }
+
+    fn deleted_at(&self, node: NodeId) -> Result<Option<VersionVector>> {
+        Ok(self.get_state(node)?.deleted_at.clone())
+    }
+
+    fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()> {
+        let state = self.get_state_mut(node)?;
+        if let Some(existing) = &mut state.deleted_at {
+            existing.merge(delta);
+        } else {
+            state.deleted_at = Some(delta.clone());
+        }
+        Ok(())
+    }
+
+    fn all_nodes(&self) -> Result<Vec<NodeId>> {
+        Ok(self.nodes.keys().copied().collect())
     }
 }
