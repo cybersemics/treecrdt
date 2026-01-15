@@ -9,6 +9,8 @@ import type { DuplexTransport } from "@treecrdt/sync/transport";
 import {
   MdAdd,
   MdChevronRight,
+  MdCloudOff,
+  MdCloudQueue,
   MdDeleteOutline,
   MdExpandMore,
   MdGroup,
@@ -151,12 +153,18 @@ export default function App() {
   const [liveAllEnabled, setLiveAllEnabled] = useState(false);
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
+  const [online, setOnline] = useState(true);
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
+  const onlineRef = useRef(true);
   const replicaId = useMemo(pickReplicaId, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const showOpsPanelRef = useRef(false);
+
+  useEffect(() => {
+    onlineRef.current = online;
+  }, [online]);
 
   const syncConnRef = useRef<
     Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>
@@ -549,8 +557,13 @@ export default function App() {
       );
       const transport: DuplexTransport<any> = {
         ...rawTransport,
+        async send(msg) {
+          if (!onlineRef.current) return;
+          return rawTransport.send(msg);
+        },
         onMessage(handler) {
           return rawTransport.onMessage((msg) => {
+            if (!onlineRef.current) return;
             lastSeen.set(peerId, Date.now());
             return handler(msg);
           });
@@ -570,6 +583,7 @@ export default function App() {
     };
 
     const onPresence = (ev: MessageEvent<any>) => {
+      if (!onlineRef.current) return;
       const data = ev.data as unknown;
       if (!data || typeof data !== "object") return;
       const msg = data as Partial<PresenceMessage>;
@@ -584,6 +598,7 @@ export default function App() {
     channel.addEventListener("message", onPresence);
 
     const sendPresence = () => {
+      if (!onlineRef.current) return;
       const msg: PresenceMessage = { t: "presence", peer_id: replicaId, ts: Date.now() };
       channel.postMessage(msg);
     };
@@ -898,6 +913,10 @@ export default function App() {
   };
 
   const handleSync = async (filter: Filter) => {
+    if (!onlineRef.current) {
+      setSyncError("Offline: toggle Online to sync.");
+      return;
+    }
     const connections = syncConnRef.current;
     if (connections.size === 0) {
       setSyncError("No peers discovered yet.");
@@ -1098,12 +1117,26 @@ export default function App() {
 	                {totalNodes === null ? "…" : totalNodes} nodes
 	                <span className="text-slate-600"> · {nodeList.length - 1} loaded</span>
 	              </div>
-	            </div>
-	            <div className="flex items-center gap-2">
+		            </div>
+		            <div className="flex items-center gap-2">
+                  <button
+                    className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-50 ${
+                      online
+                        ? "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
+                        : "border-amber-500/60 bg-amber-500/10 text-amber-100 hover:border-amber-400"
+                    }`}
+                    onClick={() => setOnline((v) => !v)}
+                    disabled={status !== "ready" || busy}
+                    title={online ? "Go offline (simulate no sync)" : "Go online (resume sync)"}
+                    type="button"
+                  >
+                    {online ? <MdCloudQueue className="text-[18px]" /> : <MdCloudOff className="text-[18px]" />}
+                    <span>{online ? "Online" : "Offline"}</span>
+                  </button>
                 <button
                   className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                   onClick={() => void handleSync({ all: {} })}
-                  disabled={status !== "ready" || busy || syncBusy || peers.length === 0}
+                  disabled={status !== "ready" || busy || syncBusy || peers.length === 0 || !online}
                   title="Sync all (one-shot)"
                 >
                   <MdSync className="text-[18px]" />
@@ -1116,7 +1149,7 @@ export default function App() {
                       : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
                   }`}
                   onClick={() => setLiveAllEnabled((v) => !v)}
-                  disabled={status !== "ready" || busy}
+                  disabled={status !== "ready" || busy || !online}
                   aria-label="Live sync all"
                   aria-pressed={liveAllEnabled}
                   title="Live sync all (polling)"

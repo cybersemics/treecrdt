@@ -6,7 +6,7 @@ license = "MIT"
 description = "SQLite / wa-sqlite extension harness for TreeCRDT."
 
 [lib]
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 blake3 = "1.6"

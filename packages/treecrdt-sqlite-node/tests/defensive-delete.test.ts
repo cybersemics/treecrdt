@@ -116,3 +116,43 @@ test("materialized tree: parent is restored when subtree changes after delete (r
   const parentChildrenRow: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(parent);
   expect(parseJsonBytes16List(parentChildrenRow.v).map((b) => b.toString("hex"))).toEqual([child.toString("hex")]);
 });
+
+test("sync: delete known_state propagates (receiver must not recompute awareness)", async () => {
+  const Database = await loadSqlite();
+  const { loadTreecrdtExtension, defaultExtensionPath } = await loadTreecrdt();
+
+  const docId = "treecrdt-defensive-delete-known-state-sync";
+  const dbA = new Database(":memory:");
+  const dbB = new Database(":memory:");
+  loadTreecrdtExtension(dbA, { extensionPath: defaultExtensionPath() });
+  loadTreecrdtExtension(dbB, { extensionPath: defaultExtensionPath() });
+  dbA.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
+  dbB.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
+
+  const rA = Buffer.from("rA");
+  const rB = Buffer.from("rB");
+  const root = Buffer.alloc(16, 0);
+  const parent = makeNodeId(1);
+  const child = makeNodeId(2);
+
+  // Replica B inserts parent, then syncs it to A.
+  dbB.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(rB, 1, 1, "insert", root, parent);
+  const bOpsRow: any = dbB.prepare("SELECT treecrdt_ops_since(0) AS v").get();
+  dbA.prepare("SELECT treecrdt_append_ops(?)").get(bOpsRow.v);
+
+  // Replica B inserts a child under parent, but A never sees it.
+  dbB.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(rB, 2, 2, "insert", parent, child);
+
+  // Replica A deletes parent without being aware of B's child insert.
+  dbA.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL)").get(rA, 1, 3, "delete", parent);
+
+  // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
+  const aOpsRow: any = dbA.prepare("SELECT treecrdt_ops_since(0) AS v").get();
+  dbB.prepare("SELECT treecrdt_append_ops(?)").get(aOpsRow.v);
+
+  const rootChildrenRow: any = dbB.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
+  expect(parseJsonBytes16List(rootChildrenRow.v).map((b) => b.toString("hex"))).toEqual([parent.toString("hex")]);
+
+  const parentChildrenRow: any = dbB.prepare("SELECT treecrdt_tree_children(?) AS v").get(parent);
+  expect(parseJsonBytes16List(parentChildrenRow.v).map((b) => b.toString("hex"))).toEqual([child.toString("hex")]);
+});

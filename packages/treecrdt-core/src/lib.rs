@@ -13,6 +13,9 @@ pub mod version_vector;
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use ops::{Operation, OperationKind, OperationMetadata};
-pub use traits::{Clock, IndexProvider, LamportClock, MemoryStorage, Snapshot, Storage};
-pub use tree::TreeCrdt;
+pub use traits::{
+    Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryStorage, NodeStore, Snapshot,
+    Storage,
+};
+pub use tree::{LogEntryExport, NodeExport, NodeSnapshotExport, TreeCrdt};
 pub use version_vector::VersionVector;
