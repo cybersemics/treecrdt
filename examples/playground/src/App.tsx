@@ -529,7 +529,7 @@ export default function App() {
           lamportRef.current = Math.max(lamportRef.current, max);
           setHeadLamport(lamportRef.current);
         }
-        scheduleRefreshParents(parentsAffectedByOps(treeStateRef.current, ops));
+        scheduleRefreshParents(Object.keys(treeStateRef.current.childrenByParent));
         scheduleRefreshNodeCount();
       },
     };
