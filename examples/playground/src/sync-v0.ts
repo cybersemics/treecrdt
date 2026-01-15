@@ -2,13 +2,22 @@ import type { Operation } from "@treecrdt/interface";
 import { bytesToHex as bytesToHexImpl, nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import type { DuplexTransport, WireCodec } from "@treecrdt/sync/transport";
-import type { Filter, OpRef, SyncBackend, SyncMessage } from "@treecrdt/sync";
+import { createTreecrdtSyncSqlitePendingOpsStore, type Filter, type OpRef, type SyncBackend, type SyncMessage } from "@treecrdt/sync";
 
 export type PresenceMessage = {
   t: "presence";
   peer_id: string;
   ts: number;
 };
+
+export type PresenceAckMessage = {
+  t: "presence_ack";
+  peer_id: string;
+  to_peer_id: string;
+  ts: number;
+};
+
+export type PlaygroundBroadcastMessage = PresenceMessage | PresenceAckMessage;
 
 export function hexToBytes16(hex: string): Uint8Array {
   return nodeIdToBytes16(hex);
@@ -18,7 +27,21 @@ export function bytesToHex(bytes: Uint8Array): string {
   return bytesToHexImpl(bytes);
 }
 
-export function createPlaygroundBackend(client: TreecrdtClient, docId: string): SyncBackend<Operation> {
+export function createPlaygroundBackend(
+  client: TreecrdtClient,
+  docId: string,
+  opts: { enablePendingSidecar?: boolean } = {}
+): SyncBackend<Operation> {
+  const pending = opts.enablePendingSidecar
+    ? createTreecrdtSyncSqlitePendingOpsStore({ runner: client.runner, docId })
+    : null;
+  let pendingReady = false;
+  const ensurePendingReady = async () => {
+    if (!pending || pendingReady) return;
+    await pending.init();
+    pendingReady = true;
+  };
+
   return {
     docId,
 
@@ -30,7 +53,16 @@ export function createPlaygroundBackend(client: TreecrdtClient, docId: string): 
 
     async listOpRefs(filter: Filter) {
       if ("all" in filter) {
-        return client.opRefs.all();
+        const refs = await client.opRefs.all();
+        if (!pending) return refs;
+        await ensurePendingReady();
+        const pendingRefs = await pending.listPendingOpRefs();
+        if (pendingRefs.length === 0) return refs;
+
+        // Union with pending refs so reconcile doesn't re-download quarantined ops.
+        const byHex = new Map(refs.map((r) => [bytesToHexImpl(r), r]));
+        for (const r of pendingRefs) byHex.set(bytesToHexImpl(r), r);
+        return Array.from(byHex.values());
       }
       return client.opRefs.children(bytesToHex(filter.children.parent));
     },
@@ -43,6 +75,23 @@ export function createPlaygroundBackend(client: TreecrdtClient, docId: string): 
       if (ops.length === 0) return;
       await client.ops.appendMany(ops);
     },
+
+    ...(pending
+      ? {
+          storePendingOps: async (ops) => {
+            await ensurePendingReady();
+            await pending.storePendingOps(ops);
+          },
+          listPendingOps: async () => {
+            await ensurePendingReady();
+            return pending.listPendingOps();
+          },
+          deletePendingOps: async (ops) => {
+            await ensurePendingReady();
+            await pending.deletePendingOps(ops);
+          },
+        }
+      : {}),
   };
 }
 

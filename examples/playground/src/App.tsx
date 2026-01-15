@@ -3,20 +3,48 @@ import { type Operation, type OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
-import { SyncPeer, type Filter, type SyncSubscription } from "@treecrdt/sync";
+import {
+  SyncPeer,
+  base64urlDecode,
+  base64urlEncode,
+  createTreecrdtCoseCwtAuth,
+  createTreecrdtSqliteSubtreeScopeEvaluator,
+  createTreecrdtSyncSqlitePendingOpsStore,
+  deriveKeyIdV1,
+  deriveTokenIdV1,
+  type Filter,
+  type SyncSubscription,
+} from "@treecrdt/sync";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { DuplexTransport } from "@treecrdt/sync/transport";
 import {
   MdCloudOff,
   MdCloudQueue,
+  MdContentCopy,
   MdGroup,
   MdOpenInNew,
   MdOutlineRssFeed,
   MdSync,
+  MdVpnKey,
 } from "react-icons/md";
 import { IoMdGitBranch } from "react-icons/io";
 
-import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceMessage } from "./sync-v0";
+import {
+  clearAuthMaterial,
+  createCapabilityTokenV1,
+  decodeInvitePayload,
+  encodeInvitePayload,
+  generateEd25519KeyPair,
+  deriveEd25519PublicKey,
+  initialAuthEnabled,
+  loadAuthMaterial,
+  persistAuthEnabled,
+  saveIssuerKeys,
+  saveLocalKeys,
+  saveLocalTokens,
+  type StoredAuthMaterial,
+} from "./auth";
+import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceAckMessage, type PresenceMessage } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
 import {
@@ -94,6 +122,26 @@ export default function App() {
   const onlineRef = useRef(true);
   const replicaId = useMemo(pickReplicaId, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
+  const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
+  const [showAuthPanel, setShowAuthPanel] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => loadAuthMaterial(docId, replicaId));
+  const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
+
+  const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
+  const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
+  const [inviteActions, setInviteActions] = useState<
+    Record<"write_structure" | "write_payload" | "delete" | "tombstone", boolean>
+  >({
+    write_structure: true,
+    write_payload: true,
+    delete: false,
+    tombstone: false,
+  });
+  const [inviteLink, setInviteLink] = useState<string>("");
+  const [inviteImportText, setInviteImportText] = useState<string>("");
+  const [pendingOps, setPendingOps] = useState<Array<{ id: string; kind: string; message?: string }>>([]);
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
@@ -148,6 +196,8 @@ export default function App() {
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
   const liveAllStartingRef = useRef<Set<string>>(new Set());
   const liveChildrenStartingRef = useRef<Set<string>>(new Set());
+  const peerReadyRef = useRef<Set<string>>(new Set());
+  const peerAckSentRef = useRef<Set<string>>(new Set());
 
   const treeStateRef = useRef<TreeState>(treeState);
   useEffect(() => {
@@ -344,6 +394,8 @@ export default function App() {
         conn.transport,
         { all: {} },
         {
+          immediate: false,
+          intervalMs: 0,
           maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
           maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
           codewordsPerMessage: 1024,
@@ -409,6 +461,8 @@ export default function App() {
         conn.transport,
         { children: { parent: hexToBytes16(parentId) } },
         {
+          immediate: false,
+          intervalMs: 0,
           maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
           maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
           codewordsPerMessage: 1024,
@@ -443,7 +497,144 @@ export default function App() {
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
     url.searchParams.set("replica", makeNewReplicaId());
+    url.searchParams.delete("auth");
+    url.hash = "";
     window.open(url.toString(), "_blank", "noopener,noreferrer");
+  };
+
+  const copyToClipboard = async (text: string) => {
+    if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
+      throw new Error("clipboard API is not available");
+    }
+    await navigator.clipboard.writeText(text);
+  };
+
+  const resetAuth = () => {
+    clearAuthMaterial(docId, replicaId);
+    setInviteLink("");
+    setInviteImportText("");
+    setAuthMaterial(loadAuthMaterial(docId, replicaId));
+    setAuthEnabled(false);
+    setAuthError(null);
+  };
+
+  const generateInviteLink = async () => {
+    if (typeof window === "undefined") return;
+    setAuthBusy(true);
+    setAuthError(null);
+    setInviteLink("");
+    try {
+      const issuerSkB64 = authMaterial.issuerSkB64;
+      const issuerPkB64 = authMaterial.issuerPkB64;
+      if (!issuerSkB64 || !issuerPkB64) {
+        throw new Error("issuer private key is not available in this tab (cannot mint invites)");
+      }
+
+      const actions = Object.entries(inviteActions)
+        .filter(([, enabled]) => enabled)
+        .map(([name]) => name);
+      if (actions.length === 0) throw new Error("select at least one action");
+
+      const maxDepthText = inviteMaxDepth.trim();
+      const maxDepth = maxDepthText.length > 0 ? Number(maxDepthText) : undefined;
+      if (maxDepthText.length > 0 && (!Number.isFinite(maxDepth) || maxDepth < 0)) {
+        throw new Error("max depth must be a non-negative number");
+      }
+
+      const issuerSk = base64urlDecode(issuerSkB64);
+      const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
+      const tokenBytes = createCapabilityTokenV1({
+        issuerPrivateKey: issuerSk,
+        subjectPublicKey: subjectPk,
+        docId,
+        rootNodeId: inviteRoot,
+        actions,
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+      });
+
+      const inviteB64 = encodeInvitePayload({
+        v: 1,
+        t: "treecrdt.playground.invite",
+        docId,
+        issuerPkB64,
+        subjectSkB64: base64urlEncode(subjectSk),
+        tokenB64: base64urlEncode(tokenBytes),
+      });
+
+      const url = new URL(window.location.href);
+      url.searchParams.set("doc", docId);
+      url.searchParams.set("replica", makeNewReplicaId());
+      url.searchParams.set("auth", "1");
+      url.hash = `invite=${inviteB64}`;
+      setInviteLink(url.toString());
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const importInviteLink = async () => {
+    if (typeof window === "undefined") return;
+    const raw = inviteImportText.trim();
+    if (!raw) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      let inviteB64: string | null = null;
+      try {
+        const url = new URL(raw, window.location.href);
+        inviteB64 = new URLSearchParams(url.hash.slice(1)).get("invite");
+      } catch {
+        // not a URL; fall back to raw text parsing
+      }
+
+      if (!inviteB64) {
+        inviteB64 = raw.startsWith("invite=") ? raw.slice("invite=".length) : raw;
+      }
+
+      const payload = decodeInvitePayload(inviteB64);
+      if (payload.docId !== docId) {
+        throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
+      }
+
+      saveIssuerKeys(docId, payload.issuerPkB64);
+
+      const localSk = base64urlDecode(payload.subjectSkB64);
+      const localPk = await deriveEd25519PublicKey(localSk);
+      saveLocalKeys(docId, replicaId, base64urlEncode(localPk), payload.subjectSkB64);
+      saveLocalTokens(docId, replicaId, [payload.tokenB64]);
+
+      setAuthEnabled(true);
+      setAuthMaterial(loadAuthMaterial(docId, replicaId));
+      setInviteImportText("");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const refreshPendingOps = async () => {
+    if (!client) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const store = createTreecrdtSyncSqlitePendingOpsStore({ runner: client.runner, docId });
+      await store.init();
+      const listed = await store.listPendingOps();
+      setPendingOps(
+        listed.map((p) => ({
+          id: `${p.op.meta.id.replica}:${p.op.meta.id.counter}`,
+          kind: p.op.kind.type,
+          ...(p.message ? { message: p.message } : {}),
+        }))
+      );
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthBusy(false);
+    }
   };
 
   const { index, childrenByParent } = treeState;
@@ -524,6 +715,159 @@ export default function App() {
   }, [docId]);
 
   useEffect(() => {
+    persistAuthEnabled(authEnabled);
+  }, [authEnabled]);
+
+  useEffect(() => {
+    if (!authEnabled) setPendingOps([]);
+  }, [authEnabled]);
+
+  useEffect(() => {
+    setAuthMaterial(loadAuthMaterial(docId, replicaId));
+  }, [docId, replicaId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const inviteB64 = new URLSearchParams(window.location.hash.slice(1)).get("invite");
+    if (!inviteB64) return;
+
+    void (async () => {
+      try {
+        const payload = decodeInvitePayload(inviteB64);
+        if (payload.docId !== docId) {
+          throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
+        }
+
+        saveIssuerKeys(docId, payload.issuerPkB64);
+
+        const localSk = base64urlDecode(payload.subjectSkB64);
+        const localPk = await deriveEd25519PublicKey(localSk);
+        saveLocalKeys(docId, replicaId, base64urlEncode(localPk), payload.subjectSkB64);
+        saveLocalTokens(docId, replicaId, [payload.tokenB64]);
+
+        // Clear hash so we don't re-import on refresh.
+        const url = new URL(window.location.href);
+        url.hash = "";
+        window.history.replaceState({}, "", url);
+
+        setAuthEnabled(true);
+        setAuthMaterial(loadAuthMaterial(docId, replicaId));
+      } catch (err) {
+        console.error("Failed to import invite", err);
+        setAuthError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId, replicaId]);
+
+  useEffect(() => {
+    if (!authEnabled) {
+      localAuthRef.current = null;
+      setAuthError(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const current = loadAuthMaterial(docId, replicaId);
+        let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
+
+        if (!issuerPkB64 && !issuerSkB64) {
+          const { sk, pk } = await generateEd25519KeyPair();
+          issuerPkB64 = base64urlEncode(pk);
+          issuerSkB64 = base64urlEncode(sk);
+          saveIssuerKeys(docId, issuerPkB64, issuerSkB64);
+        } else if (!issuerPkB64 && issuerSkB64) {
+          const issuerSk = base64urlDecode(issuerSkB64);
+          const issuerPk = await deriveEd25519PublicKey(issuerSk);
+          issuerPkB64 = base64urlEncode(issuerPk);
+          saveIssuerKeys(docId, issuerPkB64, issuerSkB64);
+        }
+
+        const canIssue = Boolean(issuerSkB64);
+
+        if (!localPkB64 && !localSkB64) {
+          if (localTokensB64.length > 0) {
+            throw new Error("auth enabled but local keys are missing; re-import an invite link or reset auth");
+          }
+          if (!canIssue) {
+            throw new Error("auth enabled but no local keys/tokens; import an invite link");
+          }
+          const { sk, pk } = await generateEd25519KeyPair();
+          localPkB64 = base64urlEncode(pk);
+          localSkB64 = base64urlEncode(sk);
+          saveLocalKeys(docId, replicaId, localPkB64, localSkB64);
+        } else if (!localPkB64 && localSkB64) {
+          const localSk = base64urlDecode(localSkB64);
+          const localPk = await deriveEd25519PublicKey(localSk);
+          localPkB64 = base64urlEncode(localPk);
+          saveLocalKeys(docId, replicaId, localPkB64, localSkB64);
+        } else if (localPkB64 && !localSkB64) {
+          throw new Error("auth enabled but local private key is missing; import an invite link or reset auth");
+        }
+
+        if (localTokensB64.length === 0) {
+          if (!canIssue || !issuerSkB64) {
+            throw new Error("auth enabled but no capability token; import an invite link");
+          }
+          if (!localPkB64) throw new Error("auth enabled but local public key is missing");
+
+          const issuerSk = base64urlDecode(issuerSkB64);
+          const subjectPk = base64urlDecode(localPkB64);
+          const tokenBytes = createCapabilityTokenV1({
+            issuerPrivateKey: issuerSk,
+            subjectPublicKey: subjectPk,
+            docId,
+            rootNodeId: ROOT_ID,
+            actions: ["write_structure", "write_payload", "delete", "tombstone"],
+          });
+          localTokensB64 = [base64urlEncode(tokenBytes)];
+          saveLocalTokens(docId, replicaId, localTokensB64);
+        }
+
+        const next = loadAuthMaterial(docId, replicaId);
+        if (cancelled) return;
+        setAuthMaterial(next);
+        setAuthError(null);
+
+        if (
+          client &&
+          next.issuerPkB64 &&
+          next.localSkB64 &&
+          next.localPkB64 &&
+          next.localTokensB64.length > 0
+        ) {
+          const issuerPk = base64urlDecode(next.issuerPkB64);
+          const localSk = base64urlDecode(next.localSkB64);
+          const localPk = base64urlDecode(next.localPkB64);
+          const localTokens = next.localTokensB64.map((t) => base64urlDecode(t));
+          const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
+
+          localAuthRef.current = createTreecrdtCoseCwtAuth({
+            issuerPublicKeys: [issuerPk],
+            localPrivateKey: localSk,
+            localPublicKey: localPk,
+            localCapabilityTokens: localTokens,
+            requireProofRef: true,
+            scopeEvaluator,
+          });
+        } else {
+          localAuthRef.current = null;
+        }
+      } catch (err) {
+        if (cancelled) return;
+        localAuthRef.current = null;
+        setAuthError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authEnabled, client, docId, replicaId]);
+
+  useEffect(() => {
     if (!client || status !== "ready") return;
     if (!docId) return;
     if (typeof BroadcastChannel === "undefined") {
@@ -535,7 +879,7 @@ export default function App() {
       typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
 
     const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
-    const baseBackend = createPlaygroundBackend(client, docId);
+    const baseBackend = createPlaygroundBackend(client, docId, { enablePendingSidecar: authEnabled });
     const backend = {
       ...baseBackend,
       maxLamport: async () => BigInt(lamportRef.current),
@@ -567,9 +911,26 @@ export default function App() {
         scheduleRefreshNodeCount();
       },
     };
+
+    const peerAuthConfig =
+      authEnabled &&
+      authMaterial.issuerPkB64 &&
+      authMaterial.localSkB64 &&
+      authMaterial.localPkB64 &&
+      authMaterial.localTokensB64.length > 0
+        ? {
+            issuerPk: base64urlDecode(authMaterial.issuerPkB64),
+            localSk: base64urlDecode(authMaterial.localSkB64),
+            localPk: base64urlDecode(authMaterial.localPkB64),
+            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
+            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
+          }
+        : null;
     const connections = new Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>();
     const lastSeen = new Map<string, number>();
     syncConnRef.current = connections;
+    peerReadyRef.current.clear();
+    peerAckSentRef.current.clear();
 
     const updatePeers = () => {
       setPeers(
@@ -577,6 +938,29 @@ export default function App() {
           .map(([id, ts]) => ({ id, lastSeen: ts }))
           .sort((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1))
       );
+    };
+
+    const maybeStartLiveForPeer = (peerId: string) => {
+      if (!peerReadyRef.current.has(peerId)) return;
+      if (liveAllEnabledRef.current) startLiveAll(peerId);
+      for (const parentId of liveChildrenParentsRef.current) startLiveChildren(peerId, parentId);
+    };
+
+    const sendPresenceAck = (toPeerId: string) => {
+      const msg = {
+        t: "presence_ack",
+        peer_id: replicaId,
+        to_peer_id: toPeerId,
+        ts: Date.now(),
+      } as const satisfies PresenceAckMessage;
+      channel.postMessage(msg);
+    };
+
+    const ensureAckSent = (peerId: string) => {
+      if (!peerId || peerId === replicaId) return;
+      if (peerAckSentRef.current.has(peerId)) return;
+      peerAckSentRef.current.add(peerId);
+      sendPresenceAck(peerId);
     };
 
     const ensureConnection = (peerId: string) => {
@@ -606,30 +990,56 @@ export default function App() {
       const peer = new SyncPeer<Operation>(backend, {
         maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
         maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+        ...(peerAuthConfig
+          ? {
+              auth: createTreecrdtCoseCwtAuth({
+                issuerPublicKeys: [peerAuthConfig.issuerPk],
+                localPrivateKey: peerAuthConfig.localSk,
+                localPublicKey: peerAuthConfig.localPk,
+                localCapabilityTokens: peerAuthConfig.localTokens,
+                requireProofRef: true,
+                scopeEvaluator: peerAuthConfig.scopeEvaluator,
+              }),
+            }
+          : {}),
       });
       const detach = peer.attach(transport);
       connections.set(peerId, { transport, peer, detach });
 
-      if (liveAllEnabledRef.current) startLiveAll(peerId);
-      for (const parentId of liveChildrenParentsRef.current) {
-        startLiveChildren(peerId, parentId);
+      maybeStartLiveForPeer(peerId);
+    };
+
+    const onBroadcast = (ev: MessageEvent<any>) => {
+      const data = ev.data as unknown;
+      if (!data || typeof data !== "object") return;
+      const msg = data as Partial<PresenceMessage | PresenceAckMessage>;
+
+      if (msg.t === "presence") {
+        if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
+        if (msg.peer_id === replicaId) return;
+        lastSeen.set(msg.peer_id, msg.ts);
+        ensureConnection(msg.peer_id);
+        ensureAckSent(msg.peer_id);
+        maybeStartLiveForPeer(msg.peer_id);
+        updatePeers();
+        return;
+      }
+
+      if (msg.t === "presence_ack") {
+        const toPeerId = (msg as Partial<PresenceAckMessage>).to_peer_id;
+        if (typeof msg.peer_id !== "string" || typeof toPeerId !== "string" || typeof msg.ts !== "number") return;
+        if (msg.peer_id === replicaId) return;
+        if (toPeerId !== replicaId) return;
+        lastSeen.set(msg.peer_id, msg.ts);
+        ensureConnection(msg.peer_id);
+        peerReadyRef.current.add(msg.peer_id);
+        ensureAckSent(msg.peer_id);
+        maybeStartLiveForPeer(msg.peer_id);
+        updatePeers();
       }
     };
 
-    const onPresence = (ev: MessageEvent<any>) => {
-      if (!onlineRef.current) return;
-      const data = ev.data as unknown;
-      if (!data || typeof data !== "object") return;
-      const msg = data as Partial<PresenceMessage>;
-      if (msg.t !== "presence") return;
-      if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
-      if (msg.peer_id === replicaId) return;
-      lastSeen.set(msg.peer_id, msg.ts);
-      ensureConnection(msg.peer_id);
-      updatePeers();
-    };
-
-    channel.addEventListener("message", onPresence);
+    channel.addEventListener("message", onBroadcast);
 
     const sendPresence = () => {
       if (!onlineRef.current) return;
@@ -644,6 +1054,8 @@ export default function App() {
       for (const [id, ts] of lastSeen) {
         if (now - ts > PLAYGROUND_PEER_TIMEOUT_MS) {
           lastSeen.delete(id);
+          peerReadyRef.current.delete(id);
+          peerAckSentRef.current.delete(id);
           const conn = connections.get(id);
           if (conn) {
             conn.detach();
@@ -659,10 +1071,14 @@ export default function App() {
     return () => {
       window.clearInterval(interval);
       window.clearInterval(pruneInterval);
-      channel.removeEventListener("message", onPresence);
+      channel.removeEventListener("message", onBroadcast);
       stopAllLiveAll();
       stopAllLiveChildren();
       channel.close();
+      liveAllStartingRef.current.clear();
+      liveChildrenStartingRef.current.clear();
+      peerReadyRef.current.clear();
+      peerAckSentRef.current.clear();
 
       for (const conn of connections.values()) {
         conn.detach();
@@ -671,7 +1087,7 @@ export default function App() {
       connections.clear();
       setPeers([]);
     };
-  }, [client, docId, replicaId, status]);
+  }, [authEnabled, authMaterial, client, docId, replicaId, status]);
 
   useEffect(() => {
     return () => {
@@ -796,18 +1212,56 @@ export default function App() {
     }
   }, [liveAllEnabled]);
 
+  const verifyLocalOps = async (ops: Operation[]) => {
+    if (!authEnabled) return;
+    const auth = localAuthRef.current;
+    if (!auth?.signOps || !auth.verifyOps) throw new Error("auth is enabled but not configured");
+    const ctx = { docId, purpose: "reconcile" as const, filterId: "__local__" };
+    const authEntries = await auth.signOps(ops, ctx);
+    const res = await auth.verifyOps(ops, authEntries, ctx);
+    const dispositions = (res as any)?.dispositions as Array<{ status: string; message?: string }> | undefined;
+    const rejected = dispositions?.find((d) => d.status !== "allow");
+    if (rejected?.status === "pending_context") {
+      throw new Error(rejected.message ?? "missing subtree context to authorize op");
+    }
+  };
+
   const appendOperation = async (kind: OperationKind) => {
     if (!client) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
+
       let op: Operation;
-      if (kind.type === "payload") {
-        op = await client.local.payload(replicaId, kind.node, kind.payload);
-      } else if (kind.type === "delete") {
-        op = await client.local.delete(replicaId, kind.node);
+      if (authEnabled) {
+        if (kind.type !== "payload" && kind.type !== "delete") {
+          throw new Error(`unsupported operation kind: ${kind.type}`);
+        }
+
+        counterRef.current += 1;
+        lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
+        op = {
+          meta: {
+            id: { replica: replicaId, counter: counterRef.current },
+            lamport: lamportRef.current,
+          },
+          kind,
+        };
+        await verifyLocalOps([op]);
+        await client.ops.append(op);
+        setHeadLamport(lamportRef.current);
       } else {
-        throw new Error(`unsupported operation kind: ${kind.type}`);
+        if (kind.type === "payload") {
+          op = await client.local.payload(replicaId, kind.node, kind.payload);
+        } else if (kind.type === "delete") {
+          op = await client.local.delete(replicaId, kind.node);
+        } else {
+          throw new Error(`unsupported operation kind: ${kind.type}`);
+        }
+
+        lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
+        counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
+        setHeadLamport(lamportRef.current);
       }
 
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
@@ -815,9 +1269,6 @@ export default function App() {
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
-      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
-      setHeadLamport(lamportRef.current);
     } catch (err) {
       console.error("Failed to append op", err);
       setError("Failed to append operation (see console)");
@@ -1088,6 +1539,15 @@ export default function App() {
 
   const stateBadge = status === "ready" ? "bg-emerald-500/80" : status === "error" ? "bg-rose-500/80" : "bg-amber-400/80";
   const peerTotal = peers.length + 1;
+  const authCanIssue = Boolean(authMaterial.issuerSkB64);
+  const authIssuerPkHex = authMaterial.issuerPkB64 ? bytesToHex(base64urlDecode(authMaterial.issuerPkB64)) : null;
+  const authLocalKeyIdHex = authMaterial.localPkB64
+    ? bytesToHex(deriveKeyIdV1(base64urlDecode(authMaterial.localPkB64)))
+    : null;
+  const authLocalTokenIdHex =
+    authMaterial.localTokensB64.length > 0
+      ? bytesToHex(deriveTokenIdV1(base64urlDecode(authMaterial.localTokensB64[0]!)))
+      : null;
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
@@ -1290,6 +1750,21 @@ export default function App() {
                   <span className="font-mono">{peerTotal}</span>
                 </button>
                 <button
+                  className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
+                    showAuthPanel
+                      ? "border-slate-600 bg-slate-800/90 text-white"
+                      : authEnabled
+                        ? "border-emerald-400/60 bg-emerald-500/10 text-white hover:border-accent"
+                        : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
+                  }`}
+                  onClick={() => setShowAuthPanel((v) => !v)}
+                  type="button"
+                  title="Auth / ACL"
+                >
+                  <MdVpnKey className="text-[18px]" />
+                  <span>Auth</span>
+                </button>
+                <button
                   className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                   onClick={openNewPeerTab}
                   disabled={typeof window === "undefined"}
@@ -1358,6 +1833,224 @@ export default function App() {
                     Only you right now. Open another tab (same `doc`, different `replica`).
                   </div>
                 )}
+              </div>
+            )}
+            {showAuthPanel && (
+              <div className="mb-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Auth (COSE+CWT)</div>
+                    <div className="mt-1 text-[11px] text-slate-400">
+                      {authEnabled ? "Enabled (ops must be signed and authorized)" : "Disabled (no signature/ACL checks)"}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                        authEnabled
+                          ? "border-emerald-400/60 bg-emerald-500/10 text-emerald-50 hover:border-accent"
+                          : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
+                      }`}
+                      type="button"
+                      onClick={() => setAuthEnabled((v) => !v)}
+                      disabled={authBusy}
+                    >
+                      {authEnabled ? "Disable" : "Enable"}
+                    </button>
+                    <button
+                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                      type="button"
+                      onClick={resetAuth}
+                      disabled={authBusy}
+                      title="Clears this tab's auth keys/tokens"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+
+                {authError && (
+                  <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
+                    {authError}
+                  </div>
+                )}
+
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Issuer</div>
+                    <div className="mt-1 font-mono text-slate-200">
+                      {authIssuerPkHex ? `${authIssuerPkHex.slice(0, 16)}…` : "-"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">{authCanIssue ? "can mint invites" : "verify-only"}</div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Local key_id</div>
+                    <div className="mt-1 font-mono text-slate-200">
+                      {authLocalKeyIdHex ? `${authLocalKeyIdHex.slice(0, 16)}…` : "-"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Token id</div>
+                    <div className="mt-1 font-mono text-slate-200">
+                      {authLocalTokenIdHex ? `${authLocalTokenIdHex.slice(0, 16)}…` : "-"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pending ops</div>
+                    <button
+                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                      type="button"
+                      onClick={() => void refreshPendingOps()}
+                      disabled={!authEnabled || authBusy || !client}
+                      title="Fetch pending ops stored due to missing ancestry context"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] text-slate-400">{pendingOps.length} pending</div>
+                  {pendingOps.length > 0 && (
+                    <div className="mt-2 max-h-28 overflow-auto pr-1">
+                      {pendingOps.map((p) => (
+                        <div key={p.id} className="flex items-center justify-between gap-2 py-1">
+                          <span className="font-mono text-[11px] text-slate-200">
+                            {p.id} <span className="text-slate-500">{p.kind}</span>
+                          </span>
+                          <span className="text-[10px] text-slate-500">{p.message ?? ""}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Create invite link</div>
+                  <div className="mt-2 flex flex-wrap items-end gap-3">
+                    <label className="w-full md:w-60 space-y-2 text-sm text-slate-200">
+                      <span>Subtree root</span>
+                      <select
+                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                        value={inviteRoot}
+                        onChange={(e) => setInviteRoot(e.target.value)}
+                        disabled={authBusy}
+                      >
+                        {nodeList.map(({ id, label, depth }) => (
+                          <option key={id} value={id}>
+                            {"".padStart(depth * 2, " ")}
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="w-full md:w-40 space-y-2 text-sm text-slate-200">
+                      <span>Max depth (optional)</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={inviteMaxDepth}
+                        onChange={(e) => setInviteMaxDepth(e.target.value)}
+                        placeholder="∞"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                        disabled={authBusy}
+                      />
+                    </label>
+
+                    <div className="flex flex-col gap-2 text-sm text-slate-200">
+                      <span>Actions</span>
+                      <div className="flex flex-wrap gap-3 text-xs text-slate-200">
+                        {(["write_structure", "write_payload", "delete", "tombstone"] as const).map((name) => (
+                          <label key={name} className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={inviteActions[name]}
+                              onChange={(e) =>
+                                setInviteActions((prev) => ({ ...prev, [name]: e.target.checked }))
+                              }
+                              disabled={authBusy}
+                            />
+                            <span className="font-mono text-[11px]">{name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
+                      type="button"
+                      onClick={() => void generateInviteLink()}
+                      disabled={!authEnabled || authBusy || !authCanIssue}
+                      title={authCanIssue ? "Generate an invite link" : "This tab cannot mint invites (issuer SK not present)"}
+                    >
+                      Generate
+                    </button>
+                  </div>
+
+                  {inviteLink && (
+                    <div className="mt-3 flex flex-col gap-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Link</div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                            type="button"
+                            onClick={() =>
+                              void copyToClipboard(inviteLink).catch((err) =>
+                                setAuthError(err instanceof Error ? err.message : String(err))
+                              )
+                            }
+                            disabled={authBusy}
+                            title="Copy link"
+                          >
+                            <MdContentCopy className="text-[16px]" />
+                            Copy
+                          </button>
+                          <button
+                            className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                            type="button"
+                            onClick={() => window.open(inviteLink, "_blank", "noopener,noreferrer")}
+                            disabled={authBusy}
+                          >
+                            Open
+                          </button>
+                        </div>
+                      </div>
+                      <textarea
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 font-mono text-[11px] text-slate-200 outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                        value={inviteLink}
+                        readOnly
+                        rows={2}
+                      />
+                      <div className="text-[11px] text-slate-500">
+                        Open the link in a new tab to join as a new replica with the granted subtree scope.
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Import invite</div>
+                  <div className="mt-2 flex flex-wrap items-end gap-2">
+                    <textarea
+                      className="w-full flex-1 rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 font-mono text-[11px] text-slate-200 outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                      rows={2}
+                      value={inviteImportText}
+                      onChange={(e) => setInviteImportText(e.target.value)}
+                      placeholder="Paste an invite URL (or invite=...)"
+                      disabled={authBusy}
+                    />
+                    <button
+                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                      type="button"
+                      onClick={() => void importInviteLink()}
+                      disabled={authBusy || inviteImportText.trim().length === 0}
+                    >
+                      Import
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
             <div ref={treeParentRef} className="max-h-[560px] overflow-auto">

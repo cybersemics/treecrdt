@@ -5,8 +5,13 @@ import {
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
-import { createTreecrdtSqliteWriter, type SqliteRunner, type TreecrdtSqlitePlacement, type TreecrdtSqliteWriter } from "@treecrdt/interface/sqlite";
-import type { RpcMethod, RpcRequest } from "./rpc.js";
+import {
+  createTreecrdtSqliteWriter,
+  type SqliteRunner,
+  type TreecrdtSqlitePlacement,
+  type TreecrdtSqliteWriter,
+} from "@treecrdt/interface/sqlite";
+import type { RpcMethod, RpcRequest, RpcSqlParams } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
 
 let db: Database | null = null;
@@ -16,6 +21,8 @@ const localWriters = new Map<string, TreecrdtSqliteWriter>();
 
 const methods = {
   init,
+  sqlExec,
+  sqlGetText,
   append,
   appendMany,
   opsSince,
@@ -78,6 +85,16 @@ async function init(
   runner = makeRunner(opened.db);
   localWriters.clear();
   return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
+}
+
+async function sqlExec(sql: string) {
+  const db = ensureDb();
+  await db.exec(sql);
+  return null;
+}
+
+async function sqlGetText(sql: string, params?: RpcSqlParams): Promise<string | null> {
+  return dbGetText(ensureDb(), sql, params ?? []);
 }
 
 async function append(op: Operation) {
@@ -194,6 +211,11 @@ function ensureApi(): TreecrdtAdapter {
   return api;
 }
 
+function ensureDb(): Database {
+  if (!db) throw new Error("db not initialized");
+  return db;
+}
+
 function ensureRunner(): SqliteRunner {
   if (!runner) throw new Error("db not initialized");
   return runner;
@@ -223,7 +245,7 @@ function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
   return writer;
 }
 
-async function dbGetText(db: Database, sql: string, params: unknown[] = []): Promise<string | null> {
+async function dbGetText(db: Database, sql: string, params: RpcSqlParams = []): Promise<string | null> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stmt: any = await db.prepare(sql);
   try {

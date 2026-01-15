@@ -13,6 +13,7 @@ import type {
   Filter,
   Hello,
   HelloAck,
+  OpAuth,
   OpRef,
   OpsBatch,
   RibltCodewords,
@@ -29,6 +30,7 @@ import {
   FilterSpecSchema,
   HelloAckSchema,
   HelloSchema,
+  OpAuthSchema,
   OpsBatchSchema,
   RejectedFilterSchema,
   RibltCodewordSchema,
@@ -316,18 +318,42 @@ function fromProtoOperation(op: any): Operation {
   }
 }
 
+function toProtoOpAuth(auth: OpAuth) {
+  return create(OpAuthSchema, {
+    keyId: auth.keyId,
+    sig: auth.sig,
+    ...(auth.proofRef ? { proofRef: auth.proofRef } : {}),
+  });
+}
+
+function fromProtoOpAuth(auth: any): OpAuth {
+  const keyId = auth.keyId as Uint8Array | undefined;
+  const sig = auth.sig as Uint8Array | undefined;
+  const proofRef = auth.proofRef as Uint8Array | undefined;
+  if (!keyId) throw new Error("OpAuth.keyId missing");
+  if (!sig) throw new Error("OpAuth.sig missing");
+  return {
+    keyId,
+    sig,
+    ...(proofRef && proofRef.length > 0 ? { proofRef } : {}),
+  };
+}
+
 function toProtoOpsBatch(batch: OpsBatch<Operation>) {
   return create(OpsBatchSchema, {
     filterId: batch.filterId,
     ops: batch.ops.map(toProtoOperation),
+    ...(batch.auth ? { auth: batch.auth.map(toProtoOpAuth) } : {}),
     done: batch.done,
   });
 }
 
 function fromProtoOpsBatch(batch: any): OpsBatch<Operation> {
+  const auth = (batch.auth ?? []) as any[];
   return {
     filterId: batch.filterId,
     ops: (batch.ops ?? []).map(fromProtoOperation),
+    ...(auth.length > 0 ? { auth: auth.map(fromProtoOpAuth) } : {}),
     done: !!batch.done,
   };
 }
@@ -577,6 +603,23 @@ export const treecrdtSyncV0ProtobufCodec: WireCodec<SyncMessage<Operation>, Uint
   encode: encodeTreecrdtSyncV0,
   decode: decodeTreecrdtSyncV0,
 };
+
+/**
+ * Encode a single TreeCRDT operation using the canonical Sync v0 protobuf schema.
+ *
+ * Useful for sidecar storage (pending ops / proof caches) where we want a stable
+ * binary representation without embedding a full SyncMessage.
+ */
+export function encodeTreecrdtSyncV0Operation(op: Operation): Uint8Array {
+  return toBinary(OperationSchema, toProtoOperation(op));
+}
+
+/**
+ * Decode a single TreeCRDT operation previously encoded with `encodeTreecrdtSyncV0Operation`.
+ */
+export function decodeTreecrdtSyncV0Operation(bytes: Uint8Array): Operation {
+  return fromProtoOperation(fromBinary(OperationSchema, bytes));
+}
 
 export function bytesToNodeId(bytes: Bytes): string {
   return nodeIdFromBytes16(bytes);

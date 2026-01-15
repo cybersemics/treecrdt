@@ -3,6 +3,9 @@ import type { TreecrdtSqlitePlacement } from "@treecrdt/interface/sqlite";
 
 export type RpcStorageMode = "memory" | "opfs";
 
+export type RpcSqlParam = number | string | null | Uint8Array;
+export type RpcSqlParams = RpcSqlParam[];
+
 export type RpcInitParams = {
   baseUrl: string;
   filename?: string;
@@ -17,6 +20,8 @@ export type RpcSchema = {
     params: [baseUrl: string, filename: string | undefined, storage: RpcStorageMode, docId: string];
     result: RpcInitResult;
   };
+  sqlExec: { params: [sql: string]; result: void };
+  sqlGetText: { params: [sql: string, params?: RpcSqlParams]; result: string | null };
   append: { params: [op: Operation]; result: void };
   appendMany: { params: [ops: Operation[]]; result: void };
   opsSince: { params: [lamport: number, root?: string]; result: unknown[] };

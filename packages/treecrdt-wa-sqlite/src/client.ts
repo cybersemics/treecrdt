@@ -45,6 +45,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   storage: StorageMode;
   docId: string;
+  runner: SqliteRunner;
   ops: TreecrdtOpsApi;
   opRefs: TreecrdtOpRefsApi;
   tree: TreecrdtTreeApi;
@@ -230,6 +231,27 @@ async function createDirectClient(opts: {
   const call: RpcCall = async (method, params) => {
     try {
       switch (method) {
+        case "sqlExec": {
+          const [sql] = params as RpcParams<"sqlExec">;
+          await db.exec(sql);
+          return undefined as any;
+        }
+        case "sqlGetText": {
+          const [sql, rawParams] = params as RpcParams<"sqlGetText">;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const stmt: any = await db.prepare(sql);
+          try {
+            let idx = 1;
+            for (const p of rawParams ?? []) {
+              await db.bind(stmt, idx++, p);
+            }
+            const row = await db.step(stmt);
+            if (row === 0) return null as any;
+            return (await db.column_text(stmt, 0)) as any;
+          } finally {
+            await db.finalize(stmt);
+          }
+        }
         case "append": {
           const [op] = params as RpcParams<"append">;
           await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
@@ -333,6 +355,11 @@ function makeTreecrdtClientFromCall(opts: {
 }): TreecrdtClient {
   const call = opts.call;
 
+  const runner: SqliteRunner = {
+    exec: (sql) => call("sqlExec", [sql]).then(() => undefined),
+    getText: (sql, params = []) => call("sqlGetText", [sql, params]),
+  };
+
   const opsSinceImpl = async (lamport: number, root?: string) => {
     const rows = await call("opsSince", [lamport, root]);
     return decodeSqliteOps(rows);
@@ -382,6 +409,7 @@ function makeTreecrdtClientFromCall(opts: {
     mode: opts.mode,
     storage: opts.storage,
     docId: opts.docId,
+    runner,
     ops: {
       append: (op) => call("append", [op]).then(() => undefined),
       appendMany: (ops) => call("appendMany", [ops]).then(() => undefined),
