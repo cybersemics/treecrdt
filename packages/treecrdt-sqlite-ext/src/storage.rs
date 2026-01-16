@@ -2,11 +2,12 @@ use rusqlite::{params, Connection, Row};
 use treecrdt_core::{
     error::Error,
     ops::{Operation, OperationKind},
-    traits::Snapshot,
-    Lamport, NodeId, OperationId, ReplicaId, Storage,
+    traits::{MaterializedStorage, NodeState, Snapshot},
+    Lamport, NodeId, OperationId, ReplicaId, Storage, VersionVector,
 };
 
-/// SQLite-backed `Storage` implementation that persists operations in an op-log table.
+/// SQLite-backed `Storage` implementation that persists operations in an op-log table
+/// and materialized node state in dedicated tables.
 pub struct SqliteStorage {
     conn: Connection,
 }
@@ -16,6 +17,8 @@ impl SqliteStorage {
         let conn = Connection::open_in_memory().map_err(|e| Error::Storage(e.to_string()))?;
         let mut storage = Self { conn };
         storage.ensure_schema()?;
+        storage.ensure_materialized_schema()?;
+        storage.init_materialized()?;
         Ok(storage)
     }
 
@@ -23,6 +26,8 @@ impl SqliteStorage {
         let conn = Connection::open(path).map_err(|e| Error::Storage(e.to_string()))?;
         let mut storage = Self { conn };
         storage.ensure_schema()?;
+        storage.ensure_materialized_schema()?;
+        storage.init_materialized()?;
         Ok(storage)
     }
 
@@ -44,6 +49,69 @@ impl SqliteStorage {
             )
             .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    fn ensure_materialized_schema(&mut self) -> treecrdt_core::Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS nodes (
+                    id BLOB PRIMARY KEY,
+                    parent BLOB,
+                    last_change BLOB NOT NULL,
+                    deleted_at BLOB
+                );
+                CREATE TABLE IF NOT EXISTS children (
+                    parent BLOB NOT NULL,
+                    position INTEGER NOT NULL,
+                    child BLOB NOT NULL,
+                    PRIMARY KEY (parent, position),
+                    UNIQUE (parent, child)
+                );",
+            )
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn init_materialized(&mut self) -> treecrdt_core::Result<()> {
+        if self.get_node(NodeId::ROOT)?.is_none() {
+            self.put_node(NodeId::ROOT, NodeState::default())?;
+        }
+        if self.get_node(NodeId::TRASH)?.is_none() {
+            self.put_node(NodeId::TRASH, NodeState::default())?;
+        }
+        Ok(())
+    }
+
+    fn serialize_vv(vv: &VersionVector) -> treecrdt_core::Result<Vec<u8>> {
+        bincode::serialize(vv).map_err(|e| Error::Storage(e.to_string()))
+    }
+
+    fn deserialize_vv(bytes: Option<Vec<u8>>) -> treecrdt_core::Result<Option<VersionVector>> {
+        match bytes {
+            Some(data) => bincode::deserialize(&data)
+                .map(Some)
+                .map_err(|e| Error::Storage(e.to_string())),
+            None => Ok(None),
+        }
+    }
+
+    fn load_children(&self, parent: NodeId) -> treecrdt_core::Result<Vec<NodeId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT child FROM children WHERE parent = ?1 ORDER BY position ASC")
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([node_to_blob(parent)], |row| {
+                let data: Vec<u8> = row.get(0)?;
+                blob_to_node(data)
+            })
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        let mut children = Vec::new();
+        for child in rows {
+            children.push(child.map_err(|e| Error::Storage(e.to_string()))?);
+        }
+        Ok(children)
     }
 }
 
@@ -133,6 +201,125 @@ impl Storage for SqliteStorage {
         Ok(Snapshot {
             head: self.latest_lamport(),
         })
+    }
+}
+
+impl MaterializedStorage for SqliteStorage {
+    fn get_node(&self, id: NodeId) -> treecrdt_core::Result<Option<NodeState>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT parent, last_change, deleted_at FROM nodes WHERE id = ?1")
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([node_to_blob(id)])
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let row_opt = rows
+            .next()
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let Some(row) = row_opt else {
+            return Ok(None);
+        };
+        let parent: Option<Vec<u8>> = row.get(0).map_err(|e| Error::Storage(e.to_string()))?;
+        let last_change: Vec<u8> = row.get(1).map_err(|e| Error::Storage(e.to_string()))?;
+        let deleted_at: Option<Vec<u8>> = row.get(2).map_err(|e| Error::Storage(e.to_string()))?;
+
+        let children = self.load_children(id)?;
+        Ok(Some(NodeState {
+            parent: parent
+                .map(|p| blob_to_node(p))
+                .transpose()
+                .map_err(|e| Error::Storage(e.to_string()))?,
+            children,
+            last_change: Self::deserialize_vv(Some(last_change))?.unwrap_or_default(),
+            deleted_at: Self::deserialize_vv(deleted_at)?,
+        }))
+    }
+
+    fn put_node(&mut self, id: NodeId, state: NodeState) -> treecrdt_core::Result<()> {
+        let parent_blob = state.parent.map(node_to_blob);
+        let last_change = Self::serialize_vv(&state.last_change)?;
+        let deleted_at = match state.deleted_at {
+            Some(v) => Some(Self::serialize_vv(&v)?),
+            None => None,
+        };
+
+        self.conn
+            .execute(
+                "INSERT INTO nodes (id, parent, last_change, deleted_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                    parent = excluded.parent,
+                    last_change = excluded.last_change,
+                    deleted_at = excluded.deleted_at",
+                params![node_to_blob(id), parent_blob, last_change, deleted_at],
+            )
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        self.conn
+            .execute(
+                "DELETE FROM children WHERE parent = ?1",
+                params![node_to_blob(id)],
+            )
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        for (pos, child) in state.children.iter().enumerate() {
+            let pos_i64: i64 = pos
+                .try_into()
+                .map_err(|_| Error::Storage("position overflow".into()))?;
+            self.conn
+                .execute(
+                    "INSERT INTO children (parent, position, child) VALUES (?1, ?2, ?3)",
+                    params![node_to_blob(id), pos_i64, node_to_blob(*child)],
+                )
+                .map_err(|e| Error::Storage(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn clear_materialized(&mut self) -> treecrdt_core::Result<()> {
+        self.conn
+            .execute("DELETE FROM children", [])
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        self.conn
+            .execute("DELETE FROM nodes", [])
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        self.init_materialized()
+    }
+
+    fn all_nodes(&self) -> treecrdt_core::Result<Vec<(NodeId, NodeState)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, parent, last_change, deleted_at FROM nodes")
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id_blob: Vec<u8> = row.get(0)?;
+                let parent_blob: Option<Vec<u8>> = row.get(1)?;
+                let last_change: Vec<u8> = row.get(2)?;
+                let deleted_at: Option<Vec<u8>> = row.get(3)?;
+                Ok((id_blob, parent_blob, last_change, deleted_at))
+            })
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (id_blob, parent_blob, last_change, deleted_at) =
+                row.map_err(|e| Error::Storage(e.to_string()))?;
+            let id = blob_to_node(id_blob).map_err(|e| Error::Storage(e.to_string()))?;
+            let children = self.load_children(id)?;
+            let parent = parent_blob
+                .map(|p| blob_to_node(p))
+                .transpose()
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            let state = NodeState {
+                parent,
+                children,
+                last_change: Self::deserialize_vv(Some(last_change))?.unwrap_or_default(),
+                deleted_at: Self::deserialize_vv(deleted_at)?,
+            };
+            results.push((id, state));
+        }
+        Ok(results)
     }
 }
 
