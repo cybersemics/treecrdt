@@ -6,6 +6,7 @@
 #![allow(non_snake_case)]
 
 use std::ffi::CString;
+use std::collections::HashSet;
 use std::os::raw::{c_char, c_int, c_void};
 #[cfg(feature = "ext-sqlite")]
 use std::ptr::null;
@@ -1074,6 +1075,350 @@ fn op_key_lt(
         return replica < head_replica;
     }
     counter < head_counter
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MaterializeKind {
+    Insert,
+    Move,
+    Delete,
+    Tombstone,
+}
+
+impl MaterializeKind {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "insert" => Some(Self::Insert),
+            "move" => Some(Self::Move),
+            "delete" => Some(Self::Delete),
+            "tombstone" => Some(Self::Tombstone),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MaterializeOp {
+    replica: Vec<u8>,
+    counter: u64,
+    lamport: Lamport,
+    kind: MaterializeKind,
+    parent: Option<NodeId>,
+    node: NodeId,
+    new_parent: Option<NodeId>,
+    position: usize,
+    known_state: Option<VersionVector>,
+    op_ref: [u8; OPREF_V0_WIDTH],
+}
+
+fn materialize_ops_in_order(
+    db: *mut sqlite3,
+    meta: &TreeMeta,
+    ops: &mut [MaterializeOp],
+) -> Result<(), c_int> {
+    struct AutoStmt(*mut sqlite3_stmt);
+    impl Drop for AutoStmt {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { sqlite_finalize(self.0) };
+            }
+        }
+    }
+
+    if ops.is_empty() {
+        return Ok(());
+    }
+    if meta.dirty {
+        return Err(SQLITE_ERROR as c_int);
+    }
+
+    ops.sort_by(|a, b| {
+        (a.lamport, &a.replica, a.counter).cmp(&(b.lamport, &b.replica, b.counter))
+    });
+    if let Some(first) = ops.first() {
+        if op_key_lt(
+            first.lamport,
+            &first.replica,
+            first.counter,
+            meta.head_lamport,
+            &meta.head_replica,
+            meta.head_counter,
+        ) {
+            return Err(SQLITE_ERROR as c_int);
+        }
+    }
+
+    use treecrdt_core::{
+        LamportClock, Operation, OperationId, OperationKind, OperationMetadata, ReplicaId, TreeCrdt,
+    };
+    let node_store = SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
+    let mut crdt = TreeCrdt::with_node_store(
+        ReplicaId::new(b"sqlite-ext"),
+        NoopStorage::default(),
+        LamportClock::default(),
+        node_store,
+    );
+
+    let parent_sql = CString::new("SELECT parent, deleted_at FROM tree_nodes WHERE node = ?1 LIMIT 1")
+        .expect("parent lookup sql");
+    let mut parent_stmt: *mut sqlite3_stmt = null_mut();
+    let parent_rc = sqlite_prepare_v2(db, parent_sql.as_ptr(), -1, &mut parent_stmt, null_mut());
+    if parent_rc != SQLITE_OK as c_int {
+        return Err(parent_rc);
+    }
+    let parent_stmt = AutoStmt(parent_stmt);
+
+    let insert_opref_sql = CString::new(
+        "INSERT OR IGNORE INTO oprefs_children(parent, op_ref, seq) VALUES (?1, ?2, ?3)",
+    )
+    .expect("insert oprefs_children sql");
+    let mut opref_stmt: *mut sqlite3_stmt = null_mut();
+    let opref_rc =
+        sqlite_prepare_v2(db, insert_opref_sql.as_ptr(), -1, &mut opref_stmt, null_mut());
+    if opref_rc != SQLITE_OK as c_int {
+        return Err(opref_rc);
+    }
+    let opref_stmt = AutoStmt(opref_stmt);
+
+    let update_tombstone_sql =
+        CString::new("UPDATE tree_nodes SET tombstone = ?2 WHERE node = ?1")
+            .expect("update tombstone sql");
+    let mut tombstone_stmt: *mut sqlite3_stmt = null_mut();
+    let tombstone_rc = sqlite_prepare_v2(
+        db,
+        update_tombstone_sql.as_ptr(),
+        -1,
+        &mut tombstone_stmt,
+        null_mut(),
+    );
+    if tombstone_rc != SQLITE_OK as c_int {
+        return Err(tombstone_rc);
+    }
+    let tombstone_stmt = AutoStmt(tombstone_stmt);
+
+    let mut seq = meta.head_seq;
+    let mut tombstone_starts: HashSet<NodeId> = HashSet::new();
+
+    for op in ops.iter() {
+        seq += 1;
+
+        let node_bytes = op.node.0.to_be_bytes();
+        let old_parent: Option<NodeId> = unsafe {
+            sqlite_clear_bindings(parent_stmt.0);
+            sqlite_reset(parent_stmt.0);
+            let bind_rc = sqlite_bind_blob(
+                parent_stmt.0,
+                1,
+                node_bytes.as_ptr() as *const c_void,
+                node_bytes.len() as c_int,
+                None,
+            );
+            if bind_rc != SQLITE_OK as c_int {
+                sqlite_reset(parent_stmt.0);
+                Err(bind_rc)
+            } else {
+                let step_rc = sqlite_step(parent_stmt.0);
+                let out = if step_rc == SQLITE_ROW as c_int {
+                    match column_blob16(parent_stmt.0, 0)? {
+                        Some(bytes) => Some(NodeId(u128::from_be_bytes(bytes))),
+                        None => None,
+                    }
+                } else if step_rc == SQLITE_DONE as c_int {
+                    None
+                } else {
+                    sqlite_reset(parent_stmt.0);
+                    return Err(step_rc);
+                };
+                sqlite_reset(parent_stmt.0);
+                Ok(out)
+            }
+        }?;
+
+        let next_parent: Option<NodeId> = match op.kind {
+            MaterializeKind::Insert => op.parent,
+            MaterializeKind::Move => op.new_parent,
+            MaterializeKind::Delete | MaterializeKind::Tombstone => old_parent,
+        };
+
+        let op_kind = match op.kind {
+            MaterializeKind::Insert => {
+                let parent = op.parent.ok_or(SQLITE_ERROR as c_int)?;
+                OperationKind::Insert {
+                    parent,
+                    node: op.node,
+                    position: op.position,
+                }
+            }
+            MaterializeKind::Move => {
+                let new_parent = op.new_parent.ok_or(SQLITE_ERROR as c_int)?;
+                OperationKind::Move {
+                    node: op.node,
+                    new_parent,
+                    position: op.position,
+                }
+            }
+            MaterializeKind::Delete => OperationKind::Delete { node: op.node },
+            MaterializeKind::Tombstone => OperationKind::Tombstone { node: op.node },
+        };
+
+        let operation = Operation {
+            meta: OperationMetadata {
+                id: OperationId {
+                    replica: ReplicaId(op.replica.clone()),
+                    counter: op.counter,
+                },
+                lamport: op.lamport,
+                known_state: op.known_state.clone(),
+            },
+            kind: op_kind,
+        };
+
+        if crdt.apply_remote(operation).is_err() {
+            return Err(SQLITE_ERROR as c_int);
+        }
+
+        let insert_parent = |parent: NodeId| -> Result<(), c_int> {
+            if parent == NodeId::TRASH {
+                return Ok(());
+            }
+            let parent_bytes = parent.0.to_be_bytes();
+            unsafe {
+                sqlite_clear_bindings(opref_stmt.0);
+                sqlite_reset(opref_stmt.0);
+            }
+            let mut bind_err = false;
+            unsafe {
+                bind_err |= sqlite_bind_blob(
+                    opref_stmt.0,
+                    1,
+                    parent_bytes.as_ptr() as *const c_void,
+                    parent_bytes.len() as c_int,
+                    None,
+                ) != SQLITE_OK as c_int;
+                bind_err |= sqlite_bind_blob(
+                    opref_stmt.0,
+                    2,
+                    op.op_ref.as_ptr() as *const c_void,
+                    op.op_ref.len() as c_int,
+                    None,
+                ) != SQLITE_OK as c_int;
+                bind_err |= sqlite_bind_int64(opref_stmt.0, 3, seq as i64) != SQLITE_OK as c_int;
+            }
+            if bind_err {
+                return Err(SQLITE_ERROR as c_int);
+            }
+            let step_rc = unsafe { sqlite_step(opref_stmt.0) };
+            if step_rc != SQLITE_DONE as c_int {
+                return Err(step_rc);
+            }
+            Ok(())
+        };
+
+        if let Some(parent) = old_parent {
+            insert_parent(parent)?;
+        }
+        if let Some(parent) = next_parent {
+            if Some(parent) != old_parent {
+                insert_parent(parent)?;
+            }
+        }
+
+        tombstone_starts.insert(op.node);
+        if let Some(parent) = old_parent {
+            tombstone_starts.insert(parent);
+        }
+        if let Some(parent) = next_parent {
+            tombstone_starts.insert(parent);
+        }
+    }
+
+    // Refresh tombstones for affected nodes + ancestors (only for nodes with deleted_at).
+    {
+        let mut stack: Vec<NodeId> = tombstone_starts.into_iter().collect();
+        let mut visited: HashSet<NodeId> = HashSet::new();
+        while let Some(node) = stack.pop() {
+            if node == NodeId::TRASH {
+                continue;
+            }
+            if !visited.insert(node) {
+                continue;
+            }
+
+            let node_bytes = node.0.to_be_bytes();
+            let (parent, has_deleted_at): (Option<NodeId>, bool) = unsafe {
+                sqlite_clear_bindings(parent_stmt.0);
+                sqlite_reset(parent_stmt.0);
+                let bind_rc = sqlite_bind_blob(
+                    parent_stmt.0,
+                    1,
+                    node_bytes.as_ptr() as *const c_void,
+                    node_bytes.len() as c_int,
+                    None,
+                );
+                if bind_rc != SQLITE_OK as c_int {
+                    sqlite_reset(parent_stmt.0);
+                    Err(bind_rc)
+                } else {
+                    let step_rc = sqlite_step(parent_stmt.0);
+                    let out = if step_rc == SQLITE_ROW as c_int {
+                        let parent = match column_blob16(parent_stmt.0, 0)? {
+                            Some(bytes) => Some(NodeId(u128::from_be_bytes(bytes))),
+                            None => None,
+                        };
+                        let has_deleted_at =
+                            sqlite_column_type(parent_stmt.0, 1) != SQLITE_NULL as c_int
+                                && sqlite_column_bytes(parent_stmt.0, 1) > 0;
+                        (parent, has_deleted_at)
+                    } else if step_rc == SQLITE_DONE as c_int {
+                        (None, false)
+                    } else {
+                        sqlite_reset(parent_stmt.0);
+                        return Err(step_rc);
+                    };
+                    sqlite_reset(parent_stmt.0);
+                    Ok(out)
+                }
+            }?;
+
+            if has_deleted_at {
+                let tombstoned = crdt.is_tombstoned(node).map_err(|_| SQLITE_ERROR as c_int)?;
+                unsafe {
+                    sqlite_clear_bindings(tombstone_stmt.0);
+                    sqlite_reset(tombstone_stmt.0);
+                }
+                let mut bind_err = false;
+                unsafe {
+                    bind_err |= sqlite_bind_blob(
+                        tombstone_stmt.0,
+                        1,
+                        node_bytes.as_ptr() as *const c_void,
+                        node_bytes.len() as c_int,
+                        None,
+                    ) != SQLITE_OK as c_int;
+                    bind_err |= sqlite_bind_int64(
+                        tombstone_stmt.0,
+                        2,
+                        if tombstoned { 1 } else { 0 },
+                    ) != SQLITE_OK as c_int;
+                }
+                if bind_err {
+                    return Err(SQLITE_ERROR as c_int);
+                }
+                let step_rc = unsafe { sqlite_step(tombstone_stmt.0) };
+                if step_rc != SQLITE_DONE as c_int {
+                    return Err(step_rc);
+                }
+            }
+
+            if let Some(parent) = parent {
+                stack.push(parent);
+            }
+        }
+    }
+
+    let last = ops.last().expect("ops non-empty");
+    update_tree_meta_head(db, last.lamport, &last.replica, last.counter, seq)?;
+    Ok(())
 }
 
 fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
@@ -2707,7 +3052,102 @@ unsafe extern "C" fn treecrdt_append_op(
         sqlite_result_int(ctx, 1);
         return;
     }
-    let _ = set_tree_meta_dirty(db, true);
+
+    // Incremental materialization fast-path (best-effort). If we can't apply in-order, mark dirty
+    // and let the next reader trigger a full rebuild.
+    let meta = match load_tree_meta(db) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = set_tree_meta_dirty(db, true);
+            sqlite_result_int(ctx, 1);
+            return;
+        }
+    };
+    if meta.dirty {
+        let _ = set_tree_meta_dirty(db, true);
+        sqlite_result_int(ctx, 1);
+        return;
+    }
+
+    let kind_parsed = match MaterializeKind::parse(kind) {
+        Some(k) => k,
+        None => {
+            let _ = set_tree_meta_dirty(db, true);
+            sqlite_result_int(ctx, 1);
+            return;
+        }
+    };
+
+    let Some(node_bytes) = node_bytes else {
+        let _ = set_tree_meta_dirty(db, true);
+        sqlite_result_int(ctx, 1);
+        return;
+    };
+    let node_id = NodeId(u128::from_be_bytes(node_bytes));
+
+    let parse_opt_node_id = |val: *mut sqlite3_value| -> Option<NodeId> {
+        unsafe {
+            if sqlite_value_type(val) == SQLITE_NULL as c_int {
+                return None;
+            }
+            let ptr = sqlite_value_blob(val) as *const u8;
+            let len = sqlite_value_bytes(val) as usize;
+            if ptr.is_null() || len != 16 {
+                return None;
+            }
+            let mut out = [0u8; 16];
+            out.copy_from_slice(slice::from_raw_parts(ptr, len));
+            Some(NodeId(u128::from_be_bytes(out)))
+        }
+    };
+
+    let parent = parse_opt_node_id(args[4]);
+    let new_parent = parse_opt_node_id(args[6]);
+    let position = unsafe {
+        if sqlite_value_type(args[7]) == SQLITE_NULL as c_int {
+            0usize
+        } else {
+            let v = sqlite_value_int64(args[7]);
+            if v < 0 {
+                0usize
+            } else {
+                (v as u64).min(usize::MAX as u64) as usize
+            }
+        }
+    };
+
+    let known_state = if let Some(ref bytes) = known_state_blob {
+        if bytes.is_empty() {
+            None
+        } else {
+            match deserialize_version_vector(bytes) {
+                Ok(vv) => Some(vv),
+                Err(_) => {
+                    let _ = set_tree_meta_dirty(db, true);
+                    sqlite_result_int(ctx, 1);
+                    return;
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut ops = [MaterializeOp {
+        replica: replica.to_vec(),
+        counter: counter_i64 as u64,
+        lamport: unsafe { sqlite_value_int64(args[2]).max(0) as Lamport },
+        kind: kind_parsed,
+        parent,
+        node: node_id,
+        new_parent,
+        position,
+        known_state,
+        op_ref,
+    }];
+    if materialize_ops_in_order(db, &meta, &mut ops).is_err() {
+        let _ = set_tree_meta_dirty(db, true);
+    }
     sqlite_result_int(ctx, 1);
 }
 
@@ -2805,6 +3245,20 @@ unsafe extern "C" fn treecrdt_append_ops(
             return;
         }
     }
+
+    let meta = match load_tree_meta(db) {
+        Ok(v) => v,
+        Err(rc) => {
+            sqlite_result_error_code(ctx, rc);
+            return;
+        }
+    };
+    let mut materialize_ops: Vec<MaterializeOp> = Vec::new();
+    let mut materialize_ok = !meta.dirty;
+    if materialize_ok {
+        materialize_ops.reserve(ops.len());
+    }
+
     let begin = CString::new("SAVEPOINT treecrdt_append_ops").expect("static");
     let commit = CString::new("RELEASE treecrdt_append_ops").expect("static");
     let rollback = CString::new("ROLLBACK TO treecrdt_append_ops; RELEASE treecrdt_append_ops")
@@ -2987,6 +3441,69 @@ unsafe extern "C" fn treecrdt_append_ops(
 
         if changed > 0 {
             inserted += 1;
+            if materialize_ok {
+                let kind_parsed = match MaterializeKind::parse(op.kind.as_str()) {
+                    Some(k) => k,
+                    None => {
+                        materialize_ok = false;
+                        continue;
+                    }
+                };
+                if op.node.len() != 16 {
+                    materialize_ok = false;
+                    continue;
+                }
+                let mut node_arr = [0u8; 16];
+                node_arr.copy_from_slice(&op.node);
+                let node = NodeId(u128::from_be_bytes(node_arr));
+
+                let to_node_id_opt = |bytes: &Option<Vec<u8>>| -> Option<NodeId> {
+                    let v = bytes.as_ref()?;
+                    if v.len() != 16 {
+                        return None;
+                    }
+                    let mut out = [0u8; 16];
+                    out.copy_from_slice(v);
+                    Some(NodeId(u128::from_be_bytes(out)))
+                };
+                let parent_id = to_node_id_opt(&op.parent);
+                let new_parent_id = to_node_id_opt(&op.new_parent);
+                if kind_parsed == MaterializeKind::Insert && parent_id.is_none() {
+                    materialize_ok = false;
+                    continue;
+                }
+                if kind_parsed == MaterializeKind::Move && new_parent_id.is_none() {
+                    materialize_ok = false;
+                    continue;
+                }
+
+                let known_state = match op.known_state.as_ref() {
+                    Some(bytes) if !bytes.is_empty() => match deserialize_version_vector(bytes) {
+                        Ok(vv) => Some(vv),
+                        Err(_) => {
+                            materialize_ok = false;
+                            continue;
+                        }
+                    },
+                    _ => None,
+                };
+
+                materialize_ops.push(MaterializeOp {
+                    replica: op.replica.clone(),
+                    counter: op.counter,
+                    lamport: op.lamport,
+                    kind: kind_parsed,
+                    parent: parent_id,
+                    node,
+                    new_parent: new_parent_id,
+                    position: op
+                        .position
+                        .unwrap_or(0)
+                        .min(usize::MAX as u64) as usize,
+                    known_state,
+                    op_ref,
+                });
+            }
             continue;
         }
 
@@ -3048,7 +3565,13 @@ unsafe extern "C" fn treecrdt_append_ops(
 
     if err_rc == SQLITE_OK as c_int {
         if inserted > 0 {
-            let _ = set_tree_meta_dirty(db, true);
+            if materialize_ok {
+                if materialize_ops_in_order(db, &meta, &mut materialize_ops).is_err() {
+                    let _ = set_tree_meta_dirty(db, true);
+                }
+            } else {
+                let _ = set_tree_meta_dirty(db, true);
+            }
         }
         let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
         if commit_rc == SQLITE_OK as c_int {
