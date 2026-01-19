@@ -38,53 +38,6 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
       return a.counter - b.counter;
     });
 
-  const buildTreeState = (): Map<string, { parent: string | null; pos: number | null; tombstone: boolean }> => {
-    const nodes = new Map<string, { parent: string | null; pos: number | null; tombstone: boolean }>();
-    const ROOT = "0".repeat(32);
-    nodes.set(ROOT, { parent: null, pos: null, tombstone: false });
-
-    for (const op of sortedOps()) {
-      if (op.kind === "insert") {
-        nodes.set(op.node, {
-          parent: op.parent ?? ROOT,
-          pos: op.position ?? 0,
-          tombstone: false,
-        });
-        continue;
-      }
-      if (op.kind === "move") {
-        const current = nodes.get(op.node) ?? { parent: null, pos: null, tombstone: false };
-        nodes.set(op.node, {
-          parent: op.new_parent ?? ROOT,
-          pos: op.position ?? 0,
-          tombstone: false,
-        });
-        if (current.tombstone) {
-          // Keep behavior simple: treat moves as re-activating a node.
-        }
-        continue;
-      }
-      if (op.kind === "delete" || op.kind === "tombstone") {
-        const current = nodes.get(op.node) ?? { parent: null, pos: null, tombstone: false };
-        nodes.set(op.node, { ...current, tombstone: true });
-      }
-    }
-
-    return nodes;
-  };
-
-  const childrenOf = (parentHex: string): string[] => {
-    const nodes = buildTreeState();
-    const out: Array<{ node: string; pos: number }> = [];
-    for (const [node, st] of nodes.entries()) {
-      if (node === "0".repeat(32)) continue;
-      if (st.tombstone) continue;
-      if (st.parent === parentHex) out.push({ node, pos: st.pos ?? 0 });
-    }
-    out.sort((a, b) => (a.pos !== b.pos ? a.pos - b.pos : a.node < b.node ? -1 : a.node > b.node ? 1 : 0));
-    return out.map((v) => v.node);
-  };
-
   return {
     setDocId: (next) => {
       docId = next;
@@ -106,26 +59,12 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     },
     treeChildren: async (parent) => {
       const parentHex = bytesToHex(parent);
-      return childrenOf(parentHex).map((hex) => Array.from(hexToBytes(hex)));
+      const out = tree.treeChildren(parentHex) as unknown;
+      if (!Array.isArray(out)) return [];
+      return (out as string[]).map((hex) => Array.from(hexToBytes(hex)));
     },
-    treeDump: async () => {
-      const nodes = buildTreeState();
-      return Array.from(nodes.entries(), ([node, st]) => ({
-        node: Array.from(hexToBytes(node)),
-        parent: st.parent ? Array.from(hexToBytes(st.parent)) : null,
-        pos: st.pos,
-        tombstone: st.tombstone,
-      }));
-    },
-    treeNodeCount: () => {
-      const nodes = buildTreeState();
-      let count = 0;
-      for (const [node, st] of nodes.entries()) {
-        if (node === "0".repeat(32)) continue;
-        if (!st.tombstone) count += 1;
-      }
-      return count;
-    },
+    treeDump: async () => tree.treeDump() as unknown[],
+    treeNodeCount: () => tree.treeNodeCount(),
     headLamport: () => Math.max(0, ...allOps().map((op) => op.lamport)),
     replicaMaxCounter: (replica) => {
       const target = bytesToHex(replica);
@@ -138,11 +77,25 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     },
     appendOp: async (op, serializeNodeId, serializeReplica) => {
       const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
+      if (op.kind.type === "delete") {
+        const ks =
+          op.meta.knownState && op.meta.knownState.length > 0
+            ? op.meta.knownState
+            : tree.subtreeKnownState(jsOp.node);
+        jsOp.known_state = Array.from(ks);
+      }
       tree.appendOp(JSON.stringify(jsOp));
     },
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
       for (const op of ops) {
         const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
+        if (op.kind.type === "delete") {
+          const ks =
+            op.meta.knownState && op.meta.knownState.length > 0
+              ? op.meta.knownState
+              : tree.subtreeKnownState(jsOp.node);
+          jsOp.known_state = Array.from(ks);
+        }
         tree.appendOp(JSON.stringify(jsOp));
       }
     },
@@ -165,6 +118,7 @@ type JsOp = {
   node: string;
   new_parent?: string | null;
   position?: number | null;
+  known_state?: number[] | null;
 };
 
 function toHex(bytes: Uint8Array): string {

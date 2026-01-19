@@ -55,6 +55,7 @@ function buildAppendOp(
     counter: number;
     lamport: number;
     serializeNodeId: SerializeNodeId;
+    knownState: Uint8Array | null;
   }
 ): SqlCall {
   const base = [opts.replica, opts.counter, opts.lamport] as (
@@ -67,7 +68,7 @@ function buildAppendOp(
   switch (kind.type) {
     case "insert":
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,NULL)",
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,NULL,NULL)",
         params: [
           ...base,
           "insert",
@@ -77,7 +78,7 @@ function buildAppendOp(
       };
     case "move":
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7)",
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)",
         params: [
           ...base,
           "move",
@@ -88,13 +89,13 @@ function buildAppendOp(
       };
     case "delete":
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL)",
-        params: [...base, "delete", opts.serializeNodeId(kind.node)],
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
+        params: [...base, "delete", opts.serializeNodeId(kind.node), opts.knownState],
       };
     case "tombstone":
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL)",
-        params: [...base, "tombstone", opts.serializeNodeId(kind.node)],
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
+        params: [...base, "tombstone", opts.serializeNodeId(kind.node), opts.knownState],
       };
     default:
       throw new Error("unsupported operation kind");
@@ -148,12 +149,6 @@ async function treecrdtAppendOp(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica
 ): Promise<void> {
-  if (op.meta.knownState && op.meta.knownState.length > 0) {
-    const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
-    await runner.getText("SELECT treecrdt_append_ops(?1)", [JSON.stringify(payload)]);
-    return;
-  }
-
   const { meta, kind } = op;
   const { id, lamport } = meta;
   const { replica, counter } = id;
@@ -163,6 +158,7 @@ async function treecrdtAppendOp(
     counter,
     lamport,
     serializeNodeId,
+    knownState: meta.knownState ?? null,
   });
 
   await runner.getText(sql, params);
@@ -179,6 +175,25 @@ async function treecrdtAppendOps(
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = "SELECT treecrdt_append_ops(?1)";
+
+  // The bulk entrypoint requires delete ops to carry knownState; fall back to per-op
+  // calls (which can ask the extension to capture it) when missing.
+  const hasDeleteWithoutKnownState = ops.some(
+    (op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0)
+  );
+  if (hasDeleteWithoutKnownState) {
+    await runner.exec("BEGIN");
+    try {
+      for (const op of ops) {
+        await treecrdtAppendOp(runner, op, serializeNodeId, serializeReplica);
+      }
+      await runner.exec("COMMIT");
+    } catch (err) {
+      await runner.exec("ROLLBACK");
+      throw err;
+    }
+    return;
+  }
 
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
   let bulkFailedAt: number | null = null;

@@ -1903,7 +1903,7 @@ pub extern "C" fn sqlite3_treecrdt_init(
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            8,
+            9,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_append_op),
@@ -2411,7 +2411,7 @@ unsafe extern "C" fn treecrdt_doc_id(
 }
 
 /// Append an operation row to the `ops` table. Args:
-/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, position INT|null
+/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, position INT|null, known_state BLOB|null
 unsafe extern "C" fn treecrdt_append_op(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -2425,10 +2425,10 @@ unsafe extern "C" fn treecrdt_append_op(
         }
     }
 
-    if argc != 8 {
+    if argc != 9 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_append_op expects 8 args\0".as_ptr() as *const c_char,
+            b"treecrdt_append_op expects 9 args\0".as_ptr() as *const c_char,
         );
         return;
     }
@@ -2489,8 +2489,8 @@ unsafe extern "C" fn treecrdt_append_op(
     }
     let op_ref = derive_op_ref_v0(&doc_id, replica, counter_i64 as u64);
 
-    // For legacy single-op entrypoint, compute delete `known_state` (subtree version vector)
-    // from the currently materialized tree so defensive deletion stays correct.
+    // Compute delete `known_state` (subtree version vector) when the caller doesn't provide it.
+    // This is only correct for the writer creating the delete op.
     let kind_ptr = unsafe { sqlite_value_text(args[3]) } as *const u8;
     let kind_len = unsafe { sqlite_value_bytes(args[3]) } as usize;
     let kind = if kind_ptr.is_null() {
@@ -2510,50 +2510,80 @@ unsafe extern "C" fn treecrdt_append_op(
     };
 
     let known_state_blob: Option<Vec<u8>> = if kind == "delete" {
-        match node_bytes {
-            Some(node_bytes) => {
-                if let Err(rc) = ensure_materialized(db) {
+        let provided_known_state = unsafe {
+            if sqlite_value_type(args[8]) == SQLITE_NULL as c_int {
+                None
+            } else {
+                let ptr = sqlite_value_blob(args[8]) as *const u8;
+                let len = sqlite_value_bytes(args[8]) as usize;
+                if ptr.is_null() {
+                    None
+                } else {
+                    Some(slice::from_raw_parts(ptr, len).to_vec())
+                }
+            }
+        };
+        if let Some(bytes) = provided_known_state {
+            if bytes.is_empty() {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error(
+                    ctx,
+                    b"treecrdt_append_op: delete known_state must not be empty\0".as_ptr()
+                        as *const c_char,
+                );
+                return;
+            }
+            Some(bytes)
+        } else {
+            let Some(node_bytes) = node_bytes else {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error(
+                    ctx,
+                    b"treecrdt_append_op: delete node must be 16-byte BLOB\0".as_ptr()
+                        as *const c_char,
+                );
+                return;
+            };
+            if let Err(rc) = ensure_materialized(db) {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error_code(ctx, rc);
+                return;
+            }
+
+            let node_id = NodeId(u128::from_be_bytes(node_bytes));
+            let node_store = match SqliteNodeStore::prepare(db) {
+                Ok(store) => store,
+                Err(_) => {
+                    unsafe { sqlite_finalize(stmt) };
+                    sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+                    return;
+                }
+            };
+
+            let crdt = treecrdt_core::TreeCrdt::with_node_store(
+                treecrdt_core::ReplicaId::new(b"sqlite-ext"),
+                NoopStorage::default(),
+                treecrdt_core::LamportClock::default(),
+                node_store,
+            );
+
+            let vv = match crdt.subtree_version_vector(node_id) {
+                Ok(vv) => vv,
+                Err(_) => {
+                    unsafe { sqlite_finalize(stmt) };
+                    sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+                    return;
+                }
+            };
+
+            match serialize_version_vector(&vv) {
+                Ok(bytes) => Some(bytes),
+                Err(rc) => {
                     unsafe { sqlite_finalize(stmt) };
                     sqlite_result_error_code(ctx, rc);
                     return;
                 }
-
-                let node_id = NodeId(u128::from_be_bytes(node_bytes));
-                let node_store = match SqliteNodeStore::prepare(db) {
-                    Ok(store) => store,
-                    Err(_) => {
-                        unsafe { sqlite_finalize(stmt) };
-                        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
-                        return;
-                    }
-                };
-
-                let crdt = treecrdt_core::TreeCrdt::with_node_store(
-                    treecrdt_core::ReplicaId::new(b"sqlite-ext"),
-                    NoopStorage::default(),
-                    treecrdt_core::LamportClock::default(),
-                    node_store,
-                );
-
-                let vv = match crdt.subtree_version_vector(node_id) {
-                    Ok(vv) => vv,
-                    Err(_) => {
-                        unsafe { sqlite_finalize(stmt) };
-                        sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
-                        return;
-                    }
-                };
-
-                match serialize_version_vector(&vv) {
-                    Ok(bytes) => Some(bytes),
-                    Err(rc) => {
-                        unsafe { sqlite_finalize(stmt) };
-                        sqlite_result_error_code(ctx, rc);
-                        return;
-                    }
-                }
             }
-            None => None,
         }
     } else {
         None
@@ -2761,6 +2791,20 @@ unsafe extern "C" fn treecrdt_append_ops(
             return;
         }
     };
+
+    // Defensive deletion requires the writer's causal "known_state" so receivers don't invent
+    // awareness from their own history (which breaks revival semantics).
+    for op in &ops {
+        if op.kind == "delete"
+            && op.known_state.as_ref().map_or(true, |bytes| bytes.is_empty())
+        {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_append_ops: delete op missing known_state\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+    }
     let begin = CString::new("SAVEPOINT treecrdt_append_ops").expect("static");
     let commit = CString::new("RELEASE treecrdt_append_ops").expect("static");
     let rollback = CString::new("ROLLBACK TO treecrdt_append_ops; RELEASE treecrdt_append_ops")
