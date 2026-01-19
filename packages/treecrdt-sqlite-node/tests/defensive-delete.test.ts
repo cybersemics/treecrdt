@@ -156,3 +156,41 @@ test("sync: delete known_state propagates (receiver must not recompute awareness
   const parentChildrenRow: any = dbB.prepare("SELECT treecrdt_tree_children(?) AS v").get(parent);
   expect(parseJsonBytes16List(parentChildrenRow.v).map((b) => b.toString("hex"))).toEqual([child.toString("hex")]);
 });
+
+test("rebuild: delete without known_state does not become aware (no backfill)", async () => {
+  const Database = await loadSqlite();
+  const { loadTreecrdtExtension, defaultExtensionPath } = await loadTreecrdt();
+
+  const docId = "treecrdt-defensive-delete-missing-known-state";
+  const db = new Database(":memory:");
+  loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
+  db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
+
+  const rA = Buffer.from("rA");
+  const rB = Buffer.from("rB");
+  const root = Buffer.alloc(16, 0);
+  const parent = makeNodeId(1);
+  const child = makeNodeId(2);
+
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(rA, 1, 1, "insert", root, parent);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(rB, 1, 2, "insert", parent, child);
+
+  // Simulate a legacy/invalid delete op that omitted known_state. The receiver must not
+  // "recompute" awareness during rebuild based on lamport order.
+  const payload = JSON.stringify([
+    {
+      replica: Array.from(rA),
+      counter: 2,
+      lamport: 3,
+      kind: "delete",
+      parent: null,
+      node: Array.from(parent),
+      new_parent: null,
+      position: null,
+    },
+  ]);
+  db.prepare("SELECT treecrdt_append_ops(?)").get(payload);
+
+  const rootChildrenRow: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
+  expect(parseJsonBytes16List(rootChildrenRow.v).map((b) => b.toString("hex"))).toEqual([parent.toString("hex")]);
+});

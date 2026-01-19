@@ -1211,7 +1211,7 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
                     continue;
                 };
 
-                let mut op = Operation {
+                let op = Operation {
                     meta: OperationMetadata {
                         id: OperationId {
                             replica: ReplicaId(replica_bytes),
@@ -1222,14 +1222,6 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
                     },
                     kind: kind_parsed,
                 };
-
-                // Best-effort backfill known_state for older delete operations.
-                if matches!(op.kind, OperationKind::Delete { .. }) && op.meta.known_state.is_none()
-                {
-                    if let Ok(vv) = crdt.subtree_version_vector(node_id) {
-                        op.meta.known_state = Some(vv);
-                    }
-                }
 
                 if crdt.apply_remote(op).is_err() {
                     scan_err = Some(SQLITE_ERROR as c_int);
