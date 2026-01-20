@@ -1,5 +1,6 @@
 use super::node_store::SqliteNodeStore;
 use super::*;
+use super::append::JsonAppendOp;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MaterializeKind {
