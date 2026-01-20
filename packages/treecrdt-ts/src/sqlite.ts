@@ -426,6 +426,13 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
       row.known_state && (row.known_state instanceof Uint8Array ? row.known_state : Uint8Array.from(row.known_state));
     const base = { meta: { id: { replica, counter }, lamport, ...(knownState ? { knownState } : {}) } } as Operation;
     if (row.kind === "insert") {
+      const rawPayload = row.payload;
+      const payload =
+        rawPayload === null || rawPayload === undefined
+          ? undefined
+          : rawPayload instanceof Uint8Array
+            ? rawPayload
+            : Uint8Array.from(rawPayload as any);
       return {
         ...base,
         kind: {
@@ -433,6 +440,7 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
           parent: decodeNodeId(row.parent),
           node: decodeNodeId(row.node),
           position: row.position === null || row.position === undefined ? 0 : Number(row.position),
+          ...(payload !== undefined ? { payload } : {}),
         },
       } as Operation;
     }

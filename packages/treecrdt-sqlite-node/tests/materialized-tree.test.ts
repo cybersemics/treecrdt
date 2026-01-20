@@ -171,9 +171,9 @@ test("materialized tree: reindexes latest payload across moves for children(pare
   const p2 = makeNodeId(2);
   const child = makeNodeId(3);
 
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 1, 1, "insert", root, p1);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 2, 2, "insert", root, p2);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 3, 3, "insert", p1, child);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, p1);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 2, 2, "insert", root, p2);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 3, 3, "insert", p1, child);
   db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(
     replica,
     4,
@@ -182,7 +182,7 @@ test("materialized tree: reindexes latest payload across moves for children(pare
     child,
     Buffer.from("hi"),
   );
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?)").get(replica, 5, 5, "move", child, p2, 0);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)").get(replica, 5, 5, "move", child, p2, 0);
 
   const refsRow: any = db.prepare("SELECT treecrdt_oprefs_children(?) AS v").get(p2);
   const refs = JSON.parse(refsRow.v) as number[][];
@@ -213,7 +213,7 @@ test("materialized tree: payload persists across reopen", async () => {
       const db = new Database(path);
       loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
       db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
-      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
+      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
       db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(
         replica,
         2,

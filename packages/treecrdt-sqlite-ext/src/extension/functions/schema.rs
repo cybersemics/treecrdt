@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS ops (
   position INTEGER,
   op_ref BLOB,
   known_state BLOB,
+  payload BLOB,
   PRIMARY KEY (replica, counter)
 );
 "#;
@@ -226,6 +227,13 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
   PRIMARY KEY (parent, op_ref)
 );
 "#;
+    const TREE_PAYLOAD: &str = r#"
+CREATE TABLE IF NOT EXISTS tree_payload (
+  node BLOB PRIMARY KEY,
+  payload BLOB,
+  op_ref BLOB NOT NULL
+);
+"#;
 
     let rc_meta = {
         let sql = CString::new(META).expect("meta schema");
@@ -240,6 +248,23 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
     };
     if rc_ops != SQLITE_OK as c_int {
         return Err(rc_ops);
+    }
+
+    // Backwards-compatible migration: older DBs may lack the `payload` column.
+    {
+        let probe = CString::new("SELECT payload FROM ops LIMIT 1").expect("probe ops payload");
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let probe_rc = sqlite_prepare_v2(db, probe.as_ptr(), -1, &mut stmt, null_mut());
+        if probe_rc == SQLITE_OK as c_int {
+            unsafe { sqlite_finalize(stmt) };
+        } else {
+            let alter =
+                CString::new("ALTER TABLE ops ADD COLUMN payload BLOB").expect("alter ops payload");
+            let alter_rc = sqlite_exec(db, alter.as_ptr(), None, null_mut(), null_mut());
+            if alter_rc != SQLITE_OK as c_int {
+                return Err(alter_rc);
+            }
+        }
     }
     let rc_tree_meta = {
         let sql = CString::new(TREE_META).expect("tree_meta schema");
@@ -261,6 +286,14 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
     };
     if rc_oprefs != SQLITE_OK as c_int {
         return Err(rc_oprefs);
+    }
+
+    let rc_tree_payload = {
+        let sql = CString::new(TREE_PAYLOAD).expect("tree_payload schema");
+        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
+    };
+    if rc_tree_payload != SQLITE_OK as c_int {
+        return Err(rc_tree_payload);
     }
 
     const INDEXES: &str = r#"

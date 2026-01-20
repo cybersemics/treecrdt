@@ -1,7 +1,7 @@
 use super::*;
 
 /// Append an operation row to the `ops` table. Args:
-/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, position INT|null, known_state BLOB|null
+/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, position INT|null, known_state_or_payload BLOB|null
 pub(super) unsafe extern "C" fn treecrdt_append_op(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -108,7 +108,18 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
             }
         }
     };
-    let known_state = read_opt_blob(args[8]);
+    let known_state_or_payload = read_opt_blob(args[8]);
+
+    let (known_state, payload) = match kind.as_str() {
+        // Deletes must carry known_state (writer-side subtree version vector).
+        "delete" => (known_state_or_payload, None),
+        // Payload ops are represented as `kind = "payload"` plus an optional payload blob.
+        // NULL payload clears.
+        "payload" => (None, known_state_or_payload),
+        // Inserts can carry an optional initial payload in the last arg.
+        "insert" => (None, known_state_or_payload),
+        _ => (known_state_or_payload, None),
+    };
 
     if kind == "delete" {
         if known_state.as_ref().map_or(true, |bytes| bytes.is_empty()) {
@@ -137,6 +148,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         new_parent,
         position,
         known_state,
+        payload,
     };
 
     match append_ops_impl(db, &doc_id, "treecrdt_append_op", std::slice::from_ref(&op)) {
@@ -156,6 +168,8 @@ pub(super) struct JsonAppendOp {
     pub(super) new_parent: Option<Vec<u8>>,
     pub(super) position: Option<u64>,
     pub(super) known_state: Option<Vec<u8>>,
+    #[serde(default)]
+    pub(super) payload: Option<Vec<u8>>,
 }
 
 /// Batch append: accepts a single JSON array argument with fields matching the ops table.

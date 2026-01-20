@@ -132,7 +132,9 @@ where
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let op = Operation::insert_with_payload(&replica, counter, lamport, parent, node, position, payload);
+        let op = Operation::insert_with_payload(
+            &replica, counter, lamport, parent, node, position, payload,
+        );
         self.commit_local(op)
     }
 

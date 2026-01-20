@@ -232,16 +232,22 @@ fn defensive_delete_parent_then_payload_change_restores_parent() {
     assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
 
     let delete_op = crdt_a.local_delete(parent).unwrap();
-    assert!(crdt_a.is_tombstoned(parent));
+    assert!(crdt_a.is_tombstoned(parent).unwrap());
 
     crdt_a.apply_remote(set_payload_op.clone()).unwrap();
     crdt_b.apply_remote(delete_op).unwrap();
-    assert!(!crdt_a.is_tombstoned(parent), "Parent should be restored");
-    assert!(!crdt_b.is_tombstoned(parent), "Parent should be restored");
+    assert!(
+        !crdt_a.is_tombstoned(parent).unwrap(),
+        "Parent should be restored"
+    );
+    assert!(
+        !crdt_b.is_tombstoned(parent).unwrap(),
+        "Parent should be restored"
+    );
     assert_eq!(crdt_a.payload(parent), Some(&b"hello"[..]));
     assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
 
-    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    assert_eq!(crdt_a.nodes().unwrap(), crdt_b.nodes().unwrap());
     crdt_a.validate_invariants().unwrap();
     crdt_b.validate_invariants().unwrap();
 }
@@ -269,17 +275,17 @@ fn defensive_delete_parent_then_payload_change_no_restoration_when_aware() {
 
     // Client A deletes with full awareness of payload.
     let delete_op = crdt_a.local_delete(parent).unwrap();
-    assert!(crdt_a.is_tombstoned(parent));
+    assert!(crdt_a.is_tombstoned(parent).unwrap());
 
     crdt_b.apply_remote(delete_op).unwrap();
 
     // Parent should stay tombstoned because delete happened with full awareness.
-    assert!(crdt_a.is_tombstoned(parent));
-    assert!(crdt_b.is_tombstoned(parent));
+    assert!(crdt_a.is_tombstoned(parent).unwrap());
+    assert!(crdt_b.is_tombstoned(parent).unwrap());
     assert_eq!(crdt_a.payload(parent), Some(&b"hello"[..]));
     assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
 
-    assert_eq!(crdt_a.nodes(), crdt_b.nodes());
+    assert_eq!(crdt_a.nodes().unwrap(), crdt_b.nodes().unwrap());
     crdt_a.validate_invariants().unwrap();
     crdt_b.validate_invariants().unwrap();
 }

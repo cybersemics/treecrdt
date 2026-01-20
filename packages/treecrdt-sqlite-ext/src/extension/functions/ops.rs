@@ -154,7 +154,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_by_oprefs(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
          FROM ops \
          WHERE op_ref = ?1",
     )
@@ -239,6 +239,7 @@ struct JsonOp {
     new_parent: Option<[u8; 16]>,
     position: Option<u64>,
     known_state: Option<Vec<u8>>,
+    payload: Option<Vec<u8>>,
 }
 
 pub(super) unsafe extern "C" fn treecrdt_ops_since(
@@ -260,7 +261,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_since(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
          FROM ops \
          WHERE lamport > ?1 \
          AND (?2 IS NULL OR parent = ?2 OR node = ?2 OR new_parent = ?2) \
@@ -354,6 +355,17 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
                 Some(slice::from_raw_parts(ptr, len).to_vec())
             }
         };
+        let payload = if sqlite_column_type(stmt, 9) == SQLITE_NULL as c_int {
+            None
+        } else {
+            let ptr = sqlite_column_blob(stmt, 9) as *const u8;
+            let len = sqlite_column_bytes(stmt, 9) as usize;
+            if ptr.is_null() {
+                None
+            } else {
+                Some(slice::from_raw_parts(ptr, len).to_vec())
+            }
+        };
 
         Ok(JsonOp {
             replica,
@@ -365,6 +377,7 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             new_parent,
             position,
             known_state,
+            payload,
         })
     }
 }
