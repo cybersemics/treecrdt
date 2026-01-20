@@ -12,10 +12,12 @@ pub mod version_vector;
 
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
-pub use ops::{Operation, OperationKind, OperationMetadata};
+pub use ops::{
+    cmp_op_key, cmp_ops, op_tie_breaker_id, Operation, OperationKind, OperationMetadata,
+};
 pub use traits::{
     Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryStorage, NodeStore, Snapshot,
     Storage,
 };
-pub use tree::{LogEntryExport, NodeExport, NodeSnapshotExport, TreeCrdt};
+pub use tree::{ApplyDelta, LogEntryExport, NodeExport, NodeSnapshotExport, TreeCrdt};
 pub use version_vector::VersionVector;

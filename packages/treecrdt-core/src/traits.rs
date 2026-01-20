@@ -189,15 +189,15 @@ impl Default for MemoryNodeStore {
 
 impl MemoryNodeStore {
     fn get_state(&self, node: NodeId) -> Result<&MemoryNodeState> {
-        self.nodes.get(&node).ok_or_else(|| {
-            Error::InconsistentState(format!("node {} missing from store", node.0))
-        })
+        self.nodes
+            .get(&node)
+            .ok_or_else(|| Error::InconsistentState(format!("node {} missing from store", node.0)))
     }
 
     fn get_state_mut(&mut self, node: NodeId) -> Result<&mut MemoryNodeState> {
-        self.nodes.get_mut(&node).ok_or_else(|| {
-            Error::InconsistentState(format!("node {} missing from store", node.0))
-        })
+        self.nodes
+            .get_mut(&node)
+            .ok_or_else(|| Error::InconsistentState(format!("node {} missing from store", node.0)))
     }
 }
 

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
-use crate::ops::{Operation, OperationKind};
+use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
 use crate::traits::{Clock, MemoryNodeStore, NodeStore, Storage};
 use crate::version_vector::VersionVector;
 
@@ -51,18 +51,15 @@ pub struct NodeSnapshotExport {
 }
 
 #[derive(Clone, Debug)]
+pub struct ApplyDelta {
+    pub snapshot: NodeSnapshotExport,
+    pub affected_parents: Vec<NodeId>,
+}
+
+#[derive(Clone, Debug)]
 pub struct LogEntryExport {
     pub op: Operation,
     pub snapshot: NodeSnapshotExport,
-}
-
-fn tie_breaker_id(op: &Operation) -> u128 {
-    let mut bytes = [0u8; 16];
-    let rep = &op.meta.id.replica.0;
-    let len = rep.len().min(8);
-    bytes[..len].copy_from_slice(&rep[..len]);
-    bytes[8..].copy_from_slice(&op.meta.id.counter.to_be_bytes());
-    u128::from_be_bytes(bytes)
 }
 
 impl<S, C> TreeCrdt<S, C, MemoryNodeStore>
@@ -144,13 +141,46 @@ where
         self.ingest(op)
     }
 
+    pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
+        let lamport = op.meta.lamport;
+        let replica = op.meta.id.replica.clone();
+        let counter = op.meta.id.counter;
+
+        self.clock.observe(lamport);
+        self.version_vector.observe(&replica, counter);
+
+        let Some(snapshot) = self.ingest_with_snapshot(op.clone())? else {
+            return Ok(None);
+        };
+
+        let mut parents = Vec::new();
+        if let Some(p) = snapshot.parent {
+            parents.push(p);
+        }
+        match op.kind {
+            OperationKind::Insert { parent, .. } => parents.push(parent),
+            OperationKind::Move { new_parent, .. } => parents.push(new_parent),
+            OperationKind::Delete { .. } | OperationKind::Tombstone { .. } => {}
+        }
+        parents.sort();
+        parents.dedup();
+
+        Ok(Some(ApplyDelta {
+            snapshot: NodeSnapshotExport {
+                parent: snapshot.parent,
+                position: snapshot.position,
+            },
+            affected_parents: parents,
+        }))
+    }
+
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         self.storage.load_since(lamport)
     }
 
     pub fn replay_from_storage(&mut self) -> Result<()> {
         let mut ops = self.storage.load_since(0)?;
-        ops.sort_by(|a, b| (a.meta.lamport, &a.meta.id).cmp(&(b.meta.lamport, &b.meta.id)));
+        ops.sort_by(cmp_ops);
         self.applied.clear();
         self.log.clear();
         self.version_vector = VersionVector::new();
@@ -313,18 +343,25 @@ where
     }
 
     fn ingest(&mut self, op: Operation) -> Result<()> {
+        let _ = self.ingest_with_snapshot(op)?;
+        Ok(())
+    }
+
+    fn ingest_with_snapshot(&mut self, op: Operation) -> Result<Option<NodeSnapshot>> {
         if self.applied.contains(&op.meta.id) {
-            return Ok(());
+            return Ok(None);
         }
 
         self.applied.insert(op.meta.id.clone());
         let idx = match self.log.binary_search_by(|existing| {
-            (
+            cmp_op_key(
                 existing.op.meta.lamport,
-                tie_breaker_id(&existing.op),
-                &existing.op.meta.id,
+                existing.op.meta.id.replica.as_bytes(),
+                existing.op.meta.id.counter,
+                op.meta.lamport,
+                op.meta.id.replica.as_bytes(),
+                op.meta.id.counter,
             )
-                .cmp(&(op.meta.lamport, tie_breaker_id(&op), &op.meta.id))
         }) {
             Ok(i) => i,
             Err(i) => i,
@@ -347,7 +384,7 @@ where
         }
 
         self.storage.apply(op)?;
-        Ok(())
+        Ok(Some(self.log[idx].snapshot.clone()))
     }
 
     fn apply_forward(nodes: &mut N, op: &Operation) -> Result<NodeSnapshot> {
@@ -489,10 +526,7 @@ where
         Ok(())
     }
 
-    fn calculate_subtree_version_vector(
-        nodes: &N,
-        node: NodeId,
-    ) -> Result<VersionVector> {
+    fn calculate_subtree_version_vector(nodes: &N, node: NodeId) -> Result<VersionVector> {
         if !nodes.exists(node)? {
             return Ok(VersionVector::new());
         }
@@ -506,11 +540,7 @@ where
         Ok(subtree_vv)
     }
 
-    fn introduces_cycle(
-        nodes: &N,
-        node: NodeId,
-        potential_parent: NodeId,
-    ) -> Result<bool> {
+    fn introduces_cycle(nodes: &N, node: NodeId, potential_parent: NodeId) -> Result<bool> {
         if potential_parent == NodeId::TRASH || potential_parent == NodeId::ROOT {
             return Ok(false);
         }

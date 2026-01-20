@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::version_vector::VersionVector;
 
@@ -116,4 +118,52 @@ impl Operation {
             kind: OperationKind::Tombstone { node },
         }
     }
+}
+
+/// Deterministic tie-breaker used to order operations with equal Lamport timestamps.
+///
+/// This intentionally avoids comparing the full replica id in the hot path by using the first
+/// 8 bytes (zero-padded) plus the counter, while still producing a total order when combined
+/// with the full `(replica, counter)` id as a final tiebreak.
+pub fn op_tie_breaker_id(replica: &[u8], counter: u64) -> u128 {
+    let mut bytes = [0u8; 16];
+    let len = replica.len().min(8);
+    bytes[..len].copy_from_slice(&replica[..len]);
+    bytes[8..].copy_from_slice(&counter.to_be_bytes());
+    u128::from_be_bytes(bytes)
+}
+
+/// Canonical ordering for operation ids used throughout the core.
+pub fn cmp_op_key(
+    a_lamport: Lamport,
+    a_replica: &[u8],
+    a_counter: u64,
+    b_lamport: Lamport,
+    b_replica: &[u8],
+    b_counter: u64,
+) -> Ordering {
+    (
+        a_lamport,
+        op_tie_breaker_id(a_replica, a_counter),
+        a_replica,
+        a_counter,
+    )
+        .cmp(&(
+            b_lamport,
+            op_tie_breaker_id(b_replica, b_counter),
+            b_replica,
+            b_counter,
+        ))
+}
+
+/// Canonical ordering for full operations.
+pub fn cmp_ops(a: &Operation, b: &Operation) -> Ordering {
+    cmp_op_key(
+        a.meta.lamport,
+        a.meta.id.replica.as_bytes(),
+        a.meta.id.counter,
+        b.meta.lamport,
+        b.meta.id.replica.as_bytes(),
+        b.meta.id.counter,
+    )
 }
