@@ -24,6 +24,18 @@ function parseJsonBytes16List(json: string): Buffer[] {
   return decoded.map((bytes) => Buffer.from(bytes));
 }
 
+function vvBytes(entries: { replica: Buffer; frontier: number; ranges?: [number, number][] }[]): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      entries: entries.map((e) => ({
+        replica: Array.from(e.replica),
+        frontier: e.frontier,
+        ranges: e.ranges ?? [],
+      })),
+    })
+  );
+}
+
 test("materialized tree: delete hides node and move restores it", async () => {
   const Database = await loadSqlite();
   const { loadTreecrdtExtension, defaultExtensionPath } = await loadTreecrdt();
@@ -38,7 +50,8 @@ test("materialized tree: delete hides node and move restores it", async () => {
   const n1 = makeNodeId(1);
 
   db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, NULL)").get(replica, 2, 2, "delete", n1);
+  const deleteKnownState = vvBytes([{ replica, frontier: 1 }]);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(replica, 2, 2, "delete", n1, deleteKnownState);
 
   const afterDeleteRow: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
   expect(parseJsonBytes16List(afterDeleteRow.v)).toEqual([]);
@@ -66,7 +79,8 @@ test("materialized tree: defensive delete restores when earlier child insert arr
 
   // Replica A inserts parent, then deletes it without having seen B's insert of a child.
   db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(rA, 1, 1, "insert", root, parent);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, NULL)").get(rA, 2, 3, "delete", parent);
+  const deleteKnownState = vvBytes([{ replica: rA, frontier: 1 }]);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(rA, 2, 3, "delete", parent, deleteKnownState);
 
   // Parent is tombstoned (hidden from root).
   const afterDeleteRow: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
@@ -102,7 +116,8 @@ test("materialized tree: parent is restored when subtree changes after delete (r
   const child = makeNodeId(2);
 
   db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, parent);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, NULL)").get(replica, 2, 2, "delete", parent);
+  const deleteKnownState = vvBytes([{ replica, frontier: 1 }]);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(replica, 2, 2, "delete", parent, deleteKnownState);
 
   const afterDeleteRow: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
   expect(parseJsonBytes16List(afterDeleteRow.v)).toEqual([]);
@@ -144,7 +159,8 @@ test("sync: delete known_state propagates (receiver must not recompute awareness
   dbB.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(rB, 2, 2, "insert", parent, child);
 
   // Replica A deletes parent without being aware of B's child insert.
-  dbA.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, NULL)").get(rA, 1, 3, "delete", parent);
+  const deleteKnownState = vvBytes([{ replica: rB, frontier: 1 }]);
+  dbA.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(rA, 1, 3, "delete", parent, deleteKnownState);
 
   // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
   const aOpsRow: any = dbA.prepare("SELECT treecrdt_ops_since(0) AS v").get();

@@ -88,6 +88,9 @@ function buildAppendOp(
         ],
       };
     case "delete":
+      if (!opts.knownState || opts.knownState.length === 0) {
+        throw new Error("treecrdt: delete operations require meta.knownState");
+      }
       return {
         sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
         params: [...base, "delete", opts.serializeNodeId(kind.node), opts.knownState],
@@ -149,6 +152,9 @@ async function treecrdtAppendOp(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica
 ): Promise<void> {
+  if (op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0)) {
+    throw new Error("treecrdt: delete operations require meta.knownState");
+  }
   const { meta, kind } = op;
   const { id, lamport } = meta;
   const { replica, counter } = id;
@@ -176,23 +182,8 @@ async function treecrdtAppendOps(
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = "SELECT treecrdt_append_ops(?1)";
 
-  // The bulk entrypoint requires delete ops to carry knownState; fall back to per-op
-  // calls (which can ask the extension to capture it) when missing.
-  const hasDeleteWithoutKnownState = ops.some(
-    (op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0)
-  );
-  if (hasDeleteWithoutKnownState) {
-    await runner.exec("BEGIN");
-    try {
-      for (const op of ops) {
-        await treecrdtAppendOp(runner, op, serializeNodeId, serializeReplica);
-      }
-      await runner.exec("COMMIT");
-    } catch (err) {
-      await runner.exec("ROLLBACK");
-      throw err;
-    }
-    return;
+  if (ops.some((op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0))) {
+    throw new Error("treecrdt: delete operations require meta.knownState");
   }
 
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
