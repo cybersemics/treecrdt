@@ -55,6 +55,7 @@ function buildAppendOp(
     counter: number;
     lamport: number;
     serializeNodeId: SerializeNodeId;
+    knownState: Uint8Array | null;
   }
 ): SqlCall {
   const base = [opts.replica, opts.counter, opts.lamport] as (
@@ -67,7 +68,7 @@ function buildAppendOp(
   switch (kind.type) {
     case "insert":
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,NULL)",
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,NULL,NULL)",
         params: [
           ...base,
           "insert",
@@ -77,7 +78,7 @@ function buildAppendOp(
       };
     case "move":
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7)",
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)",
         params: [
           ...base,
           "move",
@@ -87,14 +88,17 @@ function buildAppendOp(
         ],
       };
     case "delete":
+      if (!opts.knownState || opts.knownState.length === 0) {
+        throw new Error("treecrdt: delete operations require meta.knownState");
+      }
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL)",
-        params: [...base, "delete", opts.serializeNodeId(kind.node)],
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
+        params: [...base, "delete", opts.serializeNodeId(kind.node), opts.knownState],
       };
     case "tombstone":
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL)",
-        params: [...base, "tombstone", opts.serializeNodeId(kind.node)],
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
+        params: [...base, "tombstone", opts.serializeNodeId(kind.node), opts.knownState],
       };
     default:
       throw new Error("unsupported operation kind");
@@ -122,12 +126,14 @@ function buildAppendOpsPayload(
     const { id, lamport } = meta;
     const { replica, counter } = id;
     const serReplica = serializeReplica(replica);
+    const knownState = meta.knownState;
     const base = {
       replica: Array.from(serReplica),
       counter,
       lamport,
       kind: kind.type,
       position: "position" in kind ? kind.position ?? null : null,
+      ...(knownState && knownState.length > 0 ? { known_state: Array.from(knownState) } : {}),
     };
     if (kind.type === "insert") {
       return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
@@ -146,6 +152,9 @@ async function treecrdtAppendOp(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica
 ): Promise<void> {
+  if (op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0)) {
+    throw new Error("treecrdt: delete operations require meta.knownState");
+  }
   const { meta, kind } = op;
   const { id, lamport } = meta;
   const { replica, counter } = id;
@@ -155,6 +164,7 @@ async function treecrdtAppendOp(
     counter,
     lamport,
     serializeNodeId,
+    knownState: meta.knownState ?? null,
   });
 
   await runner.getText(sql, params);
@@ -171,6 +181,10 @@ async function treecrdtAppendOps(
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = "SELECT treecrdt_append_ops(?1)";
+
+  if (ops.some((op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0))) {
+    throw new Error("treecrdt: delete operations require meta.knownState");
+  }
 
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
   let bulkFailedAt: number | null = null;
@@ -346,7 +360,9 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
     const replica = decodeReplicaId(row.replica);
     const counter = Number(row.counter);
     const lamport = Number(row.lamport);
-    const base = { meta: { id: { replica, counter }, lamport } } as Operation;
+    const knownState =
+      row.known_state && (row.known_state instanceof Uint8Array ? row.known_state : Uint8Array.from(row.known_state));
+    const base = { meta: { id: { replica, counter }, lamport, ...(knownState ? { knownState } : {}) } } as Operation;
     if (row.kind === "insert") {
       return {
         ...base,

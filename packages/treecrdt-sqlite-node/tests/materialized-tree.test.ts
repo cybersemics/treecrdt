@@ -41,9 +41,9 @@ test("materialized tree: dump/children/meta + oprefs_children", async () => {
   const n1 = makeNodeId(1);
   const n2 = makeNodeId(2);
 
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 2, 2, "insert", root, n2);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?)").get(replica, 3, 3, "move", n2, n1, 0);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 2, 2, "insert", root, n2);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)").get(replica, 3, 3, "move", n2, n1, 0);
 
   const headLamportRow: any = db.prepare("SELECT treecrdt_head_lamport() AS v").get();
   expect(headLamportRow.v).toBe(3);
@@ -105,7 +105,7 @@ test("materialized tree: persists across reopen", async () => {
       const db = new Database(path);
       loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
       db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
-      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
+      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
       const row: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
       expect(parseJsonBytes16List(row.v).map((b) => b.toString("hex"))).toEqual([n1.toString("hex")]);
       const countRow: any = db.prepare("SELECT treecrdt_tree_node_count() AS v").get();
@@ -142,8 +142,8 @@ test("materialized tree: out-of-order ops rebuild correctly", async () => {
   const n1 = makeNodeId(1);
   const n2 = makeNodeId(2);
 
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 1, 2, "insert", root, n1);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)").get(replica, 2, 1, "insert", root, n2);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 2, "insert", root, n1);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 2, 1, "insert", root, n2);
 
   const row: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
   const children = parseJsonBytes16List(row.v).map((b) => b.toString("hex"));

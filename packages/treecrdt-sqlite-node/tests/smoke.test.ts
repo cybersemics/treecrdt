@@ -25,10 +25,10 @@ test("load extension and roundtrip ops", async () => {
   node[15] = 1;
 
   db.prepare(
-    "SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL)"
+    "SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)"
   ).get(replica, 1, 1, "insert", parent, node);
   db.prepare(
-    "SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?)"
+    "SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)"
   ).get(replica, 2, 2, "move", node, parent, 0);
 
   const row: any = db.prepare("SELECT treecrdt_ops_since(0) AS ops").get();

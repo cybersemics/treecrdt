@@ -11,9 +11,9 @@ struct JsonOp {
     counter: u64,
     lamport: u64,
     kind: String,
-    parent: Option<u128>,
-    node: u128,
-    new_parent: Option<u128>,
+    parent: Option<[u8; 16]>,
+    node: [u8; 16],
+    new_parent: Option<[u8; 16]>,
     position: Option<u64>,
 }
 
@@ -38,7 +38,7 @@ fn append_and_fetch_ops_via_extension() {
 
     let _: i64 = conn
         .query_row(
-            "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL)",
+            "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL)",
             rusqlite::params![replica, 1i64, 1i64, "insert", parent, node],
             |row| row.get(0),
         )
@@ -47,7 +47,7 @@ fn append_and_fetch_ops_via_extension() {
     // Move node to the end again
     let _: i64 = conn
         .query_row(
-            "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+            "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, NULL)",
             rusqlite::params![b"r1".to_vec(), 2i64, 2i64, "move", node, parent, 0i64],
             |row| row.get(0),
         )
@@ -60,9 +60,15 @@ fn append_and_fetch_ops_via_extension() {
     assert_eq!(ops.len(), 2);
     assert_eq!(ops[0].kind, "insert");
     assert_eq!(ops[1].kind, "move");
-    assert_eq!(ops[0].parent, Some(0));
-    assert_eq!(ops[0].node, 1);
-    assert_eq!(ops[1].new_parent, Some(0));
+    assert_eq!(
+        ops[0].parent,
+        Some(<[u8; 16]>::try_from(parent.as_slice()).unwrap())
+    );
+    assert_eq!(ops[0].node, <[u8; 16]>::try_from(node.as_slice()).unwrap());
+    assert_eq!(
+        ops[1].new_parent,
+        Some(<[u8; 16]>::try_from(parent.as_slice()).unwrap())
+    );
 
     // With root filter we still see the same ops when filtering by root.
     let json_filtered: String = conn

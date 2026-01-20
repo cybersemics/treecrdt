@@ -43,7 +43,7 @@ fn higher_lamport_wins_on_conflict() {
     crdt_a.apply_remote(move_right).unwrap();
     crdt_a.apply_remote(move_left).unwrap();
 
-    assert_eq!(crdt_a.parent(x), Some(right));
+    assert_eq!(crdt_a.parent(x).unwrap(), Some(right));
 }
 
 #[test]
@@ -73,9 +73,9 @@ fn moves_reordered_by_lamport_and_id() {
         crdt.apply_remote(op.clone()).unwrap();
     }
 
-    assert_eq!(crdt.parent(x), Some(a));
+    assert_eq!(crdt.parent(x).unwrap(), Some(a));
     crdt.replay_from_storage().unwrap();
-    assert_eq!(crdt.parent(x), Some(a));
+    assert_eq!(crdt.parent(x).unwrap(), Some(a));
 }
 
 #[test]
@@ -106,5 +106,5 @@ fn same_lamport_orders_by_op_id() {
     crdt.apply_remote(move_b.clone()).unwrap();
     crdt.apply_remote(move_a.clone()).unwrap();
     // ReplicaId "b" > "a" so move_b wins at equal lamport
-    assert_eq!(crdt.parent(x), Some(b));
+    assert_eq!(crdt.parent(x).unwrap(), Some(b));
 }
