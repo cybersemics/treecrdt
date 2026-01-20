@@ -25,7 +25,10 @@ use ops::{
 };
 use schema::*;
 use sqlite_api::*;
-use tree::{treecrdt_tree_children, treecrdt_tree_dump, treecrdt_tree_node_count};
+use tree::{
+    treecrdt_subtree_known_state, treecrdt_tree_children, treecrdt_tree_dump,
+    treecrdt_tree_node_count,
+};
 use util::drop_cstring;
 
 use std::collections::HashSet;
@@ -238,6 +241,20 @@ pub extern "C" fn sqlite3_treecrdt_init(
             None,
         )
     };
+    let rc_subtree_known_state = {
+        let name = CString::new("treecrdt_subtree_known_state").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            1,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_subtree_known_state),
+            None,
+            None,
+            None,
+        )
+    };
     let rc_tree_dump = {
         let name = CString::new("treecrdt_tree_dump").expect("static name");
         sqlite_create_function_v2(
@@ -332,6 +349,7 @@ pub extern "C" fn sqlite3_treecrdt_init(
         || rc_oprefs_all != SQLITE_OK as c_int
         || rc_oprefs_children != SQLITE_OK as c_int
         || rc_tree_children != SQLITE_OK as c_int
+        || rc_subtree_known_state != SQLITE_OK as c_int
         || rc_tree_dump != SQLITE_OK as c_int
         || rc_tree_node_count != SQLITE_OK as c_int
         || rc_head_lamport != SQLITE_OK as c_int
@@ -360,6 +378,8 @@ pub extern "C" fn sqlite3_treecrdt_init(
             rc_oprefs_children
         } else if rc_tree_children != SQLITE_OK as c_int {
             rc_tree_children
+        } else if rc_subtree_known_state != SQLITE_OK as c_int {
+            rc_subtree_known_state
         } else if rc_tree_dump != SQLITE_OK as c_int {
             rc_tree_dump
         } else if rc_tree_node_count != SQLITE_OK as c_int {

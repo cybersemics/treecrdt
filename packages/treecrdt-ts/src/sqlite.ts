@@ -48,6 +48,29 @@ async function sqliteGetNumber(
   return value;
 }
 
+async function sqliteSubtreeKnownState(
+  runner: SqliteRunner,
+  node: string,
+  serializeNodeId: SerializeNodeId
+): Promise<Uint8Array> {
+  const json = await runner.getText("SELECT treecrdt_subtree_known_state(?1)", [serializeNodeId(node)]);
+  if (!json) {
+    throw new Error("treecrdt: subtree_known_state returned empty result");
+  }
+  return new TextEncoder().encode(json);
+}
+
+async function ensureDeleteKnownState(
+  op: Operation,
+  runner: SqliteRunner,
+  serializeNodeId: SerializeNodeId
+): Promise<Operation> {
+  if (op.kind.type !== "delete") return op;
+  if (op.meta.knownState && op.meta.knownState.length > 0) return op;
+  const knownState = await sqliteSubtreeKnownState(runner, op.kind.node, serializeNodeId);
+  return { ...op, meta: { ...op.meta, knownState } };
+}
+
 function buildAppendOp(
   kind: OperationKind,
   opts: {
@@ -152,10 +175,11 @@ async function treecrdtAppendOp(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica
 ): Promise<void> {
-  if (op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0)) {
+  const preparedOp = await ensureDeleteKnownState(op, runner, serializeNodeId);
+  if (preparedOp.kind.type === "delete" && (!preparedOp.meta.knownState || preparedOp.meta.knownState.length === 0)) {
     throw new Error("treecrdt: delete operations require meta.knownState");
   }
-  const { meta, kind } = op;
+  const { meta, kind } = preparedOp;
   const { id, lamport } = meta;
   const { replica, counter } = id;
 
@@ -182,14 +206,18 @@ async function treecrdtAppendOps(
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = "SELECT treecrdt_append_ops(?1)";
 
-  if (ops.some((op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0))) {
+  const preparedOps = await Promise.all(ops.map((op) => ensureDeleteKnownState(op, runner, serializeNodeId)));
+
+  if (
+    preparedOps.some((op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0))
+  ) {
     throw new Error("treecrdt: delete operations require meta.knownState");
   }
 
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
   let bulkFailedAt: number | null = null;
-  for (let start = 0; start < ops.length; start += maxBulkOps) {
-    const chunk = ops.slice(start, start + maxBulkOps);
+  for (let start = 0; start < preparedOps.length; start += maxBulkOps) {
+    const chunk = preparedOps.slice(start, start + maxBulkOps);
     const payload = buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica);
     try {
       await runner.getText(bulkSql, [JSON.stringify(payload)]);
@@ -200,7 +228,7 @@ async function treecrdtAppendOps(
   }
   if (bulkFailedAt === null) return;
 
-  const remaining = ops.slice(bulkFailedAt);
+  const remaining = preparedOps.slice(bulkFailedAt);
   await runner.exec("BEGIN");
   try {
     for (const op of remaining) {
