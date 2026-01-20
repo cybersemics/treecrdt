@@ -34,4 +34,3 @@ pub(super) unsafe extern "C" fn drop_cstring(ptr: *mut c_void) {
         }
     }
 }
-

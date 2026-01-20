@@ -21,8 +21,7 @@ use doc_id::{treecrdt_doc_id, treecrdt_set_doc_id};
 use materialize::{append_ops_impl, ensure_materialized};
 use oprefs::{treecrdt_oprefs_all, treecrdt_oprefs_children};
 use ops::{
-    treecrdt_head_lamport, treecrdt_ops_by_oprefs, treecrdt_ops_since,
-    treecrdt_replica_max_counter,
+    treecrdt_head_lamport, treecrdt_ops_by_oprefs, treecrdt_ops_since, treecrdt_replica_max_counter,
 };
 use schema::*;
 use sqlite_api::*;

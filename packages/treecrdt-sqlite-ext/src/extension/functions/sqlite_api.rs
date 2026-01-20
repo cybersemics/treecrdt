@@ -586,7 +586,11 @@ pub(super) unsafe fn column_int_opt(stmt: *mut sqlite3_stmt, idx: c_int) -> Opti
     }
 }
 
-pub(super) unsafe fn bind_blob(stmt: *mut sqlite3_stmt, idx: c_int, val: *mut sqlite3_value) -> bool {
+pub(super) unsafe fn bind_blob(
+    stmt: *mut sqlite3_stmt,
+    idx: c_int,
+    val: *mut sqlite3_value,
+) -> bool {
     let ptr = unsafe { sqlite_value_blob(val) };
     let len = unsafe { sqlite_value_bytes(val) };
     unsafe { sqlite_bind_blob(stmt, idx, ptr, len, None) != SQLITE_OK as c_int }

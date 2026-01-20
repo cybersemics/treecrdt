@@ -68,11 +68,7 @@ fn op_to_js(op: &Operation) -> JsOp {
         OperationKind::Delete { node } => ("delete", None, *node, None, None),
         OperationKind::Tombstone { node } => ("tombstone", None, *node, None, None),
     };
-    let known_state = op
-        .meta
-        .known_state
-        .as_ref()
-        .and_then(|vv| serde_json::to_vec(vv).ok());
+    let known_state = op.meta.known_state.as_ref().and_then(|vv| serde_json::to_vec(vv).ok());
     JsOp {
         replica: bytes_to_hex(&op.meta.id.replica.0),
         counter: op.meta.id.counter,
@@ -198,10 +194,8 @@ impl WasmTree {
             tombstone: bool,
         }
 
-        let nodes = self
-            .inner
-            .export_nodes()
-            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        let nodes =
+            self.inner.export_nodes().map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
         use std::collections::HashMap;
         let mut parent_pos: HashMap<NodeId, (NodeId, u64)> = HashMap::new();
