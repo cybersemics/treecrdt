@@ -152,6 +152,11 @@ function fromProtoHelloAck(ack: any): HelloAck {
 }
 
 function toProtoOperation(op: Operation) {
+  if (op.kind.type === "delete") {
+    if (!op.meta.knownState || op.meta.knownState.length === 0) {
+      throw new Error("Delete operations require meta.knownState");
+    }
+  }
   const meta = create(OperationMetadataSchema, {
     id: create(OperationIdSchema, {
       replica: create(ReplicaIdSchema, { bytes: replicaIdToBytes(op.meta.id.replica) }),
@@ -279,6 +284,9 @@ function fromProtoOperation(op: any): Operation {
     case "delete": {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
       if (!nodeBytes) throw new Error("DeleteOp missing node id");
+      if (!knownState || knownState.length === 0) {
+        throw new Error("DeleteOp missing knownState");
+      }
       return { meta: outMeta, kind: { type: "delete", node: nodeIdFromBytes16(nodeBytes) } };
     }
     case "tombstone": {
