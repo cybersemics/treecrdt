@@ -874,30 +874,35 @@ export default function App() {
     }
   }, [liveAllEnabled]);
 
-	  const appendOperation = async (kind: OperationKind) => {
-	    if (!client) return;
-	    setBusy(true);
-	    try {
-	      const stateBefore = treeStateRef.current;
-	      counterRef.current += 1;
-	      lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
-	      const op: Operation = {
-        meta: {
-          id: { replica: replicaId, counter: counterRef.current },
-          lamport: lamportRef.current,
-        },
+  const appendOperation = async (kind: OperationKind) => {
+    if (!client) return;
+    setBusy(true);
+    try {
+      const stateBefore = treeStateRef.current;
+      counterRef.current += 1;
+      lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
+
+      const baseMeta = {
+        id: { replica: replicaId, counter: counterRef.current },
+        lamport: lamportRef.current,
+      };
+      const knownState = kind.type === "delete" ? await client.tree.subtreeKnownState(kind.node) : undefined;
+
+      const op: Operation = {
+        meta: knownState ? { ...baseMeta, knownState } : baseMeta,
         kind,
-	      };
-	      await client.ops.append(op);
-	      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-	      ingestPayloadOps([op]);
-	      ingestOps([op], { assumeSorted: true });
-	      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
-	      scheduleRefreshNodeCount();
-	      setHeadLamport(lamportRef.current);
-	    } catch (err) {
-	      console.error("Failed to append op", err);
-	      setError("Failed to append operation (see console)");
+      };
+
+      await client.ops.append(op);
+      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
+      ingestPayloadOps([op]);
+      ingestOps([op], { assumeSorted: true });
+      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
+      scheduleRefreshNodeCount();
+      setHeadLamport(lamportRef.current);
+    } catch (err) {
+      console.error("Failed to append op", err);
+      setError("Failed to append operation (see console)");
     } finally {
       setBusy(false);
     }
