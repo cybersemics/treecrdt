@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS ops (
   position INTEGER,
   op_ref BLOB,
   known_state BLOB,
+  payload BLOB,
   PRIMARY KEY (replica, counter)
 );
 "#;
@@ -224,6 +225,13 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
   op_ref BLOB NOT NULL,
   seq INTEGER NOT NULL,
   PRIMARY KEY (parent, op_ref)
+);
+"#;
+    const TREE_PAYLOAD: &str = r#"
+CREATE TABLE IF NOT EXISTS tree_payload (
+  node BLOB PRIMARY KEY,
+  payload BLOB,
+  op_ref BLOB NOT NULL
 );
 "#;
 
@@ -261,6 +269,14 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
     };
     if rc_oprefs != SQLITE_OK as c_int {
         return Err(rc_oprefs);
+    }
+
+    let rc_tree_payload = {
+        let sql = CString::new(TREE_PAYLOAD).expect("tree_payload schema");
+        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
+    };
+    if rc_tree_payload != SQLITE_OK as c_int {
+        return Err(rc_tree_payload);
     }
 
     const INDEXES: &str = r#"

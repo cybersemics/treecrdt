@@ -48,29 +48,6 @@ async function sqliteGetNumber(
   return value;
 }
 
-async function sqliteSubtreeKnownState(
-  runner: SqliteRunner,
-  node: string,
-  serializeNodeId: SerializeNodeId
-): Promise<Uint8Array> {
-  const json = await runner.getText("SELECT treecrdt_subtree_known_state(?1)", [serializeNodeId(node)]);
-  if (!json) {
-    throw new Error("treecrdt: subtree_known_state returned empty result");
-  }
-  return new TextEncoder().encode(json);
-}
-
-async function ensureDeleteKnownState(
-  op: Operation,
-  runner: SqliteRunner,
-  serializeNodeId: SerializeNodeId
-): Promise<Operation> {
-  if (op.kind.type !== "delete") return op;
-  if (op.meta.knownState && op.meta.knownState.length > 0) return op;
-  const knownState = await sqliteSubtreeKnownState(runner, op.kind.node, serializeNodeId);
-  return { ...op, meta: { ...op.meta, knownState } };
-}
-
 function buildAppendOp(
   kind: OperationKind,
   opts: {
@@ -90,13 +67,27 @@ function buildAppendOp(
 
   switch (kind.type) {
     case "insert":
+      if (kind.payload !== undefined) {
+        return {
+          sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)",
+          params: [
+            ...base,
+            "insert",
+            opts.serializeNodeId(kind.parent),
+            opts.serializeNodeId(kind.node),
+            kind.position,
+            kind.payload,
+          ],
+        };
+      }
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,NULL,NULL)",
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)",
         params: [
           ...base,
           "insert",
           opts.serializeNodeId(kind.parent),
           opts.serializeNodeId(kind.node),
+          kind.position,
         ],
       };
     case "move":
@@ -122,6 +113,11 @@ function buildAppendOp(
       return {
         sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
         params: [...base, "tombstone", opts.serializeNodeId(kind.node), opts.knownState],
+      };
+    case "payload":
+      return {
+        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
+        params: [...base, "payload", opts.serializeNodeId(kind.node), kind.payload],
       };
     default:
       throw new Error("unsupported operation kind");
@@ -159,11 +155,26 @@ function buildAppendOpsPayload(
       ...(knownState && knownState.length > 0 ? { known_state: Array.from(knownState) } : {}),
     };
     if (kind.type === "insert") {
-      return { ...base, parent: serialize(kind.parent), node: serialize(kind.node), new_parent: null };
+      const payload = kind.payload ? Array.from(kind.payload) : undefined;
+      return {
+        ...base,
+        parent: serialize(kind.parent),
+        node: serialize(kind.node),
+        new_parent: null,
+        ...(payload ? { payload } : {}),
+      };
     } else if (kind.type === "move") {
       return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
     } else if (kind.type === "delete") {
       return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
+    } else if (kind.type === "payload") {
+      return {
+        ...base,
+        parent: null,
+        node: serialize(kind.node),
+        new_parent: null,
+        payload: kind.payload === null ? null : Array.from(kind.payload),
+      };
     }
     return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
   });
@@ -175,11 +186,10 @@ async function treecrdtAppendOp(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica
 ): Promise<void> {
-  const preparedOp = await ensureDeleteKnownState(op, runner, serializeNodeId);
-  if (preparedOp.kind.type === "delete" && (!preparedOp.meta.knownState || preparedOp.meta.knownState.length === 0)) {
+  if (op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0)) {
     throw new Error("treecrdt: delete operations require meta.knownState");
   }
-  const { meta, kind } = preparedOp;
+  const { meta, kind } = op;
   const { id, lamport } = meta;
   const { replica, counter } = id;
 
@@ -206,18 +216,16 @@ async function treecrdtAppendOps(
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = "SELECT treecrdt_append_ops(?1)";
 
-  const preparedOps = await Promise.all(ops.map((op) => ensureDeleteKnownState(op, runner, serializeNodeId)));
-
   if (
-    preparedOps.some((op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0))
+    ops.some((op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0))
   ) {
     throw new Error("treecrdt: delete operations require meta.knownState");
   }
 
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
   let bulkFailedAt: number | null = null;
-  for (let start = 0; start < preparedOps.length; start += maxBulkOps) {
-    const chunk = preparedOps.slice(start, start + maxBulkOps);
+  for (let start = 0; start < ops.length; start += maxBulkOps) {
+    const chunk = ops.slice(start, start + maxBulkOps);
     const payload = buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica);
     try {
       await runner.getText(bulkSql, [JSON.stringify(payload)]);
@@ -228,7 +236,7 @@ async function treecrdtAppendOps(
   }
   if (bulkFailedAt === null) return;
 
-  const remaining = preparedOps.slice(bulkFailedAt);
+  const remaining = ops.slice(bulkFailedAt);
   await runner.exec("BEGIN");
   try {
     for (const op of remaining) {
@@ -392,6 +400,13 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
       row.known_state && (row.known_state instanceof Uint8Array ? row.known_state : Uint8Array.from(row.known_state));
     const base = { meta: { id: { replica, counter }, lamport, ...(knownState ? { knownState } : {}) } } as Operation;
     if (row.kind === "insert") {
+      const rawPayload = row.payload;
+      const payload =
+        rawPayload === null || rawPayload === undefined
+          ? undefined
+          : rawPayload instanceof Uint8Array
+            ? rawPayload
+            : Uint8Array.from(rawPayload as any);
       return {
         ...base,
         kind: {
@@ -399,6 +414,7 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
           parent: decodeNodeId(row.parent),
           node: decodeNodeId(row.node),
           position: row.position === null || row.position === undefined ? 0 : Number(row.position),
+          ...(payload !== undefined ? { payload } : {}),
         },
       } as Operation;
     }
@@ -416,6 +432,17 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
     if (row.kind === "delete") {
       return { ...base, kind: { type: "delete", node: decodeNodeId(row.node) } } as Operation;
     }
-    return { ...base, kind: { type: "tombstone", node: decodeNodeId(row.node) } } as Operation;
+    if (row.kind === "tombstone") {
+      return { ...base, kind: { type: "tombstone", node: decodeNodeId(row.node) } } as Operation;
+    }
+    if (row.kind === "payload") {
+      const rawPayload = row.payload;
+      if (rawPayload === null || rawPayload === undefined) {
+        return { ...base, kind: { type: "payload", node: decodeNodeId(row.node), payload: null } } as Operation;
+      }
+      const bytes = rawPayload instanceof Uint8Array ? rawPayload : Uint8Array.from(rawPayload as any);
+      return { ...base, kind: { type: "payload", node: decodeNodeId(row.node), payload: bytes } } as Operation;
+    }
+    throw new Error(`unknown op kind from sqlite: ${String(row.kind)}`);
   });
 }

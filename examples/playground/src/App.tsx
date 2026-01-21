@@ -35,6 +35,7 @@ const PLAYGROUND_PEER_TIMEOUT_MS = 30_000;
 type DisplayNode = {
   id: string;
   label: string;
+  value: string;
   children: DisplayNode[];
 };
 
@@ -59,6 +60,20 @@ type Status = "booting" | "ready" | "error";
 type StorageMode = "memory" | "opfs";
 
 type PeerInfo = { id: string; lastSeen: number };
+
+type PayloadRecord = {
+  lamport: number;
+  replica: string;
+  counter: number;
+  payload: Uint8Array | null;
+};
+
+function compareOpMeta(
+  a: Pick<PayloadRecord, "lamport" | "replica" | "counter">,
+  b: Pick<PayloadRecord, "lamport" | "replica" | "counter">
+): number {
+  return a.lamport - b.lamport || a.replica.localeCompare(b.replica) || a.counter - b.counter;
+}
 
 const ParentPicker = React.memo(function ParentPicker({
   nodeList,
@@ -149,11 +164,13 @@ export default function App() {
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [nodeCount, setNodeCount] = useState(1);
   const [fanout, setFanout] = useState(10);
+  const [newNodeValue, setNewNodeValue] = useState("");
   const [liveChildrenParents, setLiveChildrenParents] = useState<Set<string>>(() => new Set());
   const [liveAllEnabled, setLiveAllEnabled] = useState(false);
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [online, setOnline] = useState(true);
+  const [payloadVersion, setPayloadVersion] = useState(0);
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
@@ -161,6 +178,39 @@ export default function App() {
   const replicaId = useMemo(pickReplicaId, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const showOpsPanelRef = useRef(false);
+  const textEncoder = useMemo(() => new TextEncoder(), []);
+  const textDecoder = useMemo(() => new TextDecoder(), []);
+
+  const payloadByNodeRef = useRef<Map<string, PayloadRecord>>(new Map());
+
+  const ingestPayloadOps = React.useCallback((incoming: Operation[]) => {
+    if (incoming.length === 0) return;
+    const payloads = payloadByNodeRef.current;
+    let changed = false;
+    for (const op of incoming) {
+      const kind = op.kind;
+      const node = kind.type === "payload" ? kind.node : kind.type === "insert" ? kind.node : null;
+      const payload =
+        kind.type === "payload"
+          ? kind.payload
+          : kind.type === "insert"
+            ? kind.payload
+            : undefined;
+      if (!node || payload === undefined) continue;
+      const candidate: PayloadRecord = {
+        lamport: op.meta.lamport,
+        replica: op.meta.id.replica,
+        counter: op.meta.id.counter,
+        payload,
+      };
+      const existing = payloads.get(node);
+      if (!existing || compareOpMeta(candidate, existing) > 0) {
+        payloads.set(node, candidate);
+        changed = true;
+      }
+    }
+    if (changed) setPayloadVersion((v) => v + 1);
+  }, []);
 
   useEffect(() => {
     onlineRef.current = online;
@@ -174,6 +224,8 @@ export default function App() {
   const liveChildSubsRef = useRef<Map<string, Map<string, SyncSubscription>>>(new Map());
   const liveAllEnabledRef = useRef(false);
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
+  const liveAllStartingRef = useRef<Set<string>>(new Set());
+  const liveChildrenStartingRef = useRef<Set<string>>(new Set());
 
   const treeStateRef = useRef<TreeState>(treeState);
   useEffect(() => {
@@ -223,6 +275,14 @@ export default function App() {
       try {
         const children = await active.tree.children(parentId);
         setTreeState((prev) => applyChildrenLoaded(prev, parentId, children));
+        if (children.length > 0) {
+          try {
+            const ops = await active.ops.children(parentId);
+            ingestPayloadOps(ops);
+          } catch (err) {
+            console.error("Failed to load child payloads", err);
+          }
+        }
       } catch (err) {
         console.error("Failed to load children", err);
         setError("Failed to load tree children (see console)");
@@ -230,7 +290,7 @@ export default function App() {
         childrenLoadInFlightRef.current.delete(parentId);
       }
     },
-    [client]
+    [client, ingestPayloadOps]
   );
 
   const refreshParents = React.useCallback(
@@ -342,20 +402,39 @@ export default function App() {
     if (!conn) return;
 
     if (liveAllSubsRef.current.has(peerId)) return;
-    const sub = conn.peer.subscribe(
-      conn.transport,
-      { all: {} },
-      {
-        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-        codewordsPerMessage: 1024,
+    if (liveAllStartingRef.current.has(peerId)) return;
+    liveAllStartingRef.current.add(peerId);
+
+    void (async () => {
+      try {
+        await conn.peer.syncOnce(conn.transport, { all: {} }, {
+          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+          codewordsPerMessage: 1024,
+        });
+      } catch (err) {
+        console.error("Live sync(all) initial catch-up failed", err);
+        setSyncError(err instanceof Error ? err.message : String(err));
+        return;
       }
-    );
-    liveAllSubsRef.current.set(peerId, sub);
-    void sub.done.catch((err) => {
-      console.error("Live sync(all) failed", err);
-      stopLiveAllForPeer(peerId);
-      setSyncError(err instanceof Error ? err.message : String(err));
+
+      const sub = conn.peer.subscribe(
+        conn.transport,
+        { all: {} },
+        {
+          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+          codewordsPerMessage: 1024,
+        }
+      );
+      liveAllSubsRef.current.set(peerId, sub);
+      void sub.done.catch((err) => {
+        console.error("Live sync(all) failed", err);
+        stopLiveAllForPeer(peerId);
+        setSyncError(err instanceof Error ? err.message : String(err));
+      });
+    })().finally(() => {
+      liveAllStartingRef.current.delete(peerId);
     });
   };
 
@@ -386,24 +465,43 @@ export default function App() {
 
     const existing = liveChildSubsRef.current.get(peerId);
     if (existing?.has(parentId)) return;
+    const startKey = `${peerId}\u0000${parentId}`;
+    if (liveChildrenStartingRef.current.has(startKey)) return;
+    liveChildrenStartingRef.current.add(startKey);
 
     const byParent = existing ?? new Map<string, SyncSubscription>();
-    const sub = conn.peer.subscribe(
-      conn.transport,
-      { children: { parent: hexToBytes16(parentId) } },
-      {
-        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-        codewordsPerMessage: 1024,
+    void (async () => {
+      try {
+        await conn.peer.syncOnce(conn.transport, { children: { parent: hexToBytes16(parentId) } }, {
+          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+          codewordsPerMessage: 1024,
+        });
+      } catch (err) {
+        console.error("Live sync(children) initial catch-up failed", err);
+        setSyncError(err instanceof Error ? err.message : String(err));
+        return;
       }
-    );
-    byParent.set(parentId, sub);
-    liveChildSubsRef.current.set(peerId, byParent);
 
-    void sub.done.catch((err) => {
-      console.error("Live sync failed", err);
-      stopLiveChildren(peerId, parentId);
-      setSyncError(err instanceof Error ? err.message : String(err));
+      const sub = conn.peer.subscribe(
+        conn.transport,
+        { children: { parent: hexToBytes16(parentId) } },
+        {
+          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+          codewordsPerMessage: 1024,
+        }
+      );
+      byParent.set(parentId, sub);
+      liveChildSubsRef.current.set(peerId, byParent);
+
+      void sub.done.catch((err) => {
+        console.error("Live sync failed", err);
+        stopLiveChildren(peerId, parentId);
+        setSyncError(err instanceof Error ? err.message : String(err));
+      });
+    })().finally(() => {
+      liveChildrenStartingRef.current.delete(startKey);
     });
   };
 
@@ -428,7 +526,18 @@ export default function App() {
 
   const { index, childrenByParent } = treeState;
 
-  const nodeList = useMemo(() => flattenForSelectState(childrenByParent), [childrenByParent]);
+  const nodeLabelForId = React.useCallback(
+    (id: string) => {
+      if (id === ROOT_ID) return "Root";
+      const payload = payloadByNodeRef.current.get(id)?.payload ?? null;
+      const decoded = payload === null ? null : textDecoder.decode(payload);
+      if (decoded === null) return id;
+      return decoded.length === 0 ? "(empty)" : decoded;
+    },
+    [payloadVersion, textDecoder]
+  );
+
+  const nodeList = useMemo(() => flattenForSelectState(childrenByParent, nodeLabelForId), [childrenByParent, nodeLabelForId]);
   const visibleNodes = useMemo(() => {
     const acc: Array<{ node: DisplayNode; depth: number }> = [];
     const isCollapsed = (id: string) => {
@@ -438,8 +547,10 @@ export default function App() {
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
-      const label = entry.id === ROOT_ID ? "Root" : entry.id.slice(0, 6);
-      acc.push({ node: { id: entry.id, label, children: [] }, depth: entry.depth });
+      const payload = payloadByNodeRef.current.get(entry.id)?.payload ?? null;
+      const value = payload === null ? "" : textDecoder.decode(payload);
+      const label = entry.id === ROOT_ID ? "Root" : payload === null ? entry.id : value.length === 0 ? "(empty)" : value;
+      acc.push({ node: { id: entry.id, label, value, children: [] }, depth: entry.depth });
       if (isCollapsed(entry.id)) continue;
       const kids = childrenByParent[entry.id] ?? [];
       for (let i = kids.length - 1; i >= 0; i--) {
@@ -447,7 +558,7 @@ export default function App() {
       }
     }
     return acc;
-  }, [childrenByParent, collapse]);
+  }, [childrenByParent, collapse, payloadVersion, textDecoder]);
   const treeParentRef = useRef<HTMLDivElement | null>(null);
   const opsParentRef = useRef<HTMLDivElement | null>(null);
   const treeEstimateSize = React.useCallback(() => 72, []);
@@ -522,6 +633,7 @@ export default function App() {
           console.debug(`[sync:${replicaId}] applyOps(${ops.length})`);
         }
         await baseBackend.applyOps(ops);
+        ingestPayloadOps(ops);
         ingestOps(ops);
         if (ops.length > 0) {
           let max = 0;
@@ -689,6 +801,8 @@ export default function App() {
       index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0, deleted: false } },
       childrenByParent: { [ROOT_ID]: [] },
     });
+    payloadByNodeRef.current = new Map();
+    setPayloadVersion((v) => v + 1);
     knownOpsRef.current = new Set();
     setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
     counterRef.current = 0;
@@ -711,6 +825,7 @@ export default function App() {
       fetched.sort(compareOps);
       setOps(fetched);
       knownOpsRef.current = new Set(fetched.map(opKey));
+      ingestPayloadOps(fetched);
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
@@ -772,9 +887,10 @@ export default function App() {
           lamport: lamportRef.current,
         },
         kind,
-      };
+	      };
 	      await client.ops.append(op);
 	      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
+	      ingestPayloadOps([op]);
 	      ingestOps([op], { assumeSorted: true });
 	      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
 	      scheduleRefreshNodeCount();
@@ -797,6 +913,8 @@ export default function App() {
 	      const ops: Operation[] = [];
 	      lamportRef.current = Math.max(lamportRef.current, headLamport);
 	      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
+      const valueBase = newNodeValue.trim();
+      const shouldSetValue = valueBase.length > 0;
 
       if (fanoutLimit <= 0) {
         const basePosition = (childrenByParent[parentId] ?? []).length;
@@ -804,9 +922,13 @@ export default function App() {
           counterRef.current += 1;
           lamportRef.current += 1;
           const nodeId = makeNodeId();
+          const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
+          const kind: OperationKind = shouldSetValue
+            ? { type: "insert", parent: parentId, node: nodeId, position: basePosition + i, payload: textEncoder.encode(value) }
+            : { type: "insert", parent: parentId, node: nodeId, position: basePosition + i };
           const op: Operation = {
             meta: { id: { replica: replicaId, counter: counterRef.current }, lamport: lamportRef.current },
-            kind: { type: "insert", parent: parentId, node: nodeId, position: basePosition + i },
+            kind,
           };
           ops.push(op);
         }
@@ -848,9 +970,13 @@ export default function App() {
           counterRef.current += 1;
           lamportRef.current += 1;
           const nodeId = makeNodeId();
+          const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
+          const kind: OperationKind = shouldSetValue
+            ? { type: "insert", parent: targetParent, node: nodeId, position, payload: textEncoder.encode(value) }
+            : { type: "insert", parent: targetParent, node: nodeId, position };
           ops.push({
             meta: { id: { replica: replicaId, counter: counterRef.current }, lamport: lamportRef.current },
-            kind: { type: "insert", parent: targetParent, node: nodeId, position },
+            kind,
           });
 
           setChildCount(targetParent, position + 1);
@@ -859,6 +985,7 @@ export default function App() {
       }
 	      await client.ops.appendMany(ops);
 	      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
+	      ingestPayloadOps(ops);
 	      ingestOps(ops, { assumeSorted: true });
 	      scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
 	      scheduleRefreshNodeCount();
@@ -888,6 +1015,12 @@ export default function App() {
 
   const handleInsert = async (parentId: string) => {
     await handleAddNodes(parentId, 1, { fanout: 0 });
+  };
+
+  const handleSetValue = async (nodeId: string, value: string) => {
+    if (nodeId === ROOT_ID) return;
+    const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
+    await appendOperation({ type: "payload", node: nodeId, payload });
   };
 
   const handleDelete = async (nodeId: string) => {
@@ -1062,6 +1195,17 @@ export default function App() {
               }}
             >
               <ParentPicker nodeList={nodeList} value={parentChoice} onChange={setParentChoice} disabled={status !== "ready"} />
+              <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
+                <span>Value (optional)</span>
+                <input
+                  type="text"
+                  value={newNodeValue}
+                  onChange={(e) => setNewNodeValue(e.target.value)}
+                  placeholder="Stored as payload bytes"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                  disabled={status !== "ready" || busy}
+                />
+              </label>
               <label className="flex flex-col text-sm text-slate-200">
                 <span>Node count</span>
                 <input
@@ -1224,7 +1368,7 @@ export default function App() {
                     <span className="font-mono text-slate-200">
                       {replicaId} <span className="text-[10px] text-slate-500">(you)</span>
                     </span>
-                    <span className="text-[10px] text-slate-500">—</span>
+                    <span className="text-[10px] text-slate-500">-</span>
                   </div>
                   {peers.map((p) => (
                     <div key={p.id} className="flex items-center justify-between gap-2 py-1">
@@ -1261,6 +1405,7 @@ export default function App() {
                         depth={entry.depth}
                         collapse={collapse}
                         onToggle={toggleCollapse}
+                        onSetValue={handleSetValue}
                         onAddChild={(id) => {
                           setParentChoice(id);
                           void handleInsert(id);
@@ -1335,6 +1480,7 @@ function TreeRow({
   collapse,
   liveChildren,
   onToggle,
+  onSetValue,
   onAddChild,
   onDelete,
   onMove,
@@ -1348,6 +1494,7 @@ function TreeRow({
   collapse: CollapseState;
   liveChildren: boolean;
   onToggle: (id: string) => void;
+  onSetValue: (id: string, value: string) => void | Promise<void>;
   onAddChild: (id: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
@@ -1369,6 +1516,12 @@ function TreeRow({
   const childrenLoaded = Object.prototype.hasOwnProperty.call(childrenByParent, node.id);
   const childCount = childrenLoaded ? (childrenByParent[node.id]?.length ?? 0) : null;
   const toggleDisabled = childrenLoaded && childCount === 0 && isCollapsed;
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftValue, setDraftValue] = useState(node.value);
+
+  useEffect(() => {
+    if (!isEditing) setDraftValue(node.value);
+  }, [isEditing, node.value]);
 
   return (
     <div
@@ -1387,7 +1540,49 @@ function TreeRow({
             {isCollapsed ? <MdChevronRight className="text-[22px]" /> : <MdExpandMore className="text-[22px]" />}
           </button>
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-white">{node.label}</div>
+            {isRoot ? (
+              <div className="truncate text-sm font-semibold text-white">{node.label}</div>
+            ) : isEditing ? (
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setIsEditing(false);
+                  void onSetValue(node.id, draftValue);
+                }}
+              >
+                <input
+                  type="text"
+                  value={draftValue}
+                  onChange={(e) => setDraftValue(e.target.value)}
+                  className="w-56 max-w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                />
+                <button
+                  type="submit"
+                  className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                  title="Save"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                  onClick={() => setIsEditing(false)}
+                  title="Cancel"
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                className="block w-full text-left"
+                onClick={() => setIsEditing(true)}
+                title="Click to edit"
+              >
+                <span className="block truncate text-sm font-semibold text-white">{node.label}</span>
+              </button>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -1513,6 +1708,8 @@ function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<string> {
       out.add(kind.newParent);
       const prevParent = state.index[kind.node]?.parentId;
       if (prevParent) out.add(prevParent);
+    } else if (kind.type === "payload") {
+      // Payload ops do not affect tree structure.
     } else {
       const prevParent = state.index[kind.node]?.parentId;
       if (prevParent) out.add(prevParent);
@@ -1521,13 +1718,16 @@ function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<string> {
   return out;
 }
 
-function flattenForSelectState(childrenByParent: Record<string, string[]>): Array<{ id: string; label: string; depth: number }> {
+function flattenForSelectState(
+  childrenByParent: Record<string, string[]>,
+  getLabel?: (id: string) => string
+): Array<{ id: string; label: string; depth: number }> {
   const acc: Array<{ id: string; label: string; depth: number }> = [];
   const stack: Array<{ id: string; depth: number }> = [{ id: ROOT_ID, depth: 0 }];
   while (stack.length > 0) {
     const entry = stack.pop();
     if (!entry) break;
-    const label = entry.id === ROOT_ID ? "Root" : entry.id.slice(0, 6);
+    const label = getLabel ? getLabel(entry.id) : entry.id === ROOT_ID ? "Root" : entry.id.slice(0, 6);
     acc.push({ id: entry.id, label, depth: entry.depth });
     const kids = childrenByParent[entry.id] ?? [];
     for (let i = kids.length - 1; i >= 0; i--) {
@@ -1539,10 +1739,16 @@ function flattenForSelectState(childrenByParent: Record<string, string[]>): Arra
 
 function renderKind(kind: OperationKind): string {
   if (kind.type === "insert") {
-    return `insert ${kind.node} under ${kind.parent} @${kind.position}`;
+    const payloadSuffix = kind.payload !== undefined ? ` (${kind.payload.length} bytes)` : "";
+    return `insert ${kind.node} under ${kind.parent} @${kind.position}${payloadSuffix}`;
   }
   if (kind.type === "move") {
     return `move ${kind.node} to ${kind.newParent} @${kind.position}`;
+  }
+  if (kind.type === "payload") {
+    return kind.payload === null
+      ? `clear payload ${kind.node}`
+      : `set payload ${kind.node} (${kind.payload.length} bytes)`;
   }
   return `${kind.type} ${kind.node}`;
 }

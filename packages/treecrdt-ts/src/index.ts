@@ -21,6 +21,13 @@ export type OperationKind =
       parent: NodeId;
       node: NodeId;
       position: number;
+      /**
+       * Optional application payload to initialize alongside insert.
+       *
+       * When present, this is treated like a `payload` op at the same `(lamport, replica, counter)`,
+       * with last-writer-wins ordering per node.
+       */
+      payload?: Uint8Array;
     }
   | {
       type: "move";
@@ -35,6 +42,20 @@ export type OperationKind =
   | {
       type: "tombstone";
       node: NodeId;
+    }
+  | {
+      /**
+       * Update opaque application payload for a node.
+       *
+       * Merge semantics are last-writer-wins per node, ordered by
+       * `(lamport, replica, counter)`.
+       */
+      type: "payload";
+      node: NodeId;
+      /**
+       * `payload = Uint8Array` sets the value, `payload = null` clears it.
+       */
+      payload: Uint8Array | null;
     };
 
 export type Operation = {
@@ -64,9 +85,10 @@ export interface StorageAdapter {
 }
 
 export interface TreeCRDT {
-  insert(parent: NodeId, node: NodeId, position: number): Promise<Operation> | Operation;
+  insert(parent: NodeId, node: NodeId, position: number, payload?: Uint8Array): Promise<Operation> | Operation;
   move(node: NodeId, newParent: NodeId, position: number): Promise<Operation> | Operation;
   delete(node: NodeId): Promise<Operation> | Operation;
+  setPayload(node: NodeId, payload: Uint8Array | null): Promise<Operation> | Operation;
   applyRemote(op: Operation): Promise<void> | void;
   operationsSince(lamport: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
   snapshot(): Promise<Snapshot> | Snapshot;

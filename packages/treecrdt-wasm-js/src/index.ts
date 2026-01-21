@@ -78,11 +78,10 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     appendOp: async (op, serializeNodeId, serializeReplica) => {
       const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
       if (op.kind.type === "delete") {
-        const ks =
-          op.meta.knownState && op.meta.knownState.length > 0
-            ? op.meta.knownState
-            : tree.subtreeKnownState(jsOp.node);
-        jsOp.known_state = Array.from(ks);
+        if (!op.meta.knownState || op.meta.knownState.length === 0) {
+          throw new Error("treecrdt: delete operations require meta.knownState");
+        }
+        jsOp.known_state = Array.from(op.meta.knownState);
       }
       tree.appendOp(JSON.stringify(jsOp));
     },
@@ -90,11 +89,10 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
       for (const op of ops) {
         const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
         if (op.kind.type === "delete") {
-          const ks =
-            op.meta.knownState && op.meta.knownState.length > 0
-              ? op.meta.knownState
-              : tree.subtreeKnownState(jsOp.node);
-          jsOp.known_state = Array.from(ks);
+          if (!op.meta.knownState || op.meta.knownState.length === 0) {
+            throw new Error("treecrdt: delete operations require meta.knownState");
+          }
+          jsOp.known_state = Array.from(op.meta.knownState);
         }
         tree.appendOp(JSON.stringify(jsOp));
       }
@@ -119,6 +117,7 @@ type JsOp = {
   new_parent?: string | null;
   position?: number | null;
   known_state?: number[] | null;
+  payload?: string | null;
 };
 
 function toHex(bytes: Uint8Array): string {
@@ -164,6 +163,13 @@ function toJsOp(
         ...base,
         kind: "tombstone",
         node: normalizeNodeId(op.kind.node),
+      };
+    case "payload":
+      return {
+        ...base,
+        kind: "payload",
+        node: normalizeNodeId(op.kind.node),
+        payload: op.kind.payload === null ? null : toHex(op.kind.payload),
       };
     default:
       throw new Error("unknown op kind");

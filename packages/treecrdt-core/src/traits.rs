@@ -141,6 +141,7 @@ impl IndexProvider for MemoryStorage {
             crate::ops::OperationKind::Move { node: n, .. } => n == node,
             crate::ops::OperationKind::Delete { node: n } => n == node,
             crate::ops::OperationKind::Tombstone { node: n } => n == node,
+            crate::ops::OperationKind::Payload { node: n, .. } => n == node,
         })
     }
 }

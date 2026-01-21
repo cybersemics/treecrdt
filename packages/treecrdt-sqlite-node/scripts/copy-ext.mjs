@@ -57,5 +57,13 @@ fs.mkdirSync(destDir, { recursive: true });
 const destBase = ext === ".dll" ? "treecrdt_sqlite_ext" : "libtreecrdt_sqlite_ext";
 const dest = path.join(destDir, `${destBase}${ext}`);
 
-fs.copyFileSync(src, dest);
-console.log(`Copied ${src} -> ${dest}`);
+try {
+  if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
+  const rel = path.relative(destDir, src);
+  fs.symlinkSync(rel, dest, "file");
+  console.log(`Linked ${dest} -> ${src}`);
+} catch (err) {
+  console.warn(`Failed to create symlink, falling back to copy: ${err}`);
+  fs.copyFileSync(src, dest);
+  console.log(`Copied ${src} -> ${dest}`);
+}

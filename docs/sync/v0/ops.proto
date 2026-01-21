@@ -14,6 +14,7 @@ message InsertOp {
   NodeId parent = 1;
   NodeId node = 2;
   uint32 position = 3;
+  optional bytes payload = 4;
 }
 
 message MoveOp {
@@ -30,6 +31,19 @@ message TombstoneOp {
   NodeId node = 1;
 }
 
+message ClearPayload {
+  // Empty message: the oneof discriminant is the signal.
+}
+
+message PayloadOp {
+  NodeId node = 1;
+
+  oneof value {
+    ClearPayload clear = 2;
+    bytes payload = 3;
+  }
+}
+
 message Operation {
   OperationMetadata meta = 1;
 
@@ -38,5 +52,6 @@ message Operation {
     MoveOp move = 3;
     DeleteOp delete = 4;
     TombstoneOp tombstone = 5;
+    PayloadOp payload = 6;
   }
 }
