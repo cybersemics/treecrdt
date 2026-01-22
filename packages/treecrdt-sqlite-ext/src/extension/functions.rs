@@ -9,8 +9,10 @@ mod append;
 mod doc_id;
 mod materialize;
 mod node_store;
+mod op_storage;
 mod oprefs;
 mod ops;
+mod payload_store;
 mod schema;
 mod sqlite_api;
 mod tree;
@@ -37,7 +39,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::null_mut;
 use std::slice;
 
-pub(super) use treecrdt_core::{Lamport, NodeId, NodeStore, VersionVector};
+pub(super) use treecrdt_core::{Lamport, NodeId, VersionVector};
 
 #[cfg(any(feature = "ext-sqlite", feature = "static-link"))]
 use serde_json;
