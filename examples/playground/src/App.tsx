@@ -7,16 +7,9 @@ import { SyncPeer, type Filter, type SyncSubscription } from "@treecrdt/sync";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { DuplexTransport } from "@treecrdt/sync/transport";
 import {
-  MdAdd,
-  MdChevronRight,
   MdCloudOff,
   MdCloudQueue,
-  MdDeleteOutline,
-  MdExpandMore,
   MdGroup,
-  MdHome,
-  MdKeyboardArrowDown,
-  MdKeyboardArrowUp,
   MdOpenInNew,
   MdOutlineRssFeed,
   MdSync,
@@ -26,115 +19,39 @@ import { IoMdGitBranch } from "react-icons/io";
 import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceMessage } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
-const ROOT_ID = "00000000000000000000000000000000"; // 16-byte zero, hex-encoded
-const MAX_COMPOSER_NODE_COUNT = 100_000;
-const PLAYGROUND_SYNC_MAX_CODEWORDS = 2_000_000;
-const PLAYGROUND_SYNC_MAX_OPS_PER_BATCH = 20_000;
-const PLAYGROUND_PEER_TIMEOUT_MS = 30_000;
-
-type DisplayNode = {
-  id: string;
-  label: string;
-  value: string;
-  children: DisplayNode[];
-};
-
-type NodeMeta = {
-  parentId: string | null;
-  order: number;
-  childCount: number;
-  deleted: boolean;
-};
-
-type TreeState = {
-  index: Record<string, NodeMeta>;
-  childrenByParent: Record<string, string[]>;
-};
-
-type CollapseState = {
-  defaultCollapsed: boolean;
-  overrides: Set<string>;
-};
-
-type Status = "booting" | "ready" | "error";
-type StorageMode = "memory" | "opfs";
-
-type PeerInfo = { id: string; lastSeen: number };
-
-type PayloadRecord = {
-  lamport: number;
-  replica: string;
-  counter: number;
-  payload: Uint8Array | null;
-};
-
-function compareOpMeta(
-  a: Pick<PayloadRecord, "lamport" | "replica" | "counter">,
-  b: Pick<PayloadRecord, "lamport" | "replica" | "counter">
-): number {
-  return a.lamport - b.lamport || a.replica.localeCompare(b.replica) || a.counter - b.counter;
-}
-
-const ParentPicker = React.memo(function ParentPicker({
-  nodeList,
-  value,
-  onChange,
-  disabled,
-}: {
-  nodeList: Array<{ id: string; label: string; depth: number }>;
-  value: string;
-  onChange: (next: string) => void;
-  disabled: boolean;
-}) {
-  return (
-    <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
-      <span>Parent</span>
-      <select
-        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-      >
-        {nodeList.map(({ id, label, depth }) => (
-          <option key={id} value={id}>
-            {"".padStart(depth * 2, " ")}
-            {label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-});
-
-function opKey(op: Operation): string {
-  return `${op.meta.id.replica}\u0000${op.meta.id.counter}`;
-}
-
-function compareOps(a: Operation, b: Operation): number {
-  return (
-    a.meta.lamport - b.meta.lamport ||
-    a.meta.id.replica.localeCompare(b.meta.id.replica) ||
-    a.meta.id.counter - b.meta.id.counter
-  );
-}
-
-function mergeSortedOps(prev: Operation[], next: Operation[]): Operation[] {
-  if (prev.length === 0) return next.slice();
-  if (next.length === 0) return prev;
-  if (compareOps(prev[prev.length - 1]!, next[0]!) <= 0) return [...prev, ...next];
-
-  const out = new Array<Operation>(prev.length + next.length);
-  let i = 0;
-  let j = 0;
-  let k = 0;
-  while (i < prev.length && j < next.length) {
-    if (compareOps(prev[i]!, next[j]!) <= 0) out[k++] = prev[i++]!;
-    else out[k++] = next[j++]!;
-  }
-  while (i < prev.length) out[k++] = prev[i++]!;
-  while (j < next.length) out[k++] = next[j++]!;
-  return out;
-}
+import {
+  MAX_COMPOSER_NODE_COUNT,
+  PLAYGROUND_PEER_TIMEOUT_MS,
+  PLAYGROUND_SYNC_MAX_CODEWORDS,
+  PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+  ROOT_ID,
+} from "./playground/constants";
+import { ParentPicker } from "./playground/components/ParentPicker";
+import { TreeRow } from "./playground/components/TreeRow";
+import { compareOps, mergeSortedOps, opKey, renderKind } from "./playground/ops";
+import { compareOpMeta } from "./playground/payload";
+import {
+  ensureOpfsKey,
+  initialDocId,
+  initialStorage,
+  makeNodeId,
+  makeSessionKey,
+  persistDocId,
+  persistOpfsKey,
+  persistStorage,
+  pickReplicaId,
+} from "./playground/persist";
+import { applyChildrenLoaded, flattenForSelectState, parentsAffectedByOps } from "./playground/treeState";
+import type {
+  CollapseState,
+  DisplayNode,
+  NodeMeta,
+  PayloadRecord,
+  PeerInfo,
+  Status,
+  StorageMode,
+  TreeState,
+} from "./playground/types";
 
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
@@ -1472,372 +1389,4 @@ export default function App() {
       </div>
     </div>
   );
-}
-
-function TreeRow({
-  node,
-  depth,
-  collapse,
-  liveChildren,
-  onToggle,
-  onSetValue,
-  onAddChild,
-  onDelete,
-  onMove,
-  onMoveToRoot,
-  onToggleLiveChildren,
-  meta,
-  childrenByParent,
-}: {
-  node: DisplayNode;
-  depth: number;
-  collapse: CollapseState;
-  liveChildren: boolean;
-  onToggle: (id: string) => void;
-  onSetValue: (id: string, value: string) => void | Promise<void>;
-  onAddChild: (id: string) => void;
-  onDelete: (id: string) => void;
-  onMove: (id: string, direction: "up" | "down") => void;
-  onMoveToRoot: (id: string) => void;
-  onToggleLiveChildren: (id: string) => void;
-  meta: Record<string, NodeMeta>;
-  childrenByParent: Record<string, string[]>;
-}) {
-  const isCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(node.id) : collapse.overrides.has(node.id);
-  const isRoot = node.id === ROOT_ID;
-  const metaInfo = meta[node.id];
-  const siblings = metaInfo?.parentId ? childrenByParent[metaInfo.parentId] ?? [] : [];
-  const canMoveUp = !isRoot && metaInfo && siblings.indexOf(node.id) > 0;
-  const canMoveDown =
-    !isRoot &&
-    metaInfo &&
-    siblings.indexOf(node.id) !== -1 &&
-    siblings.indexOf(node.id) < siblings.length - 1;
-  const childrenLoaded = Object.prototype.hasOwnProperty.call(childrenByParent, node.id);
-  const childCount = childrenLoaded ? (childrenByParent[node.id]?.length ?? 0) : null;
-  const toggleDisabled = childrenLoaded && childCount === 0 && isCollapsed;
-  const [isEditing, setIsEditing] = useState(false);
-  const [draftValue, setDraftValue] = useState(node.value);
-
-  useEffect(() => {
-    if (!isEditing) setDraftValue(node.value);
-  }, [isEditing, node.value]);
-
-  return (
-    <div
-      className="group rounded-lg bg-slate-950/40 px-2 py-2 ring-1 ring-slate-800/50 transition hover:bg-slate-950/55 hover:ring-slate-700/70"
-      style={{ paddingLeft: `${depth * 16}px` }}
-    >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-2">
-          <button
-            className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-            onClick={() => onToggle(node.id)}
-            disabled={toggleDisabled}
-            aria-label={isCollapsed ? "Expand node" : "Collapse node"}
-            title={isCollapsed ? "Expand" : "Collapse"}
-          >
-            {isCollapsed ? <MdChevronRight className="text-[22px]" /> : <MdExpandMore className="text-[22px]" />}
-          </button>
-          <div className="min-w-0">
-            {isRoot ? (
-              <div className="truncate text-sm font-semibold text-white">{node.label}</div>
-            ) : isEditing ? (
-              <form
-                className="flex items-center gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setIsEditing(false);
-                  void onSetValue(node.id, draftValue);
-                }}
-              >
-                <input
-                  type="text"
-                  value={draftValue}
-                  onChange={(e) => setDraftValue(e.target.value)}
-                  className="w-56 max-w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                />
-                <button
-                  type="submit"
-                  className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-                  title="Save"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-                  onClick={() => setIsEditing(false)}
-                  title="Cancel"
-                >
-                  Cancel
-                </button>
-              </form>
-            ) : (
-              <button
-                type="button"
-                className="block w-full text-left"
-                onClick={() => setIsEditing(true)}
-                title="Click to edit"
-              >
-                <span className="block truncate text-sm font-semibold text-white">{node.label}</span>
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
-              liveChildren
-                ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
-                : "border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white"
-            }`}
-            onClick={() => onToggleLiveChildren(node.id)}
-            aria-label="Live sync children"
-            aria-pressed={liveChildren}
-            title="Live sync children"
-          >
-            <MdOutlineRssFeed className="text-[20px]" />
-          </button>
-          <button
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
-            onClick={() => onAddChild(node.id)}
-            aria-label="Add child"
-            title="Add child"
-          >
-            <MdAdd className="text-[22px]" />
-          </button>
-          {!isRoot && (
-            <>
-              <button
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                onClick={() => onMove(node.id, "up")}
-                disabled={!canMoveUp}
-                aria-label="Move up"
-                title="Move up"
-              >
-                <MdKeyboardArrowUp className="text-[22px]" />
-              </button>
-              <button
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                onClick={() => onMove(node.id, "down")}
-                disabled={!canMoveDown}
-                aria-label="Move down"
-                title="Move down"
-              >
-                <MdKeyboardArrowDown className="text-[22px]" />
-              </button>
-              <button
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
-                onClick={() => onMoveToRoot(node.id)}
-                aria-label="Move to root"
-                title="Move to root"
-              >
-                <MdHome className="text-[20px]" />
-              </button>
-              <button
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-rose-400/80 bg-rose-500/10 text-rose-100 transition hover:bg-rose-500/20"
-                onClick={() => onDelete(node.id)}
-                aria-label="Delete"
-                title="Delete"
-              >
-                <MdDeleteOutline className="text-[20px]" />
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function applyChildrenLoaded(state: TreeState, parentId: string, children: string[]): TreeState {
-  const nextChildrenByParent: Record<string, string[]> = { ...state.childrenByParent, [parentId]: children };
-  const nextIndex: Record<string, NodeMeta> = { ...state.index };
-
-  const ensureNode = (id: string): NodeMeta => {
-    const existing = nextIndex[id];
-    if (existing) return existing;
-    const meta: NodeMeta = { parentId: null, order: 0, childCount: 0, deleted: false };
-    nextIndex[id] = meta;
-    return meta;
-  };
-
-  ensureNode(ROOT_ID);
-  nextIndex[ROOT_ID] = { ...nextIndex[ROOT_ID]!, parentId: null, deleted: false };
-  if (!Object.prototype.hasOwnProperty.call(nextChildrenByParent, ROOT_ID)) nextChildrenByParent[ROOT_ID] = [];
-
-  const parentMeta = ensureNode(parentId);
-  nextIndex[parentId] = {
-    ...parentMeta,
-    parentId: parentId === ROOT_ID ? null : parentMeta.parentId,
-    deleted: false,
-    childCount: children.length,
-  };
-
-  const newSet = new Set(children);
-  const prevChildren = state.childrenByParent[parentId];
-  if (prevChildren) {
-    for (const childId of prevChildren) {
-      if (newSet.has(childId)) continue;
-      const meta = nextIndex[childId];
-      if (meta && meta.parentId === parentId) {
-        nextIndex[childId] = { ...meta, parentId: null, order: 0 };
-      }
-    }
-  }
-
-  for (let i = 0; i < children.length; i++) {
-    const childId = children[i]!;
-    const existing = ensureNode(childId);
-    const loaded = Object.prototype.hasOwnProperty.call(nextChildrenByParent, childId);
-    const childCount = loaded ? nextChildrenByParent[childId]!.length : existing.childCount;
-    nextIndex[childId] = { ...existing, parentId, order: i, deleted: false, childCount };
-  }
-
-  return { index: nextIndex, childrenByParent: nextChildrenByParent };
-}
-
-function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<string> {
-  const out = new Set<string>();
-  for (const op of ops) {
-    const kind = op.kind;
-    if (kind.type === "insert") {
-      out.add(kind.parent);
-    } else if (kind.type === "move") {
-      out.add(kind.newParent);
-      const prevParent = state.index[kind.node]?.parentId;
-      if (prevParent) out.add(prevParent);
-    } else if (kind.type === "payload") {
-      // Payload ops do not affect tree structure.
-    } else {
-      const prevParent = state.index[kind.node]?.parentId;
-      if (prevParent) out.add(prevParent);
-    }
-  }
-  return out;
-}
-
-function flattenForSelectState(
-  childrenByParent: Record<string, string[]>,
-  getLabel?: (id: string) => string
-): Array<{ id: string; label: string; depth: number }> {
-  const acc: Array<{ id: string; label: string; depth: number }> = [];
-  const stack: Array<{ id: string; depth: number }> = [{ id: ROOT_ID, depth: 0 }];
-  while (stack.length > 0) {
-    const entry = stack.pop();
-    if (!entry) break;
-    const label = getLabel ? getLabel(entry.id) : entry.id === ROOT_ID ? "Root" : entry.id.slice(0, 6);
-    acc.push({ id: entry.id, label, depth: entry.depth });
-    const kids = childrenByParent[entry.id] ?? [];
-    for (let i = kids.length - 1; i >= 0; i--) {
-      stack.push({ id: kids[i]!, depth: entry.depth + 1 });
-    }
-  }
-  return acc;
-}
-
-function renderKind(kind: OperationKind): string {
-  if (kind.type === "insert") {
-    const payloadSuffix = kind.payload !== undefined ? ` (${kind.payload.length} bytes)` : "";
-    return `insert ${kind.node} under ${kind.parent} @${kind.position}${payloadSuffix}`;
-  }
-  if (kind.type === "move") {
-    return `move ${kind.node} to ${kind.newParent} @${kind.position}`;
-  }
-  if (kind.type === "payload") {
-    return kind.payload === null
-      ? `clear payload ${kind.node}`
-      : `set payload ${kind.node} (${kind.payload.length} bytes)`;
-  }
-  return `${kind.type} ${kind.node}`;
-}
-
-function pickReplicaId(): string {
-  if (typeof window === "undefined") return `replica-${Math.random().toString(16).slice(2, 6)}`;
-  const override = new URLSearchParams(window.location.search).get("replica");
-  if (override && override.trim()) return override.trim();
-  const key = "treecrdt-playground-replica";
-  const existing = window.localStorage.getItem(key);
-  if (existing) return existing;
-  const next = `replica-${crypto.randomUUID().slice(0, 8)}`;
-  window.localStorage.setItem(key, next);
-  return next;
-}
-
-function initialStorage(): StorageMode {
-  if (typeof window === "undefined") return "memory";
-  const param = new URLSearchParams(window.location.search).get("storage");
-  return param === "opfs" ? "opfs" : "memory";
-}
-
-function initialDocId(): string {
-  if (typeof window === "undefined") return "treecrdt-playground";
-  const param = new URLSearchParams(window.location.search).get("doc");
-  if (param && param.trim()) return param.trim();
-  const key = "treecrdt-playground-doc";
-  const existing = window.localStorage.getItem(key);
-  if (existing) return existing;
-  const next = "treecrdt-playground";
-  window.localStorage.setItem(key, next);
-  return next;
-}
-
-function persistDocId(docId: string) {
-  if (typeof window === "undefined") return;
-  const key = "treecrdt-playground-doc";
-  window.localStorage.setItem(key, docId);
-  const url = new URL(window.location.href);
-  if (docId) url.searchParams.set("doc", docId);
-  else url.searchParams.delete("doc");
-  window.history.replaceState({}, "", url);
-}
-
-function persistStorage(mode: StorageMode) {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  if (mode === "opfs") {
-    url.searchParams.set("storage", "opfs");
-  } else {
-    url.searchParams.delete("storage");
-  }
-  window.history.replaceState({}, "", url);
-}
-
-function makeNodeId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return bytesToHex(bytes);
-}
-
-function makeSessionKey(): string {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return bytesToHex(bytes);
-}
-
-function opfsKeyStore(): { get: () => string | null; set: (val: string) => string } {
-  if (typeof window === "undefined") {
-    return { get: () => null, set: (val) => val };
-  }
-  const key = "treecrdt-playground-opfs-key";
-  return {
-    get: () => window.localStorage.getItem(key),
-    set: (val: string) => {
-      window.localStorage.setItem(key, val);
-      return val;
-    },
-  };
-}
-
-function ensureOpfsKey(): string {
-  const store = opfsKeyStore();
-  const existing = store.get();
-  if (existing) return existing;
-  return store.set(makeSessionKey());
-}
-
-function persistOpfsKey(val: string): string {
-  const store = opfsKeyStore();
-  return store.set(val);
 }
