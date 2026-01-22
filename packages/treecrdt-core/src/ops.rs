@@ -205,6 +205,18 @@ impl Operation {
     }
 }
 
+impl OperationKind {
+    pub fn node(&self) -> NodeId {
+        match self {
+            OperationKind::Insert { node, .. }
+            | OperationKind::Move { node, .. }
+            | OperationKind::Delete { node }
+            | OperationKind::Tombstone { node }
+            | OperationKind::Payload { node, .. } => *node,
+        }
+    }
+}
+
 /// Deterministic tie-breaker used to order operations with equal Lamport timestamps.
 ///
 /// This intentionally avoids comparing the full replica id in the hot path by using the first

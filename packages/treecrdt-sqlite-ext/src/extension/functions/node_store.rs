@@ -25,6 +25,7 @@ pub(super) struct SqliteNodeStore {
     ensure_node: *mut sqlite3_stmt,
     exists: *mut sqlite3_stmt,
     select_node: *mut sqlite3_stmt,
+    select_tombstone: *mut sqlite3_stmt,
     select_children: *mut sqlite3_stmt,
     all_nodes: *mut sqlite3_stmt,
     shift_down: *mut sqlite3_stmt,
@@ -32,6 +33,7 @@ pub(super) struct SqliteNodeStore {
     max_pos: *mut sqlite3_stmt,
     clear_parent_pos: *mut sqlite3_stmt,
     set_parent_pos: *mut sqlite3_stmt,
+    update_tombstone: *mut sqlite3_stmt,
     update_last_change: *mut sqlite3_stmt,
     update_deleted_at: *mut sqlite3_stmt,
 }
@@ -48,6 +50,9 @@ impl SqliteNodeStore {
             "SELECT parent,pos,last_change,deleted_at FROM tree_nodes WHERE node = ?1 LIMIT 1",
         )
         .expect("select node sql");
+        let select_tombstone_sql =
+            CString::new("SELECT tombstone FROM tree_nodes WHERE node = ?1 LIMIT 1")
+                .expect("select tombstone sql");
         let select_children_sql =
             CString::new("SELECT node FROM tree_nodes WHERE parent = ?1 ORDER BY pos")
                 .expect("select children sql");
@@ -68,6 +73,9 @@ impl SqliteNodeStore {
         let set_parent_pos_sql =
             CString::new("UPDATE tree_nodes SET parent = ?2, pos = ?3 WHERE node = ?1")
                 .expect("set parent pos sql");
+        let update_tombstone_sql =
+            CString::new("UPDATE tree_nodes SET tombstone = ?2 WHERE node = ?1")
+                .expect("update tombstone sql");
         let update_last_change_sql =
             CString::new("UPDATE tree_nodes SET last_change = ?2 WHERE node = ?1")
                 .expect("update last_change sql");
@@ -78,6 +86,7 @@ impl SqliteNodeStore {
         let mut ensure_node: *mut sqlite3_stmt = null_mut();
         let mut exists: *mut sqlite3_stmt = null_mut();
         let mut select_node: *mut sqlite3_stmt = null_mut();
+        let mut select_tombstone: *mut sqlite3_stmt = null_mut();
         let mut select_children: *mut sqlite3_stmt = null_mut();
         let mut all_nodes: *mut sqlite3_stmt = null_mut();
         let mut shift_down: *mut sqlite3_stmt = null_mut();
@@ -85,6 +94,7 @@ impl SqliteNodeStore {
         let mut max_pos: *mut sqlite3_stmt = null_mut();
         let mut clear_parent_pos: *mut sqlite3_stmt = null_mut();
         let mut set_parent_pos: *mut sqlite3_stmt = null_mut();
+        let mut update_tombstone: *mut sqlite3_stmt = null_mut();
         let mut update_last_change: *mut sqlite3_stmt = null_mut();
         let mut update_deleted_at: *mut sqlite3_stmt = null_mut();
 
@@ -99,6 +109,7 @@ impl SqliteNodeStore {
         prep(&ensure_node_sql, &mut ensure_node)?;
         prep(&exists_sql, &mut exists)?;
         prep(&select_node_sql, &mut select_node)?;
+        prep(&select_tombstone_sql, &mut select_tombstone)?;
         prep(&select_children_sql, &mut select_children)?;
         prep(&all_nodes_sql, &mut all_nodes)?;
         prep(&shift_down_sql, &mut shift_down)?;
@@ -106,6 +117,7 @@ impl SqliteNodeStore {
         prep(&max_pos_sql, &mut max_pos)?;
         prep(&clear_parent_pos_sql, &mut clear_parent_pos)?;
         prep(&set_parent_pos_sql, &mut set_parent_pos)?;
+        prep(&update_tombstone_sql, &mut update_tombstone)?;
         prep(&update_last_change_sql, &mut update_last_change)?;
         prep(&update_deleted_at_sql, &mut update_deleted_at)?;
 
@@ -114,6 +126,7 @@ impl SqliteNodeStore {
             ensure_node,
             exists,
             select_node,
+            select_tombstone,
             select_children,
             all_nodes,
             shift_down,
@@ -121,6 +134,7 @@ impl SqliteNodeStore {
             max_pos,
             clear_parent_pos,
             set_parent_pos,
+            update_tombstone,
             update_last_change,
             update_deleted_at,
         })
@@ -133,6 +147,7 @@ impl Drop for SqliteNodeStore {
             sqlite_finalize(self.ensure_node);
             sqlite_finalize(self.exists);
             sqlite_finalize(self.select_node);
+            sqlite_finalize(self.select_tombstone);
             sqlite_finalize(self.select_children);
             sqlite_finalize(self.all_nodes);
             sqlite_finalize(self.shift_down);
@@ -140,6 +155,7 @@ impl Drop for SqliteNodeStore {
             sqlite_finalize(self.max_pos);
             sqlite_finalize(self.clear_parent_pos);
             sqlite_finalize(self.set_parent_pos);
+            sqlite_finalize(self.update_tombstone);
             sqlite_finalize(self.update_last_change);
             sqlite_finalize(self.update_deleted_at);
         }
@@ -516,6 +532,104 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
         }
 
         Ok(())
+    }
+
+    fn tombstone(&self, node: NodeId) -> treecrdt_core::Result<bool> {
+        let bytes = sqlite_node_id_bytes(node);
+        unsafe {
+            sqlite_clear_bindings(self.select_tombstone);
+            sqlite_reset(self.select_tombstone);
+            let bind_rc = sqlite_bind_blob(
+                self.select_tombstone,
+                1,
+                bytes.as_ptr() as *const c_void,
+                bytes.len() as c_int,
+                None,
+            );
+            if bind_rc != SQLITE_OK as c_int {
+                sqlite_reset(self.select_tombstone);
+                return Err(sqlite_rc_error(bind_rc, "bind select_tombstone failed"));
+            }
+
+            let step_rc = sqlite_step(self.select_tombstone);
+            let out = if step_rc == SQLITE_ROW as c_int {
+                sqlite_column_int64(self.select_tombstone, 0) != 0
+            } else if step_rc == SQLITE_DONE as c_int {
+                false
+            } else {
+                sqlite_reset(self.select_tombstone);
+                return Err(sqlite_rc_error(step_rc, "select_tombstone step failed"));
+            };
+            sqlite_reset(self.select_tombstone);
+            Ok(out)
+        }
+    }
+
+    fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> treecrdt_core::Result<()> {
+        self.ensure_node(node)?;
+        let bytes = sqlite_node_id_bytes(node);
+        unsafe {
+            sqlite_clear_bindings(self.update_tombstone);
+            sqlite_reset(self.update_tombstone);
+            let mut bind_err = false;
+            bind_err |= sqlite_bind_blob(
+                self.update_tombstone,
+                1,
+                bytes.as_ptr() as *const c_void,
+                bytes.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(
+                self.update_tombstone,
+                2,
+                if tombstone { 1 } else { 0 },
+            ) != SQLITE_OK as c_int;
+            if bind_err {
+                sqlite_reset(self.update_tombstone);
+                return Err(sqlite_rc_error(
+                    SQLITE_ERROR as c_int,
+                    "bind update_tombstone failed",
+                ));
+            }
+            let step_rc = sqlite_step(self.update_tombstone);
+            sqlite_reset(self.update_tombstone);
+            if step_rc != SQLITE_DONE as c_int {
+                return Err(sqlite_rc_error(step_rc, "update_tombstone step failed"));
+            }
+        }
+        Ok(())
+    }
+
+    fn has_deleted_at(&self, node: NodeId) -> treecrdt_core::Result<bool> {
+        let bytes = sqlite_node_id_bytes(node);
+        unsafe {
+            sqlite_clear_bindings(self.select_node);
+            sqlite_reset(self.select_node);
+            let bind_rc = sqlite_bind_blob(
+                self.select_node,
+                1,
+                bytes.as_ptr() as *const c_void,
+                bytes.len() as c_int,
+                None,
+            );
+            if bind_rc != SQLITE_OK as c_int {
+                sqlite_reset(self.select_node);
+                return Err(sqlite_rc_error(bind_rc, "bind select_node failed"));
+            }
+
+            let step_rc = sqlite_step(self.select_node);
+            let has = if step_rc == SQLITE_ROW as c_int {
+                sqlite_column_type(self.select_node, 3) != SQLITE_NULL as c_int
+                    && sqlite_column_bytes(self.select_node, 3) > 0
+            } else if step_rc == SQLITE_DONE as c_int {
+                false
+            } else {
+                sqlite_reset(self.select_node);
+                return Err(sqlite_rc_error(step_rc, "select_node step failed"));
+            };
+            sqlite_reset(self.select_node);
+            Ok(has)
+        }
     }
 
     fn last_change(&self, node: NodeId) -> treecrdt_core::Result<VersionVector> {

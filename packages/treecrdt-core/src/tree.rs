@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
-use crate::traits::{Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, PayloadStore, Storage};
+use crate::traits::{
+    Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
+};
 use crate::version_vector::VersionVector;
 
 #[derive(Clone)]
@@ -62,6 +64,23 @@ pub struct ApplyDelta {
 pub struct LogEntryExport {
     pub op: Operation,
     pub snapshot: NodeSnapshotExport,
+}
+
+fn affected_parents(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
+    let mut parents = Vec::new();
+    if let Some(p) = snapshot_parent {
+        parents.push(p);
+    }
+    match kind {
+        OperationKind::Insert { parent, .. } => parents.push(*parent),
+        OperationKind::Move { new_parent, .. } => parents.push(*new_parent),
+        OperationKind::Delete { .. }
+        | OperationKind::Tombstone { .. }
+        | OperationKind::Payload { .. } => {}
+    }
+    parents.sort();
+    parents.dedup();
+    parents
 }
 
 impl<S, C> TreeCrdt<S, C, MemoryNodeStore>
@@ -221,18 +240,7 @@ where
             return Ok(None);
         };
 
-        let mut parents = Vec::new();
-        if let Some(p) = snapshot.parent {
-            parents.push(p);
-        }
-        match op.kind {
-            OperationKind::Insert { parent, .. } => parents.push(parent),
-            OperationKind::Move { new_parent, .. } => parents.push(new_parent),
-            OperationKind::Delete { .. } | OperationKind::Tombstone { .. } => {}
-            OperationKind::Payload { .. } => {}
-        }
-        parents.sort();
-        parents.dedup();
+        let parents = affected_parents(snapshot.parent, &op.kind);
 
         Ok(Some(ApplyDelta {
             snapshot: NodeSnapshotExport {
@@ -241,6 +249,144 @@ where
             },
             affected_parents: parents,
         }))
+    }
+
+    /// Apply a remote operation while maintaining adapter-provided derived state.
+    ///
+    /// This wires together:
+    /// - core CRDT semantics (`apply_remote_with_delta`)
+    /// - a parent→op index (`ParentOpIndex`) for partial sync
+    /// - cached tombstone flags in the [`NodeStore`] (via `set_tombstone`)
+    pub fn apply_remote_with_materialization<I: ParentOpIndex>(
+        &mut self,
+        op: Operation,
+        index: &mut I,
+        seq: u64,
+    ) -> Result<Option<ApplyDelta>> {
+        let op_node = op.kind.node();
+        let parent_after = match &op.kind {
+            OperationKind::Insert { parent, .. } => Some(*parent),
+            OperationKind::Move { new_parent, .. } => Some(*new_parent),
+            _ => None,
+        };
+        let op_id = op.meta.id.clone();
+
+        let Some(delta) = self.apply_remote_with_delta(op)? else {
+            return Ok(None);
+        };
+
+        for parent in &delta.affected_parents {
+            if *parent == NodeId::TRASH {
+                continue;
+            }
+            index.record(*parent, &op_id, seq)?;
+        }
+
+        // Ensure the latest payload op for `op_node` is discoverable under its current parent.
+        // This supports partial sync subscribers that only track `children(parent)` opRefs.
+        if let Some(parent_after) = parent_after {
+            if parent_after != NodeId::TRASH && delta.snapshot.parent != Some(parent_after) {
+                if let Some((_lamport, payload_id)) = self.payload_last_writer(op_node)? {
+                    index.record(parent_after, &payload_id, seq)?;
+                }
+            }
+        }
+
+        let mut starts = delta.affected_parents.clone();
+        starts.push(op_node);
+        self.refresh_tombstones_upward(starts)?;
+
+        Ok(Some(delta))
+    }
+
+    pub fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
+    where
+        I: IntoIterator<Item = NodeId>,
+    {
+        let mut stack: Vec<NodeId> = starts.into_iter().collect();
+        let mut visited: HashSet<NodeId> = HashSet::new();
+
+        while let Some(node) = stack.pop() {
+            if node == NodeId::ROOT || node == NodeId::TRASH {
+                continue;
+            }
+            if !visited.insert(node) {
+                continue;
+            }
+            if !self.nodes.exists(node)? {
+                continue;
+            }
+
+            if self.nodes.has_deleted_at(node)? {
+                let tombstoned = self.is_tombstoned(node)?;
+                self.nodes.set_tombstone(node, tombstoned)?;
+            }
+
+            if let Some(parent) = self.nodes.parent(node)? {
+                stack.push(parent);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn refresh_all_tombstones(&mut self) -> Result<()> {
+        for node in self.nodes.all_nodes()? {
+            if node == NodeId::ROOT || node == NodeId::TRASH {
+                continue;
+            }
+            if self.nodes.has_deleted_at(node)? {
+                let tombstoned = self.is_tombstoned(node)?;
+                self.nodes.set_tombstone(node, tombstoned)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn rebuild_parent_op_index<I: ParentOpIndex>(&self, index: &mut I) -> Result<()> {
+        index.reset()?;
+
+        for (idx, entry) in self.log.iter().enumerate() {
+            let seq = (idx as u64) + 1;
+            let parents = affected_parents(entry.snapshot.parent, &entry.op.kind);
+            for parent in parents {
+                if parent == NodeId::TRASH {
+                    continue;
+                }
+                index.record(parent, &entry.op.meta.id, seq)?;
+            }
+        }
+
+        // Ensure the latest payload op for each node is discoverable under its current parent.
+        // This mirrors the incremental path in `apply_remote_with_materialization`.
+        let payload_seq: u64 = (self.log.len() as u64).max(1);
+        for node in self.nodes.all_nodes()? {
+            if node == NodeId::ROOT || node == NodeId::TRASH {
+                continue;
+            }
+            let Some(parent) = self.nodes.parent(node)? else {
+                continue;
+            };
+            if parent == NodeId::TRASH {
+                continue;
+            }
+            let Some((_lamport, payload_id)) = self.payload_last_writer(node)? else {
+                continue;
+            };
+            index.record(parent, &payload_id, payload_seq)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn replay_from_storage_with_materialization<I: ParentOpIndex>(
+        &mut self,
+        index: &mut I,
+    ) -> Result<()> {
+        self.replay_from_storage()?;
+        self.refresh_all_tombstones()?;
+        self.rebuild_parent_op_index(index)?;
+        Ok(())
     }
 
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {

@@ -50,11 +50,22 @@ pub trait NodeStore {
     fn detach(&mut self, node: NodeId) -> Result<()>;
     fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()>;
 
+    /// Cached tombstone flag for fast queries (derived from `deleted_at` and subtree awareness).
+    ///
+    /// Adapters should treat this as derived state: core helpers can refresh it, and callers may
+    /// rely on it for efficient `children()` queries without recomputing awareness recursively.
+    fn tombstone(&self, node: NodeId) -> Result<bool>;
+    fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()>;
+
     fn last_change(&self, node: NodeId) -> Result<VersionVector>;
     fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
 
     fn deleted_at(&self, node: NodeId) -> Result<Option<VersionVector>>;
     fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
+
+    fn has_deleted_at(&self, node: NodeId) -> Result<bool> {
+        Ok(self.deleted_at(node)?.is_some())
+    }
 
     fn all_nodes(&self) -> Result<Vec<NodeId>>;
 }
@@ -69,6 +80,28 @@ pub trait PayloadStore {
     fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>>;
     fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>>;
     fn set_payload(&mut self, node: NodeId, payload: Option<Vec<u8>>, writer: (Lamport, OperationId)) -> Result<()>;
+}
+
+/// Persistent index of operations relevant to a `children(parent)` filter.
+///
+/// This is used by adapters (e.g. SQLite) to support partial sync without re-implementing which
+/// parents are affected by each operation or the "payload visibility" backfill rule.
+pub trait ParentOpIndex {
+    fn reset(&mut self) -> Result<()>;
+    fn record(&mut self, parent: NodeId, op_id: &OperationId, seq: u64) -> Result<()>;
+}
+
+#[derive(Default)]
+pub struct NoopParentOpIndex;
+
+impl ParentOpIndex for NoopParentOpIndex {
+    fn reset(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn record(&mut self, _parent: NodeId, _op_id: &OperationId, _seq: u64) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Lightweight snapshot to expose to storage adapters.
@@ -209,6 +242,7 @@ impl PayloadStore for MemoryPayloadStore {
 struct MemoryNodeState {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
+    tombstone: bool,
     last_change: VersionVector,
     deleted_at: Option<VersionVector>,
 }
@@ -218,6 +252,7 @@ impl MemoryNodeState {
         Self {
             parent: None,
             children: Vec::new(),
+            tombstone: false,
             last_change: VersionVector::new(),
             deleted_at: None,
         }
@@ -227,6 +262,7 @@ impl MemoryNodeState {
         Self {
             parent: None,
             children: Vec::new(),
+            tombstone: false,
             last_change: VersionVector::new(),
             deleted_at: None,
         }
@@ -318,6 +354,15 @@ impl NodeStore for MemoryNodeStore {
         let parent_state = self.get_state_mut(parent)?;
         let idx = position.min(parent_state.children.len());
         parent_state.children.insert(idx, node);
+        Ok(())
+    }
+
+    fn tombstone(&self, node: NodeId) -> Result<bool> {
+        Ok(self.get_state(node)?.tombstone)
+    }
+
+    fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()> {
+        self.get_state_mut(node)?.tombstone = tombstone;
         Ok(())
     }
 

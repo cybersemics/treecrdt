@@ -9,6 +9,7 @@ mod append;
 mod doc_id;
 mod materialize;
 mod node_store;
+mod op_index;
 mod op_storage;
 mod oprefs;
 mod ops;
@@ -33,7 +34,6 @@ use tree::{
 };
 use util::drop_cstring;
 
-use std::collections::HashSet;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::null_mut;
