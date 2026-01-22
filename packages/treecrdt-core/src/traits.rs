@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId};
-use crate::ops::Operation;
+use crate::ops::{cmp_ops, Operation};
 use crate::version_vector::VersionVector;
 
 #[cfg(feature = "serde")]
@@ -23,10 +23,25 @@ pub trait AccessControl {
 
 /// Persistent or in-memory operation log.
 pub trait Storage {
-    fn apply(&mut self, op: Operation) -> Result<()>;
+    /// Persist a single operation. Returns `true` if the op was inserted, or `false` if it was
+    /// already present (idempotent).
+    fn apply(&mut self, op: Operation) -> Result<bool>;
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>>;
     fn latest_lamport(&self) -> Lamport;
     fn snapshot(&self) -> Result<Snapshot>;
+
+    /// Iterate operations since `lamport` in canonical op-key order.
+    ///
+    /// Default implementation loads into memory and sorts; storage backends can override this
+    /// to stream rows in sorted order (e.g. via SQL `ORDER BY`).
+    fn scan_since(&self, lamport: Lamport, visit: &mut dyn FnMut(Operation) -> Result<()>) -> Result<()> {
+        let mut ops = self.load_since(lamport)?;
+        ops.sort_by(cmp_ops);
+        for op in ops {
+            visit(op)?;
+        }
+        Ok(())
+    }
 }
 
 /// Index provider used to accelerate subtree queries when partial sync is requested.
@@ -175,12 +190,17 @@ impl AccessControl for AllowAllAccess {
 #[derive(Default)]
 pub struct MemoryStorage {
     ops: Vec<Operation>,
+    ids: HashSet<OperationId>,
 }
 
 impl Storage for MemoryStorage {
-    fn apply(&mut self, op: Operation) -> Result<()> {
+    fn apply(&mut self, op: Operation) -> Result<bool> {
+        if self.ids.contains(&op.meta.id) {
+            return Ok(false);
+        }
+        self.ids.insert(op.meta.id.clone());
         self.ops.push(op);
-        Ok(())
+        Ok(true)
     }
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {

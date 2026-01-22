@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
-use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
+use crate::ops::{cmp_op_key, Operation, OperationKind};
 use crate::traits::{
     Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
 };
@@ -12,12 +12,6 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     position: Option<usize>,
-}
-
-#[derive(Clone)]
-struct LogEntry {
-    op: Operation,
-    snapshot: NodeSnapshot,
 }
 
 /// Generic Tree CRDT facade that wires clock and storage together.
@@ -32,11 +26,11 @@ where
     storage: S,
     clock: C,
     counter: u64,
-    applied: HashSet<OperationId>,
-    log: Vec<LogEntry>,
     nodes: N,
     version_vector: VersionVector,
     payloads: P,
+    head: Option<Operation>,
+    op_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -58,12 +52,6 @@ pub struct NodeSnapshotExport {
 pub struct ApplyDelta {
     pub snapshot: NodeSnapshotExport,
     pub affected_parents: Vec<NodeId>,
-}
-
-#[derive(Clone, Debug)]
-pub struct LogEntryExport {
-    pub op: Operation,
-    pub snapshot: NodeSnapshotExport,
 }
 
 fn affected_parents(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
@@ -94,11 +82,11 @@ where
             storage,
             clock,
             counter: 0,
-            applied: HashSet::new(),
-            log: Vec::new(),
             nodes: MemoryNodeStore::default(),
             version_vector: VersionVector::new(),
             payloads: MemoryPayloadStore::default(),
+            head: None,
+            op_count: 0,
         }
     }
 }
@@ -115,11 +103,11 @@ where
             storage,
             clock,
             counter: 0,
-            applied: HashSet::new(),
-            log: Vec::new(),
             nodes,
             version_vector: VersionVector::new(),
             payloads: MemoryPayloadStore::default(),
+            head: None,
+            op_count: 0,
         }
     }
 }
@@ -137,12 +125,27 @@ where
             storage,
             clock,
             counter: 0,
-            applied: HashSet::new(),
-            log: Vec::new(),
             nodes,
             version_vector: VersionVector::new(),
             payloads,
+            head: None,
+            op_count: 0,
         }
+    }
+
+    fn is_in_order(&self, op: &Operation) -> bool {
+        let Some(head) = self.head.as_ref() else {
+            return true;
+        };
+
+        cmp_op_key(
+            op.meta.lamport,
+            op.meta.id.replica.as_bytes(),
+            op.meta.id.counter,
+            head.meta.lamport,
+            head.meta.id.replica.as_bytes(),
+            head.meta.id.counter,
+        ) == std::cmp::Ordering::Greater
     }
 
     pub fn local_insert(
@@ -219,30 +222,46 @@ where
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
         self.clock.observe(op.meta.lamport);
         self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-        self.ingest(op)
+        if !self.storage.apply(op.clone())? {
+            return Ok(());
+        }
+
+        if self.is_in_order(&op) {
+            let _ = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.op_count += 1;
+            self.head = Some(op);
+            return Ok(());
+        }
+
+        self.replay_from_storage()
     }
 
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
-        let lamport = op.meta.lamport;
-        let replica = op.meta.id.replica.clone();
-        let counter = op.meta.id.counter;
+        self.clock.observe(op.meta.lamport);
+        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
 
-        self.clock.observe(lamport);
-        self.version_vector.observe(&replica, counter);
-
-        let Some(snapshot) = self.ingest_with_snapshot(op.clone())? else {
+        if !self.storage.apply(op.clone())? {
             return Ok(None);
-        };
+        }
 
-        let parents = affected_parents(snapshot.parent, &op.kind);
+        if self.is_in_order(&op) {
+            let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.op_count += 1;
+            self.head = Some(op.clone());
 
-        Ok(Some(ApplyDelta {
-            snapshot: NodeSnapshotExport {
-                parent: snapshot.parent,
-                position: snapshot.position,
-            },
-            affected_parents: parents,
-        }))
+            let parents = affected_parents(snapshot.parent, &op.kind);
+            return Ok(Some(ApplyDelta {
+                snapshot: NodeSnapshotExport {
+                    parent: snapshot.parent,
+                    position: snapshot.position,
+                },
+                affected_parents: parents,
+            }));
+        }
+
+        // Out-of-order operation: rebuild derived state from storage.
+        self.replay_from_storage()?;
+        Ok(None)
     }
 
     /// Apply a remote operation while maintaining adapter-provided derived state.
@@ -337,23 +356,54 @@ where
         Ok(())
     }
 
-    pub fn rebuild_parent_op_index<I: ParentOpIndex>(&self, index: &mut I) -> Result<()> {
+    pub fn replay_from_storage_with_materialization<I: ParentOpIndex>(
+        &mut self,
+        index: &mut I,
+    ) -> Result<()> {
         index.reset()?;
 
-        for (idx, entry) in self.log.iter().enumerate() {
-            let seq = (idx as u64) + 1;
-            let parents = affected_parents(entry.snapshot.parent, &entry.op.kind);
-            for parent in parents {
-                if parent == NodeId::TRASH {
+        self.version_vector = VersionVector::new();
+        self.nodes.reset()?;
+        self.payloads.reset()?;
+        self.head = None;
+        self.op_count = 0;
+
+        let storage = &self.storage;
+        let nodes = &mut self.nodes;
+        let payloads = &mut self.payloads;
+        let clock = &mut self.clock;
+        let version_vector = &mut self.version_vector;
+
+        let mut seq: u64 = 0;
+        let mut head: Option<Operation> = None;
+
+        storage.scan_since(0, &mut |op| {
+            clock.observe(op.meta.lamport);
+            version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
+
+            let snapshot = Self::apply_forward(nodes, payloads, &op)?;
+            seq += 1;
+
+            let parents = affected_parents(snapshot.parent, &op.kind);
+            for parent in &parents {
+                if *parent == NodeId::TRASH {
                     continue;
                 }
-                index.record(parent, &entry.op.meta.id, seq)?;
+                index.record(*parent, &op.meta.id, seq)?;
             }
-        }
 
-        // Ensure the latest payload op for each node is discoverable under its current parent.
-        // This mirrors the incremental path in `apply_remote_with_materialization`.
-        let payload_seq: u64 = (self.log.len() as u64).max(1);
+            head = Some(op);
+            Ok(())
+        })?;
+
+        self.head = head;
+        self.op_count = seq;
+
+        // Refresh cached tombstone flags and then ensure the latest payload op for each node is
+        // discoverable under its current parent.
+        self.refresh_all_tombstones()?;
+
+        let payload_seq = seq.max(1);
         for node in self.nodes.all_nodes()? {
             if node == NodeId::ROOT || node == NodeId::TRASH {
                 continue;
@@ -373,35 +423,36 @@ where
         Ok(())
     }
 
-    pub fn replay_from_storage_with_materialization<I: ParentOpIndex>(
-        &mut self,
-        index: &mut I,
-    ) -> Result<()> {
-        self.replay_from_storage()?;
-        self.refresh_all_tombstones()?;
-        self.rebuild_parent_op_index(index)?;
-        Ok(())
-    }
-
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         self.storage.load_since(lamport)
     }
 
     pub fn replay_from_storage(&mut self) -> Result<()> {
-        let mut ops = self.storage.load_since(0)?;
-        ops.sort_by(cmp_ops);
-        self.applied.clear();
-        self.log.clear();
         self.version_vector = VersionVector::new();
         self.nodes.reset()?;
         self.payloads.reset()?;
-        for op in ops {
-            self.clock.observe(op.meta.lamport);
-            self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-            self.applied.insert(op.meta.id.clone());
-            let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
-            self.log.push(LogEntry { op, snapshot });
-        }
+        self.head = None;
+        self.op_count = 0;
+
+        let storage = &self.storage;
+        let nodes = &mut self.nodes;
+        let payloads = &mut self.payloads;
+        let clock = &mut self.clock;
+        let version_vector = &mut self.version_vector;
+
+        let mut seq: u64 = 0;
+        let mut head: Option<Operation> = None;
+        storage.scan_since(0, &mut |op| {
+            clock.observe(op.meta.lamport);
+            version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
+            let _ = Self::apply_forward(nodes, payloads, &op)?;
+            seq += 1;
+            head = Some(op);
+            Ok(())
+        })?;
+
+        self.head = head;
+        self.op_count = seq;
         Ok(())
     }
 
@@ -482,25 +533,12 @@ where
         Ok(nodes)
     }
 
-    pub fn export_log(&self) -> Vec<LogEntryExport> {
-        self.log
-            .iter()
-            .map(|entry| LogEntryExport {
-                op: entry.op.clone(),
-                snapshot: NodeSnapshotExport {
-                    parent: entry.snapshot.parent,
-                    position: entry.snapshot.position,
-                },
-            })
-            .collect()
-    }
-
     pub fn log_len(&self) -> usize {
-        self.log.len()
+        self.op_count.min(usize::MAX as u64) as usize
     }
 
     pub fn head_op(&self) -> Option<&Operation> {
-        self.log.last().map(|entry| &entry.op)
+        self.head.as_ref()
     }
 
     pub fn validate_invariants(&self) -> Result<()> {
@@ -548,7 +586,12 @@ where
 
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
-        self.ingest(op.clone())?;
+        if !self.storage.apply(op.clone())? {
+            return Ok(op);
+        }
+        let _ = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        self.op_count += 1;
+        self.head = Some(op.clone());
         Ok(op)
     }
 
@@ -567,51 +610,6 @@ where
 {
     pub fn is_known(&self, node: NodeId) -> Result<bool> {
         self.nodes.exists(node)
-    }
-
-    fn ingest(&mut self, op: Operation) -> Result<()> {
-        let _ = self.ingest_with_snapshot(op)?;
-        Ok(())
-    }
-
-    fn ingest_with_snapshot(&mut self, op: Operation) -> Result<Option<NodeSnapshot>> {
-        if self.applied.contains(&op.meta.id) {
-            return Ok(None);
-        }
-
-        self.applied.insert(op.meta.id.clone());
-        let idx = match self.log.binary_search_by(|existing| {
-            cmp_op_key(
-                existing.op.meta.lamport,
-                existing.op.meta.id.replica.as_bytes(),
-                existing.op.meta.id.counter,
-                op.meta.lamport,
-                op.meta.id.replica.as_bytes(),
-                op.meta.id.counter,
-            )
-        }) {
-            Ok(i) => i,
-            Err(i) => i,
-        };
-        for entry in self.log.iter().rev().take(self.log.len() - idx) {
-            Self::undo_entry(&mut self.nodes, entry)?;
-        }
-
-        let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
-        self.log.insert(
-            idx,
-            LogEntry {
-                op: op.clone(),
-                snapshot,
-            },
-        );
-
-        for entry in self.log.iter_mut().skip(idx + 1) {
-            entry.snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &entry.op)?;
-        }
-
-        self.storage.apply(op)?;
-        Ok(Some(self.log[idx].snapshot.clone()))
     }
 
     fn apply_forward(nodes: &mut N, payloads: &mut P, op: &Operation) -> Result<NodeSnapshot> {
@@ -657,27 +655,6 @@ where
             None => None,
         };
         Ok(NodeSnapshot { parent, position })
-    }
-
-    fn undo_entry(nodes: &mut N, entry: &LogEntry) -> Result<()> {
-        let node_id = match &entry.op.kind {
-            OperationKind::Insert { node, .. }
-            | OperationKind::Move { node, .. }
-            | OperationKind::Delete { node }
-            | OperationKind::Tombstone { node }
-            | OperationKind::Payload { node, .. } => *node,
-        };
-        nodes.ensure_node(node_id)?;
-        nodes.detach(node_id)?;
-        if let Some(parent) = entry.snapshot.parent {
-            nodes.ensure_node(parent)?;
-            let pos = match entry.snapshot.position {
-                Some(pos) => pos,
-                None => nodes.children(parent)?.len(),
-            };
-            nodes.attach(node_id, parent, pos)?;
-        }
-        Ok(())
     }
 
     fn apply_insert(

@@ -49,7 +49,7 @@ impl SqliteStorage {
 }
 
 impl Storage for SqliteStorage {
-    fn apply(&mut self, op: Operation) -> treecrdt_core::Result<()> {
+    fn apply(&mut self, op: Operation) -> treecrdt_core::Result<bool> {
         let (kind, parent, node, new_parent, position, payload) = match op.kind {
             OperationKind::Insert {
                 parent,
@@ -99,8 +99,8 @@ impl Storage for SqliteStorage {
                     payload,
                 ],
             )
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        Ok(())
+            .map(|changed| changed > 0)
+            .map_err(|e| Error::Storage(e.to_string()))
     }
 
     fn load_since(&self, lamport: Lamport) -> treecrdt_core::Result<Vec<Operation>> {
