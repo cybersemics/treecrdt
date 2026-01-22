@@ -1,0 +1,339 @@
+name: Benchmarks
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  bench:
+    if: |
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        startsWith(github.event.comment.body, '/bench') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      ) || (github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-22.04
+    concurrency:
+      group: bench-${{ github.event.issue.number || inputs.pr }}
+      cancel-in-progress: true
+    env:
+      EM_VERSION: 4.0.21
+      EM_CACHE_FOLDER: emsdk-cache
+      PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
+
+    steps:
+      - name: Resolve PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.eventName === 'workflow_dispatch'
+              ? Number(core.getInput('pr'))
+              : context.payload.issue?.number;
+
+            if (!prNumber) {
+              throw new Error('Unable to determine pull request number');
+            }
+
+            const { owner, repo } = context.repo;
+            const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+
+            core.setOutput('number', String(prNumber));
+            core.setOutput('base_sha', pr.data.base.sha);
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('base_ref', pr.data.base.ref);
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('head_repo', pr.data.head.repo.full_name);
+
+            const sameRepo = pr.data.head.repo.full_name === `${owner}/${repo}`;
+            core.setOutput('same_repo', sameRepo ? 'true' : 'false');
+
+      - name: Comment when skipped for fork
+        if: steps.pr.outputs.same_repo != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- TREECRDT_BENCHMARKS -->';
+            const { owner, repo } = context.repo;
+            const prNumber = Number('${{ steps.pr.outputs.number }}');
+
+            const body = `${marker}
+## Benchmarks
+
+Benchmarks were skipped because the head branch comes from a fork. We only run \`/bench\` on same-repo branches for security.
+`;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const existing = comments.find((c) => typeof c.body === 'string' && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+      - name: Checkout base
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.base_sha }}
+          path: bench-base
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout head
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          path: bench-head
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Node
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: pnpm
+
+      - name: Setup pnpm
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
+          run_install: false
+
+      - name: Install Rust toolchain
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Add wasm targets
+        if: steps.pr.outputs.same_repo == 'true'
+        run: |
+          rustup target add wasm32-unknown-emscripten
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        if: steps.pr.outputs.same_repo == 'true'
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Cache Emscripten
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EM_CACHE_FOLDER }}
+          key: ${{ env.EM_VERSION }}-${{ runner.os }}-bench
+
+      - name: Setup Emscripten
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EM_VERSION }}
+          actions-cache-folder: ${{ env.EM_CACHE_FOLDER }}
+
+      - name: Verify emcc
+        if: steps.pr.outputs.same_repo == 'true'
+        run: emcc -v
+
+      - name: Install dependencies (base)
+        if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-base
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Install dependencies (head)
+        if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-head
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Install Playwright browsers
+        if: steps.pr.outputs.same_repo == 'true'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+        run: pnpm -C bench-head/packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
+
+      - name: Run benchmarks (base)
+        if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-base
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+        run: pnpm run benchmark
+
+      - name: Run benchmarks (head)
+        if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-head
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+        run: pnpm run benchmark
+
+      - name: Upload benchmark artifacts
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-${{ steps.pr.outputs.number }}
+          if-no-files-found: warn
+          path: |
+            bench-base/benchmarks/**
+            bench-head/benchmarks/**
+
+      - name: Prepare comment body
+        if: steps.pr.outputs.same_repo == 'true'
+        id: render
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+
+            const marker = '<!-- TREECRDT_BENCHMARKS -->';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            const baseFile = path.join(process.env.GITHUB_WORKSPACE, 'bench-base/benchmarks/summary.json');
+            const headFile = path.join(process.env.GITHUB_WORKSPACE, 'bench-head/benchmarks/summary.json');
+
+            const readSummary = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []);
+            const base = readSummary(baseFile);
+            const head = readSummary(headFile);
+
+            const keyFor = (row) =>
+              `${row.implementation ?? '-'}|${row.storage ?? '-'}|${row.workload ?? row.name ?? '-'}`;
+
+            const mapBase = new Map(base.map((r) => [keyFor(r), r]));
+            const mapHead = new Map(head.map((r) => [keyFor(r), r]));
+            const keys = Array.from(new Set([...mapBase.keys(), ...mapHead.keys()])).sort();
+
+            const format = (value, digits = 2) =>
+              value === null || value === undefined || Number.isNaN(Number(value))
+                ? '-'
+                : Number(value).toFixed(digits);
+            const formatPct = (value) =>
+              value === null || value === undefined || Number.isNaN(Number(value))
+                ? '-'
+                : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+
+            const lines = [];
+            lines.push('| Impl | Storage | Workload | Base ops/s | Head ops/s | Δ ops/s | Base p50 ms | Head p50 ms | Δ p50 |');
+            lines.push('|---|---|---|---:|---:|---:|---:|---:|---:|');
+
+            let improved = 0;
+            let regressed = 0;
+
+            for (const key of keys) {
+              const baseRow = mapBase.get(key);
+              const headRow = mapHead.get(key);
+
+              const baseOps = baseRow?.opsPerSec ?? null;
+              const headOps = headRow?.opsPerSec ?? null;
+              const deltaOps =
+                baseOps !== null && headOps !== null ? ((headOps - baseOps) / baseOps) * 100 : null;
+
+              if (deltaOps !== null) {
+                if (deltaOps > 0) improved += 1;
+                else if (deltaOps < 0) regressed += 1;
+              }
+
+              const baseMs = baseRow?.durationMs ?? null;
+              const headMs = headRow?.durationMs ?? null;
+              const deltaMs =
+                baseMs !== null && headMs !== null ? ((headMs - baseMs) / baseMs) * 100 : null;
+
+              const [impl, storage, workload] = key.split('|').map((s) => s.trim());
+              lines.push(
+                `| ${impl} | ${storage} | ${workload} | ${format(baseOps)} | ${format(headOps)} | ${formatPct(deltaOps)} | ${format(baseMs)} | ${format(headMs)} | ${formatPct(deltaMs)} |`,
+              );
+            }
+
+            const baseSha = '${{ steps.pr.outputs.base_sha }}'.slice(0, 7);
+            const headSha = '${{ steps.pr.outputs.head_sha }}'.slice(0, 7);
+            const baseRef = '${{ steps.pr.outputs.base_ref }}';
+            const headRef = '${{ steps.pr.outputs.head_ref }}';
+            const triggerLabel =
+              context.eventName === 'workflow_dispatch' ? '`workflow_dispatch`' : '`/bench`';
+
+            let body = `${marker}
+## Benchmarks
+
+Triggered by ${triggerLabel} • Run: ${runUrl}
+Base: ${baseRef} (${baseSha}) • Head: ${headRef} (${headSha})
+Compared entries: ${keys.length} • Improved: ${improved} • Regressed: ${regressed}
+`;
+
+            if (keys.length === 0) {
+              body += '\n_No benchmark results were found. Check the workflow logs for details._\n';
+            } else {
+              body += '\n' + lines.join('\n') + '\n';
+            }
+
+            body += `
+Artifacts:
+- base summary: \`bench-base/benchmarks/summary.json\`
+- head summary: \`bench-head/benchmarks/summary.json\`
+`;
+
+            return body;
+
+      - name: Comment results
+        if: steps.pr.outputs.same_repo == 'true'
+        uses: actions/github-script@v7
+        env:
+          BENCH_BODY: ${{ steps.render.outputs.result }}
+        with:
+          script: |
+            const marker = '<!-- TREECRDT_BENCHMARKS -->';
+            const body = process.env.BENCH_BODY;
+
+            const { owner, repo } = context.repo;
+            const prNumber = Number('${{ steps.pr.outputs.number }}');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const existing = comments.find((c) => typeof c.body === 'string' && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
