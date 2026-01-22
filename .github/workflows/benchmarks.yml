@@ -68,11 +68,13 @@ jobs:
             const { owner, repo } = context.repo;
             const prNumber = Number('${{ steps.pr.outputs.number }}');
 
-            const body = `${marker}
-## Benchmarks
-
-Benchmarks were skipped because the head branch comes from a fork. We only run \`/bench\` on same-repo branches for security.
-`;
+            const body = [
+              marker,
+              '## Benchmarks',
+              '',
+              'Benchmarks were skipped because the head branch comes from a fork. We only run `/bench` on same-repo branches for security.',
+              '',
+            ].join('\n');
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
