@@ -1,16 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
-use crate::traits::{Clock, MemoryNodeStore, NodeStore, Storage};
+use crate::traits::{Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, PayloadStore, Storage};
 use crate::version_vector::VersionVector;
-
-#[derive(Clone, Debug, Default)]
-struct PayloadState {
-    payload: Option<Vec<u8>>,
-    last_writer: Option<(Lamport, OperationId)>,
-}
 
 #[derive(Clone)]
 struct NodeSnapshot {
@@ -25,11 +19,12 @@ struct LogEntry {
 }
 
 /// Generic Tree CRDT facade that wires clock and storage together.
-pub struct TreeCrdt<S, C, N = MemoryNodeStore>
+pub struct TreeCrdt<S, C, N = MemoryNodeStore, P = MemoryPayloadStore>
 where
     S: Storage,
     C: Clock,
     N: NodeStore,
+    P: PayloadStore,
 {
     replica_id: ReplicaId,
     storage: S,
@@ -39,7 +34,7 @@ where
     log: Vec<LogEntry>,
     nodes: N,
     version_vector: VersionVector,
-    payloads: HashMap<NodeId, PayloadState>,
+    payloads: P,
 }
 
 #[derive(Clone, Debug)]
@@ -84,12 +79,12 @@ where
             log: Vec::new(),
             nodes: MemoryNodeStore::default(),
             version_vector: VersionVector::new(),
-            payloads: HashMap::new(),
+            payloads: MemoryPayloadStore::default(),
         }
     }
 }
 
-impl<S, C, N> TreeCrdt<S, C, N>
+impl<S, C, N> TreeCrdt<S, C, N, MemoryPayloadStore>
 where
     S: Storage,
     C: Clock,
@@ -105,7 +100,35 @@ where
             log: Vec::new(),
             nodes,
             version_vector: VersionVector::new(),
-            payloads: HashMap::new(),
+            payloads: MemoryPayloadStore::default(),
+        }
+    }
+}
+
+impl<S, C, N, P> TreeCrdt<S, C, N, P>
+where
+    S: Storage,
+    C: Clock,
+    N: NodeStore,
+    P: PayloadStore,
+{
+    pub fn with_stores(
+        replica_id: ReplicaId,
+        storage: S,
+        clock: C,
+        nodes: N,
+        payloads: P,
+    ) -> Self {
+        Self {
+            replica_id,
+            storage,
+            clock,
+            counter: 0,
+            applied: HashSet::new(),
+            log: Vec::new(),
+            nodes,
+            version_vector: VersionVector::new(),
+            payloads,
         }
     }
 
@@ -231,7 +254,7 @@ where
         self.log.clear();
         self.version_vector = VersionVector::new();
         self.nodes.reset()?;
-        self.payloads.clear();
+        self.payloads.reset()?;
         for op in ops {
             self.clock.observe(op.meta.lamport);
             self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
@@ -266,8 +289,12 @@ where
         Ok(self.nodes.parent(node)?.filter(|&p| p != NodeId::TRASH))
     }
 
-    pub fn payload(&self, node: NodeId) -> Option<&[u8]> {
-        self.payloads.get(&node)?.payload.as_deref()
+    pub fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
+        self.payloads.payload(node)
+    }
+
+    pub fn payload_last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>> {
+        self.payloads.last_writer(node)
     }
 
     pub fn is_tombstoned(&self, node: NodeId) -> Result<bool> {
@@ -383,11 +410,12 @@ where
     }
 }
 
-impl<S, C, N> TreeCrdt<S, C, N>
+impl<S, C, N, P> TreeCrdt<S, C, N, P>
 where
     S: Storage,
     C: Clock,
     N: NodeStore,
+    P: PayloadStore,
 {
     pub fn is_known(&self, node: NodeId) -> Result<bool> {
         self.nodes.exists(node)
@@ -440,7 +468,7 @@ where
 
     fn apply_forward(
         nodes: &mut N,
-        payloads: &mut HashMap<NodeId, PayloadState>,
+        payloads: &mut P,
         op: &Operation,
     ) -> Result<NodeSnapshot> {
         let snapshot = Self::snapshot(nodes, op)?;
@@ -580,20 +608,19 @@ where
 
     fn apply_payload(
         nodes: &mut N,
-        payloads: &mut HashMap<NodeId, PayloadState>,
+        payloads: &mut P,
         op: &Operation,
         node: NodeId,
         payload: Option<&[u8]>,
     ) -> Result<()> {
         nodes.ensure_node(node)?;
 
-        let state = payloads.entry(node).or_default();
-        if let Some((lamport, id)) = &state.last_writer {
+        if let Some((lamport, id)) = payloads.last_writer(node)? {
             if cmp_op_key(
                 op.meta.lamport,
                 op.meta.id.replica.as_bytes(),
                 op.meta.id.counter,
-                *lamport,
+                lamport,
                 id.replica.as_bytes(),
                 id.counter,
             ) != std::cmp::Ordering::Greater
@@ -602,8 +629,11 @@ where
             }
         }
 
-        state.payload = payload.map(|bytes| bytes.to_vec());
-        state.last_writer = Some((op.meta.lamport, op.meta.id.clone()));
+        payloads.set_payload(
+            node,
+            payload.map(|bytes| bytes.to_vec()),
+            (op.meta.lamport, op.meta.id.clone()),
+        )?;
         Self::update_last_change(nodes, op, node)?;
         Ok(())
     }

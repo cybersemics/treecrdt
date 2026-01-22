@@ -16,8 +16,8 @@ pub use ops::{
     cmp_op_key, cmp_ops, op_tie_breaker_id, Operation, OperationKind, OperationMetadata,
 };
 pub use traits::{
-    Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryStorage, NodeStore, Snapshot,
-    Storage,
+    Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,
+    NodeStore, PayloadStore, Snapshot, Storage,
 };
 pub use tree::{ApplyDelta, LogEntryExport, NodeExport, NodeSnapshotExport, TreeCrdt};
 pub use version_vector::VersionVector;

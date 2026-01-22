@@ -229,7 +229,7 @@ fn defensive_delete_parent_then_payload_change_restores_parent() {
     // Client B sets payload first, then Client A deletes without awareness.
     // Defensive delete: parent should be restored because delete was unaware of modifications.
     let set_payload_op = crdt_b.local_set_payload(parent, b"hello".to_vec()).unwrap();
-    assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
+    assert_eq!(crdt_b.payload(parent).unwrap(), Some(b"hello".to_vec()));
 
     let delete_op = crdt_a.local_delete(parent).unwrap();
     assert!(crdt_a.is_tombstoned(parent).unwrap());
@@ -244,8 +244,8 @@ fn defensive_delete_parent_then_payload_change_restores_parent() {
         !crdt_b.is_tombstoned(parent).unwrap(),
         "Parent should be restored"
     );
-    assert_eq!(crdt_a.payload(parent), Some(&b"hello"[..]));
-    assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
+    assert_eq!(crdt_a.payload(parent).unwrap(), Some(b"hello".to_vec()));
+    assert_eq!(crdt_b.payload(parent).unwrap(), Some(b"hello".to_vec()));
 
     assert_eq!(crdt_a.nodes().unwrap(), crdt_b.nodes().unwrap());
     crdt_a.validate_invariants().unwrap();
@@ -282,8 +282,8 @@ fn defensive_delete_parent_then_payload_change_no_restoration_when_aware() {
     // Parent should stay tombstoned because delete happened with full awareness.
     assert!(crdt_a.is_tombstoned(parent).unwrap());
     assert!(crdt_b.is_tombstoned(parent).unwrap());
-    assert_eq!(crdt_a.payload(parent), Some(&b"hello"[..]));
-    assert_eq!(crdt_b.payload(parent), Some(&b"hello"[..]));
+    assert_eq!(crdt_a.payload(parent).unwrap(), Some(b"hello".to_vec()));
+    assert_eq!(crdt_b.payload(parent).unwrap(), Some(b"hello".to_vec()));
 
     assert_eq!(crdt_a.nodes().unwrap(), crdt_b.nodes().unwrap());
     crdt_a.validate_invariants().unwrap();

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
-use crate::ids::{Lamport, NodeId};
+use crate::ids::{Lamport, NodeId, OperationId};
 use crate::ops::Operation;
 use crate::version_vector::VersionVector;
 
@@ -57,6 +57,18 @@ pub trait NodeStore {
     fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
 
     fn all_nodes(&self) -> Result<Vec<NodeId>>;
+}
+
+/// Storage for last-writer-wins node payloads.
+///
+/// Payloads are application-defined opaque bytes. Merge semantics are last-writer-wins per node,
+/// ordered by `(lamport, replica, counter)`. This trait allows embedders (SQLite, wasm, etc) to
+/// persist payload state without re-implementing CRDT ordering rules.
+pub trait PayloadStore {
+    fn reset(&mut self) -> Result<()>;
+    fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>>;
+    fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>>;
+    fn set_payload(&mut self, node: NodeId, payload: Option<Vec<u8>>, writer: (Lamport, OperationId)) -> Result<()>;
 }
 
 /// Lightweight snapshot to expose to storage adapters.
@@ -143,6 +155,53 @@ impl IndexProvider for MemoryStorage {
             crate::ops::OperationKind::Tombstone { node: n } => n == node,
             crate::ops::OperationKind::Payload { node: n, .. } => n == node,
         })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemoryPayloadStore {
+    entries: HashMap<NodeId, MemoryPayloadEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct MemoryPayloadEntry {
+    payload: Option<Vec<u8>>,
+    last_writer: Option<(Lamport, OperationId)>,
+}
+
+impl Default for MemoryPayloadEntry {
+    fn default() -> Self {
+        Self {
+            payload: None,
+            last_writer: None,
+        }
+    }
+}
+
+impl PayloadStore for MemoryPayloadStore {
+    fn reset(&mut self) -> Result<()> {
+        self.entries.clear();
+        Ok(())
+    }
+
+    fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
+        Ok(self.entries.get(&node).and_then(|e| e.payload.clone()))
+    }
+
+    fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>> {
+        Ok(self.entries.get(&node).and_then(|e| e.last_writer.clone()))
+    }
+
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> Result<()> {
+        let entry = self.entries.entry(node).or_default();
+        entry.payload = payload;
+        entry.last_writer = Some(writer);
+        Ok(())
     }
 }
 

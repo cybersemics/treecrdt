@@ -28,8 +28,8 @@ fn payload_lww_tie_breaker_converges() {
     b.apply_remote(op_b).unwrap();
     b.apply_remote(op_a).unwrap();
 
-    assert_eq!(a.payload(node), Some(&b"B"[..]));
-    assert_eq!(b.payload(node), Some(&b"B"[..]));
+    assert_eq!(a.payload(node).unwrap(), Some(b"B".to_vec()));
+    assert_eq!(b.payload(node).unwrap(), Some(b"B".to_vec()));
 }
 
 #[test]
@@ -59,8 +59,8 @@ fn payload_clear_is_last_writer_wins() {
     b.apply_remote(clear).unwrap();
     b.apply_remote(set).unwrap();
 
-    assert_eq!(a.payload(node), None);
-    assert_eq!(b.payload(node), None);
+    assert_eq!(a.payload(node).unwrap(), None);
+    assert_eq!(b.payload(node).unwrap(), None);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn payload_can_arrive_before_insert() {
     tree.apply_remote(insert).unwrap();
 
     assert_eq!(tree.parent(node).unwrap(), Some(NodeId::ROOT));
-    assert_eq!(tree.payload(node), Some(&b"hello"[..]));
+    assert_eq!(tree.payload(node).unwrap(), Some(b"hello".to_vec()));
     assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
 }
 
@@ -106,7 +106,7 @@ fn insert_with_payload_sets_value() {
     tree.apply_remote(insert).unwrap();
 
     assert_eq!(tree.parent(node).unwrap(), Some(NodeId::ROOT));
-    assert_eq!(tree.payload(node), Some(&b"hello"[..]));
+    assert_eq!(tree.payload(node).unwrap(), Some(b"hello".to_vec()));
     assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
 }
 
@@ -128,6 +128,6 @@ fn insert_payload_does_not_override_newer_payload() {
     tree.apply_remote(insert).unwrap();
 
     assert_eq!(tree.parent(node).unwrap(), Some(NodeId::ROOT));
-    assert_eq!(tree.payload(node), Some(&b"new"[..]));
+    assert_eq!(tree.payload(node).unwrap(), Some(b"new".to_vec()));
     assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
 }
