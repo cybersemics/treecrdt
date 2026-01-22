@@ -201,16 +201,15 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
         return Err(SQLITE_ERROR as c_int);
     }
 
-    let log = crdt.export_log();
-
     // Update meta head + seq.
-    if let Some(last) = log.last() {
+    let seq = crdt.log_len() as u64;
+    if let Some(last) = crdt.head_op() {
         let head_rc = update_tree_meta_head(
             db,
-            last.op.meta.lamport,
-            last.op.meta.id.replica.as_bytes(),
-            last.op.meta.id.counter,
-            log.len() as u64,
+            last.meta.lamport,
+            last.meta.id.replica.as_bytes(),
+            last.meta.id.counter,
+            seq,
         );
         if head_rc.is_err() {
             sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
@@ -270,15 +269,6 @@ pub(super) fn append_ops_impl(
     if prep_rc != SQLITE_OK as c_int {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
         return Err(prep_rc);
-    }
-
-    let changes_sql = CString::new("SELECT changes()").expect("changes sql");
-    let mut changes_stmt: *mut sqlite3_stmt = null_mut();
-    let changes_rc = sqlite_prepare_v2(db, changes_sql.as_ptr(), -1, &mut changes_stmt, null_mut());
-    if changes_rc != SQLITE_OK as c_int {
-        unsafe { sqlite_finalize(stmt) };
-        sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-        return Err(changes_rc);
     }
 
     let mut inserted: i64 = 0;
@@ -401,15 +391,7 @@ pub(super) fn append_ops_impl(
         }
 
         // Check whether this row was inserted (vs ignored due to duplicate).
-        let mut changed: i64 = 0;
-        unsafe {
-            sqlite_reset(changes_stmt);
-            let rc = sqlite_step(changes_stmt);
-            if rc == SQLITE_ROW as c_int {
-                changed = sqlite_column_int64(changes_stmt, 0);
-            }
-            sqlite_reset(changes_stmt);
-        }
+        let changed: i64 = sqlite_changes(db) as i64;
         if changed <= 0 {
             continue;
         }
@@ -478,7 +460,6 @@ pub(super) fn append_ops_impl(
     }
 
     unsafe { sqlite_finalize(stmt) };
-    unsafe { sqlite_finalize(changes_stmt) };
 
     if err_rc != SQLITE_OK as c_int {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());

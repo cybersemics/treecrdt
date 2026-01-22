@@ -281,52 +281,6 @@ CREATE TABLE IF NOT EXISTS tree_payload (
         return Err(rc_tree_payload);
     }
 
-    // Derived table: migrate legacy payload schema if present.
-    {
-        let pragma_sql = CString::new("PRAGMA table_info(tree_payload)").expect("tree_payload pragma");
-        let mut stmt: *mut sqlite3_stmt = null_mut();
-        let rc = sqlite_prepare_v2(db, pragma_sql.as_ptr(), -1, &mut stmt, null_mut());
-        if rc == SQLITE_OK as c_int {
-            let mut has_op_ref = false;
-            let mut has_last_lamport = false;
-            loop {
-                let step_rc = unsafe { sqlite_step(stmt) };
-                if step_rc == SQLITE_ROW as c_int {
-                    let name_ptr = unsafe { sqlite_column_text(stmt, 1) } as *const u8;
-                    let name_len = unsafe { sqlite_column_bytes(stmt, 1) } as usize;
-                    if !name_ptr.is_null() && name_len > 0 {
-                        let name = unsafe { slice::from_raw_parts(name_ptr, name_len) };
-                        has_op_ref |= name == b"op_ref";
-                        has_last_lamport |= name == b"last_lamport";
-                    }
-                } else if step_rc == SQLITE_DONE as c_int {
-                    break;
-                } else {
-                    break;
-                }
-            }
-            unsafe { sqlite_finalize(stmt) };
-
-            if has_op_ref && !has_last_lamport {
-                // Drop/recreate; payload table is derived from ops.
-                let drop_sql = CString::new("DROP TABLE IF EXISTS tree_payload").expect("drop tree_payload");
-                let _ = sqlite_exec(db, drop_sql.as_ptr(), None, null_mut(), null_mut());
-                let recreate_sql = CString::new(
-                    "CREATE TABLE tree_payload (\
-                      node BLOB PRIMARY KEY,\
-                      payload BLOB,\
-                      last_lamport INTEGER NOT NULL,\
-                      last_replica BLOB NOT NULL,\
-                      last_counter INTEGER NOT NULL\
-                    );",
-                )
-                .expect("recreate tree_payload");
-                let _ = sqlite_exec(db, recreate_sql.as_ptr(), None, null_mut(), null_mut());
-                let _ = set_tree_meta_dirty(db, true);
-            }
-        }
-    }
-
     const INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
 CREATE INDEX IF NOT EXISTS idx_ops_op_ref ON ops(op_ref);

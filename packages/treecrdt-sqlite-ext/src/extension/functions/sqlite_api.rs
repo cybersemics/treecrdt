@@ -123,6 +123,8 @@ mod ffi {
         pub fn sqlite3_column_text(stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_char;
         pub fn sqlite3_column_type(stmt: *mut sqlite3_stmt, idx: c_int) -> c_int;
 
+        pub fn sqlite3_changes(db: *mut sqlite3) -> c_int;
+
         pub fn sqlite3_auto_extension(xEntryPoint: Option<unsafe extern "C" fn()>) -> c_int;
     }
 
@@ -236,6 +238,18 @@ pub(super) fn sqlite_prepare_v2(
     #[cfg(feature = "static-link")]
     unsafe {
         ffi::sqlite3_prepare_v2(db, sql, n_byte, stmt, tail)
+    }
+}
+
+pub(super) fn sqlite_changes(db: *mut sqlite3) -> c_int {
+    #[cfg(feature = "ext-sqlite")]
+    {
+        let api = api().expect("api table");
+        unsafe { (api.changes.unwrap())(db) }
+    }
+    #[cfg(feature = "static-link")]
+    unsafe {
+        ffi::sqlite3_changes(db)
     }
 }
 

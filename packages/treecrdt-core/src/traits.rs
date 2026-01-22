@@ -67,6 +67,27 @@ pub trait NodeStore {
         Ok(self.deleted_at(node)?.is_some())
     }
 
+    fn parent_and_has_deleted_at(&self, node: NodeId) -> Result<Option<(Option<NodeId>, bool)>> {
+        if !self.exists(node)? {
+            return Ok(None);
+        }
+        Ok(Some((self.parent(node)?, self.has_deleted_at(node)?)))
+    }
+
+    fn subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
+        if !self.exists(node)? {
+            return Ok(VersionVector::new());
+        }
+
+        let mut subtree_vv = self.last_change(node)?;
+        for child_id in self.children(node)? {
+            let child_vv = self.subtree_version_vector(child_id)?;
+            subtree_vv.merge(&child_vv);
+        }
+
+        Ok(subtree_vv)
+    }
+
     fn all_nodes(&self) -> Result<Vec<NodeId>>;
 }
 

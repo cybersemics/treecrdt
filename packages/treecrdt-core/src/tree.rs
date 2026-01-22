@@ -197,7 +197,7 @@ where
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let known_state = Some(Self::calculate_subtree_version_vector(&self.nodes, node)?);
+        let known_state = Some(self.nodes.subtree_version_vector(node)?);
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
         self.commit_local(op)
     }
@@ -313,16 +313,16 @@ where
             if !visited.insert(node) {
                 continue;
             }
-            if !self.nodes.exists(node)? {
+            let Some((parent, has_deleted_at)) = self.nodes.parent_and_has_deleted_at(node)? else {
                 continue;
-            }
+            };
 
-            if self.nodes.has_deleted_at(node)? {
+            if has_deleted_at {
                 let tombstoned = self.is_tombstoned(node)?;
                 self.nodes.set_tombstone(node, tombstoned)?;
             }
 
-            if let Some(parent) = self.nodes.parent(node)? {
+            if let Some(parent) = parent {
                 stack.push(parent);
             }
         }
@@ -450,7 +450,7 @@ where
         let Some(deleted_vv) = self.nodes.deleted_at(node)? else {
             return Ok(false);
         };
-        let subtree_vv = Self::calculate_subtree_version_vector(&self.nodes, node)?;
+        let subtree_vv = self.nodes.subtree_version_vector(node)?;
         Ok(deleted_vv.is_aware_of(&subtree_vv))
     }
 
@@ -471,7 +471,7 @@ where
     }
 
     pub fn subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
-        Self::calculate_subtree_version_vector(&self.nodes, node)
+        self.nodes.subtree_version_vector(node)
     }
 
     pub fn export_nodes(&self) -> Result<Vec<NodeExport>> {
@@ -499,6 +499,14 @@ where
                 },
             })
             .collect()
+    }
+
+    pub fn log_len(&self) -> usize {
+        self.log.len()
+    }
+
+    pub fn head_op(&self) -> Option<&Operation> {
+        self.log.last().map(|entry| &entry.op)
     }
 
     pub fn validate_invariants(&self) -> Result<()> {
@@ -796,20 +804,6 @@ where
             nodes.merge_last_change(node, known_state)?;
         }
         Ok(())
-    }
-
-    fn calculate_subtree_version_vector(nodes: &N, node: NodeId) -> Result<VersionVector> {
-        if !nodes.exists(node)? {
-            return Ok(VersionVector::new());
-        }
-
-        let mut subtree_vv = nodes.last_change(node)?;
-        for child_id in nodes.children(node)? {
-            let child_vv = Self::calculate_subtree_version_vector(nodes, child_id)?;
-            subtree_vv.merge(&child_vv);
-        }
-
-        Ok(subtree_vv)
     }
 
     fn introduces_cycle(nodes: &N, node: NodeId, potential_parent: NodeId) -> Result<bool> {

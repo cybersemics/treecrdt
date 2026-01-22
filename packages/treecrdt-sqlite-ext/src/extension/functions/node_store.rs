@@ -632,6 +632,50 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
         }
     }
 
+    fn parent_and_has_deleted_at(
+        &self,
+        node: NodeId,
+    ) -> treecrdt_core::Result<Option<(Option<NodeId>, bool)>> {
+        let bytes = sqlite_node_id_bytes(node);
+        unsafe {
+            sqlite_clear_bindings(self.select_node);
+            sqlite_reset(self.select_node);
+            let bind_rc = sqlite_bind_blob(
+                self.select_node,
+                1,
+                bytes.as_ptr() as *const c_void,
+                bytes.len() as c_int,
+                None,
+            );
+            if bind_rc != SQLITE_OK as c_int {
+                sqlite_reset(self.select_node);
+                return Err(sqlite_rc_error(bind_rc, "bind select_node failed"));
+            }
+
+            let step_rc = sqlite_step(self.select_node);
+            let out = if step_rc == SQLITE_ROW as c_int {
+                let parent = match column_blob16(self.select_node, 0) {
+                    Ok(Some(p)) => Some(sqlite_bytes_to_node_id(p)),
+                    Ok(None) => None,
+                    Err(rc) => {
+                        sqlite_reset(self.select_node);
+                        return Err(sqlite_rc_error(rc, "read parent failed"));
+                    }
+                };
+                let has_deleted_at = sqlite_column_type(self.select_node, 3) != SQLITE_NULL as c_int
+                    && sqlite_column_bytes(self.select_node, 3) > 0;
+                Some((parent, has_deleted_at))
+            } else if step_rc == SQLITE_DONE as c_int {
+                None
+            } else {
+                sqlite_reset(self.select_node);
+                return Err(sqlite_rc_error(step_rc, "select_node step failed"));
+            };
+            sqlite_reset(self.select_node);
+            Ok(out)
+        }
+    }
+
     fn last_change(&self, node: NodeId) -> treecrdt_core::Result<VersionVector> {
         let bytes = sqlite_node_id_bytes(node);
         unsafe {
