@@ -281,27 +281,30 @@ jobs:
             const triggerLabel =
               context.eventName === 'workflow_dispatch' ? '`workflow_dispatch`' : '`/bench`';
 
-            let body = `${marker}
-## Benchmarks
-
-Triggered by ${triggerLabel} • Run: ${runUrl}
-Base: ${baseRef} (${baseSha}) • Head: ${headRef} (${headSha})
-Compared entries: ${keys.length} • Improved: ${improved} • Regressed: ${regressed}
-`;
+            const parts = [
+              marker,
+              '## Benchmarks',
+              '',
+              `Triggered by ${triggerLabel} - Run: ${runUrl}`,
+              `Base: ${baseRef} (${baseSha}) - Head: ${headRef} (${headSha})`,
+              `Compared entries: ${keys.length} - Improved: ${improved} - Regressed: ${regressed}`,
+              '',
+            ];
 
             if (keys.length === 0) {
-              body += '\n_No benchmark results were found. Check the workflow logs for details._\n';
+              parts.push('_No benchmark results were found. Check the workflow logs for details._', '');
             } else {
-              body += '\n' + lines.join('\n') + '\n';
+              parts.push(lines.join('\n'), '');
             }
 
-            body += `
-Artifacts:
-- base summary: \`bench-base/benchmarks/summary.json\`
-- head summary: \`bench-head/benchmarks/summary.json\`
-`;
+            parts.push(
+              'Artifacts:',
+              '- base summary: `bench-base/benchmarks/summary.json`',
+              '- head summary: `bench-head/benchmarks/summary.json`',
+              ''
+            );
 
-            return body;
+            return parts.join('\n');
 
       - name: Comment results
         if: steps.pr.outputs.same_repo == 'true'
