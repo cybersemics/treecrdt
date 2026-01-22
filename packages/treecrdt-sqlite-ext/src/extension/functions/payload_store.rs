@@ -126,7 +126,10 @@ impl treecrdt_core::PayloadStore for SqlitePayloadStore {
             );
             if bind_rc != SQLITE_OK as c_int {
                 sqlite_reset(self.select);
-                return Err(sqlite_rc_error(bind_rc, "bind select payload writer failed"));
+                return Err(sqlite_rc_error(
+                    bind_rc,
+                    "bind select payload writer failed",
+                ));
             }
 
             let step_rc = sqlite_step(self.select);
@@ -140,15 +143,21 @@ impl treecrdt_core::PayloadStore for SqlitePayloadStore {
                     slice::from_raw_parts(rep_ptr, rep_len).to_vec()
                 };
                 let counter = sqlite_column_int64(self.select, 3).max(0) as u64;
-                Some((lamport, treecrdt_core::OperationId {
-                    replica: treecrdt_core::ReplicaId(replica),
-                    counter,
-                }))
+                Some((
+                    lamport,
+                    treecrdt_core::OperationId {
+                        replica: treecrdt_core::ReplicaId(replica),
+                        counter,
+                    },
+                ))
             } else if step_rc == SQLITE_DONE as c_int {
                 None
             } else {
                 sqlite_reset(self.select);
-                return Err(sqlite_rc_error(step_rc, "select payload writer step failed"));
+                return Err(sqlite_rc_error(
+                    step_rc,
+                    "select payload writer step failed",
+                ));
             };
             sqlite_reset(self.select);
             Ok(writer)
@@ -214,4 +223,3 @@ impl treecrdt_core::PayloadStore for SqlitePayloadStore {
         Ok(())
     }
 }
-

@@ -39,7 +39,10 @@ impl treecrdt_core::ParentOpIndex for SqliteParentOpIndex {
         let sql = CString::new("DELETE FROM oprefs_children").expect("clear oprefs_children sql");
         let rc = sqlite_exec(self.db, sql.as_ptr(), None, null_mut(), null_mut());
         if rc != SQLITE_OK as c_int {
-            return Err(sqlite_rc_error(rc, "sqlite_exec clear oprefs_children failed"));
+            return Err(sqlite_rc_error(
+                rc,
+                "sqlite_exec clear oprefs_children failed",
+            ));
         }
         Ok(())
     }
@@ -91,9 +94,11 @@ impl treecrdt_core::ParentOpIndex for SqliteParentOpIndex {
         let step_rc = unsafe { sqlite_step(self.insert) };
         unsafe { sqlite_reset(self.insert) };
         if step_rc != SQLITE_DONE as c_int {
-            return Err(sqlite_rc_error(step_rc, "oprefs_children insert step failed"));
+            return Err(sqlite_rc_error(
+                step_rc,
+                "oprefs_children insert step failed",
+            ));
         }
         Ok(())
     }
 }
-

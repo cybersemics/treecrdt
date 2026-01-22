@@ -579,11 +579,8 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
                 bytes.len() as c_int,
                 None,
             ) != SQLITE_OK as c_int;
-            bind_err |= sqlite_bind_int64(
-                self.update_tombstone,
-                2,
-                if tombstone { 1 } else { 0 },
-            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(self.update_tombstone, 2, if tombstone { 1 } else { 0 })
+                != SQLITE_OK as c_int;
             if bind_err {
                 sqlite_reset(self.update_tombstone);
                 return Err(sqlite_rc_error(
@@ -662,7 +659,8 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
                         return Err(sqlite_rc_error(rc, "read parent failed"));
                     }
                 };
-                let has_deleted_at = sqlite_column_type(self.select_node, 3) != SQLITE_NULL as c_int
+                let has_deleted_at = sqlite_column_type(self.select_node, 3)
+                    != SQLITE_NULL as c_int
                     && sqlite_column_bytes(self.select_node, 3) > 0;
                 Some((parent, has_deleted_at))
             } else if step_rc == SQLITE_DONE as c_int {

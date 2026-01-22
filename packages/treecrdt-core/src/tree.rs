@@ -131,13 +131,7 @@ where
     N: NodeStore,
     P: PayloadStore,
 {
-    pub fn with_stores(
-        replica_id: ReplicaId,
-        storage: S,
-        clock: C,
-        nodes: N,
-        payloads: P,
-    ) -> Self {
+    pub fn with_stores(replica_id: ReplicaId, storage: S, clock: C, nodes: N, payloads: P) -> Self {
         Self {
             replica_id,
             storage,
@@ -620,11 +614,7 @@ where
         Ok(Some(self.log[idx].snapshot.clone()))
     }
 
-    fn apply_forward(
-        nodes: &mut N,
-        payloads: &mut P,
-        op: &Operation,
-    ) -> Result<NodeSnapshot> {
+    fn apply_forward(nodes: &mut N, payloads: &mut P, op: &Operation) -> Result<NodeSnapshot> {
         let snapshot = Self::snapshot(nodes, op)?;
         match &op.kind {
             OperationKind::Insert {

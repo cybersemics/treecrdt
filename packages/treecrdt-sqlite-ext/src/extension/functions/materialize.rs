@@ -193,10 +193,7 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
         node_store,
         payload_store,
     );
-    if crdt
-        .replay_from_storage_with_materialization(&mut op_index)
-        .is_err()
-    {
+    if crdt.replay_from_storage_with_materialization(&mut op_index).is_err() {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
         return Err(SQLITE_ERROR as c_int);
     }

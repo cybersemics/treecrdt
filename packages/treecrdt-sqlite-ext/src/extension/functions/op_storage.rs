@@ -32,7 +32,8 @@ impl SqliteOpStorage {
 
     fn ensure_doc_id(&mut self) -> treecrdt_core::Result<&[u8]> {
         if self.doc_id.is_none() {
-            self.doc_id = load_doc_id(self.db).map_err(|rc| sqlite_rc_error(rc, "load_doc_id failed"))?;
+            self.doc_id =
+                load_doc_id(self.db).map_err(|rc| sqlite_rc_error(rc, "load_doc_id failed"))?;
         }
         self.doc_id
             .as_deref()
@@ -113,7 +114,10 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         let mut stmt: *mut sqlite3_stmt = null_mut();
         let prep_rc = sqlite_prepare_v2(self.db, insert_sql.as_ptr(), -1, &mut stmt, null_mut());
         if prep_rc != SQLITE_OK as c_int {
-            return Err(sqlite_rc_error(prep_rc, "sqlite_prepare_v2 insert op failed"));
+            return Err(sqlite_rc_error(
+                prep_rc,
+                "sqlite_prepare_v2 insert op failed",
+            ));
         }
 
         let mut bind_err = false;
@@ -130,17 +134,14 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         }
         let kind_cstr = CString::new(kind).unwrap_or_else(|_| CString::new("insert").unwrap());
         unsafe {
-            bind_err |= sqlite_bind_text(stmt, 4, kind_cstr.as_ptr(), -1, None) != SQLITE_OK as c_int;
+            bind_err |=
+                sqlite_bind_text(stmt, 4, kind_cstr.as_ptr(), -1, None) != SQLITE_OK as c_int;
         }
         unsafe {
             if let Some(ref p) = parent {
-                bind_err |= sqlite_bind_blob(
-                    stmt,
-                    5,
-                    p.as_ptr() as *const c_void,
-                    p.len() as c_int,
-                    None,
-                ) != SQLITE_OK as c_int;
+                bind_err |=
+                    sqlite_bind_blob(stmt, 5, p.as_ptr() as *const c_void, p.len() as c_int, None)
+                        != SQLITE_OK as c_int;
             } else {
                 bind_err |= sqlite_bind_null(stmt, 5) != SQLITE_OK as c_int;
             }
@@ -257,14 +258,18 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                         .unwrap_or("")
                 };
 
-                let parent = unsafe { column_blob16(stmt, 4) }.map_err(|rc| sqlite_rc_error(rc, "read parent failed"))?;
+                let parent = unsafe { column_blob16(stmt, 4) }
+                    .map_err(|rc| sqlite_rc_error(rc, "read parent failed"))?;
                 let node = unsafe { column_blob16(stmt, 5) }
                     .map_err(|rc| sqlite_rc_error(rc, "read node failed"))?
                     .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
-                let new_parent = unsafe { column_blob16(stmt, 6) }.map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
-                let position = unsafe { column_int_opt(stmt, 7) }.map(|v| v.min(usize::MAX as u64) as usize);
+                let new_parent = unsafe { column_blob16(stmt, 6) }
+                    .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
+                let position =
+                    unsafe { column_int_opt(stmt, 7) }.map(|v| v.min(usize::MAX as u64) as usize);
 
-                let known_state = if unsafe { sqlite_column_type(stmt, 8) } == SQLITE_NULL as c_int {
+                let known_state = if unsafe { sqlite_column_type(stmt, 8) } == SQLITE_NULL as c_int
+                {
                     None
                 } else {
                     let ptr = unsafe { sqlite_column_blob(stmt, 8) } as *const u8;
@@ -322,10 +327,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                     },
                     _ => {
                         unsafe { sqlite_finalize(stmt) };
-                        return Err(sqlite_rc_error(
-                            SQLITE_ERROR as c_int,
-                            "unknown op kind",
-                        ));
+                        return Err(sqlite_rc_error(SQLITE_ERROR as c_int, "unknown op kind"));
                     }
                 };
 
@@ -356,7 +358,8 @@ impl treecrdt_core::Storage for SqliteOpStorage {
     }
 
     fn latest_lamport(&self) -> Lamport {
-        let sql = CString::new("SELECT COALESCE(MAX(lamport), 0) FROM ops").expect("max lamport sql");
+        let sql =
+            CString::new("SELECT COALESCE(MAX(lamport), 0) FROM ops").expect("max lamport sql");
         let mut stmt: *mut sqlite3_stmt = null_mut();
         let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
         if rc != SQLITE_OK as c_int {

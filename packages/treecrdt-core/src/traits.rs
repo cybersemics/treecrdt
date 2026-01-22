@@ -100,7 +100,12 @@ pub trait PayloadStore {
     fn reset(&mut self) -> Result<()>;
     fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>>;
     fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>>;
-    fn set_payload(&mut self, node: NodeId, payload: Option<Vec<u8>>, writer: (Lamport, OperationId)) -> Result<()>;
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> Result<()>;
 }
 
 /// Persistent index of operations relevant to a `children(parent)` filter.
@@ -217,19 +222,10 @@ pub struct MemoryPayloadStore {
     entries: HashMap<NodeId, MemoryPayloadEntry>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct MemoryPayloadEntry {
     payload: Option<Vec<u8>>,
     last_writer: Option<(Lamport, OperationId)>,
-}
-
-impl Default for MemoryPayloadEntry {
-    fn default() -> Self {
-        Self {
-            payload: None,
-            last_writer: None,
-        }
-    }
 }
 
 impl PayloadStore for MemoryPayloadStore {
