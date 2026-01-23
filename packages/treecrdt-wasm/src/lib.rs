@@ -117,12 +117,8 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
         "insert" => {
             let parent = js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT);
             let node = hex_to_node(&js.node)?;
-            let order_key = js
-                .order_key
-                .as_deref()
-                .map(hex_to_bytes)
-                .transpose()?
-                .unwrap_or_default();
+            let order_key =
+                js.order_key.as_deref().map(hex_to_bytes).transpose()?.unwrap_or_default();
             if let Some(payload_hex) = js.payload.as_deref() {
                 let payload = hex_to_bytes(payload_hex)?;
                 Operation::insert_with_payload(
@@ -133,22 +129,14 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
             }
         }
         "move" => {
-            let order_key = js
-                .order_key
-                .as_deref()
-                .map(hex_to_bytes)
-                .transpose()?
-                .unwrap_or_default();
+            let order_key =
+                js.order_key.as_deref().map(hex_to_bytes).transpose()?.unwrap_or_default();
             Operation::move_node(
                 &replica,
                 counter,
                 lamport,
                 hex_to_node(&js.node)?,
-                js.new_parent
-                    .as_deref()
-                    .map(hex_to_node)
-                    .transpose()?
-                    .unwrap_or(NodeId::ROOT),
+                js.new_parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
                 order_key,
             )
         }

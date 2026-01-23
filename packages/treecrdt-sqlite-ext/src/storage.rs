@@ -265,7 +265,14 @@ mod tests {
 
         // Persist operations out of order.
         storage
-            .apply(Operation::move_node(&replica, 3, 3, child, parent, Vec::new()))
+            .apply(Operation::move_node(
+                &replica,
+                3,
+                3,
+                child,
+                parent,
+                Vec::new(),
+            ))
             .unwrap();
         storage
             .apply(Operation::insert(

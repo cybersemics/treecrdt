@@ -662,10 +662,9 @@ where
         children.retain(|child| *child != node);
 
         let (left, right) = if let Some(after) = after {
-            let idx = children
-                .iter()
-                .position(|c| *c == after)
-                .ok_or_else(|| Error::InvalidOperation("after node is not a child of parent".into()))?;
+            let idx = children.iter().position(|c| *c == after).ok_or_else(|| {
+                Error::InvalidOperation("after node is not a child of parent".into())
+            })?;
             let left = self.nodes.order_key(after)?;
             let right = if idx + 1 < children.len() {
                 self.nodes.order_key(children[idx + 1])?

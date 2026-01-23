@@ -69,9 +69,8 @@ fn defensive_delete_parent_then_move_child_restores_parent() {
     let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let other_parent_op = crdt_a
-        .local_insert_after(NodeId::ROOT, other_parent, Some(parent))
-        .unwrap();
+    let other_parent_op =
+        crdt_a.local_insert_after(NodeId::ROOT, other_parent, Some(parent)).unwrap();
     crdt_b.apply_remote(other_parent_op).unwrap();
 
     let child_op = crdt_a.local_insert_after(other_parent, child, None).unwrap();
@@ -484,9 +483,8 @@ fn defensive_delete_parent_then_modify_grandchild_restores_parent() {
     crdt_b.apply_remote(grandchild_op).unwrap();
 
     // Create another parent for moving the grandchild
-    let other_parent_op = crdt_a
-        .local_insert_after(NodeId::ROOT, other_parent, Some(parent))
-        .unwrap();
+    let other_parent_op =
+        crdt_a.local_insert_after(NodeId::ROOT, other_parent, Some(parent)).unwrap();
     crdt_b.apply_remote(other_parent_op).unwrap();
 
     let move_grandchild_op = crdt_b.local_move_after(grandchild, other_parent, None).unwrap();
@@ -548,9 +546,7 @@ fn delete_unrelated_ops_should_not_prevent_restoration_when_child_insert_was_uns
 
     let insert_child_op = crdt_b.local_insert_after(parent, child, None).unwrap();
 
-    let unrelated_op = crdt_b
-        .local_insert_after(NodeId::ROOT, unrelated, Some(parent))
-        .unwrap();
+    let unrelated_op = crdt_b.local_insert_after(NodeId::ROOT, unrelated, Some(parent)).unwrap();
     crdt_a.apply_remote(unrelated_op).unwrap();
 
     let delete_op = crdt_a.local_delete(parent).unwrap();

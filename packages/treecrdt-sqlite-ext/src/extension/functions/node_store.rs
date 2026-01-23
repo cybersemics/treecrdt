@@ -56,10 +56,9 @@ impl SqliteNodeStore {
                 .expect("select children sql");
         let all_nodes_sql =
             CString::new("SELECT node FROM tree_nodes").expect("select all nodes sql");
-        let clear_parent_order_key_sql = CString::new(
-            "UPDATE tree_nodes SET parent = NULL, order_key = NULL WHERE node = ?1",
-        )
-        .expect("clear parent order_key sql");
+        let clear_parent_order_key_sql =
+            CString::new("UPDATE tree_nodes SET parent = NULL, order_key = NULL WHERE node = ?1")
+                .expect("clear parent order_key sql");
         let set_parent_order_key_sql =
             CString::new("UPDATE tree_nodes SET parent = ?2, order_key = ?3 WHERE node = ?1")
                 .expect("set parent order_key sql");

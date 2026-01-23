@@ -23,9 +23,7 @@ use append::{treecrdt_append_op, treecrdt_append_ops};
 use doc_id::{treecrdt_doc_id, treecrdt_set_doc_id};
 use materialize::{append_ops_impl, ensure_materialized, treecrdt_ensure_materialized};
 use oprefs::{treecrdt_oprefs_all, treecrdt_oprefs_children};
-use ops::{
-    treecrdt_ops_by_oprefs, treecrdt_ops_since,
-};
+use ops::{treecrdt_ops_by_oprefs, treecrdt_ops_since};
 use schema::*;
 use sqlite_api::*;
 use tree::treecrdt_subtree_known_state;

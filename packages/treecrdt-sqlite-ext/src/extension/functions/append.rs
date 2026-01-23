@@ -251,7 +251,8 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
         if (op.kind == "insert" || op.kind == "move") && op.order_key.is_none() {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_append_ops: insert/move op missing order_key\0".as_ptr() as *const c_char,
+                b"treecrdt_append_ops: insert/move op missing order_key\0".as_ptr()
+                    as *const c_char,
             );
             return;
         }

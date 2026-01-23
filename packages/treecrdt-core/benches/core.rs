@@ -51,8 +51,7 @@ fn bench_move_siblings(c: &mut Criterion) {
             },
             |mut crdt| {
                 let first = NodeId(1);
-                crdt.local_move_after(first, NodeId::ROOT, Some(NodeId(1_000)))
-                    .unwrap();
+                crdt.local_move_after(first, NodeId::ROOT, Some(NodeId(1_000))).unwrap();
             },
             BatchSize::SmallInput,
         );

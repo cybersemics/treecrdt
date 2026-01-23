@@ -40,7 +40,15 @@ fn append_and_fetch_ops_via_extension() {
     let _: i64 = conn
         .query_row(
             "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
-            rusqlite::params![replica, 1i64, 1i64, "insert", parent, node, order_key.clone()],
+            rusqlite::params![
+                replica,
+                1i64,
+                1i64,
+                "insert",
+                parent,
+                node,
+                order_key.clone()
+            ],
             |row| row.get(0),
         )
         .unwrap();
@@ -49,7 +57,15 @@ fn append_and_fetch_ops_via_extension() {
     let _: i64 = conn
         .query_row(
             "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, NULL)",
-            rusqlite::params![b"r1".to_vec(), 2i64, 2i64, "move", node, parent, order_key.clone()],
+            rusqlite::params![
+                b"r1".to_vec(),
+                2i64,
+                2i64,
+                "move",
+                node,
+                parent,
+                order_key.clone()
+            ],
             |row| row.get(0),
         )
         .unwrap();

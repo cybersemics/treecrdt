@@ -3,11 +3,46 @@ use treecrdt_core::{LamportClock, MemoryStorage, NodeId, Operation, ReplicaId, T
 #[test]
 fn permutations_converge() {
     let ops = vec![
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, NodeId(1), Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, NodeId::ROOT, NodeId(2), Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 3, 3, NodeId::ROOT, NodeId(3), Vec::new()),
-        Operation::move_node(&ReplicaId::new(b"a"), 4, 4, NodeId(3), NodeId(1), Vec::new()),
-        Operation::move_node(&ReplicaId::new(b"a"), 5, 5, NodeId(3), NodeId(2), Vec::new()),
+        Operation::insert(
+            &ReplicaId::new(b"a"),
+            1,
+            1,
+            NodeId::ROOT,
+            NodeId(1),
+            Vec::new(),
+        ),
+        Operation::insert(
+            &ReplicaId::new(b"a"),
+            2,
+            2,
+            NodeId::ROOT,
+            NodeId(2),
+            Vec::new(),
+        ),
+        Operation::insert(
+            &ReplicaId::new(b"a"),
+            3,
+            3,
+            NodeId::ROOT,
+            NodeId(3),
+            Vec::new(),
+        ),
+        Operation::move_node(
+            &ReplicaId::new(b"a"),
+            4,
+            4,
+            NodeId(3),
+            NodeId(1),
+            Vec::new(),
+        ),
+        Operation::move_node(
+            &ReplicaId::new(b"a"),
+            5,
+            5,
+            NodeId(3),
+            NodeId(2),
+            Vec::new(),
+        ),
     ];
 
     // Generate all permutations using Heap's algorithm

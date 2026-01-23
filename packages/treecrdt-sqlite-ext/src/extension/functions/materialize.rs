@@ -350,13 +350,8 @@ pub(super) fn append_ops_impl(
                 if order_key.is_empty() {
                     // Distinguish empty key from NULL.
                     let empty: [u8; 0] = [];
-                    bind_err |= sqlite_bind_blob(
-                        stmt,
-                        8,
-                        empty.as_ptr() as *const c_void,
-                        0,
-                        None,
-                    ) != SQLITE_OK as c_int;
+                    bind_err |= sqlite_bind_blob(stmt, 8, empty.as_ptr() as *const c_void, 0, None)
+                        != SQLITE_OK as c_int;
                 } else {
                     bind_err |= sqlite_bind_blob(
                         stmt,

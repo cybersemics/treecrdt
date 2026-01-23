@@ -166,13 +166,8 @@ impl treecrdt_core::Storage for SqliteOpStorage {
             if let Some(ref ok) = order_key {
                 if ok.is_empty() {
                     let empty: [u8; 0] = [];
-                    bind_err |= sqlite_bind_blob(
-                        stmt,
-                        8,
-                        empty.as_ptr() as *const c_void,
-                        0,
-                        None,
-                    ) != SQLITE_OK as c_int;
+                    bind_err |= sqlite_bind_blob(stmt, 8, empty.as_ptr() as *const c_void, 0, None)
+                        != SQLITE_OK as c_int;
                 } else {
                     bind_err |= sqlite_bind_blob(
                         stmt,
@@ -283,8 +278,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                     .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
                 let new_parent = unsafe { column_blob16(stmt, 6) }
                     .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
-                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int
-                {
+                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int {
                     Vec::new()
                 } else {
                     let ptr = unsafe { sqlite_column_blob(stmt, 7) } as *const u8;
@@ -436,8 +430,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                     .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
                 let new_parent = unsafe { column_blob16(stmt, 6) }
                     .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
-                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int
-                {
+                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int {
                     Vec::new()
                 } else {
                     let ptr = unsafe { sqlite_column_blob(stmt, 7) } as *const u8;

@@ -83,7 +83,7 @@ fn prevents_cycle_on_move() {
         b,
         Vec::new(),
     ))
-        .unwrap();
+    .unwrap();
     assert_eq!(crdt.parent(a).unwrap(), Some(root));
 }
 

@@ -71,15 +71,7 @@ impl Operation {
         node: NodeId,
         order_key: impl Into<Vec<u8>>,
     ) -> Self {
-        Self::insert_with_optional_payload(
-            replica,
-            counter,
-            lamport,
-            parent,
-            node,
-            order_key,
-            None,
-        )
+        Self::insert_with_optional_payload(replica, counter, lamport, parent, node, order_key, None)
     }
 
     pub fn insert_with_payload(
