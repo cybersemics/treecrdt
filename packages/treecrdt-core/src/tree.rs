@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
@@ -344,15 +344,54 @@ where
     }
 
     pub fn refresh_all_tombstones(&mut self) -> Result<()> {
-        for node in self.nodes.all_nodes()? {
+        fn subtree_vv<N: NodeStore>(
+            nodes: &N,
+            node: NodeId,
+            cache: &mut HashMap<NodeId, VersionVector>,
+            visiting: &mut HashSet<NodeId>,
+        ) -> Result<VersionVector> {
+            if let Some(vv) = cache.get(&node) {
+                return Ok(vv.clone());
+            }
+            if !visiting.insert(node) {
+                return Err(Error::InconsistentState(
+                    "cycle detected while computing subtree version vector".into(),
+                ));
+            }
+
+            let mut vv = nodes.last_change(node)?;
+            for child in nodes.children(node)? {
+                let child_vv = subtree_vv(nodes, child, cache, visiting)?;
+                vv.merge(&child_vv);
+            }
+
+            visiting.remove(&node);
+            cache.insert(node, vv.clone());
+            Ok(vv)
+        }
+
+        let nodes = self.nodes.all_nodes()?;
+        let nodes_ro = &self.nodes;
+
+        let mut cache: HashMap<NodeId, VersionVector> = HashMap::new();
+        let mut visiting: HashSet<NodeId> = HashSet::new();
+        let mut updates: Vec<(NodeId, bool)> = Vec::new();
+
+        for node in nodes {
             if node == NodeId::ROOT || node == NodeId::TRASH {
                 continue;
             }
-            if self.nodes.has_deleted_at(node)? {
-                let tombstoned = self.is_tombstoned(node)?;
-                self.nodes.set_tombstone(node, tombstoned)?;
-            }
+            let Some(deleted_vv) = nodes_ro.deleted_at(node)? else {
+                continue;
+            };
+            let subtree = subtree_vv(nodes_ro, node, &mut cache, &mut visiting)?;
+            updates.push((node, deleted_vv.is_aware_of(&subtree)));
         }
+
+        for (node, tombstoned) in updates {
+            self.nodes.set_tombstone(node, tombstoned)?;
+        }
+
         Ok(())
     }
 
