@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
-use crate::ids::{Lamport, NodeId};
+use crate::ids::{Lamport, NodeId, OperationId};
 use crate::ops::Operation;
 use crate::version_vector::VersionVector;
 
@@ -50,13 +50,84 @@ pub trait NodeStore {
     fn detach(&mut self, node: NodeId) -> Result<()>;
     fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()>;
 
+    /// Cached tombstone flag for fast queries (derived from `deleted_at` and subtree awareness).
+    ///
+    /// Adapters should treat this as derived state: core helpers can refresh it, and callers may
+    /// rely on it for efficient `children()` queries without recomputing awareness recursively.
+    fn tombstone(&self, node: NodeId) -> Result<bool>;
+    fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()>;
+
     fn last_change(&self, node: NodeId) -> Result<VersionVector>;
     fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
 
     fn deleted_at(&self, node: NodeId) -> Result<Option<VersionVector>>;
     fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
 
+    fn has_deleted_at(&self, node: NodeId) -> Result<bool> {
+        Ok(self.deleted_at(node)?.is_some())
+    }
+
+    fn parent_and_has_deleted_at(&self, node: NodeId) -> Result<Option<(Option<NodeId>, bool)>> {
+        if !self.exists(node)? {
+            return Ok(None);
+        }
+        Ok(Some((self.parent(node)?, self.has_deleted_at(node)?)))
+    }
+
+    fn subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
+        if !self.exists(node)? {
+            return Ok(VersionVector::new());
+        }
+
+        let mut subtree_vv = self.last_change(node)?;
+        for child_id in self.children(node)? {
+            let child_vv = self.subtree_version_vector(child_id)?;
+            subtree_vv.merge(&child_vv);
+        }
+
+        Ok(subtree_vv)
+    }
+
     fn all_nodes(&self) -> Result<Vec<NodeId>>;
+}
+
+/// Storage for last-writer-wins node payloads.
+///
+/// Payloads are application-defined opaque bytes. Merge semantics are last-writer-wins per node,
+/// ordered by `(lamport, replica, counter)`. This trait allows embedders (SQLite, wasm, etc) to
+/// persist payload state without re-implementing CRDT ordering rules.
+pub trait PayloadStore {
+    fn reset(&mut self) -> Result<()>;
+    fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>>;
+    fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>>;
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> Result<()>;
+}
+
+/// Persistent index of operations relevant to a `children(parent)` filter.
+///
+/// This is used by adapters (e.g. SQLite) to support partial sync without re-implementing which
+/// parents are affected by each operation or the "payload visibility" backfill rule.
+pub trait ParentOpIndex {
+    fn reset(&mut self) -> Result<()>;
+    fn record(&mut self, parent: NodeId, op_id: &OperationId, seq: u64) -> Result<()>;
+}
+
+#[derive(Default)]
+pub struct NoopParentOpIndex;
+
+impl ParentOpIndex for NoopParentOpIndex {
+    fn reset(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn record(&mut self, _parent: NodeId, _op_id: &OperationId, _seq: u64) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Lightweight snapshot to expose to storage adapters.
@@ -146,10 +217,49 @@ impl IndexProvider for MemoryStorage {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MemoryPayloadStore {
+    entries: HashMap<NodeId, MemoryPayloadEntry>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MemoryPayloadEntry {
+    payload: Option<Vec<u8>>,
+    last_writer: Option<(Lamport, OperationId)>,
+}
+
+impl PayloadStore for MemoryPayloadStore {
+    fn reset(&mut self) -> Result<()> {
+        self.entries.clear();
+        Ok(())
+    }
+
+    fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
+        Ok(self.entries.get(&node).and_then(|e| e.payload.clone()))
+    }
+
+    fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>> {
+        Ok(self.entries.get(&node).and_then(|e| e.last_writer.clone()))
+    }
+
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> Result<()> {
+        let entry = self.entries.entry(node).or_default();
+        entry.payload = payload;
+        entry.last_writer = Some(writer);
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct MemoryNodeState {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
+    tombstone: bool,
     last_change: VersionVector,
     deleted_at: Option<VersionVector>,
 }
@@ -159,6 +269,7 @@ impl MemoryNodeState {
         Self {
             parent: None,
             children: Vec::new(),
+            tombstone: false,
             last_change: VersionVector::new(),
             deleted_at: None,
         }
@@ -168,6 +279,7 @@ impl MemoryNodeState {
         Self {
             parent: None,
             children: Vec::new(),
+            tombstone: false,
             last_change: VersionVector::new(),
             deleted_at: None,
         }
@@ -259,6 +371,15 @@ impl NodeStore for MemoryNodeStore {
         let parent_state = self.get_state_mut(parent)?;
         let idx = position.min(parent_state.children.len());
         parent_state.children.insert(idx, node);
+        Ok(())
+    }
+
+    fn tombstone(&self, node: NodeId) -> Result<bool> {
+        Ok(self.get_state(node)?.tombstone)
+    }
+
+    fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()> {
+        self.get_state_mut(node)?.tombstone = tombstone;
         Ok(())
     }
 

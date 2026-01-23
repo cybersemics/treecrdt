@@ -231,7 +231,9 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
 CREATE TABLE IF NOT EXISTS tree_payload (
   node BLOB PRIMARY KEY,
   payload BLOB,
-  op_ref BLOB NOT NULL
+  last_lamport INTEGER NOT NULL,
+  last_replica BLOB NOT NULL,
+  last_counter INTEGER NOT NULL
 );
 "#;
 
