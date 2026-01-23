@@ -2,7 +2,9 @@ import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from "./adapt
 import {
   decodeNodeId,
   decodeReplicaId,
+  hexToBytes,
   nodeIdToBytes16,
+  ROOT_NODE_ID_HEX,
 } from "./ids.js";
 import type { Operation, OperationKind } from "./index.js";
 
@@ -47,6 +49,8 @@ async function sqliteGetNumber(
   if (!Number.isFinite(value)) throw new Error(`expected numeric result for query: ${sql}`);
   return value;
 }
+
+const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
 
 function buildAppendOp(
   kind: OperationKind,
@@ -300,6 +304,10 @@ async function treecrdtDocId(runner: SqliteRunner): Promise<string | null> {
   return runner.getText("SELECT treecrdt_doc_id()");
 }
 
+async function treecrdtEnsureMaterialized(runner: SqliteRunner): Promise<void> {
+  await runner.getText("SELECT treecrdt_ensure_materialized()");
+}
+
 /**
  * Fetch all stored opRefs (16-byte values) from the extension.
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
@@ -327,10 +335,22 @@ async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): 
 
 /**
  * Fetch materialized children for a parent node (16-byte id).
- * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
+ *
+ * Implemented as direct SQL over `tree_nodes` (not a SQLite extension UDF), returning a JSON
+ * array of canonical node id hex strings (32 chars).
  */
 async function treecrdtTreeChildren(runner: SqliteRunner, parent: Uint8Array): Promise<unknown[]> {
-  return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_tree_children(?1)", [parent]);
+  await treecrdtEnsureMaterialized(runner);
+  return sqliteGetJsonOrEmpty(
+    runner,
+    "SELECT COALESCE(json_group_array(node_hex), '[]') FROM (\
+     SELECT lower(hex(node)) AS node_hex \
+     FROM tree_nodes \
+     WHERE parent = ?1 AND tombstone = 0 \
+     ORDER BY order_key, node\
+     )",
+    [parent]
+  );
 }
 
 /**
@@ -344,14 +364,26 @@ async function treecrdtTreeChildrenPage(
   cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
   limit: number
 ): Promise<unknown[]> {
+  await treecrdtEnsureMaterialized(runner);
   const afterOrderKey = cursor?.orderKey ?? null;
   const afterNode = cursor?.node ?? null;
-  return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_tree_children_page(?1, ?2, ?3, ?4)", [
-    parent,
-    afterOrderKey,
-    afterNode,
-    limit,
-  ]);
+  return sqliteGetJsonOrEmpty(
+    runner,
+    "SELECT COALESCE(json_group_array(json_object('node', node_hex, 'order_key', order_key_hex)), '[]') \
+     FROM (\
+       SELECT \
+         lower(hex(node)) AS node_hex, \
+         CASE WHEN order_key IS NULL THEN NULL ELSE lower(hex(order_key)) END AS order_key_hex, \
+         order_key, \
+         node \
+       FROM tree_nodes \
+       WHERE parent = ?1 AND tombstone = 0 \
+         AND (?2 IS NULL OR (order_key > ?2 OR (order_key = ?2 AND node > ?3))) \
+       ORDER BY order_key, node \
+       LIMIT ?4\
+     )",
+    [parent, afterOrderKey, afterNode, limit]
+  );
 }
 
 /**
@@ -359,28 +391,46 @@ async function treecrdtTreeChildrenPage(
  * Returns raw JSON-decoded rows (array of objects with byte fields).
  */
 async function treecrdtTreeDump(runner: SqliteRunner): Promise<unknown[]> {
-  return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_tree_dump()");
+  await treecrdtEnsureMaterialized(runner);
+  return sqliteGetJsonOrEmpty(
+    runner,
+    "SELECT COALESCE(json_group_array(json_object('node', node_hex, 'parent', parent_hex, 'order_key', order_key_hex, 'tombstone', tombstone)), '[]') \
+     FROM (\
+       SELECT \
+         lower(hex(node)) AS node_hex, \
+         CASE WHEN parent IS NULL THEN NULL ELSE lower(hex(parent)) END AS parent_hex, \
+         CASE WHEN order_key IS NULL THEN NULL ELSE lower(hex(order_key)) END AS order_key_hex, \
+         tombstone \
+       FROM tree_nodes \
+       ORDER BY node\
+     )"
+  );
 }
 
 /**
  * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
  */
 async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
-  return sqliteGetNumber(runner, "SELECT treecrdt_tree_node_count()");
+  await treecrdtEnsureMaterialized(runner);
+  return sqliteGetNumber(
+    runner,
+    "SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node <> ?1",
+    [ROOT_NODE_BYTES]
+  );
 }
 
 /**
  * Fetch the maximum lamport seen in the op log.
  */
 async function treecrdtHeadLamport(runner: SqliteRunner): Promise<number> {
-  return sqliteGetNumber(runner, "SELECT treecrdt_head_lamport()");
+  return sqliteGetNumber(runner, "SELECT COALESCE(MAX(lamport), 0) FROM ops");
 }
 
 /**
  * Fetch the maximum counter observed for a replica id.
  */
 async function treecrdtReplicaMaxCounter(runner: SqliteRunner, replica: Uint8Array): Promise<number> {
-  return sqliteGetNumber(runner, "SELECT treecrdt_replica_max_counter(?1)", [replica]);
+  return sqliteGetNumber(runner, "SELECT COALESCE(MAX(counter), 0) FROM ops WHERE replica = ?1", [replica]);
 }
 
 // ---- Decoders for extension JSON payloads ----
@@ -408,6 +458,8 @@ export function decodeSqliteTreeChildRows(raw: unknown): SqliteTreeChildRow[] {
     const orderKey =
       rawOrderKey === null || rawOrderKey === undefined
         ? null
+        : typeof rawOrderKey === "string"
+          ? hexToBytes(rawOrderKey)
         : rawOrderKey instanceof Uint8Array
           ? rawOrderKey
           : Uint8Array.from(rawOrderKey as any);
@@ -431,6 +483,8 @@ export function decodeSqliteTreeRows(raw: unknown): SqliteTreeRow[] {
     const orderKey =
       rawOrderKey === null || rawOrderKey === undefined
         ? null
+        : typeof rawOrderKey === "string"
+          ? hexToBytes(rawOrderKey)
         : rawOrderKey instanceof Uint8Array
           ? rawOrderKey
           : Uint8Array.from(rawOrderKey as any);

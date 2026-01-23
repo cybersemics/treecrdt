@@ -150,6 +150,26 @@ pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     rebuild_materialized(db)
 }
 
+pub(super) unsafe extern "C" fn treecrdt_ensure_materialized(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    _argv: *mut *mut sqlite3_value,
+) {
+    if argc != 0 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_ensure_materialized expects 0 args\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
+    let db = sqlite_context_db_handle(ctx);
+    match ensure_materialized(db) {
+        Ok(()) => sqlite_result_int(ctx, 1),
+        Err(rc) => sqlite_result_error_code(ctx, rc),
+    }
+}
+
 fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     let begin = CString::new("SAVEPOINT treecrdt_materialize").expect("static");
     let commit = CString::new("RELEASE treecrdt_materialize").expect("static");
