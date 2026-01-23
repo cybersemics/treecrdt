@@ -7,7 +7,7 @@ const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
 fn decode_digits(bytes: &[u8]) -> Result<Vec<u16>> {
-    if bytes.len() % DIGIT_BYTES != 0 {
+    if !bytes.len().is_multiple_of(DIGIT_BYTES) {
         return Err(Error::InvalidOperation(
             "order_key must have even length (u16 big-endian digits)".into(),
         ));
