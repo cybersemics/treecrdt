@@ -154,7 +154,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_by_oprefs(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
          FROM ops \
          WHERE op_ref = ?1",
     )
@@ -237,7 +237,7 @@ struct JsonOp {
     parent: Option<[u8; 16]>,
     node: [u8; 16],
     new_parent: Option<[u8; 16]>,
-    position: Option<u64>,
+    order_key: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
 }
@@ -261,7 +261,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_since(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
          FROM ops \
          WHERE lamport > ?1 \
          AND (?2 IS NULL OR parent = ?2 OR node = ?2 OR new_parent = ?2) \
@@ -343,7 +343,17 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             None => return Err(SQLITE_ERROR as c_int),
         };
         let new_parent = column_blob16(stmt, 6)?;
-        let position = column_int_opt(stmt, 7);
+        let order_key = if sqlite_column_type(stmt, 7) == SQLITE_NULL as c_int {
+            None
+        } else {
+            let ptr = sqlite_column_blob(stmt, 7) as *const u8;
+            let len = sqlite_column_bytes(stmt, 7) as usize;
+            if ptr.is_null() {
+                None
+            } else {
+                Some(slice::from_raw_parts(ptr, len).to_vec())
+            }
+        };
         let known_state = if sqlite_column_type(stmt, 8) == SQLITE_NULL as c_int {
             None
         } else {
@@ -375,7 +385,7 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             parent,
             node,
             new_parent,
-            position,
+            order_key,
             known_state,
             payload,
         })

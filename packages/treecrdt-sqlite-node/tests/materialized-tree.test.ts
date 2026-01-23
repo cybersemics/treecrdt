@@ -22,6 +22,15 @@ function makeNodeId(lastByte: number): Buffer {
   return b;
 }
 
+function orderKeyFromPosition(position: number): Buffer {
+  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
+  const n = position + 1;
+  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
+  const b = Buffer.alloc(2);
+  b.writeUInt16BE(n, 0);
+  return b;
+}
+
 function parseJsonBytes16List(json: string): Buffer[] {
   const decoded = JSON.parse(json) as number[][];
   return decoded.map((bytes) => Buffer.from(bytes));
@@ -41,9 +50,33 @@ test("materialized tree: dump/children/meta + oprefs_children", async () => {
   const n1 = makeNodeId(1);
   const n2 = makeNodeId(2);
 
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 2, 2, "insert", root, n2);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)").get(replica, 3, 3, "move", n2, n1, 0);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+    replica,
+    1,
+    1,
+    "insert",
+    root,
+    n1,
+    orderKeyFromPosition(0)
+  );
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+    replica,
+    2,
+    2,
+    "insert",
+    root,
+    n2,
+    orderKeyFromPosition(0)
+  );
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)").get(
+    replica,
+    3,
+    3,
+    "move",
+    n2,
+    n1,
+    orderKeyFromPosition(0)
+  );
 
   const headLamportRow: any = db.prepare("SELECT treecrdt_head_lamport() AS v").get();
   expect(headLamportRow.v).toBe(3);
@@ -66,7 +99,7 @@ test("materialized tree: dump/children/meta + oprefs_children", async () => {
   const dump = JSON.parse(dumpRow.v) as Array<{
     node: number[];
     parent: number[] | null;
-    pos: number | null;
+    order_key: number[] | null;
     tombstone: boolean;
   }>;
   const byId = new Map(dump.map((row) => [Buffer.from(row.node).toString("hex"), row]));
@@ -105,7 +138,15 @@ test("materialized tree: persists across reopen", async () => {
       const db = new Database(path);
       loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
       db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
-      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
+      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+        replica,
+        1,
+        1,
+        "insert",
+        root,
+        n1,
+        orderKeyFromPosition(0)
+      );
       const row: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
       expect(parseJsonBytes16List(row.v).map((b) => b.toString("hex"))).toEqual([n1.toString("hex")]);
       const countRow: any = db.prepare("SELECT treecrdt_tree_node_count() AS v").get();
@@ -142,8 +183,24 @@ test("materialized tree: out-of-order ops rebuild correctly", async () => {
   const n1 = makeNodeId(1);
   const n2 = makeNodeId(2);
 
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 2, "insert", root, n1);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 2, 1, "insert", root, n2);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+    replica,
+    1,
+    2,
+    "insert",
+    root,
+    n1,
+    orderKeyFromPosition(0)
+  );
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+    replica,
+    2,
+    1,
+    "insert",
+    root,
+    n2,
+    orderKeyFromPosition(0)
+  );
 
   const row: any = db.prepare("SELECT treecrdt_tree_children(?) AS v").get(root);
   const children = parseJsonBytes16List(row.v).map((b) => b.toString("hex"));
@@ -171,9 +228,33 @@ test("materialized tree: reindexes latest payload across moves for children(pare
   const p2 = makeNodeId(2);
   const child = makeNodeId(3);
 
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, p1);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 2, 2, "insert", root, p2);
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 3, 3, "insert", p1, child);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+    replica,
+    1,
+    1,
+    "insert",
+    root,
+    p1,
+    orderKeyFromPosition(0)
+  );
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+    replica,
+    2,
+    2,
+    "insert",
+    root,
+    p2,
+    orderKeyFromPosition(0)
+  );
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+    replica,
+    3,
+    3,
+    "insert",
+    p1,
+    child,
+    orderKeyFromPosition(0)
+  );
   db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(
     replica,
     4,
@@ -182,7 +263,15 @@ test("materialized tree: reindexes latest payload across moves for children(pare
     child,
     Buffer.from("hi"),
   );
-  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)").get(replica, 5, 5, "move", child, p2, 0);
+  db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)").get(
+    replica,
+    5,
+    5,
+    "move",
+    child,
+    p2,
+    orderKeyFromPosition(0)
+  );
 
   const refsRow: any = db.prepare("SELECT treecrdt_oprefs_children(?) AS v").get(p2);
   const refs = JSON.parse(refsRow.v) as number[][];
@@ -213,7 +302,15 @@ test("materialized tree: payload persists across reopen", async () => {
       const db = new Database(path);
       loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
       db.prepare("SELECT treecrdt_set_doc_id(?)").get(docId);
-      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").get(replica, 1, 1, "insert", root, n1);
+      db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)").get(
+        replica,
+        1,
+        1,
+        "insert",
+        root,
+        n1,
+        orderKeyFromPosition(0)
+      );
       db.prepare("SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, NULL, NULL, ?)").get(
         replica,
         2,

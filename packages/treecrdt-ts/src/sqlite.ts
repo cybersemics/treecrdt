@@ -75,7 +75,7 @@ function buildAppendOp(
             "insert",
             opts.serializeNodeId(kind.parent),
             opts.serializeNodeId(kind.node),
-            kind.position,
+            kind.orderKey,
             kind.payload,
           ],
         };
@@ -87,7 +87,7 @@ function buildAppendOp(
           "insert",
           opts.serializeNodeId(kind.parent),
           opts.serializeNodeId(kind.node),
-          kind.position,
+          kind.orderKey,
         ],
       };
     case "move":
@@ -98,7 +98,7 @@ function buildAppendOp(
           "move",
           opts.serializeNodeId(kind.node),
           opts.serializeNodeId(kind.newParent),
-          kind.position,
+          kind.orderKey,
         ],
       };
     case "delete":
@@ -151,7 +151,7 @@ function buildAppendOpsPayload(
       counter,
       lamport,
       kind: kind.type,
-      position: "position" in kind ? kind.position ?? null : null,
+      order_key: "orderKey" in kind ? Array.from(kind.orderKey) : null,
       ...(knownState && knownState.length > 0 ? { known_state: Array.from(knownState) } : {}),
     };
     if (kind.type === "insert") {
@@ -273,6 +273,8 @@ export function createTreecrdtSqliteAdapter(
     opRefsChildren: (parent) => treecrdtOpRefsChildren(runner, parent),
     opsByOpRefs: (opRefs) => treecrdtOpsByOpRefs(runner, opRefs),
     treeChildren: (parent) => treecrdtTreeChildren(runner, parent),
+    treeChildrenPage: (parent, cursor, limit) =>
+      treecrdtTreeChildrenPage(runner, parent, cursor, limit),
     treeDump: () => treecrdtTreeDump(runner),
     treeNodeCount: () => treecrdtTreeNodeCount(runner),
     headLamport: () => treecrdtHeadLamport(runner),
@@ -332,6 +334,27 @@ async function treecrdtTreeChildren(runner: SqliteRunner, parent: Uint8Array): P
 }
 
 /**
+ * Fetch a page of materialized children for `parent`, including ordering keys.
+ *
+ * Use `(order_key, node)` as a keyset pagination cursor.
+ */
+async function treecrdtTreeChildrenPage(
+  runner: SqliteRunner,
+  parent: Uint8Array,
+  cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
+  limit: number
+): Promise<unknown[]> {
+  const afterOrderKey = cursor?.orderKey ?? null;
+  const afterNode = cursor?.node ?? null;
+  return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_tree_children_page(?1, ?2, ?3, ?4)", [
+    parent,
+    afterOrderKey,
+    afterNode,
+    limit,
+  ]);
+}
+
+/**
  * Dump the full materialized tree state.
  * Returns raw JSON-decoded rows (array of objects with byte fields).
  */
@@ -372,10 +395,30 @@ export function decodeSqliteNodeIds(raw: unknown): string[] {
   return raw.map((val) => decodeNodeId(val instanceof Uint8Array ? val : (val as any)));
 }
 
+export type SqliteTreeChildRow = {
+  node: string;
+  orderKey: Uint8Array | null;
+};
+
+export function decodeSqliteTreeChildRows(raw: unknown): SqliteTreeChildRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((row: any) => {
+    const node = decodeNodeId(row.node);
+    const rawOrderKey = row.order_key;
+    const orderKey =
+      rawOrderKey === null || rawOrderKey === undefined
+        ? null
+        : rawOrderKey instanceof Uint8Array
+          ? rawOrderKey
+          : Uint8Array.from(rawOrderKey as any);
+    return { node, orderKey };
+  });
+}
+
 export type SqliteTreeRow = {
   node: string;
   parent: string | null;
-  pos: number | null;
+  orderKey: Uint8Array | null;
   tombstone: boolean;
 };
 
@@ -384,9 +427,15 @@ export function decodeSqliteTreeRows(raw: unknown): SqliteTreeRow[] {
   return raw.map((row: any) => {
     const node = decodeNodeId(row.node);
     const parent = row.parent ? decodeNodeId(row.parent) : null;
-    const pos = row.pos === null || row.pos === undefined ? null : Number(row.pos);
+    const rawOrderKey = row.order_key;
+    const orderKey =
+      rawOrderKey === null || rawOrderKey === undefined
+        ? null
+        : rawOrderKey instanceof Uint8Array
+          ? rawOrderKey
+          : Uint8Array.from(rawOrderKey as any);
     const tombstone = Boolean(row.tombstone);
-    return { node, parent, pos, tombstone };
+    return { node, parent, orderKey, tombstone };
   });
 }
 
@@ -407,25 +456,35 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
           : rawPayload instanceof Uint8Array
             ? rawPayload
             : Uint8Array.from(rawPayload as any);
+      const rawOrderKey = row.order_key;
+      if (rawOrderKey === null || rawOrderKey === undefined) {
+        throw new Error("missing order_key for insert op from sqlite");
+      }
+      const orderKey = rawOrderKey instanceof Uint8Array ? rawOrderKey : Uint8Array.from(rawOrderKey as any);
       return {
         ...base,
         kind: {
           type: "insert",
           parent: decodeNodeId(row.parent),
           node: decodeNodeId(row.node),
-          position: row.position === null || row.position === undefined ? 0 : Number(row.position),
+          orderKey,
           ...(payload !== undefined ? { payload } : {}),
         },
       } as Operation;
     }
     if (row.kind === "move") {
+      const rawOrderKey = row.order_key;
+      if (rawOrderKey === null || rawOrderKey === undefined) {
+        throw new Error("missing order_key for move op from sqlite");
+      }
+      const orderKey = rawOrderKey instanceof Uint8Array ? rawOrderKey : Uint8Array.from(rawOrderKey as any);
       return {
         ...base,
         kind: {
           type: "move",
           node: decodeNodeId(row.node),
           newParent: decodeNodeId(row.new_parent),
-          position: row.position === null || row.position === undefined ? 0 : Number(row.position),
+          orderKey,
         },
       } as Operation;
     }

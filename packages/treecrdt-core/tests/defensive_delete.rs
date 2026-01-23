@@ -16,12 +16,12 @@ fn defensive_delete_parent_then_insert_child_restores_parent() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     // Client B inserts child first, then Client A deletes without awareness
     // Defensive delete: parent should be restored because delete was unaware of modifications
-    let insert_child_op = crdt_b.local_insert(parent, child, 0).unwrap();
+    let insert_child_op = crdt_b.local_insert_after(parent, child, None).unwrap();
     assert_eq!(crdt_b.parent(child).unwrap(), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
@@ -66,18 +66,20 @@ fn defensive_delete_parent_then_move_child_restores_parent() {
     let child = NodeId(2);
     let other_parent = NodeId(3);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let other_parent_op = crdt_a.local_insert(NodeId::ROOT, other_parent, 1).unwrap();
+    let other_parent_op = crdt_a
+        .local_insert_after(NodeId::ROOT, other_parent, Some(parent))
+        .unwrap();
     crdt_b.apply_remote(other_parent_op).unwrap();
 
-    let child_op = crdt_a.local_insert(other_parent, child, 0).unwrap();
+    let child_op = crdt_a.local_insert_after(other_parent, child, None).unwrap();
     crdt_b.apply_remote(child_op).unwrap();
 
     // Client B moves child first, then Client A deletes without awareness
     // Defensive delete: parent should be restored because delete was unaware of modifications
-    let move_op = crdt_b.local_move(child, parent, 0).unwrap();
+    let move_op = crdt_b.local_move_after(child, parent, None).unwrap();
     assert_eq!(crdt_b.parent(child).unwrap(), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
@@ -124,14 +126,14 @@ fn defensive_delete_parent_then_multiple_children_restores_parent() {
     let child1 = NodeId(2);
     let child2 = NodeId(3);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let insert_child1_op = crdt_b.local_insert(parent, child1, 0).unwrap();
+    let insert_child1_op = crdt_b.local_insert_after(parent, child1, None).unwrap();
 
     // Client B inserts children first, then Client A deletes without awareness
     // Defensive delete: parent should be restored because delete was unaware of modifications
-    let insert_child2_op = crdt_b.local_insert(parent, child2, 1).unwrap();
+    let insert_child2_op = crdt_b.local_insert_after(parent, child2, Some(child1)).unwrap();
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
     assert_eq!(crdt_b.children(parent).unwrap(), &[child1, child2]);
 
@@ -178,11 +180,11 @@ fn defensive_delete_insert_then_delete_no_restoration() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     // Client B inserts child first
-    let child_op = crdt_b.local_insert(parent, child, 0).unwrap();
+    let child_op = crdt_b.local_insert_after(parent, child, None).unwrap();
     assert_eq!(crdt_b.parent(child).unwrap(), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
@@ -223,7 +225,7 @@ fn defensive_delete_parent_then_payload_change_restores_parent() {
 
     let parent = NodeId(1);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     // Client B sets payload first, then Client A deletes without awareness.
@@ -267,7 +269,7 @@ fn defensive_delete_parent_then_payload_change_no_restoration_when_aware() {
 
     let parent = NodeId(1);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     let set_payload_op = crdt_b.local_set_payload(parent, b"hello".to_vec()).unwrap();
@@ -306,11 +308,11 @@ fn defensive_delete_later_delete_unaware_restores_parent() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     // Client B inserts child first
-    let insert_child_op = crdt_b.local_insert(parent, child, 0).unwrap();
+    let insert_child_op = crdt_b.local_insert_after(parent, child, None).unwrap();
     assert_eq!(crdt_b.parent(child).unwrap(), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
@@ -358,12 +360,12 @@ fn defensive_delete_insert_delete_sequence() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     // Client B inserts child first, then Client A deletes without awareness
     // Defensive delete: parent should be restored because delete was unaware of modifications
-    let insert_child_op = crdt_b.local_insert(parent, child, 0).unwrap();
+    let insert_child_op = crdt_b.local_insert_after(parent, child, None).unwrap();
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
     // Client A deletes without having seen the insert
@@ -406,13 +408,13 @@ fn defensive_delete_multiple_deletes_then_insert_restores_parent() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op.clone()).unwrap();
     crdt_c.apply_remote(parent_op).unwrap();
 
     // Client C inserts child first, then Clients A and B delete concurrently without awareness
     // Defensive delete: parent should be restored because deletes were unaware of modifications
-    let insert_child_op = crdt_c.local_insert(parent, child, 0).unwrap();
+    let insert_child_op = crdt_c.local_insert_after(parent, child, None).unwrap();
     assert!(!crdt_c.is_tombstoned(parent).unwrap());
     assert_eq!(crdt_c.children(parent).unwrap(), &[child]);
 
@@ -472,20 +474,22 @@ fn defensive_delete_parent_then_modify_grandchild_restores_parent() {
     let other_parent = NodeId(4);
 
     // Setup: root -> parent -> child -> grandchild
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let child_op = crdt_a.local_insert(parent, child, 0).unwrap();
+    let child_op = crdt_a.local_insert_after(parent, child, None).unwrap();
     crdt_b.apply_remote(child_op).unwrap();
 
-    let grandchild_op = crdt_a.local_insert(child, grandchild, 0).unwrap();
+    let grandchild_op = crdt_a.local_insert_after(child, grandchild, None).unwrap();
     crdt_b.apply_remote(grandchild_op).unwrap();
 
     // Create another parent for moving the grandchild
-    let other_parent_op = crdt_a.local_insert(NodeId::ROOT, other_parent, 1).unwrap();
+    let other_parent_op = crdt_a
+        .local_insert_after(NodeId::ROOT, other_parent, Some(parent))
+        .unwrap();
     crdt_b.apply_remote(other_parent_op).unwrap();
 
-    let move_grandchild_op = crdt_b.local_move(grandchild, other_parent, 0).unwrap();
+    let move_grandchild_op = crdt_b.local_move_after(grandchild, other_parent, None).unwrap();
     assert_eq!(crdt_b.parent(grandchild).unwrap(), Some(other_parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
     assert_eq!(crdt_b.children(parent).unwrap(), &[child]);
@@ -539,12 +543,14 @@ fn delete_unrelated_ops_should_not_prevent_restoration_when_child_insert_was_uns
     let child = NodeId(2);
     let unrelated = NodeId(99);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let insert_child_op = crdt_b.local_insert(parent, child, 0).unwrap();
+    let insert_child_op = crdt_b.local_insert_after(parent, child, None).unwrap();
 
-    let unrelated_op = crdt_b.local_insert(NodeId::ROOT, unrelated, 1).unwrap();
+    let unrelated_op = crdt_b
+        .local_insert_after(NodeId::ROOT, unrelated, Some(parent))
+        .unwrap();
     crdt_a.apply_remote(unrelated_op).unwrap();
 
     let delete_op = crdt_a.local_delete(parent).unwrap();
@@ -579,11 +585,11 @@ fn delete_should_restore_when_earlier_child_op_from_same_replica_was_missing() {
     let child1 = NodeId(2);
     let child2 = NodeId(3);
 
-    let parent_op = crdt_a.local_insert(NodeId::ROOT, parent, 0).unwrap();
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let insert_child1_op = crdt_b.local_insert(parent, child1, 0).unwrap();
-    let insert_child2_op = crdt_b.local_insert(parent, child2, 1).unwrap();
+    let insert_child1_op = crdt_b.local_insert_after(parent, child1, None).unwrap();
+    let insert_child2_op = crdt_b.local_insert_after(parent, child2, Some(child1)).unwrap();
 
     crdt_a.apply_remote(insert_child2_op).unwrap();
 

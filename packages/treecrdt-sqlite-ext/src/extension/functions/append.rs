@@ -1,7 +1,7 @@
 use super::*;
 
 /// Append an operation row to the `ops` table. Args:
-/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, position INT|null, known_state_or_payload BLOB|null
+/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, order_key BLOB|null, known_state_or_payload BLOB|null
 pub(super) unsafe extern "C" fn treecrdt_append_op(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -96,18 +96,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         }
     };
     let new_parent = read_opt_blob(args[6]);
-    let position = unsafe {
-        if sqlite_value_type(args[7]) == SQLITE_NULL as c_int {
-            None
-        } else {
-            let v = sqlite_value_int64(args[7]);
-            if v < 0 {
-                None
-            } else {
-                Some(v as u64)
-            }
-        }
-    };
+    let order_key = read_opt_blob(args[7]);
     let known_state_or_payload = read_opt_blob(args[8]);
 
     let (known_state, payload) = match kind.as_str() {
@@ -138,6 +127,14 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         }
     }
 
+    if (kind == "insert" || kind == "move") && order_key.is_none() {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_append_op: insert/move op missing order_key\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
     let op = JsonAppendOp {
         replica,
         counter,
@@ -146,7 +143,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         parent,
         node,
         new_parent,
-        position,
+        order_key,
         known_state,
         payload,
     };
@@ -158,6 +155,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct JsonAppendOp {
     pub(super) replica: Vec<u8>,
     pub(super) counter: u64,
@@ -166,7 +164,7 @@ pub(super) struct JsonAppendOp {
     pub(super) parent: Option<Vec<u8>>,
     pub(super) node: Vec<u8>,
     pub(super) new_parent: Option<Vec<u8>>,
-    pub(super) position: Option<u64>,
+    pub(super) order_key: Option<Vec<u8>>,
     pub(super) known_state: Option<Vec<u8>>,
     #[serde(default)]
     pub(super) payload: Option<Vec<u8>>,
@@ -247,6 +245,13 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
             sqlite_result_error(
                 ctx,
                 b"treecrdt_append_ops: delete op missing known_state\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+        if (op.kind == "insert" || op.kind == "move") && op.order_key.is_none() {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_append_ops: insert/move op missing order_key\0".as_ptr() as *const c_char,
             );
             return;
         }

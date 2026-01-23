@@ -18,7 +18,7 @@ struct JsOp {
     parent: Option<String>,
     node: String,
     new_parent: Option<String>,
-    position: Option<usize>,
+    order_key: Option<String>, // hex
     #[serde(default)]
     known_state: Option<Vec<u8>>,
     payload: Option<String>, // hex
@@ -55,30 +55,30 @@ fn node_to_hex(id: NodeId) -> String {
 }
 
 fn op_to_js(op: &Operation) -> JsOp {
-    let (kind, parent, node, new_parent, position, payload) = match &op.kind {
+    let (kind, parent, node, new_parent, order_key, payload) = match &op.kind {
         OperationKind::Insert {
             parent,
             node,
-            position,
+            order_key,
             payload,
         } => (
             "insert",
             Some(*parent),
             *node,
             None,
-            Some(*position),
+            Some(bytes_to_hex(order_key)),
             payload.as_deref().map(bytes_to_hex),
         ),
         OperationKind::Move {
             node,
             new_parent,
-            position,
+            order_key,
         } => (
             "move",
             None,
             *node,
             Some(*new_parent),
-            Some(*position),
+            Some(bytes_to_hex(order_key)),
             None,
         ),
         OperationKind::Delete { node } => ("delete", None, *node, None, None, None),
@@ -101,7 +101,7 @@ fn op_to_js(op: &Operation) -> JsOp {
         parent: parent.map(node_to_hex),
         node: node_to_hex(node),
         new_parent: new_parent.map(node_to_hex),
-        position,
+        order_key,
         known_state,
         payload,
     }
@@ -117,24 +117,41 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
         "insert" => {
             let parent = js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT);
             let node = hex_to_node(&js.node)?;
-            let position = js.position.unwrap_or(0);
+            let order_key = js
+                .order_key
+                .as_deref()
+                .map(hex_to_bytes)
+                .transpose()?
+                .unwrap_or_default();
             if let Some(payload_hex) = js.payload.as_deref() {
                 let payload = hex_to_bytes(payload_hex)?;
                 Operation::insert_with_payload(
-                    &replica, counter, lamport, parent, node, position, payload,
+                    &replica, counter, lamport, parent, node, order_key, payload,
                 )
             } else {
-                Operation::insert(&replica, counter, lamport, parent, node, position)
+                Operation::insert(&replica, counter, lamport, parent, node, order_key)
             }
         }
-        "move" => Operation::move_node(
-            &replica,
-            counter,
-            lamport,
-            hex_to_node(&js.node)?,
-            js.new_parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
-            js.position.unwrap_or(0),
-        ),
+        "move" => {
+            let order_key = js
+                .order_key
+                .as_deref()
+                .map(hex_to_bytes)
+                .transpose()?
+                .unwrap_or_default();
+            Operation::move_node(
+                &replica,
+                counter,
+                lamport,
+                hex_to_node(&js.node)?,
+                js.new_parent
+                    .as_deref()
+                    .map(hex_to_node)
+                    .transpose()?
+                    .unwrap_or(NodeId::ROOT),
+                order_key,
+            )
+        }
         "delete" => {
             let Some(bytes) = js.known_state else {
                 return Err("delete op missing known_state".into());

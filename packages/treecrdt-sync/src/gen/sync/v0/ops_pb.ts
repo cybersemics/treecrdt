@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file sync/v0/ops.proto.
  */
 export const file_sync_v0_ops: GenFile = /*@__PURE__*/
-  fileDesc("ChFzeW5jL3YwL29wcy5wcm90bxIQdHJlZWNyZHQuc3luYy52MCKQAQoISW5zZXJ0T3ASKAoGcGFyZW50GAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSJgoEbm9kZRgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEhAKCHBvc2l0aW9uGAMgASgNEhQKB3BheWxvYWQYBCABKAxIAIgBAUIKCghfcGF5bG9hZCJwCgZNb3ZlT3ASJgoEbm9kZRgBIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEiwKCm5ld19wYXJlbnQYAiABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBIQCghwb3NpdGlvbhgDIAEoDSIyCghEZWxldGVPcBImCgRub2RlGAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQiNQoLVG9tYnN0b25lT3ASJgoEbm9kZRgBIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkIg4KDENsZWFyUGF5bG9hZCKAAQoJUGF5bG9hZE9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBIvCgVjbGVhchgCIAEoCzIeLnRyZWVjcmR0LnN5bmMudjAuQ2xlYXJQYXlsb2FkSAASEQoHcGF5bG9hZBgDIAEoDEgAQgcKBXZhbHVlIrACCglPcGVyYXRpb24SMQoEbWV0YRgBIAEoCzIjLnRyZWVjcmR0LnN5bmMudjAuT3BlcmF0aW9uTWV0YWRhdGESLAoGaW5zZXJ0GAIgASgLMhoudHJlZWNyZHQuc3luYy52MC5JbnNlcnRPcEgAEigKBG1vdmUYAyABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk1vdmVPcEgAEiwKBmRlbGV0ZRgEIAEoCzIaLnRyZWVjcmR0LnN5bmMudjAuRGVsZXRlT3BIABIyCgl0b21ic3RvbmUYBSABKAsyHS50cmVlY3JkdC5zeW5jLnYwLlRvbWJzdG9uZU9wSAASLgoHcGF5bG9hZBgGIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUGF5bG9hZE9wSABCBgoEa2luZGIGcHJvdG8z", [file_sync_v0_types]);
+  fileDesc("ChFzeW5jL3YwL29wcy5wcm90bxIQdHJlZWNyZHQuc3luYy52MCKRAQoISW5zZXJ0T3ASKAoGcGFyZW50GAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSJgoEbm9kZRgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEhEKCW9yZGVyX2tleRgDIAEoDBIUCgdwYXlsb2FkGAQgASgMSACIAQFCCgoIX3BheWxvYWQicQoGTW92ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBIsCgpuZXdfcGFyZW50GAIgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSEQoJb3JkZXJfa2V5GAMgASgMIjIKCERlbGV0ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZCI1CgtUb21ic3RvbmVPcBImCgRub2RlGAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQiDgoMQ2xlYXJQYXlsb2FkIoABCglQYXlsb2FkT3ASJgoEbm9kZRgBIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEi8KBWNsZWFyGAIgASgLMh4udHJlZWNyZHQuc3luYy52MC5DbGVhclBheWxvYWRIABIRCgdwYXlsb2FkGAMgASgMSABCBwoFdmFsdWUisAIKCU9wZXJhdGlvbhIxCgRtZXRhGAEgASgLMiMudHJlZWNyZHQuc3luYy52MC5PcGVyYXRpb25NZXRhZGF0YRIsCgZpbnNlcnQYAiABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkluc2VydE9wSAASKAoEbW92ZRgDIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTW92ZU9wSAASLAoGZGVsZXRlGAQgASgLMhoudHJlZWNyZHQuc3luYy52MC5EZWxldGVPcEgAEjIKCXRvbWJzdG9uZRgFIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuVG9tYnN0b25lT3BIABIuCgdwYXlsb2FkGAYgASgLMhsudHJlZWNyZHQuc3luYy52MC5QYXlsb2FkT3BIAEIGCgRraW5kYgZwcm90bzM", [file_sync_v0_types]);
 
 /**
  * @generated from message treecrdt.sync.v0.InsertOp
@@ -29,9 +29,9 @@ export type InsertOp = Message<"treecrdt.sync.v0.InsertOp"> & {
   node?: NodeId;
 
   /**
-   * @generated from field: uint32 position = 3;
+   * @generated from field: bytes order_key = 3;
    */
-  position: number;
+  orderKey: Uint8Array;
 
   /**
    * @generated from field: optional bytes payload = 4;
@@ -61,9 +61,9 @@ export type MoveOp = Message<"treecrdt.sync.v0.MoveOp"> & {
   newParent?: NodeId;
 
   /**
-   * @generated from field: uint32 position = 3;
+   * @generated from field: bytes order_key = 3;
    */
-  position: number;
+  orderKey: Uint8Array;
 };
 
 /**

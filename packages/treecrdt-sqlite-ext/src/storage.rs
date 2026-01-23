@@ -36,7 +36,7 @@ impl SqliteStorage {
                     parent BLOB,
                     node BLOB NOT NULL,
                     new_parent BLOB,
-                    position INTEGER,
+                    order_key BLOB,
                     payload BLOB,
                     PRIMARY KEY (replica, counter)
                 );
@@ -49,18 +49,18 @@ impl SqliteStorage {
 
 impl Storage for SqliteStorage {
     fn apply(&mut self, op: Operation) -> treecrdt_core::Result<bool> {
-        let (kind, parent, node, new_parent, position, payload) = match op.kind {
+        let (kind, parent, node, new_parent, order_key, payload) = match op.kind {
             OperationKind::Insert {
                 parent,
                 node,
-                position,
+                order_key,
                 payload,
-            } => ("insert", Some(parent), node, None, Some(position), payload),
+            } => ("insert", Some(parent), node, None, Some(order_key), payload),
             OperationKind::Move {
                 node,
                 new_parent,
-                position,
-            } => ("move", None, node, Some(new_parent), Some(position), None),
+                order_key,
+            } => ("move", None, node, Some(new_parent), Some(order_key), None),
             OperationKind::Delete { node } => ("delete", None, node, None, None, None),
             OperationKind::Tombstone { node } => ("tombstone", None, node, None, None, None),
             OperationKind::Payload { node, payload } => {
@@ -82,7 +82,7 @@ impl Storage for SqliteStorage {
 
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO ops (replica, counter, lamport, kind, parent, node, new_parent, position, payload)
+                "INSERT OR IGNORE INTO ops (replica, counter, lamport, kind, parent, node, new_parent, order_key, payload)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     op.meta.id.replica.as_bytes(),
@@ -92,9 +92,7 @@ impl Storage for SqliteStorage {
                     parent.map(node_to_blob),
                     node_to_blob(node),
                     new_parent.map(node_to_blob),
-                    position
-                        .map(|p| i64::try_from(p).map_err(|_| Error::Storage("position overflow".into())))
-                        .transpose()?,
+                    order_key,
                     payload,
                 ],
             )
@@ -107,7 +105,7 @@ impl Storage for SqliteStorage {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT replica, counter, lamport, kind, parent, node, new_parent, position, payload
+                "SELECT replica, counter, lamport, kind, parent, node, new_parent, order_key, payload
                  FROM ops
                  WHERE lamport > ?
                  ORDER BY lamport ASC, replica ASC, counter ASC",
@@ -143,7 +141,7 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
     let parent: Option<Vec<u8>> = row.get(4)?;
     let node: Vec<u8> = row.get(5)?;
     let new_parent: Option<Vec<u8>> = row.get(6)?;
-    let position: Option<i64> = row.get(7)?;
+    let order_key: Option<Vec<u8>> = row.get(7)?;
     let payload: Option<Vec<u8>> = row.get(8)?;
 
     let op_id = OperationId {
@@ -161,7 +159,13 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
                 )
             })?)?,
             node: blob_to_node(node)?,
-            position: position.unwrap_or(0) as usize,
+            order_key: order_key.ok_or_else(|| {
+                rusqlite::Error::InvalidColumnType(
+                    7,
+                    "order_key".to_string(),
+                    rusqlite::types::Type::Blob,
+                )
+            })?,
             payload,
         },
         "move" => OperationKind::Move {
@@ -173,7 +177,13 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
                     rusqlite::types::Type::Blob,
                 )
             })?)?,
-            position: position.unwrap_or(0) as usize,
+            order_key: order_key.ok_or_else(|| {
+                rusqlite::Error::InvalidColumnType(
+                    7,
+                    "order_key".to_string(),
+                    rusqlite::types::Type::Blob,
+                )
+            })?,
         },
         "delete" => OperationKind::Delete {
             node: blob_to_node(node)?,
@@ -230,8 +240,8 @@ mod tests {
     fn apply_and_load_round_trip() {
         let mut storage = SqliteStorage::new_in_memory().unwrap();
         let replica = ReplicaId::new(b"r1");
-        let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), 0);
-        let mov = Operation::move_node(&replica, 2, 2, NodeId(1), NodeId::ROOT, 0);
+        let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), Vec::new());
+        let mov = Operation::move_node(&replica, 2, 2, NodeId(1), NodeId::ROOT, Vec::new());
         let del = Operation::delete(&replica, 3, 3, NodeId(1), None);
 
         storage.apply(insert.clone()).unwrap();
@@ -254,12 +264,28 @@ mod tests {
         let child = NodeId(3);
 
         // Persist operations out of order.
-        storage.apply(Operation::move_node(&replica, 3, 3, child, parent, 0)).unwrap();
         storage
-            .apply(Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, 0))
+            .apply(Operation::move_node(&replica, 3, 3, child, parent, Vec::new()))
             .unwrap();
         storage
-            .apply(Operation::insert(&replica, 2, 2, NodeId::ROOT, child, 0))
+            .apply(Operation::insert(
+                &replica,
+                1,
+                1,
+                NodeId::ROOT,
+                parent,
+                Vec::new(),
+            ))
+            .unwrap();
+        storage
+            .apply(Operation::insert(
+                &replica,
+                2,
+                2,
+                NodeId::ROOT,
+                child,
+                Vec::new(),
+            ))
             .unwrap();
 
         let mut crdt = TreeCrdt::new(replica, storage, LamportClock::default());

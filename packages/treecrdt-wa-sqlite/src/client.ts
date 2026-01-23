@@ -30,7 +30,7 @@ export type TreecrdtOpRefsApi = {
 export type TreeNodeRow = {
   node: string;
   parent: string | null;
-  pos: number | null;
+  orderKey: Uint8Array | null;
   tombstone: boolean;
 };
 

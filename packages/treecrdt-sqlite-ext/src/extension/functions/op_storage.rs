@@ -45,31 +45,31 @@ impl treecrdt_core::Storage for SqliteOpStorage {
     fn apply(&mut self, op: treecrdt_core::Operation) -> treecrdt_core::Result<bool> {
         let doc_id = self.ensure_doc_id()?;
 
-        let (kind, parent, node, new_parent, position, known_state, payload) = match op.kind {
+        let (kind, parent, node, new_parent, order_key, known_state, payload) = match op.kind {
             treecrdt_core::OperationKind::Insert {
                 parent,
                 node,
-                position,
+                order_key,
                 payload,
             } => (
                 "insert",
                 Some(sqlite_node_id_bytes(parent).to_vec()),
                 sqlite_node_id_bytes(node).to_vec(),
                 None,
-                Some(position as u64),
+                Some(order_key),
                 None,
                 payload,
             ),
             treecrdt_core::OperationKind::Move {
                 node,
                 new_parent,
-                position,
+                order_key,
             } => (
                 "move",
                 None,
                 sqlite_node_id_bytes(node).to_vec(),
                 Some(sqlite_node_id_bytes(new_parent).to_vec()),
-                Some(position as u64),
+                Some(order_key),
                 None,
                 None,
             ),
@@ -107,7 +107,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
 
         let insert_sql = CString::new(
             "INSERT OR IGNORE INTO ops \
-             (replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload,op_ref) \
+             (replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,op_ref) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         )
         .expect("insert op sql");
@@ -163,8 +163,25 @@ impl treecrdt_core::Storage for SqliteOpStorage {
             } else {
                 bind_err |= sqlite_bind_null(stmt, 7) != SQLITE_OK as c_int;
             }
-            if let Some(pos) = position {
-                bind_err |= sqlite_bind_int64(stmt, 8, pos as i64) != SQLITE_OK as c_int;
+            if let Some(ref ok) = order_key {
+                if ok.is_empty() {
+                    let empty: [u8; 0] = [];
+                    bind_err |= sqlite_bind_blob(
+                        stmt,
+                        8,
+                        empty.as_ptr() as *const c_void,
+                        0,
+                        None,
+                    ) != SQLITE_OK as c_int;
+                } else {
+                    bind_err |= sqlite_bind_blob(
+                        stmt,
+                        8,
+                        ok.as_ptr() as *const c_void,
+                        ok.len() as c_int,
+                        None,
+                    ) != SQLITE_OK as c_int;
+                }
             } else {
                 bind_err |= sqlite_bind_null(stmt, 8) != SQLITE_OK as c_int;
             }
@@ -220,7 +237,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
 
     fn load_since(&self, lamport: Lamport) -> treecrdt_core::Result<Vec<treecrdt_core::Operation>> {
         let sql = CString::new(
-            "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
              FROM ops \
              WHERE lamport > ?1 \
              ORDER BY lamport, replica, counter",
@@ -266,8 +283,18 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                     .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
                 let new_parent = unsafe { column_blob16(stmt, 6) }
                     .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
-                let position =
-                    unsafe { column_int_opt(stmt, 7) }.map(|v| v.min(usize::MAX as u64) as usize);
+                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int
+                {
+                    Vec::new()
+                } else {
+                    let ptr = unsafe { sqlite_column_blob(stmt, 7) } as *const u8;
+                    let len = unsafe { sqlite_column_bytes(stmt, 7) } as usize;
+                    if ptr.is_null() {
+                        Vec::new()
+                    } else {
+                        unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
+                    }
+                };
 
                 let known_state = if unsafe { sqlite_column_type(stmt, 8) } == SQLITE_NULL as c_int
                 {
@@ -302,7 +329,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                         treecrdt_core::OperationKind::Insert {
                             parent: sqlite_bytes_to_node_id(parent),
                             node: sqlite_bytes_to_node_id(node),
-                            position: position.unwrap_or(0),
+                            order_key,
                             payload,
                         }
                     }
@@ -313,7 +340,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                         treecrdt_core::OperationKind::Move {
                             node: sqlite_bytes_to_node_id(node),
                             new_parent: sqlite_bytes_to_node_id(new_parent),
-                            position: position.unwrap_or(0),
+                            order_key,
                         }
                     }
                     "delete" => treecrdt_core::OperationKind::Delete {
@@ -364,7 +391,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         visit: &mut dyn FnMut(treecrdt_core::Operation) -> treecrdt_core::Result<()>,
     ) -> treecrdt_core::Result<()> {
         let sql = CString::new(
-            "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
              FROM ops \
              WHERE lamport > ?1 \
              ORDER BY lamport, replica, counter",
@@ -409,8 +436,18 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                     .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
                 let new_parent = unsafe { column_blob16(stmt, 6) }
                     .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
-                let position =
-                    unsafe { column_int_opt(stmt, 7) }.map(|v| v.min(usize::MAX as u64) as usize);
+                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int
+                {
+                    Vec::new()
+                } else {
+                    let ptr = unsafe { sqlite_column_blob(stmt, 7) } as *const u8;
+                    let len = unsafe { sqlite_column_bytes(stmt, 7) } as usize;
+                    if ptr.is_null() {
+                        Vec::new()
+                    } else {
+                        unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
+                    }
+                };
 
                 let known_state = if unsafe { sqlite_column_type(stmt, 8) } == SQLITE_NULL as c_int
                 {
@@ -445,7 +482,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                         treecrdt_core::OperationKind::Insert {
                             parent: sqlite_bytes_to_node_id(parent),
                             node: sqlite_bytes_to_node_id(node),
-                            position: position.unwrap_or(0),
+                            order_key,
                             payload,
                         }
                     }
@@ -456,7 +493,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                         treecrdt_core::OperationKind::Move {
                             node: sqlite_bytes_to_node_id(node),
                             new_parent: sqlite_bytes_to_node_id(new_parent),
-                            position: position.unwrap_or(0),
+                            order_key,
                         }
                     }
                     "delete" => treecrdt_core::OperationKind::Delete {

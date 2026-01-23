@@ -14,7 +14,7 @@ struct JsonOp {
     parent: Option<[u8; 16]>,
     node: [u8; 16],
     new_parent: Option<[u8; 16]>,
-    position: Option<u64>,
+    order_key: Option<Vec<u8>>,
 }
 
 #[test]
@@ -35,11 +35,12 @@ fn append_and_fetch_ops_via_extension() {
     let replica = b"r1".to_vec();
     let parent = node_bytes(0);
     let node = node_bytes(1);
+    let order_key = (1u16).to_be_bytes().to_vec();
 
     let _: i64 = conn
         .query_row(
-            "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL)",
-            rusqlite::params![replica, 1i64, 1i64, "insert", parent, node],
+            "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
+            rusqlite::params![replica, 1i64, 1i64, "insert", parent, node, order_key.clone()],
             |row| row.get(0),
         )
         .unwrap();
@@ -48,7 +49,7 @@ fn append_and_fetch_ops_via_extension() {
     let _: i64 = conn
         .query_row(
             "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, NULL)",
-            rusqlite::params![b"r1".to_vec(), 2i64, 2i64, "move", node, parent, 0i64],
+            rusqlite::params![b"r1".to_vec(), 2i64, 2i64, "move", node, parent, order_key.clone()],
             |row| row.get(0),
         )
         .unwrap();
@@ -60,6 +61,8 @@ fn append_and_fetch_ops_via_extension() {
     assert_eq!(ops.len(), 2);
     assert_eq!(ops[0].kind, "insert");
     assert_eq!(ops[1].kind, "move");
+    assert_eq!(ops[0].order_key, Some(order_key.clone()));
+    assert_eq!(ops[1].order_key, Some(order_key.clone()));
     assert_eq!(
         ops[0].parent,
         Some(<[u8; 16]>::try_from(parent.as_slice()).unwrap())
