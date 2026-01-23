@@ -2,7 +2,6 @@ use rusqlite::{params, Connection, Row};
 use treecrdt_core::{
     error::Error,
     ops::{Operation, OperationKind},
-    traits::Snapshot,
     Lamport, NodeId, OperationId, ReplicaId, Storage,
 };
 
@@ -49,7 +48,7 @@ impl SqliteStorage {
 }
 
 impl Storage for SqliteStorage {
-    fn apply(&mut self, op: Operation) -> treecrdt_core::Result<()> {
+    fn apply(&mut self, op: Operation) -> treecrdt_core::Result<bool> {
         let (kind, parent, node, new_parent, position, payload) = match op.kind {
             OperationKind::Insert {
                 parent,
@@ -99,8 +98,8 @@ impl Storage for SqliteStorage {
                     payload,
                 ],
             )
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        Ok(())
+            .map(|changed| changed > 0)
+            .map_err(|e| Error::Storage(e.to_string()))
     }
 
     fn load_since(&self, lamport: Lamport) -> treecrdt_core::Result<Vec<Operation>> {
@@ -133,12 +132,6 @@ impl Storage for SqliteStorage {
             .expect("prepare latest lamport");
         let val: Option<i64> = stmt.query_row([], |row| row.get(0)).unwrap_or(None);
         val.and_then(|v| u64::try_from(v).ok()).unwrap_or_default()
-    }
-
-    fn snapshot(&self) -> treecrdt_core::Result<Snapshot> {
-        Ok(Snapshot {
-            head: self.latest_lamport(),
-        })
     }
 }
 
@@ -251,24 +244,6 @@ mod tests {
         assert_eq!(ops[1].kind, mov.kind);
         assert_eq!(ops[2].kind, del.kind);
         assert_eq!(storage.latest_lamport(), 3);
-    }
-
-    #[test]
-    fn snapshot_reflects_latest_lamport() {
-        let mut storage = SqliteStorage::new_in_memory().unwrap();
-        let replica = ReplicaId::new(b"r1");
-        storage
-            .apply(Operation::insert(
-                &replica,
-                1,
-                10,
-                NodeId::ROOT,
-                NodeId(1),
-                0,
-            ))
-            .unwrap();
-        let snap = storage.snapshot().unwrap();
-        assert_eq!(snap.head, 10);
     }
 
     #[test]

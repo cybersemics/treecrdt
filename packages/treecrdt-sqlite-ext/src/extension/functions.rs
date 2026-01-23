@@ -72,8 +72,8 @@ fn deserialize_version_vector(bytes: &[u8]) -> Result<VersionVector, c_int> {
 struct NoopStorage;
 
 impl treecrdt_core::Storage for NoopStorage {
-    fn apply(&mut self, _op: treecrdt_core::Operation) -> treecrdt_core::Result<()> {
-        Ok(())
+    fn apply(&mut self, _op: treecrdt_core::Operation) -> treecrdt_core::Result<bool> {
+        Ok(true)
     }
 
     fn load_since(
@@ -85,10 +85,6 @@ impl treecrdt_core::Storage for NoopStorage {
 
     fn latest_lamport(&self) -> Lamport {
         0
-    }
-
-    fn snapshot(&self) -> treecrdt_core::Result<treecrdt_core::Snapshot> {
-        Ok(treecrdt_core::Snapshot { head: 0 })
     }
 }
 

@@ -1,12 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId};
-use crate::ops::Operation;
+use crate::ops::{cmp_ops, Operation};
 use crate::version_vector::VersionVector;
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 /// Pluggable clock to allow Lamport, Hybrid Logical Clock, or custom time strategies.
 pub trait Clock {
@@ -23,10 +20,28 @@ pub trait AccessControl {
 
 /// Persistent or in-memory operation log.
 pub trait Storage {
-    fn apply(&mut self, op: Operation) -> Result<()>;
+    /// Persist a single operation. Returns `true` if the op was inserted, or `false` if it was
+    /// already present (idempotent).
+    fn apply(&mut self, op: Operation) -> Result<bool>;
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>>;
     fn latest_lamport(&self) -> Lamport;
-    fn snapshot(&self) -> Result<Snapshot>;
+
+    /// Iterate operations since `lamport` in canonical op-key order.
+    ///
+    /// Default implementation loads into memory and sorts; storage backends can override this
+    /// to stream rows in sorted order (e.g. via SQL `ORDER BY`).
+    fn scan_since(
+        &self,
+        lamport: Lamport,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
+        let mut ops = self.load_since(lamport)?;
+        ops.sort_by(cmp_ops);
+        for op in ops {
+            visit(op)?;
+        }
+        Ok(())
+    }
 }
 
 /// Index provider used to accelerate subtree queries when partial sync is requested.
@@ -130,13 +145,6 @@ impl ParentOpIndex for NoopParentOpIndex {
     }
 }
 
-/// Lightweight snapshot to expose to storage adapters.
-#[derive(Clone, Debug, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Snapshot {
-    pub head: Lamport,
-}
-
 /// Basic Lamport clock implementation useful for tests and default flows.
 #[derive(Clone, Debug, Default)]
 pub struct LamportClock {
@@ -175,12 +183,17 @@ impl AccessControl for AllowAllAccess {
 #[derive(Default)]
 pub struct MemoryStorage {
     ops: Vec<Operation>,
+    ids: HashSet<OperationId>,
 }
 
 impl Storage for MemoryStorage {
-    fn apply(&mut self, op: Operation) -> Result<()> {
+    fn apply(&mut self, op: Operation) -> Result<bool> {
+        if self.ids.contains(&op.meta.id) {
+            return Ok(false);
+        }
+        self.ids.insert(op.meta.id.clone());
         self.ops.push(op);
-        Ok(())
+        Ok(true)
     }
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
@@ -189,12 +202,6 @@ impl Storage for MemoryStorage {
 
     fn latest_lamport(&self) -> Lamport {
         self.ops.iter().map(|op| op.meta.lamport).max().unwrap_or_default()
-    }
-
-    fn snapshot(&self) -> Result<Snapshot> {
-        Ok(Snapshot {
-            head: self.latest_lamport(),
-        })
     }
 }
 

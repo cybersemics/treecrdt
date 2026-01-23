@@ -63,10 +63,6 @@ export type Operation = {
   kind: OperationKind;
 };
 
-export type Snapshot = {
-  head: Lamport;
-};
-
 export type SubtreeFilter = {
   root: NodeId;
   depth?: number;
@@ -81,7 +77,6 @@ export interface StorageAdapter {
   apply(op: Operation): Promise<void> | void;
   loadSince(lamport: Lamport): Promise<Operation[]> | Operation[];
   latestLamport(): Promise<Lamport> | Lamport;
-  snapshot(): Promise<Snapshot> | Snapshot;
 }
 
 export interface TreeCRDT {
@@ -91,7 +86,6 @@ export interface TreeCRDT {
   setPayload(node: NodeId, payload: Uint8Array | null): Promise<Operation> | Operation;
   applyRemote(op: Operation): Promise<void> | void;
   operationsSince(lamport: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
-  snapshot(): Promise<Snapshot> | Snapshot;
 }
 
 export interface SyncProtocol {
