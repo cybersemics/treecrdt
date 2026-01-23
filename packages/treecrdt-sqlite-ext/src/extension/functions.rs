@@ -86,10 +86,6 @@ impl treecrdt_core::Storage for NoopStorage {
     fn latest_lamport(&self) -> Lamport {
         0
     }
-
-    fn snapshot(&self) -> treecrdt_core::Result<treecrdt_core::Snapshot> {
-        Ok(treecrdt_core::Snapshot { head: 0 })
-    }
 }
 
 /// A simple scalar function that returns the crate version string. Useful to confirm

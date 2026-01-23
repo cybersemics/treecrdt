@@ -5,9 +5,6 @@ use crate::ids::{Lamport, NodeId, OperationId};
 use crate::ops::{cmp_ops, Operation};
 use crate::version_vector::VersionVector;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 /// Pluggable clock to allow Lamport, Hybrid Logical Clock, or custom time strategies.
 pub trait Clock {
     fn tick(&mut self) -> Lamport;
@@ -28,13 +25,16 @@ pub trait Storage {
     fn apply(&mut self, op: Operation) -> Result<bool>;
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>>;
     fn latest_lamport(&self) -> Lamport;
-    fn snapshot(&self) -> Result<Snapshot>;
 
     /// Iterate operations since `lamport` in canonical op-key order.
     ///
     /// Default implementation loads into memory and sorts; storage backends can override this
     /// to stream rows in sorted order (e.g. via SQL `ORDER BY`).
-    fn scan_since(&self, lamport: Lamport, visit: &mut dyn FnMut(Operation) -> Result<()>) -> Result<()> {
+    fn scan_since(
+        &self,
+        lamport: Lamport,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
         let mut ops = self.load_since(lamport)?;
         ops.sort_by(cmp_ops);
         for op in ops {
@@ -145,13 +145,6 @@ impl ParentOpIndex for NoopParentOpIndex {
     }
 }
 
-/// Lightweight snapshot to expose to storage adapters.
-#[derive(Clone, Debug, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Snapshot {
-    pub head: Lamport,
-}
-
 /// Basic Lamport clock implementation useful for tests and default flows.
 #[derive(Clone, Debug, Default)]
 pub struct LamportClock {
@@ -209,12 +202,6 @@ impl Storage for MemoryStorage {
 
     fn latest_lamport(&self) -> Lamport {
         self.ops.iter().map(|op| op.meta.lamport).max().unwrap_or_default()
-    }
-
-    fn snapshot(&self) -> Result<Snapshot> {
-        Ok(Snapshot {
-            head: self.latest_lamport(),
-        })
     }
 }
 

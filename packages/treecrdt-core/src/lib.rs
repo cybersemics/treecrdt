@@ -15,7 +15,7 @@ pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{
     Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,
-    NodeStore, NoopParentOpIndex, ParentOpIndex, PayloadStore, Snapshot, Storage,
+    NodeStore, NoopParentOpIndex, ParentOpIndex, PayloadStore, Storage,
 };
 pub use tree::{ApplyDelta, NodeExport, NodeSnapshotExport, TreeCrdt};
 pub use version_vector::VersionVector;

@@ -17,7 +17,7 @@
 ## Trait contracts (Rust)
 - `Clock`: lamport/HLC pluggable (`LamportClock` provided).
 - `AccessControl`: guards apply/read.
-- `Storage`: append operations, load since lamport, snapshot, latest_lamport.
+- `Storage`: append operations, load since lamport, latest_lamport.
 - `IndexProvider`: optional acceleration for subtree queries and existence checks.
 - These traits are the seam for SQLite/wa-sqlite implementations; extension just implements them over tables/indexes.
 

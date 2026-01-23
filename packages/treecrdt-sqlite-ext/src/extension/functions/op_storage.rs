@@ -523,10 +523,4 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         unsafe { sqlite_finalize(stmt) };
         val
     }
-
-    fn snapshot(&self) -> treecrdt_core::Result<treecrdt_core::Snapshot> {
-        Ok(treecrdt_core::Snapshot {
-            head: self.latest_lamport(),
-        })
-    }
 }
