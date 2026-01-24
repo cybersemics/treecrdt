@@ -76,6 +76,9 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
+    - name: Typecheck playground
+      run: pnpm --filter @treecrdt/playground run typecheck
+
     - name: Check Rust formatting
       run: pnpm run fmt:check
 
