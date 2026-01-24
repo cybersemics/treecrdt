@@ -1,108 +1,6 @@
 use super::util::sqlite_result_json;
 use super::*;
 
-pub(super) unsafe extern "C" fn treecrdt_head_lamport(
-    ctx: *mut sqlite3_context,
-    argc: c_int,
-    _argv: *mut *mut sqlite3_value,
-) {
-    if argc != 0 {
-        sqlite_result_error(
-            ctx,
-            b"treecrdt_head_lamport expects 0 args\0".as_ptr() as *const c_char,
-        );
-        return;
-    }
-
-    let db = sqlite_context_db_handle(ctx);
-    let sql = CString::new(
-        "SELECT lamport FROM ops ORDER BY lamport DESC, replica DESC, counter DESC LIMIT 1",
-    )
-    .expect("static sql");
-    let mut stmt: *mut sqlite3_stmt = null_mut();
-    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
-    if rc != SQLITE_OK as c_int {
-        sqlite_result_error_code(ctx, rc);
-        return;
-    }
-
-    let step_rc = unsafe { sqlite_step(stmt) };
-    let lamport = if step_rc == SQLITE_ROW as c_int {
-        unsafe { sqlite_column_int64(stmt, 0) }
-    } else {
-        0
-    };
-    let finalize_rc = unsafe { sqlite_finalize(stmt) };
-    if finalize_rc != SQLITE_OK as c_int {
-        sqlite_result_error_code(ctx, finalize_rc);
-        return;
-    }
-    sqlite_result_int64(ctx, lamport);
-}
-
-pub(super) unsafe extern "C" fn treecrdt_replica_max_counter(
-    ctx: *mut sqlite3_context,
-    argc: c_int,
-    argv: *mut *mut sqlite3_value,
-) {
-    if argc != 1 {
-        sqlite_result_error(
-            ctx,
-            b"treecrdt_replica_max_counter expects 1 arg (replica)\0".as_ptr() as *const c_char,
-        );
-        return;
-    }
-
-    let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
-    let replica_ptr = unsafe { sqlite_value_blob(args[0]) } as *const u8;
-    let replica_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
-    if replica_ptr.is_null() {
-        sqlite_result_error(
-            ctx,
-            b"treecrdt_replica_max_counter: replica must be BLOB\0".as_ptr() as *const c_char,
-        );
-        return;
-    }
-
-    let db = sqlite_context_db_handle(ctx);
-    let sql = CString::new("SELECT COALESCE(MAX(counter), 0) FROM ops WHERE replica = ?1")
-        .expect("static sql");
-    let mut stmt: *mut sqlite3_stmt = null_mut();
-    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
-    if rc != SQLITE_OK as c_int {
-        sqlite_result_error_code(ctx, rc);
-        return;
-    }
-
-    let bind_rc = unsafe {
-        sqlite_bind_blob(
-            stmt,
-            1,
-            replica_ptr as *const c_void,
-            replica_len as c_int,
-            None,
-        )
-    };
-    if bind_rc != SQLITE_OK as c_int {
-        unsafe { sqlite_finalize(stmt) };
-        sqlite_result_error_code(ctx, bind_rc);
-        return;
-    }
-
-    let step_rc = unsafe { sqlite_step(stmt) };
-    let max_counter = if step_rc == SQLITE_ROW as c_int {
-        unsafe { sqlite_column_int64(stmt, 0) }
-    } else {
-        0
-    };
-    let finalize_rc = unsafe { sqlite_finalize(stmt) };
-    if finalize_rc != SQLITE_OK as c_int {
-        sqlite_result_error_code(ctx, finalize_rc);
-        return;
-    }
-    sqlite_result_int64(ctx, max_counter);
-}
-
 pub(super) unsafe extern "C" fn treecrdt_ops_by_oprefs(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -154,7 +52,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_by_oprefs(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
          FROM ops \
          WHERE op_ref = ?1",
     )
@@ -237,7 +135,7 @@ struct JsonOp {
     parent: Option<[u8; 16]>,
     node: [u8; 16],
     new_parent: Option<[u8; 16]>,
-    position: Option<u64>,
+    order_key: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
 }
@@ -261,7 +159,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_since(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
          FROM ops \
          WHERE lamport > ?1 \
          AND (?2 IS NULL OR parent = ?2 OR node = ?2 OR new_parent = ?2) \
@@ -343,7 +241,17 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             None => return Err(SQLITE_ERROR as c_int),
         };
         let new_parent = column_blob16(stmt, 6)?;
-        let position = column_int_opt(stmt, 7);
+        let order_key = if sqlite_column_type(stmt, 7) == SQLITE_NULL as c_int {
+            None
+        } else {
+            let ptr = sqlite_column_blob(stmt, 7) as *const u8;
+            let len = sqlite_column_bytes(stmt, 7) as usize;
+            if ptr.is_null() {
+                None
+            } else {
+                Some(slice::from_raw_parts(ptr, len).to_vec())
+            }
+        };
         let known_state = if sqlite_column_type(stmt, 8) == SQLITE_NULL as c_int {
             None
         } else {
@@ -375,7 +283,7 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             parent,
             node,
             new_parent,
-            position,
+            order_key,
             known_state,
             payload,
         })

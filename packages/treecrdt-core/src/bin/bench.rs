@@ -59,13 +59,15 @@ fn main() {
         let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default());
 
         let start = Instant::now();
+        let mut last: Option<NodeId> = None;
         for i in 0..count {
             let node = hex_id(i + 1);
-            let _ = tree.local_insert(NodeId::ROOT, node, i as usize).unwrap();
+            let _ = tree.local_insert_after(NodeId::ROOT, node, last).unwrap();
+            last = Some(node);
         }
         for i in 0..count {
             let node = hex_id(i + 1);
-            let _ = tree.local_move(node, NodeId::ROOT, 0).unwrap();
+            let _ = tree.local_move_after(node, NodeId::ROOT, None).unwrap();
         }
         let _ = tree.operations_since(0 as Lamport).unwrap();
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;

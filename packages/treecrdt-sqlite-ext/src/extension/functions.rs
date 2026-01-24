@@ -21,17 +21,12 @@ mod util;
 
 use append::{treecrdt_append_op, treecrdt_append_ops};
 use doc_id::{treecrdt_doc_id, treecrdt_set_doc_id};
-use materialize::{append_ops_impl, ensure_materialized};
+use materialize::{append_ops_impl, ensure_materialized, treecrdt_ensure_materialized};
 use oprefs::{treecrdt_oprefs_all, treecrdt_oprefs_children};
-use ops::{
-    treecrdt_head_lamport, treecrdt_ops_by_oprefs, treecrdt_ops_since, treecrdt_replica_max_counter,
-};
+use ops::{treecrdt_ops_by_oprefs, treecrdt_ops_since};
 use schema::*;
 use sqlite_api::*;
-use tree::{
-    treecrdt_subtree_known_state, treecrdt_tree_children, treecrdt_tree_dump,
-    treecrdt_tree_node_count,
-};
+use tree::treecrdt_subtree_known_state;
 use util::drop_cstring;
 
 use std::ffi::CString;
@@ -196,6 +191,20 @@ pub extern "C" fn sqlite3_treecrdt_init(
             None,
         )
     };
+    let rc_ensure_materialized = {
+        let name = CString::new("treecrdt_ensure_materialized").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            0,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_ensure_materialized),
+            None,
+            None,
+            None,
+        )
+    };
 
     let rc_oprefs_all = {
         let name = CString::new("treecrdt_oprefs_all").expect("static name");
@@ -225,20 +234,6 @@ pub extern "C" fn sqlite3_treecrdt_init(
             None,
         )
     };
-    let rc_tree_children = {
-        let name = CString::new("treecrdt_tree_children").expect("static name");
-        sqlite_create_function_v2(
-            db,
-            name.as_ptr(),
-            1,
-            SQLITE_UTF8 as c_int,
-            null_mut(),
-            Some(treecrdt_tree_children),
-            None,
-            None,
-            None,
-        )
-    };
     let rc_subtree_known_state = {
         let name = CString::new("treecrdt_subtree_known_state").expect("static name");
         sqlite_create_function_v2(
@@ -248,62 +243,6 @@ pub extern "C" fn sqlite3_treecrdt_init(
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_subtree_known_state),
-            None,
-            None,
-            None,
-        )
-    };
-    let rc_tree_dump = {
-        let name = CString::new("treecrdt_tree_dump").expect("static name");
-        sqlite_create_function_v2(
-            db,
-            name.as_ptr(),
-            0,
-            SQLITE_UTF8 as c_int,
-            null_mut(),
-            Some(treecrdt_tree_dump),
-            None,
-            None,
-            None,
-        )
-    };
-    let rc_tree_node_count = {
-        let name = CString::new("treecrdt_tree_node_count").expect("static name");
-        sqlite_create_function_v2(
-            db,
-            name.as_ptr(),
-            0,
-            SQLITE_UTF8 as c_int,
-            null_mut(),
-            Some(treecrdt_tree_node_count),
-            None,
-            None,
-            None,
-        )
-    };
-    let rc_head_lamport = {
-        let name = CString::new("treecrdt_head_lamport").expect("static name");
-        sqlite_create_function_v2(
-            db,
-            name.as_ptr(),
-            0,
-            SQLITE_UTF8 as c_int,
-            null_mut(),
-            Some(treecrdt_head_lamport),
-            None,
-            None,
-            None,
-        )
-    };
-    let rc_replica_max_counter = {
-        let name = CString::new("treecrdt_replica_max_counter").expect("static name");
-        sqlite_create_function_v2(
-            db,
-            name.as_ptr(),
-            1,
-            SQLITE_UTF8 as c_int,
-            null_mut(),
-            Some(treecrdt_replica_max_counter),
             None,
             None,
             None,
@@ -344,14 +283,10 @@ pub extern "C" fn sqlite3_treecrdt_init(
         || rc_append != SQLITE_OK as c_int
         || rc_set_doc_id != SQLITE_OK as c_int
         || rc_doc_id != SQLITE_OK as c_int
+        || rc_ensure_materialized != SQLITE_OK as c_int
         || rc_oprefs_all != SQLITE_OK as c_int
         || rc_oprefs_children != SQLITE_OK as c_int
-        || rc_tree_children != SQLITE_OK as c_int
         || rc_subtree_known_state != SQLITE_OK as c_int
-        || rc_tree_dump != SQLITE_OK as c_int
-        || rc_tree_node_count != SQLITE_OK as c_int
-        || rc_head_lamport != SQLITE_OK as c_int
-        || rc_replica_max_counter != SQLITE_OK as c_int
         || rc_ops_by_oprefs != SQLITE_OK as c_int
         || rc_since != SQLITE_OK as c_int
     {
@@ -370,22 +305,14 @@ pub extern "C" fn sqlite3_treecrdt_init(
             rc_set_doc_id
         } else if rc_doc_id != SQLITE_OK as c_int {
             rc_doc_id
+        } else if rc_ensure_materialized != SQLITE_OK as c_int {
+            rc_ensure_materialized
         } else if rc_oprefs_all != SQLITE_OK as c_int {
             rc_oprefs_all
         } else if rc_oprefs_children != SQLITE_OK as c_int {
             rc_oprefs_children
-        } else if rc_tree_children != SQLITE_OK as c_int {
-            rc_tree_children
         } else if rc_subtree_known_state != SQLITE_OK as c_int {
             rc_subtree_known_state
-        } else if rc_tree_dump != SQLITE_OK as c_int {
-            rc_tree_dump
-        } else if rc_tree_node_count != SQLITE_OK as c_int {
-            rc_tree_node_count
-        } else if rc_head_lamport != SQLITE_OK as c_int {
-            rc_head_lamport
-        } else if rc_replica_max_counter != SQLITE_OK as c_int {
-            rc_replica_max_counter
         } else if rc_ops_by_oprefs != SQLITE_OK as c_int {
             rc_ops_by_oprefs
         } else {

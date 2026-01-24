@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
@@ -60,10 +61,11 @@ pub trait NodeStore {
     fn exists(&self, node: NodeId) -> Result<bool>;
 
     fn parent(&self, node: NodeId) -> Result<Option<NodeId>>;
+    fn order_key(&self, node: NodeId) -> Result<Option<Vec<u8>>>;
     fn children(&self, parent: NodeId) -> Result<Vec<NodeId>>;
 
     fn detach(&mut self, node: NodeId) -> Result<()>;
-    fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()>;
+    fn attach(&mut self, node: NodeId, parent: NodeId, order_key: Vec<u8>) -> Result<()>;
 
     /// Cached tombstone flag for fast queries (derived from `deleted_at` and subtree awareness).
     ///
@@ -265,6 +267,7 @@ impl PayloadStore for MemoryPayloadStore {
 #[derive(Clone, Debug)]
 struct MemoryNodeState {
     parent: Option<NodeId>,
+    order_key: Option<Vec<u8>>,
     children: Vec<NodeId>,
     tombstone: bool,
     last_change: VersionVector,
@@ -275,6 +278,7 @@ impl MemoryNodeState {
     fn new_root() -> Self {
         Self {
             parent: None,
+            order_key: Some(Vec::new()),
             children: Vec::new(),
             tombstone: false,
             last_change: VersionVector::new(),
@@ -285,6 +289,7 @@ impl MemoryNodeState {
     fn new() -> Self {
         Self {
             parent: None,
+            order_key: None,
             children: Vec::new(),
             tombstone: false,
             last_change: VersionVector::new(),
@@ -347,6 +352,10 @@ impl NodeStore for MemoryNodeStore {
         Ok(self.nodes.get(&node).and_then(|s| s.parent))
     }
 
+    fn order_key(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
+        Ok(self.nodes.get(&node).and_then(|s| s.order_key.clone()))
+    }
+
     fn children(&self, parent: NodeId) -> Result<Vec<NodeId>> {
         Ok(self.get_state(parent)?.children.clone())
     }
@@ -363,20 +372,33 @@ impl NodeStore for MemoryNodeStore {
         }
 
         self.get_state_mut(node)?.parent = None;
+        self.get_state_mut(node)?.order_key = None;
         Ok(())
     }
 
-    fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()> {
+    fn attach(&mut self, node: NodeId, parent: NodeId, order_key: Vec<u8>) -> Result<()> {
         self.ensure_node(parent)?;
         self.ensure_node(node)?;
         self.get_state_mut(node)?.parent = Some(parent);
+        self.get_state_mut(node)?.order_key = Some(order_key.clone());
 
         if parent == NodeId::TRASH {
             return Ok(());
         }
 
+        let existing = self.get_state(parent)?.children.clone();
+        let mut idx = existing.len();
+        for (i, child) in existing.iter().enumerate() {
+            let child_key =
+                self.nodes.get(child).and_then(|s| s.order_key.as_deref()).unwrap_or_default();
+            let cmp = child_key.cmp(order_key.as_slice()).then_with(|| child.cmp(&node));
+            if cmp == Ordering::Greater {
+                idx = i;
+                break;
+            }
+        }
+
         let parent_state = self.get_state_mut(parent)?;
-        let idx = position.min(parent_state.children.len());
         parent_state.children.insert(idx, node);
         Ok(())
     }

@@ -6,6 +6,7 @@
 pub mod error;
 pub mod ids;
 pub mod ops;
+pub mod order_key;
 pub mod traits;
 pub mod tree;
 pub mod version_vector;

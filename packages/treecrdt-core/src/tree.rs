@@ -11,7 +11,7 @@ use crate::version_vector::VersionVector;
 #[derive(Clone)]
 struct NodeSnapshot {
     parent: Option<NodeId>,
-    position: Option<usize>,
+    order_key: Option<Vec<u8>>,
 }
 
 /// Generic Tree CRDT facade that wires clock and storage together.
@@ -45,7 +45,7 @@ pub struct NodeExport {
 #[derive(Clone, Debug)]
 pub struct NodeSnapshotExport {
     pub parent: Option<NodeId>,
-    pub position: Option<usize>,
+    pub order_key: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
@@ -148,45 +148,51 @@ where
         ) == std::cmp::Ordering::Greater
     }
 
-    pub fn local_insert(
+    pub fn local_insert_after(
         &mut self,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        after: Option<NodeId>,
     ) -> Result<Operation> {
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let op = Operation::insert(&replica, counter, lamport, parent, node, position);
+        let seed = Self::seed(&replica, counter);
+        let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
+        let op = Operation::insert(&replica, counter, lamport, parent, node, order_key);
         self.commit_local(op)
     }
 
-    pub fn local_insert_with_payload(
+    pub fn local_insert_after_with_payload(
         &mut self,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        after: Option<NodeId>,
         payload: impl Into<Vec<u8>>,
     ) -> Result<Operation> {
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
+        let seed = Self::seed(&replica, counter);
+        let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
         let op = Operation::insert_with_payload(
-            &replica, counter, lamport, parent, node, position, payload,
+            &replica, counter, lamport, parent, node, order_key, payload,
         );
         self.commit_local(op)
     }
 
-    pub fn local_move(
+    pub fn local_move_after(
         &mut self,
         node: NodeId,
         new_parent: NodeId,
-        position: usize,
+        after: Option<NodeId>,
     ) -> Result<Operation> {
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let op = Operation::move_node(&replica, counter, lamport, node, new_parent, position);
+        let seed = Self::seed(&replica, counter);
+        let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
+        let op = Operation::move_node(&replica, counter, lamport, node, new_parent, order_key);
         self.commit_local(op)
     }
 
@@ -253,7 +259,7 @@ where
             return Ok(Some(ApplyDelta {
                 snapshot: NodeSnapshotExport {
                     parent: snapshot.parent,
-                    position: snapshot.position,
+                    order_key: snapshot.order_key,
                 },
                 affected_parents: parents,
             }));
@@ -634,6 +640,50 @@ where
         Ok(op)
     }
 
+    fn seed(replica: &ReplicaId, counter: u64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(replica.as_bytes().len() + 8);
+        out.extend_from_slice(replica.as_bytes());
+        out.extend_from_slice(&counter.to_be_bytes());
+        out
+    }
+
+    fn allocate_child_key_after(
+        &self,
+        parent: NodeId,
+        node: NodeId,
+        after: Option<NodeId>,
+        seed: &[u8],
+    ) -> Result<Vec<u8>> {
+        if parent == NodeId::TRASH {
+            return Ok(Vec::new());
+        }
+
+        let mut children = self.children(parent)?;
+        children.retain(|child| *child != node);
+
+        let (left, right) = if let Some(after) = after {
+            let idx = children.iter().position(|c| *c == after).ok_or_else(|| {
+                Error::InvalidOperation("after node is not a child of parent".into())
+            })?;
+            let left = self.nodes.order_key(after)?;
+            let right = if idx + 1 < children.len() {
+                self.nodes.order_key(children[idx + 1])?
+            } else {
+                None
+            };
+            (left, right)
+        } else {
+            let right = if let Some(first) = children.first().copied() {
+                self.nodes.order_key(first)?
+            } else {
+                None
+            };
+            (None, right)
+        };
+
+        crate::order_key::allocate_between(left.as_deref(), right.as_deref(), seed)
+    }
+
     fn next_counter(&mut self) -> u64 {
         self.counter += 1;
         self.counter
@@ -657,10 +707,10 @@ where
             OperationKind::Insert {
                 parent,
                 node,
-                position,
+                order_key,
                 payload,
             } => {
-                Self::apply_insert(nodes, op, *parent, *node, *position)?;
+                Self::apply_insert(nodes, op, *parent, *node, order_key.clone())?;
                 if payload.is_some() {
                     Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?;
                 }
@@ -668,8 +718,8 @@ where
             OperationKind::Move {
                 node,
                 new_parent,
-                position,
-            } => Self::apply_move(nodes, op, *node, *new_parent, *position)?,
+                order_key,
+            } => Self::apply_move(nodes, op, *node, *new_parent, order_key.clone())?,
             OperationKind::Delete { node } => Self::apply_delete(nodes, op, *node)?,
             OperationKind::Tombstone { node } => Self::apply_delete(nodes, op, *node)?,
             OperationKind::Payload { node, payload } => {
@@ -689,11 +739,8 @@ where
         };
         nodes.ensure_node(node_id)?;
         let parent = nodes.parent(node_id)?;
-        let position = match parent {
-            Some(p) => nodes.children(p)?.iter().position(|c| c == &node_id),
-            None => None,
-        };
-        Ok(NodeSnapshot { parent, position })
+        let order_key = nodes.order_key(node_id)?;
+        Ok(NodeSnapshot { parent, order_key })
     }
 
     fn apply_insert(
@@ -701,7 +748,7 @@ where
         op: &Operation,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: Vec<u8>,
     ) -> Result<()> {
         if parent == node || Self::introduces_cycle(nodes, node, parent)? {
             return Ok(());
@@ -709,7 +756,7 @@ where
         nodes.ensure_node(parent)?;
         nodes.ensure_node(node)?;
         nodes.detach(node)?;
-        nodes.attach(node, parent, position)?;
+        nodes.attach(node, parent, order_key)?;
         Self::update_last_change(nodes, op, node)?;
         Self::update_last_change(nodes, op, parent)?;
         Ok(())
@@ -720,7 +767,7 @@ where
         op: &Operation,
         node: NodeId,
         new_parent: NodeId,
-        position: usize,
+        order_key: Vec<u8>,
     ) -> Result<()> {
         if node == NodeId::ROOT {
             return Ok(());
@@ -736,7 +783,7 @@ where
         let old_parent = nodes.parent(node)?;
 
         nodes.detach(node)?;
-        nodes.attach(node, new_parent, position)?;
+        nodes.attach(node, new_parent, order_key)?;
 
         Self::update_last_change(nodes, op, node)?;
         if let Some(old_p) = old_parent {

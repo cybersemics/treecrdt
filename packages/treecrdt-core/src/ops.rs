@@ -23,7 +23,7 @@ pub enum OperationKind {
     Insert {
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: Vec<u8>,
         /// Optional application payload to initialize alongside insert.
         ///
         /// When present, this is treated like a `Payload` op at the same `(lamport, replica, counter)`,
@@ -33,7 +33,7 @@ pub enum OperationKind {
     Move {
         node: NodeId,
         new_parent: NodeId,
-        position: usize,
+        order_key: Vec<u8>,
     },
     Delete {
         node: NodeId,
@@ -69,9 +69,9 @@ impl Operation {
         lamport: Lamport,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
     ) -> Self {
-        Self::insert_with_optional_payload(replica, counter, lamport, parent, node, position, None)
+        Self::insert_with_optional_payload(replica, counter, lamport, parent, node, order_key, None)
     }
 
     pub fn insert_with_payload(
@@ -80,7 +80,7 @@ impl Operation {
         lamport: Lamport,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
         payload: impl Into<Vec<u8>>,
     ) -> Self {
         Self::insert_with_optional_payload(
@@ -89,7 +89,7 @@ impl Operation {
             lamport,
             parent,
             node,
-            position,
+            order_key,
             Some(payload.into()),
         )
     }
@@ -100,7 +100,7 @@ impl Operation {
         lamport: Lamport,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
         payload: Option<Vec<u8>>,
     ) -> Self {
         Self {
@@ -112,7 +112,7 @@ impl Operation {
             kind: OperationKind::Insert {
                 parent,
                 node,
-                position,
+                order_key: order_key.into(),
                 payload,
             },
         }
@@ -124,7 +124,7 @@ impl Operation {
         lamport: Lamport,
         node: NodeId,
         new_parent: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
     ) -> Self {
         Self {
             meta: OperationMetadata {
@@ -135,7 +135,7 @@ impl Operation {
             kind: OperationKind::Move {
                 node,
                 new_parent,
-                position,
+                order_key: order_key.into(),
             },
         }
     }

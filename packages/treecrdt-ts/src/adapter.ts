@@ -39,6 +39,18 @@ export interface TreecrdtAdapter {
    */
   treeChildren(parent: Uint8Array): Promise<unknown[]>;
   /**
+   * Fetch materialized children for a parent node, with their stable ordering keys.
+   *
+   * This enables keyset pagination via `(order_key, node)` cursors.
+   *
+   * Returns raw JSON-decoded rows: `{ node: number[16], order_key: number[] | null }[]`.
+   */
+  treeChildrenPage?(
+    parent: Uint8Array,
+    cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
+    limit: number
+  ): Promise<unknown[]>;
+  /**
    * Dump the full materialized tree state.
    *
    * Returns raw JSON-decoded rows (array of objects with byte fields).

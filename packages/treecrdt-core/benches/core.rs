@@ -19,7 +19,7 @@ fn bench_insert_chain(c: &mut Criterion) {
                     let mut parent = NodeId::ROOT;
                     for i in 0..n {
                         let node = NodeId(i as u128 + 1);
-                        crdt.local_insert(parent, node, 0).unwrap();
+                        crdt.local_insert_after(parent, node, None).unwrap();
                         parent = node;
                     }
                 },
@@ -41,14 +41,17 @@ fn bench_move_siblings(c: &mut Criterion) {
                     MemoryStorage::default(),
                     LamportClock::default(),
                 );
+                let mut last: Option<NodeId> = None;
                 for i in 0..1_000u64 {
-                    crdt.local_insert(NodeId::ROOT, NodeId(i as u128 + 1), i as usize).unwrap();
+                    let node = NodeId(i as u128 + 1);
+                    crdt.local_insert_after(NodeId::ROOT, node, last).unwrap();
+                    last = Some(node);
                 }
                 crdt
             },
             |mut crdt| {
                 let first = NodeId(1);
-                crdt.local_move(first, NodeId::ROOT, 999).unwrap();
+                crdt.local_move_after(first, NodeId::ROOT, Some(NodeId(1_000))).unwrap();
             },
             BatchSize::SmallInput,
         );

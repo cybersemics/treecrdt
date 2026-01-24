@@ -1,5 +1,14 @@
 import { expect, test } from "vitest";
 
+function orderKeyFromPosition(position: number): Buffer {
+  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
+  const n = position + 1;
+  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
+  const b = Buffer.alloc(2);
+  b.writeUInt16BE(n, 0);
+  return b;
+}
+
 test("load extension and roundtrip ops", async () => {
   const { default: Database } = await import("better-sqlite3").catch((err) => {
     throw new Error(
@@ -25,11 +34,11 @@ test("load extension and roundtrip ops", async () => {
   node[15] = 1;
 
   db.prepare(
-    "SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, NULL, NULL)"
-  ).get(replica, 1, 1, "insert", parent, node);
+    "SELECT treecrdt_append_op(?, ?, ?, ?, ?, ?, NULL, ?, NULL)"
+  ).get(replica, 1, 1, "insert", parent, node, orderKeyFromPosition(0));
   db.prepare(
     "SELECT treecrdt_append_op(?, ?, ?, ?, NULL, ?, ?, ?, NULL)"
-  ).get(replica, 2, 2, "move", node, parent, 0);
+  ).get(replica, 2, 2, "move", node, parent, orderKeyFromPosition(0));
 
   const row: any = db.prepare("SELECT treecrdt_ops_since(0) AS ops").get();
   const ops = JSON.parse(row.ops);

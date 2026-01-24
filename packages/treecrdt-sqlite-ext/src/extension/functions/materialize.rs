@@ -35,7 +35,7 @@ struct MaterializeOp {
     parent: Option<NodeId>,
     node: NodeId,
     new_parent: Option<NodeId>,
-    position: usize,
+    order_key: Vec<u8>,
     known_state: Option<VersionVector>,
     payload: Option<Vec<u8>>,
 }
@@ -96,7 +96,7 @@ fn materialize_ops_in_order(
                 OperationKind::Insert {
                     parent,
                     node: op.node,
-                    position: op.position,
+                    order_key: op.order_key.clone(),
                     payload: op.payload.clone(),
                 }
             }
@@ -105,7 +105,7 @@ fn materialize_ops_in_order(
                 OperationKind::Move {
                     node: op.node,
                     new_parent,
-                    position: op.position,
+                    order_key: op.order_key.clone(),
                 }
             }
             MaterializeKind::Delete => OperationKind::Delete { node: op.node },
@@ -148,6 +148,26 @@ pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
         return Ok(());
     }
     rebuild_materialized(db)
+}
+
+pub(super) unsafe extern "C" fn treecrdt_ensure_materialized(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    _argv: *mut *mut sqlite3_value,
+) {
+    if argc != 0 {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_ensure_materialized expects 0 args\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
+
+    let db = sqlite_context_db_handle(ctx);
+    match ensure_materialized(db) {
+        Ok(()) => sqlite_result_int(ctx, 1),
+        Err(rc) => sqlite_result_error_code(ctx, rc),
+    }
 }
 
 fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
@@ -257,7 +277,7 @@ pub(super) fn append_ops_impl(
     }
 
     let insert_sql = CString::new(
-        "INSERT OR IGNORE INTO ops (replica,counter,lamport,kind,parent,node,new_parent,position,known_state,payload,op_ref) \
+        "INSERT OR IGNORE INTO ops (replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,op_ref) \
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
     )
     .expect("insert ops sql");
@@ -326,9 +346,21 @@ pub(super) fn append_ops_impl(
             } else {
                 bind_err |= sqlite_bind_null(stmt, 7) != SQLITE_OK as c_int;
             }
-            if let Some(pos) = op.position {
-                bind_err |= sqlite_bind_int64(stmt, 8, (pos.min(i64::MAX as u64)) as i64)
-                    != SQLITE_OK as c_int;
+            if let Some(ref order_key) = op.order_key {
+                if order_key.is_empty() {
+                    // Distinguish empty key from NULL.
+                    let empty: [u8; 0] = [];
+                    bind_err |= sqlite_bind_blob(stmt, 8, empty.as_ptr() as *const c_void, 0, None)
+                        != SQLITE_OK as c_int;
+                } else {
+                    bind_err |= sqlite_bind_blob(
+                        stmt,
+                        8,
+                        order_key.as_ptr() as *const c_void,
+                        order_key.len() as c_int,
+                        None,
+                    ) != SQLITE_OK as c_int;
+                }
             } else {
                 bind_err |= sqlite_bind_null(stmt, 8) != SQLITE_OK as c_int;
             }
@@ -429,6 +461,12 @@ pub(super) fn append_ops_impl(
                 materialize_ok = false;
                 continue;
             }
+            if (kind_parsed == MaterializeKind::Insert || kind_parsed == MaterializeKind::Move)
+                && op.order_key.is_none()
+            {
+                materialize_ok = false;
+                continue;
+            }
 
             let known_state = match op.known_state.as_ref() {
                 Some(bytes) if !bytes.is_empty() => match deserialize_version_vector(bytes) {
@@ -449,7 +487,7 @@ pub(super) fn append_ops_impl(
                 parent: parent_id,
                 node,
                 new_parent: new_parent_id,
-                position: op.position.unwrap_or(0).min(usize::MAX as u64) as usize,
+                order_key: op.order_key.clone().unwrap_or_default(),
                 known_state,
                 payload: op.payload.clone(),
             });
