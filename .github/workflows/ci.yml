@@ -125,5 +125,8 @@ jobs:
     - name: Run browser tests
       run: pnpm run test:browser
 
+    - name: Run playground e2e tests
+      run: pnpm --filter @treecrdt/playground run test:e2e
+
     - name: Run native node tests
       run: pnpm run test:native-node
