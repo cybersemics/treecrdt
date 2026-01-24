@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { Operation, OperationKind } from "@treecrdt/interface";
+import { allocateBetween, makeOrderKeySeed, type Operation, type OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
@@ -29,7 +29,6 @@ import {
 import { ParentPicker } from "./playground/components/ParentPicker";
 import { TreeRow } from "./playground/components/TreeRow";
 import { compareOps, mergeSortedOps, opKey, renderKind } from "./playground/ops";
-import { allocateBetween, allocateOrderKeyAfter, makeOrderKeySeed } from "./playground/orderKey";
 import { compareOpMeta } from "./playground/payload";
 import {
   ensureOpfsKey,
@@ -811,26 +810,22 @@ export default function App() {
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
-      counterRef.current += 1;
-      lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
+      let op: Operation;
+      if (kind.type === "payload") {
+        op = await client.local.payload(replicaId, kind.node, kind.payload);
+      } else if (kind.type === "delete") {
+        op = await client.local.delete(replicaId, kind.node);
+      } else {
+        throw new Error(`unsupported operation kind: ${kind.type}`);
+      }
 
-      const baseMeta = {
-        id: { replica: replicaId, counter: counterRef.current },
-        lamport: lamportRef.current,
-      };
-      const knownState = kind.type === "delete" ? await client.tree.subtreeKnownState(kind.node) : undefined;
-
-      const op: Operation = {
-        meta: knownState ? { ...baseMeta, knownState } : baseMeta,
-        kind,
-      };
-
-      await client.ops.append(op);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
       ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
+      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
+      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
     } catch (err) {
       console.error("Failed to append op", err);
@@ -845,30 +840,15 @@ export default function App() {
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
-
-      counterRef.current += 1;
-      lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
-      const meta = {
-        id: { replica: replicaId, counter: counterRef.current },
-        lamport: lamportRef.current,
-      };
-
-      const orderKeys = await snapshotOrderKeys(client);
-      const siblings = treeStateRef.current.childrenByParent[newParent] ?? [];
-      const seed = makeOrderKeySeed(replicaId, meta.id.counter);
-      const orderKey = allocateOrderKeyAfter({ siblings, node: nodeId, after, orderKeys, seed });
-
-      const op: Operation = {
-        meta,
-        kind: { type: "move", node: nodeId, newParent, orderKey },
-      };
-
-      await client.ops.append(op);
+      const placement = after ? { type: "after" as const, after } : { type: "first" as const };
+      const op = await client.local.move(replicaId, nodeId, newParent, placement);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
       ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
+      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
+      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
     } catch (err) {
       console.error("Failed to append move op", err);
@@ -1013,7 +993,45 @@ export default function App() {
   };
 
   const handleInsert = async (parentId: string) => {
-    await handleAddNodes(parentId, 1, { fanout: 0 });
+    if (!client) return;
+    setBusy(true);
+    try {
+      const stateBefore = treeStateRef.current;
+      const valueBase = newNodeValue.trim();
+      const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
+      const nodeId = makeNodeId();
+      const op = await client.local.insert(replicaId, parentId, nodeId, { type: "last" }, payload);
+      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
+      ingestPayloadOps([op]);
+      ingestOps([op], { assumeSorted: true });
+      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
+      scheduleRefreshNodeCount();
+      if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
+        await ensureChildrenLoaded(parentId, { force: true });
+      }
+      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
+      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
+      setHeadLamport(lamportRef.current);
+      setCollapse((prev) => {
+        const overrides = new Set(prev.overrides);
+        const setExpanded = (id: string) => {
+          if (prev.defaultCollapsed) overrides.add(id);
+          else overrides.delete(id);
+        };
+        setExpanded(parentId);
+        let cur = index[parentId]?.parentId ?? null;
+        while (cur) {
+          setExpanded(cur);
+          cur = index[cur]?.parentId ?? null;
+        }
+        return { ...prev, overrides };
+      });
+    } catch (err) {
+      console.error("Failed to insert node", err);
+      setError("Failed to insert node (see console)");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleSetValue = async (nodeId: string, value: string) => {

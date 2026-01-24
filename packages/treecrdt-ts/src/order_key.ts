@@ -1,5 +1,5 @@
-import type { ReplicaId } from "@treecrdt/interface";
-import { replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { ReplicaId } from "./index.js";
+import { replicaIdToBytes } from "./ids.js";
 
 const ORDER_KEY_DOMAIN = new TextEncoder().encode("treecrdt/order_key/v0");
 const DIGIT_BYTES = 2;
@@ -77,11 +77,7 @@ function chooseInRange(seed: Uint8Array, depth: number, lo: number, hi: number):
  * Encoding matches core: variable-length sequence of big-endian u16 “digits”.
  * Allocation is LSEQ-inspired (bounded window near one side).
  */
-export function allocateBetween(
-  left: Uint8Array | null,
-  right: Uint8Array | null,
-  seed: Uint8Array
-): Uint8Array {
+export function allocateBetween(left: Uint8Array | null, right: Uint8Array | null, seed: Uint8Array): Uint8Array {
   const leftDigits = decodeDigits(left ?? new Uint8Array());
   const rightDigits = decodeDigits(right ?? new Uint8Array());
 
@@ -143,6 +139,8 @@ function keyFor(orderKeys: Map<string, Uint8Array>, nodeId: string | null | unde
 /**
  * Given the current sibling list (node ids) for a parent, allocate an order_key
  * as if performing an `insert_after(parent, node, after)` / `move_after(node, parent, after)`.
+ *
+ * `after = null` means insert at the beginning (before the first child).
  */
 export function allocateOrderKeyAfter(opts: {
   siblings: string[];

@@ -1,10 +1,14 @@
 import { detectOpfsSupport } from "./opfs.js";
 import type { Operation } from "@treecrdt/interface";
 import {
+  createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
   decodeSqliteTreeRows,
+  type SqliteRunner,
+  type TreecrdtSqlitePlacement,
+  type TreecrdtSqliteWriter,
 } from "@treecrdt/interface/sqlite";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { Database } from "./index.js";
@@ -47,6 +51,19 @@ export type TreecrdtMetaApi = {
   replicaMaxCounter: (replica: Operation["meta"]["id"]["replica"]) => Promise<number>;
 };
 
+export type TreecrdtLocalApi = {
+  insert: (
+    replica: string,
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null
+  ) => Promise<Operation>;
+  move: (replica: string, node: string, newParent: string, placement: TreecrdtSqlitePlacement) => Promise<Operation>;
+  delete: (replica: string, node: string) => Promise<Operation>;
+  payload: (replica: string, node: string, payload: Uint8Array | null) => Promise<Operation>;
+};
+
 export type TreecrdtClient = {
   mode: ClientMode;
   storage: StorageMode;
@@ -55,6 +72,7 @@ export type TreecrdtClient = {
   opRefs: TreecrdtOpRefsApi;
   tree: TreecrdtTreeApi;
   meta: TreecrdtMetaApi;
+  local: TreecrdtLocalApi;
   close: () => Promise<void>;
 };
 
@@ -210,6 +228,15 @@ async function createDirectClient(opts: {
   const finalStorage: StorageMode = opened.storage;
   const filename = opened.filename;
   const adapter = opened.api;
+  const runner: SqliteRunner = { exec: (sql) => db.exec(sql), getText: (sql, params = []) => dbGetText(db, sql, params) };
+  const localWriters = new Map<string, TreecrdtSqliteWriter>();
+  const localWriterFor = (replica: string) => {
+    const existing = localWriters.get(replica);
+    if (existing) return existing;
+    const next = createTreecrdtSqliteWriter(runner, { replica });
+    localWriters.set(replica, next);
+    return next;
+  };
   const wrapError = (stage: string, err: unknown) =>
     new Error(
       JSON.stringify({
@@ -270,6 +297,22 @@ async function createDirectClient(opts: {
             typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
           return (await adapter.replicaMaxCounter(replica)) as any;
         }
+        case "localInsert": {
+          const [replica, parent, node, placement, payload] = params as RpcParams<"localInsert">;
+          return (await localWriterFor(replica).insert(parent, node, placement, payload ? { payload } : {})) as any;
+        }
+        case "localMove": {
+          const [replica, node, newParent, placement] = params as RpcParams<"localMove">;
+          return (await localWriterFor(replica).move(node, newParent, placement)) as any;
+        }
+        case "localDelete": {
+          const [replica, node] = params as RpcParams<"localDelete">;
+          return (await localWriterFor(replica).delete(node)) as any;
+        }
+        case "localPayload": {
+          const [replica, node, payload] = params as RpcParams<"localPayload">;
+          return (await localWriterFor(replica).payload(node, payload)) as any;
+        }
         case "close":
           if (db.close) await db.close();
           return undefined as any;
@@ -318,6 +361,19 @@ function makeTreecrdtClientFromCall(opts: {
   const headLamportImpl = async () => Number(await call("headLamport", []));
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
     Number(await call("replicaMaxCounter", [Array.from(encodeReplica(replica))]));
+  const localInsertImpl = async (
+    replica: string,
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null
+  ) => (await call("localInsert", [replica, parent, node, placement, payload])) as unknown as Operation;
+  const localMoveImpl = async (replica: string, node: string, newParent: string, placement: TreecrdtSqlitePlacement) =>
+    (await call("localMove", [replica, node, newParent, placement])) as unknown as Operation;
+  const localDeleteImpl = async (replica: string, node: string) =>
+    (await call("localDelete", [replica, node])) as unknown as Operation;
+  const localPayloadImpl = async (replica: string, node: string, payload: Uint8Array | null) =>
+    (await call("localPayload", [replica, node, payload])) as unknown as Operation;
 
   return {
     mode: opts.mode,
@@ -339,6 +395,12 @@ function makeTreecrdtClientFromCall(opts: {
       nodeCount: treeNodeCountImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
+    local: {
+      insert: localInsertImpl,
+      move: localMoveImpl,
+      delete: localDeleteImpl,
+      payload: localPayloadImpl,
+    },
     close: opts.close,
   };
 }
