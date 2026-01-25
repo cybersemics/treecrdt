@@ -132,9 +132,7 @@ fn local_insert_returns_appended_insert_op() {
     let expected = allocate_between(None, None, &seed).expect("allocate_between");
     assert_eq!(op.order_key.as_ref().unwrap(), &expected);
 
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0))
-        .unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 1);
 }
 
@@ -156,7 +154,15 @@ fn local_insert_after_is_deterministic_for_single_gap() {
         let _: i64 = conn
             .query_row(
                 "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
-                rusqlite::params![replica.clone(), counter, counter, "insert", parent, node, order_key],
+                rusqlite::params![
+                    replica.clone(),
+                    counter,
+                    counter,
+                    "insert",
+                    parent,
+                    node,
+                    order_key
+                ],
                 |row| row.get(0),
             )
             .unwrap();
@@ -174,7 +180,10 @@ fn local_insert_after_is_deterministic_for_single_gap() {
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "insert");
-    assert_eq!(op.order_key.as_ref().unwrap(), &(2u16).to_be_bytes().to_vec());
+    assert_eq!(
+        op.order_key.as_ref().unwrap(),
+        &(2u16).to_be_bytes().to_vec()
+    );
 }
 
 #[test]
@@ -206,7 +215,10 @@ fn local_insert_last_is_deterministic_for_single_gap() {
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "insert");
-    assert_eq!(op.order_key.as_ref().unwrap(), &(0xfffeu16).to_be_bytes().to_vec());
+    assert_eq!(
+        op.order_key.as_ref().unwrap(),
+        &(0xfffeu16).to_be_bytes().to_vec()
+    );
 }
 
 #[test]
@@ -232,7 +244,15 @@ fn local_move_allocates_key_excluding_self() {
         let _: i64 = conn
             .query_row(
                 "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
-                rusqlite::params![replica.clone(), counter, counter, "insert", parent, node, order_key],
+                rusqlite::params![
+                    replica.clone(),
+                    counter,
+                    counter,
+                    "insert",
+                    parent,
+                    node,
+                    order_key
+                ],
                 |row| row.get(0),
             )
             .unwrap();
@@ -242,7 +262,12 @@ fn local_move_allocates_key_excluding_self() {
     let json: String = conn
         .query_row(
             "SELECT treecrdt_local_move(?1, ?2, ?3, 'after', ?4)",
-            rusqlite::params![replica.clone(), node_b.clone(), parent.clone(), node_a.clone()],
+            rusqlite::params![
+                replica.clone(),
+                node_b.clone(),
+                parent.clone(),
+                node_a.clone()
+            ],
             |row| row.get(0),
         )
         .unwrap();

@@ -28,8 +28,7 @@ pub(super) fn allocate_order_key(
         "first" => (None, select_first_child_order_key(db, parent, exclude)?),
         "last" => (select_last_child_order_key(db, parent, exclude)?, None),
         "after" => {
-            let after_node =
-                after.ok_or_else(|| SQLITE_ERROR as c_int)?;
+            let after_node = after.ok_or_else(|| SQLITE_ERROR as c_int)?;
             if exclude.map_or(false, |ex| ex == after_node) {
                 return Err(SQLITE_ERROR as c_int);
             }
@@ -184,7 +183,13 @@ fn select_child_order_key(
         return Err(rc);
     }
     unsafe {
-        sqlite_bind_blob(stmt, 1, node.as_ptr() as *const c_void, node.len() as c_int, None);
+        sqlite_bind_blob(
+            stmt,
+            1,
+            node.as_ptr() as *const c_void,
+            node.len() as c_int,
+            None,
+        );
         sqlite_bind_blob(
             stmt,
             2,

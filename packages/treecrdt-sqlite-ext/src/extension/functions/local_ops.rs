@@ -52,9 +52,7 @@ fn read_text(val: *mut sqlite3_value) -> String {
         if ptr.is_null() || len == 0 {
             return String::new();
         }
-        std::str::from_utf8(slice::from_raw_parts(ptr, len))
-            .unwrap_or("")
-            .to_string()
+        std::str::from_utf8(slice::from_raw_parts(ptr, len)).unwrap_or("").to_string()
     }
 }
 
@@ -137,9 +135,7 @@ fn subtree_known_state_bytes(db: *mut sqlite3, node: [u8; 16]) -> Result<Vec<u8>
     );
 
     let node_id = NodeId(u128::from_be_bytes(node));
-    let vv = tree
-        .subtree_version_vector(node_id)
-        .map_err(|_| SQLITE_ERROR as c_int)?;
+    let vv = tree.subtree_version_vector(node_id).map_err(|_| SQLITE_ERROR as c_int)?;
 
     serde_json::to_vec(&vv).map_err(|_| SQLITE_ERROR as c_int)
 }
@@ -249,14 +245,14 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
     let seed = make_seed(&replica, counter);
 
     let after_ref = after.as_ref();
-    let order_key = match allocate_order_key(db, &parent, placement.as_str(), after_ref, None, &seed)
-    {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
+    let order_key =
+        match allocate_order_key(db, &parent, placement.as_str(), after_ref, None, &seed) {
+            Ok(v) => v,
+            Err(rc) => {
+                sqlite_result_error_code(ctx, rc);
+                return;
+            }
+        };
 
     let op = JsonAppendOp {
         replica: replica.clone(),
@@ -271,9 +267,12 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         payload: payload.clone(),
     };
 
-    if let Err(rc) =
-        append_ops_impl(db, &doc_id, "treecrdt_local_insert", std::slice::from_ref(&op))
-    {
+    if let Err(rc) = append_ops_impl(
+        db,
+        &doc_id,
+        "treecrdt_local_insert",
+        std::slice::from_ref(&op),
+    ) {
         sqlite_result_error_code(ctx, rc);
         return;
     }
@@ -338,8 +337,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_move: new_parent must be 16-byte BLOB\0".as_ptr()
-                    as *const c_char,
+                b"treecrdt_local_move: new_parent must be 16-byte BLOB\0".as_ptr() as *const c_char,
             );
             return;
         }
@@ -412,8 +410,12 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         payload: None,
     };
 
-    if let Err(rc) = append_ops_impl(db, &doc_id, "treecrdt_local_move", std::slice::from_ref(&op))
-    {
+    if let Err(rc) = append_ops_impl(
+        db,
+        &doc_id,
+        "treecrdt_local_move",
+        std::slice::from_ref(&op),
+    ) {
         sqlite_result_error_code(ctx, rc);
         return;
     }
@@ -519,9 +521,12 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
         payload: None,
     };
 
-    if let Err(rc) =
-        append_ops_impl(db, &doc_id, "treecrdt_local_delete", std::slice::from_ref(&op))
-    {
+    if let Err(rc) = append_ops_impl(
+        db,
+        &doc_id,
+        "treecrdt_local_delete",
+        std::slice::from_ref(&op),
+    ) {
         sqlite_result_error_code(ctx, rc);
         return;
     }
@@ -621,9 +626,12 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         payload: payload.clone(),
     };
 
-    if let Err(rc) =
-        append_ops_impl(db, &doc_id, "treecrdt_local_payload", std::slice::from_ref(&op))
-    {
+    if let Err(rc) = append_ops_impl(
+        db,
+        &doc_id,
+        "treecrdt_local_payload",
+        std::slice::from_ref(&op),
+    ) {
         sqlite_result_error_code(ctx, rc);
         return;
     }
