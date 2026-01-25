@@ -446,25 +446,6 @@ pub(super) fn sqlite_result_text(
     }
 }
 
-pub(super) fn sqlite_result_blob(
-    ctx: *mut sqlite3_context,
-    val: *const c_void,
-    len: c_int,
-    destructor: Option<unsafe extern "C" fn(*mut c_void)>,
-) {
-    #[cfg(feature = "ext-sqlite")]
-    {
-        let api = api().expect("api table");
-        unsafe {
-            (api.result_blob.unwrap())(ctx, val, len, destructor);
-        }
-    }
-    #[cfg(feature = "static-link")]
-    unsafe {
-        ffi::sqlite3_result_blob(ctx, val, len, destructor);
-    }
-}
-
 pub(super) fn sqlite_result_error_code(ctx: *mut sqlite3_context, code: c_int) {
     #[cfg(feature = "ext-sqlite")]
     {
@@ -492,21 +473,6 @@ pub(super) fn sqlite_result_int(ctx: *mut sqlite3_context, val: c_int) {
     #[cfg(feature = "static-link")]
     unsafe {
         ffi::sqlite3_result_int(ctx, val);
-    }
-}
-
-pub(super) fn sqlite_result_int64(ctx: *mut sqlite3_context, val: i64) {
-    #[cfg(feature = "ext-sqlite")]
-    {
-        if let Some(api) = api() {
-            unsafe {
-                (api.result_int64.unwrap())(ctx, val);
-            }
-        }
-    }
-    #[cfg(feature = "static-link")]
-    unsafe {
-        ffi::sqlite3_result_int64(ctx, val);
     }
 }
 
@@ -614,15 +580,6 @@ pub(super) unsafe fn column_blob16(
     let mut out = [0u8; 16];
     out.copy_from_slice(bytes);
     Ok(Some(out))
-}
-
-pub(super) unsafe fn column_int_opt(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<u64> {
-    let ty = unsafe { sqlite_column_type(stmt, idx) };
-    if ty == SQLITE_NULL as c_int {
-        None
-    } else {
-        Some(unsafe { sqlite_column_int64(stmt, idx) as u64 })
-    }
 }
 
 pub(super) unsafe fn bind_blob(

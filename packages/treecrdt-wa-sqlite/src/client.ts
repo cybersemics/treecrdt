@@ -43,7 +43,6 @@ export type TreecrdtTreeApi = {
   children: (parent: string) => Promise<string[]>;
   dump: () => Promise<TreeNodeRow[]>;
   nodeCount: () => Promise<number>;
-  subtreeKnownState: (node: string) => Promise<Uint8Array>;
 };
 
 export type TreecrdtMetaApi = {
@@ -279,12 +278,6 @@ async function createDirectClient(opts: {
           const [parent] = params as RpcParams<"treeChildren">;
           return (await adapter.treeChildren(nodeIdToBytes16(parent))) as any;
         }
-        case "subtreeKnownState": {
-          const [node] = params as RpcParams<"subtreeKnownState">;
-          const json = await dbGetText(db, "SELECT treecrdt_subtree_known_state(?1)", [nodeIdToBytes16(node)]);
-          if (!json) throw new Error("treecrdt_subtree_known_state returned empty result");
-          return Array.from(new TextEncoder().encode(json)) as any;
-        }
         case "treeDump":
           return (await adapter.treeDump()) as any;
         case "treeNodeCount":
@@ -355,7 +348,6 @@ function makeTreecrdtClientFromCall(opts: {
   const opsByOpRefsImpl = async (opRefs: Uint8Array[]) =>
     decodeSqliteOps(await call("opsByOpRefs", [opRefs.map((r) => Array.from(r))]));
   const treeChildrenImpl = async (parent: string) => decodeSqliteNodeIds(await call("treeChildren", [parent]));
-  const subtreeKnownStateImpl = async (node: string) => Uint8Array.from(await call("subtreeKnownState", [node]));
   const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", []));
   const treeNodeCountImpl = async () => Number(await call("treeNodeCount", []));
   const headLamportImpl = async () => Number(await call("headLamport", []));
@@ -390,7 +382,6 @@ function makeTreecrdtClientFromCall(opts: {
     opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
     tree: {
       children: treeChildrenImpl,
-      subtreeKnownState: subtreeKnownStateImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
     },

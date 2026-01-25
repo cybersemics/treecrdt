@@ -24,7 +24,6 @@ const methods = {
   opRefsChildren,
   opsByOpRefs,
   treeChildren,
-  subtreeKnownState,
   treeDump,
   treeNodeCount,
   headLamport,
@@ -120,13 +119,6 @@ async function treeChildren(parent: string) {
   return await api.treeChildren(nodeIdToBytes16(parent));
 }
 
-async function subtreeKnownState(node: string) {
-  const db = ensureDb();
-  const json = await dbGetText(db, "SELECT treecrdt_subtree_known_state(?1)", [nodeIdToBytes16(node)]);
-  if (!json) throw new Error("treecrdt_subtree_known_state returned empty result");
-  return Array.from(new TextEncoder().encode(json));
-}
-
 async function treeDump() {
   const api = ensureApi();
   return await api.treeDump();
@@ -180,11 +172,6 @@ async function close() {
 function ensureApi(): TreecrdtAdapter {
   if (!db || !api) throw new Error("db not initialized");
   return api;
-}
-
-function ensureDb(): Database {
-  if (!db) throw new Error("db not initialized");
-  return db;
 }
 
 function ensureRunner(): SqliteRunner {

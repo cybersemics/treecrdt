@@ -24,7 +24,6 @@ export type RpcSchema = {
   opRefsChildren: { params: [parent: string]; result: unknown[] };
   opsByOpRefs: { params: [opRefs: number[][]]; result: unknown[] };
   treeChildren: { params: [parent: string]; result: unknown[] };
-  subtreeKnownState: { params: [node: string]; result: number[] };
   treeDump: { params: []; result: unknown[] };
   treeNodeCount: { params: []; result: number };
   headLamport: { params: []; result: number };

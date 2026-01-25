@@ -8,7 +8,6 @@ import {
   replicaIdToBytes,
 } from "./ids.js";
 import type { Operation, OperationKind, ReplicaId } from "./index.js";
-import { makeOrderKeySeed } from "./order_key.js";
 
 export type SqlCall = {
   sql: string;
@@ -452,90 +451,56 @@ export type TreecrdtSqliteWriter = {
   payload: (node: string, payload: Uint8Array | null) => Promise<Operation>;
 };
 
-async function treecrdtSubtreeKnownState(runner: SqliteRunner, node: Uint8Array): Promise<Uint8Array> {
-  const json = await runner.getText("SELECT treecrdt_subtree_known_state(?1)", [node]);
-  if (!json) throw new Error("treecrdt_subtree_known_state returned empty result");
-  return new TextEncoder().encode(json);
-}
-
-async function treecrdtAllocateOrderKey(
-  runner: SqliteRunner,
-  parent: Uint8Array,
-  placement: TreecrdtSqlitePlacement,
-  excludeNode: Uint8Array | null,
-  seed: Uint8Array
-): Promise<Uint8Array> {
-  const afterNode = placement.type === "after" ? nodeIdToBytes16(placement.after) : null;
-  const hex = await runner.getText(
-    "SELECT lower(hex(treecrdt_allocate_order_key(?1, ?2, ?3, ?4, ?5)))",
-    [parent, placement.type, afterNode, excludeNode, seed]
-  );
-  if (hex === null) throw new Error("treecrdt_allocate_order_key returned NULL");
-  return hexToBytes(hex);
-}
-
 export function createTreecrdtSqliteWriter(runner: SqliteRunner, opts: { replica: ReplicaId }): TreecrdtSqliteWriter {
   const replica = opts.replica;
   const replicaBytes = replicaIdToBytes(replica);
-  let counter = 0;
-  let lamport = 0;
-  let initialized = false;
 
-  const init = async () => {
-    if (initialized) return;
-    const [headLamport, maxCounter] = await Promise.all([
-      treecrdtHeadLamport(runner),
-      treecrdtReplicaMaxCounter(runner, replicaBytes),
+  const getLocalOp = async (sql: string, params: SqlCall["params"]) => {
+    const raw = await sqliteGetJson<unknown[]>(runner, sql, params);
+    const ops = decodeSqliteOps(raw);
+    if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
+    return ops[0]!;
+  };
+
+  const insert = async (
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    o: { payload?: Uint8Array } = {}
+  ) => {
+    const afterNode = placement.type === "after" ? nodeIdToBytes16(placement.after) : null;
+    const payload = o.payload ?? null;
+    return getLocalOp("SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)", [
+      replicaBytes,
+      nodeIdToBytes16(parent),
+      nodeIdToBytes16(node),
+      placement.type,
+      afterNode,
+      payload,
     ]);
-    lamport = Math.max(lamport, headLamport);
-    counter = Math.max(counter, maxCounter);
-    initialized = true;
-  };
-
-  const nextMeta = async () => {
-    await init();
-    const headLamport = await treecrdtHeadLamport(runner);
-    lamport = Math.max(lamport, headLamport) + 1;
-    counter += 1;
-    return { id: { replica, counter }, lamport };
-  };
-
-  const insert = async (parent: string, node: string, placement: TreecrdtSqlitePlacement, o: { payload?: Uint8Array } = {}) => {
-    const meta = await nextMeta();
-    const payload = o.payload;
-    const seed = makeOrderKeySeed(replica, meta.id.counter);
-    const orderKey = await treecrdtAllocateOrderKey(runner, nodeIdToBytes16(parent), placement, null, seed);
-    const kind: OperationKind =
-      payload !== undefined
-        ? { type: "insert", parent, node, orderKey, payload }
-        : { type: "insert", parent, node, orderKey };
-    const op: Operation = { meta, kind };
-    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
-    return op;
   };
 
   const move = async (node: string, newParent: string, placement: TreecrdtSqlitePlacement) => {
-    const meta = await nextMeta();
-    const seed = makeOrderKeySeed(replica, meta.id.counter);
-    const orderKey = await treecrdtAllocateOrderKey(runner, nodeIdToBytes16(newParent), placement, nodeIdToBytes16(node), seed);
-    const op: Operation = { meta, kind: { type: "move", node, newParent, orderKey } };
-    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
-    return op;
+    const afterNode = placement.type === "after" ? nodeIdToBytes16(placement.after) : null;
+    return getLocalOp("SELECT treecrdt_local_move(?1,?2,?3,?4,?5)", [
+      replicaBytes,
+      nodeIdToBytes16(node),
+      nodeIdToBytes16(newParent),
+      placement.type,
+      afterNode,
+    ]);
   };
 
   const del = async (node: string) => {
-    const meta = await nextMeta();
-    const knownState = await treecrdtSubtreeKnownState(runner, nodeIdToBytes16(node));
-    const op: Operation = { meta: { ...meta, knownState }, kind: { type: "delete", node } };
-    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
-    return op;
+    return getLocalOp("SELECT treecrdt_local_delete(?1,?2)", [replicaBytes, nodeIdToBytes16(node)]);
   };
 
   const payload = async (node: string, next: Uint8Array | null) => {
-    const meta = await nextMeta();
-    const op: Operation = { meta, kind: { type: "payload", node, payload: next } };
-    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
-    return op;
+    return getLocalOp("SELECT treecrdt_local_payload(?1,?2,?3)", [
+      replicaBytes,
+      nodeIdToBytes16(node),
+      next,
+    ]);
   };
 
   return { insert, move, delete: del, payload };
