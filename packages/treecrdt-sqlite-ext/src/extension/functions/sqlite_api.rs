@@ -110,6 +110,12 @@ mod ffi {
             n: c_int,
             destructor: Option<unsafe extern "C" fn(*mut c_void)>,
         );
+        pub fn sqlite3_result_blob(
+            ctx: *mut sqlite3_context,
+            val: *const c_void,
+            n: c_int,
+            destructor: Option<unsafe extern "C" fn(*mut c_void)>,
+        );
         pub fn sqlite3_result_error_code(ctx: *mut sqlite3_context, code: c_int);
         pub fn sqlite3_result_int(ctx: *mut sqlite3_context, value: c_int);
         pub fn sqlite3_result_int64(ctx: *mut sqlite3_context, value: i64);
@@ -437,6 +443,25 @@ pub(super) fn sqlite_result_text(
     #[cfg(feature = "static-link")]
     unsafe {
         ffi::sqlite3_result_text(ctx, val, len, destructor);
+    }
+}
+
+pub(super) fn sqlite_result_blob(
+    ctx: *mut sqlite3_context,
+    val: *const c_void,
+    len: c_int,
+    destructor: Option<unsafe extern "C" fn(*mut c_void)>,
+) {
+    #[cfg(feature = "ext-sqlite")]
+    {
+        let api = api().expect("api table");
+        unsafe {
+            (api.result_blob.unwrap())(ctx, val, len, destructor);
+        }
+    }
+    #[cfg(feature = "static-link")]
+    unsafe {
+        ffi::sqlite3_result_blob(ctx, val, len, destructor);
     }
 }
 
