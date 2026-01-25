@@ -6,12 +6,14 @@ fn payload_lww_tie_breaker_converges() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
     let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, Vec::new());
@@ -38,12 +40,14 @@ fn payload_clear_is_last_writer_wins() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
     let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, Vec::new());
@@ -69,7 +73,8 @@ fn payload_can_arrive_before_insert() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
     let insert = Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, Vec::new());
@@ -90,7 +95,8 @@ fn insert_with_payload_sets_value() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
     let insert = Operation::insert_with_payload(
@@ -116,7 +122,8 @@ fn insert_payload_does_not_override_newer_payload() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
     let insert = Operation::insert_with_payload(

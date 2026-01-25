@@ -6,7 +6,8 @@ fn applies_insert_after_parent_arrives_out_of_order() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -28,7 +29,8 @@ fn move_applied_after_insert_when_delivered_out_of_order() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let node = NodeId(2);
@@ -63,7 +65,7 @@ fn replay_rebuilds_state_and_advanced_clock() {
     storage.apply(node_insert.clone()).unwrap();
     storage.apply(parent_insert.clone()).unwrap();
 
-    let mut crdt = TreeCrdt::new(replica.clone(), storage, LamportClock::default());
+    let mut crdt = TreeCrdt::new(replica.clone(), storage, LamportClock::default()).unwrap();
     crdt.replay_from_storage().unwrap();
 
     assert_eq!(crdt.parent(node).unwrap(), Some(parent));

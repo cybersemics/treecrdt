@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
-use crate::ids::{Lamport, NodeId, OperationId};
+use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{cmp_ops, Operation};
 use crate::version_vector::VersionVector;
 
@@ -26,6 +26,19 @@ pub trait Storage {
     fn apply(&mut self, op: Operation) -> Result<bool>;
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>>;
     fn latest_lamport(&self) -> Lamport;
+    /// Return the maximum counter observed for `replica`, or 0 if absent.
+    ///
+    /// This is used to ensure locally-minted operation ids remain monotonic across restarts.
+    /// Storage backends should override this with an efficient query when possible.
+    fn latest_counter(&self, replica: &ReplicaId) -> Result<u64> {
+        let ops = self.load_since(0)?;
+        Ok(ops
+            .iter()
+            .filter(|op| &op.meta.id.replica == replica)
+            .map(|op| op.meta.id.counter)
+            .max()
+            .unwrap_or(0))
+    }
 
     /// Iterate operations since `lamport` in canonical op-key order.
     ///
@@ -204,6 +217,16 @@ impl Storage for MemoryStorage {
 
     fn latest_lamport(&self) -> Lamport {
         self.ops.iter().map(|op| op.meta.lamport).max().unwrap_or_default()
+    }
+
+    fn latest_counter(&self, replica: &ReplicaId) -> Result<u64> {
+        Ok(self
+            .ops
+            .iter()
+            .filter(|op| &op.meta.id.replica == replica)
+            .map(|op| op.meta.id.counter)
+            .max()
+            .unwrap_or(0))
     }
 }
 

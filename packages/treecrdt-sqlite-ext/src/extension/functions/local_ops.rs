@@ -132,7 +132,8 @@ fn subtree_known_state_bytes(db: *mut sqlite3, node: [u8; 16]) -> Result<Vec<u8>
         NoopStorage::default(),
         LamportClock::default(),
         node_store,
-    );
+    )
+    .map_err(|_| SQLITE_ERROR as c_int)?;
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let vv = tree.subtree_version_vector(node_id).map_err(|_| SQLITE_ERROR as c_int)?;

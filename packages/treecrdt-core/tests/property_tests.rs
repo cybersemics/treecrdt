@@ -47,7 +47,8 @@ proptest! {
                 ReplicaId::new(b"p"),
                 MemoryStorage::default(),
                 LamportClock::default(),
-            );
+            )
+            .unwrap();
             for op in &perm {
                 crdt.apply_remote(op.clone()).unwrap();
             }

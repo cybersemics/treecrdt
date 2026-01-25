@@ -76,18 +76,21 @@ where
     S: Storage,
     C: Clock,
 {
-    pub fn new(replica_id: ReplicaId, storage: S, clock: C) -> Self {
-        Self {
+    pub fn new(replica_id: ReplicaId, storage: S, clock: C) -> Result<Self> {
+        let counter = storage.latest_counter(&replica_id)?;
+        let mut clock = clock;
+        clock.observe(storage.latest_lamport());
+        Ok(Self {
             replica_id,
             storage,
             clock,
-            counter: 0,
+            counter,
             nodes: MemoryNodeStore::default(),
             version_vector: VersionVector::new(),
             payloads: MemoryPayloadStore::default(),
             head: None,
             op_count: 0,
-        }
+        })
     }
 }
 
@@ -97,18 +100,21 @@ where
     C: Clock,
     N: NodeStore,
 {
-    pub fn with_node_store(replica_id: ReplicaId, storage: S, clock: C, nodes: N) -> Self {
-        Self {
+    pub fn with_node_store(replica_id: ReplicaId, storage: S, clock: C, nodes: N) -> Result<Self> {
+        let counter = storage.latest_counter(&replica_id)?;
+        let mut clock = clock;
+        clock.observe(storage.latest_lamport());
+        Ok(Self {
             replica_id,
             storage,
             clock,
-            counter: 0,
+            counter,
             nodes,
             version_vector: VersionVector::new(),
             payloads: MemoryPayloadStore::default(),
             head: None,
             op_count: 0,
-        }
+        })
     }
 }
 
@@ -119,18 +125,27 @@ where
     N: NodeStore,
     P: PayloadStore,
 {
-    pub fn with_stores(replica_id: ReplicaId, storage: S, clock: C, nodes: N, payloads: P) -> Self {
-        Self {
+    pub fn with_stores(
+        replica_id: ReplicaId,
+        storage: S,
+        clock: C,
+        nodes: N,
+        payloads: P,
+    ) -> Result<Self> {
+        let counter = storage.latest_counter(&replica_id)?;
+        let mut clock = clock;
+        clock.observe(storage.latest_lamport());
+        Ok(Self {
             replica_id,
             storage,
             clock,
-            counter: 0,
+            counter,
             nodes,
             version_vector: VersionVector::new(),
             payloads,
             head: None,
             op_count: 0,
-        }
+        })
     }
 
     fn is_in_order(&self, op: &Operation) -> bool {
@@ -245,6 +260,9 @@ where
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
         self.clock.observe(op.meta.lamport);
         self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
+        if op.meta.id.replica == self.replica_id {
+            self.counter = self.counter.max(op.meta.id.counter);
+        }
 
         if !self.storage.apply(op.clone())? {
             return Ok(None);
@@ -443,6 +461,7 @@ where
 
         self.head = head;
         self.op_count = seq;
+        self.counter = self.counter.max(self.version_vector.get(&self.replica_id));
 
         // Refresh cached tombstone flags and then ensure the latest payload op for each node is
         // discoverable under its current parent.
@@ -498,6 +517,7 @@ where
 
         self.head = head;
         self.op_count = seq;
+        self.counter = self.counter.max(self.version_vector.get(&self.replica_id));
         Ok(())
     }
 

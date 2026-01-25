@@ -14,6 +14,7 @@ fn bench_insert_chain(c: &mut Criterion) {
                         MemoryStorage::default(),
                         LamportClock::default(),
                     )
+                    .unwrap()
                 },
                 |mut crdt| {
                     let mut parent = NodeId::ROOT;
@@ -40,7 +41,8 @@ fn bench_move_siblings(c: &mut Criterion) {
                     ReplicaId::new(b"bench"),
                     MemoryStorage::default(),
                     LamportClock::default(),
-                );
+                )
+                .unwrap();
                 let mut last: Option<NodeId> = None;
                 for i in 0..1_000u64 {
                     let node = NodeId(i as u128 + 1);

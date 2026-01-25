@@ -131,6 +131,17 @@ impl Storage for SqliteStorage {
         let val: Option<i64> = stmt.query_row([], |row| row.get(0)).unwrap_or(None);
         val.and_then(|v| u64::try_from(v).ok()).unwrap_or_default()
     }
+
+    fn latest_counter(&self, replica: &ReplicaId) -> treecrdt_core::Result<u64> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT MAX(counter) FROM ops WHERE replica = ?")
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let val: Option<i64> = stmt
+            .query_row([replica.as_bytes()], |row| row.get(0))
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        Ok(val.and_then(|v| u64::try_from(v).ok()).unwrap_or_default())
+    }
 }
 
 fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
@@ -295,7 +306,7 @@ mod tests {
             ))
             .unwrap();
 
-        let mut crdt = TreeCrdt::new(replica, storage, LamportClock::default());
+        let mut crdt = TreeCrdt::new(replica, storage, LamportClock::default()).unwrap();
         crdt.replay_from_storage().unwrap();
 
         assert_eq!(crdt.parent(child).unwrap(), Some(parent));
