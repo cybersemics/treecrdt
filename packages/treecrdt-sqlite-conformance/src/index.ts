@@ -5,7 +5,8 @@ import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 export type SqliteConformanceContext = {
   docId: string;
   engine: TreecrdtEngine;
-  createEngine: (opts: { docId: string }) => Promise<TreecrdtEngine>;
+  createEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
+  createPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
 };
 
 export type SqliteConformanceScenario = {
@@ -58,6 +59,14 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
     {
       name: "sync: delete known_state propagates (receiver must not recompute)",
       run: scenarioSyncKnownStatePropagation,
+    },
+    {
+      name: "persistence: materialized tree persists across reopen",
+      run: scenarioPersistenceMaterializedTreeReopen,
+    },
+    {
+      name: "persistence: payload persists across reopen",
+      run: scenarioPersistencePayloadReopen,
     },
   ];
 }
@@ -520,32 +529,73 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(ctx: SqliteConforman
 
 async function scenarioSyncKnownStatePropagation(ctx: SqliteConformanceContext): Promise<void> {
   const a = ctx.engine;
-  const b = await ctx.createEngine({ docId: ctx.docId });
+  const b = await ctx.createEngine({ docId: ctx.docId, name: "peer-b" });
 
-  try {
-    const root = nodeIdFromInt(0);
-    const parent = nodeIdFromInt(1);
-    const child = nodeIdFromInt(2);
-    const rA: ReplicaId = "rA";
-    const rB: ReplicaId = "rB";
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  const rA: ReplicaId = "rA";
+  const rB: ReplicaId = "rB";
 
-    // Replica B inserts parent, then syncs it to A.
-    await b.local.insert(rB, root, parent, { type: "last" }, null);
-    await a.ops.appendMany(await b.ops.all());
+  // Replica B inserts parent, then syncs it to A.
+  await b.local.insert(rB, root, parent, { type: "last" }, null);
+  await a.ops.appendMany(await b.ops.all());
 
-    // Replica B inserts a child under parent, but A never sees it.
-    await b.local.insert(rB, parent, child, { type: "last" }, null);
+  // Replica B inserts a child under parent, but A never sees it.
+  await b.local.insert(rB, parent, child, { type: "last" }, null);
 
-    // Replica A deletes parent without being aware of B's child insert.
-    const del = await a.local.delete(rA, parent);
-    assert(del.meta.knownState && del.meta.knownState.length > 0, "local delete must emit knownState");
+  // Replica A deletes parent without being aware of B's child insert.
+  const del = await a.local.delete(rA, parent);
+  assert(del.meta.knownState && del.meta.knownState.length > 0, "local delete must emit knownState");
 
-    // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
-    await b.ops.appendMany(await a.ops.all());
+  // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
+  await b.ops.appendMany(await a.ops.all());
 
-    assertArrayEqual(await b.tree.children(root), [parent], "parent restored after sync delete");
-    assertArrayEqual(await b.tree.children(parent), [child], "child still present after sync delete");
-  } finally {
-    await b.close();
-  }
+  assertArrayEqual(await b.tree.children(root), [parent], "parent restored after sync delete");
+  assertArrayEqual(await b.tree.children(parent), [child], "child still present after sync delete");
+}
+
+async function scenarioPersistenceMaterializedTreeReopen(ctx: SqliteConformanceContext): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+
+  const replica: ReplicaId = "r1";
+  const root = nodeIdFromInt(0);
+  const n1 = nodeIdFromInt(1);
+
+  const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: "db" });
+  await e1.local.insert(replica, root, n1, { type: "last" }, null);
+  assertArrayEqual(await e1.tree.children(root), [n1], "children before close");
+  assertEqual(await e1.tree.nodeCount(), 1, "nodeCount before close");
+  await e1.close();
+
+  const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: "db" });
+  assertArrayEqual(await e2.tree.children(root), [n1], "children after reopen");
+  assertEqual(await e2.tree.nodeCount(), 1, "nodeCount after reopen");
+}
+
+async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+
+  const replica: ReplicaId = "r1";
+  const root = nodeIdFromInt(0);
+  const n1 = nodeIdFromInt(1);
+
+  const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: "db" });
+  await e1.local.insert(replica, root, n1, { type: "last" }, null);
+  await e1.local.payload(replica, n1, new TextEncoder().encode("hello"));
+  await e1.close();
+
+  const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: "db" });
+  assertArrayEqual(await e2.tree.children(root), [n1], "children after reopen (payload)");
+  const refs = await e2.opRefs.children(root);
+  assertEqual(refs.length, 2, "opRefs.children length after reopen (payload)");
+  const ops = await e2.ops.get(refs);
+  const kinds = new Set(ops.map((op) => op.kind.type));
+  assert(kinds.has("insert"), "expected insert op after reopen");
+  assert(kinds.has("payload"), "expected payload op after reopen");
+
+  const payloadOp = ops.find((op) => op.kind.type === "payload");
+  assert(payloadOp, "expected payload op after reopen");
+  if (!payloadOp || payloadOp.kind.type !== "payload") throw new Error("expected payload op");
+  assertEqual(new TextDecoder().decode(payloadOp.kind.payload ?? new Uint8Array()), "hello", "payload contents after reopen");
 }
