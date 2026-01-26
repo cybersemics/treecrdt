@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { allocateBetween, makeOrderKeySeed, type Operation, type OperationKind } from "@treecrdt/interface";
+import { type Operation, type OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
@@ -796,15 +796,6 @@ export default function App() {
     }
   }, [liveAllEnabled]);
 
-  const snapshotOrderKeys = React.useCallback(async (active: TreecrdtClient) => {
-    const rows = await active.tree.dump();
-    const out = new Map<string, Uint8Array>();
-    for (const row of rows) {
-      if (row.orderKey) out.set(row.node, row.orderKey);
-    }
-    return out;
-  }, []);
-
   const appendOperation = async (kind: OperationKind) => {
     if (!client) return;
     setBusy(true);
@@ -858,55 +849,24 @@ export default function App() {
     }
   };
 
-	  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
-	    if (!client) return;
-	    const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
-	    if (normalizedCount <= 0) return;
-	    setBusy(true);
-	    try {
-	      const stateBefore = treeStateRef.current;
-	      const orderKeys = await snapshotOrderKeys(client);
-	      const lastKeyByParent = new Map<string, Uint8Array | null>();
-
-	      const lastKeyForParent = (pid: string): Uint8Array | null => {
-	        if (lastKeyByParent.has(pid)) return lastKeyByParent.get(pid) ?? null;
-	        const siblings = childrenByParent[pid] ?? [];
-	        if (siblings.length === 0) {
-	          lastKeyByParent.set(pid, null);
-	          return null;
-	        }
-	        const last = siblings[siblings.length - 1]!;
-	        const key = orderKeys.get(last);
-	        if (!key) throw new Error(`missing orderKey for existing node: ${last}`);
-	        lastKeyByParent.set(pid, key);
-	        return key;
-	      };
-
-	      const ops: Operation[] = [];
-	      lamportRef.current = Math.max(lamportRef.current, headLamport);
-	      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
+  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
+    if (!client) return;
+    const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
+    if (normalizedCount <= 0) return;
+    setBusy(true);
+    try {
+      const stateBefore = treeStateRef.current;
+      const ops: Operation[] = [];
+      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
       const valueBase = newNodeValue.trim();
       const shouldSetValue = valueBase.length > 0;
 
       if (fanoutLimit <= 0) {
-        let leftKey: Uint8Array | null = lastKeyForParent(parentId);
         for (let i = 0; i < normalizedCount; i++) {
-          counterRef.current += 1;
-          lamportRef.current += 1;
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const seed = makeOrderKeySeed(replicaId, counterRef.current);
-          const orderKey = allocateBetween(leftKey, null, seed);
-          leftKey = orderKey;
-          lastKeyByParent.set(parentId, leftKey);
-          const kind: OperationKind = shouldSetValue
-            ? { type: "insert", parent: parentId, node: nodeId, orderKey, payload: textEncoder.encode(value) }
-            : { type: "insert", parent: parentId, node: nodeId, orderKey };
-          const op: Operation = {
-            meta: { id: { replica: replicaId, counter: counterRef.current }, lamport: lamportRef.current },
-            kind,
-          };
-          ops.push(op);
+          const payload = shouldSetValue ? textEncoder.encode(value) : null;
+          ops.push(await client.local.insert(replicaId, parentId, nodeId, { type: "last" }, payload));
         }
       } else {
         const expanded = new Set<string>();
@@ -943,34 +903,29 @@ export default function App() {
           const targetParent = queue[0] ?? parentId;
           const childCount = getChildCount(targetParent);
 
-          counterRef.current += 1;
-          lamportRef.current += 1;
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const seed = makeOrderKeySeed(replicaId, counterRef.current);
-          const orderKey = allocateBetween(lastKeyForParent(targetParent), null, seed);
-          lastKeyByParent.set(targetParent, orderKey);
-          const kind: OperationKind = shouldSetValue
-            ? { type: "insert", parent: targetParent, node: nodeId, orderKey, payload: textEncoder.encode(value) }
-            : { type: "insert", parent: targetParent, node: nodeId, orderKey };
-          ops.push({
-            meta: { id: { replica: replicaId, counter: counterRef.current }, lamport: lamportRef.current },
-            kind,
-          });
+          const payload = shouldSetValue ? textEncoder.encode(value) : null;
+          ops.push(await client.local.insert(replicaId, targetParent, nodeId, { type: "last" }, payload));
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
         }
       }
-	      await client.ops.appendMany(ops);
-	      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-	      ingestPayloadOps(ops);
-	      ingestOps(ops, { assumeSorted: true });
-	      scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
-	      scheduleRefreshNodeCount();
-	      setHeadLamport(lamportRef.current);
-	      setCollapse((prev) => {
-	        const overrides = new Set(prev.overrides);
+
+      for (const op of ops) {
+        lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
+        counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
+      }
+      setHeadLamport(lamportRef.current);
+
+      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
+      ingestPayloadOps(ops);
+      ingestOps(ops, { assumeSorted: true });
+      scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
+      scheduleRefreshNodeCount();
+      setCollapse((prev) => {
+        const overrides = new Set(prev.overrides);
         const setExpanded = (id: string) => {
           if (prev.defaultCollapsed) overrides.add(id);
           else overrides.delete(id);

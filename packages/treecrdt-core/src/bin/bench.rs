@@ -56,7 +56,7 @@ fn main() {
     let replica = ReplicaId::new(b"core");
     for count in counts {
         let storage = MemoryStorage::default();
-        let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default());
+        let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default()).unwrap();
 
         let start = Instant::now();
         let mut last: Option<NodeId> = None;

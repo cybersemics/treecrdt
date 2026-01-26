@@ -21,6 +21,10 @@
     "./sqlite": {
       "import": "./dist/src/sqlite.js",
       "types": "./dist/src/sqlite.d.ts"
+    },
+    "./engine": {
+      "import": "./dist/src/engine.js",
+      "types": "./dist/src/engine.d.ts"
     }
   },
   "files": [

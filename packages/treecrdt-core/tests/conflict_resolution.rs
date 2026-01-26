@@ -6,7 +6,8 @@ fn higher_lamport_wins_on_conflict() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let x = NodeId(1);
@@ -25,7 +26,8 @@ fn higher_lamport_wins_on_conflict() {
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     crdt_b.apply_remote(insert_left.clone()).unwrap();
     crdt_b.apply_remote(insert_right.clone()).unwrap();
     crdt_b.apply_remote(insert_x.clone()).unwrap();
@@ -52,7 +54,8 @@ fn moves_reordered_by_lamport_and_id() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let a = NodeId(1);
@@ -84,7 +87,8 @@ fn same_lamport_orders_by_op_id() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let a = NodeId(1);

@@ -175,7 +175,8 @@ impl WasmTree {
         let replica_bytes = hex_to_bytes(&replica_hex).unwrap_or_else(|_| b"wasm".to_vec());
         let replica = ReplicaId::new(replica_bytes);
         WasmTree {
-            inner: TreeCrdt::new(replica, MemoryStorage::default(), LamportClock::default()),
+            inner: TreeCrdt::new(replica, MemoryStorage::default(), LamportClock::default())
+                .unwrap(),
         }
     }
 

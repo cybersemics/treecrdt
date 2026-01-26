@@ -85,7 +85,8 @@ fn materialize_ops_in_order(
         LamportClock::default(),
         node_store,
         payload_store,
-    );
+    )
+    .map_err(|_| SQLITE_ERROR as c_int)?;
 
     let mut seq = meta.head_seq;
 
@@ -212,7 +213,8 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
         LamportClock::default(),
         node_store,
         payload_store,
-    );
+    )
+    .map_err(|_| SQLITE_ERROR as c_int)?;
     if crdt.replay_from_storage_with_materialization(&mut op_index).is_err() {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
         return Err(SQLITE_ERROR as c_int);

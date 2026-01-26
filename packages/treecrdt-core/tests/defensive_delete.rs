@@ -6,12 +6,14 @@ fn defensive_delete_parent_then_insert_child_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -55,12 +57,14 @@ fn defensive_delete_parent_then_move_child_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -114,12 +118,14 @@ fn defensive_delete_sibling_moved_same_parent_then_deleted_restores_node() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let first = NodeId(2);
@@ -177,12 +183,14 @@ fn defensive_delete_parent_when_sibling_moved_same_parent_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let first = NodeId(2);
@@ -244,12 +252,14 @@ fn defensive_delete_parent_then_multiple_children_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child1 = NodeId(2);
@@ -299,12 +309,14 @@ fn defensive_delete_insert_then_delete_no_restoration() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -345,12 +357,14 @@ fn defensive_delete_parent_then_payload_change_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
 
@@ -389,12 +403,14 @@ fn defensive_delete_parent_then_payload_change_no_restoration_when_aware() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
 
@@ -427,12 +443,14 @@ fn defensive_delete_later_delete_unaware_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -479,12 +497,14 @@ fn defensive_delete_insert_delete_sequence() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -522,17 +542,20 @@ fn defensive_delete_multiple_deletes_then_insert_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_c = TreeCrdt::new(
         ReplicaId::new(b"c"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -590,12 +613,14 @@ fn defensive_delete_parent_then_modify_grandchild_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -660,12 +685,14 @@ fn delete_unrelated_ops_should_not_prevent_restoration_when_child_insert_was_uns
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child = NodeId(2);
@@ -700,12 +727,14 @@ fn delete_should_restore_when_earlier_child_op_from_same_replica_was_missing() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let child1 = NodeId(2);

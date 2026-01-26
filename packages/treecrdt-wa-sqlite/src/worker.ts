@@ -2,8 +2,8 @@
 import {
   type Database,
 } from "./index.js";
-import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
-import type { Operation } from "@treecrdt/interface";
+import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { Operation, ReplicaId } from "@treecrdt/interface";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
 import { createTreecrdtSqliteWriter, type SqliteRunner, type TreecrdtSqlitePlacement, type TreecrdtSqliteWriter } from "@treecrdt/interface/sqlite";
 import type { RpcMethod, RpcRequest } from "./rpc.js";
@@ -12,7 +12,6 @@ import { openTreecrdtDb } from "./open.js";
 let db: Database | null = null;
 let api: TreecrdtAdapter | null = null;
 let runner: SqliteRunner | null = null;
-let storage: "memory" | "opfs" = "memory";
 const localWriters = new Map<string, TreecrdtSqliteWriter>();
 
 const methods = {
@@ -24,7 +23,6 @@ const methods = {
   opRefsChildren,
   opsByOpRefs,
   treeChildren,
-  subtreeKnownState,
   treeDump,
   treeNodeCount,
   headLamport,
@@ -77,7 +75,6 @@ async function init(
   db = opened.db;
   api = opened.api;
   runner = makeRunner(opened.db);
-  storage = opened.storage;
   localWriters.clear();
   return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }
@@ -120,13 +117,6 @@ async function treeChildren(parent: string) {
   return await api.treeChildren(nodeIdToBytes16(parent));
 }
 
-async function subtreeKnownState(node: string) {
-  const db = ensureDb();
-  const json = await dbGetText(db, "SELECT treecrdt_subtree_known_state(?1)", [nodeIdToBytes16(node)]);
-  if (!json) throw new Error("treecrdt_subtree_known_state returned empty result");
-  return Array.from(new TextEncoder().encode(json));
-}
-
 async function treeDump() {
   const api = ensureApi();
   return await api.treeDump();
@@ -148,23 +138,29 @@ async function replicaMaxCounter(replica: number[] | string) {
   return await api.replicaMaxCounter(replicaBytes);
 }
 
-async function localInsert(replica: string, parent: string, node: string, placement: TreecrdtSqlitePlacement, payload: Uint8Array | null) {
-  const writer = ensureLocalWriter(replica);
+async function localInsert(
+  replica: number[] | string,
+  parent: string,
+  node: string,
+  placement: TreecrdtSqlitePlacement,
+  payload: Uint8Array | null
+) {
+  const writer = ensureLocalWriter(normalizeReplica(replica));
   return await writer.insert(parent, node, placement, payload ? { payload } : {});
 }
 
-async function localMove(replica: string, node: string, newParent: string, placement: TreecrdtSqlitePlacement) {
-  const writer = ensureLocalWriter(replica);
+async function localMove(replica: number[] | string, node: string, newParent: string, placement: TreecrdtSqlitePlacement) {
+  const writer = ensureLocalWriter(normalizeReplica(replica));
   return await writer.move(node, newParent, placement);
 }
 
-async function localDelete(replica: string, node: string) {
-  const writer = ensureLocalWriter(replica);
+async function localDelete(replica: number[] | string, node: string) {
+  const writer = ensureLocalWriter(normalizeReplica(replica));
   return await writer.delete(node);
 }
 
-async function localPayload(replica: string, node: string, payload: Uint8Array | null) {
-  const writer = ensureLocalWriter(replica);
+async function localPayload(replica: number[] | string, node: string, payload: Uint8Array | null) {
+  const writer = ensureLocalWriter(normalizeReplica(replica));
   return await writer.payload(node, payload);
 }
 
@@ -182,11 +178,6 @@ function ensureApi(): TreecrdtAdapter {
   return api;
 }
 
-function ensureDb(): Database {
-  if (!db) throw new Error("db not initialized");
-  return db;
-}
-
 function ensureRunner(): SqliteRunner {
   if (!runner) throw new Error("db not initialized");
   return runner;
@@ -199,11 +190,20 @@ function makeRunner(db: Database): SqliteRunner {
   };
 }
 
-function ensureLocalWriter(replica: string): TreecrdtSqliteWriter {
-  const existing = localWriters.get(replica);
+function replicaKey(replica: ReplicaId): string {
+  return typeof replica === "string" ? replica : bytesToHex(replica);
+}
+
+function normalizeReplica(replica: number[] | string): ReplicaId {
+  return typeof replica === "string" ? replica : Uint8Array.from(replica);
+}
+
+function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
+  const key = replicaKey(replica);
+  const existing = localWriters.get(key);
   if (existing) return existing;
   const writer = createTreecrdtSqliteWriter(ensureRunner(), { replica });
-  localWriters.set(replica, writer);
+  localWriters.set(key, writer);
   return writer;
 }
 

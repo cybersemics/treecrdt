@@ -553,4 +553,42 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         unsafe { sqlite_finalize(stmt) };
         val
     }
+
+    fn latest_counter(&self, replica: &treecrdt_core::ReplicaId) -> treecrdt_core::Result<u64> {
+        let sql = CString::new("SELECT COALESCE(MAX(counter), 0) FROM ops WHERE replica = ?1")
+            .expect("max counter sql");
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(rc, "sqlite_prepare_v2 max counter failed"));
+        }
+
+        let bind_rc = unsafe {
+            sqlite_bind_blob(
+                stmt,
+                1,
+                replica.as_bytes().as_ptr() as *const c_void,
+                replica.as_bytes().len() as c_int,
+                None,
+            )
+        };
+        if bind_rc != SQLITE_OK as c_int {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(bind_rc, "bind max counter failed"));
+        }
+
+        let step_rc = unsafe { sqlite_step(stmt) };
+        if step_rc != SQLITE_ROW as c_int {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(step_rc, "max counter step failed"));
+        }
+        let val = unsafe { sqlite_column_int64(stmt, 0).max(0) as u64 };
+
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(finalize_rc, "finalize max counter failed"));
+        }
+
+        Ok(val)
+    }
 }

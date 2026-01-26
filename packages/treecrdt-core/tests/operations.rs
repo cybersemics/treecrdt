@@ -6,7 +6,8 @@ fn inserts_and_moves_nodes() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let a = NodeId(1);
@@ -30,7 +31,8 @@ fn duplicate_operations_are_ignored() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let op = crdt.local_insert_after(NodeId::ROOT, NodeId(1), None).unwrap();
     // applying again should be idempotent
@@ -45,7 +47,8 @@ fn delete_marks_tombstone_and_removes_from_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let child = NodeId(1);
     crdt.local_insert_after(NodeId::ROOT, child, None).unwrap();
@@ -66,7 +69,8 @@ fn prevents_cycle_on_move() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let a = NodeId(1);
@@ -93,7 +97,8 @@ fn cycles_are_blocked() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let root = NodeId::ROOT;
     let a = NodeId(1);
     let b = NodeId(2);

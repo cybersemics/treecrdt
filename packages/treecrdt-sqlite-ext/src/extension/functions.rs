@@ -7,26 +7,29 @@
 
 mod append;
 mod doc_id;
+mod local_ops;
 mod materialize;
 mod node_store;
 mod op_index;
 mod op_storage;
 mod oprefs;
 mod ops;
+mod order_key;
 mod payload_store;
 mod schema;
 mod sqlite_api;
-mod tree;
 mod util;
 
 use append::{treecrdt_append_op, treecrdt_append_ops};
 use doc_id::{treecrdt_doc_id, treecrdt_set_doc_id};
+use local_ops::{
+    treecrdt_local_delete, treecrdt_local_insert, treecrdt_local_move, treecrdt_local_payload,
+};
 use materialize::{append_ops_impl, ensure_materialized, treecrdt_ensure_materialized};
 use oprefs::{treecrdt_oprefs_all, treecrdt_oprefs_children};
 use ops::{treecrdt_ops_by_oprefs, treecrdt_ops_since};
 use schema::*;
 use sqlite_api::*;
-use tree::treecrdt_subtree_known_state;
 use util::drop_cstring;
 
 use std::ffi::CString;
@@ -234,20 +237,6 @@ pub extern "C" fn sqlite3_treecrdt_init(
             None,
         )
     };
-    let rc_subtree_known_state = {
-        let name = CString::new("treecrdt_subtree_known_state").expect("static name");
-        sqlite_create_function_v2(
-            db,
-            name.as_ptr(),
-            1,
-            SQLITE_UTF8 as c_int,
-            null_mut(),
-            Some(treecrdt_subtree_known_state),
-            None,
-            None,
-            None,
-        )
-    };
     let rc_ops_by_oprefs = {
         let name = CString::new("treecrdt_ops_by_oprefs").expect("static name");
         sqlite_create_function_v2(
@@ -279,6 +268,63 @@ pub extern "C" fn sqlite3_treecrdt_init(
         )
     };
 
+    let rc_local_insert = {
+        let name = CString::new("treecrdt_local_insert").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            6,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_local_insert),
+            None,
+            None,
+            None,
+        )
+    };
+    let rc_local_move = {
+        let name = CString::new("treecrdt_local_move").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            5,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_local_move),
+            None,
+            None,
+            None,
+        )
+    };
+    let rc_local_delete = {
+        let name = CString::new("treecrdt_local_delete").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            2,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_local_delete),
+            None,
+            None,
+            None,
+        )
+    };
+    let rc_local_payload = {
+        let name = CString::new("treecrdt_local_payload").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            3,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_local_payload),
+            None,
+            None,
+            None,
+        )
+    };
+
     if rc != SQLITE_OK as c_int
         || rc_append != SQLITE_OK as c_int
         || rc_set_doc_id != SQLITE_OK as c_int
@@ -286,9 +332,12 @@ pub extern "C" fn sqlite3_treecrdt_init(
         || rc_ensure_materialized != SQLITE_OK as c_int
         || rc_oprefs_all != SQLITE_OK as c_int
         || rc_oprefs_children != SQLITE_OK as c_int
-        || rc_subtree_known_state != SQLITE_OK as c_int
         || rc_ops_by_oprefs != SQLITE_OK as c_int
         || rc_since != SQLITE_OK as c_int
+        || rc_local_insert != SQLITE_OK as c_int
+        || rc_local_move != SQLITE_OK as c_int
+        || rc_local_delete != SQLITE_OK as c_int
+        || rc_local_payload != SQLITE_OK as c_int
     {
         unsafe {
             if !pz_err_msg.is_null() {
@@ -311,10 +360,16 @@ pub extern "C" fn sqlite3_treecrdt_init(
             rc_oprefs_all
         } else if rc_oprefs_children != SQLITE_OK as c_int {
             rc_oprefs_children
-        } else if rc_subtree_known_state != SQLITE_OK as c_int {
-            rc_subtree_known_state
         } else if rc_ops_by_oprefs != SQLITE_OK as c_int {
             rc_ops_by_oprefs
+        } else if rc_local_insert != SQLITE_OK as c_int {
+            rc_local_insert
+        } else if rc_local_move != SQLITE_OK as c_int {
+            rc_local_move
+        } else if rc_local_delete != SQLITE_OK as c_int {
+            rc_local_delete
+        } else if rc_local_payload != SQLITE_OK as c_int {
+            rc_local_payload
         } else {
             rc_since
         };
