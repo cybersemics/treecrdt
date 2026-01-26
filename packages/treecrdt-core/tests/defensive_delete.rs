@@ -113,6 +113,136 @@ fn defensive_delete_parent_then_move_child_restores_parent() {
 }
 
 #[test]
+fn defensive_delete_sibling_moved_same_parent_then_deleted_restores_node() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let parent = NodeId(1);
+    let first = NodeId(2);
+    let middle = NodeId(3);
+    let last = NodeId(4);
+
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    let first_op = crdt_a.local_insert_after(parent, first, None).unwrap();
+    crdt_b.apply_remote(first_op).unwrap();
+
+    let middle_op = crdt_a.local_insert_after(parent, middle, Some(first)).unwrap();
+    crdt_b.apply_remote(middle_op).unwrap();
+
+    let last_op = crdt_a.local_insert_after(parent, last, Some(middle)).unwrap();
+    crdt_b.apply_remote(last_op).unwrap();
+
+    assert_eq!(crdt_a.children(parent).unwrap(), &[first, middle, last]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[first, middle, last]);
+
+    // Client B moves middle within same parent (position only): [first, last, middle]
+    let move_op = crdt_b.local_move_after(middle, parent, Some(last)).unwrap();
+    assert_eq!(crdt_b.parent(middle).unwrap(), Some(parent));
+    assert_eq!(crdt_b.children(parent).unwrap(), &[first, last, middle]);
+    assert!(!crdt_b.is_tombstoned(middle).unwrap());
+
+    // Client A deletes middle without having seen the move
+    let delete_op = crdt_a.local_delete(middle).unwrap();
+    assert!(crdt_a.is_tombstoned(middle).unwrap());
+
+    crdt_a.apply_remote(move_op.clone()).unwrap();
+    crdt_b.apply_remote(delete_op).unwrap();
+    assert!(
+        !crdt_a.is_tombstoned(middle).unwrap(),
+        "Node should be restored after sync"
+    );
+    assert!(
+        !crdt_b.is_tombstoned(middle).unwrap(),
+        "Node should be restored after sync"
+    );
+    assert_eq!(crdt_a.parent(middle).unwrap(), Some(parent));
+    assert_eq!(crdt_b.parent(middle).unwrap(), Some(parent));
+    assert_eq!(crdt_a.children(parent).unwrap(), &[first, last, middle]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[first, last, middle]);
+
+    assert_eq!(crdt_a.nodes().unwrap(), crdt_b.nodes().unwrap());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
+fn defensive_delete_parent_when_sibling_moved_same_parent_restores_parent() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    );
+
+    let parent = NodeId(1);
+    let first = NodeId(2);
+    let middle = NodeId(3);
+    let last = NodeId(4);
+
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
+    crdt_b.apply_remote(parent_op).unwrap();
+
+    let first_op = crdt_a.local_insert_after(parent, first, None).unwrap();
+    crdt_b.apply_remote(first_op).unwrap();
+
+    let middle_op = crdt_a.local_insert_after(parent, middle, Some(first)).unwrap();
+    crdt_b.apply_remote(middle_op).unwrap();
+
+    let last_op = crdt_a.local_insert_after(parent, last, Some(middle)).unwrap();
+    crdt_b.apply_remote(last_op).unwrap();
+
+    assert_eq!(crdt_a.children(parent).unwrap(), &[first, middle, last]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[first, middle, last]);
+
+    // Client A moves middle within same parent (position only): [first, last, middle]
+    let move_op = crdt_a.local_move_after(middle, parent, Some(last)).unwrap();
+    assert_eq!(crdt_a.parent(middle).unwrap(), Some(parent));
+    assert_eq!(crdt_a.children(parent).unwrap(), &[first, last, middle]);
+    assert!(!crdt_a.is_tombstoned(parent).unwrap());
+
+    // Client B deletes parent without having seen the move
+    let delete_op = crdt_b.local_delete(parent).unwrap();
+    assert!(crdt_b.is_tombstoned(parent).unwrap());
+
+    crdt_a.apply_remote(delete_op.clone()).unwrap();
+    crdt_b.apply_remote(move_op).unwrap();
+    assert!(
+        !crdt_a.is_tombstoned(parent).unwrap(),
+        "Parent should be restored after sync"
+    );
+    assert!(
+        !crdt_b.is_tombstoned(parent).unwrap(),
+        "Parent should be restored after sync"
+    );
+    assert_eq!(crdt_a.parent(first).unwrap(), Some(parent));
+    assert_eq!(crdt_a.parent(middle).unwrap(), Some(parent));
+    assert_eq!(crdt_a.parent(last).unwrap(), Some(parent));
+    assert_eq!(crdt_b.parent(first).unwrap(), Some(parent));
+    assert_eq!(crdt_b.parent(middle).unwrap(), Some(parent));
+    assert_eq!(crdt_b.parent(last).unwrap(), Some(parent));
+    assert_eq!(crdt_a.children(parent).unwrap(), &[first, last, middle]);
+    assert_eq!(crdt_b.children(parent).unwrap(), &[first, last, middle]);
+
+    assert_eq!(crdt_a.nodes().unwrap(), crdt_b.nodes().unwrap());
+    crdt_a.validate_invariants().unwrap();
+    crdt_b.validate_invariants().unwrap();
+}
+
+#[test]
 fn defensive_delete_parent_then_multiple_children_restores_parent() {
     let mut crdt_a = TreeCrdt::new(
         ReplicaId::new(b"a"),
