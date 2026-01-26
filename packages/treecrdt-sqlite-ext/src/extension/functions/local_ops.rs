@@ -3,7 +3,7 @@ use super::node_store::SqliteNodeStore;
 use super::order_key::allocate_order_key;
 use super::util::sqlite_result_json;
 use super::*;
-use treecrdt_core::{LamportClock, ReplicaId, TreeCrdt};
+use treecrdt_core::NodeStore;
 
 fn read_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
     unsafe {
@@ -127,16 +127,10 @@ fn subtree_known_state_bytes(db: *mut sqlite3, node: [u8; 16]) -> Result<Vec<u8>
     ensure_materialized(db)?;
 
     let node_store = SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
-    let tree = TreeCrdt::with_node_store(
-        ReplicaId::new(b"sqlite-ext"),
-        NoopStorage::default(),
-        LamportClock::default(),
-        node_store,
-    )
-    .map_err(|_| SQLITE_ERROR as c_int)?;
-
     let node_id = NodeId(u128::from_be_bytes(node));
-    let vv = tree.subtree_version_vector(node_id).map_err(|_| SQLITE_ERROR as c_int)?;
+    let vv = node_store
+        .subtree_version_vector(node_id)
+        .map_err(|_| SQLITE_ERROR as c_int)?;
 
     serde_json::to_vec(&vv).map_err(|_| SQLITE_ERROR as c_int)
 }

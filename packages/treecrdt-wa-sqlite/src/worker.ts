@@ -12,7 +12,6 @@ import { openTreecrdtDb } from "./open.js";
 let db: Database | null = null;
 let api: TreecrdtAdapter | null = null;
 let runner: SqliteRunner | null = null;
-let storage: "memory" | "opfs" = "memory";
 const localWriters = new Map<string, TreecrdtSqliteWriter>();
 
 const methods = {
@@ -76,7 +75,6 @@ async function init(
   db = opened.db;
   api = opened.api;
   runner = makeRunner(opened.db);
-  storage = opened.storage;
   localWriters.clear();
   return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }

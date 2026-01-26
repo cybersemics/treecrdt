@@ -6,12 +6,20 @@ import {
   decodeSqliteOpRefs,
   decodeSqliteOps,
   decodeSqliteTreeRows,
+  type SqliteTreeRow,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from "@treecrdt/interface/sqlite";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
-import type { TreecrdtEngine } from "@treecrdt/interface/engine";
+import type {
+  TreecrdtEngine,
+  TreecrdtEngineLocal,
+  TreecrdtEngineMeta,
+  TreecrdtEngineOpRefs,
+  TreecrdtEngineOps,
+  TreecrdtEngineTree,
+} from "@treecrdt/interface/engine";
 import type { Database } from "./index.js";
 import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
@@ -19,50 +27,17 @@ import { openTreecrdtDb } from "./open.js";
 export type StorageMode = "memory" | "opfs";
 export type ClientMode = "direct" | "worker";
 
-export type TreecrdtOpsApi = {
-  append: (op: Operation) => Promise<void>;
-  appendMany: (ops: Operation[]) => Promise<void>;
-  all: () => Promise<Operation[]>;
-  since: (lamport: number, root?: string) => Promise<Operation[]>;
-  children: (parent: string) => Promise<Operation[]>;
-  get: (opRefs: Uint8Array[]) => Promise<Operation[]>;
-};
+export type TreecrdtOpsApi = TreecrdtEngineOps;
 
-export type TreecrdtOpRefsApi = {
-  all: () => Promise<Uint8Array[]>;
-  children: (parent: string) => Promise<Uint8Array[]>;
-};
+export type TreecrdtOpRefsApi = TreecrdtEngineOpRefs;
 
-export type TreeNodeRow = {
-  node: string;
-  parent: string | null;
-  orderKey: Uint8Array | null;
-  tombstone: boolean;
-};
+export type TreeNodeRow = SqliteTreeRow;
 
-export type TreecrdtTreeApi = {
-  children: (parent: string) => Promise<string[]>;
-  dump: () => Promise<TreeNodeRow[]>;
-  nodeCount: () => Promise<number>;
-};
+export type TreecrdtTreeApi = TreecrdtEngineTree;
 
-export type TreecrdtMetaApi = {
-  headLamport: () => Promise<number>;
-  replicaMaxCounter: (replica: Operation["meta"]["id"]["replica"]) => Promise<number>;
-};
+export type TreecrdtMetaApi = TreecrdtEngineMeta;
 
-export type TreecrdtLocalApi = {
-  insert: (
-    replica: ReplicaId,
-    parent: string,
-    node: string,
-    placement: TreecrdtSqlitePlacement,
-    payload: Uint8Array | null
-  ) => Promise<Operation>;
-  move: (replica: ReplicaId, node: string, newParent: string, placement: TreecrdtSqlitePlacement) => Promise<Operation>;
-  delete: (replica: ReplicaId, node: string) => Promise<Operation>;
-  payload: (replica: ReplicaId, node: string, payload: Uint8Array | null) => Promise<Operation>;
-};
+export type TreecrdtLocalApi = TreecrdtEngineLocal;
 
 export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
