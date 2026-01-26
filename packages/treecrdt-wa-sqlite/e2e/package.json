@@ -6,16 +6,17 @@
   "scripts": {
     "build:vendor:wa-sqlite": "pnpm --filter @treecrdt/wa-sqlite-vendor build",
     "build:wa-sqlite": "pnpm run build:vendor:wa-sqlite && pnpm -C .. run build:ts",
-    "build": "pnpm -C ../../treecrdt-sync run build && pnpm run build:wa-sqlite && vite build",
+    "build": "pnpm -C ../../treecrdt-sync run build && pnpm -C ../../treecrdt-sqlite-conformance run build && pnpm run build:wa-sqlite && vite build",
     "build:app:path": "vite build --base /base-path/",
-    "build:path": "pnpm -C ../../treecrdt-sync run build && pnpm run build:wa-sqlite && vite build --base /base-path/",
+    "build:path": "pnpm -C ../../treecrdt-sync run build && pnpm -C ../../treecrdt-sqlite-conformance run build && pnpm run build:wa-sqlite && vite build --base /base-path/",
     "preview:path": "vite preview --host --port 4172 --base /base-path/ --strictPort",
     "dev": "vite",
-    "test:e2e": "pnpm -C ../../treecrdt-benchmark run build && pnpm -C ../../treecrdt-sync run build && pnpm run build:wa-sqlite && playwright test",
+    "test:e2e": "pnpm -C ../../treecrdt-benchmark run build && pnpm -C ../../treecrdt-sync run build && pnpm -C ../../treecrdt-sqlite-conformance run build && pnpm run build:wa-sqlite && playwright test",
     "bench": "pnpm -C ../../treecrdt-benchmark run build && pnpm run build && playwright test tests/bench-opfs.spec.ts tests/bench-sync.spec.ts --reporter=line"
   },
   "dependencies": {
     "@treecrdt/benchmark": "workspace:*",
+    "@treecrdt/sqlite-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",
     "react": "^18.2.0",
