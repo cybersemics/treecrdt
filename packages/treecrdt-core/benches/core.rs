@@ -5,19 +5,9 @@ use std::time::Instant;
 
 use treecrdt_core::{Lamport, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
 
-const CI_CONFIG: &[(u64, u64)] = &[
-    (100, 5),
-    (1_000, 1),
-    (10_000, 1),
-];
+const CI_CONFIG: &[(u64, u64)] = &[(100, 5), (1_000, 1), (10_000, 1)];
 
-const LOCAL_CONFIG: &[(u64, u64)] = &[
-    (1, 1),
-    (10, 1),
-    (100, 1),
-    (1_000, 1),
-    (10_000, 1),
-];
+const LOCAL_CONFIG: &[(u64, u64)] = &[(1, 1), (10, 1), (100, 1), (1_000, 1), (10_000, 1)];
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,11 +66,7 @@ fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
 
 fn main() {
     let is_ci_env = is_ci();
-    let config: &[(u64, u64)] = if is_ci_env {
-        CI_CONFIG
-    } else {
-        LOCAL_CONFIG
-    };
+    let config: &[(u64, u64)] = if is_ci_env { CI_CONFIG } else { LOCAL_CONFIG };
 
     let mut out_dir: Option<PathBuf> = None;
     let mut custom_config: Option<Vec<(u64, u64)>> = None;
