@@ -1,24 +1,14 @@
 import { createTreecrdtClient } from "@treecrdt/wa-sqlite/client";
-import { sqliteEngineConformanceScenarios } from "@treecrdt/sqlite-conformance";
+import {
+  conformanceHashKey,
+  conformanceSlugify,
+  sqliteEngineConformanceScenarios,
+} from "@treecrdt/sqlite-conformance";
 
 type StorageKind = "memory" | "opfs";
 
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function hashKey(input: string): string {
-  // Small stable hash (non-cryptographic) to keep OPFS filenames short.
-  let h = 5381;
-  for (let i = 0; i < input.length; i++) h = (h * 33) ^ input.charCodeAt(i);
-  return (h >>> 0).toString(36);
-}
-
 function docIdFromScenario(name: string, storage: StorageKind): string {
-  return `treecrdt-wa-sqlite-conformance-${storage}-${slugify(name) || "scenario"}`;
+  return `treecrdt-wa-sqlite-conformance-${storage}-${conformanceSlugify(name) || "scenario"}`;
 }
 
 export async function runTreecrdtSqliteConformanceE2E(storage: StorageKind = "memory"): Promise<{ ok: true }> {
@@ -33,9 +23,9 @@ export async function runTreecrdtSqliteConformanceE2E(storage: StorageKind = "me
     const docId = docIdFromScenario(scenario.name, storage);
     const engines: Array<{ close: () => Promise<void> }> = [];
     const runKey = runId.replace(/[^a-z0-9]/gi, "").slice(0, 10) || "run";
-    const scenarioKey = hashKey(scenario.name);
+    const scenarioKey = conformanceHashKey(scenario.name);
     const filenameFor = (name: string) => {
-      const nameKey = (slugify(name) || "db").slice(0, 12);
+      const nameKey = (conformanceSlugify(name) || "db").slice(0, 12);
       return `/treecrdt-c-${runKey}-${scenarioKey}-${nameKey}.db`;
     };
     const track = <T extends { close: () => Promise<void> }>(engine: T): T => {

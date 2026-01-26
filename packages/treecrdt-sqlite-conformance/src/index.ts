@@ -2,6 +2,20 @@ import type { TreecrdtEngine } from "@treecrdt/interface/engine";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 
+export function conformanceSlugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function conformanceHashKey(input: string): string {
+  // Small stable hash (non-cryptographic) to keep filenames short.
+  let h = 5381;
+  for (let i = 0; i < input.length; i++) h = (h * 33) ^ input.charCodeAt(i);
+  return (h >>> 0).toString(36);
+}
+
 export type SqliteConformanceContext = {
   docId: string;
   engine: TreecrdtEngine;

@@ -2,7 +2,7 @@ import { test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sqliteEngineConformanceScenarios } from "@treecrdt/sqlite-conformance";
+import { conformanceSlugify, sqliteEngineConformanceScenarios } from "@treecrdt/sqlite-conformance";
 import { createTreecrdtClient, defaultExtensionPath, loadTreecrdtExtension } from "../dist/index.js";
 
 async function createNodeEngine(opts: { docId: string; path?: string }) {
@@ -18,18 +18,7 @@ async function createNodeEngine(opts: { docId: string; path?: string }) {
 }
 
 function docIdFromScenario(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return `treecrdt-node-conformance-${slug || "scenario"}`;
-}
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  return `treecrdt-node-conformance-${conformanceSlugify(name) || "scenario"}`;
 }
 
 function track(engine: Awaited<ReturnType<typeof createNodeEngine>>, engines: any[]) {
@@ -64,7 +53,7 @@ for (const scenario of sqliteEngineConformanceScenarios()) {
         createEngine: ({ docId }) => createNodeEngine({ docId }).then((e) => track(e, engines)),
         createPersistentEngine: ({ docId, name }) => {
           const dir = ensurePersistentDir();
-          const key = slugify(name || "db");
+          const key = conformanceSlugify(name || "db");
           const existing = persistentPaths.get(key);
           const path = existing ?? join(dir, `${key}.sqlite`);
           persistentPaths.set(key, path);
