@@ -128,9 +128,7 @@ fn subtree_known_state_bytes(db: *mut sqlite3, node: [u8; 16]) -> Result<Vec<u8>
 
     let node_store = SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
     let node_id = NodeId(u128::from_be_bytes(node));
-    let vv = node_store
-        .subtree_version_vector(node_id)
-        .map_err(|_| SQLITE_ERROR as c_int)?;
+    let vv = node_store.subtree_version_vector(node_id).map_err(|_| SQLITE_ERROR as c_int)?;
 
     serde_json::to_vec(&vv).map_err(|_| SQLITE_ERROR as c_int)
 }
