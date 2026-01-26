@@ -624,9 +624,12 @@ export default function App() {
       if (msg.t !== "presence") return;
       if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
       if (msg.peer_id === replicaId) return;
+      const wasNew = !lastSeen.has(msg.peer_id);
       lastSeen.set(msg.peer_id, msg.ts);
       ensureConnection(msg.peer_id);
-      updatePeers();
+      if (wasNew) {
+        updatePeers();
+      }
     };
 
     channel.addEventListener("message", onPresence);
@@ -638,10 +641,12 @@ export default function App() {
     };
 
     sendPresence();
+    updatePeers();
     const interval = window.setInterval(sendPresence, 1000);
     const pruneInterval = window.setInterval(() => {
       const now = Date.now();
-      for (const [id, ts] of lastSeen) {
+      let changed = false;
+      for (const [id, ts] of Array.from(lastSeen.entries())) {
         if (now - ts > PLAYGROUND_PEER_TIMEOUT_MS) {
           lastSeen.delete(id);
           const conn = connections.get(id);
@@ -651,10 +656,13 @@ export default function App() {
           }
           stopLiveAllForPeer(id);
           stopLiveChildrenForPeer(id);
+          changed = true;
         }
       }
-      updatePeers();
-    }, 2000);
+      if (changed) {
+        updatePeers();
+      }
+    }, 500);
 
     return () => {
       window.clearInterval(interval);
