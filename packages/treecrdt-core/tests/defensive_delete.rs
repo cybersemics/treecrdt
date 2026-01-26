@@ -118,12 +118,14 @@ fn defensive_delete_sibling_moved_same_parent_then_deleted_restores_node() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let first = NodeId(2);
@@ -181,12 +183,14 @@ fn defensive_delete_parent_when_sibling_moved_same_parent_restores_parent() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let parent = NodeId(1);
     let first = NodeId(2);
