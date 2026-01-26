@@ -101,6 +101,16 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
+  packages/treecrdt-sqlite-conformance:
+    dependencies:
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../treecrdt-ts
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/treecrdt-sqlite-node:
     dependencies:
       '@treecrdt/interface':
@@ -110,6 +120,9 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
+      '@treecrdt/sqlite-conformance':
+        specifier: workspace:*
+        version: link:../treecrdt-sqlite-conformance
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../treecrdt-sync
@@ -195,6 +208,9 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../../treecrdt-benchmark
+      '@treecrdt/sqlite-conformance':
+        specifier: workspace:*
+        version: link:../../treecrdt-sqlite-conformance
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../../treecrdt-sync

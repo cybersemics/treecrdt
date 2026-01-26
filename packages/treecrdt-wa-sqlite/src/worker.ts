@@ -23,6 +23,7 @@ const methods = {
   opRefsChildren,
   opsByOpRefs,
   treeChildren,
+  treeChildrenPage,
   treeDump,
   treeNodeCount,
   headLamport,
@@ -115,6 +116,21 @@ async function opsByOpRefs(opRefs: number[][]) {
 async function treeChildren(parent: string) {
   const api = ensureApi();
   return await api.treeChildren(nodeIdToBytes16(parent));
+}
+
+async function treeChildrenPage(
+  parent: string,
+  cursor: { orderKey: number[]; node: number[] } | null,
+  limit: number
+) {
+  const api = ensureApi();
+  const cursorBytes = cursor
+    ? {
+        orderKey: Uint8Array.from(cursor.orderKey),
+        node: Uint8Array.from(cursor.node),
+      }
+    : null;
+  return await api.treeChildrenPage!(nodeIdToBytes16(parent), cursorBytes, limit);
 }
 
 async function treeDump() {
