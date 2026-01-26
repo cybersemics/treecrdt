@@ -24,12 +24,16 @@ function docIdFromScenario(name: string): string {
 
 for (const scenario of sqliteEngineConformanceScenarios()) {
   test(`sqlite engine conformance (node): ${scenario.name}`, async () => {
-    const engine = await createNodeEngine(docIdFromScenario(scenario.name));
+    const docId = docIdFromScenario(scenario.name);
+    const engine = await createNodeEngine(docId);
     try {
-      await scenario.run(engine);
+      await scenario.run({
+        docId,
+        engine,
+        createEngine: ({ docId }) => createNodeEngine(docId),
+      });
     } finally {
       await engine.close();
     }
   });
 }
-

@@ -5,7 +5,9 @@ import {
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
+  decodeSqliteTreeChildRows,
   decodeSqliteTreeRows,
+  type SqliteTreeChildRow,
   type SqliteTreeRow,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
@@ -256,6 +258,16 @@ async function createDirectClient(opts: {
           const [parent] = params as RpcParams<"treeChildren">;
           return (await adapter.treeChildren(nodeIdToBytes16(parent))) as any;
         }
+        case "treeChildrenPage": {
+          const [parent, cursor, limit] = params as RpcParams<"treeChildrenPage">;
+          const cursorBytes = cursor
+            ? {
+                orderKey: Uint8Array.from(cursor.orderKey),
+                node: Uint8Array.from(cursor.node),
+              }
+            : null;
+          return (await adapter.treeChildrenPage!(nodeIdToBytes16(parent), cursorBytes, limit)) as any;
+        }
         case "treeDump":
           return (await adapter.treeDump()) as any;
         case "treeNodeCount":
@@ -330,6 +342,14 @@ function makeTreecrdtClientFromCall(opts: {
   const opsByOpRefsImpl = async (opRefs: Uint8Array[]) =>
     decodeSqliteOps(await call("opsByOpRefs", [opRefs.map((r) => Array.from(r))]));
   const treeChildrenImpl = async (parent: string) => decodeSqliteNodeIds(await call("treeChildren", [parent]));
+  const treeChildrenPageImpl = async (
+    parent: string,
+    cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
+    limit: number
+  ): Promise<SqliteTreeChildRow[]> => {
+    const rpcCursor = cursor ? { orderKey: Array.from(cursor.orderKey), node: Array.from(cursor.node) } : null;
+    return decodeSqliteTreeChildRows(await call("treeChildrenPage", [parent, rpcCursor, limit]));
+  };
   const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", []));
   const treeNodeCountImpl = async () => Number(await call("treeNodeCount", []));
   const headLamportImpl = async () => Number(await call("headLamport", []));
@@ -373,6 +393,7 @@ function makeTreecrdtClientFromCall(opts: {
     opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
     tree: {
       children: treeChildrenImpl,
+      childrenPage: treeChildrenPageImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
     },

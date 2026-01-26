@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test("sqlite engine conformance (shared suite)", async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
 
   await page.goto("/");
   await page.waitForFunction(() => typeof window.runTreecrdtSqliteConformanceE2E === "function");
@@ -13,4 +13,3 @@ test("sqlite engine conformance (shared suite)", async ({ page }) => {
 
   expect(result).toEqual({ ok: true });
 });
-

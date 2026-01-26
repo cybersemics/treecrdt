@@ -12,14 +12,17 @@ function docIdFromScenario(name: string, storage: StorageKind): string {
 }
 
 export async function runTreecrdtSqliteConformanceE2E(storage: StorageKind = "memory"): Promise<{ ok: true }> {
+  const preferWorker = storage === "opfs";
+
   for (const scenario of sqliteEngineConformanceScenarios()) {
-    const client = await createTreecrdtClient({
-      storage,
-      preferWorker: storage === "opfs",
-      docId: docIdFromScenario(scenario.name, storage),
-    });
+    const docId = docIdFromScenario(scenario.name, storage);
+    const client = await createTreecrdtClient({ storage, preferWorker, docId });
     try {
-      await scenario.run(client);
+      await scenario.run({
+        docId,
+        engine: client,
+        createEngine: ({ docId }) => createTreecrdtClient({ storage, preferWorker, docId }),
+      });
     } finally {
       await client.close();
     }
@@ -36,4 +39,3 @@ declare global {
 if (typeof window !== "undefined") {
   window.runTreecrdtSqliteConformanceE2E = runTreecrdtSqliteConformanceE2E;
 }
-
