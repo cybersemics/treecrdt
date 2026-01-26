@@ -27,8 +27,10 @@ jobs:
       with:
         components: rustfmt, clippy
 
-    - name: Install wasm32-unknown-emscripten target
-      run: rustup target add wasm32-unknown-emscripten
+    - name: Install Rust WASM targets
+      run: |
+        rustup target add wasm32-unknown-unknown
+        rustup target add wasm32-unknown-emscripten
 
     - name: Cache Rust dependencies
       uses: actions/cache@v4
@@ -76,6 +78,14 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
+    - name: Build TypeScript deps for playground typecheck
+      run: |
+        pnpm -C packages/treecrdt-sync run build
+        pnpm -C packages/treecrdt-wa-sqlite run build:ts
+
+    - name: Typecheck playground
+      run: pnpm --filter @treecrdt/playground run typecheck
+
     - name: Check Rust formatting
       run: pnpm run fmt:check
 
@@ -121,6 +131,9 @@ jobs:
 
     - name: Run browser tests
       run: pnpm run test:browser
+
+    - name: Run playground e2e tests
+      run: pnpm --filter @treecrdt/playground run test:e2e
 
     - name: Run native node tests
       run: pnpm run test:native-node

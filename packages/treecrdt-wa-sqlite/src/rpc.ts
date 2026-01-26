@@ -1,4 +1,5 @@
 import type { Operation } from "@treecrdt/interface";
+import type { TreecrdtSqlitePlacement } from "@treecrdt/interface/sqlite";
 
 export type RpcStorageMode = "memory" | "opfs";
 
@@ -28,6 +29,16 @@ export type RpcSchema = {
   treeNodeCount: { params: []; result: number };
   headLamport: { params: []; result: number };
   replicaMaxCounter: { params: [replica: number[] | string]; result: number };
+  localInsert: {
+    params: [replica: string, parent: string, node: string, placement: TreecrdtSqlitePlacement, payload: Uint8Array | null];
+    result: Operation;
+  };
+  localMove: {
+    params: [replica: string, node: string, newParent: string, placement: TreecrdtSqlitePlacement];
+    result: Operation;
+  };
+  localDelete: { params: [replica: string, node: string]; result: Operation };
+  localPayload: { params: [replica: string, node: string, payload: Uint8Array | null]; result: Operation };
   close: { params: []; result: void };
 };
 

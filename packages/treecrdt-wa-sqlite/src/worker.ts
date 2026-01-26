@@ -5,12 +5,15 @@ import {
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { Operation } from "@treecrdt/interface";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
+import { createTreecrdtSqliteWriter, type SqliteRunner, type TreecrdtSqlitePlacement, type TreecrdtSqliteWriter } from "@treecrdt/interface/sqlite";
 import type { RpcMethod, RpcRequest } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
 
 let db: Database | null = null;
 let api: TreecrdtAdapter | null = null;
+let runner: SqliteRunner | null = null;
 let storage: "memory" | "opfs" = "memory";
+const localWriters = new Map<string, TreecrdtSqliteWriter>();
 
 const methods = {
   init,
@@ -26,6 +29,10 @@ const methods = {
   treeNodeCount,
   headLamport,
   replicaMaxCounter,
+  localInsert,
+  localMove,
+  localDelete,
+  localPayload,
   close,
 } as const;
 
@@ -58,6 +65,7 @@ async function init(
     if (db.close) await db.close();
     db = null;
     api = null;
+    runner = null;
   }
   const opened = await openTreecrdtDb({
     baseUrl,
@@ -68,7 +76,9 @@ async function init(
   });
   db = opened.db;
   api = opened.api;
+  runner = makeRunner(opened.db);
   storage = opened.storage;
+  localWriters.clear();
   return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }
 
@@ -138,10 +148,32 @@ async function replicaMaxCounter(replica: number[] | string) {
   return await api.replicaMaxCounter(replicaBytes);
 }
 
+async function localInsert(replica: string, parent: string, node: string, placement: TreecrdtSqlitePlacement, payload: Uint8Array | null) {
+  const writer = ensureLocalWriter(replica);
+  return await writer.insert(parent, node, placement, payload ? { payload } : {});
+}
+
+async function localMove(replica: string, node: string, newParent: string, placement: TreecrdtSqlitePlacement) {
+  const writer = ensureLocalWriter(replica);
+  return await writer.move(node, newParent, placement);
+}
+
+async function localDelete(replica: string, node: string) {
+  const writer = ensureLocalWriter(replica);
+  return await writer.delete(node);
+}
+
+async function localPayload(replica: string, node: string, payload: Uint8Array | null) {
+  const writer = ensureLocalWriter(replica);
+  return await writer.payload(node, payload);
+}
+
 async function close() {
   if (db?.close) await db.close();
   db = null;
   api = null;
+  runner = null;
+  localWriters.clear();
   return null;
 }
 
@@ -153,6 +185,26 @@ function ensureApi(): TreecrdtAdapter {
 function ensureDb(): Database {
   if (!db) throw new Error("db not initialized");
   return db;
+}
+
+function ensureRunner(): SqliteRunner {
+  if (!runner) throw new Error("db not initialized");
+  return runner;
+}
+
+function makeRunner(db: Database): SqliteRunner {
+  return {
+    exec: (sql) => db.exec(sql),
+    getText: (sql, params = []) => dbGetText(db, sql, params),
+  };
+}
+
+function ensureLocalWriter(replica: string): TreecrdtSqliteWriter {
+  const existing = localWriters.get(replica);
+  if (existing) return existing;
+  const writer = createTreecrdtSqliteWriter(ensureRunner(), { replica });
+  localWriters.set(replica, writer);
+  return writer;
 }
 
 async function dbGetText(db: Database, sql: string, params: unknown[] = []): Promise<string | null> {

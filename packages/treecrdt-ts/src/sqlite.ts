@@ -1,12 +1,16 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from "./adapter.js";
 import {
+  bytesToHex,
   decodeNodeId,
   decodeReplicaId,
   hexToBytes,
   nodeIdToBytes16,
   ROOT_NODE_ID_HEX,
+  TRASH_NODE_ID_HEX,
+  replicaIdToBytes,
 } from "./ids.js";
-import type { Operation, OperationKind } from "./index.js";
+import type { Operation, OperationKind, ReplicaId } from "./index.js";
+import { allocateBetween, makeOrderKeySeed } from "./order_key.js";
 
 export type SqlCall = {
   sql: string;
@@ -431,6 +435,221 @@ async function treecrdtHeadLamport(runner: SqliteRunner): Promise<number> {
  */
 async function treecrdtReplicaMaxCounter(runner: SqliteRunner, replica: Uint8Array): Promise<number> {
   return sqliteGetNumber(runner, "SELECT COALESCE(MAX(counter), 0) FROM ops WHERE replica = ?1", [replica]);
+}
+
+export type TreecrdtSqlitePlacement =
+  | { type: "first" }
+  | { type: "last" }
+  | { type: "after"; after: string };
+
+export type TreecrdtSqliteWriter = {
+  insert: (
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    opts?: { payload?: Uint8Array }
+  ) => Promise<Operation>;
+  move: (node: string, newParent: string, placement: TreecrdtSqlitePlacement) => Promise<Operation>;
+  delete: (node: string) => Promise<Operation>;
+  payload: (node: string, payload: Uint8Array | null) => Promise<Operation>;
+};
+
+async function treecrdtSubtreeKnownState(runner: SqliteRunner, node: Uint8Array): Promise<Uint8Array> {
+  const json = await runner.getText("SELECT treecrdt_subtree_known_state(?1)", [node]);
+  if (!json) throw new Error("treecrdt_subtree_known_state returned empty result");
+  return new TextEncoder().encode(json);
+}
+
+async function treecrdtSelectChildOrderKeyHex(runner: SqliteRunner, parent: Uint8Array, node: Uint8Array): Promise<string> {
+  const key = await runner.getText(
+    "SELECT CASE WHEN order_key IS NULL THEN NULL ELSE lower(hex(order_key)) END \
+     FROM tree_nodes \
+     WHERE node = ?1 AND parent = ?2 AND tombstone = 0 \
+     LIMIT 1",
+    [node, parent]
+  );
+  if (!key) throw new Error("missing order_key for child node");
+  return key;
+}
+
+async function treecrdtSelectFirstChildOrderKeyHex(
+  runner: SqliteRunner,
+  parent: Uint8Array,
+  excludeNode: Uint8Array | null
+): Promise<string | null> {
+  if (excludeNode) {
+    return runner.getText(
+      "SELECT lower(hex(order_key)) \
+       FROM tree_nodes \
+       WHERE parent = ?1 AND tombstone = 0 AND node <> ?2 \
+       ORDER BY order_key, node \
+       LIMIT 1",
+      [parent, excludeNode]
+    );
+  }
+  return runner.getText(
+    "SELECT lower(hex(order_key)) \
+     FROM tree_nodes \
+     WHERE parent = ?1 AND tombstone = 0 \
+     ORDER BY order_key, node \
+     LIMIT 1",
+    [parent]
+  );
+}
+
+async function treecrdtSelectLastChildOrderKeyHex(
+  runner: SqliteRunner,
+  parent: Uint8Array,
+  excludeNode: Uint8Array | null
+): Promise<string | null> {
+  if (excludeNode) {
+    return runner.getText(
+      "SELECT lower(hex(order_key)) \
+       FROM tree_nodes \
+       WHERE parent = ?1 AND tombstone = 0 AND node <> ?2 \
+       ORDER BY order_key DESC, node DESC \
+       LIMIT 1",
+      [parent, excludeNode]
+    );
+  }
+  return runner.getText(
+    "SELECT lower(hex(order_key)) \
+     FROM tree_nodes \
+     WHERE parent = ?1 AND tombstone = 0 \
+     ORDER BY order_key DESC, node DESC \
+     LIMIT 1",
+    [parent]
+  );
+}
+
+async function treecrdtSelectNextSiblingOrderKeyHex(
+  runner: SqliteRunner,
+  parent: Uint8Array,
+  afterOrderKey: Uint8Array,
+  afterNode: Uint8Array,
+  excludeNode: Uint8Array | null
+): Promise<string | null> {
+  if (excludeNode) {
+    return runner.getText(
+      "SELECT lower(hex(order_key)) \
+       FROM tree_nodes \
+       WHERE parent = ?1 AND tombstone = 0 AND node <> ?4 \
+         AND (order_key > ?2 OR (order_key = ?2 AND node > ?3)) \
+       ORDER BY order_key, node \
+       LIMIT 1",
+      [parent, afterOrderKey, afterNode, excludeNode]
+    );
+  }
+  return runner.getText(
+    "SELECT lower(hex(order_key)) \
+     FROM tree_nodes \
+     WHERE parent = ?1 AND tombstone = 0 \
+       AND (order_key > ?2 OR (order_key = ?2 AND node > ?3)) \
+     ORDER BY order_key, node \
+     LIMIT 1",
+    [parent, afterOrderKey, afterNode]
+  );
+}
+
+export function createTreecrdtSqliteWriter(runner: SqliteRunner, opts: { replica: ReplicaId }): TreecrdtSqliteWriter {
+  const replica = opts.replica;
+  const replicaBytes = replicaIdToBytes(replica);
+  let counter = 0;
+  let lamport = 0;
+  let initialized = false;
+
+  const init = async () => {
+    if (initialized) return;
+    const [headLamport, maxCounter] = await Promise.all([
+      treecrdtHeadLamport(runner),
+      treecrdtReplicaMaxCounter(runner, replicaBytes),
+    ]);
+    lamport = Math.max(lamport, headLamport);
+    counter = Math.max(counter, maxCounter);
+    initialized = true;
+  };
+
+  const nextMeta = async () => {
+    await init();
+    const headLamport = await treecrdtHeadLamport(runner);
+    lamport = Math.max(lamport, headLamport) + 1;
+    counter += 1;
+    return { id: { replica, counter }, lamport };
+  };
+
+  const orderKeyBoundaries = async (parentId: string, placement: TreecrdtSqlitePlacement, excludeNodeId: string | null) => {
+    if (parentId === TRASH_NODE_ID_HEX) return { left: null as Uint8Array | null, right: null as Uint8Array | null };
+
+    await treecrdtEnsureMaterialized(runner);
+
+    const parent = nodeIdToBytes16(parentId);
+    const excludeNode = excludeNodeId ? nodeIdToBytes16(excludeNodeId) : null;
+
+    if (placement.type === "first") {
+      const rightHex = await treecrdtSelectFirstChildOrderKeyHex(runner, parent, excludeNode);
+      return { left: null, right: rightHex ? hexToBytes(rightHex) : null };
+    }
+
+    if (placement.type === "last") {
+      const leftHex = await treecrdtSelectLastChildOrderKeyHex(runner, parent, excludeNode);
+      return { left: leftHex ? hexToBytes(leftHex) : null, right: null };
+    }
+
+    const afterNode = nodeIdToBytes16(placement.after);
+    if (excludeNode && bytesToHex(afterNode) === bytesToHex(excludeNode)) {
+      throw new Error("placement.after must not equal excluded node");
+    }
+    const leftHex = await treecrdtSelectChildOrderKeyHex(runner, parent, afterNode);
+    const left = hexToBytes(leftHex);
+    const rightHex = await treecrdtSelectNextSiblingOrderKeyHex(runner, parent, left, afterNode, excludeNode);
+    const right = rightHex ? hexToBytes(rightHex) : null;
+    return { left, right };
+  };
+
+  const insert = async (parent: string, node: string, placement: TreecrdtSqlitePlacement, o: { payload?: Uint8Array } = {}) => {
+    const meta = await nextMeta();
+    const payload = o.payload;
+    const seed = makeOrderKeySeed(replica, meta.id.counter);
+    const boundaries = parent === TRASH_NODE_ID_HEX ? null : await orderKeyBoundaries(parent, placement, null);
+    const orderKey =
+      parent === TRASH_NODE_ID_HEX ? new Uint8Array() : allocateBetween(boundaries!.left, boundaries!.right, seed);
+    const kind: OperationKind =
+      payload !== undefined
+        ? { type: "insert", parent, node, orderKey, payload }
+        : { type: "insert", parent, node, orderKey };
+    const op: Operation = { meta, kind };
+    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
+    return op;
+  };
+
+  const move = async (node: string, newParent: string, placement: TreecrdtSqlitePlacement) => {
+    const meta = await nextMeta();
+    const seed = makeOrderKeySeed(replica, meta.id.counter);
+    const boundaries =
+      newParent === TRASH_NODE_ID_HEX ? null : await orderKeyBoundaries(newParent, placement, node);
+    const orderKey =
+      newParent === TRASH_NODE_ID_HEX ? new Uint8Array() : allocateBetween(boundaries!.left, boundaries!.right, seed);
+    const op: Operation = { meta, kind: { type: "move", node, newParent, orderKey } };
+    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
+    return op;
+  };
+
+  const del = async (node: string) => {
+    const meta = await nextMeta();
+    const knownState = await treecrdtSubtreeKnownState(runner, nodeIdToBytes16(node));
+    const op: Operation = { meta: { ...meta, knownState }, kind: { type: "delete", node } };
+    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
+    return op;
+  };
+
+  const payload = async (node: string, next: Uint8Array | null) => {
+    const meta = await nextMeta();
+    const op: Operation = { meta, kind: { type: "payload", node, payload: next } };
+    await treecrdtAppendOp(runner, op, nodeIdToBytes16, replicaIdToBytes);
+    return op;
+  };
+
+  return { insert, move, delete: del, payload };
 }
 
 // ---- Decoders for extension JSON payloads ----
