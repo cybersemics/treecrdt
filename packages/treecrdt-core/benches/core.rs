@@ -48,7 +48,9 @@ fn is_ci() -> bool {
 fn default_out_dir() -> PathBuf {
     env::current_dir()
         .ok()
-        .and_then(|cwd| cwd.parent().and_then(|p| p.parent()).map(|r| r.join("benchmarks").join("core")))
+        .and_then(|cwd| {
+            cwd.parent().and_then(|p| p.parent()).map(|r| r.join("benchmarks").join("core"))
+        })
         .unwrap_or_else(|| PathBuf::from("benchmarks/core"))
 }
 
