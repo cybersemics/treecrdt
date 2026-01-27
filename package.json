@@ -17,7 +17,7 @@
     "build": "pnpm -C packages/treecrdt-ts run build && pnpm -C packages/treecrdt-benchmark run build && pnpm --filter @treecrdt/wa-sqlite-vendor build && pnpm -C packages/treecrdt-wa-sqlite run build:ts && pnpm -C packages/treecrdt-wa-sqlite/e2e run build && pnpm -C packages/treecrdt-sqlite-node run build",
     "test:browser": "pnpm -C packages/treecrdt-wa-sqlite/e2e test:e2e",
     "test:native-node": "pnpm -C packages/treecrdt-sqlite-node run test",
-    "benchmark": "rm -rf benchmarks && mkdir -p benchmarks && pnpm run benchmark:core && pnpm run benchmark:aggregate",
+    "benchmark": "rm -rf benchmarks && mkdir -p benchmarks && pnpm -C packages/treecrdt-benchmark run build && pnpm -C packages/treecrdt-wa-sqlite/e2e run bench && pnpm -C packages/treecrdt-sqlite-node run benchmark && pnpm -C packages/treecrdt-wasm-js run benchmark && pnpm run benchmark:core && pnpm run benchmark:aggregate",
     "benchmark:core": "cargo bench -p treecrdt-core --bench core --features bench",
     "benchmark:aggregate": "node scripts/aggregate-bench.mjs",
     "test": "pnpm run test:browser && pnpm run test:native-node",
