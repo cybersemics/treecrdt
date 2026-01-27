@@ -19,14 +19,9 @@ sql-storage = []
 bench = ["serde"]
 
 [dev-dependencies]
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1"
-
-[[bin]]
-name = "treecrdt-core-bench"
-path = "src/bin/bench.rs"
-required-features = ["bench"]
 
 [[bench]]
 name = "core"
 harness = false
+required-features = ["bench"]
