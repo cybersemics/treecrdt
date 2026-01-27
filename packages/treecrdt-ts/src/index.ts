@@ -20,7 +20,12 @@ export type OperationKind =
       type: "insert";
       parent: NodeId;
       node: NodeId;
-      position: number;
+      /**
+       * Stable sibling ordering key (LSEQ/Logoot-style).
+       *
+       * Stored/compared lexicographically; children(parent) must be ordered by (orderKey, nodeId).
+       */
+      orderKey: Uint8Array;
       /**
        * Optional application payload to initialize alongside insert.
        *
@@ -33,7 +38,10 @@ export type OperationKind =
       type: "move";
       node: NodeId;
       newParent: NodeId;
-      position: number;
+      /**
+       * Stable sibling ordering key (LSEQ/Logoot-style).
+       */
+      orderKey: Uint8Array;
     }
   | {
       type: "delete";
@@ -63,10 +71,6 @@ export type Operation = {
   kind: OperationKind;
 };
 
-export type Snapshot = {
-  head: Lamport;
-};
-
 export type SubtreeFilter = {
   root: NodeId;
   depth?: number;
@@ -81,17 +85,6 @@ export interface StorageAdapter {
   apply(op: Operation): Promise<void> | void;
   loadSince(lamport: Lamport): Promise<Operation[]> | Operation[];
   latestLamport(): Promise<Lamport> | Lamport;
-  snapshot(): Promise<Snapshot> | Snapshot;
-}
-
-export interface TreeCRDT {
-  insert(parent: NodeId, node: NodeId, position: number, payload?: Uint8Array): Promise<Operation> | Operation;
-  move(node: NodeId, newParent: NodeId, position: number): Promise<Operation> | Operation;
-  delete(node: NodeId): Promise<Operation> | Operation;
-  setPayload(node: NodeId, payload: Uint8Array | null): Promise<Operation> | Operation;
-  applyRemote(op: Operation): Promise<void> | void;
-  operationsSince(lamport: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
-  snapshot(): Promise<Snapshot> | Snapshot;
 }
 
 export interface SyncProtocol {
@@ -101,3 +94,4 @@ export interface SyncProtocol {
 
 export * from "./adapter.js";
 export * from "./ids.js";
+export * from "./engine.js";

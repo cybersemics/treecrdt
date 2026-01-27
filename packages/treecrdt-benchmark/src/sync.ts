@@ -55,6 +55,15 @@ export function nodeIdFromInt(i: number): string {
   return i.toString(16).padStart(32, "0");
 }
 
+function orderKeyFromPosition(position: number): Uint8Array {
+  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
+  const n = position + 1;
+  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(0, n, false);
+  return bytes;
+}
+
 export function makeOp(
   replica: ReplicaId,
   counter: number,
@@ -92,7 +101,9 @@ export function buildFanoutInsertTreeOps(opts: {
     if (cursor.nextChildPosition >= opts.fanout) queue.shift();
 
     const node = nodeIdFromInt(i);
-    ops.push(makeOp(opts.replica, i, i, { type: "insert", parent, node, position }));
+    ops.push(
+      makeOp(opts.replica, i, i, { type: "insert", parent, node, orderKey: orderKeyFromPosition(position) })
+    );
     queue.push({ parent: node, nextChildPosition: 0 });
   }
 
@@ -122,7 +133,7 @@ export function buildSyncBenchCase(opts: {
         type: "insert",
         parent: root,
         node: nodeIdFromInt(counter),
-        position: counter - 1,
+        orderKey: orderKeyFromPosition(counter - 1),
       });
       opsB.push(op);
       if (counter !== missingCounter) opsA.push(op);
@@ -148,8 +159,18 @@ export function buildSyncBenchCase(opts: {
     const sharedOps = buildFanoutInsertTreeOps({ replica: "s", size: treeSize, fanout, root });
     const movedNode = nodeIdFromInt(fanout);
     const trash = "f".repeat(32);
-    const moveOut = makeOp("m", 1, treeSize + 1, { type: "move", node: movedNode, newParent: trash, position: 0 });
-    const moveBack = makeOp("m", 2, treeSize + 2, { type: "move", node: movedNode, newParent: root, position: fanout - 1 });
+    const moveOut = makeOp("m", 1, treeSize + 1, {
+      type: "move",
+      node: movedNode,
+      newParent: trash,
+      orderKey: orderKeyFromPosition(0),
+    });
+    const moveBack = makeOp("m", 2, treeSize + 2, {
+      type: "move",
+      node: movedNode,
+      newParent: root,
+      orderKey: orderKeyFromPosition(fanout - 1),
+    });
 
     const opsA = [...sharedOps, moveOut, moveBack];
     const opsB = sharedOps;
@@ -175,7 +196,14 @@ export function buildSyncBenchCase(opts: {
 
     for (let i = 0; i < shared; i++) {
       const counter = i + 1;
-      sharedOps.push(makeOp("s", counter, counter, { type: "insert", parent: root, node: nodeIdFromInt(counter), position: i }));
+      sharedOps.push(
+        makeOp("s", counter, counter, {
+          type: "insert",
+          parent: root,
+          node: nodeIdFromInt(counter),
+          orderKey: orderKeyFromPosition(i),
+        })
+      );
     }
     for (let i = 0; i < unique; i++) {
       const counter = i + 1;
@@ -185,7 +213,7 @@ export function buildSyncBenchCase(opts: {
           type: "insert",
           parent: root,
           node: nodeIdFromInt(shared + counter),
-          position: shared + i,
+          orderKey: orderKeyFromPosition(shared + i),
         })
       );
       bOps.push(
@@ -193,7 +221,7 @@ export function buildSyncBenchCase(opts: {
           type: "insert",
           parent: root,
           node: nodeIdFromInt(shared + unique + counter),
-          position: shared + i,
+          orderKey: orderKeyFromPosition(shared + i),
         })
       );
     }
@@ -237,7 +265,7 @@ export function buildSyncBenchCase(opts: {
         type: "insert",
         parent: targetParentHex,
         node: nodeIdFromInt(counter),
-        position: i,
+        orderKey: orderKeyFromPosition(i),
       })
     );
   }
@@ -250,7 +278,7 @@ export function buildSyncBenchCase(opts: {
         type: "insert",
         parent: targetParentHex,
         node: nodeIdFromInt(sharedTarget + counter),
-        position: sharedTarget + i,
+        orderKey: orderKeyFromPosition(sharedTarget + i),
       })
     );
     bTarget.push(
@@ -258,7 +286,7 @@ export function buildSyncBenchCase(opts: {
         type: "insert",
         parent: targetParentHex,
         node: nodeIdFromInt(sharedTarget + uniqueTarget + counter),
-        position: sharedTarget + i,
+        orderKey: orderKeyFromPosition(sharedTarget + i),
       })
     );
   }
@@ -270,7 +298,7 @@ export function buildSyncBenchCase(opts: {
         type: "insert",
         parent: otherParentHex,
         node: nodeIdFromInt(sharedTarget + 2 * uniqueTarget + i + 1),
-        position: i,
+        orderKey: orderKeyFromPosition(i),
       })
     );
     bOther.push(
@@ -278,7 +306,7 @@ export function buildSyncBenchCase(opts: {
         type: "insert",
         parent: otherParentHex,
         node: nodeIdFromInt(sharedTarget + 2 * uniqueTarget + otherCount + i + 1),
-        position: i,
+        orderKey: orderKeyFromPosition(i),
       })
     );
   }

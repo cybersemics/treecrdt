@@ -51,7 +51,7 @@ export function createBroadcastDuplex<Op>(
   selfId: string,
   peerId: string,
   codec: WireCodec<SyncMessage<Op>, Uint8Array>
-): DuplexTransport<SyncMessage<Op>> {
+): DuplexTransport<SyncMessage<Op>> & { close: () => void } {
   const incoming = new BroadcastChannel(`${channel.name}:sync:${peerId}->${selfId}`);
   const outgoing = new BroadcastChannel(`${channel.name}:sync:${selfId}->${peerId}`);
   const handlers = new Set<(msg: SyncMessage<Op>) => void>();

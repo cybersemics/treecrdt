@@ -6,26 +6,28 @@ fn higher_lamport_wins_on_conflict() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let x = NodeId(1);
     let left = NodeId(10);
     let right = NodeId(11);
 
-    let insert_left = crdt_a.local_insert(root, left, 0).unwrap();
-    let insert_right = crdt_a.local_insert(root, right, 1).unwrap();
-    let insert_x = crdt_a.local_insert(root, x, 2).unwrap();
+    let insert_left = crdt_a.local_insert_after(root, left, None).unwrap();
+    let insert_right = crdt_a.local_insert_after(root, right, Some(left)).unwrap();
+    let insert_x = crdt_a.local_insert_after(root, x, Some(right)).unwrap();
 
     // replica a moves x under left (lamport 4)
-    let move_left = crdt_a.local_move(x, left, 0).unwrap();
+    let move_left = crdt_a.local_move_after(x, left, None).unwrap();
 
     // replica b moves x under right with higher lamport
     let mut crdt_b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     crdt_b.apply_remote(insert_left.clone()).unwrap();
     crdt_b.apply_remote(insert_right.clone()).unwrap();
     crdt_b.apply_remote(insert_x.clone()).unwrap();
@@ -35,7 +37,7 @@ fn higher_lamport_wins_on_conflict() {
         move_left.meta.lamport + 1,
         x,
         right,
-        0,
+        Vec::new(),
     );
     crdt_b.apply_remote(move_right.clone()).unwrap();
 
@@ -52,7 +54,8 @@ fn moves_reordered_by_lamport_and_id() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let a = NodeId(1);
@@ -60,12 +63,12 @@ fn moves_reordered_by_lamport_and_id() {
     let x = NodeId(3);
 
     let ops = [
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, 0),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, 1),
-        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, 2),
+        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, Vec::new()),
+        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, Vec::new()),
+        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, Vec::new()),
         // higher lamport move -> should win
-        Operation::move_node(&ReplicaId::new(b"a"), 4, 5, x, a, 0),
-        Operation::move_node(&ReplicaId::new(b"a"), 5, 4, x, b, 0),
+        Operation::move_node(&ReplicaId::new(b"a"), 4, 5, x, a, Vec::new()),
+        Operation::move_node(&ReplicaId::new(b"a"), 5, 4, x, b, Vec::new()),
     ];
 
     // apply out of order
@@ -84,7 +87,8 @@ fn same_lamport_orders_by_op_id() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let root = NodeId::ROOT;
     let a = NodeId(1);
@@ -92,16 +96,16 @@ fn same_lamport_orders_by_op_id() {
     let x = NodeId(3);
 
     let inserts = [
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, 0),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, 1),
-        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, 2),
+        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, Vec::new()),
+        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, Vec::new()),
+        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, Vec::new()),
     ];
     for op in inserts {
         crdt.apply_remote(op).unwrap();
     }
 
-    let move_a = Operation::move_node(&ReplicaId::new(b"a"), 10, 5, x, a, 0);
-    let move_b = Operation::move_node(&ReplicaId::new(b"b"), 10, 5, x, b, 0);
+    let move_a = Operation::move_node(&ReplicaId::new(b"a"), 10, 5, x, a, Vec::new());
+    let move_b = Operation::move_node(&ReplicaId::new(b"b"), 10, 5, x, b, Vec::new());
 
     crdt.apply_remote(move_b.clone()).unwrap();
     crdt.apply_remote(move_a.clone()).unwrap();

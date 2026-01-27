@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS ops (
   parent BLOB,
   node BLOB NOT NULL,
   new_parent BLOB,
-  position INTEGER,
+  order_key BLOB,
   op_ref BLOB,
   known_state BLOB,
   payload BLOB,
@@ -213,7 +213,7 @@ INSERT OR IGNORE INTO tree_meta(id) VALUES (1);
 CREATE TABLE IF NOT EXISTS tree_nodes (
   node BLOB PRIMARY KEY,
   parent BLOB,
-  pos INTEGER,
+  order_key BLOB,
   tombstone INTEGER NOT NULL DEFAULT 0,
   last_change BLOB,
   deleted_at BLOB
@@ -231,7 +231,9 @@ CREATE TABLE IF NOT EXISTS oprefs_children (
 CREATE TABLE IF NOT EXISTS tree_payload (
   node BLOB PRIMARY KEY,
   payload BLOB,
-  op_ref BLOB NOT NULL
+  last_lamport INTEGER NOT NULL,
+  last_replica BLOB NOT NULL,
+  last_counter INTEGER NOT NULL
 );
 "#;
 
@@ -282,7 +284,8 @@ CREATE TABLE IF NOT EXISTS tree_payload (
     const INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
 CREATE INDEX IF NOT EXISTS idx_ops_op_ref ON ops(op_ref);
-CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_pos ON tree_nodes(parent, pos);
+CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_order_key_node ON tree_nodes(parent, order_key, node);
+CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_tombstone_order_key_node ON tree_nodes(parent, tombstone, order_key, node);
 CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(parent, seq);
 "#;
     let rc_idx = {
@@ -313,7 +316,7 @@ CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(par
         // Ensure ROOT exists even before first rebuild.
         let _ = {
             let sql = CString::new(
-                "INSERT OR IGNORE INTO tree_nodes(node,parent,pos,tombstone) VALUES (?1,NULL,0,0)",
+                "INSERT OR IGNORE INTO tree_nodes(node,parent,order_key,tombstone) VALUES (?1,NULL,X'',0)",
             )
             .expect("root insert sql");
             let mut stmt: *mut sqlite3_stmt = null_mut();

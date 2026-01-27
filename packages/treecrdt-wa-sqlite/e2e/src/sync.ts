@@ -43,6 +43,14 @@ function hasOp(ops: Operation[], replica: string, counter: number): boolean {
   return ops.some((op) => op.meta.id.replica === replica && op.meta.id.counter === counter);
 }
 
+function orderKeyFromPosition(position: number): Uint8Array {
+  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
+  const n = position + 1;
+  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(0, n, false);
+  return bytes;
+}
 
 function makeBackend(
   client: TreecrdtClient,
@@ -68,8 +76,8 @@ async function runAllE2e(): Promise<void> {
   const b = await createTreecrdtClient({ storage: "memory", docId });
   try {
     const root = "0".repeat(32);
-    const aOps = [makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 })];
-    const bOps = [makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 })];
+    const aOps = [makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) })];
+    const bOps = [makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) })];
     await a.ops.appendMany(aOps);
     await b.ops.appendMany(bOps);
 
@@ -111,12 +119,12 @@ async function runChildrenE2e(): Promise<void> {
     const parentAHex = "a0".repeat(16);
     const parentBHex = "b0".repeat(16);
     const aOps = [
-      makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), position: 0 }),
-      makeOp("a", 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), position: 0 }),
+      makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+      makeOp("a", 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
     ];
     const bOps = [
-      makeOp("b", 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), position: 0 }),
-      makeOp("b", 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), position: 0 }),
+      makeOp("b", 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+      makeOp("b", 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), orderKey: orderKeyFromPosition(0) }),
     ];
     await a.ops.appendMany(aOps);
     await b.ops.appendMany(bOps);
@@ -245,7 +253,7 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
         codewordsPerMessage: SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
       });
       try {
-        const op1 = makeOp("b", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 });
+        const op1 = makeOp("b", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(op1);
         await pb.notifyLocalUpdate();
         await waitUntil(async () => {
@@ -268,7 +276,7 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
       );
       try {
         const otherParent = "a0".repeat(16);
-        const outside = makeOp("b", 2, 2, { type: "insert", parent: otherParent, node: nodeIdFromInt(2), position: 0 });
+        const outside = makeOp("b", 2, 2, { type: "insert", parent: otherParent, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(outside);
         await pb.notifyLocalUpdate();
 
@@ -277,7 +285,7 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
         const opsAfterOutside = await a.ops.all();
         if (hasOp(opsAfterOutside, "b", 2)) throw new Error("subscription(children) should not deliver ops outside filter");
 
-        const inside = makeOp("b", 3, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), position: 0 });
+        const inside = makeOp("b", 3, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(inside);
         await pb.notifyLocalUpdate();
         await waitUntil(async () => {
@@ -291,7 +299,7 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
 
       // Subscribe to "children(non-root)" and verify that we can pull grandchildren on demand.
       const parent = nodeIdFromInt(10);
-      const parentInsert = makeOp("b", 4, 4, { type: "insert", parent: root, node: parent, position: 0 });
+      const parentInsert = makeOp("b", 4, 4, { type: "insert", parent: root, node: parent, orderKey: orderKeyFromPosition(0) });
       await b.ops.append(parentInsert);
       await pa.syncOnce(ta, { children: { parent: hexToBytes(root) } }, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
@@ -310,7 +318,7 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
         }
       );
       try {
-        const outside = makeOp("b", 5, 5, { type: "insert", parent: nodeIdFromInt(11), node: nodeIdFromInt(12), position: 0 });
+        const outside = makeOp("b", 5, 5, { type: "insert", parent: nodeIdFromInt(11), node: nodeIdFromInt(12), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(outside);
         await pb.notifyLocalUpdate();
         await sleep(250);
@@ -318,7 +326,7 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
           throw new Error("subscription(children(non-root)) should not deliver ops outside filter");
         }
 
-        const inside = makeOp("b", 6, 6, { type: "insert", parent, node: nodeIdFromInt(13), position: 0 });
+        const inside = makeOp("b", 6, 6, { type: "insert", parent, node: nodeIdFromInt(13), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(inside);
         await pb.notifyLocalUpdate();
         await waitUntil(async () => hasOp(await a.ops.all(), "b", 6), {

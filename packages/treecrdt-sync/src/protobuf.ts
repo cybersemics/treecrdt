@@ -171,7 +171,7 @@ function toProtoOperation(op: Operation) {
       const insertOp = {
         parent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.parent) }),
         node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
-        position: op.kind.position,
+        orderKey: op.kind.orderKey,
         ...(op.kind.payload !== undefined ? { payload: op.kind.payload } : {}),
       } satisfies MessageInitShape<typeof InsertOpSchema>;
 
@@ -191,7 +191,7 @@ function toProtoOperation(op: Operation) {
           value: create(MoveOpSchema, {
             node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
             newParent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.newParent) }),
-            position: op.kind.position,
+            orderKey: op.kind.orderKey,
           }),
         },
       });
@@ -256,13 +256,14 @@ function fromProtoOperation(op: any): Operation {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
       if (!parentBytes || !nodeBytes) throw new Error("InsertOp missing node ids");
       const payloadBytes = op.kind.value?.payload as Uint8Array | undefined;
+      const orderKey = (op.kind.value?.orderKey as Uint8Array | undefined) ?? new Uint8Array();
       return {
         meta: outMeta,
         kind: {
           type: "insert",
           parent: nodeIdFromBytes16(parentBytes),
           node: nodeIdFromBytes16(nodeBytes),
-          position: op.kind.value.position ?? 0,
+          orderKey,
           ...(payloadBytes !== undefined ? { payload: payloadBytes } : {}),
         },
       };
@@ -271,13 +272,14 @@ function fromProtoOperation(op: any): Operation {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
       const parentBytes = op.kind.value?.newParent?.bytes as Uint8Array | undefined;
       if (!nodeBytes || !parentBytes) throw new Error("MoveOp missing node ids");
+      const orderKey = (op.kind.value?.orderKey as Uint8Array | undefined) ?? new Uint8Array();
       return {
         meta: outMeta,
         kind: {
           type: "move",
           node: nodeIdFromBytes16(nodeBytes),
           newParent: nodeIdFromBytes16(parentBytes),
-          position: op.kind.value.position ?? 0,
+          orderKey,
         },
       };
     }

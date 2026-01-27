@@ -1,13 +1,18 @@
 import type { Operation, OperationKind } from "@treecrdt/interface";
+import { bytesToHex } from "@treecrdt/interface/ids";
+
+function replicaKey(replica: Operation["meta"]["id"]["replica"]): string {
+  return typeof replica === "string" ? replica : bytesToHex(replica);
+}
 
 export function opKey(op: Operation): string {
-  return `${op.meta.id.replica}\u0000${op.meta.id.counter}`;
+  return `${replicaKey(op.meta.id.replica)}\u0000${op.meta.id.counter}`;
 }
 
 export function compareOps(a: Operation, b: Operation): number {
   return (
     a.meta.lamport - b.meta.lamport ||
-    a.meta.id.replica.localeCompare(b.meta.id.replica) ||
+    replicaKey(a.meta.id.replica).localeCompare(replicaKey(b.meta.id.replica)) ||
     a.meta.id.counter - b.meta.id.counter
   );
 }
@@ -33,10 +38,12 @@ export function mergeSortedOps(prev: Operation[], next: Operation[]): Operation[
 export function renderKind(kind: OperationKind): string {
   if (kind.type === "insert") {
     const payloadSuffix = kind.payload !== undefined ? ` (${kind.payload.length} bytes)` : "";
-    return `insert ${kind.node} under ${kind.parent} @${kind.position}${payloadSuffix}`;
+    const key = bytesToHex(kind.orderKey);
+    return `insert ${kind.node} under ${kind.parent} key=${key}${payloadSuffix}`;
   }
   if (kind.type === "move") {
-    return `move ${kind.node} to ${kind.newParent} @${kind.position}`;
+    const key = bytesToHex(kind.orderKey);
+    return `move ${kind.node} to ${kind.newParent} key=${key}`;
   }
   if (kind.type === "payload") {
     return kind.payload === null
@@ -45,4 +52,3 @@ export function renderKind(kind: OperationKind): string {
   }
   return `${kind.type} ${kind.node}`;
 }
-

@@ -63,6 +63,8 @@ export function TreeRow({
     <div
       className="group rounded-lg bg-slate-950/40 px-2 py-2 ring-1 ring-slate-800/50 transition hover:bg-slate-950/55 hover:ring-slate-700/70"
       style={{ paddingLeft: `${depth * 16}px` }}
+      data-testid="tree-row"
+      data-node-id={node.id}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-2">
@@ -181,4 +183,3 @@ export function TreeRow({
     </div>
   );
 }
-

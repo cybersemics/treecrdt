@@ -118,19 +118,17 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Setup Node
+      - name: Use Node.js 20.x
         if: steps.pr.outputs.same_repo == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 20.x
-          cache: pnpm
+          node-version: '20.x'
 
-      - name: Setup pnpm
+      - name: Install pnpm
         if: steps.pr.outputs.same_repo == 'true'
         uses: pnpm/action-setup@v4
         with:
           version: 8
-          run_install: false
 
       - name: Install Rust toolchain
         if: steps.pr.outputs.same_repo == 'true'
@@ -194,7 +192,14 @@ jobs:
         working-directory: bench-head
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-        run: pnpm run benchmark
+          SYNC_BENCH_SIZES: 1000,10000
+        run: |
+          pnpm -C packages/treecrdt-benchmark run build
+          pnpm -C packages/treecrdt-wa-sqlite/e2e run bench
+          pnpm -C packages/treecrdt-sqlite-node run benchmark -- --sizes 1000,10000
+          pnpm -C packages/treecrdt-wasm-js run benchmark -- --sizes 1000,10000
+          pnpm run benchmark:core
+          pnpm run benchmark:aggregate
 
       - name: Upload benchmark artifacts
         if: steps.pr.outputs.same_repo == 'true'

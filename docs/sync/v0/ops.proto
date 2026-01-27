@@ -13,14 +13,14 @@ import "sync/v0/types.proto";
 message InsertOp {
   NodeId parent = 1;
   NodeId node = 2;
-  uint32 position = 3;
+  bytes order_key = 3;
   optional bytes payload = 4;
 }
 
 message MoveOp {
   NodeId node = 1;
   NodeId new_parent = 2;
-  uint32 position = 3;
+  bytes order_key = 3;
 }
 
 message DeleteOp {

@@ -6,18 +6,17 @@
 pub mod error;
 pub mod ids;
 pub mod ops;
+pub mod order_key;
 pub mod traits;
 pub mod tree;
 pub mod version_vector;
 
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
-pub use ops::{
-    cmp_op_key, cmp_ops, op_tie_breaker_id, Operation, OperationKind, OperationMetadata,
-};
+pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{
-    Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryStorage, NodeStore, Snapshot,
-    Storage,
+    Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,
+    NodeStore, NoopParentOpIndex, ParentOpIndex, PayloadStore, Storage,
 };
-pub use tree::{ApplyDelta, LogEntryExport, NodeExport, NodeSnapshotExport, TreeCrdt};
+pub use tree::{ApplyDelta, NodeExport, NodeSnapshotExport, TreeCrdt};
 pub use version_vector::VersionVector;

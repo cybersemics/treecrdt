@@ -12,7 +12,7 @@
   "scripts": {
     "build:native-ext": "cd ../.. && pnpm run build:ext:native",
     "copy:ext": "node ./scripts/copy-ext.mjs",
-    "build:ts": "pnpm -C ../treecrdt-ts run build && tsc -p tsconfig.json",
+    "build:ts": "pnpm -C ../treecrdt-sqlite-conformance run build && tsc -p tsconfig.json",
     "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
     "test": "pnpm run build && vitest run",
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts && tsx ./scripts/bench-sync.ts"
@@ -27,6 +27,7 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
+    "@treecrdt/sqlite-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "tsx": "^4.19.2",

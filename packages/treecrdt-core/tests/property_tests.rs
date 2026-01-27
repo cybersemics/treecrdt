@@ -14,8 +14,8 @@ proptest! {
                 let node = nodes[(i + 1) % nodes.len()];
                 let parent = nodes[i % nodes.len()];
                 match i % 3 {
-                    0 => Operation::insert(&replica, (i + 1) as u64, lamport, parent, node, 0),
-                    1 => Operation::move_node(&replica, (i + 1) as u64, lamport, node, parent, 0),
+                    0 => Operation::insert(&replica, (i + 1) as u64, lamport, parent, node, Vec::new()),
+                    1 => Operation::move_node(&replica, (i + 1) as u64, lamport, node, parent, Vec::new()),
                     _ => Operation::delete(&replica, (i + 1) as u64, lamport, node, None),
                 }
             }),
@@ -47,7 +47,8 @@ proptest! {
                 ReplicaId::new(b"p"),
                 MemoryStorage::default(),
                 LamportClock::default(),
-            );
+            )
+            .unwrap();
             for op in &perm {
                 crdt.apply_remote(op.clone()).unwrap();
             }

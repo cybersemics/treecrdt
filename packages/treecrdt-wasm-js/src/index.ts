@@ -115,7 +115,7 @@ type JsOp = {
   parent?: string | null;
   node: string;
   new_parent?: string | null;
-  position?: number | null;
+  order_key?: string | null;
   known_state?: number[] | null;
   payload?: string | null;
 };
@@ -142,7 +142,7 @@ function toJsOp(
         kind: "insert",
         parent: normalizeNodeId(op.kind.parent),
         node: normalizeNodeId(op.kind.node),
-        position: op.kind.position,
+        order_key: toHex(op.kind.orderKey),
       };
     case "move":
       return {
@@ -150,7 +150,7 @@ function toJsOp(
         kind: "move",
         node: normalizeNodeId(op.kind.node),
         new_parent: normalizeNodeId(op.kind.newParent),
-        position: op.kind.position,
+        order_key: toHex(op.kind.orderKey),
       };
     case "delete":
       return {

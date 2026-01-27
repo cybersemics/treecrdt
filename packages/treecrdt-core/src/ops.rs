@@ -23,7 +23,7 @@ pub enum OperationKind {
     Insert {
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: Vec<u8>,
         /// Optional application payload to initialize alongside insert.
         ///
         /// When present, this is treated like a `Payload` op at the same `(lamport, replica, counter)`,
@@ -33,7 +33,7 @@ pub enum OperationKind {
     Move {
         node: NodeId,
         new_parent: NodeId,
-        position: usize,
+        order_key: Vec<u8>,
     },
     Delete {
         node: NodeId,
@@ -69,9 +69,9 @@ impl Operation {
         lamport: Lamport,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
     ) -> Self {
-        Self::insert_with_optional_payload(replica, counter, lamport, parent, node, position, None)
+        Self::insert_with_optional_payload(replica, counter, lamport, parent, node, order_key, None)
     }
 
     pub fn insert_with_payload(
@@ -80,7 +80,7 @@ impl Operation {
         lamport: Lamport,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
         payload: impl Into<Vec<u8>>,
     ) -> Self {
         Self::insert_with_optional_payload(
@@ -89,7 +89,7 @@ impl Operation {
             lamport,
             parent,
             node,
-            position,
+            order_key,
             Some(payload.into()),
         )
     }
@@ -100,7 +100,7 @@ impl Operation {
         lamport: Lamport,
         parent: NodeId,
         node: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
         payload: Option<Vec<u8>>,
     ) -> Self {
         Self {
@@ -112,7 +112,7 @@ impl Operation {
             kind: OperationKind::Insert {
                 parent,
                 node,
-                position,
+                order_key: order_key.into(),
                 payload,
             },
         }
@@ -124,7 +124,7 @@ impl Operation {
         lamport: Lamport,
         node: NodeId,
         new_parent: NodeId,
-        position: usize,
+        order_key: impl Into<Vec<u8>>,
     ) -> Self {
         Self {
             meta: OperationMetadata {
@@ -135,7 +135,7 @@ impl Operation {
             kind: OperationKind::Move {
                 node,
                 new_parent,
-                position,
+                order_key: order_key.into(),
             },
         }
     }
@@ -205,20 +205,21 @@ impl Operation {
     }
 }
 
-/// Deterministic tie-breaker used to order operations with equal Lamport timestamps.
-///
-/// This intentionally avoids comparing the full replica id in the hot path by using the first
-/// 8 bytes (zero-padded) plus the counter, while still producing a total order when combined
-/// with the full `(replica, counter)` id as a final tiebreak.
-pub fn op_tie_breaker_id(replica: &[u8], counter: u64) -> u128 {
-    let mut bytes = [0u8; 16];
-    let len = replica.len().min(8);
-    bytes[..len].copy_from_slice(&replica[..len]);
-    bytes[8..].copy_from_slice(&counter.to_be_bytes());
-    u128::from_be_bytes(bytes)
+impl OperationKind {
+    pub fn node(&self) -> NodeId {
+        match self {
+            OperationKind::Insert { node, .. }
+            | OperationKind::Move { node, .. }
+            | OperationKind::Delete { node }
+            | OperationKind::Tombstone { node }
+            | OperationKind::Payload { node, .. } => *node,
+        }
+    }
 }
 
-/// Canonical ordering for operation ids used throughout the core.
+/// Deterministic tie-breaker used to order operations with equal Lamport timestamps.
+///
+/// Canonical ordering for operations used throughout the core.
 pub fn cmp_op_key(
     a_lamport: Lamport,
     a_replica: &[u8],
@@ -227,18 +228,7 @@ pub fn cmp_op_key(
     b_replica: &[u8],
     b_counter: u64,
 ) -> Ordering {
-    (
-        a_lamport,
-        op_tie_breaker_id(a_replica, a_counter),
-        a_replica,
-        a_counter,
-    )
-        .cmp(&(
-            b_lamport,
-            op_tie_breaker_id(b_replica, b_counter),
-            b_replica,
-            b_counter,
-        ))
+    (a_lamport, a_replica, a_counter).cmp(&(b_lamport, b_replica, b_counter))
 }
 
 /// Canonical ordering for full operations.

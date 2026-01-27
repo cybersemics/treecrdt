@@ -24,6 +24,15 @@ export type BenchmarkWorkload = {
 const defaultSerializeNodeId: SerializeNodeId = nodeIdToBytes16;
 const defaultSerializeReplica: SerializeReplica = replicaIdToBytes;
 
+function orderKeyFromPosition(position: number): Uint8Array {
+  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
+  const n = position + 1;
+  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(0, n, false);
+  return bytes;
+}
+
 export async function runBenchmark(
   adapterFactory: () => Promise<TreecrdtAdapter> | TreecrdtAdapter,
   workload: BenchmarkWorkload
@@ -106,7 +115,7 @@ export function makeInsertMoveWorkload(opts: {
         const nodeHex = (i + 1).toString(16).padStart(32, "0");
         const parentHex = "0".padStart(32, "0");
         const insert = mkOp(
-          { type: "insert", parent: parentHex, node: nodeHex, position: i },
+          { type: "insert", parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(i) },
           i + 1,
           i + 1
         );
@@ -116,7 +125,7 @@ export function makeInsertMoveWorkload(opts: {
         const nodeHex = (i + 1).toString(16).padStart(32, "0");
         const parentHex = "0".padStart(32, "0");
         const mv = mkOp(
-          { type: "move", node: nodeHex, newParent: parentHex, position: 0 },
+          { type: "move", node: nodeHex, newParent: parentHex, orderKey: orderKeyFromPosition(0) },
           opts.count + i + 1,
           opts.count + i + 1
         );
@@ -161,7 +170,7 @@ export function makeInsertChainWorkload(opts: {
       for (let i = 0; i < opts.count; i++) {
         const nodeHex = (i + 1).toString(16).padStart(32, "0");
         const insert = mkOp(
-          { type: "insert", parent: parentHex, node: nodeHex, position: 0 },
+          { type: "insert", parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(0) },
           i + 1,
           i + 1
         );
@@ -203,7 +212,7 @@ export function makeReplayLogWorkload(opts: {
   for (let i = 0; i < opts.count; i++) {
     const nodeHex = (i + 1).toString(16).padStart(32, "0");
     const insert = mkOp(
-      { type: "insert", parent: parentHex, node: nodeHex, position: 0 },
+      { type: "insert", parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(0) },
       i + 1,
       i + 1
     );

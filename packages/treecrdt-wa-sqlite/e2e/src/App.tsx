@@ -4,6 +4,15 @@ import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/c
 
 type ViewOp = Operation & { asText: string };
 
+function orderKeyFromPosition(position: number): Uint8Array {
+  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
+  const n = position + 1;
+  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(0, n, false);
+  return bytes;
+}
+
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const [ops, setOps] = useState<ViewOp[]>([]);
@@ -43,14 +52,14 @@ export default function App() {
     const insertOp = makeOp("insert", replica, 1, 1, {
       parent: rootId,
       node: childId,
-      position: 0,
+      orderKey: orderKeyFromPosition(0),
     });
     await client.ops.append(insertOp);
 
     const moveOp = makeOp("move", replica, 2, 2, {
       node: childId,
       newParent: rootId,
-      position: 0,
+      orderKey: orderKeyFromPosition(0),
     });
     await client.ops.append(moveOp);
 
@@ -68,7 +77,7 @@ export default function App() {
     const insertOp = makeOp("insert", replica, 1, 1, {
       parent: rootId,
       node: childId,
-      position: 0,
+      orderKey: orderKeyFromPosition(0),
     });
     const payloadOp: Operation = {
       meta: { id: { replica, counter: 2 }, lamport: 2 },
@@ -91,7 +100,13 @@ export default function App() {
 
     const insertOp: Operation = {
       meta: { id: { replica, counter: 1 }, lamport: 1 },
-      kind: { type: "insert", parent: rootId, node: childId, position: 0, payload: new TextEncoder().encode("hello") },
+      kind: {
+        type: "insert",
+        parent: rootId,
+        node: childId,
+        orderKey: orderKeyFromPosition(0),
+        payload: new TextEncoder().encode("hello"),
+      },
     };
     await client.ops.append(insertOp);
 

@@ -1,12 +1,10 @@
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
-use crate::ids::{Lamport, NodeId};
-use crate::ops::Operation;
+use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
+use crate::ops::{cmp_ops, Operation};
 use crate::version_vector::VersionVector;
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 /// Pluggable clock to allow Lamport, Hybrid Logical Clock, or custom time strategies.
 pub trait Clock {
@@ -23,10 +21,41 @@ pub trait AccessControl {
 
 /// Persistent or in-memory operation log.
 pub trait Storage {
-    fn apply(&mut self, op: Operation) -> Result<()>;
+    /// Persist a single operation. Returns `true` if the op was inserted, or `false` if it was
+    /// already present (idempotent).
+    fn apply(&mut self, op: Operation) -> Result<bool>;
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>>;
     fn latest_lamport(&self) -> Lamport;
-    fn snapshot(&self) -> Result<Snapshot>;
+    /// Return the maximum counter observed for `replica`, or 0 if absent.
+    ///
+    /// This is used to ensure locally-minted operation ids remain monotonic across restarts.
+    /// Storage backends should override this with an efficient query when possible.
+    fn latest_counter(&self, replica: &ReplicaId) -> Result<u64> {
+        let ops = self.load_since(0)?;
+        Ok(ops
+            .iter()
+            .filter(|op| &op.meta.id.replica == replica)
+            .map(|op| op.meta.id.counter)
+            .max()
+            .unwrap_or(0))
+    }
+
+    /// Iterate operations since `lamport` in canonical op-key order.
+    ///
+    /// Default implementation loads into memory and sorts; storage backends can override this
+    /// to stream rows in sorted order (e.g. via SQL `ORDER BY`).
+    fn scan_since(
+        &self,
+        lamport: Lamport,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
+        let mut ops = self.load_since(lamport)?;
+        ops.sort_by(cmp_ops);
+        for op in ops {
+            visit(op)?;
+        }
+        Ok(())
+    }
 }
 
 /// Index provider used to accelerate subtree queries when partial sync is requested.
@@ -45,10 +74,18 @@ pub trait NodeStore {
     fn exists(&self, node: NodeId) -> Result<bool>;
 
     fn parent(&self, node: NodeId) -> Result<Option<NodeId>>;
+    fn order_key(&self, node: NodeId) -> Result<Option<Vec<u8>>>;
     fn children(&self, parent: NodeId) -> Result<Vec<NodeId>>;
 
     fn detach(&mut self, node: NodeId) -> Result<()>;
-    fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()>;
+    fn attach(&mut self, node: NodeId, parent: NodeId, order_key: Vec<u8>) -> Result<()>;
+
+    /// Cached tombstone flag for fast queries (derived from `deleted_at` and subtree awareness).
+    ///
+    /// Adapters should treat this as derived state: core helpers can refresh it, and callers may
+    /// rely on it for efficient `children()` queries without recomputing awareness recursively.
+    fn tombstone(&self, node: NodeId) -> Result<bool>;
+    fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()>;
 
     fn last_change(&self, node: NodeId) -> Result<VersionVector>;
     fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
@@ -56,14 +93,71 @@ pub trait NodeStore {
     fn deleted_at(&self, node: NodeId) -> Result<Option<VersionVector>>;
     fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
 
+    fn has_deleted_at(&self, node: NodeId) -> Result<bool> {
+        Ok(self.deleted_at(node)?.is_some())
+    }
+
+    fn parent_and_has_deleted_at(&self, node: NodeId) -> Result<Option<(Option<NodeId>, bool)>> {
+        if !self.exists(node)? {
+            return Ok(None);
+        }
+        Ok(Some((self.parent(node)?, self.has_deleted_at(node)?)))
+    }
+
+    fn subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
+        if !self.exists(node)? {
+            return Ok(VersionVector::new());
+        }
+
+        let mut subtree_vv = self.last_change(node)?;
+        for child_id in self.children(node)? {
+            let child_vv = self.subtree_version_vector(child_id)?;
+            subtree_vv.merge(&child_vv);
+        }
+
+        Ok(subtree_vv)
+    }
+
     fn all_nodes(&self) -> Result<Vec<NodeId>>;
 }
 
-/// Lightweight snapshot to expose to storage adapters.
-#[derive(Clone, Debug, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Snapshot {
-    pub head: Lamport,
+/// Storage for last-writer-wins node payloads.
+///
+/// Payloads are application-defined opaque bytes. Merge semantics are last-writer-wins per node,
+/// ordered by `(lamport, replica, counter)`. This trait allows embedders (SQLite, wasm, etc) to
+/// persist payload state without re-implementing CRDT ordering rules.
+pub trait PayloadStore {
+    fn reset(&mut self) -> Result<()>;
+    fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>>;
+    fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>>;
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> Result<()>;
+}
+
+/// Persistent index of operations relevant to a `children(parent)` filter.
+///
+/// This is used by adapters (e.g. SQLite) to support partial sync without re-implementing which
+/// parents are affected by each operation or the "payload visibility" backfill rule.
+pub trait ParentOpIndex {
+    fn reset(&mut self) -> Result<()>;
+    fn record(&mut self, parent: NodeId, op_id: &OperationId, seq: u64) -> Result<()>;
+}
+
+#[derive(Default)]
+pub struct NoopParentOpIndex;
+
+impl ParentOpIndex for NoopParentOpIndex {
+    fn reset(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn record(&mut self, _parent: NodeId, _op_id: &OperationId, _seq: u64) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Basic Lamport clock implementation useful for tests and default flows.
@@ -104,12 +198,17 @@ impl AccessControl for AllowAllAccess {
 #[derive(Default)]
 pub struct MemoryStorage {
     ops: Vec<Operation>,
+    ids: HashSet<OperationId>,
 }
 
 impl Storage for MemoryStorage {
-    fn apply(&mut self, op: Operation) -> Result<()> {
+    fn apply(&mut self, op: Operation) -> Result<bool> {
+        if self.ids.contains(&op.meta.id) {
+            return Ok(false);
+        }
+        self.ids.insert(op.meta.id.clone());
         self.ops.push(op);
-        Ok(())
+        Ok(true)
     }
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
@@ -120,10 +219,14 @@ impl Storage for MemoryStorage {
         self.ops.iter().map(|op| op.meta.lamport).max().unwrap_or_default()
     }
 
-    fn snapshot(&self) -> Result<Snapshot> {
-        Ok(Snapshot {
-            head: self.latest_lamport(),
-        })
+    fn latest_counter(&self, replica: &ReplicaId) -> Result<u64> {
+        Ok(self
+            .ops
+            .iter()
+            .filter(|op| &op.meta.id.replica == replica)
+            .map(|op| op.meta.id.counter)
+            .max()
+            .unwrap_or(0))
     }
 }
 
@@ -146,10 +249,50 @@ impl IndexProvider for MemoryStorage {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MemoryPayloadStore {
+    entries: HashMap<NodeId, MemoryPayloadEntry>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MemoryPayloadEntry {
+    payload: Option<Vec<u8>>,
+    last_writer: Option<(Lamport, OperationId)>,
+}
+
+impl PayloadStore for MemoryPayloadStore {
+    fn reset(&mut self) -> Result<()> {
+        self.entries.clear();
+        Ok(())
+    }
+
+    fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
+        Ok(self.entries.get(&node).and_then(|e| e.payload.clone()))
+    }
+
+    fn last_writer(&self, node: NodeId) -> Result<Option<(Lamport, OperationId)>> {
+        Ok(self.entries.get(&node).and_then(|e| e.last_writer.clone()))
+    }
+
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> Result<()> {
+        let entry = self.entries.entry(node).or_default();
+        entry.payload = payload;
+        entry.last_writer = Some(writer);
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct MemoryNodeState {
     parent: Option<NodeId>,
+    order_key: Option<Vec<u8>>,
     children: Vec<NodeId>,
+    tombstone: bool,
     last_change: VersionVector,
     deleted_at: Option<VersionVector>,
 }
@@ -158,7 +301,9 @@ impl MemoryNodeState {
     fn new_root() -> Self {
         Self {
             parent: None,
+            order_key: Some(Vec::new()),
             children: Vec::new(),
+            tombstone: false,
             last_change: VersionVector::new(),
             deleted_at: None,
         }
@@ -167,7 +312,9 @@ impl MemoryNodeState {
     fn new() -> Self {
         Self {
             parent: None,
+            order_key: None,
             children: Vec::new(),
+            tombstone: false,
             last_change: VersionVector::new(),
             deleted_at: None,
         }
@@ -228,6 +375,10 @@ impl NodeStore for MemoryNodeStore {
         Ok(self.nodes.get(&node).and_then(|s| s.parent))
     }
 
+    fn order_key(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
+        Ok(self.nodes.get(&node).and_then(|s| s.order_key.clone()))
+    }
+
     fn children(&self, parent: NodeId) -> Result<Vec<NodeId>> {
         Ok(self.get_state(parent)?.children.clone())
     }
@@ -244,21 +395,43 @@ impl NodeStore for MemoryNodeStore {
         }
 
         self.get_state_mut(node)?.parent = None;
+        self.get_state_mut(node)?.order_key = None;
         Ok(())
     }
 
-    fn attach(&mut self, node: NodeId, parent: NodeId, position: usize) -> Result<()> {
+    fn attach(&mut self, node: NodeId, parent: NodeId, order_key: Vec<u8>) -> Result<()> {
         self.ensure_node(parent)?;
         self.ensure_node(node)?;
         self.get_state_mut(node)?.parent = Some(parent);
+        self.get_state_mut(node)?.order_key = Some(order_key.clone());
 
         if parent == NodeId::TRASH {
             return Ok(());
         }
 
+        let existing = self.get_state(parent)?.children.clone();
+        let mut idx = existing.len();
+        for (i, child) in existing.iter().enumerate() {
+            let child_key =
+                self.nodes.get(child).and_then(|s| s.order_key.as_deref()).unwrap_or_default();
+            let cmp = child_key.cmp(order_key.as_slice()).then_with(|| child.cmp(&node));
+            if cmp == Ordering::Greater {
+                idx = i;
+                break;
+            }
+        }
+
         let parent_state = self.get_state_mut(parent)?;
-        let idx = position.min(parent_state.children.len());
         parent_state.children.insert(idx, node);
+        Ok(())
+    }
+
+    fn tombstone(&self, node: NodeId) -> Result<bool> {
+        Ok(self.get_state(node)?.tombstone)
+    }
+
+    fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()> {
+        self.get_state_mut(node)?.tombstone = tombstone;
         Ok(())
     }
 

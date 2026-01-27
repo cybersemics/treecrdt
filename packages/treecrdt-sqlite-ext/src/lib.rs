@@ -25,4 +25,5 @@ pub fn demo_instance_with_sqlite() -> TreeCrdt<SqliteStorage, LamportClock> {
         SqliteStorage::new_in_memory().expect("in-memory sqlite"),
         LamportClock::default(),
     )
+    .unwrap()
 }

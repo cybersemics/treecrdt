@@ -6,15 +6,17 @@ fn payload_lww_tie_breaker_converges() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
-    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, 0);
+    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, Vec::new());
     a.apply_remote(insert.clone()).unwrap();
     b.apply_remote(insert).unwrap();
 
@@ -28,8 +30,8 @@ fn payload_lww_tie_breaker_converges() {
     b.apply_remote(op_b).unwrap();
     b.apply_remote(op_a).unwrap();
 
-    assert_eq!(a.payload(node), Some(&b"B"[..]));
-    assert_eq!(b.payload(node), Some(&b"B"[..]));
+    assert_eq!(a.payload(node).unwrap(), Some(b"B".to_vec()));
+    assert_eq!(b.payload(node).unwrap(), Some(b"B".to_vec()));
 }
 
 #[test]
@@ -38,15 +40,17 @@ fn payload_clear_is_last_writer_wins() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
     let mut b = TreeCrdt::new(
         ReplicaId::new(b"b"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
-    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, 0);
+    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, Vec::new());
     a.apply_remote(insert.clone()).unwrap();
     b.apply_remote(insert).unwrap();
 
@@ -59,8 +63,8 @@ fn payload_clear_is_last_writer_wins() {
     b.apply_remote(clear).unwrap();
     b.apply_remote(set).unwrap();
 
-    assert_eq!(a.payload(node), None);
-    assert_eq!(b.payload(node), None);
+    assert_eq!(a.payload(node).unwrap(), None);
+    assert_eq!(b.payload(node).unwrap(), None);
 }
 
 #[test]
@@ -69,10 +73,11 @@ fn payload_can_arrive_before_insert() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
-    let insert = Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, 0);
+    let insert = Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, Vec::new());
     let payload = Operation::set_payload(&ReplicaId::new(b"a"), 2, 2, node, b"hello");
 
     // Receive payload first, then receive the earlier insert (out of order by lamport).
@@ -80,7 +85,7 @@ fn payload_can_arrive_before_insert() {
     tree.apply_remote(insert).unwrap();
 
     assert_eq!(tree.parent(node).unwrap(), Some(NodeId::ROOT));
-    assert_eq!(tree.payload(node), Some(&b"hello"[..]));
+    assert_eq!(tree.payload(node).unwrap(), Some(b"hello".to_vec()));
     assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
 }
 
@@ -90,7 +95,8 @@ fn insert_with_payload_sets_value() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
     let insert = Operation::insert_with_payload(
@@ -99,14 +105,14 @@ fn insert_with_payload_sets_value() {
         1,
         NodeId::ROOT,
         node,
-        0,
+        Vec::new(),
         b"hello",
     );
 
     tree.apply_remote(insert).unwrap();
 
     assert_eq!(tree.parent(node).unwrap(), Some(NodeId::ROOT));
-    assert_eq!(tree.payload(node), Some(&b"hello"[..]));
+    assert_eq!(tree.payload(node).unwrap(), Some(b"hello".to_vec()));
     assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
 }
 
@@ -116,11 +122,19 @@ fn insert_payload_does_not_override_newer_payload() {
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
         LamportClock::default(),
-    );
+    )
+    .unwrap();
 
     let node = NodeId(1);
-    let insert =
-        Operation::insert_with_payload(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, 0, b"old");
+    let insert = Operation::insert_with_payload(
+        &ReplicaId::new(b"a"),
+        1,
+        1,
+        NodeId::ROOT,
+        node,
+        Vec::new(),
+        b"old",
+    );
     let payload = Operation::set_payload(&ReplicaId::new(b"a"), 2, 2, node, b"new");
 
     // Receive payload first, then receive the earlier insert-with-payload (out of order by lamport).
@@ -128,6 +142,6 @@ fn insert_payload_does_not_override_newer_payload() {
     tree.apply_remote(insert).unwrap();
 
     assert_eq!(tree.parent(node).unwrap(), Some(NodeId::ROOT));
-    assert_eq!(tree.payload(node), Some(&b"new"[..]));
+    assert_eq!(tree.payload(node).unwrap(), Some(b"new".to_vec()));
     assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![node]);
 }

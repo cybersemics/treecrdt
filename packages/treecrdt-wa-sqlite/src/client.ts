@@ -1,12 +1,27 @@
 import { detectOpfsSupport } from "./opfs.js";
-import type { Operation } from "@treecrdt/interface";
+import type { Operation, ReplicaId } from "@treecrdt/interface";
 import {
+  createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
+  decodeSqliteTreeChildRows,
   decodeSqliteTreeRows,
+  type SqliteTreeChildRow,
+  type SqliteTreeRow,
+  type SqliteRunner,
+  type TreecrdtSqlitePlacement,
+  type TreecrdtSqliteWriter,
 } from "@treecrdt/interface/sqlite";
-import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type {
+  TreecrdtEngine,
+  TreecrdtEngineLocal,
+  TreecrdtEngineMeta,
+  TreecrdtEngineOpRefs,
+  TreecrdtEngineOps,
+  TreecrdtEngineTree,
+} from "@treecrdt/interface/engine";
 import type { Database } from "./index.js";
 import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
@@ -14,40 +29,19 @@ import { openTreecrdtDb } from "./open.js";
 export type StorageMode = "memory" | "opfs";
 export type ClientMode = "direct" | "worker";
 
-export type TreecrdtOpsApi = {
-  append: (op: Operation) => Promise<void>;
-  appendMany: (ops: Operation[]) => Promise<void>;
-  all: () => Promise<Operation[]>;
-  since: (lamport: number, root?: string) => Promise<Operation[]>;
-  children: (parent: string) => Promise<Operation[]>;
-  get: (opRefs: Uint8Array[]) => Promise<Operation[]>;
-};
+export type TreecrdtOpsApi = TreecrdtEngineOps;
 
-export type TreecrdtOpRefsApi = {
-  all: () => Promise<Uint8Array[]>;
-  children: (parent: string) => Promise<Uint8Array[]>;
-};
+export type TreecrdtOpRefsApi = TreecrdtEngineOpRefs;
 
-export type TreeNodeRow = {
-  node: string;
-  parent: string | null;
-  pos: number | null;
-  tombstone: boolean;
-};
+export type TreeNodeRow = SqliteTreeRow;
 
-export type TreecrdtTreeApi = {
-  children: (parent: string) => Promise<string[]>;
-  dump: () => Promise<TreeNodeRow[]>;
-  nodeCount: () => Promise<number>;
-  subtreeKnownState: (node: string) => Promise<Uint8Array>;
-};
+export type TreecrdtTreeApi = TreecrdtEngineTree;
 
-export type TreecrdtMetaApi = {
-  headLamport: () => Promise<number>;
-  replicaMaxCounter: (replica: Operation["meta"]["id"]["replica"]) => Promise<number>;
-};
+export type TreecrdtMetaApi = TreecrdtEngineMeta;
 
-export type TreecrdtClient = {
+export type TreecrdtLocalApi = TreecrdtEngineLocal;
+
+export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   storage: StorageMode;
   docId: string;
@@ -55,6 +49,7 @@ export type TreecrdtClient = {
   opRefs: TreecrdtOpRefsApi;
   tree: TreecrdtTreeApi;
   meta: TreecrdtMetaApi;
+  local: TreecrdtLocalApi;
   close: () => Promise<void>;
 };
 
@@ -210,6 +205,17 @@ async function createDirectClient(opts: {
   const finalStorage: StorageMode = opened.storage;
   const filename = opened.filename;
   const adapter = opened.api;
+  const runner: SqliteRunner = { exec: (sql) => db.exec(sql), getText: (sql, params = []) => dbGetText(db, sql, params) };
+  const localWriters = new Map<string, TreecrdtSqliteWriter>();
+  const localWriterKey = (replica: ReplicaId) => (typeof replica === "string" ? replica : bytesToHex(replica));
+  const localWriterFor = (replica: ReplicaId) => {
+    const key = localWriterKey(replica);
+    const existing = localWriters.get(key);
+    if (existing) return existing;
+    const next = createTreecrdtSqliteWriter(runner, { replica });
+    localWriters.set(key, next);
+    return next;
+  };
   const wrapError = (stage: string, err: unknown) =>
     new Error(
       JSON.stringify({
@@ -252,11 +258,15 @@ async function createDirectClient(opts: {
           const [parent] = params as RpcParams<"treeChildren">;
           return (await adapter.treeChildren(nodeIdToBytes16(parent))) as any;
         }
-        case "subtreeKnownState": {
-          const [node] = params as RpcParams<"subtreeKnownState">;
-          const json = await dbGetText(db, "SELECT treecrdt_subtree_known_state(?1)", [nodeIdToBytes16(node)]);
-          if (!json) throw new Error("treecrdt_subtree_known_state returned empty result");
-          return Array.from(new TextEncoder().encode(json)) as any;
+        case "treeChildrenPage": {
+          const [parent, cursor, limit] = params as RpcParams<"treeChildrenPage">;
+          const cursorBytes = cursor
+            ? {
+                orderKey: Uint8Array.from(cursor.orderKey),
+                node: Uint8Array.from(cursor.node),
+              }
+            : null;
+          return (await adapter.treeChildrenPage!(nodeIdToBytes16(parent), cursorBytes, limit)) as any;
         }
         case "treeDump":
           return (await adapter.treeDump()) as any;
@@ -269,6 +279,26 @@ async function createDirectClient(opts: {
           const replica =
             typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
           return (await adapter.replicaMaxCounter(replica)) as any;
+        }
+        case "localInsert": {
+          const [replica, parent, node, placement, payload] = params as RpcParams<"localInsert">;
+          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
+          return (await localWriterFor(rid).insert(parent, node, placement, payload ? { payload } : {})) as any;
+        }
+        case "localMove": {
+          const [replica, node, newParent, placement] = params as RpcParams<"localMove">;
+          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
+          return (await localWriterFor(rid).move(node, newParent, placement)) as any;
+        }
+        case "localDelete": {
+          const [replica, node] = params as RpcParams<"localDelete">;
+          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
+          return (await localWriterFor(rid).delete(node)) as any;
+        }
+        case "localPayload": {
+          const [replica, node, payload] = params as RpcParams<"localPayload">;
+          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
+          return (await localWriterFor(rid).payload(node, payload)) as any;
         }
         case "close":
           if (db.close) await db.close();
@@ -312,12 +342,41 @@ function makeTreecrdtClientFromCall(opts: {
   const opsByOpRefsImpl = async (opRefs: Uint8Array[]) =>
     decodeSqliteOps(await call("opsByOpRefs", [opRefs.map((r) => Array.from(r))]));
   const treeChildrenImpl = async (parent: string) => decodeSqliteNodeIds(await call("treeChildren", [parent]));
-  const subtreeKnownStateImpl = async (node: string) => Uint8Array.from(await call("subtreeKnownState", [node]));
+  const treeChildrenPageImpl = async (
+    parent: string,
+    cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
+    limit: number
+  ): Promise<SqliteTreeChildRow[]> => {
+    const rpcCursor = cursor ? { orderKey: Array.from(cursor.orderKey), node: Array.from(cursor.node) } : null;
+    return decodeSqliteTreeChildRows(await call("treeChildrenPage", [parent, rpcCursor, limit]));
+  };
   const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", []));
   const treeNodeCountImpl = async () => Number(await call("treeNodeCount", []));
   const headLamportImpl = async () => Number(await call("headLamport", []));
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
     Number(await call("replicaMaxCounter", [Array.from(encodeReplica(replica))]));
+  const localInsertImpl = async (
+    replica: ReplicaId,
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null
+  ) => {
+    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    return (await call("localInsert", [rid, parent, node, placement, payload])) as unknown as Operation;
+  };
+  const localMoveImpl = async (replica: ReplicaId, node: string, newParent: string, placement: TreecrdtSqlitePlacement) => {
+    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    return (await call("localMove", [rid, node, newParent, placement])) as unknown as Operation;
+  };
+  const localDeleteImpl = async (replica: ReplicaId, node: string) => {
+    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    return (await call("localDelete", [rid, node])) as unknown as Operation;
+  };
+  const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) => {
+    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    return (await call("localPayload", [rid, node, payload])) as unknown as Operation;
+  };
 
   return {
     mode: opts.mode,
@@ -334,11 +393,17 @@ function makeTreecrdtClientFromCall(opts: {
     opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
     tree: {
       children: treeChildrenImpl,
-      subtreeKnownState: subtreeKnownStateImpl,
+      childrenPage: treeChildrenPageImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
+    local: {
+      insert: localInsertImpl,
+      move: localMoveImpl,
+      delete: localDeleteImpl,
+      payload: localPayloadImpl,
+    },
     close: opts.close,
   };
 }

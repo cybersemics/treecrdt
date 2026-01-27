@@ -110,6 +110,12 @@ mod ffi {
             n: c_int,
             destructor: Option<unsafe extern "C" fn(*mut c_void)>,
         );
+        pub fn sqlite3_result_blob(
+            ctx: *mut sqlite3_context,
+            val: *const c_void,
+            n: c_int,
+            destructor: Option<unsafe extern "C" fn(*mut c_void)>,
+        );
         pub fn sqlite3_result_error_code(ctx: *mut sqlite3_context, code: c_int);
         pub fn sqlite3_result_int(ctx: *mut sqlite3_context, value: c_int);
         pub fn sqlite3_result_int64(ctx: *mut sqlite3_context, value: i64);
@@ -122,6 +128,8 @@ mod ffi {
         pub fn sqlite3_column_int64(stmt: *mut sqlite3_stmt, idx: c_int) -> i64;
         pub fn sqlite3_column_text(stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_char;
         pub fn sqlite3_column_type(stmt: *mut sqlite3_stmt, idx: c_int) -> c_int;
+
+        pub fn sqlite3_changes(db: *mut sqlite3) -> c_int;
 
         pub fn sqlite3_auto_extension(xEntryPoint: Option<unsafe extern "C" fn()>) -> c_int;
     }
@@ -236,6 +244,18 @@ pub(super) fn sqlite_prepare_v2(
     #[cfg(feature = "static-link")]
     unsafe {
         ffi::sqlite3_prepare_v2(db, sql, n_byte, stmt, tail)
+    }
+}
+
+pub(super) fn sqlite_changes(db: *mut sqlite3) -> c_int {
+    #[cfg(feature = "ext-sqlite")]
+    {
+        let api = api().expect("api table");
+        unsafe { (api.changes.unwrap())(db) }
+    }
+    #[cfg(feature = "static-link")]
+    unsafe {
+        ffi::sqlite3_changes(db)
     }
 }
 
@@ -456,21 +476,6 @@ pub(super) fn sqlite_result_int(ctx: *mut sqlite3_context, val: c_int) {
     }
 }
 
-pub(super) fn sqlite_result_int64(ctx: *mut sqlite3_context, val: i64) {
-    #[cfg(feature = "ext-sqlite")]
-    {
-        if let Some(api) = api() {
-            unsafe {
-                (api.result_int64.unwrap())(ctx, val);
-            }
-        }
-    }
-    #[cfg(feature = "static-link")]
-    unsafe {
-        ffi::sqlite3_result_int64(ctx, val);
-    }
-}
-
 pub(super) fn sqlite_result_error(ctx: *mut sqlite3_context, msg: *const c_char) {
     #[cfg(feature = "ext-sqlite")]
     {
@@ -575,15 +580,6 @@ pub(super) unsafe fn column_blob16(
     let mut out = [0u8; 16];
     out.copy_from_slice(bytes);
     Ok(Some(out))
-}
-
-pub(super) unsafe fn column_int_opt(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<u64> {
-    let ty = unsafe { sqlite_column_type(stmt, idx) };
-    if ty == SQLITE_NULL as c_int {
-        None
-    } else {
-        Some(unsafe { sqlite_column_int64(stmt, idx) as u64 })
-    }
 }
 
 pub(super) unsafe fn bind_blob(

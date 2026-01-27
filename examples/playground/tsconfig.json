@@ -9,5 +9,5 @@
     "baseUrl": "."
   },
   "include": ["src", "vite.config.ts", "tailwind.config.cjs", "postcss.config.cjs"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "references": []
 }

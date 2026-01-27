@@ -30,6 +30,15 @@ async function tick(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function orderKeyFromPosition(position: number): Uint8Array {
+  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
+  const n = position + 1;
+  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(0, n, false);
+  return bytes;
+}
+
 function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
   const aHandlers = new Set<(msg: M) => void>();
   const bHandlers = new Set<(msg: M) => void>();
@@ -239,7 +248,7 @@ test("syncOnce does not starve macrotask transports", async () => {
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 }),
+    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const [wa, wb] = createMacrotaskDuplex<Uint8Array>();
@@ -263,12 +272,12 @@ test("sync all converges union of opRefs", async () => {
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 }),
-    makeOp("a", 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 }),
+    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp("a", 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
   ]);
   await b.applyOps([
-    makeOp("b", 1, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), position: 0 }),
-    makeOp("a", 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 }),
+    makeOp("b", 1, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+    makeOp("a", 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -300,7 +309,7 @@ test("sync all transfers a single missing op (hole in the middle)", async () => 
         type: "insert",
         parent: root,
         node: nodeIdFromInt(counter),
-        position: counter - 1,
+        orderKey: orderKeyFromPosition(counter - 1),
       })
     );
   }
@@ -332,12 +341,12 @@ test("sync children(parent) only transfers those children", async () => {
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), position: 0 }),
-    makeOp("a", 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), position: 0 }),
+    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp("a", 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
   ]);
   await b.applyOps([
-    makeOp("b", 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), position: 0 }),
-    makeOp("b", 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), position: 0 }),
+    makeOp("b", 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+    makeOp("b", 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -376,10 +385,10 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
   const node = nodeIdFromInt(0x10);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node, position: 0 }),
+    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
     // Move the node out of the subtree. The move is still relevant to `children(parentA)`
     // because it changes the canonical child set of `parentA`.
-    makeOp("a", 2, 2, { type: "move", node, newParent: parentBHex, position: 0 }),
+    makeOp("a", 2, 2, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -414,9 +423,9 @@ test("sync children(parent) includes latest payload when node moves into parent"
   const payload = new Uint8Array([1, 2, 3]);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node, position: 0 }),
+    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
     makeOp("a", 2, 2, { type: "payload", node, payload }),
-    makeOp("a", 3, 3, { type: "move", node, newParent: parentBHex, position: 0 }),
+    makeOp("a", 3, 3, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -453,7 +462,7 @@ test("subscribe keeps peers converging (push deltas)", async () => {
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
-  await a.applyOps([makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), position: 0 })]);
+  await a.applyOps([makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) })]);
 
   const { peerA: pa, peerB: pb, transportA: ta, detach } = createPeers(a, b);
   try {
@@ -461,7 +470,7 @@ test("subscribe keeps peers converging (push deltas)", async () => {
     try {
       await waitUntil(() => b.hasOp("a", 1), { message: "expected b to receive a:1 via subscription" });
 
-      await b.applyOps([makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), position: 0 })]);
+      await b.applyOps([makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) })]);
       await pb.notifyLocalUpdate();
       await waitUntil(() => a.hasOp("b", 1), { message: "expected a to receive b:1 via subscription" });
     } finally {
