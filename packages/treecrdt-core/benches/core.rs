@@ -45,6 +45,13 @@ fn is_ci() -> bool {
     env::var("CI").map(|v| v == "true").unwrap_or(false)
 }
 
+fn default_out_dir() -> PathBuf {
+    env::current_dir()
+        .ok()
+        .and_then(|cwd| cwd.parent().and_then(|p| p.parent()).map(|r| r.join("benchmarks").join("core")))
+        .unwrap_or_else(|| PathBuf::from("benchmarks/core"))
+}
+
 fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
     let storage = MemoryStorage::default();
     let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default()).unwrap();
@@ -89,7 +96,7 @@ fn main() {
     }
 
     let config = custom_config.as_deref().unwrap_or(config);
-    let out_dir = out_dir.unwrap_or_else(|| PathBuf::from("benchmarks/core"));
+    let out_dir = out_dir.unwrap_or_else(default_out_dir);
     fs::create_dir_all(&out_dir).expect("mkdirs");
 
     let replica = ReplicaId::new(b"core");
