@@ -24,11 +24,11 @@
     "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/sqlite-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.19.25",
     "better-sqlite3": "^9.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
