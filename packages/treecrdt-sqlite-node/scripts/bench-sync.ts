@@ -9,9 +9,6 @@ import {
   SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
   maxLamport,
   quantile,
-  syncBenchRootChildrenSizesFromEnv,
-  syncBenchSizesFromEnv,
-  syncBenchTiming,
   type SyncBenchWorkload,
 } from "@treecrdt/benchmark";
 import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
@@ -31,7 +28,70 @@ import {
 } from "../dist/index.js";
 
 type StorageKind = "memory" | "file";
-type BenchCase = { storage: StorageKind; workload: SyncBenchWorkload; size: number };
+type ConfigEntry = [number, number];
+
+const CI_CONFIG: ReadonlyArray<ConfigEntry> = [
+  [100, 5],
+  [1_000, 5],
+  [10_000, 1],
+];
+
+const LOCAL_CONFIG: ReadonlyArray<ConfigEntry> = [
+  [100, 1],
+  [1_000, 1],
+  [10_000, 1],
+];
+
+const CI_ROOT_CONFIG: ReadonlyArray<ConfigEntry> = [[1110, 1]];
+const LOCAL_ROOT_CONFIG: ReadonlyArray<ConfigEntry> = [[1110, 1]];
+
+function isCi(): boolean {
+  return process.env.CI === "true";
+}
+
+function envInt(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function parseConfigFromArgv(argv: string[]): Array<ConfigEntry> | null {
+  let customConfig: Array<ConfigEntry> | null = null;
+  const defaultIterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 1);
+  for (const arg of argv) {
+    if (arg.startsWith("--count=")) {
+      const val = arg.slice("--count=".length).trim();
+      const count = val ? Number(val) : 500;
+      customConfig = [[Number.isFinite(count) && count > 0 ? count : 500, defaultIterations]];
+      break;
+    }
+    if (arg.startsWith("--counts=")) {
+      const vals = arg
+        .slice("--counts=".length)
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const parsed = vals
+        .map((s) => {
+          const n = Number(s);
+          return Number.isFinite(n) && n > 0 ? n : null;
+        })
+        .filter((n): n is number => n != null)
+        .map((c) => [c, defaultIterations] as ConfigEntry);
+      if (parsed.length > 0) customConfig = parsed;
+      break;
+    }
+  }
+  return customConfig;
+}
+
+type BenchCase = {
+  storage: StorageKind;
+  workload: SyncBenchWorkload;
+  size: number;
+  iterations: number;
+};
 
 type SyncBenchResult = {
   name: string;
@@ -110,7 +170,6 @@ async function runBenchOnce(
     const opsB = bench.opsB;
     const filter = bench.filter as Filter;
 
-    // Seed each peer.
     const apiA = createSqliteNodeApi(a);
     const apiB = createSqliteNodeApi(b);
     await Promise.all([
@@ -136,7 +195,6 @@ async function runBenchOnce(
       await Promise.all([backendA.flush(), backendB.flush()]);
       const end = performance.now();
 
-      // Sanity check (outside timed region).
       const countA = (a.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
       const countB = (b.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
       if (countA !== bench.expectedFinalOpsA || countB !== bench.expectedFinalOpsB) {
@@ -164,15 +222,17 @@ async function runBenchCase(
   benchCase: BenchCase
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({ workload: benchCase.workload, size: benchCase.size });
-  const { iterations, warmupIterations } = syncBenchTiming();
+  const { size, iterations } = benchCase;
 
   const samplesMs: number[] = [];
-  for (let i = 0; i < warmupIterations + iterations; i += 1) {
-    const ms = await runBenchOnce(repoRoot, benchCase, bench);
-    if (i >= warmupIterations) samplesMs.push(ms);
+  for (let i = 0; i < iterations; i += 1) {
+    samplesMs.push(await runBenchOnce(repoRoot, benchCase, bench));
   }
 
-  const durationMs = quantile(samplesMs, 0.5);
+  const durationMs =
+    iterations > 1
+      ? samplesMs.reduce((a, b) => a + b, 0) / samplesMs.length
+      : samplesMs[0] ?? 0;
   const opsPerSec = durationMs > 0 ? (bench.totalOps / durationMs) * 1000 : Infinity;
 
   return {
@@ -182,10 +242,11 @@ async function runBenchCase(
     opsPerSec,
     extra: {
       ...bench.extra,
+      count: size,
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
-      iterations,
-      warmupIterations,
+      iterations: iterations > 1 ? iterations : undefined,
+      avgDurationMs: iterations > 1 ? durationMs : undefined,
       samplesMs,
       p95Ms: quantile(samplesMs, 0.95),
       minMs: Math.min(...samplesMs),
@@ -195,20 +256,25 @@ async function runBenchCase(
 }
 
 async function main() {
+  const argv = process.argv.slice(2);
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
+  const isCiEnv = isCi();
+  const baseConfig = isCiEnv ? CI_CONFIG : LOCAL_CONFIG;
+  const baseRootConfig = isCiEnv ? CI_ROOT_CONFIG : LOCAL_ROOT_CONFIG;
+  const config = parseConfigFromArgv(argv) ?? [...baseConfig];
+  const rootConfig = [...baseRootConfig];
+
   const cases: BenchCase[] = [];
-  const sizes = syncBenchSizesFromEnv();
-  const rootChildrenSizes = syncBenchRootChildrenSizesFromEnv();
   for (const storage of ["memory", "file"] as const) {
     for (const workload of DEFAULT_SYNC_BENCH_WORKLOADS) {
-      for (const size of sizes) {
-        cases.push({ storage, workload, size });
+      for (const [size, iterations] of config) {
+        cases.push({ storage, workload, size, iterations });
       }
     }
     for (const workload of DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS) {
-      for (const size of rootChildrenSizes) {
-        cases.push({ storage, workload, size });
+      for (const [size, iterations] of rootConfig) {
+        cases.push({ storage, workload, size, iterations });
       }
     }
   }
@@ -226,7 +292,7 @@ async function main() {
       storage: benchCase.storage,
       workload: result.name,
       outFile,
-      extra: { count: result.totalOps },
+      extra: { count: benchCase.size, ...result.extra },
     });
     console.log(JSON.stringify(payload));
   }
