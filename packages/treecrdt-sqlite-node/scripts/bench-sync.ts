@@ -31,8 +31,8 @@ type StorageKind = "memory" | "file";
 type ConfigEntry = [number, number];
 
 const CI_CONFIG: ReadonlyArray<ConfigEntry> = [
-  [100, 5],
-  [1_000, 5],
+  [100, 10],
+  [1_000, 10],
   [10_000, 1],
 ];
 
@@ -260,7 +260,7 @@ async function main() {
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
   const isCiEnv = isCi();
-  const baseConfig = isCiEnv ? CI_CONFIG : LOCAL_CONFIG;
+  const baseConfig = !isCiEnv ? CI_CONFIG : LOCAL_CONFIG;
   const baseRootConfig = isCiEnv ? CI_ROOT_CONFIG : LOCAL_ROOT_CONFIG;
   const config = parseConfigFromArgv(argv) ?? [...baseConfig];
   const rootConfig = [...baseRootConfig];
