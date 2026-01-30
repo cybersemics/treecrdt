@@ -62,10 +62,12 @@ import {
   ensureOpfsKey,
   initialDocId,
   initialStorage,
+  loadPrivateRoots,
   makeNodeId,
   makeSessionKey,
   persistDocId,
   persistOpfsKey,
+  persistPrivateRoots,
   persistStorage,
   pickReplicaLabel,
 } from "./playground/persist";
@@ -145,6 +147,22 @@ export default function App() {
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
+  const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
+
+  useEffect(() => {
+    setPrivateRoots(loadPrivateRoots(docId));
+  }, [docId]);
+
+  const togglePrivateRoot = (id: string) => {
+    if (id === ROOT_ID) return;
+    setPrivateRoots((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      persistPrivateRoots(docId, next);
+      return next;
+    });
+  };
 
   const replica = useMemo(
     () => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null),
@@ -548,6 +566,10 @@ export default function App() {
         maxDepth = parsed;
       }
 
+      const excludeNodeIds = Array.from(privateRoots).filter(
+        (id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id)
+      );
+
       const issuerSk = base64urlDecode(issuerSkB64);
       const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
       const tokenBytes = createCapabilityTokenV1({
@@ -557,6 +579,7 @@ export default function App() {
         rootNodeId: inviteRoot,
         actions,
         ...(maxDepth !== undefined ? { maxDepth } : {}),
+        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
       });
 
       const inviteB64 = encodeInvitePayload({
@@ -2187,6 +2210,8 @@ export default function App() {
                         onMove={handleMove}
                         onMoveToRoot={handleMoveToRoot}
                         onToggleLiveChildren={toggleLiveChildren}
+                        privateRoots={privateRoots}
+                        onTogglePrivateRoot={togglePrivateRoot}
                         liveChildren={liveChildrenParents.has(entry.node.id)}
                         meta={index}
                         childrenByParent={childrenByParent}

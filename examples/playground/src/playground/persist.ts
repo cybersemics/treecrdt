@@ -90,3 +90,33 @@ export function persistOpfsKey(val: string): string {
   const store = opfsKeyStore();
   return store.set(val);
 }
+
+const PRIVATE_ROOTS_KEY_PREFIX = "treecrdt-playground-private-roots:";
+
+function privateRootsKey(docId: string): string {
+  return `${PRIVATE_ROOTS_KEY_PREFIX}${docId}`;
+}
+
+export function loadPrivateRoots(docId: string): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  const raw = window.localStorage.getItem(privateRootsKey(docId));
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    const ids = parsed.filter((x): x is string => typeof x === "string");
+    return new Set(ids);
+  } catch {
+    return new Set();
+  }
+}
+
+export function persistPrivateRoots(docId: string, roots: Set<string>) {
+  if (typeof window === "undefined") return;
+  const key = privateRootsKey(docId);
+  if (roots.size === 0) {
+    window.localStorage.removeItem(key);
+    return;
+  }
+  window.localStorage.setItem(key, JSON.stringify(Array.from(roots)));
+}

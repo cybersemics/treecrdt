@@ -137,6 +137,7 @@ export function createCapabilityTokenV1(opts: {
   rootNodeId: string;
   actions: string[];
   maxDepth?: number;
+  excludeNodeIds?: string[];
 }): Uint8Array {
   const cnf = new Map<unknown, unknown>([["pub", opts.subjectPublicKey]]);
 
@@ -145,6 +146,9 @@ export function createCapabilityTokenV1(opts: {
     ["root", nodeIdToBytes16(opts.rootNodeId)],
   ];
   if (opts.maxDepth !== undefined) resEntries.push(["max_depth", opts.maxDepth]);
+  if (opts.excludeNodeIds && opts.excludeNodeIds.length > 0) {
+    resEntries.push(["exclude", opts.excludeNodeIds.map((id) => nodeIdToBytes16(id))]);
+  }
   const res = new Map<unknown, unknown>(resEntries);
 
   const cap = new Map<unknown, unknown>([

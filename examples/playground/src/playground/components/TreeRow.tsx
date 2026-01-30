@@ -7,6 +7,8 @@ import {
   MdHome,
   MdKeyboardArrowDown,
   MdKeyboardArrowUp,
+  MdLockOpen,
+  MdLockOutline,
   MdOutlineRssFeed,
 } from "react-icons/md";
 
@@ -25,6 +27,8 @@ export function TreeRow({
   onMove,
   onMoveToRoot,
   onToggleLiveChildren,
+  privateRoots,
+  onTogglePrivateRoot,
   meta,
   childrenByParent,
 }: {
@@ -39,12 +43,29 @@ export function TreeRow({
   onMove: (id: string, direction: "up" | "down") => void;
   onMoveToRoot: (id: string) => void;
   onToggleLiveChildren: (id: string) => void;
+  privateRoots: Set<string>;
+  onTogglePrivateRoot: (id: string) => void;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
   const isCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(node.id) : collapse.overrides.has(node.id);
   const isRoot = node.id === ROOT_ID;
   const metaInfo = meta[node.id];
+  const isPrivateRoot = !isRoot && privateRoots.has(node.id);
+  let isPrivateInherited = false;
+  if (!isRoot && !isPrivateRoot) {
+    let parentId = metaInfo?.parentId ?? null;
+    let hops = 0;
+    while (parentId && hops < 10_000) {
+      if (privateRoots.has(parentId)) {
+        isPrivateInherited = true;
+        break;
+      }
+      parentId = meta[parentId]?.parentId ?? null;
+      hops += 1;
+    }
+  }
+  const isPrivate = !isRoot && (isPrivateRoot || isPrivateInherited);
   const siblings = metaInfo?.parentId ? childrenByParent[metaInfo.parentId] ?? [] : [];
   const canMoveUp = !isRoot && metaInfo && siblings.indexOf(node.id) > 0;
   const canMoveDown =
@@ -119,6 +140,32 @@ export function TreeRow({
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
+          <button
+            className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
+              isRoot
+                ? "border-slate-800/70 bg-slate-900/60 opacity-50"
+                : isPrivateRoot
+                  ? "border-amber-400/80 bg-amber-500/15 text-amber-100 shadow-sm shadow-amber-500/20"
+                  : isPrivateInherited
+                    ? "border-slate-700 bg-slate-900/60 text-slate-300"
+                    : "border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white"
+            }`}
+            onClick={() => onTogglePrivateRoot(node.id)}
+            disabled={isRoot}
+            aria-label="Toggle node privacy"
+            aria-pressed={isPrivate}
+            title={
+              isRoot
+                ? "Root privacy is controlled by the invite scope"
+                : isPrivateRoot
+                  ? "Make subtree public (affects new invites)"
+                  : isPrivateInherited
+                    ? "Subtree is private via ancestor. Click to mark this node as a private root too"
+                    : "Make subtree private (exclude from new invites)"
+            }
+          >
+            {isPrivate ? <MdLockOutline className="text-[20px]" /> : <MdLockOpen className="text-[20px]" />}
+          </button>
           <button
             className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
               liveChildren
