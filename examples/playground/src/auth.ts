@@ -29,20 +29,33 @@ function lsDel(key: string) {
   window.sessionStorage.removeItem(key);
 }
 
+function gsGet(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(key);
+}
+
+function gsSet(key: string, val: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(key, val);
+}
+
 export function initialAuthEnabled(): boolean {
-  if (typeof window === "undefined") return false;
+  // Default to enabled so the playground demos signed+authorized sync out of the box.
+  if (typeof window === "undefined") return true;
   const param = new URLSearchParams(window.location.search).get("auth");
+  if (param === "0") return false;
   if (param === "1") return true;
   const stored = lsGet(AUTH_ENABLED_KEY);
-  return stored === "1";
+  if (stored === "0") return false;
+  if (stored === "1") return true;
+  return true;
 }
 
 export function persistAuthEnabled(enabled: boolean) {
   if (typeof window === "undefined") return;
   lsSet(AUTH_ENABLED_KEY, enabled ? "1" : "0");
   const url = new URL(window.location.href);
-  if (enabled) url.searchParams.set("auth", "1");
-  else url.searchParams.delete("auth");
+  url.searchParams.set("auth", enabled ? "1" : "0");
   window.history.replaceState({}, "", url);
 }
 
@@ -55,8 +68,9 @@ export type StoredAuthMaterial = {
 };
 
 export function loadAuthMaterial(docId: string, replicaLabel: string): StoredAuthMaterial {
-  const issuerPkB64 = lsGet(`${ISSUER_PK_KEY_PREFIX}${docId}`);
-  const issuerSkB64 = lsGet(`${ISSUER_SK_KEY_PREFIX}${docId}`);
+  // Issuer keys are shared across tabs for the same doc so multiple peers can sync without manually exchanging invites.
+  const issuerPkB64 = gsGet(`${ISSUER_PK_KEY_PREFIX}${docId}`);
+  const issuerSkB64 = gsGet(`${ISSUER_SK_KEY_PREFIX}${docId}`);
   const localPkB64 = lsGet(`${LOCAL_PK_KEY_PREFIX}${docId}:${replicaLabel}`);
   const localSkB64 = lsGet(`${LOCAL_SK_KEY_PREFIX}${docId}:${replicaLabel}`);
 
@@ -76,9 +90,19 @@ export function loadAuthMaterial(docId: string, replicaLabel: string): StoredAut
   return { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 };
 }
 
-export function saveIssuerKeys(docId: string, issuerPkB64: string, issuerSkB64?: string) {
-  lsSet(`${ISSUER_PK_KEY_PREFIX}${docId}`, issuerPkB64);
-  if (issuerSkB64) lsSet(`${ISSUER_SK_KEY_PREFIX}${docId}`, issuerSkB64);
+export function saveIssuerKeys(
+  docId: string,
+  issuerPkB64: string,
+  issuerSkB64?: string,
+  opts: { forcePk?: boolean } = {}
+) {
+  const pkKey = `${ISSUER_PK_KEY_PREFIX}${docId}`;
+  const skKey = `${ISSUER_SK_KEY_PREFIX}${docId}`;
+
+  // Avoid clobbering issuer keys when multiple tabs initialize concurrently.
+  if (issuerSkB64 && !gsGet(skKey)) gsSet(skKey, issuerSkB64);
+  if (opts.forcePk) gsSet(pkKey, issuerPkB64);
+  else if (!gsGet(pkKey)) gsSet(pkKey, issuerPkB64);
 }
 
 export function saveLocalKeys(docId: string, replicaLabel: string, localPkB64: string, localSkB64: string) {

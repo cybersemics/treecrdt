@@ -105,16 +105,53 @@ export function createBroadcastDuplex<Op>(
   const outgoing = new BroadcastChannel(`${channel.name}:sync:${selfId}->${peerId}`);
   const handlers = new Set<(msg: SyncMessage<Op>) => void>();
   let listening = false;
+  const debug =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
 
   const onMessage = (ev: MessageEvent<any>) => {
-    const bytes = ev.data as unknown;
-    if (!(bytes instanceof Uint8Array)) return;
-    const msg = codec.decode(bytes);
+    const data = ev.data as unknown;
+    let bytes: Uint8Array | null = null;
+    if (data instanceof Uint8Array) bytes = data;
+    else if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
+    else if (ArrayBuffer.isView(data) && data.buffer instanceof ArrayBuffer) {
+      bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    if (!bytes) return;
+
+    let msg: SyncMessage<Op>;
+    try {
+      msg = codec.decode(bytes);
+    } catch (err) {
+      if (debug) console.debug(`[sync:${selfId}] decode error from ${peerId}: ${String(err)}`);
+      return;
+    }
+    if (debug) {
+      const detail =
+        msg.payload.case === "error"
+          ? ` code=${msg.payload.value.code} message=${msg.payload.value.message}`
+          : msg.payload.case === "hello"
+            ? ` caps=${msg.payload.value.capabilities.length} filters=${msg.payload.value.filters.length}`
+            : msg.payload.case === "helloAck"
+              ? ` caps=${msg.payload.value.capabilities.length} accepted=${msg.payload.value.acceptedFilters.length} rejected=${msg.payload.value.rejectedFilters.length}`
+              : "";
+      console.debug(`[sync:${selfId}] recv ${msg.payload.case} from ${peerId}${detail}`);
+    }
     for (const h of handlers) h(msg);
   };
 
   return {
     async send(msg) {
+      if (debug) {
+        const detail =
+          msg.payload.case === "error"
+            ? ` code=${msg.payload.value.code} message=${msg.payload.value.message}`
+            : msg.payload.case === "hello"
+              ? ` caps=${msg.payload.value.capabilities.length} filters=${msg.payload.value.filters.length}`
+              : msg.payload.case === "helloAck"
+                ? ` caps=${msg.payload.value.capabilities.length} accepted=${msg.payload.value.acceptedFilters.length} rejected=${msg.payload.value.rejectedFilters.length}`
+                : "";
+        console.debug(`[sync:${selfId}] send ${msg.payload.case} to ${peerId}${detail}`);
+      }
       outgoing.postMessage(codec.encode(msg));
     },
     onMessage(handler) {

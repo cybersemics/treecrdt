@@ -804,16 +804,80 @@ export default function App() {
         const current = loadAuthMaterial(docId, replicaLabel);
         let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
 
-        if (!issuerPkB64 && !issuerSkB64) {
-          const { sk, pk } = await generateEd25519KeyPair();
-          issuerPkB64 = base64urlEncode(pk);
-          issuerSkB64 = base64urlEncode(sk);
-          saveIssuerKeys(docId, issuerPkB64, issuerSkB64);
-        } else if (!issuerPkB64 && issuerSkB64) {
-          const issuerSk = base64urlDecode(issuerSkB64);
-          const issuerPk = await deriveEd25519PublicKey(issuerSk);
-          issuerPkB64 = base64urlEncode(issuerPk);
-          saveIssuerKeys(docId, issuerPkB64, issuerSkB64);
+        const ensureIssuerKeys = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
+          const run = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
+            let { issuerPkB64, issuerSkB64 } = loadAuthMaterial(docId, replicaLabel);
+
+            if (!issuerPkB64 && !issuerSkB64) {
+              const { sk, pk } = await generateEd25519KeyPair();
+              saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
+            }
+
+            // Reload in case another tab raced us.
+            ({ issuerPkB64, issuerSkB64 } = loadAuthMaterial(docId, replicaLabel));
+
+            if (issuerSkB64) {
+              // Treat issuer secret key as authoritative and force-sync the public key to match it.
+              const issuerSk = base64urlDecode(issuerSkB64);
+              const issuerPk = await deriveEd25519PublicKey(issuerSk);
+              const issuerPkB64 = base64urlEncode(issuerPk);
+              saveIssuerKeys(docId, issuerPkB64, issuerSkB64, { forcePk: true });
+            }
+
+            const final = loadAuthMaterial(docId, replicaLabel);
+            return { issuerPkB64: final.issuerPkB64, issuerSkB64: final.issuerSkB64 };
+          };
+
+          const locks = typeof navigator === "undefined" ? null : (navigator as any).locks;
+          if (locks?.request) {
+            return await locks.request(`treecrdt-playground-issuer:${docId}`, run);
+          }
+
+          // Fallback for browsers without Web Locks API.
+          if (typeof window === "undefined") return await run();
+          const lockKey = `treecrdt-playground-issuer-lock:${docId}`;
+          const lockId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
+          const now = () => Date.now();
+          const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+          const tryParseLock = (raw: string | null): { id: string; ts: number } | null => {
+            if (!raw) return null;
+            try {
+              const parsed = JSON.parse(raw) as unknown;
+              if (!parsed || typeof parsed !== "object") return null;
+              const rec = parsed as Partial<{ id: unknown; ts: unknown }>;
+              if (typeof rec.id !== "string" || typeof rec.ts !== "number") return null;
+              return { id: rec.id, ts: rec.ts };
+            } catch {
+              return null;
+            }
+          };
+
+          const ttlMs = 10_000;
+          const started = now();
+          while (true) {
+            const t = now();
+            const existing = tryParseLock(window.localStorage.getItem(lockKey));
+            if (!existing || t - existing.ts > ttlMs) {
+              window.localStorage.setItem(lockKey, JSON.stringify({ id: lockId, ts: t }));
+            }
+            const confirm = tryParseLock(window.localStorage.getItem(lockKey));
+            if (confirm?.id === lockId) break;
+            if (t - started > ttlMs) break;
+            await sleep(25);
+          }
+
+          try {
+            return await run();
+          } finally {
+            const confirm = tryParseLock(window.localStorage.getItem(lockKey));
+            if (confirm?.id === lockId) window.localStorage.removeItem(lockKey);
+          }
+        };
+
+        {
+          const ensured = await ensureIssuerKeys();
+          issuerPkB64 = ensured.issuerPkB64;
+          issuerSkB64 = ensured.issuerSkB64;
         }
 
         const canIssue = Boolean(issuerSkB64);
@@ -906,6 +970,26 @@ export default function App() {
       return;
     }
 
+    const peerAuthConfig =
+      authEnabled &&
+      authMaterial.issuerPkB64 &&
+      authMaterial.localSkB64 &&
+      authMaterial.localPkB64 &&
+      authMaterial.localTokensB64.length > 0
+        ? {
+            issuerPk: base64urlDecode(authMaterial.issuerPkB64),
+            localSk: base64urlDecode(authMaterial.localSkB64),
+            localPk: base64urlDecode(authMaterial.localPkB64),
+            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
+            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
+          }
+        : null;
+
+    if (authEnabled && !peerAuthConfig) {
+      setSyncError(authError ?? "Auth enabled: initializing keys/tokens...");
+      return;
+    }
+
     const debugSync =
       typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
 
@@ -942,21 +1026,6 @@ export default function App() {
         scheduleRefreshNodeCount();
       },
     };
-
-    const peerAuthConfig =
-      authEnabled &&
-      authMaterial.issuerPkB64 &&
-      authMaterial.localSkB64 &&
-      authMaterial.localPkB64 &&
-      authMaterial.localTokensB64.length > 0
-        ? {
-            issuerPk: base64urlDecode(authMaterial.issuerPkB64),
-            localSk: base64urlDecode(authMaterial.localSkB64),
-            localPk: base64urlDecode(authMaterial.localPkB64),
-            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
-            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
-          }
-        : null;
     const connections = new Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>();
     const lastSeen = new Map<string, number>();
     syncConnRef.current = connections;
@@ -1118,7 +1187,7 @@ export default function App() {
       connections.clear();
       setPeers([]);
     };
-  }, [authEnabled, authMaterial, client, docId, replicaLabel, status]);
+  }, [authEnabled, authError, authMaterial, client, docId, replicaLabel, status]);
 
   useEffect(() => {
     return () => {
@@ -1265,21 +1334,17 @@ export default function App() {
 
       let op: Operation;
       if (authEnabled) {
-        if (kind.type !== "payload" && kind.type !== "delete") {
+        if (kind.type === "payload") {
+          op = await client.local.payload(replica, kind.node, kind.payload);
+        } else if (kind.type === "delete") {
+          op = await client.local.delete(replica, kind.node);
+        } else {
           throw new Error(`unsupported operation kind: ${kind.type}`);
         }
-
-        counterRef.current += 1;
-        lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
-        op = {
-          meta: {
-            id: { replica, counter: counterRef.current },
-            lamport: lamportRef.current,
-          },
-          kind,
-        };
         await verifyLocalOps([op]);
-        await client.ops.append(op);
+
+        lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
+        counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
         setHeadLamport(lamportRef.current);
       } else {
         if (kind.type === "payload") {
@@ -1579,6 +1644,7 @@ export default function App() {
     authMaterial.localTokensB64.length > 0
       ? bytesToHex(deriveTokenIdV1(base64urlDecode(authMaterial.localTokensB64[0]!)))
       : null;
+  const localReplicaHex = replica ? bytesToHex(replica) : null;
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
@@ -1823,7 +1889,10 @@ export default function App() {
               </div>
             </div>
             {syncError && (
-              <div className="mb-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
+              <div
+                data-testid="sync-error"
+                className="mb-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50"
+              >
                 {syncError}
               </div>
             )}
@@ -2148,6 +2217,13 @@ export default function App() {
                     {opsVirtualizer.getVirtualItems().map((item) => {
                       const op = ops[item.index];
                       if (!op) return null;
+                      const signerHex = bytesToHex(op.meta.id.replica);
+                      const signerShort =
+                        signerHex.length > 24 ? `${signerHex.slice(0, 12)}…${signerHex.slice(-8)}` : signerHex;
+                      const signerKeyIdHex = bytesToHex(deriveKeyIdV1(op.meta.id.replica));
+                      const signerKeyIdShort =
+                        signerKeyIdHex.length > 16 ? `${signerKeyIdHex.slice(0, 8)}…${signerKeyIdHex.slice(-4)}` : signerKeyIdHex;
+                      const isLocalSigner = localReplicaHex ? signerHex === localReplicaHex : false;
                       return (
                         <div
                           key={item.key}
@@ -2159,10 +2235,42 @@ export default function App() {
                           <div className="mb-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-slate-100">
                             <div className="flex items-center justify-between">
                               <span className="font-semibold text-accent">{op.kind.type}</span>
-                              <span className="font-mono text-slate-400">lamport {op.meta.lamport}</span>
+                              <div className="flex items-center gap-2">
+                                {authEnabled ? (
+                                  <span
+                                    className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-100"
+                                    title={
+                                      isLocalSigner
+                                        ? "Auth enabled: this op will be signed when syncing"
+                                        : "Auth enabled: this op was verified before apply"
+                                    }
+                                  >
+                                    signed
+                                  </span>
+                                ) : (
+                                  <span
+                                    className="rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] font-semibold text-slate-300"
+                                    title="Auth disabled: ops are not required to carry signatures/capabilities"
+                                  >
+                                    unsigned
+                                  </span>
+                                )}
+                                <span className="font-mono text-slate-400">lamport {op.meta.lamport}</span>
+                              </div>
                             </div>
                             <div className="mt-1 text-slate-300">{renderKind(op.kind)}</div>
-                            <div className="text-[10px] text-slate-500">counter {op.meta.id.counter}</div>
+                            <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500">
+                              <span className="font-mono">counter {op.meta.id.counter}</span>
+                              <span className="font-mono" title={signerHex}>
+                                signer {signerShort}
+                                {isLocalSigner ? " (local)" : ""}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-[10px] text-slate-500">
+                              <span className="font-mono" title={signerKeyIdHex}>
+                                keyId {signerKeyIdShort}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       );
