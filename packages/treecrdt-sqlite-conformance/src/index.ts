@@ -1,6 +1,17 @@
 import type { TreecrdtEngine } from "@treecrdt/interface/engine";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
-import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+
+import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
+import { coseSign1Ed25519, createTreecrdtCoseCwtAuth } from "@treecrdt/sync";
+import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+
+import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
+import { sha512 } from "@noble/hashes/sha512";
+import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
+
+ed25519Hashes.sha512 = sha512;
 
 export function conformanceSlugify(input: string): string {
   return input
@@ -73,6 +84,10 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
     {
       name: "sync: delete known_state propagates (receiver must not recompute)",
       run: scenarioSyncKnownStatePropagation,
+    },
+    {
+      name: "sync auth: signed ops converge (COSE+CWT)",
+      run: scenarioSyncAuthSignedOps,
     },
     {
       name: "persistence: materialized tree persists across reopen",
@@ -620,4 +635,101 @@ async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): 
   assert(payloadOp, "expected payload op after reopen");
   if (!payloadOp || payloadOp.kind.type !== "payload") throw new Error("expected payload op");
   assertEqual(new TextDecoder().decode(payloadOp.kind.payload ?? new Uint8Array()), "hello", "payload contents after reopen");
+}
+
+function makeCapabilityTokenV1(opts: { issuerPrivateKey: Uint8Array; subjectPublicKey: Uint8Array; docId: string }): Uint8Array {
+  const cnf = new Map<unknown, unknown>([["pub", opts.subjectPublicKey]]);
+
+  const res = new Map<unknown, unknown>([["doc_id", opts.docId]]);
+  const cap = new Map<unknown, unknown>([
+    ["res", res],
+    ["actions", ["write_structure", "write_payload", "delete", "tombstone"]],
+  ]);
+
+  const claims = new Map<unknown, unknown>([
+    [3, opts.docId], // CWT `aud`
+    [8, cnf], // CWT `cnf`
+    [-1, [cap]], // private claim `caps`
+  ]);
+
+  const payload = cborEncode(claims, rfc8949EncodeOptions);
+  return coseSign1Ed25519({ payload, privateKey: opts.issuerPrivateKey });
+}
+
+function createEngineSyncBackend(engine: TreecrdtEngine): SyncBackend<Operation> {
+  return {
+    docId: engine.docId,
+    maxLamport: async () => BigInt(await engine.meta.headLamport()),
+    listOpRefs: async (filter: Filter) => {
+      if ("all" in filter) return engine.opRefs.all();
+      return engine.opRefs.children(bytesToHex(filter.children.parent));
+    },
+    getOpsByOpRefs: async (opRefs: OpRef[]) => engine.ops.get(opRefs),
+    applyOps: async (ops: Operation[]) => engine.ops.appendMany(ops),
+  };
+}
+
+async function scenarioSyncAuthSignedOps(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  const root = nodeIdFromInt(0);
+  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: "last" }, null);
+  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: "last" }, null);
+  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: "last" }, null);
+
+  const tokenA = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
+  const tokenB = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+  });
+
+  const backendA = createEngineSyncBackend(a);
+  const backendB = createEngineSyncBackend(b);
+
+  const { peerA, transportA, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+  });
+
+  try {
+    await peerA.syncOnce(transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+  } finally {
+    detach();
+  }
+
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    const [aRefs, bRefs] = await Promise.all([a.opRefs.all(), b.opRefs.all()]);
+    const aSet = new Set(aRefs.map((r) => bytesToHex(r)));
+    const bSet = new Set(bRefs.map((r) => bytesToHex(r)));
+    if (aSet.size === bSet.size && Array.from(aSet).every((r) => bSet.has(r))) return;
+    if (Date.now() > deadline) throw new Error("sync auth conformance: expected peers to converge");
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
 }

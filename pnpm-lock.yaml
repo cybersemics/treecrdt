@@ -112,9 +112,21 @@ importers:
 
   packages/treecrdt-sqlite-conformance:
     dependencies:
+      '@noble/ed25519':
+        specifier: ^3.0.0
+        version: 3.0.0
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../treecrdt-sync
+      cborg:
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.9.3
