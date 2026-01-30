@@ -11,6 +11,13 @@ async function waitForReady(page: import("@playwright/test").Page, path: string)
   await expect(page.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
 }
 
+async function expectAuthEnabledByDefault(page: import("@playwright/test").Page) {
+  const authToggle = page.getByRole("button", { name: "Auth", exact: true });
+  await authToggle.click();
+  await expect(page.getByText("Enabled (ops must be signed and authorized)")).toBeVisible({ timeout: 30_000 });
+  await authToggle.click();
+}
+
 function treeRowByNodeId(page: import("@playwright/test").Page, nodeId: string) {
   return page.locator(`[data-testid="tree-row"][data-node-id="${nodeId}"]`);
 }
@@ -29,12 +36,20 @@ test("insert and delete node", async ({ page }) => {
 
   const doc = uniqueDocId("pw-playground-basic");
   await waitForReady(page, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`);
+  await expectAuthEnabledByDefault(page);
 
   await page.getByPlaceholder("Stored as payload bytes").fill("parent");
   await treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" }).click();
 
   const parentRow = treeRowByLabel(page, "parent");
   await expect(parentRow).toBeVisible({ timeout: 30_000 });
+
+  await page.getByTitle("Toggle operations panel").click();
+  const opsPanel = page.locator("aside", { hasText: "Operations" });
+  await expect(opsPanel).toBeVisible({ timeout: 30_000 });
+  await expect(opsPanel.getByText(/signed/i)).toBeVisible({ timeout: 30_000 });
+  await expect(opsPanel.getByText(/signer/i)).toBeVisible({ timeout: 30_000 });
+  await expect(opsPanel.getByText(/\(local\)/)).toBeVisible({ timeout: 30_000 });
 
   await parentRow.getByRole("button", { name: "Delete" }).click();
   await expect(parentRow).toHaveCount(0);
@@ -53,6 +68,7 @@ test("defensive delete restores parent when unseen child arrives", async ({ brow
       waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
       waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
     ]);
+    await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
 
     // Wait for peer discovery (Sync button enabled).
     await Promise.all([
@@ -65,7 +81,20 @@ test("defensive delete restores parent when unseen child arrives", async ({ brow
     await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
     await expect(treeRowByLabel(pageA, "PARENT")).toBeVisible({ timeout: 30_000 });
     await pageA.getByRole("button", { name: "Sync", exact: true }).click();
-    await expect(treeRowByLabel(pageB, "PARENT")).toBeVisible({ timeout: 30_000 });
+    const parentOnB = treeRowByLabel(pageB, "PARENT");
+    const syncErrorA = pageA.getByTestId("sync-error");
+    const syncErrorB = pageB.getByTestId("sync-error");
+    await Promise.race([
+      parentOnB.waitFor({ state: "visible", timeout: 30_000 }),
+      (async () => {
+        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+      })(),
+      (async () => {
+        await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
+      })(),
+    ]);
 
     const parentRowA = treeRowByLabel(pageA, "PARENT");
     const parentRowB = treeRowByLabel(pageB, "PARENT");
