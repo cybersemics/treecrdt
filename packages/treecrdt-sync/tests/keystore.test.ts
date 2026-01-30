@@ -5,8 +5,14 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 import {
   generateTreecrdtDeviceWrapKeyV1,
   generateTreecrdtDocKeyBundleV1,
+  generateTreecrdtIssuerKeyV1,
+  generateTreecrdtLocalIdentityV1,
   openTreecrdtDocKeyBundleV1,
+  openTreecrdtIssuerKeyV1,
+  openTreecrdtLocalIdentityV1,
   sealTreecrdtDocKeyBundleV1,
+  sealTreecrdtIssuerKeyV1,
+  sealTreecrdtLocalIdentityV1,
 } from "../dist/keystore.js";
 
 test("keystore v1: seal/open doc key bundle roundtrip", async () => {
@@ -49,3 +55,60 @@ test("keystore v1: per-doc bundles are unlinkable by default (distinct keys)", a
   expect(bytesToHex(openedB.replicaPk)).toBe(bytesToHex(b.replicaPk));
 });
 
+test("keystore v1: seal/open issuer key roundtrip", async () => {
+  const docId = "doc-issuer-1";
+  const wrapKey = generateTreecrdtDeviceWrapKeyV1();
+  const issuer = await generateTreecrdtIssuerKeyV1({ docId });
+
+  const sealed = await sealTreecrdtIssuerKeyV1({ wrapKey, docId, issuerSk: issuer.issuerSk });
+  const opened = await openTreecrdtIssuerKeyV1({ wrapKey, docId, sealed });
+
+  expect(opened.docId).toBe(docId);
+  expect(bytesToHex(opened.issuerSk)).toBe(bytesToHex(issuer.issuerSk));
+  expect(bytesToHex(opened.issuerPk)).toBe(bytesToHex(issuer.issuerPk));
+});
+
+test("keystore v1: open issuer key fails with wrong docId (AAD mismatch)", async () => {
+  const wrapKey = generateTreecrdtDeviceWrapKeyV1();
+  const issuer = await generateTreecrdtIssuerKeyV1({ docId: "doc-a" });
+  const sealed = await sealTreecrdtIssuerKeyV1({ wrapKey, docId: "doc-a", issuerSk: issuer.issuerSk });
+
+  await expect(openTreecrdtIssuerKeyV1({ wrapKey, docId: "doc-b", sealed })).rejects.toThrow();
+});
+
+test("keystore v1: seal/open local identity roundtrip", async () => {
+  const docId = "doc-local-1";
+  const replicaLabel = "replica-a";
+  const wrapKey = generateTreecrdtDeviceWrapKeyV1();
+  const identity = await generateTreecrdtLocalIdentityV1({ docId, replicaLabel, localTokens: [new Uint8Array([1, 2, 3])] });
+
+  const sealed = await sealTreecrdtLocalIdentityV1({
+    wrapKey,
+    docId,
+    replicaLabel,
+    localSk: identity.localSk,
+    localTokens: identity.localTokens,
+  });
+  const opened = await openTreecrdtLocalIdentityV1({ wrapKey, docId, replicaLabel, sealed });
+
+  expect(opened.docId).toBe(docId);
+  expect(opened.replicaLabel).toBe(replicaLabel);
+  expect(bytesToHex(opened.localSk)).toBe(bytesToHex(identity.localSk));
+  expect(bytesToHex(opened.localPk)).toBe(bytesToHex(identity.localPk));
+  expect(opened.localTokens.length).toBe(1);
+  expect(bytesToHex(opened.localTokens[0]!)).toBe(bytesToHex(identity.localTokens[0]!));
+});
+
+test("keystore v1: open local identity fails with wrong replicaLabel (AAD mismatch)", async () => {
+  const wrapKey = generateTreecrdtDeviceWrapKeyV1();
+  const identity = await generateTreecrdtLocalIdentityV1({ docId: "doc-a", replicaLabel: "replica-a" });
+  const sealed = await sealTreecrdtLocalIdentityV1({
+    wrapKey,
+    docId: "doc-a",
+    replicaLabel: "replica-a",
+    localSk: identity.localSk,
+    localTokens: [],
+  });
+
+  await expect(openTreecrdtLocalIdentityV1({ wrapKey, docId: "doc-a", replicaLabel: "replica-b", sealed })).rejects.toThrow();
+});
