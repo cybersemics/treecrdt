@@ -72,14 +72,13 @@ class MemoryBackend implements SyncBackend<Operation> {
   }
 
   private opRefForOp(op: Operation): OpRef {
-    const replica =
-      typeof op.meta.id.replica === "string" ? op.meta.id.replica : bytesToHex(op.meta.id.replica);
-    return opRefFor(this.docId, replica, op.meta.id.counter);
+    const replicaHex = bytesToHex(op.meta.id.replica);
+    return opRefFor(this.docId, replicaHex, op.meta.id.counter);
   }
 
-  hasOp(replica: string, counter: number): boolean {
+  hasOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.opsByRefHex.values()).some(
-      (v) => v.op.meta.id.replica === replica && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
     );
   }
 
@@ -139,14 +138,6 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
-  await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-  ]);
-  await b.applyOps([
-    makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
-    makeOp("b", 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-  ]);
-
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
 
@@ -154,6 +145,17 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
   const aPk = await getPublicKey(aSk);
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
+
+  const aHex = bytesToHex(aPk);
+  const bHex = bytesToHex(bPk);
+
+  await a.applyOps([
+    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+  ]);
+  await b.applyOps([
+    makeOp(bPk, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+  ]);
 
   const tokenA = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
   const tokenB = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
@@ -198,12 +200,12 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
       { message: "expected convergence after syncOnce" }
     );
 
-    expect(a.hasOp("a", 1)).toBe(true);
-    expect(a.hasOp("b", 1)).toBe(true);
-    expect(a.hasOp("b", 2)).toBe(true);
-    expect(b.hasOp("a", 1)).toBe(true);
-    expect(b.hasOp("b", 1)).toBe(true);
-    expect(b.hasOp("b", 2)).toBe(true);
+    expect(a.hasOp(aHex, 1)).toBe(true);
+    expect(a.hasOp(bHex, 1)).toBe(true);
+    expect(a.hasOp(bHex, 2)).toBe(true);
+    expect(b.hasOp(aHex, 1)).toBe(true);
+    expect(b.hasOp(bHex, 1)).toBe(true);
+    expect(b.hasOp(bHex, 2)).toBe(true);
     void pb;
   } finally {
     detach();
@@ -217,20 +219,24 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
-  await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-  ]);
-  await b.applyOps([
-    makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
-    makeOp("b", 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-  ]);
-
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
 
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
   const tokenB = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+
+  const aHex = bytesToHex(aPk);
+
+  await a.applyOps([
+    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+  ]);
+  await b.applyOps([
+    makeOp(bPk, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+  ]);
 
   const authB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -253,26 +259,18 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
       /missing op auth/i
     );
     await tick();
-    expect(b.hasOp("a", 1)).toBe(false);
+    expect(b.hasOp(aHex, 1)).toBe(false);
   } finally {
     detach();
   }
 });
 
-test("syncOnce fails when op signatures do not match the claimed key_id", async () => {
+test("syncOnce fails when op signatures do not match the claimed replica_id", async () => {
   const docId = "doc-auth-badsig";
   const root = "0".repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
-
-  await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-  ]);
-  await b.applyOps([
-    makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
-    makeOp("b", 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-  ]);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -283,6 +281,16 @@ test("syncOnce fails when op signatures do not match the claimed key_id", async 
 
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
+
+  const aHex = bytesToHex(aClaimPk);
+
+  await a.applyOps([
+    makeOp(aClaimPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+  ]);
+  await b.applyOps([
+    makeOp(bPk, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+  ]);
 
   const tokenA = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: aClaimPk, docId });
   const tokenB = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
@@ -313,10 +321,10 @@ test("syncOnce fails when op signatures do not match the claimed key_id", async 
 
   try {
     await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 })).rejects.toThrow(
-      /invalid op signature|unknown author key_id|capability/i
+      /invalid op signature|unknown author|capability/i
     );
     await tick();
-    expect(b.hasOp("a", 1)).toBe(false);
+    expect(b.hasOp(aHex, 1)).toBe(false);
   } finally {
     detach();
   }

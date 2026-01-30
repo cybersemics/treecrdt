@@ -2,7 +2,7 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 
 import type { StorageMode } from "./types";
 
-export function pickReplicaId(): string {
+export function pickReplicaLabel(): string {
   if (typeof window === "undefined") return `replica-${Math.random().toString(16).slice(2, 6)}`;
   const override = new URLSearchParams(window.location.search).get("replica");
   if (override && override.trim()) return override.trim();
@@ -90,4 +90,3 @@ export function persistOpfsKey(val: string): string {
   const store = opfsKeyStore();
   return store.set(val);
 }
-

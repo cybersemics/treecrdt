@@ -39,6 +39,26 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
+function replicaFromLabel(label: string): Uint8Array {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
+const replicas = {
+  a: replicaFromLabel("a"),
+  b: replicaFromLabel("b"),
+  s: replicaFromLabel("s"),
+};
+
+const replicaHex = {
+  a: bytesToHex(replicas.a),
+  b: bytesToHex(replicas.b),
+  s: bytesToHex(replicas.s),
+};
+
 function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
   const aHandlers = new Set<(msg: M) => void>();
   const bHandlers = new Set<(msg: M) => void>();
@@ -109,14 +129,13 @@ class MemoryBackend implements SyncBackend<Operation> {
   }
 
   private opRefForOp(op: Operation): OpRef {
-    const replica =
-      typeof op.meta.id.replica === "string" ? op.meta.id.replica : bytesToHex(op.meta.id.replica);
-    return opRefFor(this.docId, replica, op.meta.id.counter);
+    const replicaHex = bytesToHex(op.meta.id.replica);
+    return opRefFor(this.docId, replicaHex, op.meta.id.counter);
   }
 
-  hasOp(replica: string, counter: number): boolean {
+  hasOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.opsByRefHex.values()).some(
-      (v) => v.op.meta.id.replica === replica && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
     );
   }
 
@@ -248,7 +267,12 @@ test("syncOnce does not starve macrotask transports", async () => {
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const [wa, wb] = createMacrotaskDuplex<Uint8Array>();
@@ -261,7 +285,7 @@ test("syncOnce does not starve macrotask transports", async () => {
 
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
 
-  await waitUntil(() => b.hasOp("a", 1), { message: "expected b to receive a:1 via macrotask duplex" });
+  await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 via macrotask duplex" });
 });
 
 test("sync all converges union of opRefs", async () => {
@@ -272,12 +296,12 @@ test("sync all converges union of opRefs", async () => {
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-    makeOp("a", 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
   ]);
   await b.applyOps([
-    makeOp("b", 1, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-    makeOp("a", 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.b, 1, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -305,7 +329,7 @@ test("sync all transfers a single missing op (hole in the middle)", async () => 
   const ops: Operation[] = [];
   for (let counter = 1; counter <= size; counter += 1) {
     ops.push(
-      makeOp("s", counter, counter, {
+      makeOp(replicas.s, counter, counter, {
         type: "insert",
         parent: root,
         node: nodeIdFromInt(counter),
@@ -322,7 +346,7 @@ test("sync all transfers a single missing op (hole in the middle)", async () => 
     await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
     await tick();
 
-    expect(a.hasOp("s", missingCounter)).toBe(true);
+    expect(a.hasOp(replicaHex.s, missingCounter)).toBe(true);
     const aAll = await a.listOpRefs({ all: {} });
     const bAll = await b.listOpRefs({ all: {} });
     expect(setHex(aAll)).toEqual(setHex(bAll));
@@ -341,12 +365,12 @@ test("sync children(parent) only transfers those children", async () => {
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-    makeOp("a", 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
   ]);
   await b.applyOps([
-    makeOp("b", 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-    makeOp("b", 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.b, 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.b, 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -364,10 +388,10 @@ test("sync children(parent) only transfers those children", async () => {
     expect(setHex(aChildrenA)).toEqual(setHex(bChildrenA));
 
     // Does not leak ops outside the filter.
-    expect(a.hasOp("b", 1)).toBe(true);
-    expect(a.hasOp("b", 2)).toBe(false);
-    expect(b.hasOp("a", 1)).toBe(true);
-    expect(b.hasOp("a", 2)).toBe(false);
+    expect(a.hasOp(replicaHex.b, 1)).toBe(true);
+    expect(a.hasOp(replicaHex.b, 2)).toBe(false);
+    expect(b.hasOp(replicaHex.a, 1)).toBe(true);
+    expect(b.hasOp(replicaHex.a, 2)).toBe(false);
   } finally {
     detach();
   }
@@ -385,10 +409,10 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
   const node = nodeIdFromInt(0x10);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
     // Move the node out of the subtree. The move is still relevant to `children(parentA)`
     // because it changes the canonical child set of `parentA`.
-    makeOp("a", 2, 2, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 2, 2, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -400,7 +424,7 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
     );
     await tick();
 
-    expect(b.hasOp("a", 2)).toBe(true);
+    expect(b.hasOp(replicaHex.a, 2)).toBe(true);
 
     const aChildrenA = await a.listOpRefs({ children: { parent: parentABytes } });
     const bChildrenA = await b.listOpRefs({ children: { parent: parentABytes } });
@@ -423,9 +447,9 @@ test("sync children(parent) includes latest payload when node moves into parent"
   const payload = new Uint8Array([1, 2, 3]);
 
   await a.applyOps([
-    makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
-    makeOp("a", 2, 2, { type: "payload", node, payload }),
-    makeOp("a", 3, 3, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 2, 2, { type: "payload", node, payload }),
+    makeOp(replicas.a, 3, 3, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -437,9 +461,9 @@ test("sync children(parent) includes latest payload when node moves into parent"
     );
     await tick();
 
-    expect(b.hasOp("a", 1)).toBe(false);
-    expect(b.hasOp("a", 2)).toBe(true);
-    expect(b.hasOp("a", 3)).toBe(true);
+    expect(b.hasOp(replicaHex.a, 1)).toBe(false);
+    expect(b.hasOp(replicaHex.a, 2)).toBe(true);
+    expect(b.hasOp(replicaHex.a, 3)).toBe(true);
 
     const aChildrenB = await a.listOpRefs({ children: { parent: parentBBytes } });
     const bChildrenB = await b.listOpRefs({ children: { parent: parentBBytes } });
@@ -462,17 +486,21 @@ test("subscribe keeps peers converging (push deltas)", async () => {
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
-  await a.applyOps([makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) })]);
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+  ]);
 
   const { peerA: pa, peerB: pb, transportA: ta, detach } = createPeers(a, b);
   try {
     const sub = pa.subscribe(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
     try {
-      await waitUntil(() => b.hasOp("a", 1), { message: "expected b to receive a:1 via subscription" });
+      await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 via subscription" });
 
-      await b.applyOps([makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) })]);
+      await b.applyOps([
+        makeOp(replicas.b, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+      ]);
       await pb.notifyLocalUpdate();
-      await waitUntil(() => a.hasOp("b", 1), { message: "expected a to receive b:1 via subscription" });
+      await waitUntil(() => a.hasOp(replicaHex.b, 1), { message: "expected a to receive b:1 via subscription" });
     } finally {
       sub.stop();
       await sub.done;

@@ -16,6 +16,14 @@ import type { Filter, OpAuth, OpRef, PendingOp, SyncBackend } from "../dist/type
 
 ed25519Hashes.sha512 = sha512;
 
+function replicaFromLabel(label: string): Uint8Array {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
 function orderKeyFromPosition(position: number): Uint8Array {
   if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
   const n = position + 1;
@@ -68,15 +76,15 @@ class TreeBackend implements SyncBackend<Operation> {
     this.docId = docId;
   }
 
-  hasOp(replica: string, counter: number): boolean {
+  hasOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.opsByRefHex.values()).some(
-      (v) => v.op.meta.id.replica === replica && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
     );
   }
 
-  hasPendingOp(replica: string, counter: number): boolean {
+  hasPendingOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.pendingByRefHex.values()).some(
-      (v) => v.op.meta.id.replica === replica && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
     );
   }
 
@@ -230,6 +238,9 @@ test("subtree scope: pending_context ops are stored and later applied when conte
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
 
+  const aReplica = aPk;
+  const aHex = bytesToHex(aPk);
+
   const tokenA = makeSubtreeCapabilityToken({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
@@ -302,18 +313,18 @@ test("subtree scope: pending_context ops are stored and later applied when conte
 
     // Deliver the payload op first (out-of-order relative to structure), so it must be
     // stored as pending until the insert arrives and provides ancestry context.
-    const payloadOp = makeOp("a", 1, 1, { type: "payload", node: child, payload: new Uint8Array([1, 2, 3]) });
+    const payloadOp = makeOp(aReplica, 1, 1, { type: "payload", node: child, payload: new Uint8Array([1, 2, 3]) });
     await a.applyOps([payloadOp]);
     void peerA.notifyLocalUpdate();
 
-    await waitUntil(() => b.hasPendingOp("a", 1), { message: "expected payload op to be stored pending" });
-    expect(b.hasPendingOp("a", 1)).toBe(true);
-    expect(b.hasOp("a", 1)).toBe(false);
-    expect(b.hasOp("a", 2)).toBe(false);
+    await waitUntil(() => b.hasPendingOp(aHex, 1), { message: "expected payload op to be stored pending" });
+    expect(b.hasPendingOp(aHex, 1)).toBe(true);
+    expect(b.hasOp(aHex, 1)).toBe(false);
+    expect(b.hasOp(aHex, 2)).toBe(false);
 
     // Now deliver the structural insert; this should allow the pending payload to be
     // reprocessed and applied.
-    const insertChild = makeOp("a", 2, 2, {
+    const insertChild = makeOp(aReplica, 2, 2, {
       type: "insert",
       parent: subtreeRoot,
       node: child,
@@ -322,8 +333,8 @@ test("subtree scope: pending_context ops are stored and later applied when conte
     await a.applyOps([insertChild]);
     void peerA.notifyLocalUpdate();
 
-    await waitUntil(() => b.hasOp("a", 2), { message: "expected insert op to be applied" });
-    await waitUntil(() => b.hasOp("a", 1), { message: "expected pending payload op to be reprocessed and applied" });
+    await waitUntil(() => b.hasOp(aHex, 2), { message: "expected insert op to be applied" });
+    await waitUntil(() => b.hasOp(aHex, 1), { message: "expected pending payload op to be reprocessed and applied" });
     await waitUntil(async () => (await b.listPendingOps?.())?.length === 0, { message: "expected pending store to drain" });
 
     sub.stop();
@@ -349,6 +360,9 @@ test("subtree scope: pending ops are dropped once context proves they are unauth
   const aPk = await getPublicKey(aSk);
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
+
+  const aReplica = aPk;
+  const aHex = bytesToHex(aPk);
 
   const tokenA = makeCapabilityTokenFromCaps({
     issuerPrivateKey: issuerSk,
@@ -429,18 +443,18 @@ test("subtree scope: pending ops are dropped once context proves they are unauth
     });
 
     // A sets a payload on `node` before any ancestry is known: pending_context.
-    await a.applyOps([makeOp("a", 1, 1, { type: "payload", node, payload: new Uint8Array([9]) })]);
+    await a.applyOps([makeOp(aReplica, 1, 1, { type: "payload", node, payload: new Uint8Array([9]) })]);
     void peerA.notifyLocalUpdate();
-    await waitUntil(() => b.hasPendingOp("a", 1), { message: "expected payload op to be stored pending" });
-    expect(b.hasOp("a", 1)).toBe(false);
+    await waitUntil(() => b.hasPendingOp(aHex, 1), { message: "expected payload op to be stored pending" });
+    expect(b.hasOp(aHex, 1)).toBe(false);
 
     // Later, `node` is inserted under ROOT. This provides enough context to prove
     // the pending payload is outside the authorized subtree, so it is dropped.
-    await a.applyOps([makeOp("a", 2, 2, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) })]);
+    await a.applyOps([makeOp(aReplica, 2, 2, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) })]);
     void peerA.notifyLocalUpdate();
-    await waitUntil(() => b.hasOp("a", 2), { message: "expected insert op to be applied" });
+    await waitUntil(() => b.hasOp(aHex, 2), { message: "expected insert op to be applied" });
     await waitUntil(async () => (await b.listPendingOps?.())?.length === 0, { message: "expected pending store to drain" });
-    expect(b.hasOp("a", 1)).toBe(false);
+    expect(b.hasOp(aHex, 1)).toBe(false);
 
     sub.stop();
     await sub.done;
@@ -465,6 +479,9 @@ test("subtree scope: ops outside scope are rejected (fail closed)", async () => 
   const aPk = await getPublicKey(aSk);
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
+
+  const aReplica = aPk;
+  const aHex = bytesToHex(aPk);
 
   const tokenA = makeSubtreeCapabilityToken({
     issuerPrivateKey: issuerSk,
@@ -522,11 +539,11 @@ test("subtree scope: ops outside scope are rejected (fail closed)", async () => 
       message: "expected responder subscription to be registered",
     });
 
-    await a.applyOps([makeOp("a", 1, 1, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) })]);
+    await a.applyOps([makeOp(aReplica, 1, 1, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) })]);
     void peerA.notifyLocalUpdate();
 
     await expect(sub.done).rejects.toThrow(/capability does not allow op/i);
-    expect(b.hasOp("a", 1)).toBe(false);
+    expect(b.hasOp(aHex, 1)).toBe(false);
   } finally {
     detach();
   }

@@ -36,17 +36,17 @@ export type RpcSchema = {
   treeDump: { params: []; result: unknown[] };
   treeNodeCount: { params: []; result: number };
   headLamport: { params: []; result: number };
-  replicaMaxCounter: { params: [replica: number[] | string]; result: number };
+  replicaMaxCounter: { params: [replica: number[]]; result: number };
   localInsert: {
-    params: [replica: number[] | string, parent: string, node: string, placement: TreecrdtSqlitePlacement, payload: Uint8Array | null];
+    params: [replica: number[], parent: string, node: string, placement: TreecrdtSqlitePlacement, payload: Uint8Array | null];
     result: Operation;
   };
   localMove: {
-    params: [replica: number[] | string, node: string, newParent: string, placement: TreecrdtSqlitePlacement];
+    params: [replica: number[], node: string, newParent: string, placement: TreecrdtSqlitePlacement];
     result: Operation;
   };
-  localDelete: { params: [replica: number[] | string, node: string]; result: Operation };
-  localPayload: { params: [replica: number[] | string, node: string, payload: Uint8Array | null]; result: Operation };
+  localDelete: { params: [replica: number[], node: string]; result: Operation };
+  localPayload: { params: [replica: number[], node: string, payload: Uint8Array | null]; result: Operation };
   close: { params: []; result: void };
 };
 

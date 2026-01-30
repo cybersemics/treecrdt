@@ -103,11 +103,7 @@ message OpsBatch {
 // This is an optional extension to Sync v0. Implementations that do not support
 // auth MUST ignore these fields.
 message OpAuth {
-  // Identifier for the doc-scoped signing key.
-  //
-  // Suggested v1 derivation:
-  //   key_id = blake3("treecrdt/keyid/v1" || ed25519_pubkey)[0..16]
-  bytes key_id = 1;
+  reserved 1;
 
   // Signature bytes (Ed25519: 64 bytes) over the canonical signing input.
   bytes sig = 2;

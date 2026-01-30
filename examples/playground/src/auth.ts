@@ -54,13 +54,13 @@ export type StoredAuthMaterial = {
   localTokensB64: string[];
 };
 
-export function loadAuthMaterial(docId: string, replicaId: string): StoredAuthMaterial {
+export function loadAuthMaterial(docId: string, replicaLabel: string): StoredAuthMaterial {
   const issuerPkB64 = lsGet(`${ISSUER_PK_KEY_PREFIX}${docId}`);
   const issuerSkB64 = lsGet(`${ISSUER_SK_KEY_PREFIX}${docId}`);
-  const localPkB64 = lsGet(`${LOCAL_PK_KEY_PREFIX}${docId}:${replicaId}`);
-  const localSkB64 = lsGet(`${LOCAL_SK_KEY_PREFIX}${docId}:${replicaId}`);
+  const localPkB64 = lsGet(`${LOCAL_PK_KEY_PREFIX}${docId}:${replicaLabel}`);
+  const localSkB64 = lsGet(`${LOCAL_SK_KEY_PREFIX}${docId}:${replicaLabel}`);
 
-  const tokensRaw = lsGet(`${LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaId}`);
+  const tokensRaw = lsGet(`${LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaLabel}`);
   let localTokensB64: string[] = [];
   if (tokensRaw) {
     try {
@@ -81,19 +81,19 @@ export function saveIssuerKeys(docId: string, issuerPkB64: string, issuerSkB64?:
   if (issuerSkB64) lsSet(`${ISSUER_SK_KEY_PREFIX}${docId}`, issuerSkB64);
 }
 
-export function saveLocalKeys(docId: string, replicaId: string, localPkB64: string, localSkB64: string) {
-  lsSet(`${LOCAL_PK_KEY_PREFIX}${docId}:${replicaId}`, localPkB64);
-  lsSet(`${LOCAL_SK_KEY_PREFIX}${docId}:${replicaId}`, localSkB64);
+export function saveLocalKeys(docId: string, replicaLabel: string, localPkB64: string, localSkB64: string) {
+  lsSet(`${LOCAL_PK_KEY_PREFIX}${docId}:${replicaLabel}`, localPkB64);
+  lsSet(`${LOCAL_SK_KEY_PREFIX}${docId}:${replicaLabel}`, localSkB64);
 }
 
-export function saveLocalTokens(docId: string, replicaId: string, tokensB64: string[]) {
-  lsSet(`${LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaId}`, JSON.stringify(tokensB64));
+export function saveLocalTokens(docId: string, replicaLabel: string, tokensB64: string[]) {
+  lsSet(`${LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaLabel}`, JSON.stringify(tokensB64));
 }
 
-export function clearAuthMaterial(docId: string, replicaId: string) {
-  lsDel(`${LOCAL_PK_KEY_PREFIX}${docId}:${replicaId}`);
-  lsDel(`${LOCAL_SK_KEY_PREFIX}${docId}:${replicaId}`);
-  lsDel(`${LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaId}`);
+export function clearAuthMaterial(docId: string, replicaLabel: string) {
+  lsDel(`${LOCAL_PK_KEY_PREFIX}${docId}:${replicaLabel}`);
+  lsDel(`${LOCAL_SK_KEY_PREFIX}${docId}:${replicaLabel}`);
+  lsDel(`${LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaLabel}`);
 }
 
 export async function generateEd25519KeyPair(): Promise<{ sk: Uint8Array; pk: Uint8Array }> {

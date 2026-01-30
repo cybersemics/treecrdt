@@ -64,6 +64,14 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
+function replicaFromLabel(label: string): Uint8Array {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
 export function makeOp(
   replica: ReplicaId,
   counter: number,
@@ -118,6 +126,14 @@ export function buildSyncBenchCase(opts: {
   const { workload } = opts;
   const size = opts.size;
   const root = "0".repeat(32);
+  const replicas = {
+    a: replicaFromLabel("a"),
+    b: replicaFromLabel("b"),
+    m: replicaFromLabel("m"),
+    s: replicaFromLabel("s"),
+    x: replicaFromLabel("x"),
+    y: replicaFromLabel("y"),
+  };
 
   if (workload === "sync-one-missing") {
     const treeSize = size;
@@ -129,7 +145,7 @@ export function buildSyncBenchCase(opts: {
     const opsB: Operation[] = [];
     const opsA: Operation[] = [];
     for (let counter = 1; counter <= treeSize; counter += 1) {
-      const op = makeOp("s", counter, counter, {
+      const op = makeOp(replicas.s, counter, counter, {
         type: "insert",
         parent: root,
         node: nodeIdFromInt(counter),
@@ -156,16 +172,16 @@ export function buildSyncBenchCase(opts: {
     const treeSize = size;
     if (treeSize < fanout) throw new Error(`sync-root-children-fanout10 requires size >= ${fanout}`);
 
-    const sharedOps = buildFanoutInsertTreeOps({ replica: "s", size: treeSize, fanout, root });
+    const sharedOps = buildFanoutInsertTreeOps({ replica: replicas.s, size: treeSize, fanout, root });
     const movedNode = nodeIdFromInt(fanout);
     const trash = "f".repeat(32);
-    const moveOut = makeOp("m", 1, treeSize + 1, {
+    const moveOut = makeOp(replicas.m, 1, treeSize + 1, {
       type: "move",
       node: movedNode,
       newParent: trash,
       orderKey: orderKeyFromPosition(0),
     });
-    const moveBack = makeOp("m", 2, treeSize + 2, {
+    const moveBack = makeOp(replicas.m, 2, treeSize + 2, {
       type: "move",
       node: movedNode,
       newParent: root,
@@ -197,7 +213,7 @@ export function buildSyncBenchCase(opts: {
     for (let i = 0; i < shared; i++) {
       const counter = i + 1;
       sharedOps.push(
-        makeOp("s", counter, counter, {
+        makeOp(replicas.s, counter, counter, {
           type: "insert",
           parent: root,
           node: nodeIdFromInt(counter),
@@ -209,7 +225,7 @@ export function buildSyncBenchCase(opts: {
       const counter = i + 1;
       const lamport = shared + counter;
       aOps.push(
-        makeOp("a", counter, lamport, {
+        makeOp(replicas.a, counter, lamport, {
           type: "insert",
           parent: root,
           node: nodeIdFromInt(shared + counter),
@@ -217,7 +233,7 @@ export function buildSyncBenchCase(opts: {
         })
       );
       bOps.push(
-        makeOp("b", counter, lamport, {
+        makeOp(replicas.b, counter, lamport, {
           type: "insert",
           parent: root,
           node: nodeIdFromInt(shared + unique + counter),
@@ -261,7 +277,7 @@ export function buildSyncBenchCase(opts: {
     lamport += 1;
     const counter = i + 1;
     sharedOps.push(
-      makeOp("s", counter, lamport, {
+      makeOp(replicas.s, counter, lamport, {
         type: "insert",
         parent: targetParentHex,
         node: nodeIdFromInt(counter),
@@ -274,7 +290,7 @@ export function buildSyncBenchCase(opts: {
     lamport += 1;
     const counter = i + 1;
     aTarget.push(
-      makeOp("a", counter, lamport, {
+      makeOp(replicas.a, counter, lamport, {
         type: "insert",
         parent: targetParentHex,
         node: nodeIdFromInt(sharedTarget + counter),
@@ -282,7 +298,7 @@ export function buildSyncBenchCase(opts: {
       })
     );
     bTarget.push(
-      makeOp("b", counter, lamport, {
+      makeOp(replicas.b, counter, lamport, {
         type: "insert",
         parent: targetParentHex,
         node: nodeIdFromInt(sharedTarget + uniqueTarget + counter),
@@ -294,7 +310,7 @@ export function buildSyncBenchCase(opts: {
   for (let i = 0; i < otherCount; i++) {
     lamport += 1;
     aOther.push(
-      makeOp("x", i + 1, lamport, {
+      makeOp(replicas.x, i + 1, lamport, {
         type: "insert",
         parent: otherParentHex,
         node: nodeIdFromInt(sharedTarget + 2 * uniqueTarget + i + 1),
@@ -302,7 +318,7 @@ export function buildSyncBenchCase(opts: {
       })
     );
     bOther.push(
-      makeOp("y", i + 1, lamport, {
+      makeOp(replicas.y, i + 1, lamport, {
         type: "insert",
         parent: otherParentHex,
         node: nodeIdFromInt(sharedTarget + 2 * uniqueTarget + otherCount + i + 1),

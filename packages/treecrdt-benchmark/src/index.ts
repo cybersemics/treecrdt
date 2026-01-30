@@ -33,6 +33,14 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
+function replicaFromLabel(label: string): Uint8Array {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
 export async function runBenchmark(
   adapterFactory: () => Promise<TreecrdtAdapter> | TreecrdtAdapter,
   workload: BenchmarkWorkload
@@ -98,7 +106,7 @@ export function makeInsertMoveWorkload(opts: {
 }): BenchmarkWorkload {
   const serializeNodeId = opts.serializeNodeId ?? defaultSerializeNodeId;
   const serializeReplica = opts.serializeReplica ?? defaultSerializeReplica;
-  const replica = opts.replica ?? defaultSerializeReplica("bench");
+  const replica = opts.replica ?? replicaFromLabel("bench");
 
   const mkOp = (kind: Operation["kind"], counter: number, lamport: number): Operation => ({
     meta: { id: { replica, counter }, lamport },
@@ -154,7 +162,7 @@ export function makeInsertChainWorkload(opts: {
 }): BenchmarkWorkload {
   const serializeNodeId = opts.serializeNodeId ?? defaultSerializeNodeId;
   const serializeReplica = opts.serializeReplica ?? defaultSerializeReplica;
-  const replica = opts.replica ?? defaultSerializeReplica("bench");
+  const replica = opts.replica ?? replicaFromLabel("bench");
 
   const mkOp = (kind: Operation["kind"], counter: number, lamport: number): Operation => ({
     meta: { id: { replica, counter }, lamport },
@@ -200,7 +208,7 @@ export function makeReplayLogWorkload(opts: {
 }): BenchmarkWorkload {
   const serializeNodeId = opts.serializeNodeId ?? defaultSerializeNodeId;
   const serializeReplica = opts.serializeReplica ?? defaultSerializeReplica;
-  const replica = opts.replica ?? defaultSerializeReplica("bench");
+  const replica = opts.replica ?? replicaFromLabel("bench");
 
   const mkOp = (kind: Operation["kind"], counter: number, lamport: number): Operation => ({
     meta: { id: { replica, counter }, lamport },

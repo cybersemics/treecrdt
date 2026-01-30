@@ -90,6 +90,14 @@ function nodeIdFromInt(n: number): string {
   return n.toString(16).padStart(32, "0");
 }
 
+function replicaFromLabel(label: string): ReplicaId {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -199,7 +207,7 @@ function makePayloadOp(opts: { replica: ReplicaId; counter: number; lamport: num
 
 async function scenarioLocalOpsBasic(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const a = nodeIdFromInt(1);
   const b = nodeIdFromInt(2);
@@ -264,7 +272,7 @@ async function scenarioLocalOpsBasic(ctx: SqliteConformanceContext): Promise<voi
 
 async function scenarioLocalInsertWithPayload(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const a = nodeIdFromInt(1);
   const payload = new TextEncoder().encode("hello");
@@ -286,7 +294,7 @@ async function scenarioChildrenPagination(ctx: SqliteConformanceContext): Promis
   const engine = ctx.engine;
   assert(engine.tree.childrenPage, "engine.tree.childrenPage not implemented");
 
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const nodes = Array.from({ length: 10 }, (_, i) => nodeIdFromInt(i + 1));
   for (const node of nodes) {
@@ -334,7 +342,7 @@ async function scenarioChildrenPagination(ctx: SqliteConformanceContext): Promis
 
 async function scenarioOutOfOrderOpsRebuild(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
   const n2 = nodeIdFromInt(2);
@@ -370,7 +378,7 @@ async function scenarioOutOfOrderOpsRebuild(ctx: SqliteConformanceContext): Prom
 
 async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
   const n2 = nodeIdFromInt(2);
@@ -414,7 +422,7 @@ async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext
 
 async function scenarioOpRefsChildrenIncludesPayloadAfterMove(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const p1 = nodeIdFromInt(1);
   const p2 = nodeIdFromInt(2);
@@ -441,7 +449,7 @@ async function scenarioOpRefsChildrenIncludesPayloadAfterMove(ctx: SqliteConform
 
 async function scenarioRejectsDeleteWithoutKnownState(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "rA";
+  const replica = replicaFromLabel("rA");
   const root = nodeIdFromInt(0);
   const node = nodeIdFromInt(1);
 
@@ -466,7 +474,7 @@ async function scenarioRejectsDeleteWithoutKnownState(ctx: SqliteConformanceCont
 
 async function scenarioDefensiveDeleteMoveRestores(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
 
@@ -480,7 +488,7 @@ async function scenarioDefensiveDeleteMoveRestores(ctx: SqliteConformanceContext
 
 async function scenarioDefensiveDeleteReactiveInsert(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
@@ -510,8 +518,8 @@ async function scenarioDefensiveDeleteReactiveInsert(ctx: SqliteConformanceConte
 
 async function scenarioDefensiveDeleteOutOfOrderChildInsert(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const rA: ReplicaId = "rA";
-  const rB: ReplicaId = "rB";
+  const rA = replicaFromLabel("rA");
+  const rB = replicaFromLabel("rB");
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
@@ -548,8 +556,8 @@ async function scenarioSyncKnownStatePropagation(ctx: SqliteConformanceContext):
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
-  const rA: ReplicaId = "rA";
-  const rB: ReplicaId = "rB";
+  const rA = replicaFromLabel("rA");
+  const rB = replicaFromLabel("rB");
 
   // Replica B inserts parent, then syncs it to A.
   await b.local.insert(rB, root, parent, { type: "last" }, null);
@@ -572,7 +580,7 @@ async function scenarioSyncKnownStatePropagation(ctx: SqliteConformanceContext):
 async function scenarioPersistenceMaterializedTreeReopen(ctx: SqliteConformanceContext): Promise<void> {
   if (!ctx.createPersistentEngine) return;
 
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
 
@@ -590,7 +598,7 @@ async function scenarioPersistenceMaterializedTreeReopen(ctx: SqliteConformanceC
 async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): Promise<void> {
   if (!ctx.createPersistentEngine) return;
 
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
 

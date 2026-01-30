@@ -125,8 +125,7 @@ export function createTreecrdtClient(
   const ready = Promise.resolve(adapter.setDocId(docId));
 
   const localWriters = new Map<string, TreecrdtSqliteWriter>();
-  const localWriterKey = (replica: ReplicaId) =>
-    typeof replica === "string" ? replica : bytesToHex(replica);
+  const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
   const localWriterFor = (replica: ReplicaId) => {
     const key = localWriterKey(replica);
     const existing = localWriters.get(key);

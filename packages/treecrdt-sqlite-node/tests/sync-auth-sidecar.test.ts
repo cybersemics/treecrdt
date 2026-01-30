@@ -33,6 +33,14 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
+function replicaFromLabel(label: string): Uint8Array {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
 function createRunner(db: any): SqliteRunner {
   const stmtCache = new Map<string, any>();
   const prepare = (sql: string) => {
@@ -112,25 +120,24 @@ test("sqlite sidecar: pending ops store roundtrips ops + auth in the same DB", a
   const store = createTreecrdtSyncSqlitePendingOpsStore({ runner, docId });
   await store.init();
 
-  const op = makeOp("a", 1, 1, {
+  const replica = replicaFromLabel("a");
+  const op = makeOp(replica, 1, 1, {
     type: "insert",
     parent: ROOT_NODE_ID_HEX,
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const keyId = randomBytes(16);
   const sig = randomBytes(64);
   const proofRef = randomBytes(16);
 
   await store.storePendingOps([
-    { op, auth: { keyId, sig, proofRef }, reason: "missing_context", message: "test" },
+    { op, auth: { sig, proofRef }, reason: "missing_context", message: "test" },
   ]);
 
   const listed = await store.listPendingOps();
   expect(listed.length).toBe(1);
-  expect(listed[0]!.op.meta.id.replica).toBe("a");
+  expect(bytesToHex(listed[0]!.op.meta.id.replica)).toBe(bytesToHex(replica));
   expect(listed[0]!.op.meta.id.counter).toBe(1);
-  expect(bytesToHex(listed[0]!.auth.keyId)).toBe(bytesToHex(keyId));
   expect(bytesToHex(listed[0]!.auth.sig)).toBe(bytesToHex(sig));
   expect(bytesToHex(listed[0]!.auth.proofRef!)).toBe(bytesToHex(proofRef));
   expect(listed[0]!.message).toBe("test");
@@ -167,7 +174,14 @@ test("sqlite subtree evaluator: allow/deny/unknown matches materialized tree", a
 
   // Insert child under subtreeRoot (root node itself need not exist as a row).
   await adapter.appendOps?.(
-    [makeOp("a", 1, 1, { type: "insert", parent: subtreeRoot, node: child, orderKey: orderKeyFromPosition(0) })],
+    [
+      makeOp(replicaFromLabel("a"), 1, 1, {
+        type: "insert",
+        parent: subtreeRoot,
+        node: child,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    ],
     nodeIdToBytes16,
     replicaIdToBytes
   );
@@ -177,7 +191,14 @@ test("sqlite subtree evaluator: allow/deny/unknown matches materialized tree", a
 
   // Insert unrelated node under ROOT; should be outside subtreeRoot.
   await adapter.appendOps?.(
-    [makeOp("a", 2, 2, { type: "insert", parent: ROOT_NODE_ID_HEX, node: unrelated, orderKey: orderKeyFromPosition(0) })],
+    [
+      makeOp(replicaFromLabel("a"), 2, 2, {
+        type: "insert",
+        parent: ROOT_NODE_ID_HEX,
+        node: unrelated,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    ],
     nodeIdToBytes16,
     replicaIdToBytes
   );
@@ -254,6 +275,7 @@ test("sqlite sync: pending_context ops are stored and later applied when context
   const aPk = await getPublicKey(aSk);
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
+  const aHex = bytesToHex(aPk);
 
   const tokenA = makeSubtreeCapabilityToken({
     issuerPrivateKey: issuerSk,
@@ -309,12 +331,14 @@ test("sqlite sync: pending_context ops are stored and later applied when context
     }
 
     // Payload arrives before insert => pending_context.
-    await backendA.applyOps([makeOp("a", 1, 1, { type: "payload", node: child, payload: new Uint8Array([1, 2, 3]) })]);
+    await backendA.applyOps([
+      makeOp(aPk, 1, 1, { type: "payload", node: child, payload: new Uint8Array([1, 2, 3]) }),
+    ]);
     void peerA.notifyLocalUpdate();
 
     const waitPending = async () => {
       const p = await pendingB.listPendingOps();
-      return p.some((x) => x.op.meta.id.replica === "a" && x.op.meta.id.counter === 1);
+      return p.some((x) => bytesToHex(x.op.meta.id.replica) === aHex && x.op.meta.id.counter === 1);
     };
     const startPending = Date.now();
     while (!(await waitPending())) {
@@ -324,15 +348,17 @@ test("sqlite sync: pending_context ops are stored and later applied when context
 
     // Now insert arrives; should apply insert and then reprocess pending payload.
     await backendA.applyOps([
-      makeOp("a", 2, 2, { type: "insert", parent: subtreeRoot, node: child, orderKey: orderKeyFromPosition(0) }),
+      makeOp(aPk, 2, 2, { type: "insert", parent: subtreeRoot, node: child, orderKey: orderKeyFromPosition(0) }),
     ]);
     void peerA.notifyLocalUpdate();
 
     const waitApplied = async () => {
       const raw = await adapterB.opsSince(0);
       const ops = decodeSqliteOps(raw);
-      return ops.some((o) => o.meta.id.replica === "a" && o.meta.id.counter === 1) &&
-        ops.some((o) => o.meta.id.replica === "a" && o.meta.id.counter === 2);
+      return (
+        ops.some((o) => bytesToHex(o.meta.id.replica) === aHex && o.meta.id.counter === 1) &&
+        ops.some((o) => bytesToHex(o.meta.id.replica) === aHex && o.meta.id.counter === 2)
+      );
     };
     const startApplied = Date.now();
     while (!(await waitApplied())) {

@@ -67,7 +67,7 @@ import {
   persistDocId,
   persistOpfsKey,
   persistStorage,
-  pickReplicaId,
+  pickReplicaLabel,
 } from "./playground/persist";
 import { applyChildrenLoaded, flattenForSelectState, parentsAffectedByOps } from "./playground/treeState";
 import type {
@@ -120,13 +120,13 @@ export default function App() {
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
   const onlineRef = useRef(true);
-  const replicaId = useMemo(pickReplicaId, []);
+  const replicaLabel = useMemo(pickReplicaLabel, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
   const [showAuthPanel, setShowAuthPanel] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
-  const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => loadAuthMaterial(docId, replicaId));
+  const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => loadAuthMaterial(docId, replicaLabel));
   const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
 
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
@@ -146,8 +146,13 @@ export default function App() {
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
 
+  const replica = useMemo(
+    () => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null),
+    [authMaterial.localPkB64]
+  );
+
   const replicaKey = useMemo(
-    () => (replica: Operation["meta"]["id"]["replica"]) => (typeof replica === "string" ? replica : bytesToHex(replica)),
+    () => (replica: Operation["meta"]["id"]["replica"]) => bytesToHex(replica),
     []
   );
 
@@ -313,7 +318,7 @@ export default function App() {
       try {
         const [lamport, counter] = await Promise.all([
           active.meta.headLamport(),
-          active.meta.replicaMaxCounter(replicaId),
+          replica ? active.meta.replicaMaxCounter(replica) : Promise.resolve(0),
         ]);
         lamportRef.current = Math.max(lamportRef.current, lamport);
         setHeadLamport(lamportRef.current);
@@ -322,7 +327,7 @@ export default function App() {
         console.error("Failed to refresh meta", err);
       }
     },
-    [client, replicaId]
+    [client, replica]
   );
 
   const refreshParentsScheduledRef = useRef(false);
@@ -490,13 +495,13 @@ export default function App() {
     });
   };
 
-  const makeNewReplicaId = () => `replica-${crypto.randomUUID().slice(0, 8)}`;
+  const makeNewPeerLabel = () => `replica-${crypto.randomUUID().slice(0, 8)}`;
 
   const openNewPeerTab = () => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
-    url.searchParams.set("replica", makeNewReplicaId());
+    url.searchParams.set("replica", makeNewPeerLabel());
     url.searchParams.delete("auth");
     url.hash = "";
     window.open(url.toString(), "_blank", "noopener,noreferrer");
@@ -510,10 +515,10 @@ export default function App() {
   };
 
   const resetAuth = () => {
-    clearAuthMaterial(docId, replicaId);
+    clearAuthMaterial(docId, replicaLabel);
     setInviteLink("");
     setInviteImportText("");
-    setAuthMaterial(loadAuthMaterial(docId, replicaId));
+    setAuthMaterial(loadAuthMaterial(docId, replicaLabel));
     setAuthEnabled(false);
     setAuthError(null);
   };
@@ -536,9 +541,11 @@ export default function App() {
       if (actions.length === 0) throw new Error("select at least one action");
 
       const maxDepthText = inviteMaxDepth.trim();
-      const maxDepth = maxDepthText.length > 0 ? Number(maxDepthText) : undefined;
-      if (maxDepthText.length > 0 && (!Number.isFinite(maxDepth) || maxDepth < 0)) {
-        throw new Error("max depth must be a non-negative number");
+      let maxDepth: number | undefined;
+      if (maxDepthText.length > 0) {
+        const parsed = Number(maxDepthText);
+        if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
+        maxDepth = parsed;
       }
 
       const issuerSk = base64urlDecode(issuerSkB64);
@@ -563,7 +570,7 @@ export default function App() {
 
       const url = new URL(window.location.href);
       url.searchParams.set("doc", docId);
-      url.searchParams.set("replica", makeNewReplicaId());
+      url.searchParams.set("replica", makeNewPeerLabel());
       url.searchParams.set("auth", "1");
       url.hash = `invite=${inviteB64}`;
       setInviteLink(url.toString());
@@ -602,11 +609,11 @@ export default function App() {
 
       const localSk = base64urlDecode(payload.subjectSkB64);
       const localPk = await deriveEd25519PublicKey(localSk);
-      saveLocalKeys(docId, replicaId, base64urlEncode(localPk), payload.subjectSkB64);
-      saveLocalTokens(docId, replicaId, [payload.tokenB64]);
+      saveLocalKeys(docId, replicaLabel, base64urlEncode(localPk), payload.subjectSkB64);
+      saveLocalTokens(docId, replicaLabel, [payload.tokenB64]);
 
       setAuthEnabled(true);
-      setAuthMaterial(loadAuthMaterial(docId, replicaId));
+      setAuthMaterial(loadAuthMaterial(docId, replicaLabel));
       setInviteImportText("");
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
@@ -625,7 +632,7 @@ export default function App() {
       const listed = await store.listPendingOps();
       setPendingOps(
         listed.map((p) => ({
-          id: `${p.op.meta.id.replica}:${p.op.meta.id.counter}`,
+          id: `${bytesToHex(p.op.meta.id.replica)}:${p.op.meta.id.counter}`,
           kind: p.op.kind.type,
           ...(p.message ? { message: p.message } : {}),
         }))
@@ -723,8 +730,32 @@ export default function App() {
   }, [authEnabled]);
 
   useEffect(() => {
-    setAuthMaterial(loadAuthMaterial(docId, replicaId));
-  }, [docId, replicaId]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const current = loadAuthMaterial(docId, replicaLabel);
+        const { localPkB64, localSkB64 } = current;
+
+        if (!localPkB64 && !localSkB64) {
+          const { sk, pk } = await generateEd25519KeyPair();
+          saveLocalKeys(docId, replicaLabel, base64urlEncode(pk), base64urlEncode(sk));
+        } else if (!localPkB64 && localSkB64) {
+          const pk = await deriveEd25519PublicKey(base64urlDecode(localSkB64));
+          saveLocalKeys(docId, replicaLabel, base64urlEncode(pk), localSkB64);
+        }
+
+        const next = loadAuthMaterial(docId, replicaLabel);
+        if (!cancelled) setAuthMaterial(next);
+      } catch (err) {
+        if (cancelled) return;
+        console.error("Failed to initialize local identity", err);
+        setAuthError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [docId, replicaLabel]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -742,8 +773,8 @@ export default function App() {
 
         const localSk = base64urlDecode(payload.subjectSkB64);
         const localPk = await deriveEd25519PublicKey(localSk);
-        saveLocalKeys(docId, replicaId, base64urlEncode(localPk), payload.subjectSkB64);
-        saveLocalTokens(docId, replicaId, [payload.tokenB64]);
+        saveLocalKeys(docId, replicaLabel, base64urlEncode(localPk), payload.subjectSkB64);
+        saveLocalTokens(docId, replicaLabel, [payload.tokenB64]);
 
         // Clear hash so we don't re-import on refresh.
         const url = new URL(window.location.href);
@@ -751,14 +782,14 @@ export default function App() {
         window.history.replaceState({}, "", url);
 
         setAuthEnabled(true);
-        setAuthMaterial(loadAuthMaterial(docId, replicaId));
+        setAuthMaterial(loadAuthMaterial(docId, replicaLabel));
       } catch (err) {
         console.error("Failed to import invite", err);
         setAuthError(err instanceof Error ? err.message : String(err));
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docId, replicaId]);
+  }, [docId, replicaLabel]);
 
   useEffect(() => {
     if (!authEnabled) {
@@ -770,7 +801,7 @@ export default function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const current = loadAuthMaterial(docId, replicaId);
+        const current = loadAuthMaterial(docId, replicaLabel);
         let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
 
         if (!issuerPkB64 && !issuerSkB64) {
@@ -797,12 +828,12 @@ export default function App() {
           const { sk, pk } = await generateEd25519KeyPair();
           localPkB64 = base64urlEncode(pk);
           localSkB64 = base64urlEncode(sk);
-          saveLocalKeys(docId, replicaId, localPkB64, localSkB64);
+          saveLocalKeys(docId, replicaLabel, localPkB64, localSkB64);
         } else if (!localPkB64 && localSkB64) {
           const localSk = base64urlDecode(localSkB64);
           const localPk = await deriveEd25519PublicKey(localSk);
           localPkB64 = base64urlEncode(localPk);
-          saveLocalKeys(docId, replicaId, localPkB64, localSkB64);
+          saveLocalKeys(docId, replicaLabel, localPkB64, localSkB64);
         } else if (localPkB64 && !localSkB64) {
           throw new Error("auth enabled but local private key is missing; import an invite link or reset auth");
         }
@@ -823,10 +854,10 @@ export default function App() {
             actions: ["write_structure", "write_payload", "delete", "tombstone"],
           });
           localTokensB64 = [base64urlEncode(tokenBytes)];
-          saveLocalTokens(docId, replicaId, localTokensB64);
+          saveLocalTokens(docId, replicaLabel, localTokensB64);
         }
 
-        const next = loadAuthMaterial(docId, replicaId);
+        const next = loadAuthMaterial(docId, replicaLabel);
         if (cancelled) return;
         setAuthMaterial(next);
         setAuthError(null);
@@ -865,7 +896,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authEnabled, client, docId, replicaId]);
+  }, [authEnabled, client, docId, replicaLabel]);
 
   useEffect(() => {
     if (!client || status !== "ready") return;
@@ -890,13 +921,13 @@ export default function App() {
             "all" in filter
               ? "all"
               : `children(${bytesToHex(filter.children.parent)})`;
-          console.debug(`[sync:${replicaId}] listOpRefs(${name}) -> ${refs.length}`);
+          console.debug(`[sync:${replicaLabel}] listOpRefs(${name}) -> ${refs.length}`);
         }
         return refs;
       },
       applyOps: async (ops: Operation[]) => {
         if (debugSync && ops.length > 0) {
-          console.debug(`[sync:${replicaId}] applyOps(${ops.length})`);
+          console.debug(`[sync:${replicaLabel}] applyOps(${ops.length})`);
         }
         await baseBackend.applyOps(ops);
         ingestPayloadOps(ops);
@@ -949,7 +980,7 @@ export default function App() {
     const sendPresenceAck = (toPeerId: string) => {
       const msg = {
         t: "presence_ack",
-        peer_id: replicaId,
+        peer_id: replicaLabel,
         to_peer_id: toPeerId,
         ts: Date.now(),
       } as const satisfies PresenceAckMessage;
@@ -957,19 +988,19 @@ export default function App() {
     };
 
     const ensureAckSent = (peerId: string) => {
-      if (!peerId || peerId === replicaId) return;
+      if (!peerId || peerId === replicaLabel) return;
       if (peerAckSentRef.current.has(peerId)) return;
       peerAckSentRef.current.add(peerId);
       sendPresenceAck(peerId);
     };
 
     const ensureConnection = (peerId: string) => {
-      if (!peerId || peerId === replicaId) return;
+      if (!peerId || peerId === replicaLabel) return;
       if (connections.has(peerId)) return;
 
       const rawTransport = createBroadcastDuplex<Operation>(
         channel,
-        replicaId,
+        replicaLabel,
         peerId,
         treecrdtSyncV0ProtobufCodec
       );
@@ -1016,7 +1047,7 @@ export default function App() {
 
       if (msg.t === "presence") {
         if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
-        if (msg.peer_id === replicaId) return;
+        if (msg.peer_id === replicaLabel) return;
         lastSeen.set(msg.peer_id, msg.ts);
         ensureConnection(msg.peer_id);
         ensureAckSent(msg.peer_id);
@@ -1028,8 +1059,8 @@ export default function App() {
       if (msg.t === "presence_ack") {
         const toPeerId = (msg as Partial<PresenceAckMessage>).to_peer_id;
         if (typeof msg.peer_id !== "string" || typeof toPeerId !== "string" || typeof msg.ts !== "number") return;
-        if (msg.peer_id === replicaId) return;
-        if (toPeerId !== replicaId) return;
+        if (msg.peer_id === replicaLabel) return;
+        if (toPeerId !== replicaLabel) return;
         lastSeen.set(msg.peer_id, msg.ts);
         ensureConnection(msg.peer_id);
         peerReadyRef.current.add(msg.peer_id);
@@ -1043,7 +1074,7 @@ export default function App() {
 
     const sendPresence = () => {
       if (!onlineRef.current) return;
-      const msg: PresenceMessage = { t: "presence", peer_id: replicaId, ts: Date.now() };
+      const msg: PresenceMessage = { t: "presence", peer_id: replicaLabel, ts: Date.now() };
       channel.postMessage(msg);
     };
 
@@ -1087,7 +1118,7 @@ export default function App() {
       connections.clear();
       setPeers([]);
     };
-  }, [authEnabled, authMaterial, client, docId, replicaId, status]);
+  }, [authEnabled, authMaterial, client, docId, replicaLabel, status]);
 
   useEffect(() => {
     return () => {
@@ -1227,7 +1258,7 @@ export default function App() {
   };
 
   const appendOperation = async (kind: OperationKind) => {
-    if (!client) return;
+    if (!client || !replica) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
@@ -1242,7 +1273,7 @@ export default function App() {
         lamportRef.current = Math.max(lamportRef.current, headLamport) + 1;
         op = {
           meta: {
-            id: { replica: replicaId, counter: counterRef.current },
+            id: { replica, counter: counterRef.current },
             lamport: lamportRef.current,
           },
           kind,
@@ -1252,9 +1283,9 @@ export default function App() {
         setHeadLamport(lamportRef.current);
       } else {
         if (kind.type === "payload") {
-          op = await client.local.payload(replicaId, kind.node, kind.payload);
+          op = await client.local.payload(replica, kind.node, kind.payload);
         } else if (kind.type === "delete") {
-          op = await client.local.delete(replicaId, kind.node);
+          op = await client.local.delete(replica, kind.node);
         } else {
           throw new Error(`unsupported operation kind: ${kind.type}`);
         }
@@ -1278,12 +1309,12 @@ export default function App() {
   };
 
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {
-    if (!client) return;
+    if (!client || !replica) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
-      const op = await client.local.move(replicaId, nodeId, newParent, placement);
+      const op = await client.local.move(replica, nodeId, newParent, placement);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
       ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
@@ -1301,7 +1332,7 @@ export default function App() {
   };
 
   const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
-    if (!client) return;
+    if (!client || !replica) return;
     const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
     setBusy(true);
@@ -1317,7 +1348,7 @@ export default function App() {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          ops.push(await client.local.insert(replicaId, parentId, nodeId, { type: "last" }, payload));
+          ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, payload));
         }
       } else {
         const expanded = new Set<string>();
@@ -1357,7 +1388,7 @@ export default function App() {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          ops.push(await client.local.insert(replicaId, targetParent, nodeId, { type: "last" }, payload));
+          ops.push(await client.local.insert(replica, targetParent, nodeId, { type: "last" }, payload));
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
@@ -1399,14 +1430,14 @@ export default function App() {
   };
 
   const handleInsert = async (parentId: string) => {
-    if (!client) return;
+    if (!client || !replica) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
       const valueBase = newNodeValue.trim();
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const nodeId = makeNodeId();
-      const op = await client.local.insert(replicaId, parentId, nodeId, { type: "last" }, payload);
+      const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, payload);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
       ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
@@ -1557,7 +1588,11 @@ export default function App() {
         </div>
         <div className="flex flex-col items-start gap-3 text-xs text-slate-400">
           <div>
-            Replica: <span className="font-mono text-slate-200">{replicaId}</span>
+            Peer: <span className="font-mono text-slate-200">{replicaLabel}</span>
+          </div>
+          <div>
+            Replica (pubkey):{" "}
+            <span className="font-mono text-slate-200">{replica ? bytesToHex(replica) : "(initializing)"}</span>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -1800,8 +1835,8 @@ export default function App() {
                     <div className="font-mono text-slate-200">{docId}</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Replica</div>
-                    <div className="font-mono text-slate-200">{replicaId}</div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Peer</div>
+                    <div className="font-mono text-slate-200">{replicaLabel}</div>
                   </div>
                 </div>
                 <div className="mt-3 flex items-center justify-between gap-2">
@@ -1817,7 +1852,7 @@ export default function App() {
                 <div className="mt-2 max-h-32 overflow-auto pr-1">
                   <div className="flex items-center justify-between gap-2 py-1">
                     <span className="font-mono text-slate-200">
-                      {replicaId} <span className="text-[10px] text-slate-500">(you)</span>
+                      {replicaLabel} <span className="text-[10px] text-slate-500">(you)</span>
                     </span>
                     <span className="text-[10px] text-slate-500">-</span>
                   </div>

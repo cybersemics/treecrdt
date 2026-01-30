@@ -65,7 +65,6 @@ export type RibltStatus = {
 };
 
 export type OpAuth = {
-  keyId: Bytes;
   sig: Bytes;
   proofRef?: Bytes;
 };

@@ -419,7 +419,6 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   const allowUnsigned = opts.allowUnsigned ?? false;
   const requireProofRef = opts.requireProofRef ?? false;
 
-  const localKeyId = deriveKeyIdV1(opts.localPublicKey);
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
 
@@ -467,8 +466,12 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const proofRef = localTokenIds.length > 0 ? localTokenIds[0] : undefined;
       const out: OpAuth[] = [];
       for (const op of ops) {
+        const opReplica = replicaIdToBytes(op.meta.id.replica);
+        if (bytesToHex(opReplica) !== bytesToHex(opts.localPublicKey)) {
+          throw new Error("cannot sign op: op.meta.id.replica does not match localPublicKey");
+        }
         const sig = await signTreecrdtOpV1({ docId: ctx.docId, op, privateKey: opts.localPrivateKey });
-        out.push({ keyId: localKeyId, sig, ...(proofRef ? { proofRef } : {}) });
+        out.push({ sig, ...(proofRef ? { proofRef } : {}) });
       }
       return out;
     },
@@ -483,9 +486,15 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
         const a = auth[i]!;
-        const keyHex = bytesToHex(a.keyId);
+        const replica = replicaIdToBytes(op.meta.id.replica);
+        const keyId = deriveKeyIdV1(replica);
+        const keyHex = bytesToHex(keyId);
         const grant = grantsByKeyIdHex.get(keyHex);
-        if (!grant) throw new Error(`unknown author key_id: ${keyHex}`);
+        if (!grant) throw new Error(`unknown author: ${keyHex}`);
+
+        if (bytesToHex(grant.publicKey) !== bytesToHex(replica)) {
+          throw new Error("author public key does not match op replica_id");
+        }
 
         if (requireProofRef) {
           if (!a.proofRef) throw new Error("missing proof_ref");
@@ -504,7 +513,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         });
         if (scopeRes === "deny") throw new Error("capability does not allow op");
 
-        const ok = await verifyTreecrdtOpV1({ docId: ctx.docId, op, signature: a.sig, publicKey: grant.publicKey });
+        const ok = await verifyTreecrdtOpV1({ docId: ctx.docId, op, signature: a.sig, publicKey: replica });
         if (!ok) throw new Error("invalid op signature");
 
         if (scopeRes === "unknown") {

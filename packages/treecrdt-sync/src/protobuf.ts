@@ -320,20 +320,16 @@ function fromProtoOperation(op: any): Operation {
 
 function toProtoOpAuth(auth: OpAuth) {
   return create(OpAuthSchema, {
-    keyId: auth.keyId,
     sig: auth.sig,
     ...(auth.proofRef ? { proofRef: auth.proofRef } : {}),
   });
 }
 
 function fromProtoOpAuth(auth: any): OpAuth {
-  const keyId = auth.keyId as Uint8Array | undefined;
   const sig = auth.sig as Uint8Array | undefined;
   const proofRef = auth.proofRef as Uint8Array | undefined;
-  if (!keyId) throw new Error("OpAuth.keyId missing");
   if (!sig) throw new Error("OpAuth.sig missing");
   return {
-    keyId,
     sig,
     ...(proofRef && proofRef.length > 0 ? { proofRef } : {}),
   };

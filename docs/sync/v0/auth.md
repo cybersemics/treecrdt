@@ -21,18 +21,19 @@ Status: draft. Backwards compatibility is not guaranteed.
 ## Identity model
 
 - Each replica uses a **doc-scoped Ed25519 keypair** to sign operations.
+- In Sync v0, `replica_id` is the **32-byte Ed25519 public key** (verifying key) for that doc.
 - Optionally, a stable cross-doc “global identity” key can exist, but should be exchanged
   end-to-end (not shown to the sync server) to avoid cross-doc correlation.
 
-### `key_id` (doc-scoped key identifier)
+### Derived `key_id` (optional)
 
-`key_id` is a short identifier derived from the doc-scoped public key.
+A short doc-scoped key identifier can be derived from the public key for local caches.
 
 Reference derivation (v1):
 
 - `key_id = blake3("treecrdt/keyid/v1" || ed25519_pubkey)[0..16]` (16 bytes)
 
-`key_id` is used to keep per-op metadata compact and to key local caches.
+This is **not transmitted per-op** in v0: verifiers derive it from `replica_id` when needed.
 
 ## Wire format: `OpAuth` in `OpsBatch`
 
@@ -56,7 +57,6 @@ If present, `auth` MUST be either empty (no auth) or exactly the same length as 
 
 Each op may carry:
 
-- `key_id`: 16-byte identifier for the author’s doc-scoped signing key
 - `sig`: Ed25519 signature bytes (64 bytes)
 - `proof_ref` (optional but RECOMMENDED): 16-byte reference to the capability token used
   to authorize this op
@@ -64,7 +64,6 @@ Each op may carry:
 Rationale:
 
 - `sig` provides integrity and non-repudiation for the op contents.
-- `key_id` avoids repeating the full 32-byte public key on every op.
 - `proof_ref` makes authorization deterministic in the presence of rotation/expiry: the
   verifier knows which token (permissions snapshot) the signer intended.
 
@@ -80,7 +79,7 @@ Reference encoding:
 
 - `cnf` is a CBOR map with:
   - `pub`: raw Ed25519 public key bytes (32 bytes)
-  - `kid` (optional): `key_id` bytes; if present it MUST match `pub`
+  - `kid` (optional): derived `key_id` bytes; if present it MUST match `pub`
 
 ### Private claim: `caps`
 
@@ -206,21 +205,10 @@ Implementations may choose different schemas; the important properties are:
 Example:
 
 ```sql
-CREATE TABLE IF NOT EXISTS treecrdt_sync_op_proofs (
-  doc_id TEXT NOT NULL,
-  op_ref BLOB NOT NULL,              -- 16 bytes
-  key_id BLOB NOT NULL,              -- 16 bytes
-  sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
-  proof_ref BLOB,                    -- 16 bytes (token_id), nullable
-  verified_at_ms INTEGER NOT NULL,
-  PRIMARY KEY (doc_id, op_ref)
-);
-
 CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   doc_id TEXT NOT NULL,
   op_ref BLOB NOT NULL,              -- 16 bytes
   op BLOB NOT NULL,                  -- encoded sync/v0 Operation protobuf bytes (not a full SyncMessage)
-  key_id BLOB NOT NULL,
   sig BLOB NOT NULL,
   proof_ref BLOB,
   reason TEXT NOT NULL,              -- e.g. "missing_context"
