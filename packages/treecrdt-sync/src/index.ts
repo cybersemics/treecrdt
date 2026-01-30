@@ -6,3 +6,4 @@ export * from "./treecrdt-auth.js";
 export * from "./cose.js";
 export * from "./base64url.js";
 export * from "./sqlite.js";
+export * from "./identity.js";
