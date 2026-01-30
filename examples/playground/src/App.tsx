@@ -36,12 +36,16 @@ import {
   encodeInvitePayload,
   generateEd25519KeyPair,
   deriveEd25519PublicKey,
+  getDeviceWrapKeyB64,
+  getSealedIssuerKeyB64,
+  importDeviceWrapKeyB64,
   initialAuthEnabled,
   loadAuthMaterial,
   persistAuthEnabled,
   saveIssuerKeys,
   saveLocalKeys,
   saveLocalTokens,
+  setSealedIssuerKeyB64,
   type StoredAuthMaterial,
 } from "./auth";
 import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceAckMessage, type PresenceMessage } from "./sync-v0";
@@ -128,7 +132,15 @@ export default function App() {
   const [showAuthPanel, setShowAuthPanel] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
-  const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => loadAuthMaterial(docId, replicaLabel));
+  const [wrapKeyImportText, setWrapKeyImportText] = useState("");
+  const [issuerKeyBlobImportText, setIssuerKeyBlobImportText] = useState("");
+  const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => ({
+    issuerPkB64: null,
+    issuerSkB64: null,
+    localPkB64: null,
+    localSkB64: null,
+    localTokensB64: [],
+  }));
   const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
 
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
@@ -163,6 +175,29 @@ export default function App() {
       return next;
     });
   };
+
+  const refreshAuthMaterial = React.useCallback(async () => {
+    const next = await loadAuthMaterial(docId, replicaLabel);
+    setAuthMaterial(next);
+    return next;
+  }, [docId, replicaLabel]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await loadAuthMaterial(docId, replicaLabel);
+        if (cancelled) return;
+        setAuthMaterial(next);
+      } catch (err) {
+        if (cancelled) return;
+        setAuthError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [docId, replicaLabel]);
 
   const replica = useMemo(
     () => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null),
@@ -536,9 +571,9 @@ export default function App() {
     clearAuthMaterial(docId, replicaLabel);
     setInviteLink("");
     setInviteImportText("");
-    setAuthMaterial(loadAuthMaterial(docId, replicaLabel));
     setAuthEnabled(false);
     setAuthError(null);
+    void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
   };
 
   const generateInviteLink = async () => {
@@ -628,15 +663,15 @@ export default function App() {
         throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
       }
 
-      saveIssuerKeys(docId, payload.issuerPkB64);
+      await saveIssuerKeys(docId, payload.issuerPkB64);
 
       const localSk = base64urlDecode(payload.subjectSkB64);
       const localPk = await deriveEd25519PublicKey(localSk);
-      saveLocalKeys(docId, replicaLabel, base64urlEncode(localPk), payload.subjectSkB64);
-      saveLocalTokens(docId, replicaLabel, [payload.tokenB64]);
+      await saveLocalKeys(docId, replicaLabel, base64urlEncode(localPk), payload.subjectSkB64);
+      await saveLocalTokens(docId, replicaLabel, [payload.tokenB64]);
 
       setAuthEnabled(true);
-      setAuthMaterial(loadAuthMaterial(docId, replicaLabel));
+      await refreshAuthMaterial();
       setInviteImportText("");
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
@@ -753,34 +788,6 @@ export default function App() {
   }, [authEnabled]);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const current = loadAuthMaterial(docId, replicaLabel);
-        const { localPkB64, localSkB64 } = current;
-
-        if (!localPkB64 && !localSkB64) {
-          const { sk, pk } = await generateEd25519KeyPair();
-          saveLocalKeys(docId, replicaLabel, base64urlEncode(pk), base64urlEncode(sk));
-        } else if (!localPkB64 && localSkB64) {
-          const pk = await deriveEd25519PublicKey(base64urlDecode(localSkB64));
-          saveLocalKeys(docId, replicaLabel, base64urlEncode(pk), localSkB64);
-        }
-
-        const next = loadAuthMaterial(docId, replicaLabel);
-        if (!cancelled) setAuthMaterial(next);
-      } catch (err) {
-        if (cancelled) return;
-        console.error("Failed to initialize local identity", err);
-        setAuthError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [docId, replicaLabel]);
-
-  useEffect(() => {
     if (typeof window === "undefined") return;
     const inviteB64 = new URLSearchParams(window.location.hash.slice(1)).get("invite");
     if (!inviteB64) return;
@@ -792,12 +799,12 @@ export default function App() {
           throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
         }
 
-        saveIssuerKeys(docId, payload.issuerPkB64);
+        await saveIssuerKeys(docId, payload.issuerPkB64);
 
         const localSk = base64urlDecode(payload.subjectSkB64);
         const localPk = await deriveEd25519PublicKey(localSk);
-        saveLocalKeys(docId, replicaLabel, base64urlEncode(localPk), payload.subjectSkB64);
-        saveLocalTokens(docId, replicaLabel, [payload.tokenB64]);
+        await saveLocalKeys(docId, replicaLabel, base64urlEncode(localPk), payload.subjectSkB64);
+        await saveLocalTokens(docId, replicaLabel, [payload.tokenB64]);
 
         // Clear hash so we don't re-import on refresh.
         const url = new URL(window.location.href);
@@ -805,7 +812,7 @@ export default function App() {
         window.history.replaceState({}, "", url);
 
         setAuthEnabled(true);
-        setAuthMaterial(loadAuthMaterial(docId, replicaLabel));
+        await refreshAuthMaterial();
       } catch (err) {
         console.error("Failed to import invite", err);
         setAuthError(err instanceof Error ? err.message : String(err));
@@ -824,30 +831,30 @@ export default function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const current = loadAuthMaterial(docId, replicaLabel);
+        const current = await loadAuthMaterial(docId, replicaLabel);
         let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
 
         const ensureIssuerKeys = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
           const run = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
-            let { issuerPkB64, issuerSkB64 } = loadAuthMaterial(docId, replicaLabel);
+            let { issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId, replicaLabel);
 
             if (!issuerPkB64 && !issuerSkB64) {
               const { sk, pk } = await generateEd25519KeyPair();
-              saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
+              await saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
             }
 
             // Reload in case another tab raced us.
-            ({ issuerPkB64, issuerSkB64 } = loadAuthMaterial(docId, replicaLabel));
+            ({ issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId, replicaLabel));
 
             if (issuerSkB64) {
               // Treat issuer secret key as authoritative and force-sync the public key to match it.
               const issuerSk = base64urlDecode(issuerSkB64);
               const issuerPk = await deriveEd25519PublicKey(issuerSk);
               const issuerPkB64 = base64urlEncode(issuerPk);
-              saveIssuerKeys(docId, issuerPkB64, issuerSkB64, { forcePk: true });
+              await saveIssuerKeys(docId, issuerPkB64, issuerSkB64, { forcePk: true });
             }
 
-            const final = loadAuthMaterial(docId, replicaLabel);
+            const final = await loadAuthMaterial(docId, replicaLabel);
             return { issuerPkB64: final.issuerPkB64, issuerSkB64: final.issuerSkB64 };
           };
 
@@ -915,12 +922,12 @@ export default function App() {
           const { sk, pk } = await generateEd25519KeyPair();
           localPkB64 = base64urlEncode(pk);
           localSkB64 = base64urlEncode(sk);
-          saveLocalKeys(docId, replicaLabel, localPkB64, localSkB64);
+          await saveLocalKeys(docId, replicaLabel, localPkB64, localSkB64);
         } else if (!localPkB64 && localSkB64) {
           const localSk = base64urlDecode(localSkB64);
           const localPk = await deriveEd25519PublicKey(localSk);
           localPkB64 = base64urlEncode(localPk);
-          saveLocalKeys(docId, replicaLabel, localPkB64, localSkB64);
+          await saveLocalKeys(docId, replicaLabel, localPkB64, localSkB64);
         } else if (localPkB64 && !localSkB64) {
           throw new Error("auth enabled but local private key is missing; import an invite link or reset auth");
         }
@@ -941,10 +948,10 @@ export default function App() {
             actions: ["write_structure", "write_payload", "delete", "tombstone"],
           });
           localTokensB64 = [base64urlEncode(tokenBytes)];
-          saveLocalTokens(docId, replicaLabel, localTokensB64);
+          await saveLocalTokens(docId, replicaLabel, localTokensB64);
         }
 
-        const next = loadAuthMaterial(docId, replicaLabel);
+        const next = await loadAuthMaterial(docId, replicaLabel);
         if (cancelled) return;
         setAuthMaterial(next);
         setAuthError(null);
@@ -1668,6 +1675,8 @@ export default function App() {
       ? bytesToHex(deriveTokenIdV1(base64urlDecode(authMaterial.localTokensB64[0]!)))
       : null;
   const localReplicaHex = replica ? bytesToHex(replica) : null;
+  const deviceWrapKeyB64 = getDeviceWrapKeyB64();
+  const sealedIssuerKeyB64 = getSealedIssuerKeyB64(docId);
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
@@ -2020,6 +2029,118 @@ export default function App() {
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Token id</div>
                     <div className="mt-1 font-mono text-slate-200">
                       {authLocalTokenIdHex ? `${authLocalTokenIdHex.slice(0, 16)}…` : "-"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Device wrap key</div>
+                      <button
+                        className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                        type="button"
+                        onClick={() =>
+                          void copyToClipboard(deviceWrapKeyB64 ?? "").catch((err) =>
+                            setAuthError(err instanceof Error ? err.message : String(err))
+                          )
+                        }
+                        disabled={authBusy || !deviceWrapKeyB64}
+                        title="Copy device wrap key"
+                      >
+                        <MdContentCopy className="text-[16px]" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="mt-1 font-mono text-slate-200" title={deviceWrapKeyB64 ?? ""}>
+                      {deviceWrapKeyB64 ? `${deviceWrapKeyB64.slice(0, 24)}…` : "(initializing)"}
+                    </div>
+                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <input
+                        type="text"
+                        value={wrapKeyImportText}
+                        onChange={(e) => setWrapKeyImportText(e.target.value)}
+                        placeholder="Paste base64url wrap key"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                        disabled={authBusy}
+                      />
+                      <button
+                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
+                        type="button"
+                        onClick={() => {
+                          try {
+                            importDeviceWrapKeyB64(wrapKeyImportText);
+                            setWrapKeyImportText("");
+                            void refreshAuthMaterial().catch((err) =>
+                              setAuthError(err instanceof Error ? err.message : String(err))
+                            );
+                          } catch (err) {
+                            setAuthError(err instanceof Error ? err.message : String(err));
+                          }
+                        }}
+                        disabled={authBusy || wrapKeyImportText.trim().length === 0}
+                        title="Import device wrap key"
+                      >
+                        Import
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Back up this key (e.g. Supabase). Needed to decrypt doc key blobs.
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Doc key blob</div>
+                      <button
+                        className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                        type="button"
+                        onClick={() =>
+                          void copyToClipboard(sealedIssuerKeyB64 ?? "").catch((err) =>
+                            setAuthError(err instanceof Error ? err.message : String(err))
+                          )
+                        }
+                        disabled={authBusy || !sealedIssuerKeyB64}
+                        title="Copy sealed issuer key blob (base64url)"
+                      >
+                        <MdContentCopy className="text-[16px]" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="mt-1 font-mono text-slate-200" title={sealedIssuerKeyB64 ?? ""}>
+                      {sealedIssuerKeyB64 ? `${sealedIssuerKeyB64.slice(0, 24)}…` : "-"}
+                    </div>
+                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <input
+                        type="text"
+                        value={issuerKeyBlobImportText}
+                        onChange={(e) => setIssuerKeyBlobImportText(e.target.value)}
+                        placeholder="Paste sealed issuer key blob (base64url)"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                        disabled={authBusy}
+                      />
+                      <button
+                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
+                        type="button"
+                        onClick={() => {
+                          try {
+                            setSealedIssuerKeyB64(docId, issuerKeyBlobImportText);
+                            setIssuerKeyBlobImportText("");
+                            void refreshAuthMaterial().catch((err) =>
+                              setAuthError(err instanceof Error ? err.message : String(err))
+                            );
+                          } catch (err) {
+                            setAuthError(err instanceof Error ? err.message : String(err));
+                          }
+                        }}
+                        disabled={authBusy || issuerKeyBlobImportText.trim().length === 0}
+                        title="Import sealed issuer key blob"
+                      >
+                        Import
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Encrypted at rest. Bound to this `docId` via AAD.
                     </div>
                   </div>
                 </div>

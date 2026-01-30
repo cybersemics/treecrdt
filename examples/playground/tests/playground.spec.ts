@@ -122,3 +122,65 @@ test("defensive delete restores parent when unseen child arrives", async ({ brow
     await context.close();
   }
 });
+
+test("invite denies writes to private subtree", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-private");
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
+    ]);
+    await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-placeholder");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const placeholderRowA = treeRowByLabel(pageA, "secret-placeholder");
+    await expect(placeholderRowA).toBeVisible({ timeout: 30_000 });
+
+    const secretNodeId = await placeholderRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+    const secretRowA = treeRowByNodeId(pageA, secretNodeId);
+
+    const privacyToggleA = secretRowA.getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    await pageA.getByRole("button", { name: "Auth", exact: true }).click();
+    await pageA.getByRole("button", { name: "Generate" }).click();
+    await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
+    const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
+
+    await pageB.getByRole("button", { name: "Auth", exact: true }).click();
+    const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
+    await inviteInput.fill(inviteLink);
+    await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    // Push ops from A to B.
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+
+    const secretRowB = treeRowByNodeId(pageB, secretNodeId);
+    await expect(secretRowB).toBeVisible({ timeout: 30_000 });
+
+    // Attempt to update payload within the excluded subtree; should be denied by local auth.
+    await secretRowB.getByRole("button", { name: "secret-placeholder" }).click();
+    await secretRowB.getByRole("textbox").fill("HACKED");
+    await secretRowB.getByRole("button", { name: "Save" }).click();
+
+    await expect(pageB.getByText("Failed to append operation (see console)")).toBeVisible({ timeout: 30_000 });
+    await expect(treeRowByLabel(pageB, "HACKED")).toHaveCount(0);
+    await expect(treeRowByLabel(pageB, "secret-placeholder")).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
