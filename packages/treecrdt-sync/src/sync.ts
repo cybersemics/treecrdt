@@ -851,7 +851,19 @@ export class SyncPeer<Op> {
       }
     }
 
-    if (!err.filterId) return;
+    if (!err.filterId) {
+      if (this.initiatorSessions.size === 0) return;
+      const code = ErrorCode[err.code] ?? String(err.code);
+      const e = new Error(`${code}: ${err.message}`);
+      for (const session of this.initiatorSessions.values()) {
+        session.done = true;
+        session.ack.reject(e);
+        session.status.reject(e);
+        session.receivedOps.reject(e);
+      }
+      this.initiatorSessions.clear();
+      return;
+    }
     const session = this.initiatorSessions.get(err.filterId);
     if (!session) return;
 
