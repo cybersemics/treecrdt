@@ -123,7 +123,7 @@ test("defensive delete restores parent when unseen child arrives", async ({ brow
   }
 });
 
-test("invite denies writes to private subtree", async ({ browser }) => {
+test("invite hides private subtree (excluded roots are not synced)", async ({ browser }) => {
   test.setTimeout(240_000);
 
   const doc = uniqueDocId("pw-playground-private");
@@ -137,6 +137,17 @@ test("invite denies writes to private subtree", async ({ browser }) => {
       waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
     ]);
     await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
+
+    // Wait for peer discovery (Sync button enabled) so auth/session initialization has time to complete.
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    // Create a public node and a private root.
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("public");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "public")).toBeVisible({ timeout: 30_000 });
 
     await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-placeholder");
     await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
@@ -169,17 +180,18 @@ test("invite denies writes to private subtree", async ({ browser }) => {
     // Push ops from A to B.
     await pageA.getByRole("button", { name: "Sync", exact: true }).click();
 
-    const secretRowB = treeRowByNodeId(pageB, secretNodeId);
-    await expect(secretRowB).toBeVisible({ timeout: 30_000 });
+    const publicRowBLabel = treeRowByLabel(pageB, "public");
+    await expect(publicRowBLabel).toBeVisible({ timeout: 30_000 });
+    const publicNodeId = await publicRowBLabel.getAttribute("data-node-id");
+    if (!publicNodeId) throw new Error("expected public node id");
+    await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
 
-    // Attempt to update payload within the excluded subtree; should be denied by local auth.
-    await secretRowB.getByRole("button", { name: "secret-placeholder" }).click();
-    await secretRowB.getByRole("textbox").fill("HACKED");
-    await secretRowB.getByRole("button", { name: "Save" }).click();
-
-    await expect(pageB.getByText("Failed to append operation (see console)")).toBeVisible({ timeout: 30_000 });
-    await expect(treeRowByLabel(pageB, "HACKED")).toHaveCount(0);
-    await expect(treeRowByLabel(pageB, "secret-placeholder")).toBeVisible({ timeout: 30_000 });
+    // Writes to non-excluded nodes should still work.
+    const publicRowB = treeRowByNodeId(pageB, publicNodeId);
+    await publicRowB.getByRole("button", { name: "public" }).click();
+    await publicRowB.getByRole("textbox").fill("PUBLIC-UPDATED");
+    await publicRowB.getByRole("button", { name: "Save" }).click();
+    await expect(treeRowByLabel(pageB, "PUBLIC-UPDATED")).toBeVisible({ timeout: 30_000 });
   } finally {
     await context.close();
   }

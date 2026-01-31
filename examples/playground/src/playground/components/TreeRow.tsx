@@ -147,7 +147,7 @@ export function TreeRow({
             {!isEditing && isPrivateRoot && (
               <span
                 className="flex-shrink-0 rounded-full border border-amber-400/60 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100"
-                title="Private root: excluded from new invites (write ACL only; not encryption)"
+                title="Private root: excluded from new invites (read/write scope). Payload privacy is handled separately via E2EE."
               >
                 private root
               </span>
@@ -155,7 +155,7 @@ export function TreeRow({
             {!isEditing && isPrivateInherited && (
               <span
                 className="flex-shrink-0 rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-[10px] font-semibold text-slate-300"
-                title="Private (inherited): excluded from new invites (write ACL only; not encryption)"
+                title="Private (inherited): excluded from new invites (read/write scope). Payload privacy is handled separately via E2EE."
               >
                 private
               </span>

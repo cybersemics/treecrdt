@@ -10,12 +10,14 @@ import {
   createTreecrdtCoseCwtAuth,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   createTreecrdtSyncSqlitePendingOpsStore,
+  describeTreecrdtCapabilityTokenV1,
   deriveKeyIdV1,
   deriveTokenIdV1,
   encryptTreecrdtPayloadV1,
   maybeDecryptTreecrdtPayloadV1,
   type Filter,
   type SyncSubscription,
+  type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/sync";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { DuplexTransport } from "@treecrdt/sync/transport";
@@ -152,6 +154,7 @@ export default function App() {
   }));
   const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
   const docPayloadKeyRef = useRef<Uint8Array | null>(null);
+  const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
 
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
   const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
@@ -248,6 +251,52 @@ export default function App() {
       cancelled = true;
     };
   }, [docId, replicaLabel]);
+
+  useEffect(() => {
+    if (!authEnabled || !client) {
+      localAuthRef.current = null;
+      return;
+    }
+
+    try {
+      if (
+        !authMaterial.issuerPkB64 ||
+        !authMaterial.localSkB64 ||
+        !authMaterial.localPkB64 ||
+        authMaterial.localTokensB64.length === 0
+      ) {
+        localAuthRef.current = null;
+        return;
+      }
+
+      const issuerPk = base64urlDecode(authMaterial.issuerPkB64);
+      const localSk = base64urlDecode(authMaterial.localSkB64);
+      const localPk = base64urlDecode(authMaterial.localPkB64);
+      const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
+      const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
+
+      localAuthRef.current = createTreecrdtCoseCwtAuth({
+        issuerPublicKeys: [issuerPk],
+        localPrivateKey: localSk,
+        localPublicKey: localPk,
+        localCapabilityTokens: localTokens,
+        requireProofRef: true,
+        scopeEvaluator,
+      });
+    } catch (err) {
+      localAuthRef.current = null;
+      setAuthError(err instanceof Error ? err.message : String(err));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    authEnabled,
+    client,
+    docId,
+    authMaterial.issuerPkB64,
+    authMaterial.localSkB64,
+    authMaterial.localPkB64,
+    authMaterial.localTokensB64.join(","),
+  ]);
 
   const replica = useMemo(
     () => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null),
@@ -787,6 +836,38 @@ export default function App() {
 
   const { index, childrenByParent } = treeState;
 
+  const viewRootId = useMemo(() => {
+    const raw = authEnabled ? authToken?.caps?.[0]?.res.rootNodeId : null;
+    if (!raw || typeof raw !== "string") return ROOT_ID;
+    const clean = raw.toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(clean)) return ROOT_ID;
+    return clean;
+  }, [authEnabled, authToken]);
+
+  const authCanSyncAll = useMemo(() => {
+    if (!authEnabled) return true;
+    if (!authToken) return false;
+    if (authToken.caps.length === 0) return true;
+    return authToken.caps.some((cap) => {
+      const root = cap.res.rootNodeId?.toLowerCase();
+      const excludeCount = cap.res.excludeNodeIds?.length ?? 0;
+      return root === ROOT_ID && cap.res.maxDepth === undefined && excludeCount === 0;
+    });
+  }, [authEnabled, authToken]);
+
+  useEffect(() => {
+    if (viewRootId === ROOT_ID) return;
+    setCollapse((prev) => {
+      if (!prev.defaultCollapsed) return prev;
+      if (prev.overrides.has(viewRootId)) return prev;
+      const overrides = new Set(prev.overrides);
+      overrides.add(viewRootId);
+      return { ...prev, overrides };
+    });
+    setParentChoice((prev) => (prev === ROOT_ID ? viewRootId : prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewRootId]);
+
   const nodeLabelForId = React.useCallback(
     (id: string) => {
       if (id === ROOT_ID) return "Root";
@@ -799,7 +880,10 @@ export default function App() {
     [payloadVersion, textDecoder]
   );
 
-  const nodeList = useMemo(() => flattenForSelectState(childrenByParent, nodeLabelForId), [childrenByParent, nodeLabelForId]);
+  const nodeList = useMemo(
+    () => flattenForSelectState(childrenByParent, nodeLabelForId, { rootId: viewRootId }),
+    [childrenByParent, nodeLabelForId, viewRootId]
+  );
   const privateRootEntries = useMemo(() => {
     const roots = Array.from(privateRoots).filter((id) => id !== ROOT_ID);
     roots.sort((a, b) => {
@@ -815,7 +899,7 @@ export default function App() {
     const isCollapsed = (id: string) => {
       return collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
     };
-    const stack: Array<{ id: string; depth: number }> = [{ id: ROOT_ID, depth: 0 }];
+    const stack: Array<{ id: string; depth: number }> = [{ id: viewRootId, depth: 0 }];
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
@@ -890,6 +974,37 @@ export default function App() {
   useEffect(() => {
     if (!authEnabled) setPendingOps([]);
   }, [authEnabled]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!authEnabled) {
+        setAuthToken(null);
+        return;
+      }
+      if (!authMaterial.issuerPkB64 || authMaterial.localTokensB64.length === 0) {
+        setAuthToken(null);
+        return;
+      }
+      try {
+        const issuerPk = base64urlDecode(authMaterial.issuerPkB64);
+        const tokenBytes = base64urlDecode(authMaterial.localTokensB64[0]!);
+        const described = await describeTreecrdtCapabilityTokenV1({
+          tokenBytes,
+          issuerPublicKeys: [issuerPk],
+          docId,
+        });
+        if (cancelled) return;
+        setAuthToken(described);
+      } catch {
+        if (cancelled) return;
+        setAuthToken(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authEnabled, authMaterial.issuerPkB64, authMaterial.localTokensB64.join(","), docId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1064,31 +1179,6 @@ export default function App() {
         if (cancelled) return;
         setAuthMaterial(next);
         setAuthError(null);
-
-        if (
-          client &&
-          next.issuerPkB64 &&
-          next.localSkB64 &&
-          next.localPkB64 &&
-          next.localTokensB64.length > 0
-        ) {
-          const issuerPk = base64urlDecode(next.issuerPkB64);
-          const localSk = base64urlDecode(next.localSkB64);
-          const localPk = base64urlDecode(next.localPkB64);
-          const localTokens = next.localTokensB64.map((t) => base64urlDecode(t));
-          const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
-
-          localAuthRef.current = createTreecrdtCoseCwtAuth({
-            issuerPublicKeys: [issuerPk],
-            localPrivateKey: localSk,
-            localPublicKey: localPk,
-            localCapabilityTokens: localTokens,
-            requireProofRef: true,
-            scopeEvaluator,
-          });
-        } else {
-          localAuthRef.current = null;
-        }
       } catch (err) {
         if (cancelled) return;
         localAuthRef.current = null;
@@ -1451,6 +1541,10 @@ export default function App() {
     }
   }, [liveAllEnabled]);
 
+  useEffect(() => {
+    if (!authCanSyncAll && liveAllEnabled) setLiveAllEnabled(false);
+  }, [authCanSyncAll, liveAllEnabled]);
+
   const verifyLocalOps = async (ops: Operation[]) => {
     if (!authEnabled) return;
     const auth = localAuthRef.current;
@@ -1729,6 +1823,49 @@ export default function App() {
     }
   };
 
+  const handleScopedSync = async () => {
+    const parents = new Set(Object.keys(treeStateRef.current.childrenByParent));
+    parents.add(viewRootId);
+    const parentIds = Array.from(parents).filter((id) => /^[0-9a-f]{32}$/i.test(id));
+    parentIds.sort();
+
+    if (!onlineRef.current) {
+      setSyncError("Offline: toggle Online to sync.");
+      return;
+    }
+    const connections = syncConnRef.current;
+    if (connections.size === 0) {
+      setSyncError("No peers discovered yet.");
+      return;
+    }
+
+    setSyncBusy(true);
+    setSyncError(null);
+    try {
+      for (const conn of connections.values()) {
+        for (const parentId of parentIds) {
+          await conn.peer.syncOnce(
+            conn.transport,
+            { children: { parent: hexToBytes16(parentId) } },
+            {
+              maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+              maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+              codewordsPerMessage: 2048,
+            }
+          );
+        }
+      }
+      await refreshMeta();
+      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      await refreshNodeCount();
+    } catch (err) {
+      console.error("Scoped sync failed", err);
+      setSyncError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
   const handleReset = async () => {
     stopAllLiveAll();
     stopAllLiveChildren();
@@ -1747,7 +1884,11 @@ export default function App() {
 
   const toggleCollapse = (id: string) => {
     const currentlyCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
-    if (currentlyCollapsed) void ensureChildrenLoaded(id);
+    if (currentlyCollapsed) {
+      void ensureChildrenLoaded(id);
+      // For scoped tokens, expanding a node should opportunistically sync its children.
+      if (!authCanSyncAll) void handleSync({ children: { parent: hexToBytes16(id) } });
+    }
     setCollapse((prev) => {
       const overrides = new Set(prev.overrides);
       const currentlyCollapsed = prev.defaultCollapsed ? !overrides.has(id) : overrides.has(id);
@@ -1760,7 +1901,7 @@ export default function App() {
   };
 
   const expandAll = () => setCollapse({ defaultCollapsed: false, overrides: new Set() });
-  const collapseAll = () => setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
+  const collapseAll = () => setCollapse({ defaultCollapsed: true, overrides: new Set([viewRootId]) });
 
   const stateBadge = status === "ready" ? "bg-emerald-500/80" : status === "error" ? "bg-rose-500/80" : "bg-amber-400/80";
   const peerTotal = peers.length + 1;
@@ -1773,6 +1914,8 @@ export default function App() {
     authMaterial.localTokensB64.length > 0
       ? bytesToHex(deriveTokenIdV1(base64urlDecode(authMaterial.localTokensB64[0]!)))
       : null;
+  const authTokenScope = authToken?.caps?.[0]?.res ?? null;
+  const authTokenActions = authToken?.caps?.[0]?.actions ?? null;
   const localReplicaHex = replica ? bytesToHex(replica) : null;
   const deviceWrapKeyB64 = getDeviceWrapKeyB64();
   const sealedIssuerKeyB64 = getSealedIssuerKeyB64(docId);
@@ -1953,9 +2096,9 @@ export default function App() {
                   </button>
                 <button
                   className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  onClick={() => void handleSync({ all: {} })}
+                  onClick={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
                   disabled={status !== "ready" || busy || syncBusy || peers.length === 0 || !online}
-                  title="Sync all (one-shot)"
+                  title={authCanSyncAll ? "Sync all (one-shot)" : "Sync loaded parents (scoped)"}
                 >
                   <MdSync className="text-[18px]" />
                   <span>Sync</span>
@@ -1967,10 +2110,10 @@ export default function App() {
                       : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
                   }`}
                   onClick={() => setLiveAllEnabled((v) => !v)}
-                  disabled={status !== "ready" || busy || !online}
+                  disabled={status !== "ready" || busy || !online || !authCanSyncAll}
                   aria-label="Live sync all"
                   aria-pressed={liveAllEnabled}
-                  title="Live sync all (polling)"
+                  title={authCanSyncAll ? "Live sync all (polling)" : "Live sync all is not allowed by this token scope"}
                 >
                   <MdOutlineRssFeed className="text-[20px]" />
                 </button>
@@ -2135,6 +2278,25 @@ export default function App() {
                     <div className="mt-1 font-mono text-slate-200">
                       {authLocalTokenIdHex ? `${authLocalTokenIdHex.slice(0, 16)}…` : "-"}
                     </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      {authTokenScope
+                        ? (() => {
+                            const rootId = authTokenScope.rootNodeId ?? ROOT_ID;
+                            return `scope=${rootId === ROOT_ID ? "doc-wide" : `${rootId.slice(0, 8)}…`}${
+                              authTokenScope.maxDepth !== undefined ? ` depth≤${authTokenScope.maxDepth}` : ""
+                            }${
+                              authTokenScope.excludeNodeIds && authTokenScope.excludeNodeIds.length > 0
+                                ? ` exclude=${authTokenScope.excludeNodeIds.length}`
+                                : ""
+                            }`;
+                          })()
+                        : "-"}
+                    </div>
+                    {authTokenActions && authTokenActions.length > 0 && (
+                      <div className="mt-1 text-[11px] text-slate-500" title={authTokenActions.join(", ")}>
+                        {authTokenActions.join(", ")}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2293,7 +2455,7 @@ export default function App() {
 	                  </div>
 	                  <div className="mt-2 text-[11px] text-slate-400">{privateRootsCount} private roots</div>
 	                  <div className="mt-1 text-[11px] text-slate-500">
-	                    Private roots are excluded from new invites (write ACL only; not encryption). Stored locally for this `docId`.
+	                    Private roots are excluded from new invites (read/write scope). Stored locally for this `docId`.
 	                  </div>
 	                  {privateRootEntries.length > 0 && (
 	                    <div className="mt-2 max-h-28 overflow-auto pr-1">
