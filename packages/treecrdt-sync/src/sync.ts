@@ -630,6 +630,12 @@ export class SyncPeer<Op> {
     hello: Hello
   ): Promise<void> {
     const hasAuthCapability = hello.capabilities.some((c) => c.name === "auth.capability");
+
+    // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
+    // can't race and get rejected before `onHello` completes.
+    if (hasAuthCapability) this.transportHasAuth.set(transport, true);
+    if (hasAuthCapability) this.transportPeerCapabilities.set(transport, hello.capabilities);
+
     let ackCapabilities: HelloAck["capabilities"] = [];
     try {
       ackCapabilities = (await this.auth?.onHello?.(hello, { docId: this.backend.docId })) ?? [];
@@ -644,9 +650,6 @@ export class SyncPeer<Op> {
       });
       return;
     }
-
-    if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (hasAuthCapability) this.transportPeerCapabilities.set(transport, hello.capabilities);
 
     const maxLamport = await this.backend.maxLamport();
     const acceptedFilters: string[] = [];

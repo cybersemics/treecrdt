@@ -405,3 +405,201 @@ test("syncOnce fails when op signatures do not match the claimed replica_id", as
     detach();
   }
 });
+
+test("auth: syncOnce rejects filters when capability scope does not allow read access", async () => {
+  const docId = "doc-auth-filter-scope";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  const subtreeRoot = nodeIdFromInt(1);
+
+  // Token allows reading structure, but only for a limited subtree.
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["read_structure"],
+    rootNodeId: subtreeRoot,
+  });
+
+  const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+    const nodeHex = bytesToHex(node);
+    const rootHex = bytesToHex(scope.root);
+    return nodeHex === rootHex ? "allow" : "deny";
+  };
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    requireProofRef: true,
+    scopeEvaluator,
+  });
+
+  // Insert a no-op op so maxLamport isn't trivially zero (not required, but keeps the setup realistic).
+  await a.applyOps([
+    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+  ]);
+
+  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB },
+  });
+
+  try {
+    await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_000, codewordsPerMessage: 64 })).rejects.toThrow(
+      /UNAUTHORIZED.*capability does not allow filter/i
+    );
+  } finally {
+    detach();
+  }
+  void bPk;
+});
+
+test("auth: subscribe rejects filters when capability scope does not allow read access", async () => {
+  const docId = "doc-auth-subscribe-scope";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  const subtreeRoot = nodeIdFromInt(1);
+
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["read_structure"],
+    rootNodeId: subtreeRoot,
+  });
+
+  const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+    const nodeHex = bytesToHex(node);
+    const rootHex = bytesToHex(scope.root);
+    return nodeHex === rootHex ? "allow" : "deny";
+  };
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    requireProofRef: true,
+    scopeEvaluator,
+  });
+
+  await a.applyOps([
+    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+  ]);
+
+  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB },
+  });
+
+  try {
+    const sub = pa.subscribe(ta, { all: {} }, { immediate: false, intervalMs: 0 });
+    await expect(sub.done).rejects.toThrow(/UNAUTHORIZED.*capability does not allow filter/i);
+  } finally {
+    detach();
+  }
+  void bPk;
+});
+
+test("auth: filters require read_structure action (read_payload alone is insufficient)", async () => {
+  const docId = "doc-auth-filter-actions";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["read_payload"],
+    rootNodeId: root,
+  });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    requireProofRef: true,
+  });
+
+  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB },
+  });
+
+  try {
+    await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_000, codewordsPerMessage: 64 })).rejects.toThrow(
+      /UNAUTHORIZED.*capability does not allow filter/i
+    );
+  } finally {
+    detach();
+  }
+  void bPk;
+});
