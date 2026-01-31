@@ -22,6 +22,7 @@ import {
   MdCloudQueue,
   MdContentCopy,
   MdGroup,
+  MdLockOutline,
   MdOpenInNew,
   MdOutlineRssFeed,
   MdSync,
@@ -86,6 +87,10 @@ import type {
   StorageMode,
   TreeState,
 } from "./playground/types";
+
+function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: string): string[] {
+  return Array.from(privateRoots).filter((id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id));
+}
 
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
@@ -160,6 +165,14 @@ export default function App() {
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
   const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
+  const privateRootsCount = useMemo(
+    () => Array.from(privateRoots).filter((id) => id !== ROOT_ID).length,
+    [privateRoots]
+  );
+  const inviteExcludeNodeIds = useMemo(
+    () => computeInviteExcludeNodeIds(privateRoots, inviteRoot),
+    [privateRoots, inviteRoot]
+  );
 
   useEffect(() => {
     setPrivateRoots(loadPrivateRoots(docId));
@@ -171,6 +184,14 @@ export default function App() {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      persistPrivateRoots(docId, next);
+      return next;
+    });
+  };
+
+  const clearPrivateRoots = () => {
+    setPrivateRoots(() => {
+      const next = new Set<string>();
       persistPrivateRoots(docId, next);
       return next;
     });
@@ -601,10 +622,6 @@ export default function App() {
         maxDepth = parsed;
       }
 
-      const excludeNodeIds = Array.from(privateRoots).filter(
-        (id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id)
-      );
-
       const issuerSk = base64urlDecode(issuerSkB64);
       const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
       const tokenBytes = createCapabilityTokenV1({
@@ -614,7 +631,7 @@ export default function App() {
         rootNodeId: inviteRoot,
         actions,
         ...(maxDepth !== undefined ? { maxDepth } : {}),
-        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
+        ...(inviteExcludeNodeIds.length > 0 ? { excludeNodeIds: inviteExcludeNodeIds } : {}),
       });
 
       const inviteB64 = encodeInvitePayload({
@@ -716,6 +733,16 @@ export default function App() {
   );
 
   const nodeList = useMemo(() => flattenForSelectState(childrenByParent, nodeLabelForId), [childrenByParent, nodeLabelForId]);
+  const privateRootEntries = useMemo(() => {
+    const roots = Array.from(privateRoots).filter((id) => id !== ROOT_ID);
+    roots.sort((a, b) => {
+      const la = nodeLabelForId(a);
+      const lb = nodeLabelForId(b);
+      if (la === lb) return a.localeCompare(b);
+      return la.localeCompare(lb);
+    });
+    return roots.map((id) => ({ id, label: nodeLabelForId(id) }));
+  }, [privateRoots, nodeLabelForId]);
   const visibleNodes = useMemo(() => {
     const acc: Array<{ node: DisplayNode; depth: number }> = [];
     const isCollapsed = (id: string) => {
@@ -1826,11 +1853,17 @@ export default function App() {
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
 	            <div className="flex items-center gap-3">
 	              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Tree</div>
-	              <div className="text-xs text-slate-500">
-	                {totalNodes === null ? "…" : totalNodes} nodes
-	                <span className="text-slate-600"> · {nodeList.length - 1} loaded</span>
-	              </div>
-		            </div>
+		              <div className="text-xs text-slate-500">
+		                {totalNodes === null ? "…" : totalNodes} nodes
+		                <span className="text-slate-600"> · {nodeList.length - 1} loaded</span>
+		                {privateRootsCount > 0 && (
+		                  <span className="text-slate-600">
+		                    {" "}
+		                    · <MdLockOutline className="inline text-[14px]" /> {privateRootsCount} private roots
+		                  </span>
+		                )}
+		              </div>
+			            </div>
 		            <div className="flex items-center gap-2">
                   <button
                     className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-50 ${
@@ -2159,23 +2192,78 @@ export default function App() {
                     </button>
                   </div>
                   <div className="mt-2 text-[11px] text-slate-400">{pendingOps.length} pending</div>
-                  {pendingOps.length > 0 && (
-                    <div className="mt-2 max-h-28 overflow-auto pr-1">
-                      {pendingOps.map((p) => (
-                        <div key={p.id} className="flex items-center justify-between gap-2 py-1">
-                          <span className="font-mono text-[11px] text-slate-200">
-                            {p.id} <span className="text-slate-500">{p.kind}</span>
-                          </span>
-                          <span className="text-[10px] text-slate-500">{p.message ?? ""}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+	                  {pendingOps.length > 0 && (
+	                    <div className="mt-2 max-h-28 overflow-auto pr-1">
+	                      {pendingOps.map((p) => (
+	                        <div key={p.id} className="flex items-center justify-between gap-2 py-1">
+	                          <span className="font-mono text-[11px] text-slate-200">
+	                            {p.id} <span className="text-slate-500">{p.kind}</span>
+	                          </span>
+	                          <span className="text-[10px] text-slate-500">{p.message ?? ""}</span>
+	                        </div>
+	                      ))}
+	                    </div>
+	                  )}
+	                </div>
 
-                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Create invite link</div>
-                  <div className="mt-2 flex flex-wrap items-end gap-3">
+	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                  <div className="flex items-center justify-between gap-2">
+	                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Private subtrees</div>
+	                    <button
+	                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+	                      type="button"
+	                      onClick={clearPrivateRoots}
+	                      disabled={authBusy || privateRootsCount === 0}
+	                      title="Clear all private roots for this doc (local only)"
+	                    >
+	                      Clear
+	                    </button>
+	                  </div>
+	                  <div className="mt-2 text-[11px] text-slate-400">{privateRootsCount} private roots</div>
+	                  <div className="mt-1 text-[11px] text-slate-500">
+	                    Private roots are excluded from new invites (write ACL only; not encryption). Stored locally for this `docId`.
+	                  </div>
+	                  {privateRootEntries.length > 0 && (
+	                    <div className="mt-2 max-h-28 overflow-auto pr-1">
+	                      {privateRootEntries.map((r) => (
+	                        <div key={r.id} className="flex items-center justify-between gap-2 py-1">
+	                          <span className="min-w-0 truncate font-mono text-[11px] text-slate-200" title={r.id}>
+	                            {r.label} <span className="text-slate-500">{r.id.slice(0, 12)}…</span>
+	                          </span>
+	                          <div className="flex items-center gap-2">
+	                            <button
+	                              className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+	                              type="button"
+	                              onClick={() => togglePrivateRoot(r.id)}
+	                              disabled={authBusy}
+	                              title="Make public (remove from private roots)"
+	                            >
+	                              Make public
+	                            </button>
+	                            <button
+	                              className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+	                              type="button"
+	                              onClick={() =>
+	                                void copyToClipboard(r.id).catch((err) =>
+	                                  setAuthError(err instanceof Error ? err.message : String(err))
+	                                )
+	                              }
+	                              disabled={authBusy}
+	                              title="Copy node id"
+	                            >
+	                              <MdContentCopy className="text-[14px]" />
+	                              Copy
+	                            </button>
+	                          </div>
+	                        </div>
+	                      ))}
+	                    </div>
+	                  )}
+	                </div>
+	
+	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Create invite link</div>
+	                  <div className="mt-2 flex flex-wrap items-end gap-3">
                     <label className="w-full md:w-60 space-y-2 text-sm text-slate-200">
                       <span>Subtree root</span>
                       <select
@@ -2232,13 +2320,28 @@ export default function App() {
                       disabled={!authEnabled || authBusy || !authCanIssue}
                       title={authCanIssue ? "Generate an invite link" : "This tab cannot mint invites (issuer SK not present)"}
                     >
-                      Generate
-                    </button>
-                  </div>
+	                      Generate
+	                    </button>
+	                  </div>
 
-                  {inviteLink && (
-                    <div className="mt-3 flex flex-col gap-2">
-                      <div className="flex items-center justify-between gap-2">
+	                  <div className="mt-2 text-[11px] text-slate-500">
+	                    {inviteExcludeNodeIds.length === 0 ? (
+	                      <span>No private roots are excluded from this invite.</span>
+	                    ) : (
+	                      <span>
+	                        Excluding {inviteExcludeNodeIds.length} private root{inviteExcludeNodeIds.length === 1 ? "" : "s"} from this invite:{" "}
+	                        {inviteExcludeNodeIds
+	                          .slice(0, 3)
+	                          .map((id) => nodeLabelForId(id))
+	                          .join(", ")}
+	                        {inviteExcludeNodeIds.length > 3 ? ` (+${inviteExcludeNodeIds.length - 3} more)` : ""}
+	                      </span>
+	                    )}
+	                  </div>
+	
+	                  {inviteLink && (
+	                    <div className="mt-3 flex flex-col gap-2">
+	                      <div className="flex items-center justify-between gap-2">
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Link</div>
                         <div className="flex items-center gap-2">
                           <button

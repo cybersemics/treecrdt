@@ -98,44 +98,67 @@ export function TreeRow({
           >
             {isCollapsed ? <MdChevronRight className="text-[22px]" /> : <MdExpandMore className="text-[22px]" />}
           </button>
-          <div className="min-w-0">
-            {isRoot ? (
-              <div className="truncate text-sm font-semibold text-white">{node.label}</div>
-            ) : isEditing ? (
-              <form
-                className="flex items-center gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setIsEditing(false);
-                  void onSetValue(node.id, draftValue);
-                }}
-              >
-                <input
-                  type="text"
-                  value={draftValue}
-                  onChange={(e) => setDraftValue(e.target.value)}
-                  className="w-56 max-w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                />
-                <button
-                  type="submit"
-                  className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-                  title="Save"
+          <div className="min-w-0 flex items-center gap-2">
+            <div className="min-w-0">
+              {isRoot ? (
+                <div className="truncate text-sm font-semibold text-white">{node.label}</div>
+              ) : isEditing ? (
+                <form
+                  className="flex items-center gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setIsEditing(false);
+                    void onSetValue(node.id, draftValue);
+                  }}
                 >
-                  Save
-                </button>
+                  <input
+                    type="text"
+                    value={draftValue}
+                    onChange={(e) => setDraftValue(e.target.value)}
+                    className="w-56 max-w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                    title="Save"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                    onClick={() => setIsEditing(false)}
+                    title="Cancel"
+                  >
+                    Cancel
+                  </button>
+                </form>
+              ) : (
                 <button
                   type="button"
-                  className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-                  onClick={() => setIsEditing(false)}
-                  title="Cancel"
+                  className="block w-full text-left"
+                  onClick={() => setIsEditing(true)}
+                  title="Click to edit"
                 >
-                  Cancel
+                  <span className="block truncate text-sm font-semibold text-white">{node.label}</span>
                 </button>
-              </form>
-            ) : (
-              <button type="button" className="block w-full text-left" onClick={() => setIsEditing(true)} title="Click to edit">
-                <span className="block truncate text-sm font-semibold text-white">{node.label}</span>
-              </button>
+              )}
+            </div>
+            {!isEditing && isPrivateRoot && (
+              <span
+                className="flex-shrink-0 rounded-full border border-amber-400/60 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100"
+                title="Private root: excluded from new invites (write ACL only; not encryption)"
+              >
+                private root
+              </span>
+            )}
+            {!isEditing && isPrivateInherited && (
+              <span
+                className="flex-shrink-0 rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-[10px] font-semibold text-slate-300"
+                title="Private (inherited): excluded from new invites (write ACL only; not encryption)"
+              >
+                private
+              </span>
             )}
           </div>
         </div>
