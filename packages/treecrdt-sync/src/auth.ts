@@ -1,4 +1,5 @@
 import type { Capability, Hello, HelloAck, OpAuth } from "./types.js";
+import type { Filter } from "./types.js";
 
 export type SyncOpPurpose = "reconcile" | "subscribe" | "reprocess_pending";
 
@@ -18,6 +19,12 @@ export type SyncAuthOpsContext = {
 
 export type SyncAuthHelloContext = {
   docId: string;
+};
+
+export type SyncAuthAuthorizeFilterContext = {
+  docId: string;
+  purpose: "hello" | "subscribe";
+  capabilities: Capability[];
 };
 
 export interface SyncAuth<Op> {
@@ -41,6 +48,13 @@ export interface SyncAuth<Op> {
    * Initiator hook invoked when receiving `HelloAck`.
    */
   onHelloAck?: (ack: HelloAck, ctx: SyncAuthHelloContext) => Promise<void> | void;
+
+  /**
+   * Optional hook to authorize a requested read filter using peer-advertised capabilities.
+   *
+   * Implementations SHOULD throw to deny the filter.
+   */
+  authorizeFilter?: (filter: Filter, ctx: SyncAuthAuthorizeFilterContext) => Promise<void> | void;
 
   /**
    * Produce auth metadata aligned with a batch of outbound ops.

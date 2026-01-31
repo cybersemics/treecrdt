@@ -9,7 +9,7 @@ import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
 
 import type { SyncAuth } from "./auth.js";
-import type { Capability, Hello, HelloAck, OpAuth } from "./types.js";
+import type { Capability, Filter, Hello, HelloAck, OpAuth } from "./types.js";
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
 import { coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
 
@@ -332,6 +332,17 @@ async function capAllowsNode(opts: {
   if (getField(res, "doc_id") !== opts.docId) return "deny";
 
   const actionSet = new Set(actions.map(String));
+  // Convenience: writing or mutating implies the ability to read structure/payload
+  // for the same scope (apps can still issue explicit read-only tokens).
+  if (
+    actionSet.has("write_structure") ||
+    actionSet.has("write_payload") ||
+    actionSet.has("delete") ||
+    actionSet.has("tombstone")
+  ) {
+    actionSet.add("read_structure");
+  }
+  if (actionSet.has("write_payload")) actionSet.add("read_payload");
   if (!opts.requiredActions.every((a) => actionSet.has(a))) return "deny";
 
   const scope = parseScope(res);
@@ -349,6 +360,33 @@ async function capAllowsNode(opts: {
 
   if (!opts.scopeEvaluator) return "unknown";
   return await opts.scopeEvaluator({ docId: opts.docId, node: opts.node, scope });
+}
+
+async function capsAllowsNodeAccess(opts: {
+  caps: unknown;
+  docId: string;
+  node: Uint8Array;
+  requiredActions: readonly string[];
+  scopeEvaluator?: TreecrdtScopeEvaluator;
+}): Promise<ScopeTri> {
+  if (!Array.isArray(opts.caps)) return "allow"; // v0: treat missing caps as allow-all
+
+  let best: ScopeTri = "deny";
+  for (const cap of opts.caps) {
+    best = triOr(
+      best,
+      await capAllowsNode({
+        cap,
+        docId: opts.docId,
+        node: opts.node,
+        requiredActions: opts.requiredActions,
+        scopeEvaluator: opts.scopeEvaluator,
+      })
+    );
+    if (best === "allow") break;
+  }
+
+  return best;
 }
 
 async function capsAllowsOp(opts: {
@@ -541,6 +579,53 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     },
     onHelloAck: async (ack: HelloAck, ctx) => {
       await recordCapabilities(ack.capabilities, ctx.docId);
+    },
+    authorizeFilter: async (filter: Filter, ctx) => {
+      const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
+      if (tokenCaps.length === 0) throw new Error('missing "auth.capability" token');
+
+      const grants: CapabilityGrant[] = [];
+      for (const cap of tokenCaps) {
+        const tokenBytes = base64urlDecode(cap.value);
+        grants.push(
+          await parseAndVerifyCapabilityToken({
+            tokenBytes,
+            issuerPublicKeys: opts.issuerPublicKeys,
+            docId: ctx.docId,
+            nowSec: now(),
+          })
+        );
+      }
+
+      const requiredActions = ["read_structure"];
+      const node =
+        "all" in filter
+          ? nodeIdToBytes16(ROOT_NODE_ID_HEX)
+          : "children" in filter
+            ? filter.children.parent
+            : (() => {
+                throw new Error("unsupported filter");
+              })();
+
+      let best: ScopeTri = "deny";
+      for (const grant of grants) {
+        best = triOr(
+          best,
+          await capsAllowsNodeAccess({
+            caps: grant.caps,
+            docId: ctx.docId,
+            node,
+            requiredActions,
+            scopeEvaluator: opts.scopeEvaluator,
+          })
+        );
+        if (best === "allow") return;
+      }
+
+      if (best === "unknown") {
+        throw new Error("missing subtree context to authorize filter");
+      }
+      throw new Error("capability does not allow filter");
     },
     signOps: async (ops, ctx) => {
       await ensureLocalTokensRecorded(ctx.docId);

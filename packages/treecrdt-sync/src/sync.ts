@@ -168,6 +168,7 @@ export class SyncPeer<Op> {
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
+  private readonly transportPeerCapabilities = new WeakMap<DuplexTransport<SyncMessage<Op>>, Hello["capabilities"]>();
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
@@ -645,6 +646,7 @@ export class SyncPeer<Op> {
     }
 
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
+    if (hasAuthCapability) this.transportPeerCapabilities.set(transport, hello.capabilities);
 
     const maxLamport = await this.backend.maxLamport();
     const acceptedFilters: string[] = [];
@@ -670,6 +672,17 @@ export class SyncPeer<Op> {
           id,
           reason: ErrorCode.UNAUTHORIZED,
           message: 'missing "auth.capability" token; send a valid capability token in Hello.capabilities',
+        });
+        continue;
+      }
+
+      try {
+        await this.auth?.authorizeFilter?.(filter, { docId: this.backend.docId, purpose: "hello", capabilities: hello.capabilities });
+      } catch (err: any) {
+        rejectedFilters.push({
+          id,
+          reason: ErrorCode.UNAUTHORIZED,
+          message: String(err?.message ?? err ?? "unauthorized filter"),
         });
         continue;
       }
@@ -852,6 +865,25 @@ export class SyncPeer<Op> {
           value: {
             code: ErrorCode.UNAUTHORIZED,
             message: 'missing "auth.capability" token; send Hello before Subscribe',
+            subscriptionId: msg.subscriptionId,
+          },
+        },
+      });
+      return;
+    }
+
+    try {
+      const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
+      await this.auth?.authorizeFilter?.(msg.filter, { docId: this.backend.docId, purpose: "subscribe", capabilities: peerCaps });
+    } catch (err: any) {
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: "error",
+          value: {
+            code: ErrorCode.UNAUTHORIZED,
+            message: String(err?.message ?? err ?? "unauthorized filter"),
             subscriptionId: msg.subscriptionId,
           },
         },
