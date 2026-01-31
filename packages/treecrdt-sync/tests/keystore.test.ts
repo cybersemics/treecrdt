@@ -4,13 +4,16 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 
 import {
   generateTreecrdtDeviceWrapKeyV1,
+  generateTreecrdtDocPayloadKeyV1,
   generateTreecrdtDocKeyBundleV1,
   generateTreecrdtIssuerKeyV1,
   generateTreecrdtLocalIdentityV1,
   openTreecrdtDocKeyBundleV1,
+  openTreecrdtDocPayloadKeyV1,
   openTreecrdtIssuerKeyV1,
   openTreecrdtLocalIdentityV1,
   sealTreecrdtDocKeyBundleV1,
+  sealTreecrdtDocPayloadKeyV1,
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
 } from "../dist/keystore.js";
@@ -36,6 +39,26 @@ test("keystore v1: open fails with wrong docId (AAD mismatch)", async () => {
   const sealed = await sealTreecrdtDocKeyBundleV1({ wrapKey, bundle });
 
   await expect(openTreecrdtDocKeyBundleV1({ wrapKey, docId: "doc-b", sealed })).rejects.toThrow();
+});
+
+test("keystore v1: seal/open doc payload key roundtrip", async () => {
+  const docId = "doc-payload-key-1";
+  const wrapKey = generateTreecrdtDeviceWrapKeyV1();
+  const { payloadKey } = generateTreecrdtDocPayloadKeyV1({ docId });
+
+  const sealed = await sealTreecrdtDocPayloadKeyV1({ wrapKey, docId, payloadKey });
+  const opened = await openTreecrdtDocPayloadKeyV1({ wrapKey, docId, sealed });
+
+  expect(opened.docId).toBe(docId);
+  expect(bytesToHex(opened.payloadKey)).toBe(bytesToHex(payloadKey));
+});
+
+test("keystore v1: open doc payload key fails with wrong docId (AAD mismatch)", async () => {
+  const wrapKey = generateTreecrdtDeviceWrapKeyV1();
+  const { payloadKey } = generateTreecrdtDocPayloadKeyV1({ docId: "doc-a" });
+  const sealed = await sealTreecrdtDocPayloadKeyV1({ wrapKey, docId: "doc-a", payloadKey });
+
+  await expect(openTreecrdtDocPayloadKeyV1({ wrapKey, docId: "doc-b", sealed })).rejects.toThrow();
 });
 
 test("keystore v1: per-doc bundles are unlinkable by default (distinct keys)", async () => {

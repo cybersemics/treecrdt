@@ -12,6 +12,8 @@ import {
   createTreecrdtSyncSqlitePendingOpsStore,
   deriveKeyIdV1,
   deriveTokenIdV1,
+  encryptTreecrdtPayloadV1,
+  maybeDecryptTreecrdtPayloadV1,
   type Filter,
   type SyncSubscription,
 } from "@treecrdt/sync";
@@ -41,8 +43,10 @@ import {
   getSealedIssuerKeyB64,
   importDeviceWrapKeyB64,
   initialAuthEnabled,
+  loadOrCreateDocPayloadKeyB64,
   loadAuthMaterial,
   persistAuthEnabled,
+  saveDocPayloadKeyB64,
   saveIssuerKeys,
   saveLocalKeys,
   saveLocalTokens,
@@ -147,6 +151,7 @@ export default function App() {
     localTokensB64: [],
   }));
   const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
+  const docPayloadKeyRef = useRef<Uint8Array | null>(null);
 
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
   const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
@@ -203,6 +208,30 @@ export default function App() {
     return next;
   }, [docId, replicaLabel]);
 
+  const refreshDocPayloadKey = React.useCallback(async () => {
+    const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
+    docPayloadKeyRef.current = base64urlDecode(keyB64);
+    return docPayloadKeyRef.current;
+  }, [docId]);
+
+  useEffect(() => {
+    docPayloadKeyRef.current = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
+        if (cancelled) return;
+        docPayloadKeyRef.current = base64urlDecode(keyB64);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [docId]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -232,34 +261,65 @@ export default function App() {
 
   const payloadByNodeRef = useRef<Map<string, PayloadRecord>>(new Map());
 
-  const ingestPayloadOps = React.useCallback((incoming: Operation[]) => {
-    if (incoming.length === 0) return;
-    const payloads = payloadByNodeRef.current;
-    let changed = false;
-    for (const op of incoming) {
-      const kind = op.kind;
-      const node = kind.type === "payload" ? kind.node : kind.type === "insert" ? kind.node : null;
-      const payload =
-        kind.type === "payload"
-          ? kind.payload
-          : kind.type === "insert"
-            ? kind.payload
-            : undefined;
-      if (!node || payload === undefined) continue;
-      const candidate: PayloadRecord = {
-        lamport: op.meta.lamport,
-        replica: replicaKey(op.meta.id.replica),
-        counter: op.meta.id.counter,
-        payload,
-      };
-      const existing = payloads.get(node);
-      if (!existing || compareOpMeta(candidate, existing) > 0) {
-        payloads.set(node, candidate);
-        changed = true;
+  const requireDocPayloadKey = React.useCallback(async (): Promise<Uint8Array> => {
+    if (docPayloadKeyRef.current) return docPayloadKeyRef.current;
+    const next = await refreshDocPayloadKey();
+    if (!next) throw new Error("doc payload key is missing");
+    return next;
+  }, [refreshDocPayloadKey]);
+
+  const ingestPayloadOps = React.useCallback(
+    async (incoming: Operation[]) => {
+      if (incoming.length === 0) return;
+      const payloads = payloadByNodeRef.current;
+      let changed = false;
+
+      for (const op of incoming) {
+        const kind = op.kind;
+        const node = kind.type === "payload" ? kind.node : kind.type === "insert" ? kind.node : null;
+        const payload =
+          kind.type === "payload" ? kind.payload : kind.type === "insert" ? kind.payload : undefined;
+        if (!node || payload === undefined) continue;
+
+        const meta = {
+          lamport: op.meta.lamport,
+          replica: replicaKey(op.meta.id.replica),
+          counter: op.meta.id.counter,
+        };
+
+        const existing = payloads.get(node);
+        if (existing && compareOpMeta(meta, existing) <= 0) continue;
+
+        if (payload === null) {
+          payloads.set(node, { ...meta, payload: null, encrypted: false });
+          changed = true;
+          continue;
+        }
+
+        try {
+          const key = await requireDocPayloadKey();
+          const res = await maybeDecryptTreecrdtPayloadV1({ docId, payloadKey: key, bytes: payload });
+          payloads.set(node, { ...meta, payload: res.plaintext, encrypted: res.encrypted });
+          changed = true;
+        } catch {
+          payloads.set(node, { ...meta, payload: null, encrypted: true });
+          changed = true;
+        }
       }
-    }
-    if (changed) setPayloadVersion((v) => v + 1);
-  }, []);
+
+      if (changed) setPayloadVersion((v) => v + 1);
+    },
+    [docId, replicaKey, requireDocPayloadKey]
+  );
+
+  const encryptPayloadBytes = React.useCallback(
+    async (payload: Uint8Array | null): Promise<Uint8Array | null> => {
+      if (payload === null) return null;
+      const key = await requireDocPayloadKey();
+      return await encryptTreecrdtPayloadV1({ docId, payloadKey: key, plaintext: payload });
+    },
+    [docId, requireDocPayloadKey]
+  );
 
   useEffect(() => {
     onlineRef.current = online;
@@ -329,7 +389,7 @@ export default function App() {
         if (children.length > 0) {
           try {
             const ops = await active.ops.children(parentId);
-            ingestPayloadOps(ops);
+            await ingestPayloadOps(ops);
           } catch (err) {
             console.error("Failed to load child payloads", err);
           }
@@ -641,6 +701,7 @@ export default function App() {
         issuerPkB64,
         subjectSkB64: base64urlEncode(subjectSk),
         tokenB64: base64urlEncode(tokenBytes),
+        payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
       });
 
       const url = new URL(window.location.href);
@@ -678,6 +739,11 @@ export default function App() {
       const payload = decodeInvitePayload(inviteB64);
       if (payload.docId !== docId) {
         throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
+      }
+
+      if (payload.payloadKeyB64) {
+        await saveDocPayloadKeyB64(docId, payload.payloadKeyB64);
+        await refreshDocPayloadKey();
       }
 
       await saveIssuerKeys(docId, payload.issuerPkB64);
@@ -724,9 +790,10 @@ export default function App() {
   const nodeLabelForId = React.useCallback(
     (id: string) => {
       if (id === ROOT_ID) return "Root";
-      const payload = payloadByNodeRef.current.get(id)?.payload ?? null;
-      const decoded = payload === null ? null : textDecoder.decode(payload);
-      if (decoded === null) return id;
+      const record = payloadByNodeRef.current.get(id);
+      const payload = record?.payload ?? null;
+      if (payload === null) return record?.encrypted ? "(encrypted)" : id;
+      const decoded = textDecoder.decode(payload);
       return decoded.length === 0 ? "(empty)" : decoded;
     },
     [payloadVersion, textDecoder]
@@ -752,9 +819,19 @@ export default function App() {
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
-      const payload = payloadByNodeRef.current.get(entry.id)?.payload ?? null;
+      const record = payloadByNodeRef.current.get(entry.id);
+      const payload = record?.payload ?? null;
       const value = payload === null ? "" : textDecoder.decode(payload);
-      const label = entry.id === ROOT_ID ? "Root" : payload === null ? entry.id : value.length === 0 ? "(empty)" : value;
+      const label =
+        entry.id === ROOT_ID
+          ? "Root"
+          : payload === null
+            ? record?.encrypted
+              ? "(encrypted)"
+              : entry.id
+            : value.length === 0
+              ? "(empty)"
+              : value;
       acc.push({ node: { id: entry.id, label, value, children: [] }, depth: entry.depth });
       if (isCollapsed(entry.id)) continue;
       const kids = childrenByParent[entry.id] ?? [];
@@ -824,6 +901,11 @@ export default function App() {
         const payload = decodeInvitePayload(inviteB64);
         if (payload.docId !== docId) {
           throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
+        }
+
+        if (payload.payloadKeyB64) {
+          await saveDocPayloadKeyB64(docId, payload.payloadKeyB64);
+          await refreshDocPayloadKey();
         }
 
         await saveIssuerKeys(docId, payload.issuerPkB64);
@@ -1071,7 +1153,7 @@ export default function App() {
           console.debug(`[sync:${replicaLabel}] applyOps(${ops.length})`);
         }
         await baseBackend.applyOps(ops);
-        ingestPayloadOps(ops);
+        await ingestPayloadOps(ops);
         ingestOps(ops);
         if (ops.length > 0) {
           let max = 0;
@@ -1320,7 +1402,7 @@ export default function App() {
       fetched.sort(compareOps);
       setOps(fetched);
       knownOpsRef.current = new Set(fetched.map(opKey));
-      ingestPayloadOps(fetched);
+      await ingestPayloadOps(fetched);
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
@@ -1390,35 +1472,22 @@ export default function App() {
       const stateBefore = treeStateRef.current;
 
       let op: Operation;
-      if (authEnabled) {
-        if (kind.type === "payload") {
-          op = await client.local.payload(replica, kind.node, kind.payload);
-        } else if (kind.type === "delete") {
-          op = await client.local.delete(replica, kind.node);
-        } else {
-          throw new Error(`unsupported operation kind: ${kind.type}`);
-        }
-        await verifyLocalOps([op]);
-
-        lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-        counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
-        setHeadLamport(lamportRef.current);
+      if (kind.type === "payload") {
+        const encryptedPayload = await encryptPayloadBytes(kind.payload);
+        op = await client.local.payload(replica, kind.node, encryptedPayload);
+      } else if (kind.type === "delete") {
+        op = await client.local.delete(replica, kind.node);
       } else {
-        if (kind.type === "payload") {
-          op = await client.local.payload(replica, kind.node, kind.payload);
-        } else if (kind.type === "delete") {
-          op = await client.local.delete(replica, kind.node);
-        } else {
-          throw new Error(`unsupported operation kind: ${kind.type}`);
-        }
-
-        lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-        counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
-        setHeadLamport(lamportRef.current);
+        throw new Error(`unsupported operation kind: ${kind.type}`);
       }
+      await verifyLocalOps([op]);
+
+      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
+      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
+      setHeadLamport(lamportRef.current);
 
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps([op]);
+      await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
@@ -1438,7 +1507,7 @@ export default function App() {
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
       const op = await client.local.move(replica, nodeId, newParent, placement);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps([op]);
+      await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
@@ -1470,7 +1539,8 @@ export default function App() {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, payload));
+          const encryptedPayload = await encryptPayloadBytes(payload);
+          ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload));
         }
       } else {
         const expanded = new Set<string>();
@@ -1510,7 +1580,8 @@ export default function App() {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          ops.push(await client.local.insert(replica, targetParent, nodeId, { type: "last" }, payload));
+          const encryptedPayload = await encryptPayloadBytes(payload);
+          ops.push(await client.local.insert(replica, targetParent, nodeId, { type: "last" }, encryptedPayload));
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
@@ -1524,7 +1595,7 @@ export default function App() {
       setHeadLamport(lamportRef.current);
 
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps(ops);
+      await ingestPayloadOps(ops);
       ingestOps(ops, { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
       scheduleRefreshNodeCount();
@@ -1558,10 +1629,11 @@ export default function App() {
       const stateBefore = treeStateRef.current;
       const valueBase = newNodeValue.trim();
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
+      const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
-      const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, payload);
+      const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
       for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps([op]);
+      await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();

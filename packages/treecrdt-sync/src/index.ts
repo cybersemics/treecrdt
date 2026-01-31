@@ -8,3 +8,4 @@ export * from "./base64url.js";
 export * from "./sqlite.js";
 export * from "./identity.js";
 export * from "./keystore.js";
+export * from "./e2ee.js";

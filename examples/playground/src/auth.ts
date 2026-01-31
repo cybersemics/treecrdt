@@ -2,9 +2,12 @@ import {
   base64urlDecode,
   base64urlEncode,
   generateTreecrdtDeviceWrapKeyV1,
+  generateTreecrdtDocPayloadKeyV1,
   issueTreecrdtCapabilityTokenV1,
+  openTreecrdtDocPayloadKeyV1,
   openTreecrdtIssuerKeyV1,
   openTreecrdtLocalIdentityV1,
+  sealTreecrdtDocPayloadKeyV1,
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
   type TreecrdtDeviceWrapKeyV1,
@@ -21,6 +24,7 @@ const DEVICE_WRAP_KEY_KEY = "treecrdt-playground-device-wrap-key:v1";
 const ISSUER_PK_KEY_PREFIX = "treecrdt-playground-auth-issuer-pk:";
 const ISSUER_SK_SEALED_KEY_PREFIX = "treecrdt-playground-auth-issuer-sk-sealed:";
 const LOCAL_IDENTITY_SEALED_KEY_PREFIX = "treecrdt-playground-auth-local-identity-sealed:";
+const DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX = "treecrdt-playground-e2ee-doc-payload-key-sealed:";
 
 // Legacy (plaintext) keys: auto-migrated and deleted on load.
 const LEGACY_ISSUER_SK_KEY_PREFIX = "treecrdt-playground-auth-issuer-sk:";
@@ -66,6 +70,51 @@ function base64urlDecodeSafe(b64: string): Uint8Array | null {
   }
 }
 
+async function withGlobalLock<T>(name: string, run: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator === "undefined" ? null : (navigator as any).locks;
+  if (locks?.request) return await locks.request(name, run);
+
+  // Fallback for browsers without Web Locks API.
+  if (typeof window === "undefined") return await run();
+  const lockKey = `treecrdt-playground-lock:${name}`;
+  const lockId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
+  const now = () => Date.now();
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const tryParseLock = (raw: string | null): { id: string; ts: number } | null => {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object") return null;
+      const rec = parsed as Partial<{ id: unknown; ts: unknown }>;
+      if (typeof rec.id !== "string" || typeof rec.ts !== "number") return null;
+      return { id: rec.id, ts: rec.ts };
+    } catch {
+      return null;
+    }
+  };
+
+  const ttlMs = 10_000;
+  const started = now();
+  while (true) {
+    const t = now();
+    const existing = tryParseLock(window.localStorage.getItem(lockKey));
+    if (!existing || t - existing.ts > ttlMs) {
+      window.localStorage.setItem(lockKey, JSON.stringify({ id: lockId, ts: t }));
+    }
+    const confirm = tryParseLock(window.localStorage.getItem(lockKey));
+    if (confirm?.id === lockId) break;
+    if (t - started > ttlMs) break;
+    await sleep(25);
+  }
+
+  try {
+    return await run();
+  } finally {
+    const confirm = tryParseLock(window.localStorage.getItem(lockKey));
+    if (confirm?.id === lockId) window.localStorage.removeItem(lockKey);
+  }
+}
+
 function requireDeviceWrapKeyBytes(): TreecrdtDeviceWrapKeyV1 {
   if (typeof window === "undefined") throw new Error("window is undefined");
   const existing = gsGet(DEVICE_WRAP_KEY_KEY);
@@ -98,6 +147,39 @@ export function importDeviceWrapKeyB64(b64: string) {
 
 export function clearDeviceWrapKey() {
   gsDel(DEVICE_WRAP_KEY_KEY);
+}
+
+export async function loadOrCreateDocPayloadKeyB64(docId: string): Promise<string> {
+  if (!docId || docId.trim().length === 0) throw new Error("docId must not be empty");
+
+  return await withGlobalLock(`treecrdt-playground-doc-payload-key:${docId}`, async () => {
+    const wrapKey = requireDeviceWrapKeyBytes();
+    const sealedKey = `${DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX}${docId}`;
+
+    if (!gsGet(sealedKey)) {
+      const { payloadKey } = generateTreecrdtDocPayloadKeyV1({ docId });
+      const sealed = await sealTreecrdtDocPayloadKeyV1({ wrapKey, docId, payloadKey });
+      gsSet(sealedKey, base64urlEncode(sealed));
+    }
+
+    const sealedB64 = gsGet(sealedKey);
+    if (!sealedB64) throw new Error("doc payload key is missing after initialization");
+    const sealedBytes = base64urlDecodeSafe(sealedB64);
+    if (!sealedBytes) throw new Error("doc payload key blob is not valid base64url");
+
+    const opened = await openTreecrdtDocPayloadKeyV1({ wrapKey, docId, sealed: sealedBytes });
+    return base64urlEncode(opened.payloadKey);
+  });
+}
+
+export async function saveDocPayloadKeyB64(docId: string, payloadKeyB64: string) {
+  if (!docId || docId.trim().length === 0) throw new Error("docId must not be empty");
+  const payloadKey = base64urlDecodeSafe(payloadKeyB64.trim());
+  if (!payloadKey || payloadKey.length !== 32) throw new Error("payload key must be a base64url-encoded 32-byte value");
+
+  const wrapKey = requireDeviceWrapKeyBytes();
+  const sealed = await sealTreecrdtDocPayloadKeyV1({ wrapKey, docId, payloadKey });
+  gsSet(`${DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX}${docId}`, base64urlEncode(sealed));
 }
 
 export function initialAuthEnabled(): boolean {
@@ -326,6 +408,7 @@ export type InvitePayloadV1 = {
   issuerPkB64: string;
   subjectSkB64: string;
   tokenB64: string;
+  payloadKeyB64?: string;
 };
 
 export function encodeInvitePayload(payload: InvitePayloadV1): string {
@@ -344,5 +427,8 @@ export function decodeInvitePayload(inviteB64: string): InvitePayloadV1 {
   if (!parsed.issuerPkB64 || typeof parsed.issuerPkB64 !== "string") throw new Error("invite issuerPkB64 missing");
   if (!parsed.subjectSkB64 || typeof parsed.subjectSkB64 !== "string") throw new Error("invite subjectSkB64 missing");
   if (!parsed.tokenB64 || typeof parsed.tokenB64 !== "string") throw new Error("invite tokenB64 missing");
+  if (parsed.payloadKeyB64 !== undefined && typeof parsed.payloadKeyB64 !== "string") {
+    throw new Error("invite payloadKeyB64 must be a string if present");
+  }
   return parsed as InvitePayloadV1;
 }

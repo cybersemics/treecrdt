@@ -5,12 +5,17 @@ import { sha512 } from "@noble/hashes/sha512";
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
 
 const DEVICE_WRAP_KEY_LEN = 32;
+const DOC_PAYLOAD_KEY_LEN = 32;
 const AES_GCM_NONCE_LEN = 12;
 const ED25519_SECRET_KEY_LEN = 32;
 
 const DOC_KEY_BUNDLE_V1_TAG = "treecrdt/doc-key-bundle/v1";
 const SEALED_DOC_KEY_BUNDLE_V1_TAG = "treecrdt/doc-key-bundle-sealed/v1";
 const SEALED_DOC_KEY_BUNDLE_V1_AAD_DOMAIN = utf8ToBytes("treecrdt/doc-key-bundle-sealed/v1");
+
+const DOC_PAYLOAD_KEY_V1_TAG = "treecrdt/doc-payload-key/v1";
+const SEALED_DOC_PAYLOAD_KEY_V1_TAG = "treecrdt/doc-payload-key-sealed/v1";
+const SEALED_DOC_PAYLOAD_KEY_V1_AAD_DOMAIN = utf8ToBytes("treecrdt/doc-payload-key-sealed/v1");
 
 const ISSUER_KEY_V1_TAG = "treecrdt/issuer-key/v1";
 const SEALED_ISSUER_KEY_V1_TAG = "treecrdt/issuer-key-sealed/v1";
@@ -143,6 +148,18 @@ export function generateTreecrdtDeviceWrapKeyV1(): TreecrdtDeviceWrapKeyV1 {
   return randomBytes(DEVICE_WRAP_KEY_LEN);
 }
 
+export type TreecrdtDocPayloadKeyV1 = {
+  docId: string;
+  payloadKey: Uint8Array;
+};
+
+export type TreecrdtSealedDocPayloadKeyV1 = Uint8Array;
+
+export function generateTreecrdtDocPayloadKeyV1(opts: { docId: string }): TreecrdtDocPayloadKeyV1 {
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+  return { docId: opts.docId, payloadKey: randomBytes(DOC_PAYLOAD_KEY_LEN) };
+}
+
 export async function generateTreecrdtDocKeyBundleV1(opts: { docId: string }): Promise<TreecrdtDocKeyBundleV1> {
   ensureEd25519();
   if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
@@ -249,6 +266,87 @@ export async function openTreecrdtDocKeyBundleV1(opts: {
   if (bundle.docId !== opts.docId) throw new Error("DocKeyBundleV1.doc_id mismatch");
 
   return bundle;
+}
+
+function encodeDocPayloadKeyV1(opts: { docId: string; payloadKey: Uint8Array }): Uint8Array {
+  assertLen(opts.payloadKey, DOC_PAYLOAD_KEY_LEN, "payloadKey");
+  const claims = new Map<unknown, unknown>();
+  claims.set("v", 1);
+  claims.set("t", DOC_PAYLOAD_KEY_V1_TAG);
+  claims.set("doc_id", opts.docId);
+  claims.set("payload_key", opts.payloadKey);
+  return encodeCbor(claims);
+}
+
+function decodeDocPayloadKeyV1(bytes: Uint8Array): TreecrdtDocPayloadKeyV1 {
+  const decoded = decodeCbor(bytes);
+  const map = assertMap(decoded, "DocPayloadKeyV1");
+
+  const v = get(map, "v");
+  if (v !== 1) throw new Error("DocPayloadKeyV1.v must be 1");
+  const t = assertString(get(map, "t"), "DocPayloadKeyV1.t");
+  if (t !== DOC_PAYLOAD_KEY_V1_TAG) throw new Error("DocPayloadKeyV1.t mismatch");
+
+  const docId = assertString(get(map, "doc_id"), "DocPayloadKeyV1.doc_id");
+  const payloadKey = assertLen(
+    assertBytes(get(map, "payload_key"), "DocPayloadKeyV1.payload_key"),
+    DOC_PAYLOAD_KEY_LEN,
+    "payload_key"
+  );
+  return { docId, payloadKey };
+}
+
+function sealedDocPayloadKeyAadV1(docId: string): Uint8Array {
+  return concatBytes(SEALED_DOC_PAYLOAD_KEY_V1_AAD_DOMAIN, utf8ToBytes(docId));
+}
+
+export async function sealTreecrdtDocPayloadKeyV1(opts: {
+  wrapKey: TreecrdtDeviceWrapKeyV1;
+  docId: string;
+  payloadKey: Uint8Array;
+}): Promise<TreecrdtSealedDocPayloadKeyV1> {
+  assertLen(opts.wrapKey, DEVICE_WRAP_KEY_LEN, "wrapKey");
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+  assertLen(opts.payloadKey, DOC_PAYLOAD_KEY_LEN, "payloadKey");
+
+  const nonce = randomBytes(AES_GCM_NONCE_LEN);
+  const plaintext = encodeDocPayloadKeyV1({ docId: opts.docId, payloadKey: opts.payloadKey });
+  const ciphertext = await aesGcmEncrypt({ key: opts.wrapKey, nonce, plaintext, aad: sealedDocPayloadKeyAadV1(opts.docId) });
+
+  const envelope = new Map<unknown, unknown>();
+  envelope.set("v", 1);
+  envelope.set("t", SEALED_DOC_PAYLOAD_KEY_V1_TAG);
+  envelope.set("alg", "A256GCM");
+  envelope.set("nonce", nonce);
+  envelope.set("ct", ciphertext);
+  return encodeCbor(envelope);
+}
+
+export async function openTreecrdtDocPayloadKeyV1(opts: {
+  wrapKey: TreecrdtDeviceWrapKeyV1;
+  docId: string;
+  sealed: TreecrdtSealedDocPayloadKeyV1;
+}): Promise<TreecrdtDocPayloadKeyV1> {
+  assertLen(opts.wrapKey, DEVICE_WRAP_KEY_LEN, "wrapKey");
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+
+  const decoded = decodeCbor(opts.sealed);
+  const map = assertMap(decoded, "SealedDocPayloadKeyV1");
+
+  const v = get(map, "v");
+  if (v !== 1) throw new Error("SealedDocPayloadKeyV1.v must be 1");
+  const t = assertString(get(map, "t"), "SealedDocPayloadKeyV1.t");
+  if (t !== SEALED_DOC_PAYLOAD_KEY_V1_TAG) throw new Error("SealedDocPayloadKeyV1.t mismatch");
+  const alg = assertString(get(map, "alg"), "SealedDocPayloadKeyV1.alg");
+  if (alg !== "A256GCM") throw new Error("SealedDocPayloadKeyV1.alg unsupported");
+
+  const nonce = assertLen(assertBytes(get(map, "nonce"), "SealedDocPayloadKeyV1.nonce"), AES_GCM_NONCE_LEN, "nonce");
+  const ct = assertBytes(get(map, "ct"), "SealedDocPayloadKeyV1.ct");
+
+  const plaintext = await aesGcmDecrypt({ key: opts.wrapKey, nonce, ciphertext: ct, aad: sealedDocPayloadKeyAadV1(opts.docId) });
+  const key = decodeDocPayloadKeyV1(plaintext);
+  if (key.docId !== opts.docId) throw new Error("DocPayloadKeyV1.doc_id mismatch");
+  return key;
 }
 
 export type TreecrdtIssuerKeyV1 = {
