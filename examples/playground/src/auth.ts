@@ -1,9 +1,8 @@
-import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import {
   base64urlDecode,
   base64urlEncode,
-  coseSign1Ed25519,
   generateTreecrdtDeviceWrapKeyV1,
+  issueTreecrdtCapabilityTokenV1,
   openTreecrdtIssuerKeyV1,
   openTreecrdtLocalIdentityV1,
   sealTreecrdtIssuerKeyV1,
@@ -13,7 +12,6 @@ import {
 
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
-import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 ed25519Hashes.sha512 = sha512;
 
@@ -310,32 +308,15 @@ export function createCapabilityTokenV1(opts: {
   maxDepth?: number;
   excludeNodeIds?: string[];
 }): Uint8Array {
-  const cnf = new Map<unknown, unknown>([["pub", opts.subjectPublicKey]]);
-
-  const resEntries: Array<[unknown, unknown]> = [
-    ["doc_id", opts.docId],
-    ["root", nodeIdToBytes16(opts.rootNodeId)],
-  ];
-  if (opts.maxDepth !== undefined) resEntries.push(["max_depth", opts.maxDepth]);
-  if (opts.excludeNodeIds && opts.excludeNodeIds.length > 0) {
-    resEntries.push(["exclude", opts.excludeNodeIds.map((id) => nodeIdToBytes16(id))]);
-  }
-  const res = new Map<unknown, unknown>(resEntries);
-
-  const cap = new Map<unknown, unknown>([
-    ["res", res],
-    ["actions", opts.actions],
-  ]);
-
-  // CWT claims (numeric keys).
-  const claims = new Map<unknown, unknown>([
-    [3, opts.docId], // aud
-    [8, cnf], // cnf
-    [-1, [cap]], // private claim `caps`
-  ]);
-
-  const payload = cborEncode(claims, rfc8949EncodeOptions);
-  return coseSign1Ed25519({ payload, privateKey: opts.issuerPrivateKey });
+  return issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: opts.issuerPrivateKey,
+    subjectPublicKey: opts.subjectPublicKey,
+    docId: opts.docId,
+    actions: opts.actions,
+    rootNodeId: opts.rootNodeId,
+    ...(opts.maxDepth !== undefined ? { maxDepth: opts.maxDepth } : {}),
+    ...(opts.excludeNodeIds ? { excludeNodeIds: opts.excludeNodeIds } : {}),
+  });
 }
 
 export type InvitePayloadV1 = {

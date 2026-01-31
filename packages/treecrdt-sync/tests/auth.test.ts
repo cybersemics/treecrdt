@@ -11,8 +11,8 @@ import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
-import { coseSign1Ed25519 } from "../dist/cose.js";
-import { createTreecrdtCoseCwtAuth } from "../dist/treecrdt-auth.js";
+import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
+import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1 } from "../dist/treecrdt-auth.js";
 import type { Filter, OpRef, SyncBackend } from "../dist/types.js";
 
 ed25519Hashes.sha512 = sha512;
@@ -210,6 +210,82 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
   } finally {
     detach();
   }
+});
+
+test("auth: signOps selects proof_ref per op when multiple tokens exist", async () => {
+  const docId = "doc-auth-multitoken";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  const tokenStructure = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const tokenDelete = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["delete"],
+  });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenStructure, tokenDelete],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    requireProofRef: true,
+  });
+
+  const helloCapsA = await authA.helloCapabilities?.({ docId });
+  await authB.onHello?.({ capabilities: helloCapsA ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const opInsert = makeOp(aPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const opDelete = makeOp(aPk, 2, 2, {
+    type: "delete",
+    node: nodeIdFromInt(1),
+  });
+
+  const ops = [opInsert, opDelete];
+  const ctx = { docId, purpose: "reconcile" as const, filterId: "all" };
+
+  const auth = await authA.signOps?.(ops, ctx);
+  expect(auth).toBeTruthy();
+  expect(auth?.length).toBe(2);
+  expect(auth?.[0]?.proofRef).toBeTruthy();
+  expect(auth?.[1]?.proofRef).toBeTruthy();
+
+  const tokenStructureId = deriveTokenIdV1(tokenStructure);
+  const tokenDeleteId = deriveTokenIdV1(tokenDelete);
+
+  expect(bytesToHex(auth?.[0]!.proofRef!)).toBe(bytesToHex(tokenStructureId));
+  expect(bytesToHex(auth?.[1]!.proofRef!)).toBe(bytesToHex(tokenDeleteId));
+
+  await authB.verifyOps?.(ops, auth, ctx);
+
+  const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
+  await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(/capability does not allow op/i);
 });
 
 test("syncOnce fails when responder requires auth but initiator sends unsigned ops", async () => {

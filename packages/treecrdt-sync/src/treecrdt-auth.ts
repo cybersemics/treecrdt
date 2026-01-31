@@ -3,7 +3,7 @@ import { utf8ToBytes } from "@noble/hashes/utils";
 import { sha512 } from "@noble/hashes/sha512";
 import { hashes as ed25519Hashes, sign as ed25519Sign, verify as ed25519Verify } from "@noble/ed25519";
 
-import { decode as cborDecode } from "cborg";
+import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
@@ -11,7 +11,7 @@ import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from 
 import type { SyncAuth } from "./auth.js";
 import type { Capability, Hello, HelloAck, OpAuth } from "./types.js";
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
-import { coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
+import { coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
 
 let ed25519Ready = false;
 function ensureEd25519(): void {
@@ -54,6 +54,54 @@ function u64be(n: bigint | number): Uint8Array {
 const KEY_ID_V1_DOMAIN = utf8ToBytes("treecrdt/keyid/v1");
 export function deriveKeyIdV1(pubkey: Uint8Array): Uint8Array {
   return blake3(concatBytes(KEY_ID_V1_DOMAIN, pubkey)).slice(0, 16);
+}
+
+function encodeCbor(value: unknown): Uint8Array {
+  return cborEncode(value, rfc8949EncodeOptions);
+}
+
+export function issueTreecrdtCapabilityTokenV1(opts: {
+  issuerPrivateKey: Uint8Array;
+  subjectPublicKey: Uint8Array;
+  docId: string;
+  actions: string[];
+  rootNodeId?: string;
+  maxDepth?: number;
+  excludeNodeIds?: string[];
+  exp?: number;
+  nbf?: number;
+}): Uint8Array {
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+  if (opts.subjectPublicKey.length !== 32) throw new Error("subjectPublicKey must be 32 bytes");
+  if (!Array.isArray(opts.actions) || opts.actions.length === 0) throw new Error("actions must be a non-empty array");
+
+  const cnf = new Map<unknown, unknown>([
+    ["pub", opts.subjectPublicKey],
+    ["kid", deriveKeyIdV1(opts.subjectPublicKey)],
+  ]);
+
+  const resEntries: Array<[unknown, unknown]> = [["doc_id", opts.docId]];
+  if (opts.rootNodeId !== undefined) resEntries.push(["root", nodeIdToBytes16(opts.rootNodeId)]);
+  if (opts.maxDepth !== undefined) resEntries.push(["max_depth", opts.maxDepth]);
+  if (opts.excludeNodeIds && opts.excludeNodeIds.length > 0) {
+    resEntries.push(["exclude", opts.excludeNodeIds.map((id) => nodeIdToBytes16(id))]);
+  }
+  const res = new Map<unknown, unknown>(resEntries);
+
+  const cap = new Map<unknown, unknown>([
+    ["res", res],
+    ["actions", opts.actions],
+  ]);
+
+  const claims = new Map<unknown, unknown>([
+    [3, opts.docId], // aud
+    [8, cnf], // cnf
+    [-1, [cap]], // private claim `caps`
+  ]);
+  if (opts.exp !== undefined) claims.set(4, opts.exp);
+  if (opts.nbf !== undefined) claims.set(5, opts.nbf);
+
+  return coseSign1Ed25519({ payload: encodeCbor(claims), privateKey: opts.issuerPrivateKey });
 }
 
 const OP_SIG_V1_DOMAIN = utf8ToBytes("treecrdt/op-sig/v1");
@@ -422,7 +470,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
 
-  const grantsByKeyIdHex = new Map<string, CapabilityGrant>();
+  const grantsByKeyIdHex = new Map<string, Map<string, CapabilityGrant>>();
   let localTokensRecordedForDoc: string | null = null;
 
   const recordToken = async (tokenBytes: Uint8Array, docId: string) => {
@@ -432,7 +480,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       docId,
       nowSec: now(),
     });
-    grantsByKeyIdHex.set(bytesToHex(grant.keyId), grant);
+    const keyHex = bytesToHex(grant.keyId);
+    const tokenHex = bytesToHex(grant.tokenId);
+    let byToken = grantsByKeyIdHex.get(keyHex);
+    if (!byToken) {
+      byToken = new Map<string, CapabilityGrant>();
+      grantsByKeyIdHex.set(keyHex, byToken);
+    }
+    byToken.set(tokenHex, grant);
   };
 
   const ensureLocalTokensRecorded = async (docId: string) => {
@@ -451,6 +506,32 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const helloCaps = (): Capability[] => localTokens.map((t) => ({ name: "auth.capability", value: base64urlEncode(t) }));
 
+  const selectGrantForOp = async (opts2: {
+    docId: string;
+    op: Operation;
+    candidates: CapabilityGrant[];
+  }): Promise<CapabilityGrant> => {
+    const nowSec = now();
+    let bestUnknown: CapabilityGrant | null = null;
+
+    for (const grant of opts2.candidates) {
+      if (grant.exp !== undefined && nowSec > grant.exp) continue;
+      if (grant.nbf !== undefined && nowSec < grant.nbf) continue;
+
+      const scopeRes = await capsAllowsOp({
+        caps: grant.caps,
+        docId: opts2.docId,
+        op: opts2.op,
+        scopeEvaluator: opts.scopeEvaluator,
+      });
+      if (scopeRes === "allow") return grant;
+      if (scopeRes === "unknown" && !bestUnknown) bestUnknown = grant;
+    }
+
+    if (bestUnknown) return bestUnknown;
+    throw new Error("capability does not allow op");
+  };
+
   return {
     helloCapabilities: async (_ctx) => helloCaps(),
     onHello: async (hello: Hello, ctx) => {
@@ -463,12 +544,23 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     },
     signOps: async (ops, ctx) => {
       await ensureLocalTokensRecorded(ctx.docId);
-      const proofRef = localTokenIds.length > 0 ? localTokenIds[0] : undefined;
+      const localKeyIdHex = bytesToHex(deriveKeyIdV1(opts.localPublicKey));
       const out: OpAuth[] = [];
       for (const op of ops) {
         const opReplica = replicaIdToBytes(op.meta.id.replica);
         if (bytesToHex(opReplica) !== bytesToHex(opts.localPublicKey)) {
           throw new Error("cannot sign op: op.meta.id.replica does not match localPublicKey");
+        }
+        let proofRef: Uint8Array | undefined;
+        if (localTokenIds.length > 0) {
+          const byToken = grantsByKeyIdHex.get(localKeyIdHex);
+          if (!byToken || byToken.size === 0) throw new Error("auth enabled but no local capability tokens are recorded");
+          const selected = await selectGrantForOp({
+            docId: ctx.docId,
+            op,
+            candidates: Array.from(byToken.values()),
+          });
+          proofRef = selected.tokenId;
         }
         const sig = await signTreecrdtOpV1({ docId: ctx.docId, op, privateKey: opts.localPrivateKey });
         out.push({ sig, ...(proofRef ? { proofRef } : {}) });
@@ -489,16 +581,31 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         const replica = replicaIdToBytes(op.meta.id.replica);
         const keyId = deriveKeyIdV1(replica);
         const keyHex = bytesToHex(keyId);
-        const grant = grantsByKeyIdHex.get(keyHex);
-        if (!grant) throw new Error(`unknown author: ${keyHex}`);
+        const byToken = grantsByKeyIdHex.get(keyHex);
+        if (!byToken || byToken.size === 0) throw new Error(`unknown author: ${keyHex}`);
 
-        if (bytesToHex(grant.publicKey) !== bytesToHex(replica)) {
-          throw new Error("author public key does not match op replica_id");
-        }
+        const candidates = Array.from(byToken.values());
+        let grant: CapabilityGrant;
 
         if (requireProofRef) {
           if (!a.proofRef) throw new Error("missing proof_ref");
-          if (bytesToHex(a.proofRef) !== bytesToHex(grant.tokenId)) throw new Error("proof_ref does not match known token");
+          const g = byToken.get(bytesToHex(a.proofRef));
+          if (!g) throw new Error("proof_ref does not match known token");
+          grant = g;
+        } else {
+          const preferred = a.proofRef ? byToken.get(bytesToHex(a.proofRef)) : undefined;
+          const orderedCandidates = preferred
+            ? [preferred, ...candidates.filter((c) => bytesToHex(c.tokenId) !== bytesToHex(preferred.tokenId))]
+            : candidates;
+          grant = await selectGrantForOp({
+            docId: ctx.docId,
+            op,
+            candidates: orderedCandidates,
+          });
+        }
+
+        if (bytesToHex(grant.publicKey) !== bytesToHex(replica)) {
+          throw new Error("author public key does not match op replica_id");
         }
 
         const nowSec = now();

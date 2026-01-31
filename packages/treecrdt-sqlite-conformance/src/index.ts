@@ -3,13 +3,12 @@ import type { Operation, ReplicaId } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
-import { coseSign1Ed25519, createTreecrdtCoseCwtAuth } from "@treecrdt/sync";
+import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1 } from "@treecrdt/sync";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
-import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 ed25519Hashes.sha512 = sha512;
 
@@ -638,22 +637,12 @@ async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): 
 }
 
 function makeCapabilityTokenV1(opts: { issuerPrivateKey: Uint8Array; subjectPublicKey: Uint8Array; docId: string }): Uint8Array {
-  const cnf = new Map<unknown, unknown>([["pub", opts.subjectPublicKey]]);
-
-  const res = new Map<unknown, unknown>([["doc_id", opts.docId]]);
-  const cap = new Map<unknown, unknown>([
-    ["res", res],
-    ["actions", ["write_structure", "write_payload", "delete", "tombstone"]],
-  ]);
-
-  const claims = new Map<unknown, unknown>([
-    [3, opts.docId], // CWT `aud`
-    [8, cnf], // CWT `cnf`
-    [-1, [cap]], // private claim `caps`
-  ]);
-
-  const payload = cborEncode(claims, rfc8949EncodeOptions);
-  return coseSign1Ed25519({ payload, privateKey: opts.issuerPrivateKey });
+  return issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: opts.issuerPrivateKey,
+    subjectPublicKey: opts.subjectPublicKey,
+    docId: opts.docId,
+    actions: ["write_structure", "write_payload", "delete", "tombstone"],
+  });
 }
 
 function createEngineSyncBackend(engine: TreecrdtEngine): SyncBackend<Operation> {
