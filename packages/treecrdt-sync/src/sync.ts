@@ -66,6 +66,8 @@ type InitiatorSession<Op> = {
 export type SyncPeerOptions<Op = unknown> = {
   maxCodewords?: number;
   maxOpsPerBatch?: number;
+  maxHelloFilters?: number;
+  requireAuthForFilters?: boolean;
   auth?: SyncAuth<Op>;
 };
 
@@ -162,7 +164,10 @@ type InitiatorSubscription = {
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
+  private readonly maxHelloFilters: number;
+  private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
+  private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
@@ -180,6 +185,8 @@ export class SyncPeer<Op> {
     this.maxCodewords = opts.maxCodewords ?? 50_000;
     this.maxOpsPerBatch = opts.maxOpsPerBatch ?? 5_000;
     this.auth = opts.auth;
+    this.maxHelloFilters = opts.maxHelloFilters ?? 8;
+    this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
   }
 
   attach(transport: DuplexTransport<SyncMessage<Op>>): () => void {
@@ -412,6 +419,20 @@ export class SyncPeer<Op> {
       try {
         if (signal.aborted) return;
 
+        // If the responder requires capability-gated filters/subscriptions, send an initial
+        // Hello (no filters) so it can record our capabilities before Subscribe arrives.
+        if (this.auth?.helloCapabilities) {
+          const [maxLamport, capabilities] = await Promise.all([
+            this.backend.maxLamport(),
+            this.auth.helloCapabilities({ docId: this.backend.docId }),
+          ]);
+          await transport.send({
+            v: 0,
+            docId: this.backend.docId,
+            payload: { case: "hello", value: { capabilities, filters: [], maxLamport } },
+          });
+        }
+
         await transport.send({
           v: 0,
           docId: this.backend.docId,
@@ -607,6 +628,7 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     hello: Hello
   ): Promise<void> {
+    const hasAuthCapability = hello.capabilities.some((c) => c.name === "auth.capability");
     let ackCapabilities: HelloAck["capabilities"] = [];
     try {
       ackCapabilities = (await this.auth?.onHello?.(hello, { docId: this.backend.docId })) ?? [];
@@ -622,16 +644,53 @@ export class SyncPeer<Op> {
       return;
     }
 
+    if (hasAuthCapability) this.transportHasAuth.set(transport, true);
+
     const maxLamport = await this.backend.maxLamport();
     const acceptedFilters: string[] = [];
+    const rejectedFilters: HelloAck["rejectedFilters"] = [];
 
-    for (const spec of hello.filters) {
-      acceptedFilters.push(spec.id);
-      const localOpRefs = await this.backend.listOpRefs(spec.filter);
+    for (let i = 0; i < hello.filters.length; i += 1) {
+      const spec = hello.filters[i]!;
+      const id = spec.id;
+      const filter = spec.filter;
+      if (!id || !filter) continue;
+
+      if (i >= this.maxHelloFilters) {
+        rejectedFilters.push({
+          id,
+          reason: ErrorCode.TOO_MANY_FILTERS,
+          message: `max filters per Hello exceeded (${this.maxHelloFilters})`,
+        });
+        continue;
+      }
+
+      if (this.requireAuthForFilters && !hasAuthCapability) {
+        rejectedFilters.push({
+          id,
+          reason: ErrorCode.UNAUTHORIZED,
+          message: 'missing "auth.capability" token; send a valid capability token in Hello.capabilities',
+        });
+        continue;
+      }
+
+      let localOpRefs: OpRef[];
+      try {
+        localOpRefs = await this.backend.listOpRefs(filter);
+      } catch (err: any) {
+        rejectedFilters.push({
+          id,
+          reason: ErrorCode.FILTER_NOT_SUPPORTED,
+          message: String(err?.message ?? err ?? "filter not supported"),
+        });
+        continue;
+      }
+
+      acceptedFilters.push(id);
       const decoder = new RibltDecoder16();
       for (const r of localOpRefs) decoder.addLocalSymbol(r);
-      this.responderSessions.set(spec.id, {
-        filter: spec.filter,
+      this.responderSessions.set(id, {
+        filter,
         round: 0,
         decoder,
         expectedIndex: 0n,
@@ -646,7 +705,7 @@ export class SyncPeer<Op> {
         value: {
           capabilities: ackCapabilities,
           acceptedFilters,
-          rejectedFilters: [],
+          rejectedFilters,
           maxLamport,
         },
       },
@@ -783,6 +842,22 @@ export class SyncPeer<Op> {
   ): Promise<void> {
     if (!msg.subscriptionId) return;
     if (!msg.filter) return;
+
+    if (this.requireAuthForFilters && !this.transportHasAuth.get(transport)) {
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: "error",
+          value: {
+            code: ErrorCode.UNAUTHORIZED,
+            message: 'missing "auth.capability" token; send Hello before Subscribe',
+            subscriptionId: msg.subscriptionId,
+          },
+        },
+      });
+      return;
+    }
 
     try {
       const [opRefs, maxLamport] = await Promise.all([

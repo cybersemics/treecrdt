@@ -552,6 +552,11 @@ export enum ErrorCode {
    * @generated from enum value: DOC_NOT_FOUND = 6;
    */
   DOC_NOT_FOUND = 6,
+
+  /**
+   * @generated from enum value: UNAUTHORIZED = 7;
+   */
+  UNAUTHORIZED = 7,
 }
 
 /**
@@ -559,4 +564,3 @@ export enum ErrorCode {
  */
 export const ErrorCodeSchema: GenEnum<ErrorCode> = /*@__PURE__*/
   enumDesc(file_sync_v0_messages, 1);
-

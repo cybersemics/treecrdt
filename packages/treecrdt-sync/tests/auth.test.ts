@@ -332,7 +332,7 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
 
   try {
     await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 })).rejects.toThrow(
-      /missing op auth/i
+      /missing op auth|unauthorized|auth\.capability/i
     );
     await tick();
     expect(b.hasOp(aHex, 1)).toBe(false);
