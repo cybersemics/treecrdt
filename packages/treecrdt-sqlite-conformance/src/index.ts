@@ -3,7 +3,7 @@ import type { Operation, ReplicaId } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
-import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1 } from "@treecrdt/sync";
+import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1, type TreecrdtScopeEvaluator } from "@treecrdt/sync";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 
@@ -87,6 +87,14 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
     {
       name: "sync auth: signed ops converge (COSE+CWT)",
       run: scenarioSyncAuthSignedOps,
+    },
+    {
+      name: "sync auth: scoped token rejects filter(all)",
+      run: scenarioSyncAuthScopedTokenRejectsAllFilter,
+    },
+    {
+      name: "sync auth: excluded root is not synced to scoped peer",
+      run: scenarioSyncAuthExcludedRootNotSynced,
     },
     {
       name: "persistence: materialized tree persists across reopen",
@@ -658,6 +666,73 @@ function createEngineSyncBackend(engine: TreecrdtEngine): SyncBackend<Operation>
   };
 }
 
+async function findDepthBfs(opts: {
+  engine: TreecrdtEngine;
+  root: string;
+  target: string;
+}): Promise<number | null> {
+  if (opts.root === opts.target) return 0;
+
+  const seen = new Set<string>([opts.root]);
+  const queue: Array<{ id: string; depth: number }> = [{ id: opts.root, depth: 0 }];
+
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (!cur) break;
+
+    const children = await opts.engine.tree.children(cur.id);
+    for (const child of children) {
+      if (child === opts.target) return cur.depth + 1;
+      if (seen.has(child)) continue;
+      seen.add(child);
+      queue.push({ id: child, depth: cur.depth + 1 });
+    }
+  }
+
+  return null;
+}
+
+function createEngineScopeEvaluator(engine: TreecrdtEngine): TreecrdtScopeEvaluator {
+  return async (opts) => {
+    const rootHex = bytesToHex(opts.scope.root);
+    const nodeHex = bytesToHex(opts.node);
+
+    const depth = await findDepthBfs({ engine, root: rootHex, target: nodeHex });
+    if (depth === null) return "unknown";
+    if (opts.scope.maxDepth !== undefined && depth > opts.scope.maxDepth) return "deny";
+
+    if (opts.scope.exclude && opts.scope.exclude.length > 0) {
+      for (const ex of opts.scope.exclude) {
+        const exHex = bytesToHex(ex);
+        const exDepth = await findDepthBfs({ engine, root: exHex, target: nodeHex });
+        if (exDepth !== null) return "deny";
+      }
+    }
+
+    return "allow";
+  };
+}
+
+function latestPayloadForNode(ops: Operation[], node: string): Uint8Array | null | undefined {
+  let bestLamport = -1;
+  let bestCounter = -1;
+  let bestPayload: Uint8Array | null | undefined = undefined;
+
+  for (const op of ops) {
+    if (op.kind.type !== "payload") continue;
+    if (op.kind.node !== node) continue;
+    const lamport = op.meta.lamport;
+    const counter = Number(op.meta.id.counter);
+    if (lamport > bestLamport || (lamport === bestLamport && counter > bestCounter)) {
+      bestLamport = lamport;
+      bestCounter = counter;
+      bestPayload = op.kind.payload;
+    }
+  }
+
+  return bestPayload;
+}
+
 async function scenarioSyncAuthSignedOps(ctx: SqliteConformanceContext): Promise<void> {
   const docId = ctx.docId;
   const a = ctx.engine;
@@ -720,5 +795,155 @@ async function scenarioSyncAuthSignedOps(ctx: SqliteConformanceContext): Promise
     if (aSet.size === bSet.size && Array.from(aSet).every((r) => bSet.has(r))) return;
     if (Date.now() > deadline) throw new Error("sync auth conformance: expected peers to converge");
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function scenarioSyncAuthScopedTokenRejectsAllFilter(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  const root = nodeIdFromInt(0);
+  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: "last" }, null);
+  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: "last" }, null);
+
+  // Scoped tokens must not be allowed to use `filter(all)`; they should use `children(parent)` instead.
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["write_structure", "write_payload", "delete", "tombstone"],
+    rootNodeId: root,
+    maxDepth: 1,
+  });
+  const tokenB = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+  });
+
+  const backendA = createEngineSyncBackend(a);
+  const backendB = createEngineSyncBackend(b);
+
+  const { peerA, transportA, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB },
+  });
+
+  try {
+    let threw = false;
+    try {
+      await peerA.syncOnce(transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    } catch (err: any) {
+      threw = true;
+      const msg = String(err?.message ?? err ?? "");
+      assert(/unauthorized/i.test(msg), `expected UNAUTHORIZED, got: ${msg}`);
+    }
+    assert(threw, "expected syncOnce(all) to be rejected for scoped token");
+  } finally {
+    detach();
+  }
+}
+
+async function scenarioSyncAuthExcludedRootNotSynced(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  const root = nodeIdFromInt(0);
+  const publicNode = nodeIdFromInt(1);
+  const secretRoot = nodeIdFromInt(2);
+
+  await a.local.insert(aPk, root, publicNode, { type: "last" }, null);
+  await a.local.insert(aPk, root, secretRoot, { type: "last" }, null);
+  await a.local.insert(aPk, secretRoot, nodeIdFromInt(3), { type: "last" }, null);
+
+  const tokenA = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
+  const tokenB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: bPk,
+    docId,
+    actions: ["write_structure", "write_payload", "delete", "tombstone"],
+    rootNodeId: root,
+    excludeNodeIds: [secretRoot],
+  });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    scopeEvaluator: createEngineScopeEvaluator(a),
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+  });
+
+  const backendA = createEngineSyncBackend(a);
+  const backendB = createEngineSyncBackend(b);
+
+  const { peerA, peerB, transportA, transportB, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+  });
+
+  try {
+    // A pushes ops to B, but B's capability excludes `secretRoot`.
+    await peerA.syncOnce(transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    const bKids = await b.tree.children(root);
+    assertArrayEqual(bKids, [publicNode], "scoped peer should only see public node");
+
+    // B can still write to the allowed node and sync back using `children(root)`.
+    const updated = new TextEncoder().encode("public-updated");
+    await b.local.payload(bPk, publicNode, updated);
+
+    await peerB.syncOnce(transportB, { children: { parent: nodeIdToBytes16(root) } }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    const ops = await a.ops.all();
+    const latest = latestPayloadForNode(ops, publicNode);
+    assertBytesEqual(latest ?? null, updated, "expected payload update to propagate to full peer");
+  } finally {
+    detach();
   }
 }
