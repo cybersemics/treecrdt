@@ -104,6 +104,25 @@ export function issueTreecrdtCapabilityTokenV1(opts: {
   return coseSign1Ed25519({ payload: encodeCbor(claims), privateKey: opts.issuerPrivateKey });
 }
 
+export type TreecrdtCapabilityV1 = {
+  actions: string[];
+  res: {
+    docId: string;
+    rootNodeId?: string;
+    maxDepth?: number;
+    excludeNodeIds?: string[];
+  };
+};
+
+export type TreecrdtCapabilityTokenV1 = {
+  tokenId: Uint8Array;
+  subjectKeyId: Uint8Array;
+  subjectPublicKey: Uint8Array;
+  caps: TreecrdtCapabilityV1[];
+  exp?: number;
+  nbf?: number;
+};
+
 const OP_SIG_V1_DOMAIN = utf8ToBytes("treecrdt/op-sig/v1");
 
 export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation }): Uint8Array {
@@ -489,6 +508,54 @@ async function parseAndVerifyCapabilityToken(opts: {
   };
 }
 
+export async function describeTreecrdtCapabilityTokenV1(opts: {
+  tokenBytes: Uint8Array;
+  issuerPublicKeys: Uint8Array[];
+  docId: string;
+  nowSec?: number;
+}): Promise<TreecrdtCapabilityTokenV1> {
+  const grant = await parseAndVerifyCapabilityToken({
+    tokenBytes: opts.tokenBytes,
+    issuerPublicKeys: opts.issuerPublicKeys,
+    docId: opts.docId,
+    nowSec: opts.nowSec ?? Math.floor(Date.now() / 1000),
+  });
+
+  const rawCaps = grant.caps;
+  const caps: TreecrdtCapabilityV1[] = [];
+  if (Array.isArray(rawCaps)) {
+    for (const cap of rawCaps) {
+      const res = getField(cap, "res");
+      const actions = getField(cap, "actions");
+      if (!res || typeof res !== "object") continue;
+      if (!Array.isArray(actions)) continue;
+
+      const docId = getField(res, "doc_id");
+      if (typeof docId !== "string" || docId.trim().length === 0) continue;
+
+      const scope = parseScope(res);
+      caps.push({
+        actions: actions.map(String),
+        res: {
+          docId,
+          ...(scope?.root ? { rootNodeId: bytesToHex(scope.root) } : {}),
+          ...(scope?.maxDepth !== undefined ? { maxDepth: scope.maxDepth } : {}),
+          ...(scope?.exclude ? { excludeNodeIds: scope.exclude.map((b) => bytesToHex(b)) } : {}),
+        },
+      });
+    }
+  }
+
+  return {
+    tokenId: grant.tokenId,
+    subjectKeyId: grant.keyId,
+    subjectPublicKey: grant.publicKey,
+    caps,
+    ...(grant.exp !== undefined ? { exp: grant.exp } : {}),
+    ...(grant.nbf !== undefined ? { nbf: grant.nbf } : {}),
+  };
+}
+
 export type TreecrdtCoseCwtAuthOptions = {
   issuerPublicKeys: Uint8Array[];
   localPrivateKey: Uint8Array;
@@ -607,6 +674,37 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
                 throw new Error("unsupported filter");
               })();
 
+      // `filter(all)` is only safe for doc-wide scopes. If a token has any scope restrictions
+      // (e.g. `max_depth`/`exclude` or a non-root `root`), allow it to use `children(parent)` instead.
+      if ("all" in filter) {
+        for (const grant of grants) {
+          if (!Array.isArray(grant.caps)) return; // v0 allow-all
+          for (const cap of grant.caps) {
+            const res = getField(cap, "res");
+            if (!res || typeof res !== "object") continue;
+            if (getField(res, "doc_id") !== ctx.docId) continue;
+
+            const scope = parseScope(res);
+            const isDocWide =
+              !scope ||
+              (bytesToHex(scope.root) === ROOT_NODE_ID_HEX &&
+                scope.maxDepth === undefined &&
+                (!scope.exclude || scope.exclude.length === 0));
+            if (!isDocWide) continue;
+
+            const tri = await capAllowsNode({
+              cap,
+              docId: ctx.docId,
+              node,
+              requiredActions,
+              scopeEvaluator: opts.scopeEvaluator,
+            });
+            if (tri === "allow") return;
+          }
+        }
+        throw new Error("capability does not allow filter");
+      }
+
       let best: ScopeTri = "deny";
       for (const grant of grants) {
         best = triOr(
@@ -626,6 +724,93 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         throw new Error("missing subtree context to authorize filter");
       }
       throw new Error("capability does not allow filter");
+    },
+    filterOutgoingOps: async (ops, ctx) => {
+      const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
+      if (tokenCaps.length === 0) return ops.map(() => true);
+
+      const grants: CapabilityGrant[] = [];
+      for (const cap of tokenCaps) {
+        const tokenBytes = base64urlDecode(cap.value);
+        grants.push(
+          await parseAndVerifyCapabilityToken({
+            tokenBytes,
+            issuerPublicKeys: opts.issuerPublicKeys,
+            docId: ctx.docId,
+            nowSec: now(),
+          })
+        );
+      }
+
+      // Fast path: if the peer has any doc-wide read_structure capability, we don't need to filter.
+      const requiredStructure = ["read_structure"];
+      for (const grant of grants) {
+        if (!Array.isArray(grant.caps)) return ops.map(() => true); // v0 allow-all
+        for (const cap of grant.caps) {
+          const res = getField(cap, "res");
+          if (!res || typeof res !== "object") continue;
+          if (getField(res, "doc_id") !== ctx.docId) continue;
+
+          const scope = parseScope(res);
+          const isDocWide =
+            !scope ||
+            (bytesToHex(scope.root) === ROOT_NODE_ID_HEX &&
+              scope.maxDepth === undefined &&
+              (!scope.exclude || scope.exclude.length === 0));
+          if (!isDocWide) continue;
+
+          const tri = await capAllowsNode({
+            cap,
+            docId: ctx.docId,
+            node: nodeIdToBytes16(ROOT_NODE_ID_HEX),
+            requiredActions: requiredStructure,
+            scopeEvaluator: opts.scopeEvaluator,
+          });
+          if (tri === "allow") return ops.map(() => true);
+        }
+      }
+
+      const allowNode = async (node: Uint8Array, requiredActions: readonly string[]): Promise<boolean> => {
+        let best: ScopeTri = "deny";
+        for (const grant of grants) {
+          best = triOr(
+            best,
+            await capsAllowsNodeAccess({
+              caps: grant.caps,
+              docId: ctx.docId,
+              node,
+              requiredActions,
+              scopeEvaluator: opts.scopeEvaluator,
+            })
+          );
+          if (best === "allow") return true;
+        }
+        // Fail closed: if scope membership is unknown, do not reveal the op.
+        return false;
+      };
+
+      const out: boolean[] = [];
+      for (const op of ops) {
+        // For `children(parent)` we still need to hide inserts/payloads for nodes outside scope
+        // (e.g. excluded private roots) so peers cannot discover them by syncing the parent's children.
+        switch (op.kind.type) {
+          case "insert":
+          case "payload":
+            out.push(await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure));
+            break;
+          case "move":
+          case "delete":
+          case "tombstone":
+            out.push(true);
+            break;
+          default: {
+            const _exhaustive: never = op.kind;
+            throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
+          }
+        }
+      }
+
+      return out;
     },
     signOps: async (ops, ctx) => {
       await ensureLocalTokensRecorded(ctx.docId);

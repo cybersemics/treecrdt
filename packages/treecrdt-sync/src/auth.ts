@@ -27,6 +27,13 @@ export type SyncAuthAuthorizeFilterContext = {
   capabilities: Capability[];
 };
 
+export type SyncAuthFilterOutgoingOpsContext = {
+  docId: string;
+  purpose: "hello" | "subscribe" | "reconcile";
+  filter: Filter;
+  capabilities: Capability[];
+};
+
 export interface SyncAuth<Op> {
   /**
    * Capabilities to advertise in `Hello.capabilities`.
@@ -55,6 +62,16 @@ export interface SyncAuth<Op> {
    * Implementations SHOULD throw to deny the filter.
    */
   authorizeFilter?: (filter: Filter, ctx: SyncAuthAuthorizeFilterContext) => Promise<void> | void;
+
+  /**
+   * Optional hook to hide/restrict outgoing ops based on peer-advertised capabilities.
+   *
+   * Returns a boolean allow-list aligned with `ops`.
+   */
+  filterOutgoingOps?: (
+    ops: readonly Op[],
+    ctx: SyncAuthFilterOutgoingOpsContext
+  ) => Promise<boolean[]> | boolean[];
 
   /**
    * Produce auth metadata aligned with a batch of outbound ops.

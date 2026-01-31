@@ -245,13 +245,47 @@ export class SyncPeer<Op> {
 
     for (let start = 0; start < newOpRefs.length; start += this.maxOpsPerBatch) {
       const chunk = newOpRefs.slice(start, start + this.maxOpsPerBatch);
-      const ops = await this.backend.getOpsByOpRefs(chunk);
+      let ops = await this.backend.getOpsByOpRefs(chunk);
+
+      // Apply peer-scoped visibility restrictions (best-effort).
+      if (this.auth?.filterOutgoingOps && ops.length > 0) {
+        const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: "subscribe",
+          filter: sub.filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+        }
+
+        const allowedRefs: OpRef[] = [];
+        const allowedOps: Op[] = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          if (allowed[i] === true) {
+            allowedRefs.push(chunk[i]!);
+            allowedOps.push(ops[i]!);
+          }
+        }
+
+        // Record everything as sent so we don't repeatedly attempt to send filtered ops.
+        for (const r of chunk) sub.sentOpRefs.add(bytesToHex(r));
+
+        if (allowedOps.length === 0) {
+          await yieldToMacrotask();
+          continue;
+        }
+
+        ops = allowedOps;
+        chunk.length = 0;
+        chunk.push(...allowedRefs);
+      }
+
       const auth = this.auth?.signOps
         ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "subscribe", filterId: sub.subscriptionId })
         : undefined;
-      if (auth && auth.length !== ops.length) {
-        throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
-      }
+      if (auth && auth.length !== ops.length) throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       const done = start + this.maxOpsPerBatch >= newOpRefs.length;
       await sub.transport.send({
         v: 0,
@@ -294,7 +328,25 @@ export class SyncPeer<Op> {
       });
       await session.ack.promise;
 
-      const opRefs = await this.backend.listOpRefs(filter);
+      let opRefs = await this.backend.listOpRefs(filter);
+
+      // If we have peer capabilities (from HelloAck) and an auth layer that can scope outgoing ops,
+      // filter the local set to avoid advertising/sending ops the peer cannot receive.
+      if (this.auth?.filterOutgoingOps && opRefs.length > 0) {
+        const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
+        const ops = await this.backend.getOpsByOpRefs(opRefs);
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: "reconcile",
+          filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+        }
+        opRefs = opRefs.filter((_r, idx) => allowed[idx] === true);
+      }
+
       const enc = new RibltEncoder16();
       for (const r of opRefs) enc.addSymbol(r);
 
@@ -362,6 +414,12 @@ export class SyncPeer<Op> {
       throw new Error(`invalid maxOpsPerBatch: ${maxOpsPerBatch}`);
     }
 
+    const filter =
+      this.responderSessions.get(filterId)?.filter ??
+      this.initiatorSessions.get(filterId)?.filter ??
+      undefined;
+    const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
+
     if (opRefs.length === 0) {
       await transport.send({
         v: 0,
@@ -373,14 +431,46 @@ export class SyncPeer<Op> {
 
     for (let start = 0; start < opRefs.length; start += maxOpsPerBatch) {
       const chunk = opRefs.slice(start, start + maxOpsPerBatch);
-      const ops = await this.backend.getOpsByOpRefs(chunk);
+      let ops = await this.backend.getOpsByOpRefs(chunk);
+
+      if (filter && this.auth?.filterOutgoingOps && ops.length > 0) {
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: "reconcile",
+          filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+        }
+
+        const nextOps: Op[] = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          if (allowed[i] === true) nextOps.push(ops[i]!);
+        }
+        ops = nextOps;
+      }
+
+      const done = start + maxOpsPerBatch >= opRefs.length;
+
+      if (ops.length === 0) {
+        if (done) {
+          await transport.send({
+            v: 0,
+            docId: this.backend.docId,
+            payload: { case: "opsBatch", value: { filterId, ops: [], done: true } },
+          });
+        }
+        continue;
+      }
+
       const auth = this.auth?.signOps
         ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "reconcile", filterId })
         : undefined;
       if (auth && auth.length !== ops.length) {
         throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       }
-      const done = start + maxOpsPerBatch >= opRefs.length;
+
       await transport.send({
         v: 0,
         docId: this.backend.docId,
@@ -554,7 +644,7 @@ export class SyncPeer<Op> {
           await this.onHello(transport, msg.payload.value);
           return;
         case "helloAck":
-          await this.onHelloAck(msg.payload.value);
+          await this.onHelloAck(transport, msg.payload.value);
           return;
         case "ribltCodewords":
           await this.onRibltCodewords(transport, msg.payload.value);
@@ -702,6 +792,29 @@ export class SyncPeer<Op> {
         continue;
       }
 
+      if (!("all" in filter) && this.auth?.filterOutgoingOps && localOpRefs.length > 0) {
+        try {
+          const ops = await this.backend.getOpsByOpRefs(localOpRefs);
+          const allowed = await this.auth.filterOutgoingOps(ops, {
+            docId: this.backend.docId,
+            purpose: "hello",
+            filter,
+            capabilities: hello.capabilities,
+          });
+          if (allowed.length !== ops.length) {
+            throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+          }
+          localOpRefs = localOpRefs.filter((_r, idx) => allowed[idx] === true);
+        } catch (err: any) {
+          rejectedFilters.push({
+            id,
+            reason: ErrorCode.UNAUTHORIZED,
+            message: String(err?.message ?? err ?? "failed to filter ops"),
+          });
+          continue;
+        }
+      }
+
       acceptedFilters.push(id);
       const decoder = new RibltDecoder16();
       for (const r of localOpRefs) decoder.addLocalSymbol(r);
@@ -728,8 +841,12 @@ export class SyncPeer<Op> {
     });
   }
 
-  private async onHelloAck(ack: HelloAck): Promise<void> {
+  private async onHelloAck(transport: DuplexTransport<SyncMessage<Op>>, ack: HelloAck): Promise<void> {
     await this.auth?.onHelloAck?.(ack, { docId: this.backend.docId });
+
+    const hasAuthCapability = ack.capabilities.some((c) => c.name === "auth.capability");
+    if (hasAuthCapability) this.transportHasAuth.set(transport, true);
+    if (hasAuthCapability) this.transportPeerCapabilities.set(transport, ack.capabilities);
 
     for (const id of ack.acceptedFilters) {
       const session = this.initiatorSessions.get(id);

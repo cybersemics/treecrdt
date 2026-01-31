@@ -12,7 +12,11 @@ import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
 import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
-import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1 } from "../dist/treecrdt-auth.js";
+import {
+  createTreecrdtCoseCwtAuth,
+  describeTreecrdtCapabilityTokenV1,
+  issueTreecrdtCapabilityTokenV1,
+} from "../dist/treecrdt-auth.js";
 import type { Filter, OpRef, SyncBackend } from "../dist/types.js";
 
 ed25519Hashes.sha512 = sha512;
@@ -299,6 +303,61 @@ test("auth: signOps selects proof_ref per op when multiple tokens exist", async 
 
   const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(/capability does not allow op/i);
+});
+
+test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async () => {
+  const docId = "doc-auth-token-describe";
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const subjectSk = ed25519Utils.randomSecretKey();
+  const subjectPk = await getPublicKey(subjectSk);
+
+  const rootNodeId = nodeIdFromInt(1);
+  const excludeNodeId = nodeIdFromInt(2);
+
+  const tokenBytes = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: subjectPk,
+    docId,
+    actions: ["write_structure"],
+    rootNodeId,
+    maxDepth: 2,
+    excludeNodeIds: [excludeNodeId],
+  });
+
+  const described = await describeTreecrdtCapabilityTokenV1({
+    tokenBytes,
+    issuerPublicKeys: [issuerPk],
+    docId,
+  });
+
+  expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(subjectPk));
+  expect(described.caps.length).toBe(1);
+  expect(described.caps[0]!.actions).toContain("write_structure");
+  expect(described.caps[0]!.res.docId).toBe(docId);
+  expect(described.caps[0]!.res.rootNodeId).toBe(rootNodeId);
+  expect(described.caps[0]!.res.maxDepth).toBe(2);
+  expect(described.caps[0]!.res.excludeNodeIds).toContain(excludeNodeId);
+
+  await expect(
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes,
+      issuerPublicKeys: [issuerPk],
+      docId: "wrong-doc",
+    })
+  ).rejects.toThrow(/audience mismatch/i);
+
+  const otherIssuerSk = ed25519Utils.randomSecretKey();
+  const otherIssuerPk = await getPublicKey(otherIssuerSk);
+  await expect(
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes,
+      issuerPublicKeys: [otherIssuerPk],
+      docId,
+    })
+  ).rejects.toThrow(/verification failed/i);
 });
 
 test("syncOnce fails when responder requires auth but initiator sends unsigned ops", async () => {
