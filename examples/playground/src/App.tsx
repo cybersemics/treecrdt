@@ -44,6 +44,8 @@ import {
   generateEd25519KeyPair,
   deriveEd25519PublicKey,
   getDeviceWrapKeyB64,
+  getSealedDeviceSigningKeyB64,
+  getSealedIdentityKeyB64,
   getSealedIssuerKeyB64,
   importDeviceWrapKeyB64,
   initialAuthEnabled,
@@ -56,6 +58,8 @@ import {
   saveIssuerKeys,
   saveLocalKeys,
   saveLocalTokens,
+  setSealedDeviceSigningKeyB64,
+  setSealedIdentityKeyB64,
   setSealedIssuerKeyB64,
   type StoredAuthMaterial,
 } from "./auth";
@@ -150,6 +154,8 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [wrapKeyImportText, setWrapKeyImportText] = useState("");
   const [issuerKeyBlobImportText, setIssuerKeyBlobImportText] = useState("");
+  const [identityKeyBlobImportText, setIdentityKeyBlobImportText] = useState("");
+  const [deviceSigningKeyBlobImportText, setDeviceSigningKeyBlobImportText] = useState("");
   const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => ({
     issuerPkB64: null,
     issuerSkB64: null,
@@ -2000,6 +2006,8 @@ export default function App() {
   const localReplicaHex = replica ? bytesToHex(replica) : null;
   const deviceWrapKeyB64 = getDeviceWrapKeyB64();
   const sealedIssuerKeyB64 = getSealedIssuerKeyB64(docId);
+  const sealedIdentityKeyB64 = getSealedIdentityKeyB64();
+  const sealedDeviceSigningKeyB64 = getSealedDeviceSigningKeyB64();
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
@@ -2489,6 +2497,116 @@ export default function App() {
                     </div>
                     <div className="mt-1 text-[11px] text-slate-500">
                       Encrypted at rest. Bound to this `docId` via AAD.
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Identity key blob</div>
+                      <button
+                        className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                        type="button"
+                        onClick={() =>
+                          void copyToClipboard(sealedIdentityKeyB64 ?? "").catch((err) =>
+                            setAuthError(err instanceof Error ? err.message : String(err))
+                          )
+                        }
+                        disabled={authBusy || !sealedIdentityKeyB64}
+                        title="Copy sealed identity key blob (base64url)"
+                      >
+                        <MdContentCopy className="text-[16px]" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="mt-1 font-mono text-slate-200" title={sealedIdentityKeyB64 ?? ""}>
+                      {sealedIdentityKeyB64 ? `${sealedIdentityKeyB64.slice(0, 24)}…` : "-"}
+                    </div>
+                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <input
+                        type="text"
+                        value={identityKeyBlobImportText}
+                        onChange={(e) => setIdentityKeyBlobImportText(e.target.value)}
+                        placeholder="Paste sealed identity key blob (base64url)"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                        disabled={authBusy}
+                      />
+                      <button
+                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
+                        type="button"
+                        onClick={() => {
+                          try {
+                            setSealedIdentityKeyB64(identityKeyBlobImportText);
+                            setIdentityKeyBlobImportText("");
+                            localIdentityChainPromiseRef.current = null;
+                          } catch (err) {
+                            setAuthError(err instanceof Error ? err.message : String(err));
+                          }
+                        }}
+                        disabled={authBusy || identityKeyBlobImportText.trim().length === 0}
+                        title="Import sealed identity key blob"
+                      >
+                        Import
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Encrypted at rest. Requires the device wrap key to open.
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Device signing key blob
+                      </div>
+                      <button
+                        className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                        type="button"
+                        onClick={() =>
+                          void copyToClipboard(sealedDeviceSigningKeyB64 ?? "").catch((err) =>
+                            setAuthError(err instanceof Error ? err.message : String(err))
+                          )
+                        }
+                        disabled={authBusy || !sealedDeviceSigningKeyB64}
+                        title="Copy sealed device signing key blob (base64url)"
+                      >
+                        <MdContentCopy className="text-[16px]" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="mt-1 font-mono text-slate-200" title={sealedDeviceSigningKeyB64 ?? ""}>
+                      {sealedDeviceSigningKeyB64 ? `${sealedDeviceSigningKeyB64.slice(0, 24)}…` : "-"}
+                    </div>
+                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <input
+                        type="text"
+                        value={deviceSigningKeyBlobImportText}
+                        onChange={(e) => setDeviceSigningKeyBlobImportText(e.target.value)}
+                        placeholder="Paste sealed device signing key blob (base64url)"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                        disabled={authBusy}
+                      />
+                      <button
+                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
+                        type="button"
+                        onClick={() => {
+                          try {
+                            setSealedDeviceSigningKeyB64(deviceSigningKeyBlobImportText);
+                            setDeviceSigningKeyBlobImportText("");
+                            localIdentityChainPromiseRef.current = null;
+                          } catch (err) {
+                            setAuthError(err instanceof Error ? err.message : String(err));
+                          }
+                        }}
+                        disabled={authBusy || deviceSigningKeyBlobImportText.trim().length === 0}
+                        title="Import sealed device signing key blob"
+                      >
+                        Import
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Encrypted at rest. Requires the device wrap key to open.
                     </div>
                   </div>
                 </div>

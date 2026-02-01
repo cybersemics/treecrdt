@@ -9,6 +9,7 @@ function uniqueDocId(prefix: string): string {
 async function waitForReady(page: import("@playwright/test").Page, path: string) {
   await page.goto(path);
   await expect(page.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
+  await expect(treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" })).toBeEnabled({ timeout: 60_000 });
 }
 
 async function expectAuthEnabledByDefault(page: import("@playwright/test").Page) {
@@ -187,10 +188,43 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
     ]);
 
     // Push ops from A to B.
-    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
-
     const publicRowBLabel = treeRowByLabel(pageB, "public");
-    await expect(publicRowBLabel).toBeVisible({ timeout: 30_000 });
+    const syncErrorA = pageA.getByTestId("sync-error");
+    const syncErrorB = pageB.getByTestId("sync-error");
+
+    const waitForPublicOrError = async () => {
+      await Promise.race([
+        publicRowBLabel.waitFor({ state: "visible", timeout: 30_000 }),
+        (async () => {
+          await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+          throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+        })(),
+        (async () => {
+          await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
+          throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
+        })(),
+      ]);
+    };
+
+    let pushed = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+      try {
+        await waitForPublicOrError();
+        pushed = true;
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const initializing = msg.includes("initializing keys/tokens");
+        if (msg.startsWith("sync error") && !initializing) throw err;
+        if (attempt < 2) {
+          await pageA.waitForTimeout(250);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!pushed) throw new Error("failed to sync public node");
     const publicNodeId = await publicRowBLabel.getAttribute("data-node-id");
     if (!publicNodeId) throw new Error("expected public node id");
     await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
@@ -239,6 +273,79 @@ test("identity chain is shown when peers reveal identity", async ({ browser }) =
     const opsPanel = pageB.locator("aside", { hasText: "Operations" });
     await expect(opsPanel).toBeVisible({ timeout: 30_000 });
     await expect(opsPanel.getByText(/identity/i)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("identity key blobs can be exported and imported", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const IDENTITY_SK_SEALED_KEY = "treecrdt-playground-identity-sk-sealed:v1";
+  const DEVICE_SIGNING_SK_SEALED_KEY = "treecrdt-playground-device-signing-sk-sealed:v1";
+
+  const doc = uniqueDocId("pw-playground-identity-blobs");
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
+    ]);
+    await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
+    await enableRevealIdentity(pageA);
+
+    // Wait for peer discovery so the identity chain is computed (which creates the identity keys).
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    // Trigger an authenticated sync roundtrip so hello/ack capabilities run.
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("BLOB-TEST");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "BLOB-TEST")).toBeVisible({ timeout: 30_000 });
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(treeRowByLabel(pageB, "BLOB-TEST")).toBeVisible({ timeout: 30_000 });
+
+    const authToggle = pageA.getByRole("button", { name: "Auth", exact: true });
+    await authToggle.click();
+
+    const identityCard = pageA.getByText("Identity key blob", { exact: true }).locator("..").locator("..");
+    const deviceSigningCard = pageA.getByText("Device signing key blob", { exact: true }).locator("..").locator("..");
+
+    await expect(identityCard.getByRole("button", { name: "Copy", exact: true })).toBeEnabled({ timeout: 30_000 });
+    await expect(deviceSigningCard.getByRole("button", { name: "Copy", exact: true })).toBeEnabled({ timeout: 30_000 });
+
+    const identityBlob = await identityCard.locator("div.font-mono").first().getAttribute("title");
+    if (!identityBlob) throw new Error("expected identity key blob");
+    const deviceSigningBlob = await deviceSigningCard.locator("div.font-mono").first().getAttribute("title");
+    if (!deviceSigningBlob) throw new Error("expected device signing key blob");
+
+    await pageA.evaluate(
+      ({ identityKey, deviceKey }) => {
+        window.localStorage.removeItem(identityKey);
+        window.localStorage.removeItem(deviceKey);
+      },
+      { identityKey: IDENTITY_SK_SEALED_KEY, deviceKey: DEVICE_SIGNING_SK_SEALED_KEY }
+    );
+
+    // Force a re-render to re-read localStorage-backed values.
+    await authToggle.click();
+    await authToggle.click();
+
+    await expect(identityCard.getByRole("button", { name: "Copy", exact: true })).toBeDisabled({ timeout: 30_000 });
+    await expect(deviceSigningCard.getByRole("button", { name: "Copy", exact: true })).toBeDisabled({ timeout: 30_000 });
+
+    await identityCard.getByPlaceholder("Paste sealed identity key blob (base64url)").fill(identityBlob);
+    await identityCard.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(identityCard.getByRole("button", { name: "Copy", exact: true })).toBeEnabled({ timeout: 30_000 });
+
+    await deviceSigningCard.getByPlaceholder("Paste sealed device signing key blob (base64url)").fill(deviceSigningBlob);
+    await deviceSigningCard.getByRole("button", { name: "Import", exact: true }).click();
+    await expect(deviceSigningCard.getByRole("button", { name: "Copy", exact: true })).toBeEnabled({ timeout: 30_000 });
   } finally {
     await context.close();
   }

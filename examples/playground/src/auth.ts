@@ -332,6 +332,34 @@ export function setSealedIssuerKeyB64(docId: string, sealedB64: string) {
   gsSet(`${ISSUER_SK_SEALED_KEY_PREFIX}${docId}`, base64urlEncode(bytes));
 }
 
+export function getSealedIdentityKeyB64(): string | null {
+  return gsGet(IDENTITY_SK_SEALED_KEY);
+}
+
+export function setSealedIdentityKeyB64(sealedB64: string) {
+  const bytes = base64urlDecodeSafe(sealedB64.trim());
+  if (!bytes) throw new Error("identity key blob must be base64url");
+  gsSet(IDENTITY_SK_SEALED_KEY, base64urlEncode(bytes));
+}
+
+export function clearSealedIdentityKey() {
+  gsDel(IDENTITY_SK_SEALED_KEY);
+}
+
+export function getSealedDeviceSigningKeyB64(): string | null {
+  return gsGet(DEVICE_SIGNING_SK_SEALED_KEY);
+}
+
+export function setSealedDeviceSigningKeyB64(sealedB64: string) {
+  const bytes = base64urlDecodeSafe(sealedB64.trim());
+  if (!bytes) throw new Error("device signing key blob must be base64url");
+  gsSet(DEVICE_SIGNING_SK_SEALED_KEY, base64urlEncode(bytes));
+}
+
+export function clearSealedDeviceSigningKey() {
+  gsDel(DEVICE_SIGNING_SK_SEALED_KEY);
+}
+
 export async function saveIssuerKeys(
   docId: string,
   issuerPkB64: string,
