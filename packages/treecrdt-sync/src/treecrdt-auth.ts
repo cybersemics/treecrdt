@@ -791,17 +791,15 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
       const out: boolean[] = [];
       for (const op of ops) {
-        // For `children(parent)` we still need to hide inserts/payloads for nodes outside scope
+        // For `children(parent)` we still need to hide ops for nodes outside scope
         // (e.g. excluded private roots) so peers cannot discover them by syncing the parent's children.
         switch (op.kind.type) {
           case "insert":
           case "payload":
-            out.push(await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure));
-            break;
           case "move":
           case "delete":
           case "tombstone":
-            out.push(true);
+            out.push(await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure));
             break;
           default: {
             const _exhaustive: never = op.kind;

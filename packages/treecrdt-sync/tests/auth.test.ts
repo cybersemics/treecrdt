@@ -877,3 +877,131 @@ test("auth: syncOnce rejects filter(children) when capability scope does not mat
   }
   void bPk;
 });
+
+test("auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees", async () => {
+  const docId = "doc-auth-filter-outgoing-exclude";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const senderSk = ed25519Utils.randomSecretKey();
+  const senderPk = await getPublicKey(senderSk);
+
+  const receiverSk = ed25519Utils.randomSecretKey();
+  const receiverPk = await getPublicKey(receiverSk);
+
+  const publicNode = nodeIdFromInt(1);
+  const privateRoot = nodeIdFromInt(2);
+  const privateChild = nodeIdFromInt(3);
+  const privateSibling = nodeIdFromInt(4);
+
+  const parentByNodeHex = new Map<string, string | null>([
+    [root, null],
+    [publicNode, root],
+    [privateRoot, root],
+    // Current tree state (after the move below): child is under sibling, both under privateRoot.
+    [privateSibling, privateRoot],
+    [privateChild, privateSibling],
+  ]);
+
+  const scopeEvaluator = ({
+    node,
+    scope,
+  }: {
+    node: Uint8Array;
+    scope: { root: Uint8Array; maxDepth?: number; exclude?: Uint8Array[] };
+  }) => {
+    const rootHex = bytesToHex(scope.root);
+    const excludeHex = new Set((scope.exclude ?? []).map((b) => bytesToHex(b)));
+    const maxDepth = scope.maxDepth;
+
+    let curHex = bytesToHex(node);
+    let distance = 0;
+
+    for (let hops = 0; hops < 10_000; hops += 1) {
+      if (excludeHex.has(curHex)) return "deny" as const;
+      if (curHex === rootHex) {
+        if (maxDepth !== undefined && distance > maxDepth) return "deny" as const;
+        return "allow" as const;
+      }
+
+      // Reserved ids terminate the chain (unless they are the scope root, handled above).
+      if (curHex === root || curHex === "f".repeat(32)) return "deny" as const;
+
+      // If we already traversed `maxDepth` edges without reaching `root`, the node cannot be within scope.
+      if (maxDepth !== undefined && distance >= maxDepth) return "deny" as const;
+
+      const parentHex = parentByNodeHex.get(curHex);
+      if (parentHex === undefined) return "unknown" as const;
+      if (parentHex === null) return "deny" as const;
+
+      curHex = parentHex;
+      distance += 1;
+    }
+
+    // Defensive: cycles or extreme depth.
+    return "unknown" as const;
+  };
+
+  const tokenReceiver = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: receiverPk,
+    docId,
+    actions: ["read_structure"],
+    rootNodeId: root,
+    excludeNodeIds: [privateRoot],
+  });
+
+  const authSender = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: senderSk,
+    localPublicKey: senderPk,
+    requireProofRef: true,
+    scopeEvaluator,
+  });
+
+  const authReceiver = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: receiverSk,
+    localPublicKey: receiverPk,
+    localCapabilityTokens: [tokenReceiver],
+    requireProofRef: true,
+  });
+
+  const receiverCaps = await authReceiver.helloCapabilities?.({ docId });
+  expect(receiverCaps).toBeTruthy();
+
+  const ops: Operation[] = [
+    makeOp(senderPk, 1, 1, { type: "insert", parent: root, node: publicNode, orderKey: orderKeyFromPosition(0) }),
+    makeOp(senderPk, 2, 2, { type: "insert", parent: root, node: privateRoot, orderKey: orderKeyFromPosition(1) }),
+    makeOp(senderPk, 3, 3, { type: "insert", parent: privateRoot, node: privateSibling, orderKey: orderKeyFromPosition(0) }),
+    makeOp(senderPk, 4, 4, { type: "insert", parent: privateRoot, node: privateChild, orderKey: orderKeyFromPosition(1) }),
+    makeOp(senderPk, 5, 5, { type: "move", node: privateChild, newParent: privateSibling, orderKey: orderKeyFromPosition(0) }),
+    makeOp(senderPk, 6, 6, { type: "payload", node: privateChild, payload: new Uint8Array([1, 2, 3]) }),
+    makeOp(senderPk, 7, 7, { type: "delete", node: privateChild }),
+    makeOp(senderPk, 8, 8, { type: "tombstone", node: privateChild }),
+    makeOp(senderPk, 9, 9, { type: "move", node: publicNode, newParent: root, orderKey: orderKeyFromPosition(0) }),
+    makeOp(senderPk, 10, 10, { type: "delete", node: publicNode }),
+  ];
+
+  const allowed = await authSender.filterOutgoingOps?.(ops, {
+    docId,
+    purpose: "reconcile",
+    filter: { all: {} },
+    capabilities: receiverCaps ?? [],
+  });
+
+  expect(allowed).toBeTruthy();
+  expect(allowed?.length).toBe(ops.length);
+
+  // Allowed: ops for the public subtree.
+  expect(allowed?.[0]).toBe(true); // insert(public)
+  expect(allowed?.[8]).toBe(true); // move(public)
+  expect(allowed?.[9]).toBe(true); // delete(public)
+
+  // Denied: everything under the excluded private root (including move/delete/tombstone).
+  for (const i of [1, 2, 3, 4, 5, 6, 7]) {
+    expect(allowed?.[i]).toBe(false);
+  }
+});
