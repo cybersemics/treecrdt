@@ -19,6 +19,8 @@ import {
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
 
+import { prefixPlaygroundStorageKey } from "./playground/storage";
+
 ed25519Hashes.sha512 = sha512;
 
 const AUTH_ENABLED_KEY = "treecrdt-playground-auth-enabled";
@@ -40,32 +42,32 @@ const LEGACY_LOCAL_TOKENS_KEY_PREFIX = "treecrdt-playground-auth-local-tokens:";
 
 function lsGet(key: string): string | null {
   if (typeof window === "undefined") return null;
-  return window.sessionStorage.getItem(key);
+  return window.sessionStorage.getItem(prefixPlaygroundStorageKey(key));
 }
 
 function lsSet(key: string, val: string) {
   if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(key, val);
+  window.sessionStorage.setItem(prefixPlaygroundStorageKey(key), val);
 }
 
 function lsDel(key: string) {
   if (typeof window === "undefined") return;
-  window.sessionStorage.removeItem(key);
+  window.sessionStorage.removeItem(prefixPlaygroundStorageKey(key));
 }
 
 function gsGet(key: string): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(key);
+  return window.localStorage.getItem(prefixPlaygroundStorageKey(key));
 }
 
 function gsSet(key: string, val: string) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(key, val);
+  window.localStorage.setItem(prefixPlaygroundStorageKey(key), val);
 }
 
 function gsDel(key: string) {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(key);
+  window.localStorage.removeItem(prefixPlaygroundStorageKey(key));
 }
 
 function base64urlDecodeSafe(b64: string): Uint8Array | null {
@@ -78,11 +80,12 @@ function base64urlDecodeSafe(b64: string): Uint8Array | null {
 
 async function withGlobalLock<T>(name: string, run: () => Promise<T>): Promise<T> {
   const locks = typeof navigator === "undefined" ? null : (navigator as any).locks;
-  if (locks?.request) return await locks.request(name, run);
+  const lockName = typeof window === "undefined" ? name : prefixPlaygroundStorageKey(name);
+  if (locks?.request) return await locks.request(lockName, run);
 
   // Fallback for browsers without Web Locks API.
   if (typeof window === "undefined") return await run();
-  const lockKey = `treecrdt-playground-lock:${name}`;
+  const lockKey = prefixPlaygroundStorageKey(`treecrdt-playground-lock:${name}`);
   const lockId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
   const now = () => Date.now();
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

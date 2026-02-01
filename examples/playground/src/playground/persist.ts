@@ -1,12 +1,13 @@
 import { bytesToHex } from "@treecrdt/interface/ids";
 
 import type { StorageMode } from "./types";
+import { prefixPlaygroundStorageKey } from "./storage";
 
 export function pickReplicaLabel(): string {
   if (typeof window === "undefined") return `replica-${Math.random().toString(16).slice(2, 6)}`;
   const override = new URLSearchParams(window.location.search).get("replica");
   if (override && override.trim()) return override.trim();
-  const key = "treecrdt-playground-replica";
+  const key = prefixPlaygroundStorageKey("treecrdt-playground-replica");
   const existing = window.localStorage.getItem(key);
   if (existing) return existing;
   const next = `replica-${crypto.randomUUID().slice(0, 8)}`;
@@ -24,7 +25,7 @@ export function initialDocId(): string {
   if (typeof window === "undefined") return "treecrdt-playground";
   const param = new URLSearchParams(window.location.search).get("doc");
   if (param && param.trim()) return param.trim();
-  const key = "treecrdt-playground-doc";
+  const key = prefixPlaygroundStorageKey("treecrdt-playground-doc");
   const existing = window.localStorage.getItem(key);
   if (existing) return existing;
   const next = "treecrdt-playground";
@@ -34,7 +35,7 @@ export function initialDocId(): string {
 
 export function persistDocId(docId: string) {
   if (typeof window === "undefined") return;
-  const key = "treecrdt-playground-doc";
+  const key = prefixPlaygroundStorageKey("treecrdt-playground-doc");
   window.localStorage.setItem(key, docId);
   const url = new URL(window.location.href);
   if (docId) url.searchParams.set("doc", docId);
@@ -69,7 +70,7 @@ function opfsKeyStore(): { get: () => string | null; set: (val: string) => strin
   if (typeof window === "undefined") {
     return { get: () => null, set: (val) => val };
   }
-  const key = "treecrdt-playground-opfs-key";
+  const key = prefixPlaygroundStorageKey("treecrdt-playground-opfs-key");
   return {
     get: () => window.localStorage.getItem(key),
     set: (val: string) => {
@@ -94,7 +95,7 @@ export function persistOpfsKey(val: string): string {
 const PRIVATE_ROOTS_KEY_PREFIX = "treecrdt-playground-private-roots:";
 
 function privateRootsKey(docId: string): string {
-  return `${PRIVATE_ROOTS_KEY_PREFIX}${docId}`;
+  return prefixPlaygroundStorageKey(`${PRIVATE_ROOTS_KEY_PREFIX}${docId}`);
 }
 
 export function loadPrivateRoots(docId: string): Set<string> {

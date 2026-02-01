@@ -90,6 +90,7 @@ import {
   persistStorage,
   pickReplicaLabel,
 } from "./playground/persist";
+import { prefixPlaygroundStorageKey } from "./playground/storage";
 import { applyChildrenLoaded, flattenForSelectState, parentsAffectedByOps } from "./playground/treeState";
 import type {
   CollapseState,
@@ -141,6 +142,9 @@ export default function App() {
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [online, setOnline] = useState(true);
   const [payloadVersion, setPayloadVersion] = useState(0);
+
+  const joinMode =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("join") === "1";
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
@@ -731,12 +735,25 @@ export default function App() {
   };
 
   const makeNewPeerLabel = () => `replica-${crypto.randomUUID().slice(0, 8)}`;
+  const makeNewProfileId = () => `profile-${crypto.randomUUID().slice(0, 8)}`;
 
   const openNewPeerTab = () => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
     url.searchParams.set("replica", makeNewPeerLabel());
+    url.searchParams.delete("auth");
+    url.hash = "";
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
+  };
+
+  const openNewIsolatedPeerTab = () => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("doc", docId);
+    url.searchParams.set("replica", makeNewPeerLabel());
+    url.searchParams.set("profile", makeNewProfileId());
+    url.searchParams.set("join", "1");
     url.searchParams.delete("auth");
     url.hash = "";
     window.open(url.toString(), "_blank", "noopener,noreferrer");
@@ -1115,16 +1132,18 @@ export default function App() {
         let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
 
         const ensureIssuerKeys = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
-          const run = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
-            let { issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId, replicaLabel);
+            const run = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
+              let { issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId, replicaLabel);
 
-            if (!issuerPkB64 && !issuerSkB64) {
-              const { sk, pk } = await generateEd25519KeyPair();
-              await saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
-            }
+              if (!issuerPkB64 && !issuerSkB64) {
+                if (!joinMode) {
+                  const { sk, pk } = await generateEd25519KeyPair();
+                  await saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
+                }
+              }
 
-            // Reload in case another tab raced us.
-            ({ issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId, replicaLabel));
+              // Reload in case another tab raced us.
+              ({ issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId, replicaLabel));
 
             if (issuerSkB64) {
               // Treat issuer secret key as authoritative and force-sync the public key to match it.
@@ -1140,12 +1159,12 @@ export default function App() {
 
           const locks = typeof navigator === "undefined" ? null : (navigator as any).locks;
           if (locks?.request) {
-            return await locks.request(`treecrdt-playground-issuer:${docId}`, run);
+            return await locks.request(prefixPlaygroundStorageKey(`treecrdt-playground-issuer:${docId}`), run);
           }
 
           // Fallback for browsers without Web Locks API.
           if (typeof window === "undefined") return await run();
-          const lockKey = `treecrdt-playground-issuer-lock:${docId}`;
+          const lockKey = prefixPlaygroundStorageKey(`treecrdt-playground-issuer-lock:${docId}`);
           const lockId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
           const now = () => Date.now();
           const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -1245,7 +1264,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authEnabled, client, docId, replicaLabel]);
+  }, [authEnabled, client, docId, replicaLabel, joinMode]);
 
   useEffect(() => {
     if (!client || status !== "ready") return;
@@ -2242,6 +2261,15 @@ export default function App() {
                   title="Open a new peer tab"
                 >
                   <MdOpenInNew className="text-[18px]" />
+                </button>
+                <button
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                  onClick={openNewIsolatedPeerTab}
+                  disabled={typeof window === "undefined"}
+                  type="button"
+                  title="Open an isolated peer tab (separate storage namespace; requires invite)"
+                >
+                  <MdLockOutline className="text-[18px]" />
                 </button>
                 <button
                   className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
