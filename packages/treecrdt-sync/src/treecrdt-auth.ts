@@ -12,6 +12,13 @@ import type { SyncAuth } from "./auth.js";
 import type { Capability, Filter, Hello, HelloAck, OpAuth } from "./types.js";
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
 import { coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
+import {
+  createTreecrdtIdentityChainCapabilityV1,
+  TREECRDT_IDENTITY_CHAIN_CAPABILITY,
+  verifyTreecrdtIdentityChainCapabilityV1,
+  type TreecrdtIdentityChainV1,
+  type VerifiedTreecrdtIdentityChainV1,
+} from "./identity.js";
 
 let ed25519Ready = false;
 function ensureEd25519(): void {
@@ -561,6 +568,8 @@ export type TreecrdtCoseCwtAuthOptions = {
   localPrivateKey: Uint8Array;
   localPublicKey: Uint8Array;
   localCapabilityTokens?: Uint8Array[];
+  localIdentityChain?: TreecrdtIdentityChainV1;
+  onPeerIdentityChain?: (chain: VerifiedTreecrdtIdentityChainV1) => void;
   scopeEvaluator?: TreecrdtScopeEvaluator;
   allowUnsigned?: boolean;
   requireProofRef?: boolean;
@@ -603,13 +612,30 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const recordCapabilities = async (caps: Capability[], docId: string) => {
     for (const cap of caps) {
-      if (cap.name !== "auth.capability") continue;
-      const tokenBytes = base64urlDecode(cap.value);
-      await recordToken(tokenBytes, docId);
+      if (cap.name === "auth.capability") {
+        const tokenBytes = base64urlDecode(cap.value);
+        await recordToken(tokenBytes, docId);
+        continue;
+      }
+
+      if (cap.name === TREECRDT_IDENTITY_CHAIN_CAPABILITY && opts.onPeerIdentityChain) {
+        try {
+          const chain = await verifyTreecrdtIdentityChainCapabilityV1({ capability: cap, docId, nowSec: now });
+          opts.onPeerIdentityChain(chain);
+        } catch {
+          // Identity chains are optional and best-effort; ignore invalid entries.
+        }
+      }
     }
   };
 
-  const helloCaps = (): Capability[] => localTokens.map((t) => ({ name: "auth.capability", value: base64urlEncode(t) }));
+  const helloCaps = (): Capability[] => {
+    const caps = localTokens.map((t) => ({ name: "auth.capability", value: base64urlEncode(t) }));
+    if (opts.localIdentityChain) {
+      caps.push(createTreecrdtIdentityChainCapabilityV1(opts.localIdentityChain));
+    }
+    return caps;
+  };
 
   const selectGrantForOp = async (opts2: {
     docId: string;

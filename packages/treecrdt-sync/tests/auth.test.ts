@@ -12,6 +12,7 @@ import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
 import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
+import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
 import {
   createTreecrdtCoseCwtAuth,
   describeTreecrdtCapabilityTokenV1,
@@ -1004,4 +1005,50 @@ test("auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees"
   for (const i of [1, 2, 3, 4, 5, 6, 7]) {
     expect(allowed?.[i]).toBe(false);
   }
+});
+
+test("auth: records peer identity chain capability via onPeerIdentityChain", async () => {
+  const docId = "doc-auth-identity-chain";
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const localSk = ed25519Utils.randomSecretKey();
+  const localPk = await getPublicKey(localSk);
+
+  const identitySk = ed25519Utils.randomSecretKey();
+  const identityPk = await getPublicKey(identitySk);
+  const deviceSk = ed25519Utils.randomSecretKey();
+  const devicePk = await getPublicKey(deviceSk);
+  const replicaSk = ed25519Utils.randomSecretKey();
+  const replicaPk = await getPublicKey(replicaSk);
+  void replicaSk;
+
+  const deviceCertBytes = issueDeviceCertV1({ identityPrivateKey: identitySk, devicePublicKey: devicePk });
+  const replicaCertBytes = issueReplicaCertV1({ devicePrivateKey: deviceSk, docId, replicaPublicKey: replicaPk });
+  const chainCap = createTreecrdtIdentityChainCapabilityV1({ identityPublicKey: identityPk, deviceCertBytes, replicaCertBytes });
+
+  let seen: { identityPkHex: string; devicePkHex: string; replicaPkHex: string } | null = null;
+
+  const auth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: localSk,
+    localPublicKey: localPk,
+    requireProofRef: true,
+    onPeerIdentityChain: (c) => {
+      seen = {
+        identityPkHex: bytesToHex(c.identityPublicKey),
+        devicePkHex: bytesToHex(c.devicePublicKey),
+        replicaPkHex: bytesToHex(c.replicaPublicKey),
+      };
+    },
+  });
+
+  await auth.onHello?.({ capabilities: [chainCap], filters: [], maxLamport: 0n }, { docId });
+
+  expect(seen).toEqual({
+    identityPkHex: bytesToHex(identityPk),
+    devicePkHex: bytesToHex(devicePk),
+    replicaPkHex: bytesToHex(replicaPk),
+  });
 });

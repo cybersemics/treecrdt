@@ -6,8 +6,10 @@ import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@n
 import { sha512 } from "@noble/hashes/sha512";
 
 import {
+  createTreecrdtIdentityChainCapabilityV1,
   issueDeviceCertV1,
   issueReplicaCertV1,
+  verifyTreecrdtIdentityChainCapabilityV1,
   verifyDeviceCertV1,
   verifyReplicaCertV1,
   verifyReplicaChainV1,
@@ -97,3 +99,31 @@ test("identity v1: replica cert doc mismatch throws when expectedDocId provided"
   ).rejects.toThrow(/doc_id mismatch/i);
 });
 
+test("identity chain v1: capability verifies and binds replica key to doc", async () => {
+  const docId = "doc-identity-chain";
+
+  const identitySk = ed25519Utils.randomSecretKey();
+  const identityPk = await getPublicKey(identitySk);
+
+  const deviceSk = ed25519Utils.randomSecretKey();
+  const devicePk = await getPublicKey(deviceSk);
+
+  const replicaSk = ed25519Utils.randomSecretKey();
+  const replicaPk = await getPublicKey(replicaSk);
+
+  const deviceCertBytes = issueDeviceCertV1({ identityPrivateKey: identitySk, devicePublicKey: devicePk });
+  const replicaCertBytes = issueReplicaCertV1({ devicePrivateKey: deviceSk, docId, replicaPublicKey: replicaPk });
+
+  const cap = createTreecrdtIdentityChainCapabilityV1({
+    identityPublicKey: identityPk,
+    deviceCertBytes,
+    replicaCertBytes,
+  });
+
+  const verified = await verifyTreecrdtIdentityChainCapabilityV1({ capability: cap, docId });
+  expect(bytesToHex(verified.identityPublicKey)).toBe(bytesToHex(identityPk));
+  expect(bytesToHex(verified.devicePublicKey)).toBe(bytesToHex(devicePk));
+  expect(bytesToHex(verified.replicaPublicKey)).toBe(bytesToHex(replicaPk));
+
+  await expect(verifyTreecrdtIdentityChainCapabilityV1({ capability: cap, docId: "other-doc" })).rejects.toThrow(/mismatch/i);
+});

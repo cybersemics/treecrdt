@@ -18,6 +18,15 @@ async function expectAuthEnabledByDefault(page: import("@playwright/test").Page)
   await authToggle.click();
 }
 
+async function enableRevealIdentity(page: import("@playwright/test").Page) {
+  const authToggle = page.getByRole("button", { name: "Auth", exact: true });
+  await authToggle.click();
+  const identityToggle = page.getByRole("button", { name: "Private", exact: true });
+  await identityToggle.click();
+  await expect(page.getByRole("button", { name: "Revealing", exact: true })).toBeVisible({ timeout: 30_000 });
+  await authToggle.click();
+}
+
 function treeRowByNodeId(page: import("@playwright/test").Page, nodeId: string) {
   return page.locator(`[data-testid="tree-row"][data-node-id="${nodeId}"]`);
 }
@@ -192,6 +201,44 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
     await publicRowB.getByRole("textbox").fill("PUBLIC-UPDATED");
     await publicRowB.getByRole("button", { name: "Save" }).click();
     await expect(treeRowByLabel(pageB, "PUBLIC-UPDATED")).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("identity chain is shown when peers reveal identity", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-identity");
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
+    ]);
+    await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
+    await Promise.all([enableRevealIdentity(pageA), enableRevealIdentity(pageB)]);
+
+    // Wait for peer discovery (Sync button enabled).
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("IDENTITY-TEST");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "IDENTITY-TEST")).toBeVisible({ timeout: 30_000 });
+
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(treeRowByLabel(pageB, "IDENTITY-TEST")).toBeVisible({ timeout: 30_000 });
+
+    await pageB.getByTitle("Toggle operations panel").click();
+    const opsPanel = pageB.locator("aside", { hasText: "Operations" });
+    await expect(opsPanel).toBeVisible({ timeout: 30_000 });
+    await expect(opsPanel.getByText(/identity/i)).toBeVisible({ timeout: 30_000 });
   } finally {
     await context.close();
   }

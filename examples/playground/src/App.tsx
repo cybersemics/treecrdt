@@ -8,6 +8,7 @@ import {
   base64urlDecode,
   base64urlEncode,
   createTreecrdtCoseCwtAuth,
+  createTreecrdtIdentityChainCapabilityV1,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   createTreecrdtSyncSqlitePendingOpsStore,
   describeTreecrdtCapabilityTokenV1,
@@ -36,6 +37,7 @@ import { IoMdGitBranch } from "react-icons/io";
 
 import {
   clearAuthMaterial,
+  createLocalIdentityChainV1,
   createCapabilityTokenV1,
   decodeInvitePayload,
   encodeInvitePayload,
@@ -45,8 +47,10 @@ import {
   getSealedIssuerKeyB64,
   importDeviceWrapKeyB64,
   initialAuthEnabled,
+  initialRevealIdentity,
   loadOrCreateDocPayloadKeyB64,
   loadAuthMaterial,
+  persistRevealIdentity,
   persistAuthEnabled,
   saveDocPayloadKeyB64,
   saveIssuerKeys,
@@ -140,6 +144,7 @@ export default function App() {
   const replicaLabel = useMemo(pickReplicaLabel, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
+  const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
   const [showAuthPanel, setShowAuthPanel] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -154,6 +159,7 @@ export default function App() {
   }));
   const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
   const docPayloadKeyRef = useRef<Uint8Array | null>(null);
+  const localIdentityChainPromiseRef = useRef<Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null>(null);
   const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
 
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
@@ -172,6 +178,8 @@ export default function App() {
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
+  const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
+  const [identityVersion, setIdentityVersion] = useState(0);
   const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
   const privateRootsCount = useMemo(
     () => Array.from(privateRoots).filter((id) => id !== ROOT_ID).length,
@@ -182,9 +190,31 @@ export default function App() {
     [privateRoots, inviteRoot]
   );
 
+  const onPeerIdentityChain = React.useCallback(
+    (chain: { identityPublicKey: Uint8Array; devicePublicKey: Uint8Array; replicaPublicKey: Uint8Array }) => {
+      const replicaHex = bytesToHex(chain.replicaPublicKey);
+      const existing = identityByReplicaRef.current.get(replicaHex);
+      if (
+        existing &&
+        bytesToHex(existing.identityPk) === bytesToHex(chain.identityPublicKey) &&
+        bytesToHex(existing.devicePk) === bytesToHex(chain.devicePublicKey)
+      ) {
+        return;
+      }
+      identityByReplicaRef.current.set(replicaHex, { identityPk: chain.identityPublicKey, devicePk: chain.devicePublicKey });
+      setIdentityVersion((v) => v + 1);
+    },
+    []
+  );
+
   useEffect(() => {
     setPrivateRoots(loadPrivateRoots(docId));
   }, [docId]);
+
+  useEffect(() => {
+    // Local identity chains are doc-bound (replica cert includes `docId`) and depend on the current replica key.
+    localIdentityChainPromiseRef.current = null;
+  }, [docId, authMaterial.localPkB64, revealIdentity]);
 
   const togglePrivateRoot = (id: string) => {
     if (id === ROOT_ID) return;
@@ -216,6 +246,22 @@ export default function App() {
     docPayloadKeyRef.current = base64urlDecode(keyB64);
     return docPayloadKeyRef.current;
   }, [docId]);
+
+  const getLocalIdentityChain = React.useCallback(async () => {
+    if (!revealIdentity) return null;
+    const pkB64 = authMaterial.localPkB64;
+    if (!pkB64) return null;
+
+    if (!localIdentityChainPromiseRef.current) {
+      const replicaPk = base64urlDecode(pkB64);
+      localIdentityChainPromiseRef.current = createLocalIdentityChainV1({ docId, replicaPublicKey: replicaPk }).catch((err) => {
+        console.error("Failed to create identity chain", err);
+        return null;
+      });
+    }
+
+    return await localIdentityChainPromiseRef.current;
+  }, [authMaterial.localPkB64, docId, revealIdentity]);
 
   useEffect(() => {
     docPayloadKeyRef.current = null;
@@ -972,6 +1018,10 @@ export default function App() {
   }, [authEnabled]);
 
   useEffect(() => {
+    persistRevealIdentity(revealIdentity);
+  }, [revealIdentity]);
+
+  useEffect(() => {
     if (!authEnabled) setPendingOps([]);
   }, [authEnabled]);
 
@@ -1199,20 +1249,22 @@ export default function App() {
       return;
     }
 
-    const peerAuthConfig =
-      authEnabled &&
-      authMaterial.issuerPkB64 &&
-      authMaterial.localSkB64 &&
-      authMaterial.localPkB64 &&
-      authMaterial.localTokensB64.length > 0
-        ? {
-            issuerPk: base64urlDecode(authMaterial.issuerPkB64),
-            localSk: base64urlDecode(authMaterial.localSkB64),
-            localPk: base64urlDecode(authMaterial.localPkB64),
-            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
-            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
-          }
-        : null;
+	    const peerAuthConfig =
+	      authEnabled &&
+	      authMaterial.issuerPkB64 &&
+	      authMaterial.localSkB64 &&
+	      authMaterial.localPkB64 &&
+	      authMaterial.localTokensB64.length > 0
+	        ? {
+	            issuerPk: base64urlDecode(authMaterial.issuerPkB64),
+	            localSk: base64urlDecode(authMaterial.localSkB64),
+	            localPk: base64urlDecode(authMaterial.localPkB64),
+	            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
+	            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
+	            getLocalIdentityChain,
+	            onPeerIdentityChain,
+	          }
+	        : null;
 
     if (authEnabled && !peerAuthConfig) {
       setSyncError(authError ?? "Auth enabled: initializing keys/tokens...");
@@ -1316,22 +1368,51 @@ export default function App() {
           });
         },
       };
-      const peer = new SyncPeer<Operation>(backend, {
-        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-        ...(peerAuthConfig
-          ? {
-              auth: createTreecrdtCoseCwtAuth({
-                issuerPublicKeys: [peerAuthConfig.issuerPk],
-                localPrivateKey: peerAuthConfig.localSk,
-                localPublicKey: peerAuthConfig.localPk,
-                localCapabilityTokens: peerAuthConfig.localTokens,
-                requireProofRef: true,
-                scopeEvaluator: peerAuthConfig.scopeEvaluator,
-              }),
-            }
-          : {}),
-      });
+	      const peer = new SyncPeer<Operation>(backend, {
+	        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+	        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+	        ...(peerAuthConfig
+	          ? {
+	              auth: (() => {
+	                const baseAuth = createTreecrdtCoseCwtAuth({
+	                  issuerPublicKeys: [peerAuthConfig.issuerPk],
+	                  localPrivateKey: peerAuthConfig.localSk,
+	                  localPublicKey: peerAuthConfig.localPk,
+	                  localCapabilityTokens: peerAuthConfig.localTokens,
+	                  requireProofRef: true,
+	                  scopeEvaluator: peerAuthConfig.scopeEvaluator,
+	                  onPeerIdentityChain: peerAuthConfig.onPeerIdentityChain,
+	                });
+
+	                const withIdentity: typeof baseAuth = {
+	                  ...baseAuth,
+	                  helloCapabilities: async (ctx) => {
+	                    const caps = (await baseAuth.helloCapabilities?.(ctx)) ?? [];
+	                    try {
+	                      const chain = await peerAuthConfig.getLocalIdentityChain();
+	                      if (chain) caps.push(createTreecrdtIdentityChainCapabilityV1(chain));
+	                    } catch {
+	                      // Best-effort; identity chains are optional.
+	                    }
+	                    return caps;
+	                  },
+	                  onHello: async (hello, ctx) => {
+	                    const ackCaps = (await baseAuth.onHello?.(hello, ctx)) ?? [];
+	                    try {
+	                      const chain = await peerAuthConfig.getLocalIdentityChain();
+	                      if (chain) ackCaps.push(createTreecrdtIdentityChainCapabilityV1(chain));
+	                    } catch {
+	                      // Best-effort; identity chains are optional.
+	                    }
+	                    return ackCaps;
+	                  },
+	                };
+
+	                return withIdentity;
+	              })(),
+	            }
+	          : {}),
+	      });
       const detach = peer.attach(transport);
       connections.set(peerId, { transport, peer, detach });
 
@@ -1416,7 +1497,7 @@ export default function App() {
       connections.clear();
       setPeers([]);
     };
-  }, [authEnabled, authError, authMaterial, client, docId, replicaLabel, status]);
+  }, [authEnabled, authError, authMaterial, client, docId, getLocalIdentityChain, onPeerIdentityChain, replicaLabel, revealIdentity, status]);
 
   useEffect(() => {
     return () => {
@@ -2426,24 +2507,51 @@ export default function App() {
                     </button>
                   </div>
                   <div className="mt-2 text-[11px] text-slate-400">{pendingOps.length} pending</div>
-	                  {pendingOps.length > 0 && (
-	                    <div className="mt-2 max-h-28 overflow-auto pr-1">
-	                      {pendingOps.map((p) => (
-	                        <div key={p.id} className="flex items-center justify-between gap-2 py-1">
-	                          <span className="font-mono text-[11px] text-slate-200">
-	                            {p.id} <span className="text-slate-500">{p.kind}</span>
-	                          </span>
-	                          <span className="text-[10px] text-slate-500">{p.message ?? ""}</span>
-	                        </div>
-	                      ))}
-	                    </div>
-	                  )}
-	                </div>
+		                  {pendingOps.length > 0 && (
+		                    <div className="mt-2 max-h-28 overflow-auto pr-1">
+		                      {pendingOps.map((p) => (
+		                        <div key={p.id} className="flex items-center justify-between gap-2 py-1">
+		                          <span className="font-mono text-[11px] text-slate-200">
+		                            {p.id} <span className="text-slate-500">{p.kind}</span>
+		                          </span>
+		                          <span className="text-[10px] text-slate-500">{p.message ?? ""}</span>
+		                        </div>
+		                      ))}
+		                    </div>
+		                  )}
+		                </div>
 
-	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-	                  <div className="flex items-center justify-between gap-2">
-	                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Private subtrees</div>
-	                    <button
+		                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+		                  <div className="flex items-center justify-between gap-2">
+		                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Identity</div>
+		                    <button
+		                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+		                        revealIdentity
+		                          ? "border-amber-400/70 bg-amber-500/10 text-amber-100 hover:border-amber-300"
+		                          : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
+		                      }`}
+		                      type="button"
+		                      onClick={() => setRevealIdentity((v) => !v)}
+		                      disabled={authBusy}
+		                      title={
+		                        revealIdentity
+		                          ? "Stop advertising an identity chain (unlinkable by default)"
+		                          : "Advertise an identity chain (identity→device→replica) so peers can attribute signatures"
+		                      }
+		                    >
+		                      {revealIdentity ? "Revealing" : "Private"}
+		                    </button>
+		                  </div>
+		                  <div className="mt-1 text-[11px] text-slate-500">
+		                    When enabled, this tab advertises an identity chain so peers can attribute signatures. This is linkable across
+		                    documents; keep disabled for unlinkable-by-default privacy.
+		                  </div>
+		                </div>
+
+		                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+		                  <div className="flex items-center justify-between gap-2">
+		                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Private subtrees</div>
+		                    <button
 	                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
 	                      type="button"
 	                      onClick={clearPrivateRoots}
@@ -2700,14 +2808,21 @@ export default function App() {
                     {opsVirtualizer.getVirtualItems().map((item) => {
                       const op = ops[item.index];
                       if (!op) return null;
-                      const signerHex = bytesToHex(op.meta.id.replica);
-                      const signerShort =
-                        signerHex.length > 24 ? `${signerHex.slice(0, 12)}…${signerHex.slice(-8)}` : signerHex;
-                      const signerKeyIdHex = bytesToHex(deriveKeyIdV1(op.meta.id.replica));
-                      const signerKeyIdShort =
-                        signerKeyIdHex.length > 16 ? `${signerKeyIdHex.slice(0, 8)}…${signerKeyIdHex.slice(-4)}` : signerKeyIdHex;
-                      const isLocalSigner = localReplicaHex ? signerHex === localReplicaHex : false;
-                      return (
+	                      const signerHex = bytesToHex(op.meta.id.replica);
+	                      const signerShort =
+	                        signerHex.length > 24 ? `${signerHex.slice(0, 12)}…${signerHex.slice(-8)}` : signerHex;
+	                      const signerKeyIdHex = bytesToHex(deriveKeyIdV1(op.meta.id.replica));
+	                      const signerKeyIdShort =
+	                        signerKeyIdHex.length > 16 ? `${signerKeyIdHex.slice(0, 8)}…${signerKeyIdHex.slice(-4)}` : signerKeyIdHex;
+	                      const identity = identityByReplicaRef.current.get(signerHex);
+	                      const identityKeyIdHex = identity ? bytesToHex(deriveKeyIdV1(identity.identityPk)) : null;
+	                      const identityKeyIdShort =
+	                        identityKeyIdHex && identityKeyIdHex.length > 16
+	                          ? `${identityKeyIdHex.slice(0, 8)}…${identityKeyIdHex.slice(-4)}`
+	                          : identityKeyIdHex;
+	                      const identityPkHex = identity ? bytesToHex(identity.identityPk) : null;
+	                      const isLocalSigner = localReplicaHex ? signerHex === localReplicaHex : false;
+	                      return (
                         <div
                           key={item.key}
                           data-index={item.index}
@@ -2749,14 +2864,21 @@ export default function App() {
                                 {isLocalSigner ? " (local)" : ""}
                               </span>
                             </div>
-                            <div className="mt-0.5 text-[10px] text-slate-500">
-                              <span className="font-mono" title={signerKeyIdHex}>
-                                keyId {signerKeyIdShort}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      );
+	                            <div className="mt-0.5 text-[10px] text-slate-500">
+	                              <span className="font-mono" title={signerKeyIdHex}>
+	                                keyId {signerKeyIdShort}
+	                              </span>
+	                            </div>
+	                            {identity && identityKeyIdHex && (
+	                              <div className="mt-0.5 text-[10px] text-slate-500">
+	                                <span className="font-mono" title={identityPkHex ?? ""}>
+	                                  identity {identityKeyIdShort}
+	                                </span>
+	                              </div>
+	                            )}
+	                          </div>
+	                        </div>
+	                      );
                     })}
                   </div>
                 )}

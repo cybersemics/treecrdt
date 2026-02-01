@@ -3,6 +3,8 @@ import {
   base64urlEncode,
   generateTreecrdtDeviceWrapKeyV1,
   generateTreecrdtDocPayloadKeyV1,
+  issueDeviceCertV1,
+  issueReplicaCertV1,
   issueTreecrdtCapabilityTokenV1,
   openTreecrdtDocPayloadKeyV1,
   openTreecrdtIssuerKeyV1,
@@ -10,6 +12,7 @@ import {
   sealTreecrdtDocPayloadKeyV1,
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
+  type TreecrdtIdentityChainV1,
   type TreecrdtDeviceWrapKeyV1,
 } from "@treecrdt/sync";
 
@@ -19,12 +22,15 @@ import { sha512 } from "@noble/hashes/sha512";
 ed25519Hashes.sha512 = sha512;
 
 const AUTH_ENABLED_KEY = "treecrdt-playground-auth-enabled";
+const REVEAL_IDENTITY_KEY = "treecrdt-playground-reveal-identity";
 const DEVICE_WRAP_KEY_KEY = "treecrdt-playground-device-wrap-key:v1";
 
 const ISSUER_PK_KEY_PREFIX = "treecrdt-playground-auth-issuer-pk:";
 const ISSUER_SK_SEALED_KEY_PREFIX = "treecrdt-playground-auth-issuer-sk-sealed:";
 const LOCAL_IDENTITY_SEALED_KEY_PREFIX = "treecrdt-playground-auth-local-identity-sealed:";
 const DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX = "treecrdt-playground-e2ee-doc-payload-key-sealed:";
+const IDENTITY_SK_SEALED_KEY = "treecrdt-playground-identity-sk-sealed:v1";
+const DEVICE_SIGNING_SK_SEALED_KEY = "treecrdt-playground-device-signing-sk-sealed:v1";
 
 // Legacy (plaintext) keys: auto-migrated and deleted on load.
 const LEGACY_ISSUER_SK_KEY_PREFIX = "treecrdt-playground-auth-issuer-sk:";
@@ -200,6 +206,22 @@ export function persistAuthEnabled(enabled: boolean) {
   const url = new URL(window.location.href);
   url.searchParams.set("auth", enabled ? "1" : "0");
   window.history.replaceState({}, "", url);
+}
+
+export function initialRevealIdentity(): boolean {
+  if (typeof window === "undefined") return false;
+  const param = new URLSearchParams(window.location.search).get("revealIdentity");
+  if (param === "0") return false;
+  if (param === "1") return true;
+  const stored = lsGet(REVEAL_IDENTITY_KEY);
+  if (stored === "0") return false;
+  if (stored === "1") return true;
+  return false;
+}
+
+export function persistRevealIdentity(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  lsSet(REVEAL_IDENTITY_KEY, enabled ? "1" : "0");
 }
 
 export type StoredAuthMaterial = {
@@ -379,6 +401,66 @@ export async function generateEd25519KeyPair(): Promise<{ sk: Uint8Array; pk: Ui
 
 export async function deriveEd25519PublicKey(secretKey: Uint8Array): Promise<Uint8Array> {
   return await getPublicKey(secretKey);
+}
+
+async function loadOrCreateGlobalIssuerLikeKeyPairBytes(opts: { storageKey: string; docId: string }) {
+  const wrapKey = requireDeviceWrapKeyBytes();
+  await withGlobalLock(`playground-global-key:${opts.docId}`, async () => {
+    if (gsGet(opts.storageKey)) return;
+    const { sk } = await generateEd25519KeyPair();
+    const sealed = await sealTreecrdtIssuerKeyV1({ wrapKey, docId: opts.docId, issuerSk: sk });
+    gsSet(opts.storageKey, base64urlEncode(sealed));
+  });
+
+  const sealedB64 = gsGet(opts.storageKey);
+  if (!sealedB64) throw new Error("global key is missing after initialization");
+  const sealedBytes = base64urlDecodeSafe(sealedB64);
+  if (!sealedBytes) throw new Error("global key blob is not valid base64url");
+
+  const opened = await openTreecrdtIssuerKeyV1({ wrapKey, docId: opts.docId, sealed: sealedBytes });
+  return { sk: opened.issuerSk, pk: opened.issuerPk };
+}
+
+export async function loadOrCreateIdentityKeyPair(): Promise<{ sk: Uint8Array; pk: Uint8Array }> {
+  return await loadOrCreateGlobalIssuerLikeKeyPairBytes({
+    storageKey: IDENTITY_SK_SEALED_KEY,
+    docId: "__treecrdt_playground_identity__",
+  });
+}
+
+export async function loadOrCreateDeviceSigningKeyPair(): Promise<{ sk: Uint8Array; pk: Uint8Array }> {
+  return await loadOrCreateGlobalIssuerLikeKeyPairBytes({
+    storageKey: DEVICE_SIGNING_SK_SEALED_KEY,
+    docId: "__treecrdt_playground_device_signing__",
+  });
+}
+
+export async function createLocalIdentityChainV1(opts: {
+  docId: string;
+  replicaPublicKey: Uint8Array;
+}): Promise<TreecrdtIdentityChainV1> {
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+  if (!(opts.replicaPublicKey instanceof Uint8Array)) throw new Error("replicaPublicKey must be bytes");
+
+  const identity = await loadOrCreateIdentityKeyPair();
+  const device = await loadOrCreateDeviceSigningKeyPair();
+
+  const deviceCertBytes = issueDeviceCertV1({
+    identityPrivateKey: identity.sk,
+    devicePublicKey: device.pk,
+  });
+
+  const replicaCertBytes = issueReplicaCertV1({
+    devicePrivateKey: device.sk,
+    docId: opts.docId,
+    replicaPublicKey: opts.replicaPublicKey,
+  });
+
+  return {
+    identityPublicKey: identity.pk,
+    deviceCertBytes,
+    replicaCertBytes,
+  };
 }
 
 export function createCapabilityTokenV1(opts: {

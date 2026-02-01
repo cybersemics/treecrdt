@@ -1,6 +1,8 @@
 import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 import { coseSign1Ed25519, coseVerifySign1Ed25519 } from "./cose.js";
+import { base64urlDecode, base64urlEncode } from "./base64url.js";
+import type { Capability } from "./types.js";
 
 const ED25519_PUBLIC_KEY_LEN = 32;
 
@@ -49,6 +51,9 @@ function get(map: Map<unknown, unknown>, key: string): unknown {
 
 const DEVICE_CERT_V1_TAG = "treecrdt/device-cert/v1";
 const REPLICA_CERT_V1_TAG = "treecrdt/replica-cert/v1";
+const IDENTITY_CHAIN_V1_TAG = "treecrdt/identity-chain/v1";
+
+export const TREECRDT_IDENTITY_CHAIN_CAPABILITY = "auth.identity_chain";
 
 export type DeviceCertV1Claims = {
   devicePublicKey: Ed25519PublicKey;
@@ -208,3 +213,71 @@ export async function verifyReplicaChainV1(opts: {
   return { devicePublicKey: device.devicePublicKey, replicaPublicKey: replica.replicaPublicKey };
 }
 
+export type TreecrdtIdentityChainV1 = {
+  identityPublicKey: Ed25519PublicKey;
+  deviceCertBytes: Uint8Array;
+  replicaCertBytes: Uint8Array;
+};
+
+export type VerifiedTreecrdtIdentityChainV1 = TreecrdtIdentityChainV1 & {
+  devicePublicKey: Ed25519PublicKey;
+  replicaPublicKey: Ed25519PublicKey;
+};
+
+export function encodeTreecrdtIdentityChainV1(chain: TreecrdtIdentityChainV1): Uint8Array {
+  assertEd25519PublicKey(chain.identityPublicKey, "identityPublicKey");
+  assertBytes(chain.deviceCertBytes, "deviceCertBytes");
+  assertBytes(chain.replicaCertBytes, "replicaCertBytes");
+
+  const claims = new Map<unknown, unknown>();
+  claims.set("v", 1);
+  claims.set("t", IDENTITY_CHAIN_V1_TAG);
+  claims.set("identity_pk", chain.identityPublicKey);
+  claims.set("device_cert", chain.deviceCertBytes);
+  claims.set("replica_cert", chain.replicaCertBytes);
+  return encodeCbor(claims);
+}
+
+export function decodeTreecrdtIdentityChainV1(bytes: Uint8Array): TreecrdtIdentityChainV1 {
+  const decoded = decodeCbor(bytes);
+  const map = assertPayloadMap(decoded, "IdentityChainV1");
+
+  const v = get(map, "v");
+  if (v !== 1) throw new Error("IdentityChainV1.v must be 1");
+  const t = assertString(get(map, "t"), "IdentityChainV1.t");
+  if (t !== IDENTITY_CHAIN_V1_TAG) throw new Error("IdentityChainV1.t mismatch");
+
+  const identityPk = assertEd25519PublicKey(get(map, "identity_pk"), "IdentityChainV1.identity_pk");
+  const deviceCertBytes = assertBytes(get(map, "device_cert"), "IdentityChainV1.device_cert");
+  const replicaCertBytes = assertBytes(get(map, "replica_cert"), "IdentityChainV1.replica_cert");
+  return { identityPublicKey: identityPk, deviceCertBytes, replicaCertBytes };
+}
+
+export function createTreecrdtIdentityChainCapabilityV1(chain: TreecrdtIdentityChainV1): Capability {
+  return { name: TREECRDT_IDENTITY_CHAIN_CAPABILITY, value: base64urlEncode(encodeTreecrdtIdentityChainV1(chain)) };
+}
+
+export async function verifyTreecrdtIdentityChainCapabilityV1(opts: {
+  capability: Capability;
+  docId: string;
+  expectedReplicaPublicKey?: Ed25519PublicKey;
+  nowSec?: () => number;
+}): Promise<VerifiedTreecrdtIdentityChainV1> {
+  if (opts.capability.name !== TREECRDT_IDENTITY_CHAIN_CAPABILITY) {
+    throw new Error(`unexpected capability: ${opts.capability.name}`);
+  }
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+
+  const bytes = base64urlDecode(opts.capability.value);
+  const parsed = decodeTreecrdtIdentityChainV1(bytes);
+  const verified = await verifyReplicaChainV1({
+    identityPublicKey: parsed.identityPublicKey,
+    deviceCertBytes: parsed.deviceCertBytes,
+    replicaCertBytes: parsed.replicaCertBytes,
+    expectedDocId: opts.docId,
+    expectedReplicaPublicKey: opts.expectedReplicaPublicKey,
+    nowSec: opts.nowSec,
+  });
+
+  return { ...parsed, devicePublicKey: verified.devicePublicKey, replicaPublicKey: verified.replicaPublicKey };
+}
