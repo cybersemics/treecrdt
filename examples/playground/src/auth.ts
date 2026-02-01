@@ -124,21 +124,24 @@ async function withGlobalLock<T>(name: string, run: () => Promise<T>): Promise<T
   }
 }
 
-function requireDeviceWrapKeyBytes(): TreecrdtDeviceWrapKeyV1 {
+async function requireDeviceWrapKeyBytes(): Promise<TreecrdtDeviceWrapKeyV1> {
   if (typeof window === "undefined") throw new Error("window is undefined");
-  const existing = gsGet(DEVICE_WRAP_KEY_KEY);
-  if (!existing) {
-    const wrapKey = generateTreecrdtDeviceWrapKeyV1();
-    const b64 = base64urlEncode(wrapKey);
-    gsSet(DEVICE_WRAP_KEY_KEY, b64);
-    return wrapKey;
-  }
 
-  const bytes = base64urlDecodeSafe(existing);
-  if (!bytes || bytes.length !== 32) {
-    throw new Error("device wrap key is invalid; reset storage or import a valid key");
-  }
-  return bytes;
+  return await withGlobalLock("treecrdt-playground-device-wrap-key:v1", async () => {
+    const existing = gsGet(DEVICE_WRAP_KEY_KEY);
+    if (!existing) {
+      const wrapKey = generateTreecrdtDeviceWrapKeyV1();
+      const b64 = base64urlEncode(wrapKey);
+      gsSet(DEVICE_WRAP_KEY_KEY, b64);
+      return wrapKey;
+    }
+
+    const bytes = base64urlDecodeSafe(existing);
+    if (!bytes || bytes.length !== 32) {
+      throw new Error("device wrap key is invalid; reset storage or import a valid key");
+    }
+    return bytes;
+  });
 }
 
 export function getDeviceWrapKeyB64(): string | null {
@@ -162,7 +165,7 @@ export async function loadOrCreateDocPayloadKeyB64(docId: string): Promise<strin
   if (!docId || docId.trim().length === 0) throw new Error("docId must not be empty");
 
   return await withGlobalLock(`treecrdt-playground-doc-payload-key:${docId}`, async () => {
-    const wrapKey = requireDeviceWrapKeyBytes();
+    const wrapKey = await requireDeviceWrapKeyBytes();
     const sealedKey = `${DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX}${docId}`;
 
     if (!gsGet(sealedKey)) {
@@ -186,7 +189,7 @@ export async function saveDocPayloadKeyB64(docId: string, payloadKeyB64: string)
   const payloadKey = base64urlDecodeSafe(payloadKeyB64.trim());
   if (!payloadKey || payloadKey.length !== 32) throw new Error("payload key must be a base64url-encoded 32-byte value");
 
-  const wrapKey = requireDeviceWrapKeyBytes();
+  const wrapKey = await requireDeviceWrapKeyBytes();
   const sealed = await sealTreecrdtDocPayloadKeyV1({ wrapKey, docId, payloadKey });
   gsSet(`${DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX}${docId}`, base64urlEncode(sealed));
 }
@@ -236,7 +239,7 @@ export type StoredAuthMaterial = {
 };
 
 export async function loadAuthMaterial(docId: string, replicaLabel: string): Promise<StoredAuthMaterial> {
-  const wrapKey = requireDeviceWrapKeyBytes();
+  const wrapKey = await requireDeviceWrapKeyBytes();
 
   const pkKey = `${ISSUER_PK_KEY_PREFIX}${docId}`;
   const legacyIssuerSkKey = `${LEGACY_ISSUER_SK_KEY_PREFIX}${docId}`;
@@ -374,7 +377,7 @@ export async function saveIssuerKeys(
 
   // Avoid clobbering issuer keys when multiple tabs initialize concurrently.
   if (issuerSkB64 && !gsGet(skKey)) {
-    const wrapKey = requireDeviceWrapKeyBytes();
+    const wrapKey = await requireDeviceWrapKeyBytes();
     const issuerSk = base64urlDecode(issuerSkB64);
     const sealed = await sealTreecrdtIssuerKeyV1({ wrapKey, docId, issuerSk });
     gsSet(skKey, base64urlEncode(sealed));
@@ -387,7 +390,7 @@ async function readLocalIdentityOrNull(docId: string, replicaLabel: string): Pro
   localSk: Uint8Array;
   localTokens: Uint8Array[];
 } | null> {
-  const wrapKey = requireDeviceWrapKeyBytes();
+  const wrapKey = await requireDeviceWrapKeyBytes();
   const sealedB64 = lsGet(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:${replicaLabel}`);
   if (!sealedB64) return null;
   const sealed = base64urlDecodeSafe(sealedB64);
@@ -397,7 +400,7 @@ async function readLocalIdentityOrNull(docId: string, replicaLabel: string): Pro
 }
 
 async function writeLocalIdentity(docId: string, replicaLabel: string, localSk: Uint8Array, localTokens: Uint8Array[]) {
-  const wrapKey = requireDeviceWrapKeyBytes();
+  const wrapKey = await requireDeviceWrapKeyBytes();
   const sealed = await sealTreecrdtLocalIdentityV1({ wrapKey, docId, replicaLabel, localSk, localTokens });
   lsSet(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:${replicaLabel}`, base64urlEncode(sealed));
 }
@@ -435,7 +438,7 @@ export async function deriveEd25519PublicKey(secretKey: Uint8Array): Promise<Uin
 }
 
 async function loadOrCreateGlobalIssuerLikeKeyPairBytes(opts: { storageKey: string; docId: string }) {
-  const wrapKey = requireDeviceWrapKeyBytes();
+  const wrapKey = await requireDeviceWrapKeyBytes();
   await withGlobalLock(`playground-global-key:${opts.docId}`, async () => {
     if (gsGet(opts.storageKey)) return;
     const { sk } = await generateEd25519KeyPair();

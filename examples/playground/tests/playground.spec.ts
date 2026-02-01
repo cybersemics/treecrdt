@@ -9,6 +9,10 @@ function uniqueDocId(prefix: string): string {
 async function waitForReady(page: import("@playwright/test").Page, path: string) {
   await page.goto(path);
   await expect(page.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
+  const isJoinMode = new URL(path, "http://localhost").searchParams.get("join") === "1";
+  if (!isJoinMode) {
+    await expect(page.getByText("Replica (pubkey):").locator("..")).toContainText(/[0-9a-f]{64}/, { timeout: 60_000 });
+  }
   await expect(treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" })).toBeEnabled({ timeout: 60_000 });
 }
 
@@ -26,6 +30,16 @@ async function enableRevealIdentity(page: import("@playwright/test").Page) {
   await identityToggle.click();
   await expect(page.getByRole("button", { name: "Revealing", exact: true })).toBeVisible({ timeout: 30_000 });
   await authToggle.click();
+}
+
+async function readDeviceWrapKeyB64(page: import("@playwright/test").Page): Promise<string> {
+  const authToggle = page.getByRole("button", { name: "Auth", exact: true });
+  await authToggle.click();
+  const card = page.getByText("Device wrap key", { exact: true }).locator("..").locator("..");
+  const wrapKey = await card.locator("div.font-mono").first().getAttribute("title");
+  await authToggle.click();
+  if (!wrapKey) throw new Error("expected device wrap key");
+  return wrapKey;
 }
 
 function treeRowByNodeId(page: import("@playwright/test").Page, nodeId: string) {
@@ -346,6 +360,107 @@ test("identity key blobs can be exported and imported", async ({ browser }) => {
     await deviceSigningCard.getByPlaceholder("Paste sealed device signing key blob (base64url)").fill(deviceSigningBlob);
     await deviceSigningCard.getByRole("button", { name: "Import", exact: true }).click();
     await expect(deviceSigningCard.getByRole("button", { name: "Copy", exact: true })).toBeEnabled({ timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("isolated peer tab uses separate storage namespace and requires invite", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-isolated");
+  const profile = `pw-iso-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b&profile=${encodeURIComponent(profile)}&join=1`),
+    ]);
+
+    await expectAuthEnabledByDefault(pageA);
+
+    const wrapKeyA = await readDeviceWrapKeyB64(pageA);
+    const wrapKeyB = await readDeviceWrapKeyB64(pageB);
+    expect(wrapKeyB).not.toBe(wrapKeyA);
+
+    // Create a public node and a private root on A.
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("public");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "public")).toBeVisible({ timeout: 30_000 });
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-placeholder");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const placeholderRowA = treeRowByLabel(pageA, "secret-placeholder");
+    await expect(placeholderRowA).toBeVisible({ timeout: 30_000 });
+
+    const secretNodeId = await placeholderRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+    const secretRowA = treeRowByNodeId(pageA, secretNodeId);
+    const privacyToggleA = secretRowA.getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    // Generate invite link on A.
+    await pageA.getByRole("button", { name: "Auth", exact: true }).click();
+    await pageA.getByRole("button", { name: "Generate" }).click();
+    await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
+    const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
+
+    // Import invite link on B (isolated storage namespace; join-mode requires invite).
+    await pageB.getByRole("button", { name: "Auth", exact: true }).click();
+    const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
+    await inviteInput.fill(inviteLink);
+    await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();
+
+    // Wait for peer discovery (Sync button enabled).
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    // Push ops from A to B.
+    const publicRowBLabel = treeRowByLabel(pageB, "public");
+    const syncErrorA = pageA.getByTestId("sync-error");
+    const syncErrorB = pageB.getByTestId("sync-error");
+
+    const waitForPublicOrError = async () => {
+      await Promise.race([
+        publicRowBLabel.waitFor({ state: "visible", timeout: 30_000 }),
+        (async () => {
+          await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+          throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+        })(),
+        (async () => {
+          await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
+          throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
+        })(),
+      ]);
+    };
+
+    let pushed = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+      try {
+        await waitForPublicOrError();
+        pushed = true;
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const initializing = msg.includes("initializing keys/tokens");
+        if (msg.startsWith("sync error") && !initializing) throw err;
+        if (attempt < 2) {
+          await pageA.waitForTimeout(250);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!pushed) throw new Error("failed to sync public node");
+
+    await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
   } finally {
     await context.close();
   }

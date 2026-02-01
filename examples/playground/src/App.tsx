@@ -1296,6 +1296,8 @@ export default function App() {
       return;
     }
 
+    setSyncError((prev) => (prev && prev.includes("initializing keys/tokens") ? null : prev));
+
     const debugSync =
       typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
 
