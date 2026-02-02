@@ -10,6 +10,7 @@ import {
   MdLockOpen,
   MdLockOutline,
   MdOutlineRssFeed,
+  MdShare,
 } from "react-icons/md";
 
 import { ROOT_ID } from "../constants";
@@ -29,6 +30,7 @@ export function TreeRow({
   onToggleLiveChildren,
   privateRoots,
   onTogglePrivateRoot,
+  onShare,
   meta,
   childrenByParent,
 }: {
@@ -45,6 +47,7 @@ export function TreeRow({
   onToggleLiveChildren: (id: string) => void;
   privateRoots: Set<string>;
   onTogglePrivateRoot: (id: string) => void;
+  onShare: (id: string) => void;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
@@ -163,6 +166,14 @@ export function TreeRow({
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
+          <button
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
+            onClick={() => onShare(node.id)}
+            aria-label="Share subtree"
+            title="Share subtree"
+          >
+            <MdShare className="text-[20px]" />
+          </button>
           <button
             className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
               isRoot

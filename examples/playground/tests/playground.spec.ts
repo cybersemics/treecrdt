@@ -38,6 +38,14 @@ async function waitForLocalAuthTokens(page: import("@playwright/test").Page) {
   await page.getByRole("button", { name: "Auth", exact: true }).click();
 }
 
+async function readReplicaPubkeyHex(page: import("@playwright/test").Page): Promise<string> {
+  const line = page.getByText("Replica (pubkey):").locator("..");
+  const raw = await line.textContent();
+  const match = raw?.match(/[0-9a-f]{64}/i);
+  if (!match) throw new Error(`expected replica pubkey in: ${raw ?? ""}`);
+  return match[0]!;
+}
+
 async function enableRevealIdentity(page: import("@playwright/test").Page) {
   await ensureAuthPanelOpen(page);
   const identityToggle = page.getByRole("button", { name: "Private", exact: true });
@@ -269,6 +277,95 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
     await publicRowB.getByRole("textbox").fill("PUBLIC-UPDATED");
     await publicRowB.getByRole("button", { name: "Save" }).click();
     await expect(treeRowByLabel(pageB, "PUBLIC-UPDATED")).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("grant by replica pubkey reveals a private subtree on resync", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-grant");
+  const profile = `pw-grant-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b&profile=${encodeURIComponent(profile)}&join=1`),
+    ]);
+
+    await expectAuthEnabledByDefault(pageA);
+
+    // Create a public node and a private root on A.
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("public");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "public")).toBeVisible({ timeout: 30_000 });
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-placeholder");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const placeholderRowA = treeRowByLabel(pageA, "secret-placeholder");
+    await expect(placeholderRowA).toBeVisible({ timeout: 30_000 });
+
+    const secretNodeId = await placeholderRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+    const secretRowA = treeRowByNodeId(pageA, secretNodeId);
+    const privacyToggleA = secretRowA.getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    // Invite B with private roots excluded (default behavior).
+    await ensureAuthPanelOpen(pageA);
+    await pageA.getByRole("button", { name: "Generate" }).click();
+    await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
+    const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
+
+    await ensureAuthPanelOpen(pageB);
+    const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
+    await inviteInput.fill(inviteLink);
+    await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();
+    await waitForLocalAuthTokens(pageB);
+
+    // Wait for peer discovery and sync public ops.
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    const publicRowB = treeRowByLabel(pageB, "public");
+    const syncErrorA = pageA.getByTestId("sync-error");
+    const syncErrorB = pageB.getByTestId("sync-error");
+
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+    await Promise.race([
+      publicRowB.waitFor({ state: "visible", timeout: 30_000 }),
+      (async () => {
+        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+      })(),
+      (async () => {
+        await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
+      })(),
+    ]);
+
+    await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
+
+    // Grant access to B's replica pubkey for the secret subtree.
+    const recipientPkHex = await readReplicaPubkeyHex(pageB);
+    await ensureAuthPanelOpen(pageA);
+    await pageA.getByLabel("Subtree root").selectOption(secretNodeId);
+    await pageA.getByPlaceholder("Recipient replica pubkey (hex or base64url)").fill(recipientPkHex);
+    await pageA.getByRole("button", { name: "Grant", exact: true }).click();
+
+    await expect(pageB.getByText("Access grant received", { exact: false })).toBeVisible({ timeout: 30_000 });
+
+    // Sync from B so it advertises the new token and pulls the newly authorized ops.
+    await expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 });
+    await pageB.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(treeRowByNodeId(pageB, secretNodeId)).toBeVisible({ timeout: 30_000 });
   } finally {
     await context.close();
   }

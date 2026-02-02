@@ -63,7 +63,14 @@ import {
   setSealedIssuerKeyB64,
   type StoredAuthMaterial,
 } from "./auth";
-import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceAckMessage, type PresenceMessage } from "./sync-v0";
+import {
+  createBroadcastDuplex,
+  createPlaygroundBackend,
+  hexToBytes16,
+  type AuthGrantMessageV1,
+  type PresenceAckMessage,
+  type PresenceMessage,
+} from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
 import {
@@ -158,6 +165,7 @@ export default function App() {
     if (!joinMode) return false;
     return !new URLSearchParams(window.location.hash.slice(1)).has("invite");
   });
+  const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [wrapKeyImportText, setWrapKeyImportText] = useState("");
@@ -188,10 +196,13 @@ export default function App() {
   });
   const [inviteLink, setInviteLink] = useState<string>("");
   const [inviteImportText, setInviteImportText] = useState<string>("");
+  const [grantRecipientKey, setGrantRecipientKey] = useState<string>("");
   const [pendingOps, setPendingOps] = useState<Array<{ id: string; kind: string; message?: string }>>([]);
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
+  const invitePanelRef = useRef<HTMLDivElement | null>(null);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
   const [identityVersion, setIdentityVersion] = useState(0);
   const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
@@ -751,7 +762,55 @@ export default function App() {
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
-  const buildInviteB64 = async (): Promise<string> => {
+  const openShareForNode = (nodeId: string) => {
+    setInviteRoot(nodeId);
+    setShowAuthPanel(true);
+    void generateInviteLink({ rootNodeId: nodeId });
+    requestAnimationFrame(() => invitePanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  };
+
+  const hexToBytes32 = (hex: string): Uint8Array => {
+    const clean = hex.trim().toLowerCase().replace(/^0x/, "");
+    if (!/^[0-9a-f]{64}$/.test(clean)) throw new Error("expected 64 hex chars");
+    const out = new Uint8Array(32);
+    for (let i = 0; i < out.length; i += 1) {
+      out[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+    }
+    return out;
+  };
+
+  const parseReplicaPublicKeyInput = (input: string): Uint8Array => {
+    const raw = input.trim();
+    if (!raw) throw new Error("replica public key is required");
+    if (/^(0x)?[0-9a-f]{64}$/i.test(raw)) return hexToBytes32(raw);
+    try {
+      const bytes = base64urlDecode(raw);
+      if (bytes.length !== 32) throw new Error("replica public key must be 32 bytes");
+      return bytes;
+    } catch (err) {
+      throw new Error("replica public key must be 64 hex chars (or base64url-encoded 32 bytes)");
+    }
+  };
+
+  const readInviteConfig = (rootNodeId: string) => {
+    const actions = Object.entries(inviteActions)
+      .filter(([, enabled]) => enabled)
+      .map(([name]) => name);
+    if (actions.length === 0) throw new Error("select at least one action");
+
+    const maxDepthText = inviteMaxDepth.trim();
+    let maxDepth: number | undefined;
+    if (maxDepthText.length > 0) {
+      const parsed = Number(maxDepthText);
+      if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
+      maxDepth = parsed;
+    }
+
+    const excludeNodeIds = computeInviteExcludeNodeIds(privateRoots, rootNodeId);
+    return { actions, maxDepth, excludeNodeIds };
+  };
+
+  const buildInviteB64 = async (opts: { rootNodeId?: string } = {}): Promise<string> => {
     let issuerSkB64 = authMaterial.issuerSkB64;
     let issuerPkB64 = authMaterial.issuerPkB64;
 
@@ -766,18 +825,8 @@ export default function App() {
       throw new Error("issuer private key is not available in this tab (cannot mint invites)");
     }
 
-    const actions = Object.entries(inviteActions)
-      .filter(([, enabled]) => enabled)
-      .map(([name]) => name);
-    if (actions.length === 0) throw new Error("select at least one action");
-
-    const maxDepthText = inviteMaxDepth.trim();
-    let maxDepth: number | undefined;
-    if (maxDepthText.length > 0) {
-      const parsed = Number(maxDepthText);
-      if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
-      maxDepth = parsed;
-    }
+    const rootNodeId = opts.rootNodeId ?? inviteRoot;
+    const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
 
     const issuerSk = base64urlDecode(issuerSkB64);
     const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
@@ -785,10 +834,10 @@ export default function App() {
       issuerPrivateKey: issuerSk,
       subjectPublicKey: subjectPk,
       docId,
-      rootNodeId: inviteRoot,
+      rootNodeId,
       actions,
       ...(maxDepth !== undefined ? { maxDepth } : {}),
-      ...(inviteExcludeNodeIds.length > 0 ? { excludeNodeIds: inviteExcludeNodeIds } : {}),
+      ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
     });
 
     return encodeInvitePayload({
@@ -843,20 +892,80 @@ export default function App() {
     void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
   };
 
-  const generateInviteLink = async () => {
+  const generateInviteLink = async (opts: { rootNodeId?: string; copyToClipboard?: boolean } = {}) => {
     if (typeof window === "undefined") return;
     setAuthBusy(true);
     setAuthError(null);
+    setAuthInfo(null);
     setInviteLink("");
     try {
-      const inviteB64 = await buildInviteB64();
+      const inviteB64 = await buildInviteB64({ rootNodeId: opts.rootNodeId });
 
       const url = new URL(window.location.href);
       url.searchParams.set("doc", docId);
       url.searchParams.set("replica", makeNewPeerLabel());
       url.searchParams.set("auth", "1");
       url.hash = `invite=${inviteB64}`;
-      setInviteLink(url.toString());
+      const link = url.toString();
+      setInviteLink(link);
+      if (opts.copyToClipboard) {
+        await copyToClipboard(link);
+        setAuthInfo("Invite link copied to clipboard.");
+      }
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const grantSubtreeToReplicaPubkey = async () => {
+    if (!authEnabled) return;
+    if (typeof window === "undefined") return;
+
+    setAuthBusy(true);
+    setAuthError(null);
+    setAuthInfo(null);
+
+    try {
+      const channel = broadcastChannelRef.current;
+      if (!channel) throw new Error("sync channel is not ready yet");
+
+      const issuerPkB64 = authMaterial.issuerPkB64;
+      const issuerSkB64 = authMaterial.issuerSkB64;
+      if (!issuerPkB64 || !issuerSkB64) {
+        throw new Error("issuer private key is not available in this tab (cannot mint grants)");
+      }
+
+      const subjectPk = parseReplicaPublicKeyInput(grantRecipientKey);
+      const rootNodeId = inviteRoot;
+      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
+
+      const issuerSk = base64urlDecode(issuerSkB64);
+      const tokenBytes = createCapabilityTokenV1({
+        issuerPrivateKey: issuerSk,
+        subjectPublicKey: subjectPk,
+        docId,
+        rootNodeId,
+        actions,
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
+      });
+
+      const msg: AuthGrantMessageV1 = {
+        t: "auth_grant_v1",
+        doc_id: docId,
+        to_replica_pk_hex: bytesToHex(subjectPk),
+        issuer_pk_b64: issuerPkB64,
+        token_b64: base64urlEncode(tokenBytes),
+        payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
+        from_peer_id: replicaLabel,
+        ts: Date.now(),
+      };
+
+      channel.postMessage(msg);
+      setGrantRecipientKey("");
+      setAuthInfo("Grant sent. The recipient should sync again to receive newly authorized ops.");
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1335,6 +1444,7 @@ export default function App() {
       typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
 
     const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
+    broadcastChannelRef.current = channel;
     const baseBackend = createPlaygroundBackend(client, docId, { enablePendingSidecar: authEnabled });
     const backend = {
       ...baseBackend,
@@ -1482,7 +1592,51 @@ export default function App() {
     const onBroadcast = (ev: MessageEvent<any>) => {
       const data = ev.data as unknown;
       if (!data || typeof data !== "object") return;
-      const msg = data as Partial<PresenceMessage | PresenceAckMessage>;
+      const msg = data as Partial<PresenceMessage | PresenceAckMessage | AuthGrantMessageV1>;
+
+      if (msg.t === "auth_grant_v1") {
+        const grant = msg as Partial<AuthGrantMessageV1>;
+        if (typeof grant.doc_id !== "string") return;
+        if (grant.doc_id !== docId) return;
+        if (typeof grant.to_replica_pk_hex !== "string") return;
+        if (typeof grant.issuer_pk_b64 !== "string") return;
+        if (typeof grant.token_b64 !== "string") return;
+
+        const localReplicaHex = replica ? bytesToHex(replica) : null;
+        if (!localReplicaHex) return;
+        if (grant.to_replica_pk_hex.toLowerCase() !== localReplicaHex.toLowerCase()) return;
+
+        void (async () => {
+          setAuthBusy(true);
+          setAuthError(null);
+          setAuthInfo(null);
+          try {
+            await saveIssuerKeys(docId, grant.issuer_pk_b64);
+
+            if (grant.payload_key_b64) {
+              await saveDocPayloadKeyB64(docId, grant.payload_key_b64);
+              await refreshDocPayloadKey();
+            }
+
+            const current = await loadAuthMaterial(docId, replicaLabel);
+            if (!current.localPkB64 || !current.localSkB64) {
+              throw new Error("received grant but local keys are missing; import an invite link first");
+            }
+
+            const merged = new Set<string>(current.localTokensB64);
+            merged.add(grant.token_b64);
+            await saveLocalTokens(docId, replicaLabel, Array.from(merged));
+            await refreshAuthMaterial();
+            setAuthInfo("Access grant received. Click Sync to fetch newly authorized ops.");
+            setShowAuthPanel(true);
+          } catch (err) {
+            setAuthError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setAuthBusy(false);
+          }
+        })();
+        return;
+      }
 
       if (msg.t === "presence") {
         if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
@@ -1544,6 +1698,7 @@ export default function App() {
       channel.removeEventListener("message", onBroadcast);
       stopAllLiveAll();
       stopAllLiveChildren();
+      if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
       channel.close();
       liveAllStartingRef.current.clear();
       liveChildrenStartingRef.current.clear();
@@ -2417,6 +2572,12 @@ export default function App() {
                   </div>
                 )}
 
+                {authInfo && (
+                  <div className="mt-3 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-50">
+                    {authInfo}
+                  </div>
+                )}
+
                 {authError && !authErrorIsJoinPrompt && (
                   <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
                     {authError}
@@ -2441,6 +2602,9 @@ export default function App() {
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Token id</div>
                     <div className="mt-1 font-mono text-slate-200">
                       {authLocalTokenIdHex ? `${authLocalTokenIdHex.slice(0, 16)}…` : "-"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      {authMaterial.localTokensB64.length > 0 ? `${authMaterial.localTokensB64.length} token(s)` : "-"}
                     </div>
                     <div className="mt-1 text-[11px] text-slate-500">
                       {authTokenScope
@@ -2796,8 +2960,8 @@ export default function App() {
 	                  )}
 	                </div>
 	
-	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-	                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Create invite link</div>
+		                <div ref={invitePanelRef} className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+		                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Create invite link</div>
 	                  <div className="mt-2 flex flex-wrap items-end gap-3">
                     <label className="w-full md:w-60 space-y-2 text-sm text-slate-200">
                       <span>Subtree root</span>
@@ -2874,10 +3038,10 @@ export default function App() {
 	                    )}
 	                  </div>
 	
-	                  {inviteLink && (
-	                    <div className="mt-3 flex flex-col gap-2">
-	                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Link</div>
+		                  {inviteLink && (
+		                    <div className="mt-3 flex flex-col gap-2">
+		                      <div className="flex items-center justify-between gap-2">
+	                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Link</div>
                         <div className="flex items-center gap-2">
                           <button
                             className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
@@ -2911,13 +3075,39 @@ export default function App() {
                       />
                       <div className="text-[11px] text-slate-500">
                         Open the link in a new tab to join as a new replica with the granted subtree scope.
-                      </div>
-                    </div>
-                  )}
-                </div>
+	                      </div>
+	                    </div>
+	                  )}
 
-                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Import invite</div>
+	                  <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grant access by replica pubkey</div>
+	                    <div className="mt-1 text-[11px] text-slate-500">
+	                      Mints a new capability token for the selected subtree and sends it over the playground channel. The recipient must sync again.
+	                    </div>
+	                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+	                      <input
+	                        type="text"
+	                        value={grantRecipientKey}
+	                        onChange={(e) => setGrantRecipientKey(e.target.value)}
+	                        placeholder="Recipient replica pubkey (hex or base64url)"
+	                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+	                        disabled={authBusy}
+	                      />
+	                      <button
+	                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
+	                        type="button"
+	                        onClick={() => void grantSubtreeToReplicaPubkey()}
+	                        disabled={!authEnabled || authBusy || !authCanIssue || grantRecipientKey.trim().length === 0}
+	                        title={authCanIssue ? "Grant access to this subtree" : "This tab cannot mint grants (issuer SK not present)"}
+	                      >
+	                        Grant
+	                      </button>
+	                    </div>
+	                  </div>
+	                </div>
+
+	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Import invite</div>
                   <div className="mt-2 flex flex-wrap items-end gap-2">
                     <textarea
                       className="w-full flex-1 rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 font-mono text-[11px] text-slate-200 outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
@@ -2960,6 +3150,7 @@ export default function App() {
                         depth={entry.depth}
                         collapse={collapse}
                         onToggle={toggleCollapse}
+                        onShare={openShareForNode}
                         onSetValue={handleSetValue}
                         onAddChild={(id) => {
                           setParentChoice(id);

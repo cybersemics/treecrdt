@@ -17,7 +17,18 @@ export type PresenceAckMessage = {
   ts: number;
 };
 
-export type PlaygroundBroadcastMessage = PresenceMessage | PresenceAckMessage;
+export type AuthGrantMessageV1 = {
+  t: "auth_grant_v1";
+  doc_id: string;
+  to_replica_pk_hex: string;
+  issuer_pk_b64: string;
+  token_b64: string;
+  payload_key_b64?: string;
+  from_peer_id: string;
+  ts: number;
+};
+
+export type PlaygroundBroadcastMessage = PresenceMessage | PresenceAckMessage | AuthGrantMessageV1;
 
 export function hexToBytes16(hex: string): Uint8Array {
   return nodeIdToBytes16(hex);
