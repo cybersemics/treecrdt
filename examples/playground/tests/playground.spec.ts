@@ -23,21 +23,40 @@ async function expectAuthEnabledByDefault(page: import("@playwright/test").Page)
   await authToggle.click();
 }
 
+async function ensureAuthPanelOpen(page: import("@playwright/test").Page) {
+  const marker = page.getByText("Auth (COSE+CWT)", { exact: true });
+  if ((await marker.count()) > 0) return;
+  await page.getByRole("button", { name: "Auth", exact: true }).click();
+  await expect(marker).toBeVisible({ timeout: 30_000 });
+}
+
+async function waitForLocalAuthTokens(page: import("@playwright/test").Page) {
+  await ensureAuthPanelOpen(page);
+  const tokenCard = page.getByText("Token id", { exact: true }).locator("..");
+  const tokenValue = tokenCard.locator("div.font-mono").first();
+  await expect(tokenValue).toContainText(/[0-9a-f]{16}/i, { timeout: 30_000 });
+  await page.getByRole("button", { name: "Auth", exact: true }).click();
+}
+
 async function enableRevealIdentity(page: import("@playwright/test").Page) {
-  const authToggle = page.getByRole("button", { name: "Auth", exact: true });
-  await authToggle.click();
+  await ensureAuthPanelOpen(page);
   const identityToggle = page.getByRole("button", { name: "Private", exact: true });
   await identityToggle.click();
   await expect(page.getByRole("button", { name: "Revealing", exact: true })).toBeVisible({ timeout: 30_000 });
-  await authToggle.click();
+  await page.getByRole("button", { name: "Auth", exact: true }).click();
 }
 
 async function readDeviceWrapKeyB64(page: import("@playwright/test").Page): Promise<string> {
-  const authToggle = page.getByRole("button", { name: "Auth", exact: true });
-  await authToggle.click();
-  const card = page.getByText("Device wrap key", { exact: true }).locator("..").locator("..");
-  const wrapKey = await card.locator("div.font-mono").first().getAttribute("title");
-  await authToggle.click();
+  const title = page.getByText("Device wrap key", { exact: true });
+  const wasOpen = (await title.count()) > 0;
+  if (!wasOpen) await ensureAuthPanelOpen(page);
+
+  const card = title.locator("..").locator("..");
+  const mono = card.locator("div.font-mono").first();
+  await expect(mono).toHaveAttribute("title", /[A-Za-z0-9_-]{43}/, { timeout: 30_000 });
+  const wrapKey = await mono.getAttribute("title");
+
+  if (!wasOpen) await page.getByRole("button", { name: "Auth", exact: true }).click();
   if (!wrapKey) throw new Error("expected device wrap key");
   return wrapKey;
 }
@@ -61,6 +80,7 @@ test("insert and delete node", async ({ page }) => {
   const doc = uniqueDocId("pw-playground-basic");
   await waitForReady(page, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`);
   await expectAuthEnabledByDefault(page);
+  await waitForLocalAuthTokens(page);
 
   await page.getByPlaceholder("Stored as payload bytes").fill("parent");
   await treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" }).click();
@@ -76,7 +96,7 @@ test("insert and delete node", async ({ page }) => {
   await expect(opsPanel.getByText(/\(local\)/)).toBeVisible({ timeout: 30_000 });
 
   await parentRow.getByRole("button", { name: "Delete" }).click();
-  await expect(parentRow).toHaveCount(0);
+  await expect(parentRow).toHaveCount(0, { timeout: 30_000 });
 });
 
 test("defensive delete restores parent when unseen child arrives", async ({ browser }) => {
@@ -404,13 +424,13 @@ test("isolated peer tab uses separate storage namespace and requires invite", as
     await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
 
     // Generate invite link on A.
-    await pageA.getByRole("button", { name: "Auth", exact: true }).click();
+    await ensureAuthPanelOpen(pageA);
     await pageA.getByRole("button", { name: "Generate" }).click();
     await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
     const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
 
     // Import invite link on B (isolated storage namespace; join-mode requires invite).
-    await pageB.getByRole("button", { name: "Auth", exact: true }).click();
+    await ensureAuthPanelOpen(pageB);
     const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
     await inviteInput.fill(inviteLink);
     await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();

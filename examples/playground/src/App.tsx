@@ -153,7 +153,11 @@ export default function App() {
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
   const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
-  const [showAuthPanel, setShowAuthPanel] = useState(false);
+  const [showAuthPanel, setShowAuthPanel] = useState(() => {
+    if (typeof window === "undefined") return false;
+    if (!joinMode) return false;
+    return !new URLSearchParams(window.location.hash.slice(1)).has("invite");
+  });
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [wrapKeyImportText, setWrapKeyImportText] = useState("");
@@ -747,8 +751,60 @@ export default function App() {
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
-  const openNewIsolatedPeerTab = () => {
+  const buildInviteB64 = async (): Promise<string> => {
+    let issuerSkB64 = authMaterial.issuerSkB64;
+    let issuerPkB64 = authMaterial.issuerPkB64;
+
+    // If the UI state is stale, re-read from storage once before giving up.
+    if (!issuerSkB64 || !issuerPkB64) {
+      const latest = await loadAuthMaterial(docId, replicaLabel);
+      issuerSkB64 = latest.issuerSkB64;
+      issuerPkB64 = latest.issuerPkB64;
+      setAuthMaterial(latest);
+    }
+    if (!issuerSkB64 || !issuerPkB64) {
+      throw new Error("issuer private key is not available in this tab (cannot mint invites)");
+    }
+
+    const actions = Object.entries(inviteActions)
+      .filter(([, enabled]) => enabled)
+      .map(([name]) => name);
+    if (actions.length === 0) throw new Error("select at least one action");
+
+    const maxDepthText = inviteMaxDepth.trim();
+    let maxDepth: number | undefined;
+    if (maxDepthText.length > 0) {
+      const parsed = Number(maxDepthText);
+      if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
+      maxDepth = parsed;
+    }
+
+    const issuerSk = base64urlDecode(issuerSkB64);
+    const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
+    const tokenBytes = createCapabilityTokenV1({
+      issuerPrivateKey: issuerSk,
+      subjectPublicKey: subjectPk,
+      docId,
+      rootNodeId: inviteRoot,
+      actions,
+      ...(maxDepth !== undefined ? { maxDepth } : {}),
+      ...(inviteExcludeNodeIds.length > 0 ? { excludeNodeIds: inviteExcludeNodeIds } : {}),
+    });
+
+    return encodeInvitePayload({
+      v: 1,
+      t: "treecrdt.playground.invite",
+      docId,
+      issuerPkB64,
+      subjectSkB64: base64urlEncode(subjectSk),
+      tokenB64: base64urlEncode(tokenBytes),
+      payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
+    });
+  };
+
+  const openNewIsolatedPeerTab = async (opts: { autoInvite: boolean }) => {
     if (typeof window === "undefined") return;
+
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
     url.searchParams.set("replica", makeNewPeerLabel());
@@ -756,6 +812,18 @@ export default function App() {
     url.searchParams.set("join", "1");
     url.searchParams.delete("auth");
     url.hash = "";
+
+    if (opts.autoInvite) {
+      try {
+        // Auto-invite makes the common "simulate another device" flow 1 click.
+        url.hash = `invite=${await buildInviteB64()}`;
+      } catch (err) {
+        // Fall back to a blank join-only tab and show the reason on the current tab.
+        setAuthError(err instanceof Error ? err.message : String(err));
+        setShowAuthPanel(true);
+      }
+    }
+
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
@@ -781,46 +849,7 @@ export default function App() {
     setAuthError(null);
     setInviteLink("");
     try {
-      const issuerSkB64 = authMaterial.issuerSkB64;
-      const issuerPkB64 = authMaterial.issuerPkB64;
-      if (!issuerSkB64 || !issuerPkB64) {
-        throw new Error("issuer private key is not available in this tab (cannot mint invites)");
-      }
-
-      const actions = Object.entries(inviteActions)
-        .filter(([, enabled]) => enabled)
-        .map(([name]) => name);
-      if (actions.length === 0) throw new Error("select at least one action");
-
-      const maxDepthText = inviteMaxDepth.trim();
-      let maxDepth: number | undefined;
-      if (maxDepthText.length > 0) {
-        const parsed = Number(maxDepthText);
-        if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
-        maxDepth = parsed;
-      }
-
-      const issuerSk = base64urlDecode(issuerSkB64);
-      const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
-      const tokenBytes = createCapabilityTokenV1({
-        issuerPrivateKey: issuerSk,
-        subjectPublicKey: subjectPk,
-        docId,
-        rootNodeId: inviteRoot,
-        actions,
-        ...(maxDepth !== undefined ? { maxDepth } : {}),
-        ...(inviteExcludeNodeIds.length > 0 ? { excludeNodeIds: inviteExcludeNodeIds } : {}),
-      });
-
-      const inviteB64 = encodeInvitePayload({
-        v: 1,
-        t: "treecrdt.playground.invite",
-        docId,
-        issuerPkB64,
-        subjectSkB64: base64urlEncode(subjectSk),
-        tokenB64: base64urlEncode(tokenBytes),
-        payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
-      });
+      const inviteB64 = await buildInviteB64();
 
       const url = new URL(window.location.href);
       url.searchParams.set("doc", docId);
@@ -1216,7 +1245,11 @@ export default function App() {
             throw new Error("auth enabled but local keys are missing; re-import an invite link or reset auth");
           }
           if (!canIssue) {
-            throw new Error("auth enabled but no local keys/tokens; import an invite link");
+            throw new Error(
+              joinMode
+                ? "Join-only tab (isolated): import an invite link from another tab (Auth → Generate)"
+                : "auth enabled but no local keys/tokens; import an invite link"
+            );
           }
           const { sk, pk } = await generateEd25519KeyPair();
           localPkB64 = base64urlEncode(pk);
@@ -2029,6 +2062,7 @@ export default function App() {
   const sealedIssuerKeyB64 = getSealedIssuerKeyB64(docId);
   const sealedIdentityKeyB64 = getSealedIdentityKeyB64();
   const sealedDeviceSigningKeyB64 = getSealedDeviceSigningKeyB64();
+  const authErrorIsJoinPrompt = Boolean(authError && authError.startsWith("Join-only tab (isolated):"));
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
@@ -2266,10 +2300,10 @@ export default function App() {
                 </button>
                 <button
                   className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  onClick={openNewIsolatedPeerTab}
+                  onClick={(e) => void openNewIsolatedPeerTab({ autoInvite: !e.altKey })}
                   disabled={typeof window === "undefined"}
                   type="button"
-                  title="Open an isolated peer tab (separate storage namespace; requires invite)"
+                  title="Open an isolated peer tab (separate storage namespace; auto-invite). Alt+click opens a blank join-only tab."
                 >
                   <MdLockOutline className="text-[18px]" />
                 </button>
@@ -2372,7 +2406,18 @@ export default function App() {
                   </div>
                 </div>
 
-                {authError && (
+                {authErrorIsJoinPrompt && (
+                  <div className="mt-3 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-50">
+                    <div className="font-semibold">Join-only (isolated) tab</div>
+                    <div className="mt-1 text-sky-100/90">
+                      This tab uses a separate storage namespace, so it starts with no keys/tokens. Generate an invite in
+                      another tab for this doc (<span className="font-semibold">Auth → Generate</span>) and paste it into{" "}
+                      <span className="font-semibold">Import invite</span> below.
+                    </div>
+                  </div>
+                )}
+
+                {authError && !authErrorIsJoinPrompt && (
                   <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
                     {authError}
                   </div>
