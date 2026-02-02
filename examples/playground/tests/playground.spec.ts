@@ -30,6 +30,15 @@ async function ensureAuthPanelOpen(page: import("@playwright/test").Page) {
   await expect(marker).toBeVisible({ timeout: 30_000 });
 }
 
+async function ensureAuthAdvancedOpen(page: import("@playwright/test").Page) {
+  await ensureAuthPanelOpen(page);
+  const toggle = page.getByRole("button", { name: /advanced$/i });
+  if ((await toggle.count()) === 0) return;
+  const expanded = await toggle.getAttribute("aria-expanded");
+  if (expanded !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true", { timeout: 30_000 });
+}
+
 async function waitForLocalAuthTokens(page: import("@playwright/test").Page) {
   await ensureAuthPanelOpen(page);
   const tokenCard = page.getByText("Token id", { exact: true }).locator("..");
@@ -47,7 +56,7 @@ async function readReplicaPubkeyHex(page: import("@playwright/test").Page): Prom
 }
 
 async function enableRevealIdentity(page: import("@playwright/test").Page) {
-  await ensureAuthPanelOpen(page);
+  await ensureAuthAdvancedOpen(page);
   const identityToggle = page.getByRole("button", { name: "Private", exact: true });
   await identityToggle.click();
   await expect(page.getByRole("button", { name: "Revealing", exact: true })).toBeVisible({ timeout: 30_000 });
@@ -55,16 +64,18 @@ async function enableRevealIdentity(page: import("@playwright/test").Page) {
 }
 
 async function readDeviceWrapKeyB64(page: import("@playwright/test").Page): Promise<string> {
+  const marker = page.getByText("Auth (COSE+CWT)", { exact: true });
+  const authWasOpen = (await marker.count()) > 0;
+  await ensureAuthAdvancedOpen(page);
+
   const title = page.getByText("Device wrap key", { exact: true });
-  const wasOpen = (await title.count()) > 0;
-  if (!wasOpen) await ensureAuthPanelOpen(page);
 
   const card = title.locator("..").locator("..");
   const mono = card.locator("div.font-mono").first();
   await expect(mono).toHaveAttribute("title", /[A-Za-z0-9_-]{43}/, { timeout: 30_000 });
   const wrapKey = await mono.getAttribute("title");
 
-  if (!wasOpen) await page.getByRole("button", { name: "Auth", exact: true }).click();
+  if (!authWasOpen) await page.getByRole("button", { name: "Auth", exact: true }).click();
   if (!wrapKey) throw new Error("expected device wrap key");
   return wrapKey;
 }
@@ -443,6 +454,7 @@ test("identity key blobs can be exported and imported", async ({ browser }) => {
 
     const authToggle = pageA.getByRole("button", { name: "Auth", exact: true });
     await authToggle.click();
+    await ensureAuthAdvancedOpen(pageA);
 
     const identityCard = pageA.getByText("Identity key blob", { exact: true }).locator("..").locator("..");
     const deviceSigningCard = pageA.getByText("Device signing key blob", { exact: true }).locator("..").locator("..");

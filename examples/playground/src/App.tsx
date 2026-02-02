@@ -165,6 +165,7 @@ export default function App() {
     if (!joinMode) return false;
     return !new URLSearchParams(window.location.hash.slice(1)).has("invite");
   });
+  const [showAuthAdvanced, setShowAuthAdvanced] = useState(false);
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -2625,14 +2626,37 @@ export default function App() {
                         {authTokenActions.join(", ")}
                       </div>
                     )}
-                  </div>
-                </div>
+	                  </div>
+	                </div>
 
-                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Device wrap key</div>
-                      <button
+	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
+	                  <div className="flex items-center justify-between gap-3">
+	                    <div>
+	                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Advanced</div>
+	                      <div className="mt-1 text-[11px] text-slate-500">
+	                        Backup/restore keys, identity (linkability), and debug tools.
+	                      </div>
+	                    </div>
+	                    <button
+	                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+	                      type="button"
+	                      onClick={() => setShowAuthAdvanced((v) => !v)}
+	                      disabled={authBusy}
+	                      aria-expanded={showAuthAdvanced}
+	                      title={showAuthAdvanced ? "Hide advanced" : "Show advanced"}
+	                    >
+	                      {showAuthAdvanced ? "Hide advanced" : "Show advanced"}
+	                    </button>
+	                  </div>
+	                </div>
+
+	                {showAuthAdvanced && (
+	                  <>
+	                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+	                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                    <div className="flex items-center justify-between gap-2">
+	                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Device wrap key</div>
+	                      <button
                         className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                         type="button"
                         onClick={() =>
@@ -2900,15 +2924,17 @@ export default function App() {
 		                    </button>
 		                  </div>
 		                  <div className="mt-1 text-[11px] text-slate-500">
-		                    When enabled, this tab advertises an identity chain so peers can attribute signatures. This is linkable across
-		                    documents; keep disabled for unlinkable-by-default privacy.
-		                  </div>
-		                </div>
+			                    When enabled, this tab advertises an identity chain so peers can attribute signatures. This is linkable across
+			                    documents; keep disabled for unlinkable-by-default privacy.
+			                  </div>
+			                </div>
+			                  </>
+			                )}
 
-		                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-		                  <div className="flex items-center justify-between gap-2">
-		                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Private subtrees</div>
-		                    <button
+			                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+			                  <div className="flex items-center justify-between gap-2">
+			                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Private subtrees</div>
+			                    <button
 	                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
 	                      type="button"
 	                      onClick={clearPrivateRoots}
