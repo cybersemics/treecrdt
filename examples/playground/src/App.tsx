@@ -114,6 +114,8 @@ function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: stri
   return Array.from(privateRoots).filter((id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id));
 }
 
+type InvitePreset = "read" | "read_write" | "admin" | "custom";
+
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const clientRef = useRef<TreecrdtClient | null>(null);
@@ -195,6 +197,8 @@ export default function App() {
     delete: false,
     tombstone: false,
   });
+  const [invitePreset, setInvitePreset] = useState<InvitePreset>("read_write");
+  const [showInviteOptions, setShowInviteOptions] = useState(false);
   const [inviteLink, setInviteLink] = useState<string>("");
   const [inviteImportText, setInviteImportText] = useState<string>("");
   const [grantRecipientKey, setGrantRecipientKey] = useState<string>("");
@@ -781,7 +785,7 @@ export default function App() {
     return out;
   };
 
-  const parseReplicaPublicKeyInput = (input: string): Uint8Array => {
+	  const parseReplicaPublicKeyInput = (input: string): Uint8Array => {
     const raw = input.trim();
     if (!raw) throw new Error("replica public key is required");
     if (/^(0x)?[0-9a-f]{64}$/i.test(raw)) return hexToBytes32(raw);
@@ -792,18 +796,44 @@ export default function App() {
     } catch (err) {
       throw new Error("replica public key must be 64 hex chars (or base64url-encoded 32 bytes)");
     }
-  };
+	  };
 
-  const readInviteConfig = (rootNodeId: string) => {
-    const actions = Object.entries(inviteActions)
-      .filter(([, enabled]) => enabled)
-      .map(([name]) => name);
-    if (actions.length === 0) throw new Error("select at least one action");
+	  const applyInvitePreset = (preset: InvitePreset) => {
+	    setInvitePreset(preset);
+	    if (preset === "custom") {
+	      setShowInviteOptions(true);
+	      return;
+	    }
+	    if (preset === "read") {
+	      setInviteActions({ write_structure: false, write_payload: false, delete: false, tombstone: false });
+	      return;
+	    }
+	    if (preset === "admin") {
+	      setInviteActions({ write_structure: true, write_payload: true, delete: true, tombstone: true });
+	      return;
+	    }
+	    setInviteActions({ write_structure: true, write_payload: true, delete: false, tombstone: false });
+	  };
 
-    const maxDepthText = inviteMaxDepth.trim();
-    let maxDepth: number | undefined;
-    if (maxDepthText.length > 0) {
-      const parsed = Number(maxDepthText);
+	  const readInviteConfig = (rootNodeId: string) => {
+	    let actions: string[];
+	    if (invitePreset === "read") {
+	      actions = ["read_structure", "read_payload"];
+	    } else if (invitePreset === "read_write") {
+	      actions = ["write_structure", "write_payload"];
+	    } else if (invitePreset === "admin") {
+	      actions = ["write_structure", "write_payload", "delete", "tombstone"];
+	    } else {
+	      actions = Object.entries(inviteActions)
+	        .filter(([, enabled]) => enabled)
+	        .map(([name]) => name);
+	      if (actions.length === 0) throw new Error("select at least one action");
+	    }
+
+	    const maxDepthText = inviteMaxDepth.trim();
+	    let maxDepth: number | undefined;
+	    if (maxDepthText.length > 0) {
+	      const parsed = Number(maxDepthText);
       if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
       maxDepth = parsed;
     }
@@ -3068,74 +3098,108 @@ export default function App() {
 	                    </div>
 	                  )}
 	                </div>
-	
-		                <div ref={invitePanelRef} className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-		                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Create invite link</div>
-	                  <div className="mt-2 flex flex-wrap items-end gap-3">
-                    <label className="w-full md:w-60 space-y-2 text-sm text-slate-200">
-                      <span>Subtree root</span>
-                      <select
+
+	                <div ref={invitePanelRef} className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+			                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Create invite link</div>
+		                  <div className="mt-2 flex flex-wrap items-end gap-3">
+	                    <label className="w-full md:w-60 space-y-2 text-sm text-slate-200">
+	                      <span>Subtree root</span>
+	                      <select
                         className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
                         value={inviteRoot}
                         onChange={(e) => setInviteRoot(e.target.value)}
                         disabled={authBusy}
                       >
-                        {nodeList.map(({ id, label, depth }) => (
-                          <option key={id} value={id}>
-                            {"".padStart(depth * 2, " ")}
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+	                        {nodeList.map(({ id, label, depth }) => (
+	                          <option key={id} value={id}>
+	                            {"".padStart(depth * 2, " ")}
+	                            {label}
+	                          </option>
+	                        ))}
+	                      </select>
+	                    </label>
 
-                    <label className="w-full md:w-40 space-y-2 text-sm text-slate-200">
-                      <span>Max depth (optional)</span>
-                      <input
-                        type="number"
-                        min={0}
-                        value={inviteMaxDepth}
-                        onChange={(e) => setInviteMaxDepth(e.target.value)}
-                        placeholder="∞"
-                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                        disabled={authBusy}
-                      />
-                    </label>
+	                    <label className="w-full md:w-44 space-y-2 text-sm text-slate-200">
+	                      <span>Permission</span>
+	                      <select
+	                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+	                        value={invitePreset}
+	                        onChange={(e) => applyInvitePreset(e.target.value as InvitePreset)}
+	                        disabled={authBusy}
+	                      >
+	                        <option value="read">Read</option>
+	                        <option value="read_write">Read + Write</option>
+	                        <option value="admin">Admin</option>
+	                        <option value="custom">Custom</option>
+	                      </select>
+	                    </label>
 
-                    <div className="flex flex-col gap-2 text-sm text-slate-200">
-                      <span>Actions</span>
-                      <div className="flex flex-wrap gap-3 text-xs text-slate-200">
-                        {(["write_structure", "write_payload", "delete", "tombstone"] as const).map((name) => (
-                          <label key={name} className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={inviteActions[name]}
-                              onChange={(e) =>
-                                setInviteActions((prev) => ({ ...prev, [name]: e.target.checked }))
-                              }
-                              disabled={authBusy}
-                            />
-                            <span className="font-mono text-[11px]">{name}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
+	                    <button
+	                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
+	                      type="button"
+	                      onClick={() => void generateInviteLink()}
+	                      disabled={!authEnabled || authBusy || !authCanIssue}
+	                      title={authCanIssue ? "Generate an invite link" : "This tab cannot mint invites (issuer SK not present)"}
+	                    >
+		                      Generate
+		                    </button>
+		                    <button
+		                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+		                      type="button"
+		                      onClick={() => setShowInviteOptions((v) => !v)}
+		                      disabled={authBusy}
+		                      aria-expanded={showInviteOptions}
+		                    >
+		                      {showInviteOptions ? "Hide options" : "Options"}
+		                    </button>
+		                  </div>
 
-                    <button
-                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-                      type="button"
-                      onClick={() => void generateInviteLink()}
-                      disabled={!authEnabled || authBusy || !authCanIssue}
-                      title={authCanIssue ? "Generate an invite link" : "This tab cannot mint invites (issuer SK not present)"}
-                    >
-	                      Generate
-	                    </button>
-	                  </div>
+		                  {showInviteOptions && (
+		                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+		                      <label className="space-y-2 text-sm text-slate-200">
+		                        <span>Max depth (optional)</span>
+		                        <input
+		                          type="number"
+		                          min={0}
+		                          value={inviteMaxDepth}
+		                          onChange={(e) => setInviteMaxDepth(e.target.value)}
+		                          placeholder="∞"
+		                          className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+		                          disabled={authBusy}
+		                        />
+		                      </label>
+		                      <div className="md:col-span-2 space-y-2 text-sm text-slate-200">
+		                        <div className="text-sm">Actions</div>
+		                        {invitePreset === "custom" ? (
+		                          <div className="flex flex-wrap gap-3 text-xs text-slate-200">
+		                            {(["write_structure", "write_payload", "delete", "tombstone"] as const).map((name) => (
+		                              <label key={name} className="flex items-center gap-2">
+		                                <input
+		                                  type="checkbox"
+		                                  checked={inviteActions[name]}
+		                                  onChange={(e) => {
+		                                    setInvitePreset("custom");
+		                                    setInviteActions((prev) => ({ ...prev, [name]: e.target.checked }));
+		                                  }}
+		                                  disabled={authBusy}
+		                                />
+		                                <span className="font-mono text-[11px]">{name}</span>
+		                              </label>
+		                            ))}
+		                          </div>
+		                        ) : (
+		                          <div className="text-[11px] text-slate-500">
+		                            Preset actions. Select <span className="font-semibold text-slate-300">Custom</span> to edit.
+		                          </div>
+		                        )}
+		                      </div>
+		                    </div>
+		                  )}
 
-	                  <div className="mt-2 text-[11px] text-slate-500">
-	                    {inviteExcludeNodeIds.length === 0 ? (
-	                      <span>No private roots are excluded from this invite.</span>
-	                    ) : (
+		                  <div className="mt-2 text-[11px] text-slate-500">
+		                    {inviteExcludeNodeIds.length === 0 ? (
+		                      <span>No private roots are excluded from this invite.</span>
+		                    ) : (
 	                      <span>
 	                        Excluding {inviteExcludeNodeIds.length} private root{inviteExcludeNodeIds.length === 1 ? "" : "s"} from this invite:{" "}
 	                        {inviteExcludeNodeIds
