@@ -207,6 +207,7 @@ export default function App() {
   const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
   const [identityVersion, setIdentityVersion] = useState(0);
   const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
+  const [showPrivateRootsPanel, setShowPrivateRootsPanel] = useState(false);
   const privateRootsCount = useMemo(
     () => Array.from(privateRoots).filter((id) => id !== ROOT_ID).length,
     [privateRoots]
@@ -2211,8 +2212,35 @@ export default function App() {
     authMaterial.localTokensB64.length > 0
       ? bytesToHex(deriveTokenIdV1(base64urlDecode(authMaterial.localTokensB64[0]!)))
       : null;
+  const authTokenCount = authMaterial.localTokensB64.length;
   const authTokenScope = authToken?.caps?.[0]?.res ?? null;
   const authTokenActions = authToken?.caps?.[0]?.actions ?? null;
+  const authScopeSummary = (() => {
+    if (!authTokenScope) return "-";
+    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
+    if (rootId === ROOT_ID) return "doc-wide";
+    const label = nodeLabelForId(rootId);
+    if (label && label !== rootId) return `subtree ${label}`;
+    return `subtree ${rootId.slice(0, 8)}…`;
+  })();
+  const authScopeTitle = (() => {
+    if (!authTokenScope) return "";
+    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
+    const parts = [`root=${rootId}`];
+    if (authTokenScope.maxDepth !== undefined) parts.push(`maxDepth=${authTokenScope.maxDepth}`);
+    const excludeCount = authTokenScope.excludeNodeIds?.length ?? 0;
+    if (excludeCount > 0) parts.push(`exclude=${excludeCount}`);
+    return parts.join(" ");
+  })();
+  const authSummaryBadges = (() => {
+    if (!Array.isArray(authTokenActions)) return [];
+    const set = new Set(authTokenActions.map(String));
+    const out: string[] = [];
+    if (set.has("write_structure") || set.has("write_payload")) out.push("write");
+    if (set.has("delete")) out.push("delete");
+    if (set.has("tombstone")) out.push("tombstone");
+    return out;
+  })();
   const localReplicaHex = replica ? bytesToHex(replica) : null;
   const deviceWrapKeyB64 = getDeviceWrapKeyB64();
   const sealedIssuerKeyB64 = getSealedIssuerKeyB64(docId);
@@ -2579,62 +2607,18 @@ export default function App() {
                   </div>
                 )}
 
-                {authError && !authErrorIsJoinPrompt && (
-                  <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
-                    {authError}
-                  </div>
-                )}
-
-                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Issuer</div>
-                    <div className="mt-1 font-mono text-slate-200">
-                      {authIssuerPkHex ? `${authIssuerPkHex.slice(0, 16)}…` : "-"}
-                    </div>
-                    <div className="mt-1 text-[11px] text-slate-500">{authCanIssue ? "can mint invites" : "verify-only"}</div>
-                  </div>
-                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Local key_id</div>
-                    <div className="mt-1 font-mono text-slate-200">
-                      {authLocalKeyIdHex ? `${authLocalKeyIdHex.slice(0, 16)}…` : "-"}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Token id</div>
-                    <div className="mt-1 font-mono text-slate-200">
-                      {authLocalTokenIdHex ? `${authLocalTokenIdHex.slice(0, 16)}…` : "-"}
-                    </div>
-                    <div className="mt-1 text-[11px] text-slate-500">
-                      {authMaterial.localTokensB64.length > 0 ? `${authMaterial.localTokensB64.length} token(s)` : "-"}
-                    </div>
-                    <div className="mt-1 text-[11px] text-slate-500">
-                      {authTokenScope
-                        ? (() => {
-                            const rootId = authTokenScope.rootNodeId ?? ROOT_ID;
-                            return `scope=${rootId === ROOT_ID ? "doc-wide" : `${rootId.slice(0, 8)}…`}${
-                              authTokenScope.maxDepth !== undefined ? ` depth≤${authTokenScope.maxDepth}` : ""
-                            }${
-                              authTokenScope.excludeNodeIds && authTokenScope.excludeNodeIds.length > 0
-                                ? ` exclude=${authTokenScope.excludeNodeIds.length}`
-                                : ""
-                            }`;
-                          })()
-                        : "-"}
-                    </div>
-                    {authTokenActions && authTokenActions.length > 0 && (
-                      <div className="mt-1 text-[11px] text-slate-500" title={authTokenActions.join(", ")}>
-                        {authTokenActions.join(", ")}
-                      </div>
-                    )}
+	                {authError && !authErrorIsJoinPrompt && (
+	                  <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
+	                    {authError}
 	                  </div>
-	                </div>
+	                )}
 
-	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
-	                  <div className="flex items-center justify-between gap-3">
+	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                  <div className="flex flex-wrap items-center justify-between gap-3">
 	                    <div>
-	                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Advanced</div>
+	                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Access</div>
 	                      <div className="mt-1 text-[11px] text-slate-500">
-	                        Backup/restore keys, identity (linkability), and debug tools.
+	                        {authCanIssue ? "This tab can mint invites/grants." : "Verify-only (import an invite to join)."}
 	                      </div>
 	                    </div>
 	                    <button
@@ -2648,15 +2632,94 @@ export default function App() {
 	                      {showAuthAdvanced ? "Hide advanced" : "Show advanced"}
 	                    </button>
 	                  </div>
+
+	                  <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+	                    <span
+	                      className={`rounded-full border px-2 py-0.5 font-semibold ${
+	                        authEnabled
+	                          ? authCanIssue
+	                            ? "border-emerald-400/60 bg-emerald-500/10 text-emerald-50"
+	                            : "border-slate-700 bg-slate-900/60 text-slate-200"
+	                          : "border-slate-800/70 bg-slate-900/60 text-slate-400"
+	                      }`}
+	                    >
+	                      issuer {authCanIssue ? "minting" : "verify-only"}
+	                    </span>
+	                    <span
+	                      data-testid="auth-token-count"
+	                      className="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 font-semibold text-slate-200"
+	                    >
+	                      tokens {authTokenCount}
+	                    </span>
+	                    <span
+	                      data-testid="auth-scope"
+	                      className="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 font-semibold text-slate-200"
+	                      title={authScopeTitle}
+	                    >
+	                      scope {authScopeSummary}
+	                    </span>
+	                    {authSummaryBadges.map((name) => (
+	                      <span
+	                        key={name}
+	                        className="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 font-semibold text-slate-200"
+	                      >
+	                        {name}
+	                      </span>
+	                    ))}
+	                  </div>
 	                </div>
 
-	                {showAuthAdvanced && (
-	                  <>
-	                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-	                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-	                    <div className="flex items-center justify-between gap-2">
-	                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Device wrap key</div>
-	                      <button
+		                {showAuthAdvanced && (
+		                  <>
+			                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+			                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
+			                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Issuer</div>
+			                    <div className="mt-1 font-mono text-slate-200">
+			                      {authIssuerPkHex ? `${authIssuerPkHex.slice(0, 16)}…` : "-"}
+			                    </div>
+			                    <div className="mt-1 text-[11px] text-slate-500">{authCanIssue ? "can mint invites" : "verify-only"}</div>
+			                  </div>
+			                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
+			                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Local key_id</div>
+			                    <div className="mt-1 font-mono text-slate-200">
+			                      {authLocalKeyIdHex ? `${authLocalKeyIdHex.slice(0, 16)}…` : "-"}
+			                    </div>
+			                  </div>
+			                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">
+			                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Token id</div>
+			                    <div className="mt-1 font-mono text-slate-200">
+			                      {authLocalTokenIdHex ? `${authLocalTokenIdHex.slice(0, 16)}…` : "-"}
+			                    </div>
+			                    <div className="mt-1 text-[11px] text-slate-500">
+			                      {authTokenCount > 0 ? `${authTokenCount} token(s)` : "-"}
+			                    </div>
+			                    <div className="mt-1 text-[11px] text-slate-500">
+			                      {authTokenScope
+			                        ? (() => {
+			                            const rootId = authTokenScope.rootNodeId ?? ROOT_ID;
+			                            return `scope=${rootId === ROOT_ID ? "doc-wide" : `${rootId.slice(0, 8)}…`}${
+			                              authTokenScope.maxDepth !== undefined ? ` depth≤${authTokenScope.maxDepth}` : ""
+			                            }${
+			                              authTokenScope.excludeNodeIds && authTokenScope.excludeNodeIds.length > 0
+			                                ? ` exclude=${authTokenScope.excludeNodeIds.length}`
+			                                : ""
+			                            }`;
+			                          })()
+			                        : "-"}
+			                    </div>
+			                    {authTokenActions && authTokenActions.length > 0 && (
+			                      <div className="mt-1 text-[11px] text-slate-500" title={authTokenActions.join(", ")}>
+			                        {authTokenActions.join(", ")}
+			                      </div>
+			                    )}
+			                  </div>
+			                </div>
+
+		                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+		                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+		                    <div className="flex items-center justify-between gap-2">
+		                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Device wrap key</div>
+		                      <button
                         className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                         type="button"
                         onClick={() =>
@@ -2931,33 +2994,53 @@ export default function App() {
 			                  </>
 			                )}
 
-			                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-			                  <div className="flex items-center justify-between gap-2">
-			                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Private subtrees</div>
-			                    <button
-	                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-	                      type="button"
-	                      onClick={clearPrivateRoots}
-	                      disabled={authBusy || privateRootsCount === 0}
-	                      title="Clear all private roots for this doc (local only)"
-	                    >
-	                      Clear
-	                    </button>
-	                  </div>
-	                  <div className="mt-2 text-[11px] text-slate-400">{privateRootsCount} private roots</div>
-	                  <div className="mt-1 text-[11px] text-slate-500">
-	                    Private roots are excluded from new invites (read/write scope). Stored locally for this `docId`.
-	                  </div>
-	                  {privateRootEntries.length > 0 && (
-	                    <div className="mt-2 max-h-28 overflow-auto pr-1">
-	                      {privateRootEntries.map((r) => (
-	                        <div key={r.id} className="flex items-center justify-between gap-2 py-1">
-	                          <span className="min-w-0 truncate font-mono text-[11px] text-slate-200" title={r.id}>
-	                            {r.label} <span className="text-slate-500">{r.id.slice(0, 12)}…</span>
-	                          </span>
-	                          <div className="flex items-center gap-2">
-	                            <button
-	                              className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+				                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+				                  <div className="flex items-center justify-between gap-2">
+				                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Private subtrees</div>
+				                    <div className="flex items-center gap-2">
+				                      <button
+				                        className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+				                        type="button"
+				                        onClick={() => setShowPrivateRootsPanel((v) => !v)}
+				                        disabled={authBusy}
+				                        aria-expanded={showPrivateRootsPanel}
+				                        title={showPrivateRootsPanel ? "Hide list" : "Manage private roots"}
+				                      >
+				                        {showPrivateRootsPanel ? "Hide" : "Manage"}
+				                      </button>
+				                      {showPrivateRootsPanel && (
+				                        <button
+				                          className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+				                          type="button"
+				                          onClick={clearPrivateRoots}
+				                          disabled={authBusy || privateRootsCount === 0}
+				                          title="Clear all private roots for this doc (local only)"
+				                        >
+				                          Clear
+				                        </button>
+				                      )}
+				                    </div>
+				                  </div>
+				                  <div className="mt-2 text-[11px] text-slate-400">{privateRootsCount} private roots</div>
+				                  <div className="mt-1 text-[11px] text-slate-500">
+				                    Private roots are excluded from new invites (read/write scope). Stored locally for this `docId`.
+				                  </div>
+				                  {!showPrivateRootsPanel && privateRootsCount > 0 && (
+				                    <div className="mt-1 text-[11px] text-slate-500">
+				                      Use the lock icon on a node to mark it private. Manage shows the list.
+				                    </div>
+				                  )}
+				                  {showPrivateRootsPanel && privateRootEntries.length > 0 && (
+				                    <div className="mt-2 max-h-28 overflow-auto pr-1">
+				                      {privateRootEntries.map((r) => (
+				                        <div key={r.id} className="flex items-center justify-between gap-2 py-1">
+				                          <span className="min-w-0 truncate font-mono text-[11px] text-slate-200" title={r.id}>
+				                            {r.label === r.id ? `Node ${r.id.slice(0, 8)}…` : r.label}{" "}
+				                            <span className="text-slate-500">{r.id.slice(0, 12)}…</span>
+				                          </span>
+				                          <div className="flex items-center gap-2">
+				                            <button
+				                              className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
 	                              type="button"
 	                              onClick={() => togglePrivateRoot(r.id)}
 	                              disabled={authBusy}

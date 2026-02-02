@@ -41,9 +41,8 @@ async function ensureAuthAdvancedOpen(page: import("@playwright/test").Page) {
 
 async function waitForLocalAuthTokens(page: import("@playwright/test").Page) {
   await ensureAuthPanelOpen(page);
-  const tokenCard = page.getByText("Token id", { exact: true }).locator("..");
-  const tokenValue = tokenCard.locator("div.font-mono").first();
-  await expect(tokenValue).toContainText(/[0-9a-f]{16}/i, { timeout: 30_000 });
+  const tokenCount = page.getByTestId("auth-token-count");
+  await expect(tokenCount).toContainText(/tokens\s*[1-9]/i, { timeout: 30_000 });
   await page.getByRole("button", { name: "Auth", exact: true }).click();
 }
 
