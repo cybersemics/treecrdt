@@ -2684,20 +2684,20 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Doc key blob</div>
-                      <button
-                        className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                        type="button"
+	                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                    <div className="flex items-center justify-between gap-2">
+	                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Issuer key blob</div>
+	                      <button
+	                        className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+	                        type="button"
                         onClick={() =>
                           void copyToClipboard(sealedIssuerKeyB64 ?? "").catch((err) =>
                             setAuthError(err instanceof Error ? err.message : String(err))
                           )
                         }
                         disabled={authBusy || !sealedIssuerKeyB64}
-                        title="Copy sealed issuer key blob (base64url)"
-                      >
+	                        title="Copy sealed issuer key blob (base64url)"
+	                      >
                         <MdContentCopy className="text-[16px]" />
                         Copy
                       </button>
