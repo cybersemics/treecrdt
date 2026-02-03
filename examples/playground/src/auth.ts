@@ -33,6 +33,7 @@ const LOCAL_IDENTITY_SEALED_KEY_PREFIX = "treecrdt-playground-auth-local-identit
 const DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX = "treecrdt-playground-e2ee-doc-payload-key-sealed:";
 const IDENTITY_SK_SEALED_KEY = "treecrdt-playground-identity-sk-sealed:v1";
 const DEVICE_SIGNING_SK_SEALED_KEY = "treecrdt-playground-device-signing-sk-sealed:v1";
+const LOCAL_IDENTITY_LABEL_V1 = "replica";
 
 // Legacy (plaintext) keys: auto-migrated and deleted on load.
 const LEGACY_ISSUER_SK_KEY_PREFIX = "treecrdt-playground-auth-issuer-sk:";
@@ -76,6 +77,16 @@ function base64urlDecodeSafe(b64: string): Uint8Array | null {
   } catch {
     return null;
   }
+}
+
+function allSessionStorageKeys(): string[] {
+  if (typeof window === "undefined") return [];
+  const keys: string[] = [];
+  for (let i = 0; i < window.sessionStorage.length; i += 1) {
+    const key = window.sessionStorage.key(i);
+    if (key) keys.push(key);
+  }
+  return keys;
 }
 
 async function withGlobalLock<T>(name: string, run: () => Promise<T>): Promise<T> {
@@ -238,13 +249,13 @@ export type StoredAuthMaterial = {
   localTokensB64: string[];
 };
 
-export async function loadAuthMaterial(docId: string, replicaLabel: string): Promise<StoredAuthMaterial> {
+export async function loadAuthMaterial(docId: string): Promise<StoredAuthMaterial> {
   const wrapKey = await requireDeviceWrapKeyBytes();
 
   const pkKey = `${ISSUER_PK_KEY_PREFIX}${docId}`;
   const legacyIssuerSkKey = `${LEGACY_ISSUER_SK_KEY_PREFIX}${docId}`;
   const sealedIssuerSkKey = `${ISSUER_SK_SEALED_KEY_PREFIX}${docId}`;
-  const sealedLocalKey = `${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:${replicaLabel}`;
+  const sealedLocalKey = `${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}`;
 
   // Migrate legacy issuer secret key (plaintext) -> sealed.
   if (!gsGet(sealedIssuerSkKey)) {
@@ -259,16 +270,53 @@ export async function loadAuthMaterial(docId: string, replicaLabel: string): Pro
     }
   }
 
-  // Migrate legacy local identity (plaintext) -> sealed.
-  if (!lsGet(sealedLocalKey)) {
-    const legacyLocalSkB64 = lsGet(`${LEGACY_LOCAL_SK_KEY_PREFIX}${docId}:${replicaLabel}`);
-    if (legacyLocalSkB64) {
-      const legacyLocalSk = base64urlDecodeSafe(legacyLocalSkB64);
-      const legacyTokensRaw = lsGet(`${LEGACY_LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaLabel}`);
-      let legacyTokens: Uint8Array[] = [];
-      if (legacyTokensRaw) {
+  // Migrate legacy local identities (replicaLabel-scoped) to a per-tab identity.
+  if (!lsGet(sealedLocalKey) && typeof window !== "undefined") {
+    const oldSealedPrefix = prefixPlaygroundStorageKey(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:`);
+    const oldSealedKeys = allSessionStorageKeys().filter((k) => k.startsWith(oldSealedPrefix));
+    if (oldSealedKeys.length === 1) {
+      const storageKey = oldSealedKeys[0]!;
+      const legacyReplicaLabel = storageKey.slice(oldSealedPrefix.length);
+      const raw = window.sessionStorage.getItem(storageKey);
+      const sealedBytes = raw ? base64urlDecodeSafe(raw) : null;
+      if (sealedBytes) {
         try {
-          const parsed = JSON.parse(legacyTokensRaw) as unknown;
+          const opened = await openTreecrdtLocalIdentityV1({
+            wrapKey,
+            docId,
+            replicaLabel: legacyReplicaLabel,
+            sealed: sealedBytes,
+          });
+          const resealed = await sealTreecrdtLocalIdentityV1({
+            wrapKey,
+            docId,
+            replicaLabel: LOCAL_IDENTITY_LABEL_V1,
+            localSk: opened.localSk,
+            localTokens: opened.localTokens,
+          });
+          lsSet(sealedLocalKey, base64urlEncode(resealed));
+          window.sessionStorage.removeItem(storageKey);
+        } catch {
+          // ignore invalid legacy entry; user can reset auth
+        }
+      }
+    }
+
+    // Migrate plaintext legacy keys if present (best-effort).
+    const oldSkPrefix = prefixPlaygroundStorageKey(`${LEGACY_LOCAL_SK_KEY_PREFIX}${docId}:`);
+    const oldSkKeys = allSessionStorageKeys().filter((k) => k.startsWith(oldSkPrefix));
+    if (!lsGet(sealedLocalKey) && oldSkKeys.length === 1) {
+      const skStorageKey = oldSkKeys[0]!;
+      const legacyReplicaLabel = skStorageKey.slice(oldSkPrefix.length);
+      const rawSk = window.sessionStorage.getItem(skStorageKey);
+      const legacyLocalSk = rawSk ? base64urlDecodeSafe(rawSk) : null;
+
+      const tokensStorageKey = prefixPlaygroundStorageKey(`${LEGACY_LOCAL_TOKENS_KEY_PREFIX}${docId}:${legacyReplicaLabel}`);
+      const rawTokens = window.sessionStorage.getItem(tokensStorageKey);
+      let legacyTokens: Uint8Array[] = [];
+      if (rawTokens) {
+        try {
+          const parsed = JSON.parse(rawTokens) as unknown;
           if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
             legacyTokens = (parsed as string[]).map((b64) => base64urlDecode(b64));
           }
@@ -278,19 +326,24 @@ export async function loadAuthMaterial(docId: string, replicaLabel: string): Pro
       }
 
       if (legacyLocalSk && legacyLocalSk.length === 32) {
-        const sealed = await sealTreecrdtLocalIdentityV1({
-          wrapKey,
-          docId,
-          replicaLabel,
-          localSk: legacyLocalSk,
-          localTokens: legacyTokens,
-        });
-        lsSet(sealedLocalKey, base64urlEncode(sealed));
+        try {
+          const sealed = await sealTreecrdtLocalIdentityV1({
+            wrapKey,
+            docId,
+            replicaLabel: LOCAL_IDENTITY_LABEL_V1,
+            localSk: legacyLocalSk,
+            localTokens: legacyTokens,
+          });
+          lsSet(sealedLocalKey, base64urlEncode(sealed));
+          window.sessionStorage.removeItem(skStorageKey);
+          window.sessionStorage.removeItem(tokensStorageKey);
+          window.sessionStorage.removeItem(
+            prefixPlaygroundStorageKey(`${LEGACY_LOCAL_PK_KEY_PREFIX}${docId}:${legacyReplicaLabel}`)
+          );
+        } catch {
+          // ignore; user can reset auth
+        }
       }
-
-      lsDel(`${LEGACY_LOCAL_PK_KEY_PREFIX}${docId}:${replicaLabel}`);
-      lsDel(`${LEGACY_LOCAL_SK_KEY_PREFIX}${docId}:${replicaLabel}`);
-      lsDel(`${LEGACY_LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaLabel}`);
     }
   }
 
@@ -319,7 +372,12 @@ export async function loadAuthMaterial(docId: string, replicaLabel: string): Pro
   if (localSealedB64) {
     const sealedBytes = base64urlDecodeSafe(localSealedB64);
     if (!sealedBytes) throw new Error("local identity blob is not valid base64url");
-    const opened = await openTreecrdtLocalIdentityV1({ wrapKey, docId, replicaLabel, sealed: sealedBytes });
+    const opened = await openTreecrdtLocalIdentityV1({
+      wrapKey,
+      docId,
+      replicaLabel: LOCAL_IDENTITY_LABEL_V1,
+      sealed: sealedBytes,
+    });
     localPkB64 = base64urlEncode(opened.localPk);
     localSkB64 = base64urlEncode(opened.localSk);
     localTokensB64 = opened.localTokens.map((t) => base64urlEncode(t));
@@ -386,45 +444,59 @@ export async function saveIssuerKeys(
   else if (!gsGet(pkKey)) gsSet(pkKey, issuerPkB64);
 }
 
-async function readLocalIdentityOrNull(docId: string, replicaLabel: string): Promise<{
+async function readLocalIdentityOrNull(docId: string): Promise<{
   localSk: Uint8Array;
   localTokens: Uint8Array[];
 } | null> {
   const wrapKey = await requireDeviceWrapKeyBytes();
-  const sealedB64 = lsGet(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:${replicaLabel}`);
+  const sealedB64 = lsGet(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}`);
   if (!sealedB64) return null;
   const sealed = base64urlDecodeSafe(sealedB64);
   if (!sealed) throw new Error("local identity blob is not valid base64url");
-  const opened = await openTreecrdtLocalIdentityV1({ wrapKey, docId, replicaLabel, sealed });
+  const opened = await openTreecrdtLocalIdentityV1({ wrapKey, docId, replicaLabel: LOCAL_IDENTITY_LABEL_V1, sealed });
   return { localSk: opened.localSk, localTokens: opened.localTokens };
 }
 
-async function writeLocalIdentity(docId: string, replicaLabel: string, localSk: Uint8Array, localTokens: Uint8Array[]) {
+async function writeLocalIdentity(docId: string, localSk: Uint8Array, localTokens: Uint8Array[]) {
   const wrapKey = await requireDeviceWrapKeyBytes();
-  const sealed = await sealTreecrdtLocalIdentityV1({ wrapKey, docId, replicaLabel, localSk, localTokens });
-  lsSet(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:${replicaLabel}`, base64urlEncode(sealed));
+  const sealed = await sealTreecrdtLocalIdentityV1({
+    wrapKey,
+    docId,
+    replicaLabel: LOCAL_IDENTITY_LABEL_V1,
+    localSk,
+    localTokens,
+  });
+  lsSet(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}`, base64urlEncode(sealed));
 }
 
-export async function saveLocalKeys(docId: string, replicaLabel: string, _localPkB64: string, localSkB64: string) {
+export async function saveLocalKeys(docId: string, localSkB64: string) {
   const localSk = base64urlDecode(localSkB64);
-  const existing = await readLocalIdentityOrNull(docId, replicaLabel);
+  const existing = await readLocalIdentityOrNull(docId);
   const localTokens = existing?.localTokens ?? [];
-  await writeLocalIdentity(docId, replicaLabel, localSk, localTokens);
+  await writeLocalIdentity(docId, localSk, localTokens);
 }
 
-export async function saveLocalTokens(docId: string, replicaLabel: string, tokensB64: string[]) {
-  const existing = await readLocalIdentityOrNull(docId, replicaLabel);
+export async function saveLocalTokens(docId: string, tokensB64: string[]) {
+  const existing = await readLocalIdentityOrNull(docId);
   if (!existing) throw new Error("local identity is missing; cannot store capability tokens");
   const tokens = tokensB64.map((b64) => base64urlDecode(b64));
-  await writeLocalIdentity(docId, replicaLabel, existing.localSk, tokens);
+  await writeLocalIdentity(docId, existing.localSk, tokens);
 }
 
-export function clearAuthMaterial(docId: string, replicaLabel: string) {
-  lsDel(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:${replicaLabel}`);
-  // Also clear legacy keys in case the app crashes before migration.
-  lsDel(`${LEGACY_LOCAL_PK_KEY_PREFIX}${docId}:${replicaLabel}`);
-  lsDel(`${LEGACY_LOCAL_SK_KEY_PREFIX}${docId}:${replicaLabel}`);
-  lsDel(`${LEGACY_LOCAL_TOKENS_KEY_PREFIX}${docId}:${replicaLabel}`);
+export function clearAuthMaterial(docId: string) {
+  lsDel(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}`);
+  if (typeof window !== "undefined") {
+    const prefixes = [
+      `${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:`,
+      `${LEGACY_LOCAL_PK_KEY_PREFIX}${docId}:`,
+      `${LEGACY_LOCAL_SK_KEY_PREFIX}${docId}:`,
+      `${LEGACY_LOCAL_TOKENS_KEY_PREFIX}${docId}:`,
+    ];
+    const candidates = allSessionStorageKeys().filter((k) =>
+      prefixes.some((p) => k.startsWith(prefixPlaygroundStorageKey(p)))
+    );
+    for (const k of candidates) window.sessionStorage.removeItem(k);
+  }
 }
 
 export async function generateEd25519KeyPair(): Promise<{ sk: Uint8Array; pk: Uint8Array }> {

@@ -20,8 +20,8 @@ pnpm -C examples/playground dev
 
 The playground includes a simple sync panel that discovers other open tabs via `BroadcastChannel`.
 
-- Open tab A with a chosen doc and replica: `http://localhost:5193/?doc=demo&replica=replica-a`
-- Open tab B with the same doc and a different replica: `http://localhost:5193/?doc=demo&replica=replica-b`
+- Open tab A with a chosen doc: `http://localhost:5193/?doc=demo`
+- Open tab B with the same doc: `http://localhost:5193/?doc=demo` (each tab gets its own replica key)
 - Make changes in either tab, then click `Sync all` (or `Sync children`) to reconcile and exchange missing ops.
 
 ### Auth / ACL demo

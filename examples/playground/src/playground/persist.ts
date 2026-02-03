@@ -3,18 +3,6 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 import type { StorageMode } from "./types";
 import { prefixPlaygroundStorageKey } from "./storage";
 
-export function pickReplicaLabel(): string {
-  if (typeof window === "undefined") return `replica-${Math.random().toString(16).slice(2, 6)}`;
-  const override = new URLSearchParams(window.location.search).get("replica");
-  if (override && override.trim()) return override.trim();
-  const key = prefixPlaygroundStorageKey("treecrdt-playground-replica");
-  const existing = window.localStorage.getItem(key);
-  if (existing) return existing;
-  const next = `replica-${crypto.randomUUID().slice(0, 8)}`;
-  window.localStorage.setItem(key, next);
-  return next;
-}
-
 export function initialStorage(): StorageMode {
   if (typeof window === "undefined") return "memory";
   const param = new URLSearchParams(window.location.search).get("storage");

@@ -11,7 +11,7 @@ async function waitForReady(page: import("@playwright/test").Page, path: string)
   await expect(page.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
   const isJoinMode = new URL(path, "http://localhost").searchParams.get("join") === "1";
   if (!isJoinMode) {
-    await expect(page.getByText("Replica (pubkey):").locator("..")).toContainText(/[0-9a-f]{64}/, { timeout: 60_000 });
+    await expect(page.getByTestId("self-pubkey")).toHaveAttribute("title", /[0-9a-f]{64}/i, { timeout: 60_000 });
   }
   await expect(treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" })).toBeEnabled({ timeout: 60_000 });
 }
@@ -24,7 +24,7 @@ async function expectAuthEnabledByDefault(page: import("@playwright/test").Page)
 }
 
 async function ensureAuthPanelOpen(page: import("@playwright/test").Page) {
-  const marker = page.getByText("Auth (COSE+CWT)", { exact: true });
+  const marker = page.getByText("Sharing & Auth", { exact: true });
   if ((await marker.count()) > 0) return;
   await page.getByRole("button", { name: "Auth", exact: true }).click();
   await expect(marker).toBeVisible({ timeout: 30_000 });
@@ -47,10 +47,9 @@ async function waitForLocalAuthTokens(page: import("@playwright/test").Page) {
 }
 
 async function readReplicaPubkeyHex(page: import("@playwright/test").Page): Promise<string> {
-  const line = page.getByText("Replica (pubkey):").locator("..");
-  const raw = await line.textContent();
-  const match = raw?.match(/[0-9a-f]{64}/i);
-  if (!match) throw new Error(`expected replica pubkey in: ${raw ?? ""}`);
+  const title = await page.getByTestId("self-pubkey").getAttribute("title");
+  const match = title?.match(/[0-9a-f]{64}/i);
+  if (!match) throw new Error(`expected replica pubkey in title: ${title ?? ""}`);
   return match[0]!;
 }
 
@@ -63,7 +62,7 @@ async function enableRevealIdentity(page: import("@playwright/test").Page) {
 }
 
 async function readDeviceWrapKeyB64(page: import("@playwright/test").Page): Promise<string> {
-  const marker = page.getByText("Auth (COSE+CWT)", { exact: true });
+  const marker = page.getByText("Sharing & Auth", { exact: true });
   const authWasOpen = (await marker.count()) > 0;
   await ensureAuthAdvancedOpen(page);
 
@@ -96,7 +95,7 @@ test("insert and delete node", async ({ page }) => {
   test.setTimeout(90_000);
 
   const doc = uniqueDocId("pw-playground-basic");
-  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`);
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
   await expectAuthEnabledByDefault(page);
   await waitForLocalAuthTokens(page);
 
@@ -127,8 +126,8 @@ test("defensive delete restores parent when unseen child arrives", async ({ brow
 
   try {
     await Promise.all([
-      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
-      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}`),
     ]);
     await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
 
@@ -195,8 +194,8 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
 
   try {
     await Promise.all([
-      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
-      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}`),
     ]);
     await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
 
@@ -303,8 +302,8 @@ test("grant by replica pubkey reveals a private subtree on resync", async ({ bro
 
   try {
     await Promise.all([
-      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
-      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b&profile=${encodeURIComponent(profile)}&join=1`),
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profile)}&join=1`),
     ]);
 
     await expectAuthEnabledByDefault(pageA);
@@ -391,8 +390,8 @@ test("identity chain is shown when peers reveal identity", async ({ browser }) =
 
   try {
     await Promise.all([
-      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
-      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}`),
     ]);
     await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
     await Promise.all([enableRevealIdentity(pageA), enableRevealIdentity(pageB)]);
@@ -432,8 +431,8 @@ test("identity key blobs can be exported and imported", async ({ browser }) => {
 
   try {
     await Promise.all([
-      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
-      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b`),
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}`),
     ]);
     await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
     await enableRevealIdentity(pageA);
@@ -504,8 +503,8 @@ test("isolated peer tab uses separate storage namespace and requires invite", as
 
   try {
     await Promise.all([
-      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}&replica=pw-a`),
-      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&replica=pw-b&profile=${encodeURIComponent(profile)}&join=1`),
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profile)}&join=1`),
     ]);
 
     await expectAuthEnabledByDefault(pageA);

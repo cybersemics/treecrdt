@@ -169,8 +169,8 @@ export function TreeRow({
           <button
             className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
             onClick={() => onShare(node.id)}
-            aria-label="Share subtree"
-            title="Share subtree"
+            aria-label="Share subtree (invite)"
+            title="Share subtree (invite)"
           >
             <MdShare className="text-[20px]" />
           </button>
