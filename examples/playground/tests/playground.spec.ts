@@ -18,7 +18,9 @@ async function waitForReady(page: import("@playwright/test").Page, path: string)
   const showComposer = page.getByRole("button", { name: "Show", exact: true });
   if ((await showComposer.count()) > 0) await showComposer.click();
 
-  await expect(treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" })).toBeEnabled({ timeout: 60_000 });
+  if (!isJoinMode) {
+    await expect(treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" })).toBeEnabled({ timeout: 60_000 });
+  }
 }
 
 async function expectAuthEnabledByDefault(page: import("@playwright/test").Page) {

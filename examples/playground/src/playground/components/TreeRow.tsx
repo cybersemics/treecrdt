@@ -31,6 +31,10 @@ export function TreeRow({
   privateRoots,
   onTogglePrivateRoot,
   onShare,
+  scopeRootId,
+  canWritePayload,
+  canWriteStructure,
+  canDelete,
   meta,
   childrenByParent,
 }: {
@@ -48,11 +52,16 @@ export function TreeRow({
   privateRoots: Set<string>;
   onTogglePrivateRoot: (id: string) => void;
   onShare: (id: string) => void;
+  scopeRootId: string;
+  canWritePayload: boolean;
+  canWriteStructure: boolean;
+  canDelete: boolean;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
   const isCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(node.id) : collapse.overrides.has(node.id);
   const isRoot = node.id === ROOT_ID;
+  const isScopeRoot = scopeRootId !== ROOT_ID && node.id === scopeRootId;
   const metaInfo = meta[node.id];
   const isPrivateRoot = !isRoot && privateRoots.has(node.id);
   let isPrivateInherited = false;
@@ -78,10 +87,18 @@ export function TreeRow({
   const toggleDisabled = childrenLoaded && childCount === 0 && isCollapsed;
   const [isEditing, setIsEditing] = useState(false);
   const [draftValue, setDraftValue] = useState(node.value);
+  const canEditValue = canWritePayload && !isRoot;
+  const canInsertChild = canWriteStructure;
+  const canMoveStructure = canWriteStructure;
+  const canMoveToDocRoot = canWriteStructure && scopeRootId === ROOT_ID;
 
   useEffect(() => {
     if (!isEditing) setDraftValue(node.value);
   }, [isEditing, node.value]);
+
+  useEffect(() => {
+    if (!canEditValue && isEditing) setIsEditing(false);
+  }, [canEditValue, isEditing]);
 
   return (
     <div
@@ -140,13 +157,24 @@ export function TreeRow({
                 <button
                   type="button"
                   className="block w-full text-left"
-                  onClick={() => setIsEditing(true)}
-                  title="Click to edit"
+                  onClick={() => {
+                    if (canEditValue) setIsEditing(true);
+                  }}
+                  disabled={!canEditValue}
+                  title={canEditValue ? "Click to edit" : "Read-only (no write_payload permission)"}
                 >
                   <span className="block truncate text-sm font-semibold text-white">{node.label}</span>
                 </button>
               )}
             </div>
+            {!isEditing && isScopeRoot && (
+              <span
+                className="flex-shrink-0 rounded-full border border-emerald-400/60 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-50"
+                title="Scoped access: your capability token starts at this subtree root. Nodes outside this subtree are hidden."
+              >
+                scoped access
+              </span>
+            )}
             {!isEditing && isPrivateRoot && (
               <span
                 className="flex-shrink-0 rounded-full border border-amber-400/60 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100"
@@ -214,10 +242,11 @@ export function TreeRow({
             <MdOutlineRssFeed className="text-[20px]" />
           </button>
           <button
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
             onClick={() => onAddChild(node.id)}
             aria-label="Add child"
-            title="Add child"
+            title={canInsertChild ? "Add child" : "Read-only (no write_structure permission)"}
+            disabled={!canInsertChild}
           >
             <MdAdd className="text-[22px]" />
           </button>
@@ -226,34 +255,42 @@ export function TreeRow({
               <button
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                 onClick={() => onMove(node.id, "up")}
-                disabled={!canMoveUp}
+                disabled={!canMoveStructure || !canMoveUp}
                 aria-label="Move up"
-                title="Move up"
+                title={canMoveStructure ? "Move up" : "Read-only (no write_structure permission)"}
               >
                 <MdKeyboardArrowUp className="text-[22px]" />
               </button>
               <button
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                 onClick={() => onMove(node.id, "down")}
-                disabled={!canMoveDown}
+                disabled={!canMoveStructure || !canMoveDown}
                 aria-label="Move down"
-                title="Move down"
+                title={canMoveStructure ? "Move down" : "Read-only (no write_structure permission)"}
               >
                 <MdKeyboardArrowDown className="text-[22px]" />
               </button>
               <button
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                 onClick={() => onMoveToRoot(node.id)}
                 aria-label="Move to root"
-                title="Move to root"
+                title={
+                  canMoveToDocRoot
+                    ? "Move to root"
+                    : scopeRootId !== ROOT_ID
+                      ? "Not available in scoped access (can’t move nodes outside your subtree)"
+                      : "Read-only (no write_structure permission)"
+                }
+                disabled={!canMoveToDocRoot}
               >
                 <MdHome className="text-[20px]" />
               </button>
               <button
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-rose-400/80 bg-rose-500/10 text-rose-100 transition hover:bg-rose-500/20"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-rose-400/80 bg-rose-500/10 text-rose-100 transition hover:bg-rose-500/20 disabled:opacity-50"
                 onClick={() => onDelete(node.id)}
                 aria-label="Delete"
-                title="Delete"
+                title={canDelete ? "Delete" : "Read-only (no delete permission)"}
+                disabled={!canDelete}
               >
                 <MdDeleteOutline className="text-[20px]" />
               </button>

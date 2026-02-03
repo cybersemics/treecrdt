@@ -1168,6 +1168,21 @@ export default function App() {
     });
   }, [authEnabled, authToken]);
 
+  const authActionSet = useMemo(() => {
+    const set = new Set<string>();
+    if (!authEnabled) return set;
+    if (!authToken) return set;
+    for (const cap of authToken.caps) {
+      for (const action of cap.actions ?? []) set.add(String(action));
+    }
+    return set;
+  }, [authEnabled, authToken]);
+
+  const canWriteStructure = !authEnabled || authActionSet.has("write_structure");
+  const canWritePayload = !authEnabled || authActionSet.has("write_payload");
+  const canDelete = !authEnabled || authActionSet.has("delete");
+  const isScopedAccess = authEnabled && viewRootId !== ROOT_ID;
+
   useEffect(() => {
     if (viewRootId === ROOT_ID) return;
     setCollapse((prev) => {
@@ -2027,6 +2042,7 @@ export default function App() {
 
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {
     if (!client || !replica) return;
+    if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
@@ -2050,6 +2066,7 @@ export default function App() {
 
   const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
     if (!client || !replica) return;
+    if (authEnabled && !canWriteStructure) return;
     const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
     setBusy(true);
@@ -2057,8 +2074,8 @@ export default function App() {
       const stateBefore = treeStateRef.current;
       const ops: Operation[] = [];
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
-      const valueBase = newNodeValue.trim();
-      const shouldSetValue = valueBase.length > 0;
+      const valueBase = canWritePayload ? newNodeValue.trim() : "";
+      const shouldSetValue = canWritePayload && valueBase.length > 0;
 
       if (fanoutLimit <= 0) {
         for (let i = 0; i < normalizedCount; i++) {
@@ -2150,10 +2167,11 @@ export default function App() {
 
   const handleInsert = async (parentId: string) => {
     if (!client || !replica) return;
+    if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
-      const valueBase = newNodeValue.trim();
+      const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
@@ -2217,6 +2235,7 @@ export default function App() {
 
   const handleMoveToRoot = async (nodeId: string) => {
     if (nodeId === ROOT_ID) return;
+    if (authEnabled && (!canWriteStructure || isScopedAccess)) return;
     const siblings = childrenByParent[ROOT_ID] ?? [];
     const without = siblings.filter((id) => id !== nodeId);
     const after = without.length === 0 ? null : without[without.length - 1]!;
@@ -2778,88 +2797,93 @@ export default function App() {
       </header>
 
       <div className="grid gap-6 md:grid-cols-3">
-	        <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} space-y-4`}>
-	          <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-	            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-	              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Composer</div>
-	              <button
-	                type="button"
-	                className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-	                onClick={() => setComposerOpen((prev) => !prev)}
-	                aria-expanded={composerOpen}
-	                title={composerOpen ? "Hide composer" : "Show composer"}
-	              >
-	                {composerOpen ? <MdExpandLess className="text-[16px]" /> : <MdExpandMore className="text-[16px]" />}
-	                {composerOpen ? "Hide" : "Show"}
-	              </button>
-	            </div>
-	            {composerOpen ? (
-	              <form
-	              className="flex flex-col gap-3 md:flex-row md:items-end"
-	              onSubmit={(e) => {
-	                e.preventDefault();
-	                void handleAddNodes(parentChoice, nodeCount, { fanout });
-	              }}
-	            >
-              <ParentPicker nodeList={nodeList} value={parentChoice} onChange={setParentChoice} disabled={status !== "ready"} />
-              <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
-                <span>Value (optional)</span>
-                <input
-                  type="text"
-                  value={newNodeValue}
-                  onChange={(e) => setNewNodeValue(e.target.value)}
-                  placeholder="Stored as payload bytes"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={status !== "ready" || busy}
-                />
-              </label>
-              <label className="flex flex-col text-sm text-slate-200">
-                <span>Node count</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={MAX_COMPOSER_NODE_COUNT}
-                  value={nodeCount}
-                  onChange={(e) => {
-                    const next = Number(e.target.value);
-                    if (!Number.isFinite(next)) {
-                      setNodeCount(0);
-                      return;
-                    }
-                    setNodeCount(Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(next))));
-                  }}
-                  className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={status !== "ready" || busy}
-                />
-              </label>
-              <label className="flex flex-col text-sm text-slate-200">
-                <span>Fanout</span>
-                <select
-                  value={fanout}
-                  onChange={(e) => setFanout(Number(e.target.value) || 0)}
-                  className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={status !== "ready" || busy}
-                  title="Fanout > 0 distributes nodes in a k-ary tree; 0 inserts all nodes under the chosen parent."
-                >
-                  <option value={0}>Flat</option>
-                  <option value={2}>2</option>
-                  <option value={3}>3</option>
-                  <option value={5}>5</option>
-                  <option value={10}>10</option>
-                  <option value={20}>20</option>
-                  <option value={50}>50</option>
-                </select>
-              </label>
+        <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} space-y-4`}>
+          <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Composer</div>
               <button
-                type="submit"
-                className="flex-shrink-0 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-                disabled={status !== "ready" || busy || nodeCount <= 0}
+                type="button"
+                className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                onClick={() => setComposerOpen((prev) => !prev)}
+                aria-expanded={composerOpen}
+                title={composerOpen ? "Hide composer" : "Show composer"}
               >
-		                Add node{nodeCount > 1 ? "s" : ""}
-		              </button>
-		            </form>
-		            ) : null}
-	          </div>
+                {composerOpen ? <MdExpandLess className="text-[16px]" /> : <MdExpandMore className="text-[16px]" />}
+                {composerOpen ? "Hide" : "Show"}
+              </button>
+            </div>
+            {composerOpen ? (
+              <form
+                className="flex flex-col gap-3 md:flex-row md:items-end"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleAddNodes(parentChoice, nodeCount, { fanout });
+                }}
+              >
+                <ParentPicker
+                  nodeList={nodeList}
+                  value={parentChoice}
+                  onChange={setParentChoice}
+                  disabled={status !== "ready"}
+                />
+                <label className="w-full space-y-2 text-sm text-slate-200 md:w-52">
+                  <span>Value (optional)</span>
+                  <input
+                    type="text"
+                    value={newNodeValue}
+                    onChange={(e) => setNewNodeValue(e.target.value)}
+                    placeholder="Stored as payload bytes"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                    disabled={status !== "ready" || busy || !canWritePayload}
+                  />
+                </label>
+                <label className="flex flex-col text-sm text-slate-200">
+                  <span>Node count</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={MAX_COMPOSER_NODE_COUNT}
+                    value={nodeCount}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      if (!Number.isFinite(next)) {
+                        setNodeCount(0);
+                        return;
+                      }
+                      setNodeCount(Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(next))));
+                    }}
+                    className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                    disabled={status !== "ready" || busy}
+                  />
+                </label>
+                <label className="flex flex-col text-sm text-slate-200">
+                  <span>Fanout</span>
+                  <select
+                    value={fanout}
+                    onChange={(e) => setFanout(Number(e.target.value) || 0)}
+                    className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                    disabled={status !== "ready" || busy}
+                    title="Fanout > 0 distributes nodes in a k-ary tree; 0 inserts all nodes under the chosen parent."
+                  >
+                    <option value={0}>Flat</option>
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                  </select>
+                </label>
+                <button
+                  type="submit"
+                  className="flex-shrink-0 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
+                  disabled={status !== "ready" || busy || nodeCount <= 0 || !canWriteStructure}
+                >
+                  Add node{nodeCount > 1 ? "s" : ""}
+                </button>
+              </form>
+            ) : null}
+          </div>
 
           <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -3848,27 +3872,31 @@ export default function App() {
                       className="absolute left-0 top-0 w-full"
                       style={{ transform: `translateY(${item.start}px)` }}
                     >
-                      <TreeRow
-                        node={entry.node}
-                        depth={entry.depth}
-                        collapse={collapse}
-                        onToggle={toggleCollapse}
-                        onShare={openShareForNode}
-                        onSetValue={handleSetValue}
-                        onAddChild={(id) => {
-                          setParentChoice(id);
-                          void handleInsert(id);
-                        }}
-                        onDelete={handleDelete}
-                        onMove={handleMove}
-                        onMoveToRoot={handleMoveToRoot}
-                        onToggleLiveChildren={toggleLiveChildren}
-                        privateRoots={privateRoots}
-                        onTogglePrivateRoot={togglePrivateRoot}
-                        liveChildren={liveChildrenParents.has(entry.node.id)}
-                        meta={index}
-                        childrenByParent={childrenByParent}
-                      />
+	                      <TreeRow
+	                        node={entry.node}
+	                        depth={entry.depth}
+	                        collapse={collapse}
+	                        onToggle={toggleCollapse}
+	                        onShare={openShareForNode}
+	                        onSetValue={handleSetValue}
+	                        onAddChild={(id) => {
+	                          setParentChoice(id);
+	                          void handleInsert(id);
+	                        }}
+	                        onDelete={handleDelete}
+	                        onMove={handleMove}
+	                        onMoveToRoot={handleMoveToRoot}
+	                        onToggleLiveChildren={toggleLiveChildren}
+	                        privateRoots={privateRoots}
+	                        onTogglePrivateRoot={togglePrivateRoot}
+	                        scopeRootId={viewRootId}
+	                        canWritePayload={canWritePayload}
+	                        canWriteStructure={canWriteStructure}
+	                        canDelete={canDelete}
+	                        liveChildren={liveChildrenParents.has(entry.node.id)}
+	                        meta={index}
+	                        childrenByParent={childrenByParent}
+	                      />
                     </div>
                   );
                 })}
