@@ -98,6 +98,31 @@ async function expandIfCollapsed(row: import("@playwright/test").Locator) {
   if (await expand.count()) await expand.click();
 }
 
+async function shareSubtreeInvite(page: import("@playwright/test").Page, nodeId: string): Promise<string> {
+  await treeRowByNodeId(page, nodeId).getByRole("button", { name: "Share subtree (invite)" }).click();
+  const textarea = page.getByPlaceholder("Invite link will appear here…");
+  await expect(textarea).toHaveValue(/invite=/, { timeout: 30_000 });
+  const link = await textarea.inputValue();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  return link;
+}
+
+async function clickSync(page: import("@playwright/test").Page, label: string) {
+  const syncBtn = page.getByRole("button", { name: "Sync", exact: true });
+  const syncError = page.getByTestId("sync-error");
+  await syncBtn.click();
+  await Promise.race([
+    expect(syncBtn).toBeEnabled({ timeout: 30_000 }),
+    (async () => {
+      await syncError.waitFor({ state: "visible", timeout: 30_000 });
+      throw new Error(`sync error (${label}): ${await syncError.textContent()}`);
+    })(),
+  ]);
+  if (await syncError.isVisible()) {
+    throw new Error(`sync error (${label}): ${await syncError.textContent()}`);
+  }
+}
+
 test("insert and delete node", async ({ page }) => {
   test.setTimeout(90_000);
 
@@ -195,6 +220,7 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
   test.setTimeout(240_000);
 
   const doc = uniqueDocId("pw-playground-private");
+  const profile = `pw-private-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const context = await browser.newContext();
   const pageA = await context.newPage();
   const pageB = await context.newPage();
@@ -202,15 +228,14 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
   try {
     await Promise.all([
       waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
-      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}`),
+      // Use an isolated (join-only) peer so importing the invite doesn't "swap" an existing peer id mid-test
+      // (which can cause A to sync to a stale peer id and burn the per-peer 15s timeout).
+      waitForReady(
+        pageB,
+        `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profile)}&join=1`
+      ),
     ]);
-    await Promise.all([expectAuthEnabledByDefault(pageA), expectAuthEnabledByDefault(pageB)]);
-
-    // Wait for peer discovery (Sync button enabled) so auth/session initialization has time to complete.
-    await Promise.all([
-      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
-      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
-    ]);
+    await expectAuthEnabledByDefault(pageA);
 
     // Create a public node and a private root.
     await pageA.getByPlaceholder("Stored as payload bytes").fill("public");
@@ -235,10 +260,11 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
     await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
     const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
 
-    await pageB.getByRole("button", { name: "Auth", exact: true }).click();
+    await ensureAuthPanelOpen(pageB);
     const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
     await inviteInput.fill(inviteLink);
     await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();
+    await waitForLocalAuthTokens(pageB);
 
     await Promise.all([
       expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
@@ -596,6 +622,151 @@ test("isolated peer tab uses separate storage namespace and requires invite", as
     if (!pushed) throw new Error("failed to sync public node");
 
     await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("delegated invite can be reshared (A → B → C) and sync is bidirectional", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-delegated");
+  const profileB = `pw-deleg-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const profileC = `pw-deleg-c-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const pageC = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileB)}&join=1`),
+      waitForReady(pageC, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileC)}&join=1`),
+    ]);
+
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    // Create public + private subtree root on A.
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("public");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "public")).toBeVisible({ timeout: 30_000 });
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-root");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const secretRootRowA = treeRowByLabel(pageA, "secret-root");
+    await expect(secretRootRowA).toBeVisible({ timeout: 30_000 });
+
+    const secretNodeId = await secretRootRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+
+    const privacyToggleA = treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    // A shares the secret subtree to B (invite includes grant so B can reshare).
+    const inviteToB = await shareSubtreeInvite(pageA, secretNodeId);
+
+    await ensureAuthPanelOpen(pageB);
+    const inviteInputB = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
+    await inviteInputB.fill(inviteToB);
+    await inviteInputB.locator("..").getByRole("button", { name: "Import" }).click();
+    await waitForLocalAuthTokens(pageB);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    // Sync so B can fetch the secret subtree root payload.
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+    const syncErrorA = pageA.getByTestId("sync-error");
+    const syncErrorB = pageB.getByTestId("sync-error");
+    await Promise.race([
+      treeRowByLabel(pageB, "secret-root").waitFor({ state: "visible", timeout: 30_000 }),
+      (async () => {
+        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+      })(),
+      (async () => {
+        await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
+      })(),
+    ]);
+
+    const secretRootRowB = treeRowByNodeId(pageB, secretNodeId);
+    await expect(secretRootRowB.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
+
+    // B reshared invite to C (delegated).
+    const inviteToC = await shareSubtreeInvite(pageB, secretNodeId);
+
+    await ensureAuthPanelOpen(pageC);
+    const inviteInputC = pageC.getByPlaceholder("Paste an invite URL (or invite=...)");
+    await inviteInputC.fill(inviteToC);
+    await inviteInputC.locator("..").getByRole("button", { name: "Import" }).click();
+    await waitForLocalAuthTokens(pageC);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageC.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    // Sync so C can fetch the secret subtree root payload.
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+    const syncErrorC = pageC.getByTestId("sync-error");
+    await Promise.race([
+      treeRowByLabel(pageC, "secret-root").waitFor({ state: "visible", timeout: 30_000 }),
+      (async () => {
+        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+      })(),
+      (async () => {
+        await syncErrorC.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (C): ${await syncErrorC.textContent()}`);
+      })(),
+    ]);
+
+    // A writes under the secret subtree; B and C should receive it.
+    const secretRowAById = treeRowByNodeId(pageA, secretNodeId);
+    await expandIfCollapsed(secretRowAById);
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("from-A");
+    await secretRowAById.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "from-A")).toBeVisible({ timeout: 30_000 });
+
+    const fromARowB = treeRowByLabel(pageB, "from-A");
+    const fromARowC = treeRowByLabel(pageC, "from-A");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await clickSync(pageA, "A");
+      if ((await fromARowB.isVisible()) && (await fromARowC.isVisible())) break;
+      await clickSync(pageB, "B");
+      await clickSync(pageC, "C");
+      if ((await fromARowB.isVisible()) && (await fromARowC.isVisible())) break;
+    }
+    expect(await fromARowB.isVisible()).toBe(true);
+    expect(await fromARowC.isVisible()).toBe(true);
+
+    // C writes under the secret subtree; A (and B) should receive it.
+    const secretRowCById = treeRowByNodeId(pageC, secretNodeId);
+    await pageC.getByPlaceholder("Stored as payload bytes").fill("from-C");
+    await secretRowCById.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageC, "from-C")).toBeVisible({ timeout: 30_000 });
+
+    await expandIfCollapsed(secretRowAById);
+    const fromCRowA = treeRowByLabel(pageA, "from-C");
+    const fromCRowB = treeRowByLabel(pageB, "from-C");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await clickSync(pageA, "A");
+      await expandIfCollapsed(secretRowAById);
+      if ((await fromCRowA.isVisible()) && (await fromCRowB.isVisible())) break;
+      await clickSync(pageB, "B");
+      await clickSync(pageC, "C");
+      await expandIfCollapsed(secretRowAById);
+      if ((await fromCRowA.isVisible()) && (await fromCRowB.isVisible())) break;
+    }
+    expect(await fromCRowA.isVisible()).toBe(true);
+    expect(await fromCRowB.isVisible()).toBe(true);
   } finally {
     await context.close();
   }

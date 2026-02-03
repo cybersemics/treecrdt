@@ -1104,6 +1104,110 @@ test("auth: delegation requires grant action in proof token", async () => {
   ).rejects.toThrow(/delegation proof/i);
 });
 
+test("auth: delegation proof can itself be delegated (chain)", async () => {
+  const docId = "doc-auth-delegation-chain";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const delegatorSk = ed25519Utils.randomSecretKey();
+  const delegatorPk = await getPublicKey(delegatorSk);
+
+  const intermediateSk = ed25519Utils.randomSecretKey();
+  const intermediatePk = await getPublicKey(intermediateSk);
+
+  const recipientPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  // Issuer grants delegator the ability to delegate.
+  const proofAtoB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: delegatorPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure", "grant"],
+  });
+
+  // Delegator grants intermediate the ability to further delegate (chain).
+  const proofBtoC = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proofAtoB,
+    subjectPublicKey: intermediatePk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure", "grant"],
+  });
+
+  // Intermediate delegates to recipient using delegated proof token.
+  const delegatedCtoD = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: intermediateSk,
+    delegatorProofToken: proofBtoC,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes: delegatedCtoD, issuerPublicKeys: [issuerPk], docId });
+  expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
+});
+
+test("auth: delegated capability root may be a descendant of proof root (with scope evaluator)", async () => {
+  const docId = "doc-auth-delegation-narrow-root";
+  const root = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const delegatorSk = ed25519Utils.randomSecretKey();
+  const delegatorPk = await getPublicKey(delegatorSk);
+
+  const recipientPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  const proof = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: delegatorPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure", "grant"],
+  });
+
+  const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proof,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: child,
+    actions: ["write_structure"],
+  });
+
+  await expect(describeTreecrdtCapabilityTokenV1({ tokenBytes: delegated, issuerPublicKeys: [issuerPk], docId })).rejects.toThrow(
+    /scope evaluator/i
+  );
+
+  const parentByNode = new Map<string, string>([[child, root]]);
+  const scopeEvaluator = async ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+    const rootHex = bytesToHex(scope.root);
+    let curHex = bytesToHex(node);
+    for (let hops = 0; hops < 16; hops += 1) {
+      if (curHex === rootHex) return "allow" as const;
+      const parent = parentByNode.get(curHex);
+      if (!parent) return "deny" as const;
+      curHex = parent;
+    }
+    return "unknown" as const;
+  };
+
+  const described = await describeTreecrdtCapabilityTokenV1({
+    tokenBytes: delegated,
+    issuerPublicKeys: [issuerPk],
+    docId,
+    scopeEvaluator: scopeEvaluator as any,
+  });
+  expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
+});
+
 test("auth: records peer identity chain capability via onPeerIdentityChain", async () => {
   const docId = "doc-auth-identity-chain";
 

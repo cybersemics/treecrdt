@@ -241,6 +241,7 @@ export default function App() {
     delete: false,
     tombstone: false,
   });
+  const [inviteAllowGrant, setInviteAllowGrant] = useState(true);
   const [invitePreset, setInvitePreset] = useState<InvitePreset>("read_write");
   const [showInviteOptions, setShowInviteOptions] = useState(false);
   const [inviteLink, setInviteLink] = useState<string>("");
@@ -831,11 +832,11 @@ export default function App() {
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
-  const openShareForNode = (nodeId: string) => {
-    setInviteRoot(nodeId);
-    setShowShareDialog(true);
-    void generateInviteLink({ rootNodeId: nodeId, copyToClipboard: true });
-  };
+	  const openShareForNode = (nodeId: string) => {
+	    setInviteRoot(nodeId);
+	    setShowShareDialog(true);
+	    void generateInviteLink({ rootNodeId: nodeId });
+	  };
 
   const hexToBytes32 = (hex: string): Uint8Array => {
     const clean = hex.trim().toLowerCase().replace(/^0x/, "");
@@ -882,19 +883,20 @@ export default function App() {
 		    if (invitePreset === "read") {
 		      actions = ["read_structure", "read_payload"];
 		    } else if (invitePreset === "read_write") {
-		      actions = ["write_structure", "write_payload", "grant"];
+			      actions = ["write_structure", "write_payload"];
 		    } else if (invitePreset === "admin") {
-		      actions = ["write_structure", "write_payload", "delete", "tombstone", "grant"];
+			      actions = ["write_structure", "write_payload", "delete", "tombstone"];
 		    } else {
 		      actions = Object.entries(inviteActions)
 		        .filter(([, enabled]) => enabled)
 		        .map(([name]) => name);
-	      if (actions.length === 0) throw new Error("select at least one action");
-	    }
+		      if (actions.length === 0) throw new Error("select at least one action");
+		    }
+		    if (inviteAllowGrant && !actions.includes("grant")) actions.push("grant");
 
-	    const maxDepthText = inviteMaxDepth.trim();
-	    let maxDepth: number | undefined;
-	    if (maxDepthText.length > 0) {
+		    const maxDepthText = inviteMaxDepth.trim();
+		    let maxDepth: number | undefined;
+		    if (maxDepthText.length > 0) {
 	      const parsed = Number(maxDepthText);
       if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
       maxDepth = parsed;
@@ -938,13 +940,15 @@ export default function App() {
 		        throw new Error("This tab is verify-only and has no local keys/tokens yet; import an invite link first.");
 		      }
 
-		      const issuerPk = base64urlDecode(issuerPkB64);
-		      const proofTokenBytes = base64urlDecode(proofTokenB64);
-		      const proofDesc = await describeTreecrdtCapabilityTokenV1({
-		        tokenBytes: proofTokenBytes,
-		        issuerPublicKeys: [issuerPk],
-		        docId,
-		      });
+			      const issuerPk = base64urlDecode(issuerPkB64);
+			      const proofTokenBytes = base64urlDecode(proofTokenB64);
+			      const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
+			      const proofDesc = await describeTreecrdtCapabilityTokenV1({
+			        tokenBytes: proofTokenBytes,
+			        issuerPublicKeys: [issuerPk],
+			        docId,
+			        scopeEvaluator,
+			      });
 		      const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
 		      if (!proofActions.has("grant")) {
 		        throw new Error("This tab is verify-only and cannot mint invites (missing grant permission).");
@@ -959,9 +963,24 @@ export default function App() {
 		        proofRootId === ROOT_ID &&
 		        proofScope?.maxDepth === undefined &&
 		        ((proofScope?.excludeNodeIds?.length ?? 0) === 0);
-		      if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
-		        throw new Error("This tab can only mint delegated invites for its current subtree scope.");
-		      }
+			      if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
+			        if (proofScope?.maxDepth !== undefined) {
+			          throw new Error("This tab can only mint delegated invites for its current subtree scope (maxDepth).");
+			        }
+			        if (!scopeEvaluator) {
+			          throw new Error("This tab can only mint delegated invites for its current subtree scope.");
+			        }
+			        const tri = await scopeEvaluator({
+			          docId,
+			          node: hexToBytes16(rootNodeId),
+			          scope: {
+			            root: hexToBytes16(proofRootId),
+			            ...(proofScope?.excludeNodeIds?.length ? { exclude: proofScope.excludeNodeIds.map((id) => hexToBytes16(id)) } : {}),
+			          },
+			        });
+			        if (tri === "deny") throw new Error("This tab can only mint delegated invites within its granted subtree scope.");
+			        if (tri === "unknown") throw new Error("Missing subtree context to mint delegated invites for that node.");
+			      }
 
 		      const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
 		      const tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
@@ -1137,13 +1156,15 @@ export default function App() {
 	          throw new Error("cannot delegate grants without local keys/tokens; import an invite link first");
 	        }
 
-	        const issuerPk = base64urlDecode(issuerPkB64);
-	        const proofTokenBytes = base64urlDecode(proofTokenB64);
-	        const proofDesc = await describeTreecrdtCapabilityTokenV1({
-	          tokenBytes: proofTokenBytes,
-	          issuerPublicKeys: [issuerPk],
-	          docId,
-	        });
+		        const issuerPk = base64urlDecode(issuerPkB64);
+		        const proofTokenBytes = base64urlDecode(proofTokenB64);
+		        const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
+		        const proofDesc = await describeTreecrdtCapabilityTokenV1({
+		          tokenBytes: proofTokenBytes,
+		          issuerPublicKeys: [issuerPk],
+		          docId,
+		          scopeEvaluator,
+		        });
 	        const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
 	        if (!proofActions.has("grant")) {
 	          throw new Error("this tab cannot delegate grants (missing grant permission)");
@@ -1155,9 +1176,26 @@ export default function App() {
 	          proofRootId === ROOT_ID &&
 	          proofScope?.maxDepth === undefined &&
 	          ((proofScope?.excludeNodeIds?.length ?? 0) === 0);
-	        if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
-	          throw new Error("this tab can only delegate grants for its current subtree scope");
-	        }
+		        if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
+		          if (proofScope?.maxDepth !== undefined) {
+		            throw new Error("this tab can only delegate grants for its current subtree scope (maxDepth)");
+		          }
+		          if (!scopeEvaluator) {
+		            throw new Error("this tab can only delegate grants for its current subtree scope");
+		          }
+		          const tri = await scopeEvaluator({
+		            docId,
+		            node: hexToBytes16(rootNodeId),
+		            scope: {
+		              root: hexToBytes16(proofRootId),
+		              ...(proofScope?.excludeNodeIds?.length
+		                ? { exclude: proofScope.excludeNodeIds.map((id) => hexToBytes16(id)) }
+		                : {}),
+		            },
+		          });
+		          if (tri === "deny") throw new Error("this tab can only delegate grants within its granted subtree scope");
+		          if (tri === "unknown") throw new Error("missing subtree context to delegate grants for that node");
+		        }
 
 	        tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
 	          delegatorPrivateKey: base64urlDecode(localSkB64),
@@ -1306,8 +1344,8 @@ export default function App() {
       return { ...prev, overrides };
     });
     setParentChoice((prev) => (prev === ROOT_ID ? viewRootId : prev));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewRootId]);
+    void ensureChildrenLoaded(viewRootId);
+  }, [ensureChildrenLoaded, viewRootId]);
 
   const nodeLabelForId = React.useCallback(
     (id: string) => {
@@ -2440,6 +2478,7 @@ export default function App() {
   const handleScopedSync = async () => {
     const parents = new Set(Object.keys(treeStateRef.current.childrenByParent));
     parents.add(viewRootId);
+    if (viewRootId !== ROOT_ID) parents.delete(ROOT_ID);
     const parentIds = Array.from(parents).filter((id) => /^[0-9a-f]{32}$/i.test(id));
     parentIds.sort();
 
@@ -2688,16 +2727,51 @@ export default function App() {
               </div>
             )}
 
-            {authError && (
-              <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
-                {authError}
-              </div>
-            )}
+	            {authError && (
+	              <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
+	                {authError}
+	              </div>
+	            )}
 
-            <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Invite link</div>
+	            {authEnabled && (
+	              <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                <div className="flex flex-wrap items-end gap-3">
+	                  <label className="w-full md:w-44 space-y-2 text-sm text-slate-200">
+	                    <span>Permission</span>
+	                    <select
+	                      className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+	                      value={invitePreset}
+	                      onChange={(e) => applyInvitePreset(e.target.value as InvitePreset)}
+	                      disabled={authBusy}
+	                    >
+	                      <option value="read">Read</option>
+	                      <option value="read_write">Read + Write</option>
+	                      <option value="admin">Admin</option>
+	                      <option value="custom">Custom</option>
+	                    </select>
+	                  </label>
+	                  <label className="flex items-center gap-2 pb-2 text-sm text-slate-200">
+	                    <input
+	                      type="checkbox"
+	                      checked={inviteAllowGrant}
+	                      onChange={(e) => setInviteAllowGrant(e.target.checked)}
+	                      disabled={authBusy}
+	                    />
+	                    <span className="text-[13px]">
+	                      Allow resharing <span className="text-[11px] text-slate-500">(grant)</span>
+	                    </span>
+	                  </label>
+	                </div>
+	                <div className="mt-2 text-[11px] text-slate-500">
+	                  Grant permission lets the recipient mint delegated invites/grants within their scope.
+	                </div>
+	              </div>
+	            )}
+
+	            <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	              <div className="flex flex-wrap items-center justify-between gap-2">
+	                <div>
+	                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Invite link</div>
                   <div className="mt-1 text-[11px] text-slate-500">
                     Copies a subtree-scoped invite link (includes E2EE doc payload key).
                   </div>
@@ -2761,12 +2835,14 @@ export default function App() {
               </div>
             </div>
 
-            {authEnabled && authCanIssue && (
-              <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grant to pubkey</div>
-                <div className="mt-1 text-[11px] text-slate-500">
-                  Send a capability token to another peer (they should resync to fetch newly authorized ops).
-                </div>
+	            {authEnabled && (authCanIssue || authCanDelegate) && (
+	              <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+	                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+	                  {authCanIssue ? "Grant to pubkey" : "Delegated grant to pubkey"}
+	                </div>
+	                <div className="mt-1 text-[11px] text-slate-500">
+	                  Send a capability token to another peer (they should resync to fetch newly authorized ops).
+	                </div>
                 <div className="mt-2 flex flex-wrap items-end gap-2">
                   <label className="flex-1 space-y-2 text-sm text-slate-200">
                     <span className="text-[11px] text-slate-400">Recipient replica pubkey (hex or base64url)</span>
@@ -3085,21 +3161,28 @@ export default function App() {
                   <MdGroup className="text-[18px]" />
                   <span className="font-mono">{peerTotal}</span>
                 </button>
-                <button
-                  className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
-                    showAuthPanel
-                      ? "border-slate-600 bg-slate-800/90 text-white"
-                      : authEnabled
-                        ? "border-emerald-400/60 bg-emerald-500/10 text-white hover:border-accent"
-                        : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
-                  }`}
-                  onClick={() => setShowAuthPanel((v) => !v)}
-                  type="button"
-                  title="Sharing & Auth"
-                >
-                  <MdVpnKey className="text-[18px]" />
-                  <span>Auth</span>
-                </button>
+	                <button
+	                  className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
+	                    showAuthPanel
+	                      ? "border-slate-600 bg-slate-800/90 text-white"
+	                      : authEnabled
+	                        ? "border-emerald-400/60 bg-emerald-500/10 text-white hover:border-accent"
+	                        : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
+	                  }`}
+	                  onClick={() => setShowAuthPanel((v) => !v)}
+	                  type="button"
+	                  title={showAuthPanel ? "Hide Sharing & Auth panel" : "Show Sharing & Auth panel"}
+	                  aria-expanded={showAuthPanel}
+	                  aria-controls="playground-auth-panel"
+	                >
+	                  <MdVpnKey className="text-[18px]" aria-hidden />
+	                  <span>Auth</span>
+	                  {showAuthPanel ? (
+	                    <MdExpandLess className="text-[18px]" aria-hidden />
+	                  ) : (
+	                    <MdExpandMore className="text-[18px]" aria-hidden />
+	                  )}
+	                </button>
                 <button
                   className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                   onClick={openNewPeerTab}
@@ -3249,8 +3332,11 @@ export default function App() {
                 )}
               </div>
             )}
-            {showAuthPanel && (
-              <div className="mb-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300">
+	            {showAuthPanel && (
+	              <div
+	                id="playground-auth-panel"
+	                className="mb-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300"
+	              >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Sharing & Auth</div>
@@ -3819,25 +3905,36 @@ export default function App() {
 	                      </select>
 	                    </label>
 
-	                    <label className="w-full md:w-44 space-y-2 text-sm text-slate-200">
-	                      <span>Permission</span>
-	                      <select
-	                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-	                        value={invitePreset}
-	                        onChange={(e) => applyInvitePreset(e.target.value as InvitePreset)}
-	                        disabled={authBusy}
-	                      >
-	                        <option value="read">Read</option>
-	                        <option value="read_write">Read + Write</option>
-	                        <option value="admin">Admin</option>
-	                        <option value="custom">Custom</option>
-	                      </select>
-	                    </label>
+		                    <label className="w-full md:w-44 space-y-2 text-sm text-slate-200">
+		                      <span>Permission</span>
+		                      <select
+		                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+		                        value={invitePreset}
+		                        onChange={(e) => applyInvitePreset(e.target.value as InvitePreset)}
+		                        disabled={authBusy}
+		                      >
+		                        <option value="read">Read</option>
+		                        <option value="read_write">Read + Write</option>
+		                        <option value="admin">Admin</option>
+		                        <option value="custom">Custom</option>
+		                      </select>
+		                    </label>
+		                    <label className="flex items-center gap-2 pb-2 text-sm text-slate-200">
+		                      <input
+		                        type="checkbox"
+		                        checked={inviteAllowGrant}
+		                        onChange={(e) => setInviteAllowGrant(e.target.checked)}
+		                        disabled={authBusy}
+		                      />
+		                      <span className="text-[13px]">
+		                        Allow resharing <span className="text-[11px] text-slate-500">(grant)</span>
+		                      </span>
+		                    </label>
 
-		                    <button
-		                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-		                      type="button"
-		                      onClick={() => void generateInviteLink()}
+			                    <button
+			                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
+			                      type="button"
+			                      onClick={() => void generateInviteLink()}
 		                      disabled={!authEnabled || authBusy || !(authCanIssue || authCanDelegate)}
 		                      title={
 		                        authCanIssue || authCanDelegate

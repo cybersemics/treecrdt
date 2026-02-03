@@ -500,25 +500,45 @@ async function capsAllowsOp(opts: {
   return overall;
 }
 
+const MAX_DELEGATION_PROOF_CHAIN = 8;
+
 async function parseAndVerifyCapabilityToken(opts: {
   tokenBytes: Uint8Array;
   issuerPublicKeys: Uint8Array[];
   docId: string;
   nowSec: number;
+  scopeEvaluator?: TreecrdtScopeEvaluator;
+}): Promise<CapabilityGrant> {
+  const seenTokenIds = new Set<string>();
+  return parseAndVerifyCapabilityTokenDepth({ ...opts, depth: 0, seenTokenIds });
+}
+
+async function parseAndVerifyCapabilityTokenDepth(opts: {
+  tokenBytes: Uint8Array;
+  issuerPublicKeys: Uint8Array[];
+  docId: string;
+  nowSec: number;
+  scopeEvaluator?: TreecrdtScopeEvaluator;
+  depth: number;
+  seenTokenIds: Set<string>;
 }): Promise<CapabilityGrant> {
   if (opts.issuerPublicKeys.length === 0) throw new Error("issuerPublicKeys is empty");
+  if (opts.depth > MAX_DELEGATION_PROOF_CHAIN) throw new Error("delegation proof chain is too deep");
+
+  const tokenIdHex = bytesToHex(deriveTokenIdV1(opts.tokenBytes));
+  if (opts.seenTokenIds.has(tokenIdHex)) throw new Error("delegation proof cycle detected");
+  opts.seenTokenIds.add(tokenIdHex);
 
   const verifyWithIssuers = async (): Promise<{ payload: Uint8Array } | null> => {
-    let payload: Uint8Array | undefined;
     for (const issuerPk of opts.issuerPublicKeys) {
       try {
-        payload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: issuerPk });
-        break;
+        const payload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: issuerPk });
+        return { payload };
       } catch {
         // continue
       }
     }
-    return payload ? { payload } : null;
+    return null;
   };
 
   const issuerVerified = await verifyWithIssuers();
@@ -531,8 +551,9 @@ async function parseAndVerifyCapabilityToken(opts: {
     });
   }
 
-  // Delegation: accept tokens signed by the subject key of an issuer-signed proof token.
-  // The delegated token must carry a proof token (issuer-signed) in its unprotected header.
+  // Delegation: accept tokens signed by the subject key of a proof token.
+  // Proof tokens can be issuer-signed or delegated (chained), but must ultimately verify against an issuer key.
+  // The delegated token must carry exactly one proof token in its unprotected header.
   const decoded = await coseDecodeSign1(opts.tokenBytes);
   const proofRaw = mapGet(decoded.unprotected, TREECRDT_DELEGATION_PROOF_HEADER_V1);
   if (proofRaw === undefined || proofRaw === null) {
@@ -544,14 +565,17 @@ async function parseAndVerifyCapabilityToken(opts: {
     throw new Error("delegation proof must be a bstr or an array of bstr");
   })();
   if (proofTokens.length !== 1) {
-    throw new Error("delegation proof must contain exactly 1 issuer-signed token");
+    throw new Error("delegation proof must contain exactly 1 proof token");
   }
 
-  const proofGrant = await parseCapabilityTokenIssuerSigned({
+  const proofGrant = await parseAndVerifyCapabilityTokenDepth({
     tokenBytes: proofTokens[0]!,
     issuerPublicKeys: opts.issuerPublicKeys,
     docId: opts.docId,
     nowSec: opts.nowSec,
+    scopeEvaluator: opts.scopeEvaluator,
+    depth: opts.depth + 1,
+    seenTokenIds: opts.seenTokenIds,
   });
 
   const delegatedPayload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: proofGrant.publicKey });
@@ -562,10 +586,11 @@ async function parseAndVerifyCapabilityToken(opts: {
     nowSec: opts.nowSec,
   });
 
-  assertDelegatedGrantWithinProof({
+  await assertDelegatedGrantWithinProof({
     docId: opts.docId,
     proof: proofGrant,
     delegated: delegatedGrant,
+    scopeEvaluator: opts.scopeEvaluator,
   });
 
   return delegatedGrant;
@@ -625,33 +650,6 @@ function parseCapabilityGrantFromClaims(opts: {
   };
 }
 
-async function parseCapabilityTokenIssuerSigned(opts: {
-  tokenBytes: Uint8Array;
-  issuerPublicKeys: Uint8Array[];
-  docId: string;
-  nowSec: number;
-}): Promise<CapabilityGrant> {
-  let payload: Uint8Array | undefined;
-  let lastErr: unknown;
-  for (const issuerPk of opts.issuerPublicKeys) {
-    try {
-      payload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: issuerPk });
-      break;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  if (!payload) {
-    throw new Error(`capability token verification failed: ${String((lastErr as any)?.message ?? lastErr ?? "")}`);
-  }
-  return parseCapabilityGrantFromClaims({
-    tokenBytes: opts.tokenBytes,
-    claimsBytes: payload,
-    docId: opts.docId,
-    nowSec: opts.nowSec,
-  });
-}
-
 function expandCapabilityActions(actions: readonly unknown[]): Set<string> {
   const actionSet = new Set(actions.map(String));
   // Keep in sync with capAllowsNode convenience rules.
@@ -667,11 +665,12 @@ function expandCapabilityActions(actions: readonly unknown[]): Set<string> {
   return actionSet;
 }
 
-function assertDelegatedGrantWithinProof(opts: {
+async function assertDelegatedGrantWithinProof(opts: {
   docId: string;
   proof: CapabilityGrant;
   delegated: CapabilityGrant;
-}): void {
+  scopeEvaluator?: TreecrdtScopeEvaluator;
+}): Promise<void> {
   if (!Array.isArray(opts.proof.caps)) throw new Error("delegation proof token must be a v1 capability token");
   if (!Array.isArray(opts.delegated.caps)) throw new Error("delegated capability token must be a v1 capability token");
 
@@ -727,8 +726,18 @@ function assertDelegatedGrantWithinProof(opts: {
 
       if (!proofDocWide) {
         if (!proofScope) throw new Error("proof capability missing scope");
-        if (bytesToHex(delegatedScope.root) !== bytesToHex(proofScope.root)) {
-          throw new Error("delegated capability root must match proof root (non-doc-wide delegation)");
+        const proofRootHex = bytesToHex(proofScope.root);
+        const delegatedRootHex = bytesToHex(delegatedScope.root);
+        if (delegatedRootHex !== proofRootHex) {
+          if (proofScope.maxDepth !== undefined) {
+            throw new Error("delegated capability root must match proof root when proof uses maxDepth");
+          }
+          if (!opts.scopeEvaluator) {
+            throw new Error("delegated capability root must match proof root (scope evaluator missing)");
+          }
+          const tri = await opts.scopeEvaluator({ docId: opts.docId, node: delegatedScope.root, scope: proofScope });
+          if (tri === "deny") throw new Error("delegated capability root is outside proof scope");
+          if (tri === "unknown") throw new Error("cannot validate delegated capability root within proof scope");
         }
 
         if (proofScope.maxDepth !== undefined) {
@@ -765,12 +774,14 @@ export async function describeTreecrdtCapabilityTokenV1(opts: {
   tokenBytes: Uint8Array;
   issuerPublicKeys: Uint8Array[];
   docId: string;
+  scopeEvaluator?: TreecrdtScopeEvaluator;
   nowSec?: number;
 }): Promise<TreecrdtCapabilityTokenV1> {
   const grant = await parseAndVerifyCapabilityToken({
     tokenBytes: opts.tokenBytes,
     issuerPublicKeys: opts.issuerPublicKeys,
     docId: opts.docId,
+    scopeEvaluator: opts.scopeEvaluator,
     nowSec: opts.nowSec ?? Math.floor(Date.now() / 1000),
   });
 
@@ -838,6 +849,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       tokenBytes,
       issuerPublicKeys: opts.issuerPublicKeys,
       docId,
+      scopeEvaluator: opts.scopeEvaluator,
       nowSec: now(),
     });
     const keyHex = bytesToHex(grant.keyId);
@@ -931,6 +943,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             tokenBytes,
             issuerPublicKeys: opts.issuerPublicKeys,
             docId: ctx.docId,
+            scopeEvaluator: opts.scopeEvaluator,
             nowSec: now(),
           })
         );
@@ -1009,6 +1022,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             tokenBytes,
             issuerPublicKeys: opts.issuerPublicKeys,
             docId: ctx.docId,
+            scopeEvaluator: opts.scopeEvaluator,
             nowSec: now(),
           })
         );
