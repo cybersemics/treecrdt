@@ -1,7 +1,5 @@
 import { blake3 } from "@noble/hashes/blake3";
 import { utf8ToBytes } from "@noble/hashes/utils";
-import { sha512 } from "@noble/hashes/sha512";
-import { hashes as ed25519Hashes, sign as ed25519Sign, verify as ed25519Verify } from "@noble/ed25519";
 
 import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
@@ -18,15 +16,9 @@ import {
   type TreecrdtIdentityChainV1,
   type VerifiedTreecrdtIdentityChainV1,
 } from "./identity.js";
+import { signEd25519, verifyEd25519 } from "./ed25519.js";
 
 const TREECRDT_DELEGATION_PROOF_HEADER_V1 = "treecrdt.delegation_proof_v1";
-
-let ed25519Ready = false;
-function ensureEd25519(): void {
-  if (ed25519Ready) return;
-  ed25519Hashes.sha512 = sha512;
-  ed25519Ready = true;
-}
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((acc, p) => acc + p.length, 0);
@@ -262,9 +254,8 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
 }
 
 export async function signTreecrdtOpV1(opts: { docId: string; op: Operation; privateKey: Uint8Array }): Promise<Uint8Array> {
-  ensureEd25519();
   const msg = encodeTreecrdtOpSigInputV1({ docId: opts.docId, op: opts.op });
-  return ed25519Sign(msg, opts.privateKey);
+  return signEd25519(msg, opts.privateKey);
 }
 
 export async function verifyTreecrdtOpV1(opts: {
@@ -273,9 +264,8 @@ export async function verifyTreecrdtOpV1(opts: {
   signature: Uint8Array;
   publicKey: Uint8Array;
 }): Promise<boolean> {
-  ensureEd25519();
   const msg = encodeTreecrdtOpSigInputV1({ docId: opts.docId, op: opts.op });
-  return ed25519Verify(opts.signature, msg, opts.publicKey);
+  return await verifyEd25519(opts.signature, msg, opts.publicKey);
 }
 
 type CapabilityGrant = {

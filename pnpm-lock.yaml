@@ -17,12 +17,6 @@ importers:
 
   examples/playground:
     dependencies:
-      '@noble/ed25519':
-        specifier: ^3.0.0
-        version: 3.0.0
-      '@noble/hashes':
-        specifier: ^1.8.0
-        version: 1.8.0
       '@tanstack/react-virtual':
         specifier: ^3.13.13
         version: 3.13.13(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -38,9 +32,6 @@ importers:
       '@treecrdt/wa-sqlite':
         specifier: workspace:*
         version: link:../../packages/treecrdt-wa-sqlite
-      cborg:
-        specifier: ^4.3.2
-        version: 4.3.2
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -146,12 +137,6 @@ importers:
 
   packages/treecrdt-sqlite-conformance:
     dependencies:
-      '@noble/ed25519':
-        specifier: ^3.0.0
-        version: 3.0.0
-      '@noble/hashes':
-        specifier: ^1.8.0
-        version: 1.8.0
       '@treecrdt/auth':
         specifier: workspace:*
         version: link:../treecrdt-auth
@@ -161,9 +146,6 @@ importers:
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../treecrdt-sync
-      cborg:
-        specifier: ^4.3.2
-        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.9.3

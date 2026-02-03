@@ -3,14 +3,15 @@ import type { Operation, ReplicaId } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
-import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1, type TreecrdtScopeEvaluator } from "@treecrdt/auth";
+import {
+  createTreecrdtCoseCwtAuth,
+  getEd25519PublicKey,
+  issueTreecrdtCapabilityTokenV1,
+  randomEd25519SecretKey,
+  type TreecrdtScopeEvaluator,
+} from "@treecrdt/auth";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-
-import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
-import { sha512 } from "@noble/hashes/sha512";
-
-ed25519Hashes.sha512 = sha512;
 
 export function conformanceSlugify(input: string): string {
   return input
@@ -738,13 +739,13 @@ async function scenarioSyncAuthSignedOps(ctx: SqliteConformanceContext): Promise
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: "peer-b" });
 
-  const issuerSk = ed25519Utils.randomSecretKey();
-  const issuerPk = await getPublicKey(issuerSk);
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
 
-  const aSk = ed25519Utils.randomSecretKey();
-  const aPk = await getPublicKey(aSk);
-  const bSk = ed25519Utils.randomSecretKey();
-  const bPk = await getPublicKey(bSk);
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
 
   const root = nodeIdFromInt(0);
   await a.local.insert(aPk, root, nodeIdFromInt(1), { type: "last" }, null);
@@ -803,13 +804,13 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(ctx: SqliteConformanc
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: "peer-b" });
 
-  const issuerSk = ed25519Utils.randomSecretKey();
-  const issuerPk = await getPublicKey(issuerSk);
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
 
-  const aSk = ed25519Utils.randomSecretKey();
-  const aPk = await getPublicKey(aSk);
-  const bSk = ed25519Utils.randomSecretKey();
-  const bPk = await getPublicKey(bSk);
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
 
   const root = nodeIdFromInt(0);
   await a.local.insert(aPk, root, nodeIdFromInt(1), { type: "last" }, null);
@@ -873,13 +874,13 @@ async function scenarioSyncAuthExcludedRootNotSynced(ctx: SqliteConformanceConte
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: "peer-b" });
 
-  const issuerSk = ed25519Utils.randomSecretKey();
-  const issuerPk = await getPublicKey(issuerSk);
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
 
-  const aSk = ed25519Utils.randomSecretKey();
-  const aPk = await getPublicKey(aSk);
-  const bSk = ed25519Utils.randomSecretKey();
-  const bPk = await getPublicKey(bSk);
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
 
   const root = nodeIdFromInt(0);
   const publicNode = nodeIdFromInt(1);

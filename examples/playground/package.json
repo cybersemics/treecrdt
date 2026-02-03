@@ -12,14 +12,11 @@
     "deploy": "pnpm run build && gh-pages -d dist"
   },
   "dependencies": {
-    "@noble/ed25519": "^3.0.0",
-    "@noble/hashes": "^1.8.0",
     "@tanstack/react-virtual": "^3.13.13",
     "@treecrdt/auth": "workspace:*",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",
-    "cborg": "^4.3.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-icons": "^5.5.0"

@@ -12,18 +12,15 @@ import {
 import {
   base64urlDecode,
   base64urlEncode,
+  getEd25519PublicKey,
   issueDeviceCertV1,
   issueReplicaCertV1,
   issueTreecrdtCapabilityTokenV1,
+  randomEd25519SecretKey,
   type TreecrdtIdentityChainV1,
 } from "@treecrdt/auth";
 
-import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
-import { sha512 } from "@noble/hashes/sha512";
-
 import { prefixPlaygroundStorageKey } from "./playground/storage";
-
-ed25519Hashes.sha512 = sha512;
 
 const AUTH_ENABLED_KEY = "treecrdt-playground-auth-enabled";
 const REVEAL_IDENTITY_KEY = "treecrdt-playground-reveal-identity";
@@ -502,13 +499,13 @@ export function clearAuthMaterial(docId: string) {
 }
 
 export async function generateEd25519KeyPair(): Promise<{ sk: Uint8Array; pk: Uint8Array }> {
-  const sk = ed25519Utils.randomSecretKey();
-  const pk = await getPublicKey(sk);
+  const sk = randomEd25519SecretKey();
+  const pk = await getEd25519PublicKey(sk);
   return { sk, pk };
 }
 
 export async function deriveEd25519PublicKey(secretKey: Uint8Array): Promise<Uint8Array> {
-  return await getPublicKey(secretKey);
+  return await getEd25519PublicKey(secretKey);
 }
 
 async function loadOrCreateGlobalIssuerLikeKeyPairBytes(opts: { storageKey: string; docId: string }) {
