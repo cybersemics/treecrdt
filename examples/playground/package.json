@@ -8,13 +8,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "playwright test",
+    "test:e2e": "pnpm -C ../../packages/treecrdt-auth run build && pnpm -C ../../packages/treecrdt-wa-sqlite-vendor run build && pnpm -C ../../packages/treecrdt-wa-sqlite run build:ts && playwright test",
     "deploy": "pnpm run build && gh-pages -d dist"
   },
   "dependencies": {
     "@noble/ed25519": "^3.0.0",
     "@noble/hashes": "^1.8.0",
     "@tanstack/react-virtual": "^3.13.13",
+    "@treecrdt/auth": "workspace:*",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",

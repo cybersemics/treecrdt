@@ -8,8 +8,7 @@ import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
 
-import type { SyncAuth } from "./auth.js";
-import type { Capability, Filter, Hello, HelloAck, OpAuth } from "./types.js";
+import type { Capability, Filter, Hello, HelloAck, OpAuth, SyncAuth } from "@treecrdt/sync";
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
 import { coseDecodeSign1, coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
 import {

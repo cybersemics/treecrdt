@@ -5,7 +5,9 @@ function padBase64(s: string): string {
 }
 
 export function base64urlEncode(bytes: Uint8Array): string {
-  const BufferCtor = (globalThis as any).Buffer as { from?: (data: Uint8Array) => { toString: (enc: string) => string } } | undefined;
+  const BufferCtor = (globalThis as any).Buffer as
+    | { from?: (data: Uint8Array) => { toString: (enc: string) => string } }
+    | undefined;
   if (typeof BufferCtor?.from === "function") {
     return BufferCtor.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
   }

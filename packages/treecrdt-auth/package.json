@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/sqlite-conformance",
+  "name": "@treecrdt/auth",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -16,17 +16,20 @@
     "src"
   ],
   "scripts": {
-    "build": "pnpm -C ../treecrdt-auth run build && tsc -p tsconfig.json"
+    "build": "pnpm -C ../treecrdt-ts run build && pnpm -C ../treecrdt-sync run build && tsc -p tsconfig.json",
+    "test": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@noble/ed25519": "^3.0.0",
     "@noble/hashes": "^1.8.0",
-    "@treecrdt/auth": "workspace:*",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "cborg": "^4.3.2"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "@treecrdt/benchmark": "workspace:*",
+    "@types/node": "^20.19.25",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
   }
 }

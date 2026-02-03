@@ -3,7 +3,7 @@ import type { Operation, ReplicaId } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
-import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1, type TreecrdtScopeEvaluator } from "@treecrdt/sync";
+import { createTreecrdtCoseCwtAuth, issueTreecrdtCapabilityTokenV1, type TreecrdtScopeEvaluator } from "@treecrdt/auth";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 
@@ -937,12 +937,29 @@ async function scenarioSyncAuthExcludedRootNotSynced(ctx: SqliteConformanceConte
     // B can still write to the allowed node and sync back using `children(root)`.
     const updated = new TextEncoder().encode("public-updated");
     await b.local.payload(bPk, publicNode, updated);
+    // Sanity: the payload update must be discoverable under `children(root)`; otherwise scoped sync cannot propagate it.
+    {
+      const refs = await b.opRefs.children(root);
+      const ops = await b.ops.get(refs);
+      const latestLocal = latestPayloadForNode(ops, publicNode);
+      assertBytesEqual(latestLocal ?? null, updated, "expected local payload to be discoverable under opRefs.children(root)");
+    }
 
     await peerB.syncOnce(transportB, { children: { parent: nodeIdToBytes16(root) } }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
 
-    const ops = await a.ops.all();
-    const latest = latestPayloadForNode(ops, publicNode);
-    assertBytesEqual(latest ?? null, updated, "expected payload update to propagate to full peer");
+    // `syncOnce` does not guarantee the responder has fully applied the initiator's ops when using async backends
+    // (e.g. wa-sqlite worker/OPFS). Poll briefly for the update to become visible.
+    const expectedHex = bytesToHex(updated);
+    const deadline = Date.now() + 2_000;
+    while (true) {
+      const ops = await a.ops.all();
+      const latest = latestPayloadForNode(ops, publicNode);
+      if (latest && bytesToHex(latest) === expectedHex) break;
+      if (Date.now() > deadline) {
+        assertBytesEqual(latest ?? null, updated, "expected payload update to propagate to full peer");
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
   } finally {
     detach();
   }

@@ -28,6 +28,7 @@
     "@noble/hashes": "^1.8.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^20.19.25",
+    "@treecrdt/auth": "workspace:*",
     "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/sqlite-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",

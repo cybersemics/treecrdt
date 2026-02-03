@@ -4,22 +4,24 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
 import {
-  SyncPeer,
   base64urlDecode,
   base64urlEncode,
   createTreecrdtCoseCwtAuth,
   createTreecrdtIdentityChainCapabilityV1,
   createTreecrdtSqliteSubtreeScopeEvaluator,
-  createTreecrdtSyncSqlitePendingOpsStore,
   describeTreecrdtCapabilityTokenV1,
   deriveKeyIdV1,
   deriveTokenIdV1,
-  encryptTreecrdtPayloadV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
+  type TreecrdtCapabilityTokenV1,
+} from "@treecrdt/auth";
+import {
+  SyncPeer,
+  createTreecrdtSyncSqlitePendingOpsStore,
+  encryptTreecrdtPayloadV1,
   maybeDecryptTreecrdtPayloadV1,
   type Filter,
   type SyncSubscription,
-  type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/sync";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { DuplexTransport } from "@treecrdt/sync/transport";

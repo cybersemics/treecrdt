@@ -9,8 +9,8 @@ import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@n
 import { sha512 } from "@noble/hashes/sha512";
 import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
-import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
-import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
+import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
 import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
 import {
@@ -19,7 +19,7 @@ import {
   issueTreecrdtCapabilityTokenV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
 } from "../dist/treecrdt-auth.js";
-import type { Filter, OpRef, SyncBackend } from "../dist/types.js";
+import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
 ed25519Hashes.sha512 = sha512;
 

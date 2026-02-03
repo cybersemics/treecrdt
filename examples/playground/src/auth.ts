@@ -1,20 +1,22 @@
 import {
-  base64urlDecode,
-  base64urlEncode,
   generateTreecrdtDeviceWrapKeyV1,
   generateTreecrdtDocPayloadKeyV1,
-  issueDeviceCertV1,
-  issueReplicaCertV1,
-  issueTreecrdtCapabilityTokenV1,
   openTreecrdtDocPayloadKeyV1,
   openTreecrdtIssuerKeyV1,
   openTreecrdtLocalIdentityV1,
   sealTreecrdtDocPayloadKeyV1,
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
-  type TreecrdtIdentityChainV1,
   type TreecrdtDeviceWrapKeyV1,
 } from "@treecrdt/sync";
+import {
+  base64urlDecode,
+  base64urlEncode,
+  issueDeviceCertV1,
+  issueReplicaCertV1,
+  issueTreecrdtCapabilityTokenV1,
+  type TreecrdtIdentityChainV1,
+} from "@treecrdt/auth";
 
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";

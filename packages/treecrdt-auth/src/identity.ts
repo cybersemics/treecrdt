@@ -1,8 +1,9 @@
 import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
-import { coseSign1Ed25519, coseVerifySign1Ed25519 } from "./cose.js";
+import type { Capability } from "@treecrdt/sync";
+
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
-import type { Capability } from "./types.js";
+import { coseSign1Ed25519, coseVerifySign1Ed25519 } from "./cose.js";
 
 const ED25519_PUBLIC_KEY_LEN = 32;
 
@@ -281,3 +282,4 @@ export async function verifyTreecrdtIdentityChainCapabilityV1(opts: {
 
   return { ...parsed, devicePublicKey: verified.devicePublicKey, replicaPublicKey: verified.replicaPublicKey };
 }
+

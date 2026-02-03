@@ -26,6 +26,9 @@ importers:
       '@tanstack/react-virtual':
         specifier: ^3.13.13
         version: 3.13.13(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-auth
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../packages/treecrdt-ts
@@ -82,6 +85,37 @@ importers:
         specifier: ^7.2.7
         version: 7.2.7(@types/node@20.19.25)(jiti@1.21.7)(tsx@4.21.0)
 
+  packages/treecrdt-auth:
+    dependencies:
+      '@noble/ed25519':
+        specifier: ^3.0.0
+        version: 3.0.0
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../treecrdt-sync
+      cborg:
+        specifier: ^4.3.2
+        version: 4.3.2
+    devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
   packages/treecrdt-benchmark:
     dependencies:
       '@treecrdt/interface':
@@ -118,6 +152,9 @@ importers:
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../treecrdt-auth
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
@@ -144,6 +181,9 @@ importers:
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../treecrdt-auth
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark

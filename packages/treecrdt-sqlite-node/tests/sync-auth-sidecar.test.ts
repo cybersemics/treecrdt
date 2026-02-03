@@ -11,12 +11,10 @@ import type { Operation } from "@treecrdt/interface";
 import { createInMemoryConnectedPeers, makeQueuedSyncBackend } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import {
-  createTreecrdtCoseCwtAuth,
-  createTreecrdtSqliteSubtreeScopeEvaluator,
   createTreecrdtSyncSqlitePendingOpsStore,
-  coseSign1Ed25519,
   deriveOpRefV0,
 } from "@treecrdt/sync";
+import { coseSign1Ed25519, createTreecrdtCoseCwtAuth, createTreecrdtSqliteSubtreeScopeEvaluator } from "@treecrdt/auth";
 
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
