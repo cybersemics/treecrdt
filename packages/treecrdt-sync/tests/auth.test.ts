@@ -17,6 +17,7 @@ import {
   createTreecrdtCoseCwtAuth,
   describeTreecrdtCapabilityTokenV1,
   issueTreecrdtCapabilityTokenV1,
+  issueTreecrdtDelegatedCapabilityTokenV1,
 } from "../dist/treecrdt-auth.js";
 import type { Filter, OpRef, SyncBackend } from "../dist/types.js";
 
@@ -1005,6 +1006,102 @@ test("auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees"
   for (const i of [1, 2, 3, 4, 5, 6, 7]) {
     expect(allowed?.[i]).toBe(false);
   }
+});
+
+test("auth: delegated capability token can be verified via issuer-signed proof", async () => {
+  const docId = "doc-auth-delegation-basic";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const delegatorSk = ed25519Utils.randomSecretKey();
+  const delegatorPk = await getPublicKey(delegatorSk);
+
+  const recipientSk = ed25519Utils.randomSecretKey();
+  const recipientPk = await getPublicKey(recipientSk);
+
+  const proof = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: delegatorPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure", "grant"],
+  });
+
+  const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proof,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes: delegated, issuerPublicKeys: [issuerPk], docId });
+  expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
+
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+  });
+
+  const authRecipient = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: recipientSk,
+    localPublicKey: recipientPk,
+    localCapabilityTokens: [delegated],
+    requireProofRef: true,
+  });
+
+  const helloCaps = await authRecipient.helloCapabilities?.({ docId });
+  expect(helloCaps).toBeTruthy();
+  await authVerifier.onHello?.({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const node = nodeIdFromInt(1);
+  const op: Operation = makeOp(recipientPk, 1, 1, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) });
+  const auth = await authRecipient.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
+  expect(auth).toBeTruthy();
+
+  await authVerifier.verifyOps?.([op], auth ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+});
+
+test("auth: delegation requires grant action in proof token", async () => {
+  const docId = "doc-auth-delegation-requires-grant";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const delegatorSk = ed25519Utils.randomSecretKey();
+  const delegatorPk = await getPublicKey(delegatorSk);
+
+  const recipientPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  const proof = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: delegatorPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proof,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  await expect(
+    describeTreecrdtCapabilityTokenV1({ tokenBytes: delegated, issuerPublicKeys: [issuerPk], docId })
+  ).rejects.toThrow(/delegation proof/i);
 });
 
 test("auth: records peer identity chain capability via onPeerIdentityChain", async () => {

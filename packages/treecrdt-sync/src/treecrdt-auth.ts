@@ -11,7 +11,7 @@ import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from 
 import type { SyncAuth } from "./auth.js";
 import type { Capability, Filter, Hello, HelloAck, OpAuth } from "./types.js";
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
-import { coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
+import { coseDecodeSign1, coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
 import {
   createTreecrdtIdentityChainCapabilityV1,
   TREECRDT_IDENTITY_CHAIN_CAPABILITY,
@@ -19,6 +19,8 @@ import {
   type TreecrdtIdentityChainV1,
   type VerifiedTreecrdtIdentityChainV1,
 } from "./identity.js";
+
+const TREECRDT_DELEGATION_PROOF_HEADER_V1 = "treecrdt.delegation_proof_v1";
 
 let ed25519Ready = false;
 function ensureEd25519(): void {
@@ -109,6 +111,57 @@ export function issueTreecrdtCapabilityTokenV1(opts: {
   if (opts.nbf !== undefined) claims.set(5, opts.nbf);
 
   return coseSign1Ed25519({ payload: encodeCbor(claims), privateKey: opts.issuerPrivateKey });
+}
+
+export function issueTreecrdtDelegatedCapabilityTokenV1(opts: {
+  delegatorPrivateKey: Uint8Array;
+  delegatorProofToken: Uint8Array;
+  subjectPublicKey: Uint8Array;
+  docId: string;
+  actions: string[];
+  rootNodeId?: string;
+  maxDepth?: number;
+  excludeNodeIds?: string[];
+  exp?: number;
+  nbf?: number;
+}): Uint8Array {
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+  if (opts.delegatorPrivateKey.length !== 32) throw new Error("delegatorPrivateKey must be 32 bytes");
+  if (opts.subjectPublicKey.length !== 32) throw new Error("subjectPublicKey must be 32 bytes");
+  if (!Array.isArray(opts.actions) || opts.actions.length === 0) throw new Error("actions must be a non-empty array");
+
+  const cnf = new Map<unknown, unknown>([
+    ["pub", opts.subjectPublicKey],
+    ["kid", deriveKeyIdV1(opts.subjectPublicKey)],
+  ]);
+
+  const resEntries: Array<[unknown, unknown]> = [["doc_id", opts.docId]];
+  if (opts.rootNodeId !== undefined) resEntries.push(["root", nodeIdToBytes16(opts.rootNodeId)]);
+  if (opts.maxDepth !== undefined) resEntries.push(["max_depth", opts.maxDepth]);
+  if (opts.excludeNodeIds && opts.excludeNodeIds.length > 0) {
+    resEntries.push(["exclude", opts.excludeNodeIds.map((id) => nodeIdToBytes16(id))]);
+  }
+  const res = new Map<unknown, unknown>(resEntries);
+
+  const cap = new Map<unknown, unknown>([
+    ["res", res],
+    ["actions", opts.actions],
+  ]);
+
+  const claims = new Map<unknown, unknown>([
+    [3, opts.docId], // aud
+    [8, cnf], // cnf
+    [-1, [cap]], // private claim `caps`
+  ]);
+  if (opts.exp !== undefined) claims.set(4, opts.exp);
+  if (opts.nbf !== undefined) claims.set(5, opts.nbf);
+
+  const unprotectedHeader = new Map<unknown, unknown>([[TREECRDT_DELEGATION_PROOF_HEADER_V1, [opts.delegatorProofToken]]]);
+  return coseSign1Ed25519({
+    payload: encodeCbor(claims),
+    privateKey: opts.delegatorPrivateKey,
+    unprotectedHeader,
+  });
 }
 
 export type TreecrdtCapabilityV1 = {
@@ -455,20 +508,77 @@ async function parseAndVerifyCapabilityToken(opts: {
 }): Promise<CapabilityGrant> {
   if (opts.issuerPublicKeys.length === 0) throw new Error("issuerPublicKeys is empty");
 
-  let payload: Uint8Array | undefined;
-  let lastErr: unknown;
-  for (const issuerPk of opts.issuerPublicKeys) {
-    try {
-      payload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: issuerPk });
-      break;
-    } catch (err) {
-      lastErr = err;
+  const verifyWithIssuers = async (): Promise<{ payload: Uint8Array } | null> => {
+    let payload: Uint8Array | undefined;
+    for (const issuerPk of opts.issuerPublicKeys) {
+      try {
+        payload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: issuerPk });
+        break;
+      } catch {
+        // continue
+      }
     }
-  }
-  if (!payload) throw new Error(`capability token verification failed: ${String((lastErr as any)?.message ?? lastErr ?? "")}`);
+    return payload ? { payload } : null;
+  };
 
+  const issuerVerified = await verifyWithIssuers();
+  if (issuerVerified) {
+    return parseCapabilityGrantFromClaims({
+      tokenBytes: opts.tokenBytes,
+      claimsBytes: issuerVerified.payload,
+      docId: opts.docId,
+      nowSec: opts.nowSec,
+    });
+  }
+
+  // Delegation: accept tokens signed by the subject key of an issuer-signed proof token.
+  // The delegated token must carry a proof token (issuer-signed) in its unprotected header.
+  const decoded = await coseDecodeSign1(opts.tokenBytes);
+  const proofRaw = mapGet(decoded.unprotected, TREECRDT_DELEGATION_PROOF_HEADER_V1);
+  if (proofRaw === undefined || proofRaw === null) {
+    throw new Error("capability token verification failed: unknown issuer (no delegation proof)");
+  }
+  const proofTokens: Uint8Array[] = (() => {
+    if (proofRaw instanceof Uint8Array) return [proofRaw];
+    if (Array.isArray(proofRaw) && proofRaw.every((v) => v instanceof Uint8Array)) return proofRaw as Uint8Array[];
+    throw new Error("delegation proof must be a bstr or an array of bstr");
+  })();
+  if (proofTokens.length !== 1) {
+    throw new Error("delegation proof must contain exactly 1 issuer-signed token");
+  }
+
+  const proofGrant = await parseCapabilityTokenIssuerSigned({
+    tokenBytes: proofTokens[0]!,
+    issuerPublicKeys: opts.issuerPublicKeys,
+    docId: opts.docId,
+    nowSec: opts.nowSec,
+  });
+
+  const delegatedPayload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: proofGrant.publicKey });
+  const delegatedGrant = parseCapabilityGrantFromClaims({
+    tokenBytes: opts.tokenBytes,
+    claimsBytes: delegatedPayload,
+    docId: opts.docId,
+    nowSec: opts.nowSec,
+  });
+
+  assertDelegatedGrantWithinProof({
+    docId: opts.docId,
+    proof: proofGrant,
+    delegated: delegatedGrant,
+  });
+
+  return delegatedGrant;
+}
+
+function parseCapabilityGrantFromClaims(opts: {
+  tokenBytes: Uint8Array;
+  claimsBytes: Uint8Array;
+  docId: string;
+  nowSec: number;
+}): CapabilityGrant {
   // Decode CWT claims (allow non-string keys).
-  const claims = cborDecode(payload, { useMaps: true }) as unknown;
+  const claims = cborDecode(opts.claimsBytes, { useMaps: true }) as unknown;
   if (!(claims instanceof Map)) throw new Error("capability token payload must be a CBOR map");
 
   const aud = getClaim(claims, 3, "aud");
@@ -513,6 +623,142 @@ async function parseAndVerifyCapabilityToken(opts: {
     exp,
     nbf,
   };
+}
+
+async function parseCapabilityTokenIssuerSigned(opts: {
+  tokenBytes: Uint8Array;
+  issuerPublicKeys: Uint8Array[];
+  docId: string;
+  nowSec: number;
+}): Promise<CapabilityGrant> {
+  let payload: Uint8Array | undefined;
+  let lastErr: unknown;
+  for (const issuerPk of opts.issuerPublicKeys) {
+    try {
+      payload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: issuerPk });
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!payload) {
+    throw new Error(`capability token verification failed: ${String((lastErr as any)?.message ?? lastErr ?? "")}`);
+  }
+  return parseCapabilityGrantFromClaims({
+    tokenBytes: opts.tokenBytes,
+    claimsBytes: payload,
+    docId: opts.docId,
+    nowSec: opts.nowSec,
+  });
+}
+
+function expandCapabilityActions(actions: readonly unknown[]): Set<string> {
+  const actionSet = new Set(actions.map(String));
+  // Keep in sync with capAllowsNode convenience rules.
+  if (
+    actionSet.has("write_structure") ||
+    actionSet.has("write_payload") ||
+    actionSet.has("delete") ||
+    actionSet.has("tombstone")
+  ) {
+    actionSet.add("read_structure");
+  }
+  if (actionSet.has("write_payload")) actionSet.add("read_payload");
+  return actionSet;
+}
+
+function assertDelegatedGrantWithinProof(opts: {
+  docId: string;
+  proof: CapabilityGrant;
+  delegated: CapabilityGrant;
+}): void {
+  if (!Array.isArray(opts.proof.caps)) throw new Error("delegation proof token must be a v1 capability token");
+  if (!Array.isArray(opts.delegated.caps)) throw new Error("delegated capability token must be a v1 capability token");
+
+  // Time bounds: delegated token cannot be valid outside the proof token window.
+  if (opts.proof.exp !== undefined) {
+    if (opts.delegated.exp === undefined) throw new Error("delegated token must include exp when proof token has exp");
+    if (opts.delegated.exp > opts.proof.exp) throw new Error("delegated token exp exceeds proof token exp");
+  }
+  if (opts.proof.nbf !== undefined) {
+    if (opts.delegated.nbf === undefined) throw new Error("delegated token must include nbf when proof token has nbf");
+    if (opts.delegated.nbf < opts.proof.nbf) throw new Error("delegated token nbf precedes proof token nbf");
+  }
+
+  for (const delegatedCap of opts.delegated.caps) {
+    const delegatedRes = getField(delegatedCap, "res");
+    const delegatedActions = getField(delegatedCap, "actions");
+    if (!delegatedRes || typeof delegatedRes !== "object") throw new Error("delegated capability missing res");
+    if (!Array.isArray(delegatedActions) || delegatedActions.length === 0) {
+      throw new Error("delegated capability missing actions");
+    }
+    if (getField(delegatedRes, "doc_id") !== opts.docId) throw new Error("delegated capability doc_id mismatch");
+
+    const delegatedActionSet = expandCapabilityActions(delegatedActions);
+    let matched = false;
+
+    for (const proofCap of opts.proof.caps) {
+      const proofRes = getField(proofCap, "res");
+      const proofActions = getField(proofCap, "actions");
+      if (!proofRes || typeof proofRes !== "object") continue;
+      if (!Array.isArray(proofActions) || proofActions.length === 0) continue;
+      if (getField(proofRes, "doc_id") !== opts.docId) continue;
+
+      const proofActionSet = expandCapabilityActions(proofActions);
+      if (!proofActionSet.has("grant")) continue;
+      let ok = true;
+      for (const a of delegatedActionSet) {
+        if (!proofActionSet.has(a)) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+
+      const proofScope = parseScope(proofRes);
+      const delegatedScope = parseScope(delegatedRes);
+      if (!delegatedScope) throw new Error("delegated capability missing scope");
+
+      const proofDocWide =
+        !proofScope ||
+        (bytesToHex(proofScope.root) === ROOT_NODE_ID_HEX &&
+          proofScope.maxDepth === undefined &&
+          (!proofScope.exclude || proofScope.exclude.length === 0));
+
+      if (!proofDocWide) {
+        if (!proofScope) throw new Error("proof capability missing scope");
+        if (bytesToHex(delegatedScope.root) !== bytesToHex(proofScope.root)) {
+          throw new Error("delegated capability root must match proof root (non-doc-wide delegation)");
+        }
+
+        if (proofScope.maxDepth !== undefined) {
+          if (delegatedScope.maxDepth === undefined) {
+            throw new Error("delegated capability must include maxDepth when proof uses maxDepth");
+          }
+          if (delegatedScope.maxDepth > proofScope.maxDepth) {
+            throw new Error("delegated capability maxDepth exceeds proof maxDepth");
+          }
+        }
+
+        const proofExclude = new Set((proofScope.exclude ?? []).map((b) => bytesToHex(b)));
+        if (proofExclude.size > 0) {
+          const delegatedExclude = new Set((delegatedScope.exclude ?? []).map((b) => bytesToHex(b)));
+          for (const ex of proofExclude) {
+            if (!delegatedExclude.has(ex)) {
+              throw new Error("delegated capability must preserve proof exclude list");
+            }
+          }
+        }
+      }
+
+      matched = true;
+      break;
+    }
+
+    if (!matched) {
+      throw new Error("delegation proof does not allow delegated capability");
+    }
+  }
 }
 
 export async function describeTreecrdtCapabilityTokenV1(opts: {

@@ -15,6 +15,7 @@ import {
   deriveKeyIdV1,
   deriveTokenIdV1,
   encryptTreecrdtPayloadV1,
+  issueTreecrdtDelegatedCapabilityTokenV1,
   maybeDecryptTreecrdtPayloadV1,
   type Filter,
   type SyncSubscription,
@@ -876,18 +877,18 @@ export default function App() {
 	    setInviteActions({ write_structure: true, write_payload: true, delete: false, tombstone: false });
 	  };
 
-	  const readInviteConfig = (rootNodeId: string) => {
-	    let actions: string[];
-	    if (invitePreset === "read") {
-	      actions = ["read_structure", "read_payload"];
-	    } else if (invitePreset === "read_write") {
-	      actions = ["write_structure", "write_payload"];
-	    } else if (invitePreset === "admin") {
-	      actions = ["write_structure", "write_payload", "delete", "tombstone"];
-	    } else {
-	      actions = Object.entries(inviteActions)
-	        .filter(([, enabled]) => enabled)
-	        .map(([name]) => name);
+		  const readInviteConfig = (rootNodeId: string) => {
+		    let actions: string[];
+		    if (invitePreset === "read") {
+		      actions = ["read_structure", "read_payload"];
+		    } else if (invitePreset === "read_write") {
+		      actions = ["write_structure", "write_payload", "grant"];
+		    } else if (invitePreset === "admin") {
+		      actions = ["write_structure", "write_payload", "delete", "tombstone", "grant"];
+		    } else {
+		      actions = Object.entries(inviteActions)
+		        .filter(([, enabled]) => enabled)
+		        .map(([name]) => name);
 	      if (actions.length === 0) throw new Error("select at least one action");
 	    }
 
@@ -903,17 +904,19 @@ export default function App() {
     return { actions, maxDepth, excludeNodeIds };
   };
 
-	  const buildInviteB64 = async (opts: { rootNodeId?: string } = {}): Promise<string> => {
-	    let issuerSkB64 = authMaterial.issuerSkB64;
-	    let issuerPkB64 = authMaterial.issuerPkB64;
+		  const buildInviteB64 = async (opts: { rootNodeId?: string } = {}): Promise<string> => {
+		    let issuerSkB64 = authMaterial.issuerSkB64;
+		    let issuerPkB64 = authMaterial.issuerPkB64;
+		    let refreshedMaterial: StoredAuthMaterial | null = null;
 
-	    // If the UI state is stale, re-read from storage once before giving up.
-	    if (!issuerSkB64 || !issuerPkB64) {
-	      const latest = await loadAuthMaterial(docId);
-	      issuerSkB64 = latest.issuerSkB64;
-	      issuerPkB64 = latest.issuerPkB64;
-	      setAuthMaterial(latest);
-	    }
+		    // If the UI state is stale, re-read from storage once before giving up.
+		    if (!issuerSkB64 || !issuerPkB64) {
+		      const latest = await loadAuthMaterial(docId);
+		      issuerSkB64 = latest.issuerSkB64;
+		      issuerPkB64 = latest.issuerPkB64;
+		      refreshedMaterial = latest;
+		      setAuthMaterial(latest);
+		    }
 
 	    // Best-effort bootstrap so "New device" can mint an invite even if the background auth init hasn't completed yet.
 	    if (!issuerSkB64 && !issuerPkB64) {
@@ -927,15 +930,67 @@ export default function App() {
 	      issuerPkB64 = latest.issuerPkB64;
 	      setAuthMaterial(latest);
 	    }
-	    if (!issuerSkB64 && issuerPkB64) {
-	      throw new Error("This tab is verify-only (issuer secret key missing) and can’t mint invites/grants.");
-	    }
-	    if (!issuerSkB64 || !issuerPkB64) {
-	      throw new Error("issuer private key is not available in this tab (cannot mint invites)");
-	    }
+		    if (!issuerSkB64 && issuerPkB64) {
+		      const latest = refreshedMaterial ?? authMaterial;
+		      const localSkB64 = latest.localSkB64;
+		      const proofTokenB64 = latest.localTokensB64[0] ?? null;
+		      if (!localSkB64 || !proofTokenB64) {
+		        throw new Error("This tab is verify-only and has no local keys/tokens yet; import an invite link first.");
+		      }
 
-    const rootNodeId = opts.rootNodeId ?? inviteRoot;
-    const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
+		      const issuerPk = base64urlDecode(issuerPkB64);
+		      const proofTokenBytes = base64urlDecode(proofTokenB64);
+		      const proofDesc = await describeTreecrdtCapabilityTokenV1({
+		        tokenBytes: proofTokenBytes,
+		        issuerPublicKeys: [issuerPk],
+		        docId,
+		      });
+		      const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
+		      if (!proofActions.has("grant")) {
+		        throw new Error("This tab is verify-only and cannot mint invites (missing grant permission).");
+		      }
+
+		      const rootNodeId = opts.rootNodeId ?? inviteRoot;
+		      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
+
+		      const proofScope = proofDesc.caps?.[0]?.res ?? null;
+		      const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
+		      const proofDocWide =
+		        proofRootId === ROOT_ID &&
+		        proofScope?.maxDepth === undefined &&
+		        ((proofScope?.excludeNodeIds?.length ?? 0) === 0);
+		      if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
+		        throw new Error("This tab can only mint delegated invites for its current subtree scope.");
+		      }
+
+		      const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
+		      const tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
+		        delegatorPrivateKey: base64urlDecode(localSkB64),
+		        delegatorProofToken: proofTokenBytes,
+		        subjectPublicKey: subjectPk,
+		        docId,
+		        rootNodeId,
+		        actions,
+		        ...(maxDepth !== undefined ? { maxDepth } : {}),
+		        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
+		      });
+
+		      return encodeInvitePayload({
+		        v: 1,
+		        t: "treecrdt.playground.invite",
+		        docId,
+		        issuerPkB64,
+		        subjectSkB64: base64urlEncode(subjectSk),
+		        tokenB64: base64urlEncode(tokenBytes),
+		        payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
+		      });
+		    }
+		    if (!issuerSkB64 || !issuerPkB64) {
+		      throw new Error("issuer private key is not available in this tab (cannot mint invites)");
+		    }
+
+	    const rootNodeId = opts.rootNodeId ?? inviteRoot;
+	    const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
 
     const issuerSk = base64urlDecode(issuerSkB64);
     const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
@@ -1042,48 +1097,88 @@ export default function App() {
     }
   };
 
-  const grantSubtreeToReplicaPubkey = async () => {
-    if (!authEnabled) return;
-    if (typeof window === "undefined") return;
+	  const grantSubtreeToReplicaPubkey = async () => {
+	    if (!authEnabled) return;
+	    if (typeof window === "undefined") return;
 
-    setAuthBusy(true);
-    setAuthError(null);
-    setAuthInfo(null);
+	    setAuthBusy(true);
+	    setAuthError(null);
+	    setAuthInfo(null);
 
-    try {
-      if (!selfPeerId) throw new Error("local replica public key is not ready yet");
-      const channel = broadcastChannelRef.current;
-      if (!channel) throw new Error("sync channel is not ready yet");
+	    try {
+	      if (!selfPeerId) throw new Error("local replica public key is not ready yet");
+	      const channel = broadcastChannelRef.current;
+	      if (!channel) throw new Error("sync channel is not ready yet");
 
-      const issuerPkB64 = authMaterial.issuerPkB64;
-      const issuerSkB64 = authMaterial.issuerSkB64;
-      if (!issuerPkB64 || !issuerSkB64) {
-        throw new Error("issuer private key is not available in this tab (cannot mint grants)");
-      }
+	      const issuerPkB64 = authMaterial.issuerPkB64;
+	      const issuerSkB64 = authMaterial.issuerSkB64;
+	      if (!issuerPkB64) throw new Error("issuer public key is missing; import an invite link first");
 
-      const subjectPk = parseReplicaPublicKeyInput(grantRecipientKey);
-      const rootNodeId = inviteRoot;
-      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
+	      const subjectPk = parseReplicaPublicKeyInput(grantRecipientKey);
+	      const rootNodeId = inviteRoot;
+	      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
 
-      const issuerSk = base64urlDecode(issuerSkB64);
-      const tokenBytes = createCapabilityTokenV1({
-        issuerPrivateKey: issuerSk,
-        subjectPublicKey: subjectPk,
-        docId,
-        rootNodeId,
-        actions,
-        ...(maxDepth !== undefined ? { maxDepth } : {}),
-        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
-      });
+	      let tokenBytes: Uint8Array;
+	      if (issuerSkB64) {
+	        const issuerSk = base64urlDecode(issuerSkB64);
+	        tokenBytes = createCapabilityTokenV1({
+	          issuerPrivateKey: issuerSk,
+	          subjectPublicKey: subjectPk,
+	          docId,
+	          rootNodeId,
+	          actions,
+	          ...(maxDepth !== undefined ? { maxDepth } : {}),
+	          ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
+	        });
+	      } else {
+	        const localSkB64 = authMaterial.localSkB64;
+	        const proofTokenB64 = authMaterial.localTokensB64[0] ?? null;
+	        if (!localSkB64 || !proofTokenB64) {
+	          throw new Error("cannot delegate grants without local keys/tokens; import an invite link first");
+	        }
 
-      const msg: AuthGrantMessageV1 = {
-        t: "auth_grant_v1",
-        doc_id: docId,
+	        const issuerPk = base64urlDecode(issuerPkB64);
+	        const proofTokenBytes = base64urlDecode(proofTokenB64);
+	        const proofDesc = await describeTreecrdtCapabilityTokenV1({
+	          tokenBytes: proofTokenBytes,
+	          issuerPublicKeys: [issuerPk],
+	          docId,
+	        });
+	        const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
+	        if (!proofActions.has("grant")) {
+	          throw new Error("this tab cannot delegate grants (missing grant permission)");
+	        }
+
+	        const proofScope = proofDesc.caps?.[0]?.res ?? null;
+	        const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
+	        const proofDocWide =
+	          proofRootId === ROOT_ID &&
+	          proofScope?.maxDepth === undefined &&
+	          ((proofScope?.excludeNodeIds?.length ?? 0) === 0);
+	        if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
+	          throw new Error("this tab can only delegate grants for its current subtree scope");
+	        }
+
+	        tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
+	          delegatorPrivateKey: base64urlDecode(localSkB64),
+	          delegatorProofToken: proofTokenBytes,
+	          subjectPublicKey: subjectPk,
+	          docId,
+	          rootNodeId,
+	          actions,
+	          ...(maxDepth !== undefined ? { maxDepth } : {}),
+	          ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
+	        });
+	      }
+
+	      const msg: AuthGrantMessageV1 = {
+	        t: "auth_grant_v1",
+	        doc_id: docId,
         to_replica_pk_hex: bytesToHex(subjectPk),
-        issuer_pk_b64: issuerPkB64,
-        token_b64: base64urlEncode(tokenBytes),
-        payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
-        from_peer_id: selfPeerId,
+	        issuer_pk_b64: issuerPkB64,
+	        token_b64: base64urlEncode(tokenBytes),
+	        payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
+	        from_peer_id: selfPeerId,
         ts: Date.now(),
       };
 
@@ -2451,9 +2546,15 @@ export default function App() {
       ? `${selfPeerId.slice(0, 8)}…${selfPeerId.slice(-6)}`
       : selfPeerId
     : null;
-  const peerTotal = peers.length + 1;
-  const authCanIssue = Boolean(authMaterial.issuerSkB64);
-  const authIssuerPkHex = authMaterial.issuerPkB64 ? bytesToHex(base64urlDecode(authMaterial.issuerPkB64)) : null;
+	  const peerTotal = peers.length + 1;
+	  const authCanIssue = Boolean(authMaterial.issuerSkB64);
+	  const authCanDelegate =
+	    authEnabled &&
+	    !authCanIssue &&
+	    Boolean(authMaterial.localSkB64) &&
+	    authMaterial.localTokensB64.length > 0 &&
+	    authActionSet.has("grant");
+	  const authIssuerPkHex = authMaterial.issuerPkB64 ? bytesToHex(base64urlDecode(authMaterial.issuerPkB64)) : null;
   const authLocalKeyIdHex = authMaterial.localPkB64
     ? bytesToHex(deriveKeyIdV1(base64urlDecode(authMaterial.localPkB64)))
     : null;
@@ -2564,16 +2665,16 @@ export default function App() {
               </div>
             )}
 
-            {authEnabled && !authCanIssue && (
-              <div className="mt-3 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-50">
-                <div className="font-semibold">Verify-only tab</div>
-                <div className="mt-1 text-sky-100/90">
-                  This tab can’t mint invites/grants. Open a minting peer (same storage, without join-only mode).
-                </div>
-                <button
-                  className="mt-2 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-50 transition hover:border-sky-300/60"
-                  type="button"
-                  onClick={openMintingPeerTab}
+	            {authEnabled && !(authCanIssue || authCanDelegate) && (
+	              <div className="mt-3 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-50">
+	                <div className="font-semibold">Verify-only tab</div>
+	                <div className="mt-1 text-sky-100/90">
+	                  This tab can’t mint invites/grants. Open a minting peer (same storage) or import a grant with share permission.
+	                </div>
+	                <button
+	                  className="mt-2 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-50 transition hover:border-sky-300/60"
+	                  type="button"
+	                  onClick={openMintingPeerTab}
                   disabled={typeof window === "undefined"}
                 >
                   Open minting peer
@@ -2602,26 +2703,36 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                    type="button"
-                    onClick={() => void openNewIsolatedPeerTab({ autoInvite: true, rootNodeId: inviteRoot })}
-                    disabled={authBusy || !authEnabled || !authCanIssue}
-                    title="Open an isolated device tab and auto-import the invite"
-                  >
-                    <MdLockOutline className="text-[16px]" />
-                    Open device
-                  </button>
-                  <button
-                    className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                    type="button"
-                    onClick={() => void generateInviteLink({ rootNodeId: inviteRoot, copyToClipboard: true })}
-                    disabled={authBusy || !authEnabled || !authCanIssue}
-                    title={!authEnabled ? "Enable Auth to mint invites" : !authCanIssue ? "Verify-only tab" : "Copy invite"}
-                  >
-                    <MdContentCopy className="text-[14px]" />
-                    Copy invite
-                  </button>
+	                  <button
+	                    className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+	                    type="button"
+	                    onClick={() => void openNewIsolatedPeerTab({ autoInvite: true, rootNodeId: inviteRoot })}
+	                    disabled={authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
+	                    title={
+	                      authCanIssue || authCanDelegate
+	                        ? "Open an isolated device tab and auto-import the invite"
+	                        : "This tab can’t mint invites (verify-only)"
+	                    }
+	                  >
+	                    <MdLockOutline className="text-[16px]" />
+	                    Open device
+	                  </button>
+	                  <button
+	                    className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+	                    type="button"
+	                    onClick={() => void generateInviteLink({ rootNodeId: inviteRoot, copyToClipboard: true })}
+	                    disabled={authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
+	                    title={
+	                      !authEnabled
+	                        ? "Enable Auth to mint invites"
+	                        : authCanIssue || authCanDelegate
+	                          ? "Copy invite"
+	                          : "Verify-only tab"
+	                    }
+	                  >
+	                    <MdContentCopy className="text-[14px]" />
+	                    Copy invite
+	                  </button>
                 </div>
               </div>
               <textarea
@@ -3003,11 +3114,11 @@ export default function App() {
                 <button
                   className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                   onClick={(e) => void openNewIsolatedPeerTab({ autoInvite: !e.altKey, rootNodeId: ROOT_ID })}
-                  disabled={typeof window === "undefined" || (authEnabled && !authCanIssue)}
+                  disabled={typeof window === "undefined" || (authEnabled && !(authCanIssue || authCanDelegate))}
                   type="button"
                   title={
-                    authEnabled && !authCanIssue
-                      ? "Verify-only tabs can’t mint invites. Open a minting peer to create new devices with auto-invite."
+                    authEnabled && !(authCanIssue || authCanDelegate)
+                      ? "Verify-only tabs can’t mint invites. Open a minting peer (or import a grant with share permission)."
                       : "New device (isolated): separate storage (no shared keys/private-roots). Auto-invite; Alt+click opens join-only."
                   }
                   aria-label="New device (isolated)"
@@ -3095,10 +3206,10 @@ export default function App() {
                       className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                       type="button"
                       onClick={() => void openNewIsolatedPeerTab({ autoInvite: true, rootNodeId: ROOT_ID })}
-                      disabled={typeof window === "undefined" || (authEnabled && !authCanIssue)}
+                      disabled={typeof window === "undefined" || (authEnabled && !(authCanIssue || authCanDelegate))}
                       title={
-                        authEnabled && !authCanIssue
-                          ? "Verify-only tabs can’t mint invites. Open a minting peer to create new devices with auto-invite."
+                        authEnabled && !(authCanIssue || authCanDelegate)
+                          ? "Verify-only tabs can’t mint invites. Open a minting peer (or import a grant with share permission)."
                           : "New device (isolated): separate storage, auto-invite"
                       }
                     >
@@ -3231,11 +3342,15 @@ export default function App() {
 	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
 	                  <div className="flex flex-wrap items-center justify-between gap-3">
 	                    <div>
-	                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Access</div>
-	                      <div className="mt-1 text-[11px] text-slate-500">
-	                        {authCanIssue ? "This tab can mint invites/grants." : "Verify-only (import an invite to join)."}
-	                      </div>
-	                    </div>
+		                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Access</div>
+		                      <div className="mt-1 text-[11px] text-slate-500">
+		                        {authCanIssue
+		                          ? "Minting: can mint invites/grants."
+		                          : authCanDelegate
+		                            ? "Delegate-only: can mint invites/grants within your scope."
+		                            : "Verify-only (import an invite to join)."}
+		                      </div>
+		                    </div>
 	                    <button
 	                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
 	                      type="button"
@@ -3719,15 +3834,19 @@ export default function App() {
 	                      </select>
 	                    </label>
 
-	                    <button
-	                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-	                      type="button"
-	                      onClick={() => void generateInviteLink()}
-	                      disabled={!authEnabled || authBusy || !authCanIssue}
-	                      title={authCanIssue ? "Generate an invite link" : "This tab cannot mint invites (issuer SK not present)"}
-	                    >
-		                      Generate
-		                    </button>
+		                    <button
+		                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
+		                      type="button"
+		                      onClick={() => void generateInviteLink()}
+		                      disabled={!authEnabled || authBusy || !(authCanIssue || authCanDelegate)}
+		                      title={
+		                        authCanIssue || authCanDelegate
+		                          ? "Generate an invite link"
+		                          : "This tab cannot mint/delegate invites (verify-only)"
+		                      }
+		                    >
+			                      Generate
+			                    </button>
 		                    <button
 		                      className="rounded-lg border border-slate-700 bg-slate-800/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
 		                      type="button"
@@ -3851,15 +3970,19 @@ export default function App() {
 	                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
 	                        disabled={authBusy}
 	                      />
-	                      <button
-	                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
-	                        type="button"
-	                        onClick={() => void grantSubtreeToReplicaPubkey()}
-	                        disabled={!authEnabled || authBusy || !authCanIssue || grantRecipientKey.trim().length === 0}
-	                        title={authCanIssue ? "Grant access to this subtree" : "This tab cannot mint grants (issuer SK not present)"}
-	                      >
-	                        Grant
-	                      </button>
+		                      <button
+		                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
+		                        type="button"
+		                        onClick={() => void grantSubtreeToReplicaPubkey()}
+		                        disabled={!authEnabled || authBusy || !(authCanIssue || authCanDelegate) || grantRecipientKey.trim().length === 0}
+		                        title={
+		                          authCanIssue || authCanDelegate
+		                            ? "Grant access to this subtree"
+		                            : "This tab cannot mint/delegate grants (verify-only)"
+		                        }
+		                      >
+		                        Grant
+		                      </button>
 	                    </div>
 	                  </div>
 	                </div>
