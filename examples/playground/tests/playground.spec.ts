@@ -324,7 +324,7 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
   }
 });
 
-test("grant by replica pubkey reveals a private subtree on resync", async ({ browser }) => {
+test("grant by public key reveals a private subtree on resync", async ({ browser }) => {
   test.setTimeout(240_000);
 
   const doc = uniqueDocId("pw-playground-grant");
@@ -395,11 +395,11 @@ test("grant by replica pubkey reveals a private subtree on resync", async ({ bro
 
     await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
 
-    // Grant access to B's replica pubkey for the secret subtree.
+    // Grant access to B's public key for the secret subtree.
     const recipientPkHex = await readReplicaPubkeyHex(pageB);
     await ensureAuthPanelOpen(pageA);
     await pageA.getByLabel("Subtree root").selectOption(secretNodeId);
-    await pageA.getByPlaceholder("Recipient replica pubkey (hex or base64url)").fill(recipientPkHex);
+    await pageA.getByPlaceholder("Recipient public key (hex or base64url)").fill(recipientPkHex);
     await pageA.getByRole("button", { name: "Grant", exact: true }).click();
 
     const toast = pageB.getByRole("status");
@@ -698,6 +698,7 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
 
     const secretRootRowB = treeRowByNodeId(pageB, secretNodeId);
     await expect(secretRootRowB.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(secretRootRowB.getByText("private root", { exact: true })).toBeVisible({ timeout: 30_000 });
 
     // B reshared invite to C (delegated).
     const inviteToC = await shareSubtreeInvite(pageB, secretNodeId);
@@ -727,6 +728,9 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
         throw new Error(`sync error (C): ${await syncErrorC.textContent()}`);
       })(),
     ]);
+    const secretRootRowC = treeRowByNodeId(pageC, secretNodeId);
+    await expect(secretRootRowC.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(secretRootRowC.getByText("private root", { exact: true })).toBeVisible({ timeout: 30_000 });
 
     // A writes under the secret subtree; B and C should receive it.
     const secretRowAById = treeRowByNodeId(pageA, secretNodeId);

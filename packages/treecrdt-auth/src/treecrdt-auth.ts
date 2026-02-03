@@ -6,7 +6,7 @@ import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
 
-import type { Capability, Filter, Hello, HelloAck, OpAuth, SyncAuth } from "@treecrdt/sync";
+import { deriveOpRefV0, type Capability, type Filter, type Hello, type HelloAck, type OpAuth, type SyncAuth } from "@treecrdt/sync";
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
 import { coseDecodeSign1, coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
 import {
@@ -831,6 +831,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
 
   const grantsByKeyIdHex = new Map<string, Map<string, CapabilityGrant>>();
+  const opAuthByOpRefHex = new Map<string, OpAuth>();
   let localTokensRecordedForDoc: string | null = null;
 
   const recordToken = async (tokenBytes: Uint8Array, docId: string) => {
@@ -1087,12 +1088,19 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     },
     signOps: async (ops, ctx) => {
       await ensureLocalTokensRecorded(ctx.docId);
+      const localReplicaHex = bytesToHex(opts.localPublicKey);
       const localKeyIdHex = bytesToHex(deriveKeyIdV1(opts.localPublicKey));
       const out: OpAuth[] = [];
       for (const op of ops) {
         const opReplica = replicaIdToBytes(op.meta.id.replica);
-        if (bytesToHex(opReplica) !== bytesToHex(opts.localPublicKey)) {
-          throw new Error("cannot sign op: op.meta.id.replica does not match localPublicKey");
+        const opRefHex = bytesToHex(deriveOpRefV0(ctx.docId, { replica: opReplica, counter: op.meta.id.counter }));
+        if (bytesToHex(opReplica) !== localReplicaHex) {
+          const existing = opAuthByOpRefHex.get(opRefHex);
+          if (!existing) {
+            throw new Error("missing op auth for non-local replica; cannot forward unsigned op");
+          }
+          out.push(existing);
+          continue;
         }
         let proofRef: Uint8Array | undefined;
         if (localTokenIds.length > 0) {
@@ -1106,7 +1114,9 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           proofRef = selected.tokenId;
         }
         const sig = await signTreecrdtOpV1({ docId: ctx.docId, op, privateKey: opts.localPrivateKey });
-        out.push({ sig, ...(proofRef ? { proofRef } : {}) });
+        const entry: OpAuth = { sig, ...(proofRef ? { proofRef } : {}) };
+        opAuthByOpRefHex.set(opRefHex, entry);
+        out.push(entry);
       }
       return out;
     },
@@ -1165,6 +1175,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
         const ok = await verifyTreecrdtOpV1({ docId: ctx.docId, op, signature: a.sig, publicKey: replica });
         if (!ok) throw new Error("invalid op signature");
+        opAuthByOpRefHex.set(bytesToHex(deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter })), a);
 
         if (scopeRes === "unknown") {
           dispositions.push({ status: "pending_context", message: "missing subtree context to authorize op" });

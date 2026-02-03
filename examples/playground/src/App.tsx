@@ -320,6 +320,41 @@ export default function App() {
     });
   };
 
+  const rememberScopedPrivateRootsFromToken = React.useCallback(
+    async (issuerPkB64: string, tokenB64: string) => {
+      try {
+        const issuerPk = base64urlDecode(issuerPkB64);
+        const tokenBytes = base64urlDecode(tokenB64);
+        const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes, issuerPublicKeys: [issuerPk], docId });
+        const roots = new Set<string>();
+        for (const cap of described.caps) {
+          const root = cap.res.rootNodeId?.toLowerCase();
+          if (!root) continue;
+          if (root === ROOT_ID) continue;
+          if (!/^[0-9a-f]{32}$/.test(root)) continue;
+          roots.add(root);
+        }
+        if (roots.size === 0) return;
+        setPrivateRoots((prev) => {
+          let changed = false;
+          const next = new Set(prev);
+          for (const root of roots) {
+            if (!next.has(root)) {
+              next.add(root);
+              changed = true;
+            }
+          }
+          if (!changed) return prev;
+          persistPrivateRoots(docId, next);
+          return next;
+        });
+      } catch {
+        // Best-effort: tokens may be invalid or unverifiable at this moment.
+      }
+    },
+    [docId]
+  );
+
   const refreshAuthMaterial = React.useCallback(async () => {
     const next = await loadAuthMaterial(docId);
     setAuthMaterial(next);
@@ -1264,9 +1299,10 @@ export default function App() {
       await saveIssuerKeys(docId, payload.issuerPkB64);
 
       const localSk = base64urlDecode(payload.subjectSkB64);
-      const localPk = await deriveEd25519PublicKey(localSk);
+      await deriveEd25519PublicKey(localSk);
       await saveLocalKeys(docId, payload.subjectSkB64);
       await saveLocalTokens(docId, [payload.tokenB64]);
+      await rememberScopedPrivateRootsFromToken(payload.issuerPkB64, payload.tokenB64);
 
       setAuthEnabled(true);
       await refreshAuthMaterial();
@@ -1511,9 +1547,10 @@ export default function App() {
       await saveIssuerKeys(docId, payload.issuerPkB64);
 
       const localSk = base64urlDecode(payload.subjectSkB64);
-      const localPk = await deriveEd25519PublicKey(localSk);
+      await deriveEd25519PublicKey(localSk);
       await saveLocalKeys(docId, payload.subjectSkB64);
       await saveLocalTokens(docId, [payload.tokenB64]);
+      await rememberScopedPrivateRootsFromToken(payload.issuerPkB64, payload.tokenB64);
 
         // Clear hash so we don't re-import on refresh.
         const url = new URL(window.location.href);
@@ -1919,6 +1956,7 @@ export default function App() {
             const merged = new Set<string>(current.localTokensB64);
             merged.add(tokenB64);
             await saveLocalTokens(docId, Array.from(merged));
+            await rememberScopedPrivateRootsFromToken(issuerPkB64, tokenB64);
             await refreshAuthMaterial();
             setAuthInfo("Access grant received. Click Sync to fetch newly authorized ops.");
             setToast({
@@ -2437,8 +2475,12 @@ export default function App() {
     setSyncError(null);
     try {
       const now = Date.now();
-      const recentPeerIds = peers.filter((p) => now - p.lastSeen < 5_000).map((p) => p.id);
+      const recentPeerIds = peers
+        .filter((p) => now - p.lastSeen < 5_000)
+        .sort((a, b) => b.lastSeen - a.lastSeen)
+        .map((p) => p.id);
       const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
+      const perPeerTimeoutMs = targets.length > 1 ? 3_000 : 15_000;
 
       let successes = 0;
       let lastErr: unknown = null;
@@ -2452,7 +2494,7 @@ export default function App() {
               maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
               codewordsPerMessage: 2048,
             }),
-            15_000,
+            perPeerTimeoutMs,
             `sync with ${peerId.slice(0, 8)}… timed out`
           );
           successes += 1;
@@ -2498,8 +2540,12 @@ export default function App() {
     setSyncError(null);
     try {
       const now = Date.now();
-      const recentPeerIds = peers.filter((p) => now - p.lastSeen < 5_000).map((p) => p.id);
+      const recentPeerIds = peers
+        .filter((p) => now - p.lastSeen < 5_000)
+        .sort((a, b) => b.lastSeen - a.lastSeen)
+        .map((p) => p.id);
       const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
+      const perPeerTimeoutMs = targets.length > 1 ? 3_000 : 15_000;
 
       let successes = 0;
       let lastErr: unknown = null;
@@ -2518,7 +2564,7 @@ export default function App() {
                   codewordsPerMessage: 2048,
                 }
               ),
-              15_000,
+              perPeerTimeoutMs,
               `sync(children ${parentId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`
             );
           }
@@ -2846,12 +2892,12 @@ export default function App() {
 	                  Send a capability token to another peer (they should resync to fetch newly authorized ops).
 	                </div>
                 <div className="mt-2 flex flex-wrap items-end gap-2">
-                  <label className="flex-1 space-y-2 text-sm text-slate-200">
-                    <span className="text-[11px] text-slate-400">Recipient replica pubkey (hex or base64url)</span>
-                    <input
-                      value={grantRecipientKey}
-                      onChange={(e) => setGrantRecipientKey(e.target.value)}
-                      placeholder="e.g. c7df…bf32"
+	                  <label className="flex-1 space-y-2 text-sm text-slate-200">
+	                    <span className="text-[11px] text-slate-400">Recipient public key (hex or base64url)</span>
+	                    <input
+	                      value={grantRecipientKey}
+	                      onChange={(e) => setGrantRecipientKey(e.target.value)}
+	                      placeholder="e.g. c7df…bf32"
                       className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
                       disabled={authBusy}
                     />
@@ -2881,7 +2927,7 @@ export default function App() {
                   )
                 }
                 disabled={!selfPeerId}
-                title="Copy your replica pubkey"
+                title="Copy your public key"
               >
                 <MdContentCopy className="text-[14px]" />
                 Copy my pubkey
@@ -3240,13 +3286,13 @@ export default function App() {
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Document</div>
                     <div className="font-mono text-slate-200">{docId}</div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      Replica (pubkey)
-                    </div>
-                    <div className="font-mono text-slate-200">{selfPeerId ?? "-"}</div>
-                  </div>
-                </div>
+	                  <div className="text-right">
+	                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+	                      Public key
+	                    </div>
+	                    <div className="font-mono text-slate-200">{selfPeerId ?? "-"}</div>
+	                  </div>
+	                </div>
                 <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-400">
                   <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
                     mode {joinMode ? "isolated" : "shared"}
@@ -3378,11 +3424,11 @@ export default function App() {
                       This tab has its own storage namespace, so it starts with no keys/tokens and can’t mint invites.
                     </div>
                     <div className="mt-2 space-y-2 text-sky-100/90">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <span className="font-semibold">Your replica pubkey</span>{" "}
-                          <span className="font-mono text-sky-50">{selfPeerId ?? "(initializing)"}</span>
-                        </div>
+	                      <div className="flex flex-wrap items-center justify-between gap-2">
+	                        <div>
+	                          <span className="font-semibold">Your public key</span>{" "}
+	                          <span className="font-mono text-sky-50">{selfPeerId ?? "(initializing)"}</span>
+	                        </div>
                         <button
                           className="flex items-center gap-2 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-50 transition hover:border-sky-300/60 disabled:opacity-50"
                           type="button"
@@ -3390,10 +3436,10 @@ export default function App() {
                             void (selfPeerId ? copyToClipboard(selfPeerId) : Promise.resolve()).catch((err) =>
                               setAuthError(err instanceof Error ? err.message : String(err))
                             )
-                          }
-                          disabled={!selfPeerId}
-                          title="Copy replica pubkey"
-                        >
+	                          }
+	                          disabled={!selfPeerId}
+	                          title="Copy public key"
+	                        >
                           <MdContentCopy className="text-[14px]" />
                           Copy
                         </button>
@@ -4055,20 +4101,20 @@ export default function App() {
 	                    </div>
 	                  )}
 
-	                  <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-	                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grant access by replica pubkey</div>
-	                    <div className="mt-1 text-[11px] text-slate-500">
-	                      Mints a new capability token for the selected subtree and sends it over the playground channel. The recipient must sync again.
-	                    </div>
-	                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+		                  <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+		                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Grant access by public key</div>
+		                    <div className="mt-1 text-[11px] text-slate-500">
+		                      Mints a new capability token for the selected subtree and sends it over the playground channel. The recipient must sync again.
+		                    </div>
+		                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
 	                      <input
-	                        type="text"
-	                        value={grantRecipientKey}
-	                        onChange={(e) => setGrantRecipientKey(e.target.value)}
-	                        placeholder="Recipient replica pubkey (hex or base64url)"
-	                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-	                        disabled={authBusy}
-	                      />
+		                        type="text"
+		                        value={grantRecipientKey}
+		                        onChange={(e) => setGrantRecipientKey(e.target.value)}
+		                        placeholder="Recipient public key (hex or base64url)"
+		                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+		                        disabled={authBusy}
+		                      />
 		                      <button
 		                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
 		                        type="button"
