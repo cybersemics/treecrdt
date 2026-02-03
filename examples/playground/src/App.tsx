@@ -172,7 +172,7 @@ export default function App() {
     const stored = window.localStorage.getItem(key);
     if (stored === "0") return false;
     if (stored === "1") return true;
-    return true;
+    return false;
   });
   const [online, setOnline] = useState(true);
   const [payloadVersion, setPayloadVersion] = useState(0);
@@ -2854,12 +2854,10 @@ export default function App() {
                 className="flex-shrink-0 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
                 disabled={status !== "ready" || busy || nodeCount <= 0}
               >
-	                Add node{nodeCount > 1 ? "s" : ""}
-	              </button>
-	            </form>
-	            ) : (
-	              <div className="text-xs text-slate-500">Hidden. Toggle “Show” when you want to add nodes.</div>
-	            )}
+		                Add node{nodeCount > 1 ? "s" : ""}
+		              </button>
+		            </form>
+		            ) : null}
 	          </div>
 
           <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">

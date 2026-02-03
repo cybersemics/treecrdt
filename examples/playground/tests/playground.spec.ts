@@ -13,6 +13,11 @@ async function waitForReady(page: import("@playwright/test").Page, path: string)
   if (!isJoinMode) {
     await expect(page.getByTestId("self-pubkey")).toHaveAttribute("title", /[0-9a-f]{64}/i, { timeout: 60_000 });
   }
+
+  // Composer is hidden by default; open it for tests that rely on the input fields.
+  const showComposer = page.getByRole("button", { name: "Show", exact: true });
+  if ((await showComposer.count()) > 0) await showComposer.click();
+
   await expect(treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" })).toBeEnabled({ timeout: 60_000 });
 }
 
