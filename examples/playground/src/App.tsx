@@ -1472,26 +1472,27 @@ export default function App() {
 
 	        if (authEnabled && localTokensB64.length === 0) {
 	          if (!canIssue || !issuerSkB64) {
-	            throw new Error(
-	              joinMode
-	                ? "Join-only tab (isolated): import an invite link from another tab (Auth → Generate)"
-	                : "auth enabled but no capability token; import an invite link"
-	            );
-	          }
-	          if (!localPkB64) throw new Error("auth enabled but local public key is missing");
+	            // In join-only mode we intentionally start without any capability tokens.
+	            // The user must import an invite/grant from another peer before sync is enabled.
+	            if (!joinMode) {
+	              throw new Error("auth enabled but no capability token; import an invite link");
+	            }
+	          } else {
+	            if (!localPkB64) throw new Error("auth enabled but local public key is missing");
 
-	          const issuerSk = base64urlDecode(issuerSkB64);
-	          const subjectPk = base64urlDecode(localPkB64);
-          const tokenBytes = createCapabilityTokenV1({
-            issuerPrivateKey: issuerSk,
-            subjectPublicKey: subjectPk,
-            docId,
-            rootNodeId: ROOT_ID,
-            actions: ["write_structure", "write_payload", "delete", "tombstone"],
-          });
-          localTokensB64 = [base64urlEncode(tokenBytes)];
-          await saveLocalTokens(docId, localTokensB64);
-        }
+	            const issuerSk = base64urlDecode(issuerSkB64);
+	            const subjectPk = base64urlDecode(localPkB64);
+	            const tokenBytes = createCapabilityTokenV1({
+	              issuerPrivateKey: issuerSk,
+	              subjectPublicKey: subjectPk,
+	              docId,
+	              rootNodeId: ROOT_ID,
+	              actions: ["write_structure", "write_payload", "delete", "tombstone"],
+	            });
+	            localTokensB64 = [base64urlEncode(tokenBytes)];
+	            await saveLocalTokens(docId, localTokensB64);
+	          }
+	        }
 
 	        const next = await loadAuthMaterial(docId);
 	        if (cancelled) return;
@@ -1539,7 +1540,6 @@ export default function App() {
 	      setSyncError((prev) =>
 	        prev &&
 	        (prev.startsWith("Auth enabled:") ||
-	          prev.startsWith("Join-only tab (isolated):") ||
 	          prev.startsWith("Initializing local peer key"))
 	          ? null
 	          : prev
@@ -1547,7 +1547,8 @@ export default function App() {
 	    }
 
 	    if (authEnabled && !peerAuthConfig) {
-	      setSyncError(authError ?? "Auth enabled: initializing keys/tokens...");
+	      const waitingForInvite = joinMode && authMaterial.localTokensB64.length === 0;
+	      setSyncError(waitingForInvite ? null : authError ?? "Auth enabled: initializing keys/tokens...");
 	      return;
 	    }
 
@@ -2452,7 +2453,7 @@ export default function App() {
   const sealedIssuerKeyB64 = getSealedIssuerKeyB64(docId);
   const sealedIdentityKeyB64 = getSealedIdentityKeyB64();
   const sealedDeviceSigningKeyB64 = getSealedDeviceSigningKeyB64();
-  const authErrorIsJoinPrompt = Boolean(authError && authError.startsWith("Join-only tab (isolated):"));
+  const authNeedsInvite = Boolean(authEnabled && joinMode && authTokenCount === 0);
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
@@ -3116,7 +3117,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {authErrorIsJoinPrompt && (
+                {authNeedsInvite && (
                   <div className="mt-3 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-50">
                     <div className="font-semibold">Isolated device (join-only)</div>
                     <div className="mt-1 text-sky-100/90">
@@ -3166,11 +3167,11 @@ export default function App() {
                   </div>
                 )}
 
-	                {authError && !authErrorIsJoinPrompt && (
-	                  <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
-	                    {authError}
-	                  </div>
-	                )}
+		                {authError && !authNeedsInvite && (
+		                  <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
+		                    {authError}
+		                  </div>
+		                )}
 
 	                <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
 	                  <div className="flex flex-wrap items-center justify-between gap-3">
