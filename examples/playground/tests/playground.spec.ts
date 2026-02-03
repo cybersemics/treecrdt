@@ -376,7 +376,8 @@ test("grant by replica pubkey reveals a private subtree on resync", async ({ bro
     await pageA.getByPlaceholder("Recipient replica pubkey (hex or base64url)").fill(recipientPkHex);
     await pageA.getByRole("button", { name: "Grant", exact: true }).click();
 
-    await expect(pageB.getByText("Access grant received", { exact: false })).toBeVisible({ timeout: 30_000 });
+    const toast = pageB.getByRole("status");
+    await expect(toast).toContainText("Access granted", { timeout: 30_000 });
 
     // Sync from B so it advertises the new token and pulls the newly authorized ops.
     await expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 });

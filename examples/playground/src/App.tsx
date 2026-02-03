@@ -117,6 +117,16 @@ function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: stri
 
 type InvitePreset = "read" | "read_write" | "admin" | "custom";
 
+type ToastKind = "success" | "info" | "error";
+type ToastAction = "sync" | "details";
+type ToastState = {
+  kind: ToastKind;
+  title: string;
+  message?: string;
+  actions?: ToastAction[];
+  durationMs?: number;
+};
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), ms);
@@ -203,6 +213,7 @@ export default function App() {
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [toast, setToast] = useState<ToastState | null>(null);
   const [wrapKeyImportText, setWrapKeyImportText] = useState("");
   const [issuerKeyBlobImportText, setIssuerKeyBlobImportText] = useState("");
   const [identityKeyBlobImportText, setIdentityKeyBlobImportText] = useState("");
@@ -252,6 +263,13 @@ export default function App() {
     () => computeInviteExcludeNodeIds(privateRoots, inviteRoot),
     [privateRoots, inviteRoot]
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!toast) return;
+    const id = window.setTimeout(() => setToast(null), toast.durationMs ?? 10_000);
+    return () => window.clearTimeout(id);
+  }, [toast]);
 
   const onPeerIdentityChain = React.useCallback(
     (chain: { identityPublicKey: Uint8Array; devicePublicKey: Uint8Array; replicaPublicKey: Uint8Array }) => {
@@ -1768,7 +1786,12 @@ export default function App() {
             await saveLocalTokens(docId, Array.from(merged));
             await refreshAuthMaterial();
             setAuthInfo("Access grant received. Click Sync to fetch newly authorized ops.");
-            setShowAuthPanel(true);
+            setToast({
+              kind: "success",
+              title: "Access granted",
+              message: "Sync to fetch newly authorized ops.",
+              actions: ["sync", "details"],
+            });
           } catch (err) {
             setAuthError(err instanceof Error ? err.message : String(err));
           } finally {
@@ -2980,9 +3003,13 @@ export default function App() {
                 <button
                   className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                   onClick={(e) => void openNewIsolatedPeerTab({ autoInvite: !e.altKey, rootNodeId: ROOT_ID })}
-                  disabled={typeof window === "undefined"}
+                  disabled={typeof window === "undefined" || (authEnabled && !authCanIssue)}
                   type="button"
-                  title="New device (isolated): separate storage (no shared keys/private-roots). Auto-invite; Alt+click opens join-only."
+                  title={
+                    authEnabled && !authCanIssue
+                      ? "Verify-only tabs can’t mint invites. Open a minting peer to create new devices with auto-invite."
+                      : "New device (isolated): separate storage (no shared keys/private-roots). Auto-invite; Alt+click opens join-only."
+                  }
                   aria-label="New device (isolated)"
                 >
                   <MdLockOutline className="text-[18px]" />
@@ -3068,8 +3095,12 @@ export default function App() {
                       className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                       type="button"
                       onClick={() => void openNewIsolatedPeerTab({ autoInvite: true, rootNodeId: ROOT_ID })}
-                      disabled={typeof window === "undefined"}
-                      title="New device (isolated): separate storage, auto-invite"
+                      disabled={typeof window === "undefined" || (authEnabled && !authCanIssue)}
+                      title={
+                        authEnabled && !authCanIssue
+                          ? "Verify-only tabs can’t mint invites. Open a minting peer to create new devices with auto-invite."
+                          : "New device (isolated): separate storage, auto-invite"
+                      }
                     >
                       <MdLockOutline className="text-[16px]" />
                       New device
@@ -4002,6 +4033,67 @@ export default function App() {
           </aside>
         )}
       </div>
+
+      {toast && (
+        <div
+          className={`fixed bottom-4 right-4 z-50 w-[min(420px,calc(100vw-2rem))] rounded-xl border px-4 py-3 shadow-lg shadow-black/40 ring-1 ${
+            toast.kind === "success"
+              ? "border-emerald-400/50 bg-emerald-500/10 ring-emerald-500/10"
+              : toast.kind === "error"
+                ? "border-rose-400/50 bg-rose-500/10 ring-rose-500/10"
+                : "border-slate-700/70 bg-slate-900/70 ring-slate-800/60"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-white">{toast.title}</div>
+              {toast.message ? <div className="mt-1 text-xs text-slate-200">{toast.message}</div> : null}
+            </div>
+            <button
+              type="button"
+              className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+              onClick={() => setToast(null)}
+              aria-label="Dismiss notification"
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+          {toast.actions && toast.actions.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {toast.actions.includes("sync") && (
+                <button
+                  type="button"
+                  className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
+                  onClick={() => {
+                    setToast(null);
+                    void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
+                  }}
+                  disabled={status !== "ready" || busy || syncBusy || peers.length === 0 || !online}
+                  title="Sync now"
+                >
+                  Sync now
+                </button>
+              )}
+              {toast.actions.includes("details") && (
+                <button
+                  type="button"
+                  className="rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                  onClick={() => {
+                    setToast(null);
+                    setShowAuthPanel(true);
+                  }}
+                  title="Open Sharing & Auth panel"
+                >
+                  Details
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
