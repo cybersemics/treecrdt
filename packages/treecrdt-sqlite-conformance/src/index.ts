@@ -1,10 +1,12 @@
 import type { TreecrdtEngine } from "@treecrdt/interface/engine";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 import {
   createTreecrdtCoseCwtAuth,
+  createTreecrdtSqliteSubtreeScopeEvaluator,
   getEd25519PublicKey,
   issueTreecrdtCapabilityTokenV1,
   randomEd25519SecretKey,
@@ -12,6 +14,7 @@ import {
 } from "@treecrdt/auth";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import { createTreecrdtSyncSqlitePendingOpsStore } from "@treecrdt/sync";
 
 export function conformanceSlugify(input: string): string {
   return input
@@ -98,6 +101,14 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
       run: scenarioSyncAuthExcludedRootNotSynced,
     },
     {
+      name: "auth: sqlite subtree evaluator allow/deny/unknown",
+      run: scenarioAuthSqliteSubtreeEvaluator,
+    },
+    {
+      name: "sync auth: pending_context ops use sqlite sidecar + reprocess",
+      run: scenarioSyncAuthPendingContextSidecar,
+    },
+    {
       name: "persistence: materialized tree persists across reopen",
       run: scenarioPersistenceMaterializedTreeReopen,
     },
@@ -153,6 +164,14 @@ function assertBytesEqual(actual: Uint8Array | null, expected: Uint8Array | null
   for (let i = 0; i < actual.length; i++) {
     if (actual[i] !== expected[i]) throw new Error(`${message}: mismatch at byte ${i}`);
   }
+}
+
+function engineRunnerOrNull(engine: TreecrdtEngine): SqliteRunner | null {
+  const candidate = (engine as any)?.runner as Partial<SqliteRunner> | undefined;
+  if (!candidate) return null;
+  if (typeof candidate.exec !== "function") return null;
+  if (typeof candidate.getText !== "function") return null;
+  return candidate as SqliteRunner;
 }
 
 function orderKeyFromPosition(position: number): Uint8Array {
@@ -864,6 +883,177 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(ctx: SqliteConformanc
       assert(/unauthorized/i.test(msg), `expected UNAUTHORIZED, got: ${msg}`);
     }
     assert(threw, "expected syncOnce(all) to be rejected for scoped token");
+  } finally {
+    detach();
+  }
+}
+
+async function scenarioAuthSqliteSubtreeEvaluator(ctx: SqliteConformanceContext): Promise<void> {
+  const runner = engineRunnerOrNull(ctx.engine);
+  if (!runner) return;
+
+  const docId = ctx.docId;
+  const engine = ctx.engine;
+  const evalScope = createTreecrdtSqliteSubtreeScopeEvaluator(runner);
+
+  const root = nodeIdFromInt(0);
+  const subtreeRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  const unrelated = nodeIdFromInt(3);
+
+  // Missing node => unknown context.
+  assertEqual(
+    await evalScope({ docId, node: nodeIdToBytes16(child), scope: { root: nodeIdToBytes16(subtreeRoot) } }),
+    "unknown",
+    "sqlite scope evaluator: missing node should be unknown"
+  );
+
+  // Insert child under subtreeRoot (root node itself need not exist as a row).
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: replicaFromLabel("r1"),
+      counter: 1,
+      lamport: 1,
+      parent: subtreeRoot,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+  assertEqual(
+    await evalScope({ docId, node: nodeIdToBytes16(child), scope: { root: nodeIdToBytes16(subtreeRoot) } }),
+    "allow",
+    "sqlite scope evaluator: expected child to be within subtree"
+  );
+
+  // Insert unrelated node under ROOT; should be outside subtreeRoot.
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: replicaFromLabel("r1"),
+      counter: 2,
+      lamport: 2,
+      parent: root,
+      node: unrelated,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+  assertEqual(
+    await evalScope({ docId, node: nodeIdToBytes16(unrelated), scope: { root: nodeIdToBytes16(subtreeRoot) } }),
+    "deny",
+    "sqlite scope evaluator: expected unrelated node to be outside subtree"
+  );
+}
+
+async function scenarioSyncAuthPendingContextSidecar(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const runnerB = engineRunnerOrNull(b);
+  if (!runnerB) return;
+
+  const pendingB = createTreecrdtSyncSqlitePendingOpsStore({ runner: runnerB, docId });
+  await pendingB.init();
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
+  const aPkHex = bytesToHex(aPk);
+
+  const subtreeRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+
+  // A is scoped to a subtree; B is doc-wide. When B receives an op for an unknown node, it must fail closed
+  // (pending_context) until the node's placement is known.
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["write_structure", "write_payload"],
+    rootNodeId: subtreeRoot,
+  });
+  const tokenB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: bPk,
+    docId,
+    actions: ["write_structure", "write_payload"],
+  });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+    scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(runnerB),
+  });
+
+  const backendA = createEngineSyncBackend(a);
+
+  const backendB: SyncBackend<Operation> = {
+    ...createEngineSyncBackend(b),
+    storePendingOps: pendingB.storePendingOps,
+    listPendingOps: pendingB.listPendingOps,
+    deletePendingOps: pendingB.deletePendingOps,
+  };
+
+  const { peerB, transportB, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA, maxOpsPerBatch: 1 },
+    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+  });
+
+  try {
+    // Exchange capabilities first (so B learns A's token for verifying A's ops).
+    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    // Payload arrives before insert => pending_context.
+    await a.ops.appendMany([
+      makePayloadOp({ replica: aPk, counter: 1, lamport: 1, node: child, payload: new Uint8Array([1, 2, 3]) }),
+    ]);
+
+    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    const pendingAfterPayload = await pendingB.listPendingOps();
+    assertEqual(pendingAfterPayload.length, 1, "expected payload op to be stored as pending");
+    assertEqual(bytesToHex(pendingAfterPayload[0]!.op.meta.id.replica), aPkHex, "pending op replica");
+    assertEqual(pendingAfterPayload[0]!.op.meta.id.counter, 1, "pending op counter");
+
+    // Now insert arrives; should apply insert and then reprocess pending payload.
+    await a.ops.appendMany([
+      makeInsertOp({ replica: aPk, counter: 2, lamport: 2, parent: subtreeRoot, node: child, orderKey: orderKeyFromPosition(0) }),
+    ]);
+
+    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    const deadline = Date.now() + 2_000;
+    while (true) {
+      const ops = await b.ops.all();
+      const hasPayload = ops.some((o) => bytesToHex(o.meta.id.replica) === aPkHex && o.meta.id.counter === 1);
+      const hasInsert = ops.some((o) => bytesToHex(o.meta.id.replica) === aPkHex && o.meta.id.counter === 2);
+      const pendingCount = (await pendingB.listPendingOps()).length;
+
+      if (hasPayload && hasInsert && pendingCount === 0) break;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `expected insert+payload to apply and pending to drain (hasPayload=${hasPayload}, hasInsert=${hasInsert}, pending=${pendingCount})`
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
   } finally {
     detach();
   }
