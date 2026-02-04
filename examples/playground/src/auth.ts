@@ -34,12 +34,6 @@ const IDENTITY_SK_SEALED_KEY = "treecrdt-playground-identity-sk-sealed:v1";
 const DEVICE_SIGNING_SK_SEALED_KEY = "treecrdt-playground-device-signing-sk-sealed:v1";
 const LOCAL_IDENTITY_LABEL_V1 = "replica";
 
-// Legacy (plaintext) keys: auto-migrated and deleted on load.
-const LEGACY_ISSUER_SK_KEY_PREFIX = "treecrdt-playground-auth-issuer-sk:";
-const LEGACY_LOCAL_PK_KEY_PREFIX = "treecrdt-playground-auth-local-pk:";
-const LEGACY_LOCAL_SK_KEY_PREFIX = "treecrdt-playground-auth-local-sk:";
-const LEGACY_LOCAL_TOKENS_KEY_PREFIX = "treecrdt-playground-auth-local-tokens:";
-
 function lsGet(key: string): string | null {
   if (typeof window === "undefined") return null;
   return window.sessionStorage.getItem(prefixPlaygroundStorageKey(key));
@@ -76,16 +70,6 @@ function base64urlDecodeSafe(b64: string): Uint8Array | null {
   } catch {
     return null;
   }
-}
-
-function allSessionStorageKeys(): string[] {
-  if (typeof window === "undefined") return [];
-  const keys: string[] = [];
-  for (let i = 0; i < window.sessionStorage.length; i += 1) {
-    const key = window.sessionStorage.key(i);
-    if (key) keys.push(key);
-  }
-  return keys;
 }
 
 async function withGlobalLock<T>(name: string, run: () => Promise<T>): Promise<T> {
@@ -252,99 +236,8 @@ export async function loadAuthMaterial(docId: string): Promise<StoredAuthMateria
   const wrapKey = await requireDeviceWrapKeyBytes();
 
   const pkKey = `${ISSUER_PK_KEY_PREFIX}${docId}`;
-  const legacyIssuerSkKey = `${LEGACY_ISSUER_SK_KEY_PREFIX}${docId}`;
   const sealedIssuerSkKey = `${ISSUER_SK_SEALED_KEY_PREFIX}${docId}`;
   const sealedLocalKey = `${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}`;
-
-  // Migrate legacy issuer secret key (plaintext) -> sealed.
-  if (!gsGet(sealedIssuerSkKey)) {
-    const legacyIssuerSkB64 = gsGet(legacyIssuerSkKey);
-    if (legacyIssuerSkB64) {
-      const legacyIssuerSk = base64urlDecodeSafe(legacyIssuerSkB64);
-      if (legacyIssuerSk && legacyIssuerSk.length === 32) {
-        const sealed = await sealTreecrdtIssuerKeyV1({ wrapKey, docId, issuerSk: legacyIssuerSk });
-        gsSet(sealedIssuerSkKey, base64urlEncode(sealed));
-      }
-      gsDel(legacyIssuerSkKey);
-    }
-  }
-
-  // Migrate legacy local identities (replicaLabel-scoped) to a per-tab identity.
-  if (!lsGet(sealedLocalKey) && typeof window !== "undefined") {
-    const oldSealedPrefix = prefixPlaygroundStorageKey(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:`);
-    const oldSealedKeys = allSessionStorageKeys().filter((k) => k.startsWith(oldSealedPrefix));
-    if (oldSealedKeys.length === 1) {
-      const storageKey = oldSealedKeys[0]!;
-      const legacyReplicaLabel = storageKey.slice(oldSealedPrefix.length);
-      const raw = window.sessionStorage.getItem(storageKey);
-      const sealedBytes = raw ? base64urlDecodeSafe(raw) : null;
-      if (sealedBytes) {
-        try {
-          const opened = await openTreecrdtLocalIdentityV1({
-            wrapKey,
-            docId,
-            replicaLabel: legacyReplicaLabel,
-            sealed: sealedBytes,
-          });
-          const resealed = await sealTreecrdtLocalIdentityV1({
-            wrapKey,
-            docId,
-            replicaLabel: LOCAL_IDENTITY_LABEL_V1,
-            localSk: opened.localSk,
-            localTokens: opened.localTokens,
-          });
-          lsSet(sealedLocalKey, base64urlEncode(resealed));
-          window.sessionStorage.removeItem(storageKey);
-        } catch {
-          // ignore invalid legacy entry; user can reset auth
-        }
-      }
-    }
-
-    // Migrate plaintext legacy keys if present (best-effort).
-    const oldSkPrefix = prefixPlaygroundStorageKey(`${LEGACY_LOCAL_SK_KEY_PREFIX}${docId}:`);
-    const oldSkKeys = allSessionStorageKeys().filter((k) => k.startsWith(oldSkPrefix));
-    if (!lsGet(sealedLocalKey) && oldSkKeys.length === 1) {
-      const skStorageKey = oldSkKeys[0]!;
-      const legacyReplicaLabel = skStorageKey.slice(oldSkPrefix.length);
-      const rawSk = window.sessionStorage.getItem(skStorageKey);
-      const legacyLocalSk = rawSk ? base64urlDecodeSafe(rawSk) : null;
-
-      const tokensStorageKey = prefixPlaygroundStorageKey(`${LEGACY_LOCAL_TOKENS_KEY_PREFIX}${docId}:${legacyReplicaLabel}`);
-      const rawTokens = window.sessionStorage.getItem(tokensStorageKey);
-      let legacyTokens: Uint8Array[] = [];
-      if (rawTokens) {
-        try {
-          const parsed = JSON.parse(rawTokens) as unknown;
-          if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
-            legacyTokens = (parsed as string[]).map((b64) => base64urlDecode(b64));
-          }
-        } catch {
-          // ignore invalid legacy tokens payload
-        }
-      }
-
-      if (legacyLocalSk && legacyLocalSk.length === 32) {
-        try {
-          const sealed = await sealTreecrdtLocalIdentityV1({
-            wrapKey,
-            docId,
-            replicaLabel: LOCAL_IDENTITY_LABEL_V1,
-            localSk: legacyLocalSk,
-            localTokens: legacyTokens,
-          });
-          lsSet(sealedLocalKey, base64urlEncode(sealed));
-          window.sessionStorage.removeItem(skStorageKey);
-          window.sessionStorage.removeItem(tokensStorageKey);
-          window.sessionStorage.removeItem(
-            prefixPlaygroundStorageKey(`${LEGACY_LOCAL_PK_KEY_PREFIX}${docId}:${legacyReplicaLabel}`)
-          );
-        } catch {
-          // ignore; user can reset auth
-        }
-      }
-    }
-  }
 
   // Issuer keys are shared across tabs for the same doc so multiple peers can sync without manually exchanging invites.
   let issuerPkB64 = gsGet(pkKey);
@@ -484,18 +377,6 @@ export async function saveLocalTokens(docId: string, tokensB64: string[]) {
 
 export function clearAuthMaterial(docId: string) {
   lsDel(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}`);
-  if (typeof window !== "undefined") {
-    const prefixes = [
-      `${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}:`,
-      `${LEGACY_LOCAL_PK_KEY_PREFIX}${docId}:`,
-      `${LEGACY_LOCAL_SK_KEY_PREFIX}${docId}:`,
-      `${LEGACY_LOCAL_TOKENS_KEY_PREFIX}${docId}:`,
-    ];
-    const candidates = allSessionStorageKeys().filter((k) =>
-      prefixes.some((p) => k.startsWith(prefixPlaygroundStorageKey(p)))
-    );
-    for (const k of candidates) window.sessionStorage.removeItem(k);
-  }
 }
 
 export async function generateEd25519KeyPair(): Promise<{ sk: Uint8Array; pk: Uint8Array }> {
