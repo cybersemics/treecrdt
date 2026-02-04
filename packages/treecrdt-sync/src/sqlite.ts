@@ -4,7 +4,7 @@ import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 
 import { deriveOpRefV0 } from "./opref.js";
 import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from "./protobuf.js";
-import type { OpRef, PendingOp } from "./types.js";
+import type { OpAuth, OpRef, PendingOp } from "./types.js";
 
 function hexToBytesStrict(hex: string, expectedLen: number, field: string): Uint8Array {
   const clean = hex.trim();
@@ -26,6 +26,12 @@ export type TreecrdtSyncSqlitePendingOpsStore = {
   deletePendingOps: (ops: Operation[]) => Promise<void>;
 };
 
+export type TreecrdtSyncSqliteOpAuthStore = {
+  init: () => Promise<void>;
+  storeOpAuth: (entries: Array<{ opRef: OpRef; auth: OpAuth }>) => Promise<void>;
+  getOpAuthByOpRefs: (opRefs: OpRef[]) => Promise<Array<OpAuth | null>>;
+};
+
 const PENDING_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   doc_id TEXT NOT NULL,
@@ -35,6 +41,17 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   proof_ref BLOB,                    -- 16 bytes (token id), nullable
   reason TEXT NOT NULL,              -- e.g. "missing_context"
   message TEXT,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (doc_id, op_ref)
+);
+`;
+
+const OP_AUTH_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
+  doc_id TEXT NOT NULL,
+  op_ref BLOB NOT NULL,              -- 16 bytes
+  sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
+  proof_ref BLOB,                    -- 16 bytes (token id), nullable
   created_at_ms INTEGER NOT NULL,
   PRIMARY KEY (doc_id, op_ref)
 );
@@ -171,6 +188,80 @@ RETURNING 1
         await opts.runner.exec("ROLLBACK");
         throw err;
       }
+    },
+  };
+}
+
+export function createTreecrdtSyncSqliteOpAuthStore(opts: {
+  runner: SqliteRunner;
+  docId: string;
+  nowMs?: () => number;
+}): TreecrdtSyncSqliteOpAuthStore {
+  const nowMs = opts.nowMs ?? (() => Date.now());
+
+  const insertSql = `
+INSERT OR REPLACE INTO treecrdt_sync_op_auth
+  (doc_id, op_ref, sig, proof_ref, created_at_ms)
+VALUES (?1, ?2, ?3, ?4, ?5)
+RETURNING 1
+`;
+
+  const selectByRefsSql = (n: number) => {
+    if (!Number.isInteger(n) || n < 0) throw new Error(`invalid opRefs length: ${n}`);
+    if (n === 0) throw new Error("selectByRefsSql requires at least 1 opRef");
+    const placeholders = Array.from({ length: n }, (_v, i) => `?${i + 2}`).join(", ");
+    return `
+SELECT COALESCE(json_group_array(json(obj)), '[]') AS json
+FROM (
+  SELECT json_object(
+    'op_ref_hex', hex(op_ref),
+    'sig_hex', hex(sig),
+    'proof_ref_hex', CASE WHEN proof_ref IS NULL THEN NULL ELSE hex(proof_ref) END
+  ) AS obj
+  FROM treecrdt_sync_op_auth
+  WHERE doc_id = ?1 AND op_ref IN (${placeholders})
+)
+`;
+  };
+
+  return {
+    init: async () => {
+      await opts.runner.exec(OP_AUTH_SCHEMA_SQL);
+    },
+
+    storeOpAuth: async (entries) => {
+      if (entries.length === 0) return;
+
+      await opts.runner.exec("BEGIN");
+      try {
+        for (const e of entries) {
+          const proofRef = e.auth.proofRef ?? null;
+          await opts.runner.getText(insertSql, [opts.docId, e.opRef, e.auth.sig, proofRef, nowMs()]);
+        }
+        await opts.runner.exec("COMMIT");
+      } catch (err) {
+        await opts.runner.exec("ROLLBACK");
+        throw err;
+      }
+    },
+
+    getOpAuthByOpRefs: async (opRefs) => {
+      if (opRefs.length === 0) return [];
+
+      const sql = selectByRefsSql(opRefs.length);
+      const text = await opts.runner.getText(sql, [opts.docId, ...opRefs]);
+      if (!text) return opRefs.map(() => null);
+      const rows = JSON.parse(text) as Array<{ op_ref_hex: string; sig_hex: string; proof_ref_hex: string | null }>;
+
+      const byHex = new Map<string, OpAuth>();
+      for (const r of rows) {
+        const opRefHex = String(r.op_ref_hex).toLowerCase();
+        const sig = hexToBytesStrict(r.sig_hex, 64, "op_auth sig");
+        const proofRef = r.proof_ref_hex ? hexToBytesStrict(r.proof_ref_hex, 16, "op_auth proof_ref") : undefined;
+        byHex.set(opRefHex, { sig, ...(proofRef ? { proofRef } : {}) });
+      }
+
+      return opRefs.map((ref) => byHex.get(bytesToHex(ref)) ?? null);
     },
   };
 }

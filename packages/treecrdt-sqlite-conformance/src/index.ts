@@ -14,7 +14,7 @@ import {
 } from "@treecrdt/auth";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { createTreecrdtSyncSqlitePendingOpsStore } from "@treecrdt/sync";
+import { createTreecrdtSyncSqliteOpAuthStore, createTreecrdtSyncSqlitePendingOpsStore } from "@treecrdt/sync";
 
 export function conformanceSlugify(input: string): string {
   return input
@@ -107,6 +107,10 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
     {
       name: "sync auth: pending_context ops use sqlite sidecar + reprocess",
       run: scenarioSyncAuthPendingContextSidecar,
+    },
+    {
+      name: "sync auth: restart relay re-serves signed ops using sqlite op-auth store",
+      run: scenarioSyncAuthRestartRelayReServesSignedOps,
     },
     {
       name: "persistence: materialized tree persists across reopen",
@@ -1057,6 +1061,122 @@ async function scenarioSyncAuthPendingContextSidecar(ctx: SqliteConformanceConte
   } finally {
     detach();
   }
+}
+
+async function scenarioSyncAuthRestartRelayReServesSignedOps(ctx: SqliteConformanceContext): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+
+  const docId = ctx.docId;
+  const a = ctx.engine;
+
+  const relay1 = await ctx.createPersistentEngine({ docId, name: "relay" });
+  const runnerRelay1 = engineRunnerOrNull(relay1);
+  if (!runnerRelay1) return;
+  const opAuthRelay1 = createTreecrdtSyncSqliteOpAuthStore({ runner: runnerRelay1, docId });
+  await opAuthRelay1.init();
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
+  const cSk = randomEd25519SecretKey();
+  const cPk = await getEd25519PublicKey(cSk);
+
+  const tokenA = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
+  const tokenB = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+  const tokenC = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: cPk, docId });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authRelay1 = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    // Advertise tokenA so downstream peers can verify A's ops (A is offline after relay restart).
+    localCapabilityTokens: [tokenB, tokenA],
+    requireProofRef: true,
+    opAuthStore: opAuthRelay1,
+  });
+
+  const root = nodeIdFromInt(0);
+  const subtreeRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  await a.local.insert(aPk, root, subtreeRoot, { type: "last" }, null);
+  await a.local.insert(aPk, subtreeRoot, child, { type: "last" }, null);
+
+  const backendA = createEngineSyncBackend(a);
+  const backendRelay1 = createEngineSyncBackend(relay1);
+
+  const { peerB: peerRelay1, transportB: transportRelay1, detach: detach1 } = createInMemoryConnectedPeers({
+    backendA,
+    backendB: backendRelay1,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authRelay1 },
+  });
+
+  try {
+    await peerRelay1.syncOnce(transportRelay1, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+  } finally {
+    detach1();
+  }
+
+  // Close and reopen the relay to simulate a restart.
+  await relay1.close();
+
+  const relay2 = await ctx.createPersistentEngine({ docId, name: "relay" });
+  const runnerRelay2 = engineRunnerOrNull(relay2);
+  if (!runnerRelay2) return;
+  const opAuthRelay2 = createTreecrdtSyncSqliteOpAuthStore({ runner: runnerRelay2, docId });
+  await opAuthRelay2.init();
+
+  const authRelay2 = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB, tokenA],
+    requireProofRef: true,
+    opAuthStore: opAuthRelay2,
+  });
+
+  const authC = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: cSk,
+    localPublicKey: cPk,
+    localCapabilityTokens: [tokenC],
+    requireProofRef: true,
+  });
+
+  const c = await ctx.createEngine({ docId, name: "peer-c" });
+
+  const backendRelay2 = createEngineSyncBackend(relay2);
+  const backendC = createEngineSyncBackend(c);
+
+  const { peerB: peerC, transportB: transportC, detach: detach2 } = createInMemoryConnectedPeers({
+    backendA: backendRelay2,
+    backendB: backendC,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authRelay2 },
+    peerBOptions: { auth: authC },
+  });
+
+  try {
+    await peerC.syncOnce(transportC, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+  } finally {
+    detach2();
+  }
+
+  assertArrayEqual(await c.tree.children(root), [subtreeRoot], "receiver sees subtree root after relay restart");
+  assertArrayEqual(await c.tree.children(subtreeRoot), [child], "receiver sees child under subtree after relay restart");
 }
 
 async function scenarioSyncAuthExcludedRootNotSynced(ctx: SqliteConformanceContext): Promise<void> {

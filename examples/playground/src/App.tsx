@@ -17,6 +17,7 @@ import {
 } from "@treecrdt/auth";
 import {
   SyncPeer,
+  createTreecrdtSyncSqliteOpAuthStore,
   createTreecrdtSyncSqlitePendingOpsStore,
   encryptTreecrdtPayloadV1,
   maybeDecryptTreecrdtPayloadV1,
@@ -450,6 +451,7 @@ export default function App() {
       const localPk = base64urlDecode(authMaterial.localPkB64);
       const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
       const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
+      const opAuthStore = createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId });
 
       localAuthRef.current = createTreecrdtCoseCwtAuth({
         issuerPublicKeys: [issuerPk],
@@ -458,6 +460,7 @@ export default function App() {
         localCapabilityTokens: localTokens,
         requireProofRef: true,
         scopeEvaluator,
+        opAuthStore,
       });
     } catch (err) {
       localAuthRef.current = null;
@@ -1734,6 +1737,7 @@ export default function App() {
 		            localSk: base64urlDecode(authMaterial.localSkB64),
 		            localPk: base64urlDecode(authMaterial.localPkB64),
 		            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
+		            opAuthStore: createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId }),
 		            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
 		            getLocalIdentityChain,
 		            onPeerIdentityChain,
@@ -1876,6 +1880,7 @@ export default function App() {
 	                  localPublicKey: peerAuthConfig.localPk,
 	                  localCapabilityTokens: peerAuthConfig.localTokens,
 	                  requireProofRef: true,
+	                  opAuthStore: peerAuthConfig.opAuthStore,
 	                  scopeEvaluator: peerAuthConfig.scopeEvaluator,
 	                  onPeerIdentityChain: peerAuthConfig.onPeerIdentityChain,
 	                });

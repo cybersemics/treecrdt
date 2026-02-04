@@ -6,7 +6,16 @@ import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
 
-import { deriveOpRefV0, type Capability, type Filter, type Hello, type HelloAck, type OpAuth, type SyncAuth } from "@treecrdt/sync";
+import {
+  deriveOpRefV0,
+  type Capability,
+  type Filter,
+  type Hello,
+  type HelloAck,
+  type OpAuth,
+  type OpRef,
+  type SyncAuth,
+} from "@treecrdt/sync";
 import { base64urlDecode, base64urlEncode } from "./base64url.js";
 import { coseDecodeSign1, coseSign1Ed25519, coseVerifySign1Ed25519, deriveTokenIdV1 } from "./cose.js";
 import {
@@ -817,6 +826,15 @@ export type TreecrdtCoseCwtAuthOptions = {
   localIdentityChain?: TreecrdtIdentityChainV1;
   onPeerIdentityChain?: (chain: VerifiedTreecrdtIdentityChainV1) => void;
   scopeEvaluator?: TreecrdtScopeEvaluator;
+  /**
+   * Optional persistence layer for op auth (signature + proofRef) for already-applied ops.
+   * Needed for peers/servers that restart and must re-serve ops they did not author.
+   */
+  opAuthStore?: {
+    init?: () => Promise<void>;
+    storeOpAuth: (entries: Array<{ opRef: OpRef; auth: OpAuth }>) => Promise<void>;
+    getOpAuthByOpRefs: (opRefs: OpRef[]) => Promise<Array<OpAuth | null>>;
+  };
   allowUnsigned?: boolean;
   requireProofRef?: boolean;
   now?: () => number;
@@ -833,6 +851,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   const grantsByKeyIdHex = new Map<string, Map<string, CapabilityGrant>>();
   const opAuthByOpRefHex = new Map<string, OpAuth>();
   let localTokensRecordedForDoc: string | null = null;
+  let opAuthStoreInitPromise: Promise<void> | null = null;
 
   const recordToken = async (tokenBytes: Uint8Array, docId: string) => {
     const grant = await parseAndVerifyCapabilityToken({
@@ -856,6 +875,13 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     if (localTokensRecordedForDoc === docId) return;
     for (const t of localTokens) await recordToken(t, docId);
     localTokensRecordedForDoc = docId;
+  };
+
+  const ensureOpAuthStoreReady = async () => {
+    if (!opts.opAuthStore?.init) return;
+    if (opAuthStoreInitPromise) return opAuthStoreInitPromise;
+    opAuthStoreInitPromise = opts.opAuthStore.init();
+    return opAuthStoreInitPromise;
   };
 
   const recordCapabilities = async (caps: Capability[], docId: string) => {
@@ -1090,18 +1116,29 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       await ensureLocalTokensRecorded(ctx.docId);
       const localReplicaHex = bytesToHex(opts.localPublicKey);
       const localKeyIdHex = bytesToHex(deriveKeyIdV1(opts.localPublicKey));
-      const out: OpAuth[] = [];
-      for (const op of ops) {
+      const out: OpAuth[] = new Array(ops.length);
+
+      const missingOpRefs: OpRef[] = [];
+      const missingIndices: number[] = [];
+
+      for (let i = 0; i < ops.length; i += 1) {
+        const op = ops[i]!;
         const opReplica = replicaIdToBytes(op.meta.id.replica);
-        const opRefHex = bytesToHex(deriveOpRefV0(ctx.docId, { replica: opReplica, counter: op.meta.id.counter }));
-        if (bytesToHex(opReplica) !== localReplicaHex) {
+        const opReplicaHex = bytesToHex(opReplica);
+        const opRef = deriveOpRefV0(ctx.docId, { replica: opReplica, counter: op.meta.id.counter });
+        const opRefHex = bytesToHex(opRef);
+
+        if (opReplicaHex !== localReplicaHex) {
           const existing = opAuthByOpRefHex.get(opRefHex);
-          if (!existing) {
-            throw new Error("missing op auth for non-local replica; cannot forward unsigned op");
+          if (existing) {
+            out[i] = existing;
+          } else {
+            missingOpRefs.push(opRef);
+            missingIndices.push(i);
           }
-          out.push(existing);
           continue;
         }
+
         let proofRef: Uint8Array | undefined;
         if (localTokenIds.length > 0) {
           const byToken = grantsByKeyIdHex.get(localKeyIdHex);
@@ -1116,8 +1153,27 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         const sig = await signTreecrdtOpV1({ docId: ctx.docId, op, privateKey: opts.localPrivateKey });
         const entry: OpAuth = { sig, ...(proofRef ? { proofRef } : {}) };
         opAuthByOpRefHex.set(opRefHex, entry);
-        out.push(entry);
+        out[i] = entry;
       }
+
+      if (missingOpRefs.length > 0) {
+        const store = opts.opAuthStore;
+        if (!store) {
+          throw new Error("missing op auth for non-local replica; cannot forward unsigned op");
+        }
+        await ensureOpAuthStoreReady();
+        const listed = await store.getOpAuthByOpRefs(missingOpRefs);
+        for (let j = 0; j < listed.length; j += 1) {
+          const found = listed[j];
+          if (!found) {
+            throw new Error("missing op auth for non-local replica; cannot forward unsigned op");
+          }
+          const opRefHex = bytesToHex(missingOpRefs[j]!);
+          opAuthByOpRefHex.set(opRefHex, found);
+          out[missingIndices[j]!] = found;
+        }
+      }
+
       return out;
     },
     verifyOps: async (ops, auth, ctx) => {
@@ -1128,6 +1184,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       }
 
       const dispositions: Array<{ status: "allow" } | { status: "pending_context"; message?: string }> = [];
+      const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
         const a = auth[i]!;
@@ -1175,7 +1232,9 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
         const ok = await verifyTreecrdtOpV1({ docId: ctx.docId, op, signature: a.sig, publicKey: replica });
         if (!ok) throw new Error("invalid op signature");
-        opAuthByOpRefHex.set(bytesToHex(deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter })), a);
+        const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
+        opAuthByOpRefHex.set(bytesToHex(opRef), a);
+        if (opts.opAuthStore) toPersist.push({ opRef, auth: a });
 
         if (scopeRes === "unknown") {
           dispositions.push({ status: "pending_context", message: "missing subtree context to authorize op" });
@@ -1185,7 +1244,16 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       }
 
       if (dispositions.some((d) => d.status !== "allow")) {
+        if (opts.opAuthStore && toPersist.length > 0) {
+          await ensureOpAuthStoreReady();
+          await opts.opAuthStore.storeOpAuth(toPersist);
+        }
         return { dispositions };
+      }
+
+      if (opts.opAuthStore && toPersist.length > 0) {
+        await ensureOpAuthStoreReady();
+        await opts.opAuthStore.storeOpAuth(toPersist);
       }
     },
   };
