@@ -1,8 +1,20 @@
-import { encode as cborEncode, decode as cborDecode, rfc8949EncodeOptions } from "cborg";
-
 import { utf8ToBytes } from "@noble/hashes/utils";
 import { sha512 } from "@noble/hashes/sha512";
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
+
+import {
+  aesGcmDecrypt,
+  aesGcmEncrypt,
+  assertBytes,
+  assertLen,
+  assertMap,
+  assertString,
+  concatBytes,
+  decodeCbor,
+  encodeCbor,
+  mapGet,
+  randomBytes,
+} from "./internal/util.js";
 
 const DEVICE_WRAP_KEY_LEN = 32;
 const DOC_PAYLOAD_KEY_LEN = 32;
@@ -33,103 +45,8 @@ function ensureEd25519(): void {
   ed25519Ready = true;
 }
 
-function encodeCbor(value: unknown): Uint8Array {
-  return cborEncode(value, rfc8949EncodeOptions);
-}
-
-function decodeCbor(bytes: Uint8Array): unknown {
-  return cborDecode(bytes, { useMaps: true });
-}
-
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function assertBytes(val: unknown, field: string): Uint8Array {
-  if (!(val instanceof Uint8Array)) throw new Error(`${field} must be bytes`);
-  return val;
-}
-
-function assertString(val: unknown, field: string): string {
-  if (typeof val !== "string") throw new Error(`${field} must be a string`);
-  return val;
-}
-
-function assertLen(bytes: Uint8Array, expected: number, field: string): Uint8Array {
-  if (bytes.length !== expected) {
-    throw new Error(`${field}: expected ${expected} bytes, got ${bytes.length}`);
-  }
-  return bytes;
-}
-
-function assertMap(val: unknown, ctx: string): Map<unknown, unknown> {
-  if (!(val instanceof Map)) throw new Error(`${ctx} must be a CBOR map`);
-  return val;
-}
-
-function mapGet(map: Map<unknown, unknown>, key: unknown): unknown {
-  return map.has(key) ? map.get(key) : undefined;
-}
-
 function get(map: Map<unknown, unknown>, key: string): unknown {
   return mapGet(map, key);
-}
-
-function randomBytes(len: number): Uint8Array {
-  const cryptoObj = (globalThis as any).crypto as { getRandomValues?: (arr: Uint8Array) => Uint8Array } | undefined;
-  if (!cryptoObj?.getRandomValues) throw new Error("crypto.getRandomValues is not available");
-  const bytes = new Uint8Array(len);
-  cryptoObj.getRandomValues(bytes);
-  return bytes;
-}
-
-async function aesGcmEncrypt(opts: {
-  key: Uint8Array;
-  nonce: Uint8Array;
-  plaintext: Uint8Array;
-  aad?: Uint8Array;
-}): Promise<Uint8Array> {
-  const cryptoObj = (globalThis as any).crypto as { subtle?: any } | undefined;
-  if (!cryptoObj?.subtle) throw new Error("crypto.subtle is not available");
-
-  const key = await cryptoObj.subtle.importKey("raw", opts.key, { name: "AES-GCM" }, false, ["encrypt"]);
-  const ciphertext = await cryptoObj.subtle.encrypt(
-    {
-      name: "AES-GCM",
-      iv: opts.nonce,
-      ...(opts.aad ? { additionalData: opts.aad } : {}),
-      tagLength: 128,
-    },
-    key,
-    opts.plaintext
-  );
-  return new Uint8Array(ciphertext);
-}
-
-async function aesGcmDecrypt(opts: {
-  key: Uint8Array;
-  nonce: Uint8Array;
-  ciphertext: Uint8Array;
-  aad?: Uint8Array;
-}): Promise<Uint8Array> {
-  const cryptoObj = (globalThis as any).crypto as { subtle?: any } | undefined;
-  if (!cryptoObj?.subtle) throw new Error("crypto.subtle is not available");
-
-  const key = await cryptoObj.subtle.importKey("raw", opts.key, { name: "AES-GCM" }, false, ["decrypt"]);
-  const plaintext = await cryptoObj.subtle.decrypt(
-    {
-      name: "AES-GCM",
-      iv: opts.nonce,
-      ...(opts.aad ? { additionalData: opts.aad } : {}),
-      tagLength: 128,
-    },
-    key,
-    opts.ciphertext
-  );
-  return new Uint8Array(plaintext);
 }
 
 export type TreecrdtDeviceWrapKeyV1 = Uint8Array;
@@ -581,4 +498,3 @@ export async function openTreecrdtLocalIdentityV1(opts: {
   if (identity.replicaLabel !== opts.replicaLabel) throw new Error("LocalIdentityV1.replica_label mismatch");
   return identity;
 }
-
