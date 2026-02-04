@@ -370,7 +370,13 @@ test("subtree scope: pending ops are dropped once context proves they are unauth
     docId,
     caps: [
       // Doc-wide: allow structure writes anywhere.
-      { res: new Map<unknown, unknown>([["doc_id", docId]]), actions: ["write_structure"] },
+      {
+        res: new Map<unknown, unknown>([
+          ["doc_id", docId],
+          ["root", nodeIdToBytes16(root)],
+        ]),
+        actions: ["write_structure"],
+      },
       // Subtree-scoped: allow payload writes under `subtreeRoot` only.
       {
         res: new Map<unknown, unknown>([

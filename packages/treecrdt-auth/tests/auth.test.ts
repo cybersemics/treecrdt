@@ -7,11 +7,10 @@ import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
-import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
+import { deriveTokenIdV1 } from "../dist/cose.js";
 import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
 import {
   createTreecrdtCoseCwtAuth,
@@ -136,20 +135,6 @@ class MemoryBackend implements SyncBackend<Operation> {
   }
 }
 
-function makeCapabilityToken(opts: {
-  issuerPrivateKey: Uint8Array;
-  subjectPublicKey: Uint8Array;
-  docId: string;
-}): Uint8Array {
-  const cnf = new Map<unknown, unknown>([["pub", opts.subjectPublicKey]]);
-  const claims = new Map<unknown, unknown>([
-    [3, opts.docId], // CWT `aud`
-    [8, cnf], // CWT `cnf`
-  ]);
-  const payload = cborEncode(claims, rfc8949EncodeOptions);
-  return coseSign1Ed25519({ payload, privateKey: opts.issuerPrivateKey });
-}
-
 test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
   const docId = "doc-auth-happy";
   const root = "0".repeat(32);
@@ -176,8 +161,18 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
     makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
   ]);
 
-  const tokenA = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
-  const tokenB = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const tokenB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: bPk,
+    docId,
+    actions: ["write_structure"],
+  });
 
   const authA = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -376,7 +371,12 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
   const aPk = await getPublicKey(aSk);
   const bSk = ed25519Utils.randomSecretKey();
   const bPk = await getPublicKey(bSk);
-  const tokenB = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+  const tokenB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: bPk,
+    docId,
+    actions: ["write_structure"],
+  });
 
   const aHex = bytesToHex(aPk);
 
@@ -442,8 +442,18 @@ test("syncOnce fails when op signatures do not match the claimed replica_id", as
     makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
   ]);
 
-  const tokenA = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: aClaimPk, docId });
-  const tokenB = makeCapabilityToken({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aClaimPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const tokenB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: bPk,
+    docId,
+    actions: ["write_structure"],
+  });
 
   const authA = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
