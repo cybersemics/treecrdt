@@ -578,51 +578,6 @@ export class SyncPeer<Op> {
     return { stop: () => controller.abort(), done };
   }
 
-  /**
-   * Legacy polling subscription (periodic `syncOnce`), kept as a fallback.
-   */
-  subscribePolling(
-    transport: DuplexTransport<SyncMessage<Op>>,
-    filter: Filter,
-    opts: SyncSubscribeOptions = {}
-  ): SyncSubscription {
-    const controller = new AbortController();
-    if (opts.signal) {
-      if (opts.signal.aborted) {
-        controller.abort();
-      } else {
-        opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
-      }
-    }
-
-    const signal = controller.signal;
-    const intervalMs = opts.intervalMs ?? 1_000;
-    const immediate = opts.immediate ?? true;
-    const codewordsPerMessage = opts.codewordsPerMessage;
-    const maxCodewords = opts.maxCodewords;
-    const maxOpsPerBatch = opts.maxOpsPerBatch;
-
-    const done = (async () => {
-      let first = true;
-      while (!signal.aborted) {
-        if (first && !immediate) {
-          first = false;
-        } else {
-          first = false;
-          await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch });
-        }
-        if (signal.aborted) break;
-        const slept = await sleepUntil(intervalMs, signal);
-        if (!slept) break;
-      }
-    })();
-
-    return {
-      stop: () => controller.abort(),
-      done,
-    };
-  }
-
   private async handleMessage(
     transport: DuplexTransport<SyncMessage<Op>>,
     msg: SyncMessage<Op>
