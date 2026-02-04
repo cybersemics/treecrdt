@@ -1,9 +1,11 @@
 import { expect, test } from "vitest";
 
-import { bytesToHex } from "@treecrdt/interface/ids";
-
 import { generateTreecrdtDocPayloadKeyV1 } from "../dist/keystore.js";
 import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from "../dist/e2ee.js";
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("hex");
+}
 
 test("e2ee v1: encrypt/decrypt payload roundtrip", async () => {
   const docId = "doc-e2ee-1";

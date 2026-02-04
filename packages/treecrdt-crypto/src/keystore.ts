@@ -262,41 +262,11 @@ export async function openTreecrdtDocKeyBundleV1(opts: {
 
   const plaintext = await aesGcmDecrypt({ key: opts.wrapKey, nonce, ciphertext: ct, aad: sealedAadV1(opts.docId) });
   const bundle = await decodeDocKeyBundleV1(plaintext);
-
   if (bundle.docId !== opts.docId) throw new Error("DocKeyBundleV1.doc_id mismatch");
-
   return bundle;
 }
 
-function encodeDocPayloadKeyV1(opts: { docId: string; payloadKey: Uint8Array }): Uint8Array {
-  assertLen(opts.payloadKey, DOC_PAYLOAD_KEY_LEN, "payloadKey");
-  const claims = new Map<unknown, unknown>();
-  claims.set("v", 1);
-  claims.set("t", DOC_PAYLOAD_KEY_V1_TAG);
-  claims.set("doc_id", opts.docId);
-  claims.set("payload_key", opts.payloadKey);
-  return encodeCbor(claims);
-}
-
-function decodeDocPayloadKeyV1(bytes: Uint8Array): TreecrdtDocPayloadKeyV1 {
-  const decoded = decodeCbor(bytes);
-  const map = assertMap(decoded, "DocPayloadKeyV1");
-
-  const v = get(map, "v");
-  if (v !== 1) throw new Error("DocPayloadKeyV1.v must be 1");
-  const t = assertString(get(map, "t"), "DocPayloadKeyV1.t");
-  if (t !== DOC_PAYLOAD_KEY_V1_TAG) throw new Error("DocPayloadKeyV1.t mismatch");
-
-  const docId = assertString(get(map, "doc_id"), "DocPayloadKeyV1.doc_id");
-  const payloadKey = assertLen(
-    assertBytes(get(map, "payload_key"), "DocPayloadKeyV1.payload_key"),
-    DOC_PAYLOAD_KEY_LEN,
-    "payload_key"
-  );
-  return { docId, payloadKey };
-}
-
-function sealedDocPayloadKeyAadV1(docId: string): Uint8Array {
+function sealedDocPayloadAadV1(docId: string): Uint8Array {
   return concatBytes(SEALED_DOC_PAYLOAD_KEY_V1_AAD_DOMAIN, utf8ToBytes(docId));
 }
 
@@ -310,8 +280,15 @@ export async function sealTreecrdtDocPayloadKeyV1(opts: {
   assertLen(opts.payloadKey, DOC_PAYLOAD_KEY_LEN, "payloadKey");
 
   const nonce = randomBytes(AES_GCM_NONCE_LEN);
-  const plaintext = encodeDocPayloadKeyV1({ docId: opts.docId, payloadKey: opts.payloadKey });
-  const ciphertext = await aesGcmEncrypt({ key: opts.wrapKey, nonce, plaintext, aad: sealedDocPayloadKeyAadV1(opts.docId) });
+
+  const claims = new Map<unknown, unknown>();
+  claims.set("v", 1);
+  claims.set("t", DOC_PAYLOAD_KEY_V1_TAG);
+  claims.set("doc_id", opts.docId);
+  claims.set("payload_key", opts.payloadKey);
+  const plaintext = encodeCbor(claims);
+
+  const ciphertext = await aesGcmEncrypt({ key: opts.wrapKey, nonce, plaintext, aad: sealedDocPayloadAadV1(opts.docId) });
 
   const envelope = new Map<unknown, unknown>();
   envelope.set("v", 1);
@@ -343,10 +320,20 @@ export async function openTreecrdtDocPayloadKeyV1(opts: {
   const nonce = assertLen(assertBytes(get(map, "nonce"), "SealedDocPayloadKeyV1.nonce"), AES_GCM_NONCE_LEN, "nonce");
   const ct = assertBytes(get(map, "ct"), "SealedDocPayloadKeyV1.ct");
 
-  const plaintext = await aesGcmDecrypt({ key: opts.wrapKey, nonce, ciphertext: ct, aad: sealedDocPayloadKeyAadV1(opts.docId) });
-  const key = decodeDocPayloadKeyV1(plaintext);
-  if (key.docId !== opts.docId) throw new Error("DocPayloadKeyV1.doc_id mismatch");
-  return key;
+  const plaintext = await aesGcmDecrypt({ key: opts.wrapKey, nonce, ciphertext: ct, aad: sealedDocPayloadAadV1(opts.docId) });
+  const opened = decodeCbor(plaintext);
+  const claims = assertMap(opened, "DocPayloadKeyV1");
+
+  const v2 = get(claims, "v");
+  if (v2 !== 1) throw new Error("DocPayloadKeyV1.v must be 1");
+  const t2 = assertString(get(claims, "t"), "DocPayloadKeyV1.t");
+  if (t2 !== DOC_PAYLOAD_KEY_V1_TAG) throw new Error("DocPayloadKeyV1.t mismatch");
+
+  const docId = assertString(get(claims, "doc_id"), "DocPayloadKeyV1.doc_id");
+  const payloadKey = assertLen(assertBytes(get(claims, "payload_key"), "DocPayloadKeyV1.payload_key"), DOC_PAYLOAD_KEY_LEN, "payload_key");
+
+  if (docId !== opts.docId) throw new Error("DocPayloadKeyV1.doc_id mismatch");
+  return { docId, payloadKey };
 }
 
 export type TreecrdtIssuerKeyV1 = {
@@ -363,11 +350,14 @@ export async function generateTreecrdtIssuerKeyV1(opts: { docId: string }): Prom
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
+
   return { docId: opts.docId, issuerSk, issuerPk };
 }
 
 function encodeIssuerKeyV1(opts: { docId: string; issuerSk: Uint8Array }): Uint8Array {
   assertLen(opts.issuerSk, ED25519_SECRET_KEY_LEN, "issuerSk");
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
+
   const claims = new Map<unknown, unknown>();
   claims.set("v", 1);
   claims.set("t", ISSUER_KEY_V1_TAG);
@@ -388,6 +378,7 @@ async function decodeIssuerKeyV1(bytes: Uint8Array): Promise<TreecrdtIssuerKeyV1
 
   const docId = assertString(get(map, "doc_id"), "IssuerKeyV1.doc_id");
   const issuerSk = assertLen(assertBytes(get(map, "issuer_sk"), "IssuerKeyV1.issuer_sk"), ED25519_SECRET_KEY_LEN, "issuer_sk");
+
   const issuerPk = await getPublicKey(issuerSk);
   return { docId, issuerSk, issuerPk };
 }
@@ -586,9 +577,8 @@ export async function openTreecrdtLocalIdentityV1(opts: {
     aad: sealedLocalIdentityAadV1(opts.docId, opts.replicaLabel),
   });
   const identity = await decodeLocalIdentityV1(plaintext);
-
   if (identity.docId !== opts.docId) throw new Error("LocalIdentityV1.doc_id mismatch");
   if (identity.replicaLabel !== opts.replicaLabel) throw new Error("LocalIdentityV1.replica_label mismatch");
-
   return identity;
 }
+

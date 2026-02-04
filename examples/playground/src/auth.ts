@@ -8,7 +8,7 @@ import {
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
   type TreecrdtDeviceWrapKeyV1,
-} from "@treecrdt/sync";
+} from "@treecrdt/crypto";
 import {
   base64urlDecode,
   base64urlEncode,

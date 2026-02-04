@@ -1,7 +1,5 @@
 import { expect, test } from "vitest";
 
-import { bytesToHex } from "@treecrdt/interface/ids";
-
 import {
   generateTreecrdtDeviceWrapKeyV1,
   generateTreecrdtDocPayloadKeyV1,
@@ -17,6 +15,10 @@ import {
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
 } from "../dist/keystore.js";
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("hex");
+}
 
 test("keystore v1: seal/open doc key bundle roundtrip", async () => {
   const docId = "doc-keys-1";
@@ -135,3 +137,4 @@ test("keystore v1: open local identity fails with wrong replicaLabel (AAD mismat
 
   await expect(openTreecrdtLocalIdentityV1({ wrapKey, docId: "doc-a", replicaLabel: "replica-b", sealed })).rejects.toThrow();
 });
+

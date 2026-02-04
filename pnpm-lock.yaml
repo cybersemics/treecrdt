@@ -23,6 +23,9 @@ importers:
       '@treecrdt/auth':
         specifier: workspace:*
         version: link:../../packages/treecrdt-auth
+      '@treecrdt/crypto':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-crypto
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../packages/treecrdt-ts
@@ -123,6 +126,28 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/treecrdt-crypto:
+    dependencies:
+      '@noble/ed25519':
+        specifier: ^3.0.0
+        version: 3.0.0
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
+      cborg:
+        specifier: ^4.3.2
+        version: 4.3.2
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
   packages/treecrdt-riblt-wasm-js:
     devDependencies:
       '@types/node':
@@ -202,9 +227,6 @@ importers:
       '@bufbuild/protobuf':
         specifier: ^2.10.2
         version: 2.10.2
-      '@noble/ed25519':
-        specifier: ^3.0.0
-        version: 3.0.0
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
@@ -214,9 +236,6 @@ importers:
       '@treecrdt/riblt-wasm':
         specifier: workspace:*
         version: link:../treecrdt-riblt-wasm-js
-      cborg:
-        specifier: ^4.3.2
-        version: 4.3.2
     devDependencies:
       '@treecrdt/benchmark':
         specifier: workspace:*

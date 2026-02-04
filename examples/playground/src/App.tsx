@@ -19,11 +19,10 @@ import {
   SyncPeer,
   createTreecrdtSyncSqliteOpAuthStore,
   createTreecrdtSyncSqlitePendingOpsStore,
-  encryptTreecrdtPayloadV1,
-  maybeDecryptTreecrdtPayloadV1,
   type Filter,
   type SyncSubscription,
 } from "@treecrdt/sync";
+import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from "@treecrdt/crypto";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { DuplexTransport } from "@treecrdt/sync/transport";
 import {

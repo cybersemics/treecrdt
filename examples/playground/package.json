@@ -14,6 +14,7 @@
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.13",
     "@treecrdt/auth": "workspace:*",
+    "@treecrdt/crypto": "workspace:*",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",

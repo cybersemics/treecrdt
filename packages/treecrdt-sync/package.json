@@ -33,11 +33,9 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.10.2",
-    "@noble/ed25519": "^3.0.0",
     "@noble/hashes": "^1.8.0",
     "@treecrdt/interface": "workspace:*",
-    "@treecrdt/riblt-wasm": "workspace:*",
-    "cborg": "^4.3.2"
+    "@treecrdt/riblt-wasm": "workspace:*"
   },
   "devDependencies": {
     "@treecrdt/benchmark": "workspace:*",
