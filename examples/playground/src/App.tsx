@@ -3,95 +3,32 @@ import { type Operation, type OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
-import {
-  base64urlDecode,
-  base64urlEncode,
-  createTreecrdtCoseCwtAuth,
-  createTreecrdtIdentityChainCapabilityV1,
-  createTreecrdtSqliteSubtreeScopeEvaluator,
-  describeTreecrdtCapabilityTokenV1,
-  deriveKeyIdV1,
-  deriveTokenIdV1,
-  issueTreecrdtDelegatedCapabilityTokenV1,
-  type TreecrdtCapabilityTokenV1,
-} from "@treecrdt/auth";
-import {
-  SyncPeer,
-  createTreecrdtSyncSqliteOpAuthStore,
-  createTreecrdtSyncSqlitePendingOpsStore,
-  type Filter,
-  type SyncSubscription,
-} from "@treecrdt/sync";
+import { base64urlDecode } from "@treecrdt/auth";
 import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from "@treecrdt/crypto";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import type { DuplexTransport } from "@treecrdt/sync/transport";
-import {
-  MdCloudOff,
-  MdCloudQueue,
-  MdContentCopy,
-  MdExpandLess,
-  MdExpandMore,
-  MdGroup,
-  MdLockOutline,
-  MdOpenInNew,
-  MdOutlineRssFeed,
-  MdSync,
-  MdVpnKey,
-} from "react-icons/md";
-import { IoMdGitBranch } from "react-icons/io";
 
-import {
-  clearAuthMaterial,
-  createLocalIdentityChainV1,
-  createCapabilityTokenV1,
-  decodeInvitePayload,
-  encodeInvitePayload,
-  generateEd25519KeyPair,
-  deriveEd25519PublicKey,
-  initialAuthEnabled,
-  initialRevealIdentity,
-  loadOrCreateDocPayloadKeyB64,
-  loadAuthMaterial,
-  persistRevealIdentity,
-  persistAuthEnabled,
-  saveDocPayloadKeyB64,
-  saveIssuerKeys,
-  saveLocalKeys,
-  saveLocalTokens,
-  type StoredAuthMaterial,
-} from "./auth";
-import {
-  createBroadcastDuplex,
-  createPlaygroundBackend,
-  hexToBytes16,
-  type AuthGrantMessageV1,
-  type PresenceAckMessage,
-  type PresenceMessage,
-} from "./sync-v0";
+import { loadOrCreateDocPayloadKeyB64 } from "./auth";
+import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
-import {
-  MAX_COMPOSER_NODE_COUNT,
-  PLAYGROUND_PEER_TIMEOUT_MS,
-  PLAYGROUND_SYNC_MAX_CODEWORDS,
-  PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-  ROOT_ID,
-} from "./playground/constants";
-import { ParentPicker } from "./playground/components/ParentPicker";
-import { SharingAuthPanel } from "./playground/components/SharingAuthPanel";
-import { TreeRow } from "./playground/components/TreeRow";
-import { compareOps, mergeSortedOps, opKey, renderKind } from "./playground/ops";
+import { MAX_COMPOSER_NODE_COUNT, ROOT_ID } from "./playground/constants";
+import { ComposerPanel } from "./playground/components/ComposerPanel";
+import { OpsPanel } from "./playground/components/OpsPanel";
+import { PlaygroundHeader } from "./playground/components/PlaygroundHeader";
+import { ShareSubtreeDialog } from "./playground/components/ShareSubtreeDialog";
+import { PlaygroundToast } from "./playground/components/PlaygroundToast";
+import { TreePanel } from "./playground/components/TreePanel";
+import { usePlaygroundAuth } from "./playground/hooks/usePlaygroundAuth";
+import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
+import { compareOps, mergeSortedOps, opKey } from "./playground/ops";
 import { compareOpMeta } from "./playground/payload";
 import {
   ensureOpfsKey,
   initialDocId,
   initialStorage,
-  loadPrivateRoots,
   makeNodeId,
   makeSessionKey,
   persistDocId,
   persistOpfsKey,
-  persistPrivateRoots,
   persistStorage,
 } from "./playground/persist";
 import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
@@ -99,45 +36,11 @@ import { applyChildrenLoaded, flattenForSelectState, parentsAffectedByOps } from
 import type {
   CollapseState,
   DisplayNode,
-  NodeMeta,
   PayloadRecord,
-  PeerInfo,
   Status,
   StorageMode,
   TreeState,
 } from "./playground/types";
-
-function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: string): string[] {
-  return Array.from(privateRoots).filter((id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id));
-}
-
-type InvitePreset = "read" | "read_write" | "admin" | "custom";
-
-type ToastKind = "success" | "info" | "error";
-type ToastAction = "sync" | "details";
-type ToastState = {
-  kind: ToastKind;
-  title: string;
-  message?: string;
-  actions?: ToastAction[];
-  durationMs?: number;
-};
-
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      }
-    );
-  });
-}
 
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
@@ -162,14 +65,9 @@ export default function App() {
     overrides: new Set([ROOT_ID]),
   }));
   const [busy, setBusy] = useState(false);
-  const [syncBusy, setSyncBusy] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [nodeCount, setNodeCount] = useState(1);
   const [fanout, setFanout] = useState(10);
   const [newNodeValue, setNewNodeValue] = useState("");
-  const [liveChildrenParents, setLiveChildrenParents] = useState<Set<string>>(() => new Set());
-  const [liveAllEnabled, setLiveAllEnabled] = useState(false);
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [composerOpen, setComposerOpen] = useState(() => {
@@ -195,79 +93,108 @@ export default function App() {
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
-  const onlineRef = useRef(true);
   const opfsSupport = useMemo(detectOpfsSupport, []);
-  const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
-  const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
-  const [showAuthPanel, setShowAuthPanel] = useState(() => {
-    if (typeof window === "undefined") return false;
-    if (!joinMode) return false;
-    return !new URLSearchParams(window.location.hash.slice(1)).has("invite");
-  });
-  const [showShareDialog, setShowShareDialog] = useState(false);
-  const [showAuthAdvanced, setShowAuthAdvanced] = useState(false);
-  const [authInfo, setAuthInfo] = useState<string | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [authBusy, setAuthBusy] = useState(false);
-  const [toast, setToast] = useState<ToastState | null>(null);
-  const [wrapKeyImportText, setWrapKeyImportText] = useState("");
-  const [issuerKeyBlobImportText, setIssuerKeyBlobImportText] = useState("");
-  const [identityKeyBlobImportText, setIdentityKeyBlobImportText] = useState("");
-  const [deviceSigningKeyBlobImportText, setDeviceSigningKeyBlobImportText] = useState("");
-  const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => ({
-    issuerPkB64: null,
-    issuerSkB64: null,
-    localPkB64: null,
-    localSkB64: null,
-    localTokensB64: [],
-  }));
-  const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
   const docPayloadKeyRef = useRef<Uint8Array | null>(null);
-  const localIdentityChainPromiseRef = useRef<Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null>(null);
-  const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
+  const refreshDocPayloadKey = React.useCallback(async () => {
+    const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
+    docPayloadKeyRef.current = base64urlDecode(keyB64);
+    return docPayloadKeyRef.current;
+  }, [docId]);
 
-  const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
-  const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
-  const [inviteActions, setInviteActions] = useState<
-    Record<"write_structure" | "write_payload" | "delete" | "tombstone", boolean>
-  >({
-    write_structure: true,
-    write_payload: true,
-    delete: false,
-    tombstone: false,
-  });
-  const [inviteAllowGrant, setInviteAllowGrant] = useState(true);
-  const [invitePreset, setInvitePreset] = useState<InvitePreset>("read_write");
-  const [showInviteOptions, setShowInviteOptions] = useState(false);
-  const [inviteLink, setInviteLink] = useState<string>("");
-  const [inviteImportText, setInviteImportText] = useState<string>("");
-  const [grantRecipientKey, setGrantRecipientKey] = useState<string>("");
-  const [pendingOps, setPendingOps] = useState<Array<{ id: string; kind: string; message?: string }>>([]);
+  const {
+    authEnabled,
+    setAuthEnabled,
+    revealIdentity,
+    setRevealIdentity,
+    showAuthPanel,
+    setShowAuthPanel,
+    showShareDialog,
+    setShowShareDialog,
+    showAuthAdvanced,
+    setShowAuthAdvanced,
+    authInfo,
+    authError,
+    setAuthError,
+    authBusy,
+    toast,
+    setToast,
+    wrapKeyImportText,
+    setWrapKeyImportText,
+    issuerKeyBlobImportText,
+    setIssuerKeyBlobImportText,
+    identityKeyBlobImportText,
+    setIdentityKeyBlobImportText,
+    deviceSigningKeyBlobImportText,
+    setDeviceSigningKeyBlobImportText,
+    authMaterial,
+    refreshAuthMaterial,
+    localIdentityChainPromiseRef,
+    getLocalIdentityChain,
+    authToken,
+    replica,
+    selfPeerId,
+    authActionSet,
+    viewRootId,
+    authCanSyncAll,
+    canWriteStructure,
+    canWritePayload,
+    canDelete,
+    isScopedAccess,
+    authCanIssue,
+    authCanDelegate,
+    authIssuerPkHex,
+    authLocalKeyIdHex,
+    authLocalTokenIdHex,
+    authTokenCount,
+    authTokenScope,
+    authTokenActions,
+    authNeedsInvite,
+    pendingOps,
+    refreshPendingOps,
+    privateRoots,
+    privateRootsCount,
+    showPrivateRootsPanel,
+    setShowPrivateRootsPanel,
+    togglePrivateRoot,
+    clearPrivateRoots,
+    inviteRoot,
+    setInviteRoot,
+    inviteMaxDepth,
+    setInviteMaxDepth,
+    inviteActions,
+    setInviteActions,
+    inviteAllowGrant,
+    setInviteAllowGrant,
+    invitePreset,
+    setInvitePreset,
+    showInviteOptions,
+    setShowInviteOptions,
+    inviteExcludeNodeIds,
+    inviteLink,
+    generateInviteLink,
+    applyInvitePreset,
+    invitePanelRef,
+    inviteImportText,
+    setInviteImportText,
+    importInviteLink,
+    grantRecipientKey,
+    setGrantRecipientKey,
+    grantSubtreeToReplicaPubkey: grantSubtreeToReplicaPubkeyRaw,
+    resetAuth,
+    openMintingPeerTab,
+    openNewIsolatedPeerTab,
+    openShareForNode,
+    verifyLocalOps,
+    copyToClipboard,
+    onAuthGrantMessage,
+  } = usePlaygroundAuth({ docId, joinMode, client, refreshDocPayloadKey });
+
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
-  const invitePanelRef = useRef<HTMLDivElement>(null!);
-  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+
   const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
-  const [identityVersion, setIdentityVersion] = useState(0);
-  const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
-  const [showPrivateRootsPanel, setShowPrivateRootsPanel] = useState(false);
-  const privateRootsCount = useMemo(
-    () => Array.from(privateRoots).filter((id) => id !== ROOT_ID).length,
-    [privateRoots]
-  );
-  const inviteExcludeNodeIds = useMemo(
-    () => computeInviteExcludeNodeIds(privateRoots, inviteRoot),
-    [privateRoots, inviteRoot]
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!toast) return;
-    const id = window.setTimeout(() => setToast(null), toast.durationMs ?? 10_000);
-    return () => window.clearTimeout(id);
-  }, [toast]);
-
+  const [, bumpIdentityVersion] = useState(0);
   const onPeerIdentityChain = React.useCallback(
     (chain: { identityPublicKey: Uint8Array; devicePublicKey: Uint8Array; replicaPublicKey: Uint8Array }) => {
       const replicaHex = bytesToHex(chain.replicaPublicKey);
@@ -280,111 +207,10 @@ export default function App() {
         return;
       }
       identityByReplicaRef.current.set(replicaHex, { identityPk: chain.identityPublicKey, devicePk: chain.devicePublicKey });
-      setIdentityVersion((v) => v + 1);
+      bumpIdentityVersion((v) => v + 1);
     },
     []
   );
-
-  useEffect(() => {
-    setPrivateRoots(loadPrivateRoots(docId));
-  }, [docId]);
-
-  useEffect(() => {
-    // Local identity chains are doc-bound (replica cert includes `docId`) and depend on the current replica key.
-    localIdentityChainPromiseRef.current = null;
-  }, [docId, authMaterial.localPkB64, revealIdentity]);
-
-  const togglePrivateRoot = (id: string) => {
-    if (id === ROOT_ID) return;
-    setPrivateRoots((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      persistPrivateRoots(docId, next);
-      return next;
-    });
-  };
-
-  const clearPrivateRoots = () => {
-    setPrivateRoots(() => {
-      const next = new Set<string>();
-      persistPrivateRoots(docId, next);
-      return next;
-    });
-  };
-
-  const rememberScopedPrivateRootsFromToken = React.useCallback(
-    async (issuerPkB64: string, tokenB64: string) => {
-      try {
-        const issuerPk = base64urlDecode(issuerPkB64);
-        const tokenBytes = base64urlDecode(tokenB64);
-        const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes, issuerPublicKeys: [issuerPk], docId });
-        const roots = new Set<string>();
-        for (const cap of described.caps) {
-          const root = cap.res.rootNodeId?.toLowerCase();
-          if (!root) continue;
-          if (root === ROOT_ID) continue;
-          if (!/^[0-9a-f]{32}$/.test(root)) continue;
-          roots.add(root);
-        }
-        if (roots.size === 0) return;
-        setPrivateRoots((prev) => {
-          let changed = false;
-          const next = new Set(prev);
-          for (const root of roots) {
-            if (!next.has(root)) {
-              next.add(root);
-              changed = true;
-            }
-          }
-          if (!changed) return prev;
-          persistPrivateRoots(docId, next);
-          return next;
-        });
-      } catch {
-        // Best-effort: tokens may be invalid or unverifiable at this moment.
-      }
-    },
-    [docId]
-  );
-
-  const refreshAuthMaterial = React.useCallback(async () => {
-    const next = await loadAuthMaterial(docId);
-    setAuthMaterial(next);
-    return next;
-  }, [docId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    if (url.searchParams.get("fresh") !== "1") return;
-    url.searchParams.delete("fresh");
-    window.history.replaceState({}, "", url);
-    clearAuthMaterial(docId);
-    void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
-  }, [docId, refreshAuthMaterial]);
-
-  const refreshDocPayloadKey = React.useCallback(async () => {
-    const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
-    docPayloadKeyRef.current = base64urlDecode(keyB64);
-    return docPayloadKeyRef.current;
-  }, [docId]);
-
-  const getLocalIdentityChain = React.useCallback(async () => {
-    if (!revealIdentity) return null;
-    const pkB64 = authMaterial.localPkB64;
-    if (!pkB64) return null;
-
-    if (!localIdentityChainPromiseRef.current) {
-      const replicaPk = base64urlDecode(pkB64);
-      localIdentityChainPromiseRef.current = createLocalIdentityChainV1({ docId, replicaPublicKey: replicaPk }).catch((err) => {
-        console.error("Failed to create identity chain", err);
-        return null;
-      });
-    }
-
-    return await localIdentityChainPromiseRef.current;
-  }, [authMaterial.localPkB64, docId, revealIdentity]);
 
   useEffect(() => {
     docPayloadKeyRef.current = null;
@@ -403,78 +229,6 @@ export default function App() {
       cancelled = true;
     };
   }, [docId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const next = await loadAuthMaterial(docId);
-        if (cancelled) return;
-        setAuthMaterial(next);
-      } catch (err) {
-        if (cancelled) return;
-        setAuthError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [docId]);
-
-  useEffect(() => {
-    if (!authEnabled || !client) {
-      localAuthRef.current = null;
-      return;
-    }
-
-    try {
-      if (
-        !authMaterial.issuerPkB64 ||
-        !authMaterial.localSkB64 ||
-        !authMaterial.localPkB64 ||
-        authMaterial.localTokensB64.length === 0
-      ) {
-        localAuthRef.current = null;
-        return;
-      }
-
-      const issuerPk = base64urlDecode(authMaterial.issuerPkB64);
-      const localSk = base64urlDecode(authMaterial.localSkB64);
-      const localPk = base64urlDecode(authMaterial.localPkB64);
-      const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
-      const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
-      const opAuthStore = createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId });
-
-      localAuthRef.current = createTreecrdtCoseCwtAuth({
-        issuerPublicKeys: [issuerPk],
-        localPrivateKey: localSk,
-        localPublicKey: localPk,
-        localCapabilityTokens: localTokens,
-        requireProofRef: true,
-        scopeEvaluator,
-        opAuthStore,
-      });
-    } catch (err) {
-      localAuthRef.current = null;
-      setAuthError(err instanceof Error ? err.message : String(err));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    authEnabled,
-    client,
-    docId,
-    authMaterial.issuerPkB64,
-    authMaterial.localSkB64,
-    authMaterial.localPkB64,
-    authMaterial.localTokensB64.join(","),
-  ]);
-
-  const replica = useMemo(
-    () => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null),
-    [authMaterial.localPkB64]
-  );
-
-  const selfPeerId = useMemo(() => (replica ? bytesToHex(replica) : null), [replica]);
 
   const replicaKey = useMemo(
     () => (replica: Operation["meta"]["id"]["replica"]) => bytesToHex(replica),
@@ -542,24 +296,7 @@ export default function App() {
     },
     [docId, requireDocPayloadKey]
   );
-
-  useEffect(() => {
-    onlineRef.current = online;
-  }, [online]);
-
-  const syncPeerRef = useRef<SyncPeer<Operation> | null>(null);
-  const syncConnRef = useRef<
-    Map<string, { transport: DuplexTransport<any>; detach: () => void }>
-  >(new Map());
   const knownOpsRef = useRef<Set<string>>(new Set());
-  const liveChildrenParentsRef = useRef<Set<string>>(new Set());
-  const liveChildSubsRef = useRef<Map<string, Map<string, SyncSubscription>>>(new Map());
-  const liveAllEnabledRef = useRef(false);
-  const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
-  const liveAllStartingRef = useRef<Set<string>>(new Set());
-  const liveChildrenStartingRef = useRef<Set<string>>(new Set());
-  const peerReadyRef = useRef<Set<string>>(new Set());
-  const peerAckSentRef = useRef<Set<string>>(new Set());
 
   const treeStateRef = useRef<TreeState>(treeState);
   useEffect(() => {
@@ -719,142 +456,23 @@ export default function App() {
     });
   }, [refreshNodeCount]);
 
-  const stopLiveAllForPeer = (peerId: string) => {
-    const existing = liveAllSubsRef.current.get(peerId);
-    if (!existing) return;
-    existing.stop();
-    liveAllSubsRef.current.delete(peerId);
-  };
+  const getMaxLamport = React.useCallback(() => BigInt(lamportRef.current), []);
 
-  const stopAllLiveAll = () => {
-    for (const sub of liveAllSubsRef.current.values()) sub.stop();
-    liveAllSubsRef.current.clear();
-  };
-
-  const startLiveAll = (peerId: string) => {
-    const conn = syncConnRef.current.get(peerId);
-    const peer = syncPeerRef.current;
-    if (!conn || !peer) return;
-
-    if (liveAllSubsRef.current.has(peerId)) return;
-    if (liveAllStartingRef.current.has(peerId)) return;
-    liveAllStartingRef.current.add(peerId);
-
-    void (async () => {
-      try {
-        await peer.syncOnce(conn.transport, { all: {} }, {
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        });
-      } catch (err) {
-        console.error("Live sync(all) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
-        return;
+  const onRemoteOpsApplied = React.useCallback(
+    async (appliedOps: Operation[]) => {
+      await ingestPayloadOps(appliedOps);
+      ingestOps(appliedOps);
+      if (appliedOps.length > 0) {
+        let max = 0;
+        for (const op of appliedOps) max = Math.max(max, op.meta.lamport);
+        lamportRef.current = Math.max(lamportRef.current, max);
+        setHeadLamport(lamportRef.current);
       }
-
-      const sub = peer.subscribe(
-        conn.transport,
-        { all: {} },
-        {
-          immediate: false,
-          intervalMs: 0,
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        }
-      );
-      liveAllSubsRef.current.set(peerId, sub);
-      void sub.done.catch((err) => {
-        console.error("Live sync(all) failed", err);
-        stopLiveAllForPeer(peerId);
-        setSyncError(err instanceof Error ? err.message : String(err));
-      });
-    })().finally(() => {
-      liveAllStartingRef.current.delete(peerId);
-    });
-  };
-
-  const stopLiveChildrenForPeer = (peerId: string) => {
-    const byParent = liveChildSubsRef.current.get(peerId);
-    if (!byParent) return;
-    for (const sub of byParent.values()) sub.stop();
-    liveChildSubsRef.current.delete(peerId);
-  };
-
-  const stopLiveChildren = (peerId: string, parentId: string) => {
-    const byParent = liveChildSubsRef.current.get(peerId);
-    if (!byParent) return;
-    const sub = byParent.get(parentId);
-    if (!sub) return;
-    sub.stop();
-    byParent.delete(parentId);
-    if (byParent.size === 0) liveChildSubsRef.current.delete(peerId);
-  };
-
-  const stopAllLiveChildren = () => {
-    for (const peerId of Array.from(liveChildSubsRef.current.keys())) stopLiveChildrenForPeer(peerId);
-  };
-
-  const startLiveChildren = (peerId: string, parentId: string) => {
-    const conn = syncConnRef.current.get(peerId);
-    const peer = syncPeerRef.current;
-    if (!conn || !peer) return;
-
-    const existing = liveChildSubsRef.current.get(peerId);
-    if (existing?.has(parentId)) return;
-    const startKey = `${peerId}\u0000${parentId}`;
-    if (liveChildrenStartingRef.current.has(startKey)) return;
-    liveChildrenStartingRef.current.add(startKey);
-
-    const byParent = existing ?? new Map<string, SyncSubscription>();
-    void (async () => {
-      try {
-        await peer.syncOnce(conn.transport, { children: { parent: hexToBytes16(parentId) } }, {
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        });
-      } catch (err) {
-        console.error("Live sync(children) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
-        return;
-      }
-
-      const sub = peer.subscribe(
-        conn.transport,
-        { children: { parent: hexToBytes16(parentId) } },
-        {
-          immediate: false,
-          intervalMs: 0,
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        }
-      );
-      byParent.set(parentId, sub);
-      liveChildSubsRef.current.set(peerId, byParent);
-
-      void sub.done.catch((err) => {
-        console.error("Live sync failed", err);
-        stopLiveChildren(peerId, parentId);
-        setSyncError(err instanceof Error ? err.message : String(err));
-      });
-    })().finally(() => {
-      liveChildrenStartingRef.current.delete(startKey);
-    });
-  };
-
-  const toggleLiveChildren = (parentId: string) => {
-    setLiveChildrenParents((prev) => {
-      const next = new Set(prev);
-      if (next.has(parentId)) next.delete(parentId);
-      else next.add(parentId);
-      return next;
-    });
-  };
-
-  const makeNewProfileId = () => `profile-${crypto.randomUUID().slice(0, 8)}`;
+      scheduleRefreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      scheduleRefreshNodeCount();
+    },
+    [ingestOps, ingestPayloadOps, scheduleRefreshNodeCount, scheduleRefreshParents]
+  );
 
   const openNewPeerTab = () => {
     if (typeof window === "undefined") return;
@@ -867,508 +485,48 @@ export default function App() {
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
-	  const openShareForNode = (nodeId: string) => {
-	    setInviteRoot(nodeId);
-	    setShowShareDialog(true);
-	    void generateInviteLink({ rootNodeId: nodeId });
-	  };
-
-  const hexToBytes32 = (hex: string): Uint8Array => {
-    const clean = hex.trim().toLowerCase().replace(/^0x/, "");
-    if (!/^[0-9a-f]{64}$/.test(clean)) throw new Error("expected 64 hex chars");
-    const out = new Uint8Array(32);
-    for (let i = 0; i < out.length; i += 1) {
-      out[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-    }
-    return out;
-  };
-
-	  const parseReplicaPublicKeyInput = (input: string): Uint8Array => {
-    const raw = input.trim();
-    if (!raw) throw new Error("replica public key is required");
-    if (/^(0x)?[0-9a-f]{64}$/i.test(raw)) return hexToBytes32(raw);
-    try {
-      const bytes = base64urlDecode(raw);
-      if (bytes.length !== 32) throw new Error("replica public key must be 32 bytes");
-      return bytes;
-    } catch (err) {
-      throw new Error("replica public key must be 64 hex chars (or base64url-encoded 32 bytes)");
-    }
-	  };
-
-	  const applyInvitePreset = (preset: InvitePreset) => {
-	    setInvitePreset(preset);
-	    if (preset === "custom") {
-	      setShowInviteOptions(true);
-	      return;
-	    }
-	    if (preset === "read") {
-	      setInviteActions({ write_structure: false, write_payload: false, delete: false, tombstone: false });
-	      return;
-	    }
-	    if (preset === "admin") {
-	      setInviteActions({ write_structure: true, write_payload: true, delete: true, tombstone: true });
-	      return;
-	    }
-	    setInviteActions({ write_structure: true, write_payload: true, delete: false, tombstone: false });
-	  };
-
-		  const readInviteConfig = (rootNodeId: string) => {
-		    let actions: string[];
-		    if (invitePreset === "read") {
-		      actions = ["read_structure", "read_payload"];
-		    } else if (invitePreset === "read_write") {
-			      actions = ["write_structure", "write_payload"];
-		    } else if (invitePreset === "admin") {
-			      actions = ["write_structure", "write_payload", "delete", "tombstone"];
-		    } else {
-		      actions = Object.entries(inviteActions)
-		        .filter(([, enabled]) => enabled)
-		        .map(([name]) => name);
-		      if (actions.length === 0) throw new Error("select at least one action");
-		    }
-		    if (inviteAllowGrant && !actions.includes("grant")) actions.push("grant");
-
-		    const maxDepthText = inviteMaxDepth.trim();
-		    let maxDepth: number | undefined;
-		    if (maxDepthText.length > 0) {
-	      const parsed = Number(maxDepthText);
-      if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
-      maxDepth = parsed;
-    }
-
-    const excludeNodeIds = computeInviteExcludeNodeIds(privateRoots, rootNodeId);
-    return { actions, maxDepth, excludeNodeIds };
-  };
-
-		  const buildInviteB64 = async (opts: { rootNodeId?: string } = {}): Promise<string> => {
-		    let issuerSkB64 = authMaterial.issuerSkB64;
-		    let issuerPkB64 = authMaterial.issuerPkB64;
-		    let refreshedMaterial: StoredAuthMaterial | null = null;
-
-		    // If the UI state is stale, re-read from storage once before giving up.
-		    if (!issuerSkB64 || !issuerPkB64) {
-		      const latest = await loadAuthMaterial(docId);
-		      issuerSkB64 = latest.issuerSkB64;
-		      issuerPkB64 = latest.issuerPkB64;
-		      refreshedMaterial = latest;
-		      setAuthMaterial(latest);
-		    }
-
-	    // Best-effort bootstrap so "New device" can mint an invite even if the background auth init hasn't completed yet.
-	    if (!issuerSkB64 && !issuerPkB64) {
-	      if (joinMode) {
-	        throw new Error("This is an isolated device and can’t mint invites. Open a minting peer tab and share from there.");
-	      }
-	      const { sk, pk } = await generateEd25519KeyPair();
-	      await saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
-	      const latest = await loadAuthMaterial(docId);
-	      issuerSkB64 = latest.issuerSkB64;
-	      issuerPkB64 = latest.issuerPkB64;
-	      setAuthMaterial(latest);
-	    }
-		    if (!issuerSkB64 && issuerPkB64) {
-		      const latest = refreshedMaterial ?? authMaterial;
-		      const localSkB64 = latest.localSkB64;
-		      const proofTokenB64 = latest.localTokensB64[0] ?? null;
-		      if (!localSkB64 || !proofTokenB64) {
-		        throw new Error("This tab is verify-only and has no local keys/tokens yet; import an invite link first.");
-		      }
-
-			      const issuerPk = base64urlDecode(issuerPkB64);
-			      const proofTokenBytes = base64urlDecode(proofTokenB64);
-			      const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
-			      const proofDesc = await describeTreecrdtCapabilityTokenV1({
-			        tokenBytes: proofTokenBytes,
-			        issuerPublicKeys: [issuerPk],
-			        docId,
-			        scopeEvaluator,
-			      });
-		      const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
-		      if (!proofActions.has("grant")) {
-		        throw new Error("This tab is verify-only and cannot mint invites (missing grant permission).");
-		      }
-
-		      const rootNodeId = opts.rootNodeId ?? inviteRoot;
-		      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
-
-		      const proofScope = proofDesc.caps?.[0]?.res ?? null;
-		      const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
-		      const proofDocWide =
-		        proofRootId === ROOT_ID &&
-		        proofScope?.maxDepth === undefined &&
-		        ((proofScope?.excludeNodeIds?.length ?? 0) === 0);
-			      if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
-			        if (proofScope?.maxDepth !== undefined) {
-			          throw new Error("This tab can only mint delegated invites for its current subtree scope (maxDepth).");
-			        }
-			        if (!scopeEvaluator) {
-			          throw new Error("This tab can only mint delegated invites for its current subtree scope.");
-			        }
-			        const tri = await scopeEvaluator({
-			          docId,
-			          node: hexToBytes16(rootNodeId),
-			          scope: {
-			            root: hexToBytes16(proofRootId),
-			            ...(proofScope?.excludeNodeIds?.length ? { exclude: proofScope.excludeNodeIds.map((id) => hexToBytes16(id)) } : {}),
-			          },
-			        });
-			        if (tri === "deny") throw new Error("This tab can only mint delegated invites within its granted subtree scope.");
-			        if (tri === "unknown") throw new Error("Missing subtree context to mint delegated invites for that node.");
-			      }
-
-		      const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
-		      const tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
-		        delegatorPrivateKey: base64urlDecode(localSkB64),
-		        delegatorProofToken: proofTokenBytes,
-		        subjectPublicKey: subjectPk,
-		        docId,
-		        rootNodeId,
-		        actions,
-		        ...(maxDepth !== undefined ? { maxDepth } : {}),
-		        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
-		      });
-
-		      return encodeInvitePayload({
-		        v: 1,
-		        t: "treecrdt.playground.invite",
-		        docId,
-		        issuerPkB64,
-		        subjectSkB64: base64urlEncode(subjectSk),
-		        tokenB64: base64urlEncode(tokenBytes),
-		        payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
-		      });
-		    }
-		    if (!issuerSkB64 || !issuerPkB64) {
-		      throw new Error("issuer private key is not available in this tab (cannot mint invites)");
-		    }
-
-	    const rootNodeId = opts.rootNodeId ?? inviteRoot;
-	    const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
-
-    const issuerSk = base64urlDecode(issuerSkB64);
-    const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
-    const tokenBytes = createCapabilityTokenV1({
-      issuerPrivateKey: issuerSk,
-      subjectPublicKey: subjectPk,
-      docId,
-      rootNodeId,
-      actions,
-      ...(maxDepth !== undefined ? { maxDepth } : {}),
-      ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
-    });
-
-    return encodeInvitePayload({
-      v: 1,
-      t: "treecrdt.playground.invite",
-      docId,
-      issuerPkB64,
-      subjectSkB64: base64urlEncode(subjectSk),
-      tokenB64: base64urlEncode(tokenBytes),
-      payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
-    });
-  };
-
-  const openNewIsolatedPeerTab = async (opts: { autoInvite: boolean; rootNodeId?: string }) => {
-    if (typeof window === "undefined") return;
-
-    const url = new URL(window.location.href);
-    url.searchParams.set("doc", docId);
-    url.searchParams.delete("replica");
-    url.searchParams.set("profile", makeNewProfileId());
-    url.searchParams.set("join", "1");
-    url.searchParams.set("auth", "1");
-    url.hash = "";
-
-    if (opts.autoInvite) {
-      try {
-        // Auto-invite makes the common "simulate another device" flow 1 click.
-        url.hash = `invite=${await buildInviteB64({ rootNodeId: opts.rootNodeId ?? ROOT_ID })}`;
-      } catch (err) {
-        // Fall back to a blank join-only tab and show the reason on the current tab.
-        setAuthError(err instanceof Error ? err.message : String(err));
-        setShowAuthPanel(true);
-      }
-    }
-
-    window.open(url.toString(), "_blank", "noopener,noreferrer");
-  };
-
-  const openMintingPeerTab = () => {
-    if (typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    url.searchParams.set("doc", docId);
-    url.searchParams.delete("join");
-    url.searchParams.delete("fresh");
-    url.searchParams.set("auth", "1");
-    url.hash = "";
-    window.open(url.toString(), "_blank", "noopener,noreferrer");
-  };
-
-  const copyToClipboard = async (text: string) => {
-    if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
-      throw new Error("clipboard API is not available");
-    }
-    await navigator.clipboard.writeText(text);
-  };
-
-  const resetAuth = () => {
-    clearAuthMaterial(docId);
-    setInviteLink("");
-    setInviteImportText("");
-    setAuthEnabled(false);
-    setAuthError(null);
-    void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
-  };
-
-  const generateInviteLink = async (opts: { rootNodeId?: string; copyToClipboard?: boolean } = {}) => {
-    if (typeof window === "undefined") return;
-    setAuthBusy(true);
-    setAuthError(null);
-    setAuthInfo(null);
-    setInviteLink("");
-    try {
-      const inviteB64 = await buildInviteB64({ rootNodeId: opts.rootNodeId });
-
-      const url = new URL(window.location.href);
-      url.searchParams.set("doc", docId);
-      url.searchParams.delete("replica");
-      url.searchParams.delete("fresh");
-      url.searchParams.set("join", "1");
-      url.searchParams.set("profile", makeNewProfileId());
-      url.searchParams.set("auth", "1");
-      url.hash = `invite=${inviteB64}`;
-      const link = url.toString();
-      setInviteLink(link);
-      if (opts.copyToClipboard) {
-        await copyToClipboard(link);
-        setAuthInfo("Invite link copied to clipboard.");
-      }
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-	  const grantSubtreeToReplicaPubkey = async () => {
-	    if (!authEnabled) return;
-	    if (typeof window === "undefined") return;
-
-	    setAuthBusy(true);
-	    setAuthError(null);
-	    setAuthInfo(null);
-
-	    try {
-	      if (!selfPeerId) throw new Error("local replica public key is not ready yet");
-	      const channel = broadcastChannelRef.current;
-	      if (!channel) throw new Error("sync channel is not ready yet");
-
-	      const issuerPkB64 = authMaterial.issuerPkB64;
-	      const issuerSkB64 = authMaterial.issuerSkB64;
-	      if (!issuerPkB64) throw new Error("issuer public key is missing; import an invite link first");
-
-	      const subjectPk = parseReplicaPublicKeyInput(grantRecipientKey);
-	      const rootNodeId = inviteRoot;
-	      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
-
-	      let tokenBytes: Uint8Array;
-	      if (issuerSkB64) {
-	        const issuerSk = base64urlDecode(issuerSkB64);
-	        tokenBytes = createCapabilityTokenV1({
-	          issuerPrivateKey: issuerSk,
-	          subjectPublicKey: subjectPk,
-	          docId,
-	          rootNodeId,
-	          actions,
-	          ...(maxDepth !== undefined ? { maxDepth } : {}),
-	          ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
-	        });
-	      } else {
-	        const localSkB64 = authMaterial.localSkB64;
-	        const proofTokenB64 = authMaterial.localTokensB64[0] ?? null;
-	        if (!localSkB64 || !proofTokenB64) {
-	          throw new Error("cannot delegate grants without local keys/tokens; import an invite link first");
-	        }
-
-		        const issuerPk = base64urlDecode(issuerPkB64);
-		        const proofTokenBytes = base64urlDecode(proofTokenB64);
-		        const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
-		        const proofDesc = await describeTreecrdtCapabilityTokenV1({
-		          tokenBytes: proofTokenBytes,
-		          issuerPublicKeys: [issuerPk],
-		          docId,
-		          scopeEvaluator,
-		        });
-	        const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
-	        if (!proofActions.has("grant")) {
-	          throw new Error("this tab cannot delegate grants (missing grant permission)");
-	        }
-
-	        const proofScope = proofDesc.caps?.[0]?.res ?? null;
-	        const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
-	        const proofDocWide =
-	          proofRootId === ROOT_ID &&
-	          proofScope?.maxDepth === undefined &&
-	          ((proofScope?.excludeNodeIds?.length ?? 0) === 0);
-		        if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
-		          if (proofScope?.maxDepth !== undefined) {
-		            throw new Error("this tab can only delegate grants for its current subtree scope (maxDepth)");
-		          }
-		          if (!scopeEvaluator) {
-		            throw new Error("this tab can only delegate grants for its current subtree scope");
-		          }
-		          const tri = await scopeEvaluator({
-		            docId,
-		            node: hexToBytes16(rootNodeId),
-		            scope: {
-		              root: hexToBytes16(proofRootId),
-		              ...(proofScope?.excludeNodeIds?.length
-		                ? { exclude: proofScope.excludeNodeIds.map((id) => hexToBytes16(id)) }
-		                : {}),
-		            },
-		          });
-		          if (tri === "deny") throw new Error("this tab can only delegate grants within its granted subtree scope");
-		          if (tri === "unknown") throw new Error("missing subtree context to delegate grants for that node");
-		        }
-
-	        tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
-	          delegatorPrivateKey: base64urlDecode(localSkB64),
-	          delegatorProofToken: proofTokenBytes,
-	          subjectPublicKey: subjectPk,
-	          docId,
-	          rootNodeId,
-	          actions,
-	          ...(maxDepth !== undefined ? { maxDepth } : {}),
-	          ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
-	        });
-	      }
-
-	      const msg: AuthGrantMessageV1 = {
-	        t: "auth_grant_v1",
-	        doc_id: docId,
-        to_replica_pk_hex: bytesToHex(subjectPk),
-	        issuer_pk_b64: issuerPkB64,
-	        token_b64: base64urlEncode(tokenBytes),
-	        payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
-	        from_peer_id: selfPeerId,
-        ts: Date.now(),
-      };
-
-      channel.postMessage(msg);
-      setGrantRecipientKey("");
-      setAuthInfo("Grant sent. The recipient should sync again to receive newly authorized ops.");
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const importInviteLink = async () => {
-    if (typeof window === "undefined") return;
-    const raw = inviteImportText.trim();
-    if (!raw) return;
-    setAuthBusy(true);
-    setAuthError(null);
-    try {
-      let inviteB64: string | null = null;
-      try {
-        const url = new URL(raw, window.location.href);
-        inviteB64 = new URLSearchParams(url.hash.slice(1)).get("invite");
-      } catch {
-        // not a URL; fall back to raw text parsing
-      }
-
-      if (!inviteB64) {
-        inviteB64 = raw.startsWith("invite=") ? raw.slice("invite=".length) : raw;
-      }
-
-      const payload = decodeInvitePayload(inviteB64);
-      if (payload.docId !== docId) {
-        throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
-      }
-
-      if (payload.payloadKeyB64) {
-        await saveDocPayloadKeyB64(docId, payload.payloadKeyB64);
-        await refreshDocPayloadKey();
-      }
-
-      await saveIssuerKeys(docId, payload.issuerPkB64);
-
-      const localSk = base64urlDecode(payload.subjectSkB64);
-      await deriveEd25519PublicKey(localSk);
-      await saveLocalKeys(docId, payload.subjectSkB64);
-      await saveLocalTokens(docId, [payload.tokenB64]);
-      await rememberScopedPrivateRootsFromToken(payload.issuerPkB64, payload.tokenB64);
-
-      setAuthEnabled(true);
-      await refreshAuthMaterial();
-      setInviteImportText("");
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const refreshPendingOps = async () => {
-    if (!client) return;
-    setAuthBusy(true);
-    setAuthError(null);
-    try {
-      const store = createTreecrdtSyncSqlitePendingOpsStore({ runner: client.runner, docId });
-      await store.init();
-      const listed = await store.listPendingOps();
-      setPendingOps(
-        listed.map((p) => ({
-          id: `${bytesToHex(p.op.meta.id.replica)}:${p.op.meta.id.counter}`,
-          kind: p.op.kind.type,
-          ...(p.message ? { message: p.message } : {}),
-        }))
-      );
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
   const { index, childrenByParent } = treeState;
 
-  const viewRootId = useMemo(() => {
-    const raw = authEnabled ? authToken?.caps?.[0]?.res.rootNodeId : null;
-    if (!raw || typeof raw !== "string") return ROOT_ID;
-    const clean = raw.toLowerCase();
-    if (!/^[0-9a-f]{32}$/.test(clean)) return ROOT_ID;
-    return clean;
-  }, [authEnabled, authToken]);
+  const {
+    peers,
+    syncBusy,
+    syncError,
+    setSyncError,
+    liveChildrenParents,
+    setLiveChildrenParents,
+    liveAllEnabled,
+    setLiveAllEnabled,
+    toggleLiveChildren,
+    notifyLocalUpdate,
+    handleSync,
+    handleScopedSync,
+    postBroadcastMessage,
+  } = usePlaygroundSync({
+    client,
+    status,
+    docId,
+    selfPeerId,
+    online,
+    getMaxLamport,
+    authEnabled,
+    authMaterial,
+    authError,
+    joinMode,
+    authCanSyncAll,
+    viewRootId,
+    treeStateRef,
+    refreshMeta,
+    refreshParents,
+    refreshNodeCount,
+    getLocalIdentityChain,
+    onPeerIdentityChain,
+    onAuthGrantMessage,
+    onRemoteOpsApplied,
+  });
 
-  const authCanSyncAll = useMemo(() => {
-    if (!authEnabled) return true;
-    if (!authToken) return false;
-    if (authToken.caps.length === 0) return true;
-    return authToken.caps.some((cap) => {
-      const root = cap.res.rootNodeId?.toLowerCase();
-      const excludeCount = cap.res.excludeNodeIds?.length ?? 0;
-      return root === ROOT_ID && cap.res.maxDepth === undefined && excludeCount === 0;
-    });
-  }, [authEnabled, authToken]);
-
-  const authActionSet = useMemo(() => {
-    const set = new Set<string>();
-    if (!authEnabled) return set;
-    if (!authToken) return set;
-    for (const cap of authToken.caps) {
-      for (const action of cap.actions ?? []) set.add(String(action));
-    }
-    return set;
-  }, [authEnabled, authToken]);
-
-  const canWriteStructure = !authEnabled || authActionSet.has("write_structure");
-  const canWritePayload = !authEnabled || authActionSet.has("write_payload");
-  const canDelete = !authEnabled || authActionSet.has("delete");
-  const isScopedAccess = authEnabled && viewRootId !== ROOT_ID;
+  const grantSubtreeToReplicaPubkey = React.useCallback(async () => {
+    await grantSubtreeToReplicaPubkeyRaw(postBroadcastMessage);
+  }, [grantSubtreeToReplicaPubkeyRaw, postBroadcastMessage]);
 
   useEffect(() => {
     if (viewRootId === ROOT_ID) return;
@@ -1483,589 +641,6 @@ export default function App() {
   }, [docId]);
 
   useEffect(() => {
-    persistAuthEnabled(authEnabled);
-  }, [authEnabled]);
-
-  useEffect(() => {
-    persistRevealIdentity(revealIdentity);
-  }, [revealIdentity]);
-
-  useEffect(() => {
-    if (!authEnabled) setPendingOps([]);
-  }, [authEnabled]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (!authEnabled) {
-        setAuthToken(null);
-        return;
-      }
-      if (!authMaterial.issuerPkB64 || authMaterial.localTokensB64.length === 0) {
-        setAuthToken(null);
-        return;
-      }
-      try {
-        const issuerPk = base64urlDecode(authMaterial.issuerPkB64);
-        const tokenBytes = base64urlDecode(authMaterial.localTokensB64[0]!);
-        const described = await describeTreecrdtCapabilityTokenV1({
-          tokenBytes,
-          issuerPublicKeys: [issuerPk],
-          docId,
-        });
-        if (cancelled) return;
-        setAuthToken(described);
-      } catch {
-        if (cancelled) return;
-        setAuthToken(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [authEnabled, authMaterial.issuerPkB64, authMaterial.localTokensB64.join(","), docId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const inviteB64 = new URLSearchParams(window.location.hash.slice(1)).get("invite");
-    if (!inviteB64) return;
-
-    void (async () => {
-      try {
-        const payload = decodeInvitePayload(inviteB64);
-        if (payload.docId !== docId) {
-          throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
-        }
-
-        if (payload.payloadKeyB64) {
-          await saveDocPayloadKeyB64(docId, payload.payloadKeyB64);
-          await refreshDocPayloadKey();
-        }
-
-      await saveIssuerKeys(docId, payload.issuerPkB64);
-
-      const localSk = base64urlDecode(payload.subjectSkB64);
-      await deriveEd25519PublicKey(localSk);
-      await saveLocalKeys(docId, payload.subjectSkB64);
-      await saveLocalTokens(docId, [payload.tokenB64]);
-      await rememberScopedPrivateRootsFromToken(payload.issuerPkB64, payload.tokenB64);
-
-        // Clear hash so we don't re-import on refresh.
-        const url = new URL(window.location.href);
-        url.hash = "";
-        window.history.replaceState({}, "", url);
-
-        setAuthEnabled(true);
-        await refreshAuthMaterial();
-      } catch (err) {
-        console.error("Failed to import invite", err);
-        setAuthError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-	  }, [docId]);
-	
-	  useEffect(() => {
-	    let cancelled = false;
-	    void (async () => {
-	      try {
-	        const current = await loadAuthMaterial(docId);
-	        let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
-
-	        const ensureIssuerKeys = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
-	            const run = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
-	              let { issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId);
-
-	              if (!issuerPkB64 && !issuerSkB64) {
-	                if (authEnabled && !joinMode) {
-	                  const { sk, pk } = await generateEd25519KeyPair();
-	                  await saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
-	                }
-	              }
-
-	              // Reload in case another tab raced us.
-	              ({ issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId));
-
-            if (issuerSkB64) {
-              // Treat issuer secret key as authoritative and force-sync the public key to match it.
-              const issuerSk = base64urlDecode(issuerSkB64);
-              const issuerPk = await deriveEd25519PublicKey(issuerSk);
-              const issuerPkB64 = base64urlEncode(issuerPk);
-              await saveIssuerKeys(docId, issuerPkB64, issuerSkB64, { forcePk: true });
-            }
-
-            const final = await loadAuthMaterial(docId);
-            return { issuerPkB64: final.issuerPkB64, issuerSkB64: final.issuerSkB64 };
-          };
-
-          const locks = typeof navigator === "undefined" ? null : (navigator as any).locks;
-          if (locks?.request) {
-            return await locks.request(prefixPlaygroundStorageKey(`treecrdt-playground-issuer:${docId}`), run);
-          }
-
-          // Fallback for browsers without Web Locks API.
-          if (typeof window === "undefined") return await run();
-          const lockKey = prefixPlaygroundStorageKey(`treecrdt-playground-issuer-lock:${docId}`);
-          const lockId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
-          const now = () => Date.now();
-          const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-          const tryParseLock = (raw: string | null): { id: string; ts: number } | null => {
-            if (!raw) return null;
-            try {
-              const parsed = JSON.parse(raw) as unknown;
-              if (!parsed || typeof parsed !== "object") return null;
-              const rec = parsed as Partial<{ id: unknown; ts: unknown }>;
-              if (typeof rec.id !== "string" || typeof rec.ts !== "number") return null;
-              return { id: rec.id, ts: rec.ts };
-            } catch {
-              return null;
-            }
-          };
-
-          const ttlMs = 10_000;
-          const started = now();
-          while (true) {
-            const t = now();
-            const existing = tryParseLock(window.localStorage.getItem(lockKey));
-            if (!existing || t - existing.ts > ttlMs) {
-              window.localStorage.setItem(lockKey, JSON.stringify({ id: lockId, ts: t }));
-            }
-            const confirm = tryParseLock(window.localStorage.getItem(lockKey));
-            if (confirm?.id === lockId) break;
-            if (t - started > ttlMs) break;
-            await sleep(25);
-          }
-
-          try {
-            return await run();
-          } finally {
-            const confirm = tryParseLock(window.localStorage.getItem(lockKey));
-            if (confirm?.id === lockId) window.localStorage.removeItem(lockKey);
-          }
-        };
-
-	        {
-	          if (authEnabled) {
-	            const ensured = await ensureIssuerKeys();
-	            issuerPkB64 = ensured.issuerPkB64;
-	            issuerSkB64 = ensured.issuerSkB64;
-	          }
-	        }
-
-	        const canIssue = Boolean(issuerSkB64);
-
-	        if (!localPkB64 && !localSkB64) {
-	          if (authEnabled && localTokensB64.length > 0) {
-	            throw new Error("auth enabled but local keys are missing; re-import an invite link or reset auth");
-	          }
-	          const { sk, pk } = await generateEd25519KeyPair();
-	          localPkB64 = base64urlEncode(pk);
-	          localSkB64 = base64urlEncode(sk);
-	          await saveLocalKeys(docId, localSkB64);
-	        } else if (!localPkB64 && localSkB64) {
-	          const localSk = base64urlDecode(localSkB64);
-	          const localPk = await deriveEd25519PublicKey(localSk);
-	          localPkB64 = base64urlEncode(localPk);
-	          await saveLocalKeys(docId, localSkB64);
-	        } else if (localPkB64 && !localSkB64) {
-	          if (authEnabled) {
-	            throw new Error("auth enabled but local private key is missing; import an invite link or reset auth");
-	          }
-	        }
-
-	        if (authEnabled && localTokensB64.length === 0) {
-	          if (!canIssue || !issuerSkB64) {
-	            // In join-only mode we intentionally start without any capability tokens.
-	            // The user must import an invite/grant from another peer before sync is enabled.
-	            if (!joinMode) {
-	              throw new Error("auth enabled but no capability token; import an invite link");
-	            }
-	          } else {
-	            if (!localPkB64) throw new Error("auth enabled but local public key is missing");
-
-	            const issuerSk = base64urlDecode(issuerSkB64);
-	            const subjectPk = base64urlDecode(localPkB64);
-	            const tokenBytes = createCapabilityTokenV1({
-	              issuerPrivateKey: issuerSk,
-	              subjectPublicKey: subjectPk,
-	              docId,
-	              rootNodeId: ROOT_ID,
-	              actions: ["write_structure", "write_payload", "delete", "tombstone"],
-	            });
-	            localTokensB64 = [base64urlEncode(tokenBytes)];
-	            await saveLocalTokens(docId, localTokensB64);
-	          }
-	        }
-
-	        const next = await loadAuthMaterial(docId);
-	        if (cancelled) return;
-	        setAuthMaterial(next);
-	        setAuthError(authEnabled ? null : null);
-	      } catch (err) {
-	        if (cancelled) return;
-	        localAuthRef.current = null;
-	        setAuthError(authEnabled ? (err instanceof Error ? err.message : String(err)) : null);
-	      }
-	    })();
-
-	    return () => {
-	      cancelled = true;
-	    };
-	  }, [authEnabled, docId, joinMode]);
-
-  useEffect(() => {
-    if (!client || status !== "ready") return;
-    if (!docId) return;
-    if (typeof BroadcastChannel === "undefined") {
-      setSyncError("BroadcastChannel is not available in this environment.");
-      return;
-    }
-
-		    const peerAuthConfig =
-		      authEnabled &&
-		      authMaterial.issuerPkB64 &&
-		      authMaterial.localSkB64 &&
-		      authMaterial.localPkB64 &&
-		      authMaterial.localTokensB64.length > 0
-		        ? {
-		            issuerPk: base64urlDecode(authMaterial.issuerPkB64),
-		            localSk: base64urlDecode(authMaterial.localSkB64),
-		            localPk: base64urlDecode(authMaterial.localPkB64),
-		            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
-		            opAuthStore: createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId }),
-		            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
-		            getLocalIdentityChain,
-		            onPeerIdentityChain,
-		          }
-		        : null;
-
-	    if (!authEnabled) {
-	      // If auth is off, clear any auth-gating error strings so the UI doesn't keep telling users to import invites.
-	      setSyncError((prev) =>
-	        prev &&
-	        (prev.startsWith("Auth enabled:") ||
-	          prev.startsWith("Initializing local peer key"))
-	          ? null
-	          : prev
-	      );
-	    }
-
-	    if (authEnabled && !peerAuthConfig) {
-	      const waitingForInvite = joinMode && authMaterial.localTokensB64.length === 0;
-	      setSyncError(waitingForInvite ? null : authError ?? "Auth enabled: initializing keys/tokens...");
-	      return;
-	    }
-
-    if (!selfPeerId) {
-      setSyncError("Initializing local peer key...");
-      return;
-    }
-
-    setSyncError((prev) =>
-      prev && (prev.includes("initializing keys/tokens") || prev.startsWith("Initializing local peer key")) ? null : prev
-    );
-
-    const debugSync =
-      typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
-
-    const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
-    broadcastChannelRef.current = channel;
-    const baseBackend = createPlaygroundBackend(client, docId, { enablePendingSidecar: authEnabled });
-    const backend = {
-      ...baseBackend,
-      maxLamport: async () => BigInt(lamportRef.current),
-      listOpRefs: async (filter: Filter) => {
-        const refs = await baseBackend.listOpRefs(filter);
-        if (debugSync) {
-          const name =
-            "all" in filter
-              ? "all"
-              : `children(${bytesToHex(filter.children.parent)})`;
-          console.debug(`[sync:${selfPeerId}] listOpRefs(${name}) -> ${refs.length}`);
-        }
-        return refs;
-      },
-      applyOps: async (ops: Operation[]) => {
-        if (debugSync && ops.length > 0) {
-          console.debug(`[sync:${selfPeerId}] applyOps(${ops.length})`);
-        }
-        await baseBackend.applyOps(ops);
-        await ingestPayloadOps(ops);
-        ingestOps(ops);
-        if (ops.length > 0) {
-          let max = 0;
-          for (const op of ops) max = Math.max(max, op.meta.lamport);
-          lamportRef.current = Math.max(lamportRef.current, max);
-          setHeadLamport(lamportRef.current);
-        }
-        scheduleRefreshParents(Object.keys(treeStateRef.current.childrenByParent));
-        scheduleRefreshNodeCount();
-      },
-    };
-
-    const sharedPeer = new SyncPeer<Operation>(backend, {
-      maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-      maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-      ...(peerAuthConfig
-        ? {
-            auth: (() => {
-              const baseAuth = createTreecrdtCoseCwtAuth({
-                issuerPublicKeys: [peerAuthConfig.issuerPk],
-                localPrivateKey: peerAuthConfig.localSk,
-                localPublicKey: peerAuthConfig.localPk,
-                localCapabilityTokens: peerAuthConfig.localTokens,
-                requireProofRef: true,
-                opAuthStore: peerAuthConfig.opAuthStore,
-                scopeEvaluator: peerAuthConfig.scopeEvaluator,
-                onPeerIdentityChain: peerAuthConfig.onPeerIdentityChain,
-              });
-
-              const withIdentity: typeof baseAuth = {
-                ...baseAuth,
-                helloCapabilities: async (ctx) => {
-                  const caps = (await baseAuth.helloCapabilities?.(ctx)) ?? [];
-                  try {
-                    const chain = await peerAuthConfig.getLocalIdentityChain();
-                    if (chain) caps.push(createTreecrdtIdentityChainCapabilityV1(chain));
-                  } catch {
-                    // Best-effort; identity chains are optional.
-                  }
-                  return caps;
-                },
-                onHello: async (hello, ctx) => {
-                  const ackCaps = (await baseAuth.onHello?.(hello, ctx)) ?? [];
-                  try {
-                    const chain = await peerAuthConfig.getLocalIdentityChain();
-                    if (chain) ackCaps.push(createTreecrdtIdentityChainCapabilityV1(chain));
-                  } catch {
-                    // Best-effort; identity chains are optional.
-                  }
-                  return ackCaps;
-                },
-              };
-
-              return withIdentity;
-            })(),
-          }
-        : {}),
-    });
-    syncPeerRef.current = sharedPeer;
-
-    const connections = new Map<string, { transport: DuplexTransport<any>; detach: () => void }>();
-    const lastSeen = new Map<string, number>();
-    syncConnRef.current = connections;
-    peerReadyRef.current.clear();
-    peerAckSentRef.current.clear();
-
-    const updatePeers = () => {
-      setPeers(
-        Array.from(lastSeen.entries())
-          .map(([id, ts]) => ({ id, lastSeen: ts }))
-          .sort((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1))
-      );
-    };
-
-    const maybeStartLiveForPeer = (peerId: string) => {
-      if (!peerReadyRef.current.has(peerId)) return;
-      if (liveAllEnabledRef.current) startLiveAll(peerId);
-      for (const parentId of liveChildrenParentsRef.current) startLiveChildren(peerId, parentId);
-    };
-
-    const sendPresenceAck = (toPeerId: string) => {
-      const msg = {
-        t: "presence_ack",
-        peer_id: selfPeerId,
-        to_peer_id: toPeerId,
-        ts: Date.now(),
-      } as const satisfies PresenceAckMessage;
-      channel.postMessage(msg);
-    };
-
-    const ensureAckSent = (peerId: string) => {
-      if (!peerId || peerId === selfPeerId) return;
-      if (peerAckSentRef.current.has(peerId)) return;
-      peerAckSentRef.current.add(peerId);
-      sendPresenceAck(peerId);
-    };
-
-    const ensureConnection = (peerId: string) => {
-      if (!peerId || peerId === selfPeerId) return;
-      if (connections.has(peerId)) return;
-
-      const rawTransport = createBroadcastDuplex<Operation>(
-        channel,
-        selfPeerId,
-        peerId,
-        treecrdtSyncV0ProtobufCodec
-      );
-      const transport: DuplexTransport<any> = {
-        ...rawTransport,
-        async send(msg) {
-          if (!onlineRef.current) return;
-          return rawTransport.send(msg);
-        },
-        onMessage(handler) {
-          return rawTransport.onMessage((msg) => {
-            if (!onlineRef.current) return;
-            lastSeen.set(peerId, Date.now());
-            return handler(msg);
-          });
-        },
-      };
-      const detach = sharedPeer.attach(transport);
-      connections.set(peerId, { transport, detach });
-
-      maybeStartLiveForPeer(peerId);
-    };
-
-    const onBroadcast = (ev: MessageEvent<any>) => {
-      const data = ev.data as unknown;
-      if (!data || typeof data !== "object") return;
-      const msg = data as Partial<PresenceMessage | PresenceAckMessage | AuthGrantMessageV1>;
-
-      if (msg.t === "auth_grant_v1") {
-        const grant = msg as Partial<AuthGrantMessageV1>;
-        if (typeof grant.doc_id !== "string") return;
-        if (grant.doc_id !== docId) return;
-        if (typeof grant.to_replica_pk_hex !== "string") return;
-        if (typeof grant.issuer_pk_b64 !== "string") return;
-        if (typeof grant.token_b64 !== "string") return;
-
-        const issuerPkB64 = grant.issuer_pk_b64;
-        const tokenB64 = grant.token_b64;
-        const payloadKeyB64 = typeof grant.payload_key_b64 === "string" ? grant.payload_key_b64 : null;
-
-        const localReplicaHex = selfPeerId;
-        if (!localReplicaHex) return;
-        if (grant.to_replica_pk_hex.toLowerCase() !== localReplicaHex.toLowerCase()) return;
-
-        void (async () => {
-          setAuthBusy(true);
-          setAuthError(null);
-          setAuthInfo(null);
-          try {
-            await saveIssuerKeys(docId, issuerPkB64);
-
-            if (payloadKeyB64) {
-              await saveDocPayloadKeyB64(docId, payloadKeyB64);
-              await refreshDocPayloadKey();
-            }
-
-            const current = await loadAuthMaterial(docId);
-            if (!current.localPkB64 || !current.localSkB64) {
-              throw new Error("received grant but local keys are missing; import an invite link first");
-            }
-
-            const merged = new Set<string>(current.localTokensB64);
-            merged.add(tokenB64);
-            await saveLocalTokens(docId, Array.from(merged));
-            await rememberScopedPrivateRootsFromToken(issuerPkB64, tokenB64);
-            await refreshAuthMaterial();
-            setAuthInfo("Access grant received. Click Sync to fetch newly authorized ops.");
-            setToast({
-              kind: "success",
-              title: "Access granted",
-              message: "Sync to fetch newly authorized ops.",
-              actions: ["sync", "details"],
-            });
-          } catch (err) {
-            setAuthError(err instanceof Error ? err.message : String(err));
-          } finally {
-            setAuthBusy(false);
-          }
-        })();
-        return;
-      }
-
-      if (msg.t === "presence") {
-        if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
-        if (msg.peer_id === selfPeerId) return;
-        lastSeen.set(msg.peer_id, msg.ts);
-        ensureConnection(msg.peer_id);
-        ensureAckSent(msg.peer_id);
-        maybeStartLiveForPeer(msg.peer_id);
-        updatePeers();
-        return;
-      }
-
-      if (msg.t === "presence_ack") {
-        const toPeerId = (msg as Partial<PresenceAckMessage>).to_peer_id;
-        if (typeof msg.peer_id !== "string" || typeof toPeerId !== "string" || typeof msg.ts !== "number") return;
-        if (msg.peer_id === selfPeerId) return;
-        if (toPeerId !== selfPeerId) return;
-        lastSeen.set(msg.peer_id, msg.ts);
-        ensureConnection(msg.peer_id);
-        peerReadyRef.current.add(msg.peer_id);
-        ensureAckSent(msg.peer_id);
-        maybeStartLiveForPeer(msg.peer_id);
-        updatePeers();
-      }
-    };
-
-    channel.addEventListener("message", onBroadcast);
-
-    const sendPresence = () => {
-      if (!onlineRef.current) return;
-      const msg: PresenceMessage = { t: "presence", peer_id: selfPeerId, ts: Date.now() };
-      channel.postMessage(msg);
-    };
-
-    sendPresence();
-    const interval = window.setInterval(sendPresence, 1000);
-    const pruneInterval = window.setInterval(() => {
-      const now = Date.now();
-      for (const [id, ts] of lastSeen) {
-        if (now - ts > PLAYGROUND_PEER_TIMEOUT_MS) {
-          lastSeen.delete(id);
-          peerReadyRef.current.delete(id);
-          peerAckSentRef.current.delete(id);
-          const conn = connections.get(id);
-          if (conn) {
-            conn.detach();
-            connections.delete(id);
-          }
-          stopLiveAllForPeer(id);
-          stopLiveChildrenForPeer(id);
-        }
-      }
-      updatePeers();
-    }, 2000);
-
-    return () => {
-      window.clearInterval(interval);
-      window.clearInterval(pruneInterval);
-      channel.removeEventListener("message", onBroadcast);
-      stopAllLiveAll();
-      stopAllLiveChildren();
-      if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
-      if (syncPeerRef.current === sharedPeer) syncPeerRef.current = null;
-      channel.close();
-      liveAllStartingRef.current.clear();
-      liveChildrenStartingRef.current.clear();
-      peerReadyRef.current.clear();
-      peerAckSentRef.current.clear();
-
-      for (const conn of connections.values()) {
-        conn.detach();
-        (conn.transport as any).close?.();
-      }
-      connections.clear();
-      setPeers([]);
-    };
-  }, [
-    authEnabled,
-    authError,
-    authMaterial,
-    client,
-    docId,
-    getLocalIdentityChain,
-    onPeerIdentityChain,
-    revealIdentity,
-    selfPeerId,
-    status,
-  ]);
-
-  useEffect(() => {
     return () => {
       void clientRef.current?.close();
     };
@@ -2154,58 +729,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showOpsPanel, client, status]);
 
-  useEffect(() => {
-    liveChildrenParentsRef.current = liveChildrenParents;
-
-    const connections = syncConnRef.current;
-
-    for (const peerId of connections.keys()) {
-      for (const parentId of liveChildrenParents) {
-        startLiveChildren(peerId, parentId);
-      }
-    }
-
-    for (const peerId of Array.from(liveChildSubsRef.current.keys())) {
-      if (!connections.has(peerId)) {
-        stopLiveChildrenForPeer(peerId);
-        continue;
-      }
-      const byParent = liveChildSubsRef.current.get(peerId);
-      if (!byParent) continue;
-      for (const parentId of Array.from(byParent.keys())) {
-        if (!liveChildrenParents.has(parentId)) stopLiveChildren(peerId, parentId);
-      }
-    }
-  }, [liveChildrenParents]);
-
-  useEffect(() => {
-    liveAllEnabledRef.current = liveAllEnabled;
-    const connections = syncConnRef.current;
-    if (liveAllEnabled) {
-      for (const peerId of connections.keys()) startLiveAll(peerId);
-    } else {
-      stopAllLiveAll();
-    }
-  }, [liveAllEnabled]);
-
-  useEffect(() => {
-    if (!authCanSyncAll && liveAllEnabled) setLiveAllEnabled(false);
-  }, [authCanSyncAll, liveAllEnabled]);
-
-  const verifyLocalOps = async (ops: Operation[]) => {
-    if (!authEnabled) return;
-    const auth = localAuthRef.current;
-    if (!auth?.signOps || !auth.verifyOps) throw new Error("auth is enabled but not configured");
-    const ctx = { docId, purpose: "reconcile" as const, filterId: "__local__" };
-    const authEntries = await auth.signOps(ops, ctx);
-    const res = await auth.verifyOps(ops, authEntries, ctx);
-    const dispositions = (res as any)?.dispositions as Array<{ status: string; message?: string }> | undefined;
-    const rejected = dispositions?.find((d) => d.status !== "allow");
-    if (rejected?.status === "pending_context") {
-      throw new Error(rejected.message ?? "missing subtree context to authorize op");
-    }
-  };
-
   const appendOperation = async (kind: OperationKind) => {
     if (!client || !replica) return;
     setBusy(true);
@@ -2227,7 +750,7 @@ export default function App() {
       counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
 
-      void syncPeerRef.current?.notifyLocalUpdate();
+      notifyLocalUpdate();
       await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
@@ -2248,7 +771,7 @@ export default function App() {
       const stateBefore = treeStateRef.current;
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
       const op = await client.local.move(replica, nodeId, newParent, placement);
-      void syncPeerRef.current?.notifyLocalUpdate();
+      notifyLocalUpdate();
       await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
@@ -2337,7 +860,7 @@ export default function App() {
       }
       setHeadLamport(lamportRef.current);
 
-      void syncPeerRef.current?.notifyLocalUpdate();
+      notifyLocalUpdate();
       await ingestPayloadOps(ops);
       ingestOps(ops, { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
@@ -2376,7 +899,7 @@ export default function App() {
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
-      void syncPeerRef.current?.notifyLocalUpdate();
+      notifyLocalUpdate();
       await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
@@ -2442,171 +965,7 @@ export default function App() {
     await appendMoveAfter(nodeId, ROOT_ID, after);
   };
 
-  const dropPeerConnection = (peerId: string) => {
-    const connections = syncConnRef.current;
-    const conn = connections.get(peerId);
-    if (!conn) return;
-    try {
-      conn.detach();
-    } catch {
-      // ignore
-    }
-    try {
-      (conn.transport as any).close?.();
-    } catch {
-      // ignore
-    }
-    connections.delete(peerId);
-    peerReadyRef.current.delete(peerId);
-    peerAckSentRef.current.delete(peerId);
-    stopLiveAllForPeer(peerId);
-    stopLiveChildrenForPeer(peerId);
-    setPeers((prev) => prev.filter((p) => p.id !== peerId));
-  };
-
-  const handleSync = async (filter: Filter) => {
-    if (!onlineRef.current) {
-      setSyncError("Offline: toggle Online to sync.");
-      return;
-    }
-    const peer = syncPeerRef.current;
-    if (!peer) {
-      setSyncError("Sync peer is not ready yet.");
-      return;
-    }
-    const connections = syncConnRef.current;
-    if (connections.size === 0) {
-      setSyncError("No peers discovered yet.");
-      return;
-    }
-
-    setSyncBusy(true);
-    setSyncError(null);
-    try {
-      const now = Date.now();
-      const recentPeerIds = peers
-        .filter((p) => now - p.lastSeen < 5_000)
-        .sort((a, b) => b.lastSeen - a.lastSeen)
-        .map((p) => p.id);
-      const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
-      const perPeerTimeoutMs = targets.length > 1 ? 8_000 : 15_000;
-
-      let successes = 0;
-      let lastErr: unknown = null;
-      for (const peerId of targets) {
-        const conn = connections.get(peerId);
-        if (!conn) continue;
-        try {
-          await withTimeout(
-            peer.syncOnce(conn.transport, filter, {
-              maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-              maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-              codewordsPerMessage: 2048,
-            }),
-            perPeerTimeoutMs,
-            `sync with ${peerId.slice(0, 8)}… timed out`
-          );
-          successes += 1;
-        } catch (err) {
-          lastErr = err;
-          console.error("Sync failed for peer", peerId, err);
-          dropPeerConnection(peerId);
-        }
-      }
-      if (successes === 0) {
-        if (lastErr) throw lastErr;
-        throw new Error("No peers responded to sync.");
-      }
-      await refreshMeta();
-      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
-      await refreshNodeCount();
-    } catch (err) {
-      console.error("Sync failed", err);
-      setSyncError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSyncBusy(false);
-    }
-  };
-
-  const handleScopedSync = async () => {
-    const parents = new Set(Object.keys(treeStateRef.current.childrenByParent));
-    parents.add(viewRootId);
-    if (viewRootId !== ROOT_ID) parents.delete(ROOT_ID);
-    const parentIds = Array.from(parents).filter((id) => /^[0-9a-f]{32}$/i.test(id));
-    parentIds.sort();
-
-    if (!onlineRef.current) {
-      setSyncError("Offline: toggle Online to sync.");
-      return;
-    }
-    const peer = syncPeerRef.current;
-    if (!peer) {
-      setSyncError("Sync peer is not ready yet.");
-      return;
-    }
-    const connections = syncConnRef.current;
-    if (connections.size === 0) {
-      setSyncError("No peers discovered yet.");
-      return;
-    }
-
-    setSyncBusy(true);
-    setSyncError(null);
-    try {
-      const now = Date.now();
-      const recentPeerIds = peers
-        .filter((p) => now - p.lastSeen < 5_000)
-        .sort((a, b) => b.lastSeen - a.lastSeen)
-        .map((p) => p.id);
-      const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
-      const perPeerTimeoutMs = targets.length > 1 ? 8_000 : 15_000;
-
-      let successes = 0;
-      let lastErr: unknown = null;
-      for (const peerId of targets) {
-        const conn = connections.get(peerId);
-        if (!conn) continue;
-        try {
-          for (const parentId of parentIds) {
-            await withTimeout(
-              peer.syncOnce(
-                conn.transport,
-                { children: { parent: hexToBytes16(parentId) } },
-                {
-                  maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-                  maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-                  codewordsPerMessage: 2048,
-                }
-              ),
-              perPeerTimeoutMs,
-              `sync(children ${parentId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`
-            );
-          }
-          successes += 1;
-        } catch (err) {
-          lastErr = err;
-          console.error("Scoped sync failed for peer", peerId, err);
-          dropPeerConnection(peerId);
-        }
-      }
-      if (successes === 0) {
-        if (lastErr) throw lastErr;
-        throw new Error("No peers responded to sync.");
-      }
-      await refreshMeta();
-      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
-      await refreshNodeCount();
-    } catch (err) {
-      console.error("Scoped sync failed", err);
-      setSyncError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSyncBusy(false);
-    }
-  };
-
   const handleReset = async () => {
-    stopAllLiveAll();
-    stopAllLiveChildren();
     setLiveChildrenParents(new Set());
     setLiveAllEnabled(false);
     await resetAndInit(storage, { resetKey: true });
@@ -2641,31 +1000,12 @@ export default function App() {
   const expandAll = () => setCollapse({ defaultCollapsed: false, overrides: new Set() });
   const collapseAll = () => setCollapse({ defaultCollapsed: true, overrides: new Set([viewRootId]) });
 
-  const stateBadge = status === "ready" ? "bg-emerald-500/80" : status === "error" ? "bg-rose-500/80" : "bg-amber-400/80";
   const selfPeerIdShort = selfPeerId
     ? selfPeerId.length > 20
       ? `${selfPeerId.slice(0, 8)}…${selfPeerId.slice(-6)}`
       : selfPeerId
     : null;
-	  const peerTotal = peers.length + 1;
-	  const authCanIssue = Boolean(authMaterial.issuerSkB64);
-	  const authCanDelegate =
-	    authEnabled &&
-	    !authCanIssue &&
-	    Boolean(authMaterial.localSkB64) &&
-	    authMaterial.localTokensB64.length > 0 &&
-	    authActionSet.has("grant");
-	  const authIssuerPkHex = authMaterial.issuerPkB64 ? bytesToHex(base64urlDecode(authMaterial.issuerPkB64)) : null;
-  const authLocalKeyIdHex = authMaterial.localPkB64
-    ? bytesToHex(deriveKeyIdV1(base64urlDecode(authMaterial.localPkB64)))
-    : null;
-  const authLocalTokenIdHex =
-    authMaterial.localTokensB64.length > 0
-      ? bytesToHex(deriveTokenIdV1(base64urlDecode(authMaterial.localTokensB64[0]!)))
-      : null;
-  const authTokenCount = authMaterial.localTokensB64.length;
-  const authTokenScope = authToken?.caps?.[0]?.res ?? null;
-  const authTokenActions = authToken?.caps?.[0]?.actions ?? null;
+  const peerTotal = peers.length + 1;
   const authScopeSummary = (() => {
     if (!authTokenScope) return "-";
     const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
@@ -2693,985 +1033,248 @@ export default function App() {
     return out;
   })();
   const localReplicaHex = selfPeerId;
-  const authNeedsInvite = Boolean(authEnabled && joinMode && authTokenCount === 0);
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
-      {showShareDialog && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          onClick={() => setShowShareDialog(false)}
-        >
-          <div
-            className="w-full max-w-xl rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5 shadow-2xl shadow-black/40 backdrop-blur"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Share subtree</div>
-                <div className="mt-1 text-sm font-semibold text-slate-100">
-                  {inviteRoot === ROOT_ID ? "Root (whole document)" : nodeLabelForId(inviteRoot)}
-                </div>
-                <div className="mt-1 font-mono text-[11px] text-slate-500">{inviteRoot}</div>
-              </div>
-              <button
-                className="rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-                type="button"
-                onClick={() => setShowShareDialog(false)}
-              >
-                Close
-              </button>
-            </div>
+      <ShareSubtreeDialog
+        open={showShareDialog}
+        onClose={() => setShowShareDialog(false)}
+        inviteRoot={inviteRoot}
+        nodeLabelForId={nodeLabelForId}
+        joinMode={joinMode}
+        authEnabled={authEnabled}
+        authBusy={authBusy}
+        authCanIssue={authCanIssue}
+        authCanDelegate={authCanDelegate}
+        authScopeTitle={authScopeTitle}
+        authScopeSummary={authScopeSummary}
+        inviteExcludeNodeIds={inviteExcludeNodeIds}
+        onEnableAuth={() => setAuthEnabled(true)}
+        openMintingPeerTab={openMintingPeerTab}
+        authInfo={authInfo}
+        authError={authError}
+        setAuthError={setAuthError}
+        invitePreset={invitePreset}
+        applyInvitePreset={applyInvitePreset}
+        inviteAllowGrant={inviteAllowGrant}
+        setInviteAllowGrant={setInviteAllowGrant}
+        openNewIsolatedPeerTab={openNewIsolatedPeerTab}
+        generateInviteLink={generateInviteLink}
+        inviteLink={inviteLink}
+        copyToClipboard={copyToClipboard}
+        grantRecipientKey={grantRecipientKey}
+        setGrantRecipientKey={setGrantRecipientKey}
+        grantSubtreeToReplicaPubkey={grantSubtreeToReplicaPubkey}
+        selfPeerId={selfPeerId}
+      />
 
-            <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-400">
-              <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-                mode {joinMode ? "isolated" : "shared"}
-              </span>
-              <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-                auth {authEnabled ? "on" : "off"}
-              </span>
-              {authEnabled && (
-                <span
-                  className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold"
-                  title={authScopeTitle}
-                >
-                  scope {authScopeSummary}
-                </span>
-              )}
-              {inviteExcludeNodeIds.length > 0 && (
-                <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 font-semibold text-amber-100">
-                  excludes {inviteExcludeNodeIds.length} private root{inviteExcludeNodeIds.length === 1 ? "" : "s"}
-                </span>
-              )}
-            </div>
-
-            {!authEnabled && (
-              <div className="mt-3 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-50">
-                <div className="font-semibold">Enable Auth to share</div>
-                <div className="mt-1 text-amber-100/90">
-                  Sharing uses signed capability tokens (invite links / grants). Enable Auth to mint invites.
-                </div>
-                <button
-                  className="mt-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-50 transition hover:border-amber-300/60"
-                  type="button"
-                  onClick={() => setAuthEnabled(true)}
-                  disabled={authBusy}
-                >
-                  Enable Auth
-                </button>
-              </div>
-            )}
-
-	            {authEnabled && !(authCanIssue || authCanDelegate) && (
-	              <div className="mt-3 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-50">
-	                <div className="font-semibold">Verify-only tab</div>
-	                <div className="mt-1 text-sky-100/90">
-	                  This tab can’t mint invites/grants. Open a minting peer (same storage) or import a grant with share permission.
-	                </div>
-	                <button
-	                  className="mt-2 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-50 transition hover:border-sky-300/60"
-	                  type="button"
-	                  onClick={openMintingPeerTab}
-                  disabled={typeof window === "undefined"}
-                >
-                  Open minting peer
-                </button>
-              </div>
-            )}
-
-            {authInfo && (
-              <div className="mt-3 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-50">
-                {authInfo}
-              </div>
-            )}
-
-	            {authError && (
-	              <div className="mt-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
-	                {authError}
-	              </div>
-	            )}
-
-	            {authEnabled && (
-	              <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-	                <div className="flex flex-wrap items-end gap-3">
-	                  <label className="w-full md:w-44 space-y-2 text-sm text-slate-200">
-	                    <span>Permission</span>
-	                    <select
-	                      className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-	                      value={invitePreset}
-	                      onChange={(e) => applyInvitePreset(e.target.value as InvitePreset)}
-	                      disabled={authBusy}
-	                    >
-	                      <option value="read">Read</option>
-	                      <option value="read_write">Read + Write</option>
-	                      <option value="admin">Admin</option>
-	                      <option value="custom">Custom</option>
-	                    </select>
-	                  </label>
-	                  <label className="flex items-center gap-2 pb-2 text-sm text-slate-200">
-	                    <input
-	                      type="checkbox"
-	                      checked={inviteAllowGrant}
-	                      onChange={(e) => setInviteAllowGrant(e.target.checked)}
-	                      disabled={authBusy}
-	                    />
-	                    <span className="text-[13px]">
-	                      Allow resharing <span className="text-[11px] text-slate-500">(grant)</span>
-	                    </span>
-	                  </label>
-	                </div>
-	                <div className="mt-2 text-[11px] text-slate-500">
-	                  Grant permission lets the recipient mint delegated invites/grants within their scope.
-	                </div>
-	              </div>
-	            )}
-
-	            <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-	              <div className="flex flex-wrap items-center justify-between gap-2">
-	                <div>
-	                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Invite link</div>
-                  <div className="mt-1 text-[11px] text-slate-500">
-                    Copies a subtree-scoped invite link (includes E2EE doc payload key).
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-	                  <button
-	                    className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-	                    type="button"
-	                    onClick={() => void openNewIsolatedPeerTab({ autoInvite: true, rootNodeId: inviteRoot })}
-	                    disabled={authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
-	                    title={
-	                      authCanIssue || authCanDelegate
-	                        ? "Open an isolated device tab and auto-import the invite"
-	                        : "This tab can’t mint invites (verify-only)"
-	                    }
-	                  >
-	                    <MdLockOutline className="text-[16px]" />
-	                    Open device
-	                  </button>
-	                  <button
-	                    className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-	                    type="button"
-	                    onClick={() => void generateInviteLink({ rootNodeId: inviteRoot, copyToClipboard: true })}
-	                    disabled={authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
-	                    title={
-	                      !authEnabled
-	                        ? "Enable Auth to mint invites"
-	                        : authCanIssue || authCanDelegate
-	                          ? "Copy invite"
-	                          : "Verify-only tab"
-	                    }
-	                  >
-	                    <MdContentCopy className="text-[14px]" />
-	                    Copy invite
-	                  </button>
-                </div>
-              </div>
-              <textarea
-                className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 font-mono text-[11px] text-slate-200 outline-none focus:border-accent focus:ring-2 focus:ring-accent/40"
-                rows={3}
-                value={inviteLink || ""}
-                readOnly
-                placeholder="Invite link will appear here…"
-              />
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
-                <span>Tip: The recipient can paste it into Auth → Import invite.</span>
-                <button
-                  className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  type="button"
-                  onClick={() =>
-                    void (inviteLink ? copyToClipboard(inviteLink) : Promise.resolve()).catch((err) =>
-                      setAuthError(err instanceof Error ? err.message : String(err))
-                    )
-                  }
-                  disabled={!inviteLink || authBusy}
-                  title="Copy invite link text"
-                >
-                  <MdContentCopy className="text-[14px]" />
-                  Copy text
-                </button>
-              </div>
-            </div>
-
-	            {authEnabled && (authCanIssue || authCanDelegate) && (
-	              <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-	                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-	                  {authCanIssue ? "Grant to pubkey" : "Delegated grant to pubkey"}
-	                </div>
-	                <div className="mt-1 text-[11px] text-slate-500">
-	                  Send a capability token to another peer (they should resync to fetch newly authorized ops).
-	                </div>
-                <div className="mt-2 flex flex-wrap items-end gap-2">
-	                  <label className="flex-1 space-y-2 text-sm text-slate-200">
-	                    <span className="text-[11px] text-slate-400">Recipient public key (hex or base64url)</span>
-	                    <input
-	                      value={grantRecipientKey}
-	                      onChange={(e) => setGrantRecipientKey(e.target.value)}
-	                      placeholder="e.g. c7df…bf32"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                      disabled={authBusy}
-                    />
-                  </label>
-                  <button
-                    className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
-                    type="button"
-                    onClick={() => void grantSubtreeToReplicaPubkey()}
-                    disabled={authBusy || grantRecipientKey.trim().length === 0}
-                  >
-                    Grant
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
-              <div>
-                Your pubkey: <span className="font-mono text-slate-200">{selfPeerId ?? "-"}</span>
-              </div>
-              <button
-                className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                type="button"
-                onClick={() =>
-                  void (selfPeerId ? copyToClipboard(selfPeerId) : Promise.resolve()).catch((err) =>
-                    setAuthError(err instanceof Error ? err.message : String(err))
-                  )
-                }
-                disabled={!selfPeerId}
-                title="Copy your public key"
-              >
-                <MdContentCopy className="text-[14px]" />
-                Copy my pubkey
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <header className="flex flex-col gap-2 rounded-2xl bg-slate-900/60 p-4 shadow-xl shadow-black/20 ring-1 ring-slate-800/60 backdrop-blur">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-lg font-semibold text-slate-50">TreeCRDT</div>
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold text-slate-900 ${stateBadge}`}>
-            {status === "ready"
-              ? storage === "opfs"
-                ? "Ready (OPFS)"
-                : "Ready (memory)"
-              : status === "booting"
-                ? "Starting wasm"
-                : "Error"}
-          </span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
-          <span
-            className="flex items-center gap-2 rounded-full border border-slate-800/70 bg-slate-950/30 px-3 py-1 font-semibold text-slate-200"
-            title={
-              profileId
-                ? joinMode
-                  ? "Isolated storage profile (join-only)"
-                  : "Isolated storage profile"
-                : "Default (shared) storage profile"
-            }
-          >
-            {joinMode ? (
-              <MdLockOutline className="text-[14px]" />
-            ) : profileId ? (
-              <MdOpenInNew className="text-[14px]" />
-            ) : (
-              <MdGroup className="text-[14px]" />
-            )}
-            <span className="text-slate-400">Device</span>
-            <span className="font-mono">{profileId ?? "default"}</span>
-            {joinMode ? <span className="text-slate-500">(join-only)</span> : profileId ? <span className="text-slate-500">(isolated)</span> : null}
-          </span>
-
-          <button
-            type="button"
-            data-testid="self-pubkey"
-            className="flex items-center gap-2 rounded-full border border-slate-800/70 bg-slate-950/30 px-3 py-1 font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-            onClick={() =>
-              void (selfPeerId ? copyToClipboard(selfPeerId) : Promise.resolve()).catch((err) =>
-                setSyncError(err instanceof Error ? err.message : String(err))
-              )
-            }
-            disabled={!selfPeerId}
-            title={selfPeerId ?? "Initializing pubkey…"}
-            aria-label="Copy my pubkey"
-          >
-            <MdVpnKey className="text-[14px]" />
-            <span className="font-mono">{selfPeerIdShort ?? "(initializing)"}</span>
-            <MdContentCopy className="text-[14px]" />
-          </button>
-
-          <div
-            className="flex items-center overflow-hidden rounded-full border border-slate-800/70 bg-slate-950/30 text-xs font-semibold"
-            aria-label="Storage selector"
-          >
-            <button
-              type="button"
-              className={`px-3 py-1 text-slate-200 transition hover:text-white ${
-                storage === "memory" ? "bg-slate-900/70" : "bg-transparent"
-              }`}
-              onClick={() => {
-                if (storage !== "memory") handleStorageToggle("memory");
-              }}
-              disabled={status === "booting"}
-              title="In-memory storage"
-            >
-              Memory
-            </button>
-            <button
-              type="button"
-              className={`px-3 py-1 text-slate-200 transition hover:text-white ${
-                storage === "opfs" ? "bg-slate-900/70" : "bg-transparent"
-              } ${!opfsSupport.available ? "opacity-50" : ""}`}
-              onClick={() => {
-                if (storage !== "opfs") handleStorageToggle("opfs");
-              }}
-              disabled={status === "booting" || !opfsSupport.available}
-              title={
-                opfsSupport.available
-                  ? "Persistent OPFS storage"
-                  : "OPFS may be blocked by the browser; falls back to memory."
-              }
-            >
-              OPFS
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
-            onClick={handleReset}
-            disabled={status !== "ready"}
-          >
-            Reset
-          </button>
-          <button
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-            onClick={expandAll}
-          >
-            Expand
-          </button>
-          <button
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-            onClick={collapseAll}
-          >
-            Collapse
-          </button>
-        </div>
-
-        {error && <div className="rounded-lg border border-rose-400/50 bg-rose-500/10 px-4 py-2 text-sm text-rose-50">{error}</div>}
-      </header>
+      <PlaygroundHeader
+        status={status}
+        storage={storage}
+        opfsAvailable={opfsSupport.available}
+        joinMode={joinMode}
+        profileId={profileId}
+        selfPeerId={selfPeerId}
+        selfPeerIdShort={selfPeerIdShort}
+        onCopyPubkey={() =>
+          void (selfPeerId ? copyToClipboard(selfPeerId) : Promise.resolve()).catch((err) =>
+            setSyncError(err instanceof Error ? err.message : String(err))
+          )
+        }
+        onSelectStorage={handleStorageToggle}
+        onReset={handleReset}
+        onExpandAll={expandAll}
+        onCollapseAll={collapseAll}
+        error={error}
+      />
 
       <div className="grid gap-6 md:grid-cols-3">
         <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} space-y-4`}>
-          <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Composer</div>
-              <button
-                type="button"
-                className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-                onClick={() => setComposerOpen((prev) => !prev)}
-                aria-expanded={composerOpen}
-                title={composerOpen ? "Hide composer" : "Show composer"}
-              >
-                {composerOpen ? <MdExpandLess className="text-[16px]" /> : <MdExpandMore className="text-[16px]" />}
-                {composerOpen ? "Hide" : "Show"}
-              </button>
-            </div>
-            {composerOpen ? (
-              <form
-                className="flex flex-col gap-3 md:flex-row md:items-end"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handleAddNodes(parentChoice, nodeCount, { fanout });
-                }}
-              >
-                <ParentPicker
-                  nodeList={nodeList}
-                  value={parentChoice}
-                  onChange={setParentChoice}
-                  disabled={status !== "ready"}
-                />
-                <label className="w-full space-y-2 text-sm text-slate-200 md:w-52">
-                  <span>Value (optional)</span>
-                  <input
-                    type="text"
-                    value={newNodeValue}
-                    onChange={(e) => setNewNodeValue(e.target.value)}
-                    placeholder="Stored as payload bytes"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                    disabled={status !== "ready" || busy || !canWritePayload}
-                  />
-                </label>
-                <label className="flex flex-col text-sm text-slate-200">
-                  <span>Node count</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={MAX_COMPOSER_NODE_COUNT}
-                    value={nodeCount}
-                    onChange={(e) => {
-                      const next = Number(e.target.value);
-                      if (!Number.isFinite(next)) {
-                        setNodeCount(0);
-                        return;
-                      }
-                      setNodeCount(Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(next))));
-                    }}
-                    className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                    disabled={status !== "ready" || busy}
-                  />
-                </label>
-                <label className="flex flex-col text-sm text-slate-200">
-                  <span>Fanout</span>
-                  <select
-                    value={fanout}
-                    onChange={(e) => setFanout(Number(e.target.value) || 0)}
-                    className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                    disabled={status !== "ready" || busy}
-                    title="Fanout > 0 distributes nodes in a k-ary tree; 0 inserts all nodes under the chosen parent."
-                  >
-                    <option value={0}>Flat</option>
-                    <option value={2}>2</option>
-                    <option value={3}>3</option>
-                    <option value={5}>5</option>
-                    <option value={10}>10</option>
-                    <option value={20}>20</option>
-                    <option value={50}>50</option>
-                  </select>
-                </label>
-                <button
-                  type="submit"
-                  className="flex-shrink-0 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-                  disabled={status !== "ready" || busy || nodeCount <= 0 || !canWriteStructure}
-                >
-                  Add node{nodeCount > 1 ? "s" : ""}
-                </button>
-              </form>
-            ) : null}
-          </div>
+          <ComposerPanel
+            composerOpen={composerOpen}
+            setComposerOpen={setComposerOpen}
+            nodeList={nodeList}
+            parentChoice={parentChoice}
+            setParentChoice={setParentChoice}
+            newNodeValue={newNodeValue}
+            setNewNodeValue={setNewNodeValue}
+            nodeCount={nodeCount}
+            setNodeCount={setNodeCount}
+            maxNodeCount={MAX_COMPOSER_NODE_COUNT}
+            fanout={fanout}
+            setFanout={setFanout}
+            onAddNodes={handleAddNodes}
+            ready={status === "ready"}
+            busy={busy}
+            canWritePayload={canWritePayload}
+            canWriteStructure={canWriteStructure}
+          />
 
-          <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-	            <div className="flex items-center gap-3">
-	              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Tree</div>
-		              <div className="text-xs text-slate-500">
-		                {totalNodes === null ? "…" : totalNodes} nodes
-		                <span className="text-slate-600"> · {nodeList.length - 1} loaded</span>
-		                {privateRootsCount > 0 && (
-		                  <span className="text-slate-600">
-		                    {" "}
-		                    · <MdLockOutline className="inline text-[14px]" /> {privateRootsCount} private roots
-		                  </span>
-		                )}
-		              </div>
-			            </div>
-		            <div className="flex items-center gap-2">
-                  <button
-                    className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-50 ${
-                      online
-                        ? "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
-                        : "border-amber-500/60 bg-amber-500/10 text-amber-100 hover:border-amber-400"
-                    }`}
-                    onClick={() => setOnline((v) => !v)}
-                    disabled={status !== "ready" || busy}
-                    title={online ? "Go offline (simulate no sync)" : "Go online (resume sync)"}
-                    type="button"
-                  >
-                    {online ? <MdCloudQueue className="text-[18px]" /> : <MdCloudOff className="text-[18px]" />}
-                    <span>{online ? "Online" : "Offline"}</span>
-                  </button>
-                <button
-                  className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  onClick={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
-                  disabled={status !== "ready" || busy || syncBusy || peers.length === 0 || !online}
-                  title={authCanSyncAll ? "Sync all (one-shot)" : "Sync loaded parents (scoped)"}
-                >
-                  <MdSync className="text-[18px]" />
-                  <span>Sync</span>
-                </button>
-                <button
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition disabled:opacity-50 ${
-                    liveAllEnabled
-                      ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
-                      : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
-                  }`}
-                  onClick={() => setLiveAllEnabled((v) => !v)}
-                  disabled={status !== "ready" || busy || !online || !authCanSyncAll}
-                  aria-label="Live sync all"
-                  aria-pressed={liveAllEnabled}
-                  title={authCanSyncAll ? "Live sync all (polling)" : "Live sync all is not allowed by this token scope"}
-                >
-                  <MdOutlineRssFeed className="text-[20px]" />
-                </button>
-                <button
-                  className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
-                    showPeersPanel
-                      ? "border-slate-600 bg-slate-800/90 text-white"
-                      : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
-                  }`}
-                  onClick={() => setShowPeersPanel((v) => !v)}
-                  type="button"
-                  title="Peers"
-                >
-                  <MdGroup className="text-[18px]" />
-                  <span className="font-mono">{peerTotal}</span>
-                </button>
-	                <button
-	                  className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
-	                    showAuthPanel
-	                      ? "border-slate-600 bg-slate-800/90 text-white"
-	                      : authEnabled
-	                        ? "border-emerald-400/60 bg-emerald-500/10 text-white hover:border-accent"
-	                        : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
-	                  }`}
-	                  onClick={() => setShowAuthPanel((v) => !v)}
-	                  type="button"
-	                  title={showAuthPanel ? "Hide Sharing & Auth panel" : "Show Sharing & Auth panel"}
-	                  aria-expanded={showAuthPanel}
-	                  aria-controls="playground-auth-panel"
-	                >
-	                  <MdVpnKey className="text-[18px]" aria-hidden />
-	                  <span>Auth</span>
-	                  {showAuthPanel ? (
-	                    <MdExpandLess className="text-[18px]" aria-hidden />
-	                  ) : (
-	                    <MdExpandMore className="text-[18px]" aria-hidden />
-	                  )}
-	                </button>
-                <button
-                  className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  onClick={openNewPeerTab}
-                  disabled={typeof window === "undefined"}
-                  type="button"
-                  title="New view (same storage): shares local state and can see private subtrees"
-                  aria-label="New view (same storage)"
-                >
-                  <MdOpenInNew className="text-[18px]" />
-                  <span>New view</span>
-                </button>
-                <button
-                  className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  onClick={(e) => void openNewIsolatedPeerTab({ autoInvite: !e.altKey, rootNodeId: ROOT_ID })}
-                  disabled={typeof window === "undefined" || (authEnabled && !(authCanIssue || authCanDelegate))}
-                  type="button"
-                  title={
-                    authEnabled && !(authCanIssue || authCanDelegate)
-                      ? "Verify-only tabs can’t mint invites. Open a minting peer (or import a grant with share permission)."
-                      : "New device (isolated): separate storage (no shared keys/private-roots). Auto-invite; Alt+click opens join-only."
-                  }
-                  aria-label="New device (isolated)"
-                >
-                  <MdLockOutline className="text-[18px]" />
-                  <span>New device</span>
-                </button>
-                <button
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
-                    showOpsPanel
-                      ? "border-slate-600 bg-slate-800/90 text-white"
-                      : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
-                  }`}
-                  onClick={() => setShowOpsPanel((v) => !v)}
-                  type="button"
-                  title="Toggle operations panel"
-                >
-                  <IoMdGitBranch className="text-[18px]" />
-                </button>
-              </div>
-            </div>
-            {syncError && (
-              <div
-                data-testid="sync-error"
-                className="mb-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50"
-              >
-                {syncError}
-              </div>
-            )}
-            {showPeersPanel && (
-              <div className="mb-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Document</div>
-                    <div className="font-mono text-slate-200">{docId}</div>
-                  </div>
-	                  <div className="text-right">
-	                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-	                      Public key
-	                    </div>
-	                    <div className="font-mono text-slate-200">{selfPeerId ?? "-"}</div>
-	                  </div>
-	                </div>
-                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-400">
-                  <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-                    mode {joinMode ? "isolated" : "shared"}
-                  </span>
-                  {profileId && (
-                    <span
-                      className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold"
-                      title={`profile=${profileId}`}
-                    >
-                      profile {profileId}
-                    </span>
-                  )}
-                  <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-                    auth {authEnabled ? "on" : "off"}
-                  </span>
-                  {authEnabled && (
-                    <>
-                      <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-                        tokens {authTokenCount}
-                      </span>
-                      <span
-                        className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold"
-                        title={authScopeTitle}
-                      >
-                        scope {authScopeSummary}
-                      </span>
-                      {authSummaryBadges.map((name) => (
-                        <span
-                          key={name}
-                          className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold"
-                        >
-                          {name}
-                        </span>
-                      ))}
-                    </>
-                  )}
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <div className="text-slate-400">Peers</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                      type="button"
-                      onClick={() => void openNewIsolatedPeerTab({ autoInvite: true, rootNodeId: ROOT_ID })}
-                      disabled={typeof window === "undefined" || (authEnabled && !(authCanIssue || authCanDelegate))}
-                      title={
-                        authEnabled && !(authCanIssue || authCanDelegate)
-                          ? "Verify-only tabs can’t mint invites. Open a minting peer (or import a grant with share permission)."
-                          : "New device (isolated): separate storage, auto-invite"
-                      }
-                    >
-                      <MdLockOutline className="text-[16px]" />
-                      New device
-                    </button>
-                    <button
-                      className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                      type="button"
-                      onClick={openNewPeerTab}
-                      disabled={typeof window === "undefined"}
-                      title="New view (same storage): shares local state"
-                    >
-                      <MdOpenInNew className="text-[16px]" />
-                      New view
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-2 max-h-32 overflow-auto pr-1">
-                  <div className="flex items-center justify-between gap-2 py-1">
-                    <span className="font-mono text-slate-200">
-                      {selfPeerId ?? "-"} <span className="text-[10px] text-slate-500">(you)</span>
-                    </span>
-                    <span className="text-[10px] text-slate-500">-</span>
-                  </div>
-                  {peers.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between gap-2 py-1">
-                      <span className="font-mono text-slate-200">{p.id}</span>
-                      <span className="text-[10px] text-slate-500">{Math.max(0, Date.now() - p.lastSeen)}ms</span>
-                    </div>
-                  ))}
-                </div>
-                {peers.length === 0 && (
-                  <div className="mt-2 text-slate-500">
-                    Only you right now. Open another tab with the same `doc`.
-                  </div>
-                )}
-              </div>
-            )}
-            {showAuthPanel && (
-              <SharingAuthPanel
-                docId={docId}
-                authEnabled={authEnabled}
-                setAuthEnabled={setAuthEnabled}
-                authBusy={authBusy}
-                resetAuth={resetAuth}
-                authNeedsInvite={authNeedsInvite}
-                authError={authError}
-                authInfo={authInfo}
-                setAuthError={setAuthError}
-                authCanIssue={authCanIssue}
-                authCanDelegate={authCanDelegate}
-                authIssuerPkHex={authIssuerPkHex}
-                authLocalKeyIdHex={authLocalKeyIdHex}
-                authLocalTokenIdHex={authLocalTokenIdHex}
-                authTokenCount={authTokenCount}
-                authTokenScope={authTokenScope}
-                authTokenActions={authTokenActions}
-                authScopeSummary={authScopeSummary}
-                authScopeTitle={authScopeTitle}
-                authSummaryBadges={authSummaryBadges}
-                selfPeerId={selfPeerId}
-                revealIdentity={revealIdentity}
-                setRevealIdentity={setRevealIdentity}
-                openMintingPeerTab={openMintingPeerTab}
-                showAuthAdvanced={showAuthAdvanced}
-                setShowAuthAdvanced={setShowAuthAdvanced}
-                showInviteOptions={showInviteOptions}
-                setShowInviteOptions={setShowInviteOptions}
-                invitePanelRef={invitePanelRef}
-                nodeList={nodeList}
-                inviteRoot={inviteRoot}
-                setInviteRoot={setInviteRoot}
-                inviteMaxDepth={inviteMaxDepth}
-                setInviteMaxDepth={setInviteMaxDepth}
-                inviteActions={inviteActions}
-                setInviteActions={setInviteActions}
-                inviteAllowGrant={inviteAllowGrant}
-                setInviteAllowGrant={setInviteAllowGrant}
-                invitePreset={invitePreset}
-                setInvitePreset={setInvitePreset}
-                inviteExcludeNodeIds={inviteExcludeNodeIds}
-                inviteLink={inviteLink}
-                generateInviteLink={generateInviteLink}
-                applyInvitePreset={applyInvitePreset}
-                copyToClipboard={copyToClipboard}
-                refreshAuthMaterial={refreshAuthMaterial}
-                refreshPendingOps={refreshPendingOps}
-                client={client}
-                pendingOps={pendingOps}
-                showPrivateRootsPanel={showPrivateRootsPanel}
-                setShowPrivateRootsPanel={setShowPrivateRootsPanel}
-                privateRootsCount={privateRootsCount}
-                privateRootEntries={privateRootEntries}
-                togglePrivateRoot={togglePrivateRoot}
-                clearPrivateRoots={clearPrivateRoots}
-                wrapKeyImportText={wrapKeyImportText}
-                setWrapKeyImportText={setWrapKeyImportText}
-                issuerKeyBlobImportText={issuerKeyBlobImportText}
-                setIssuerKeyBlobImportText={setIssuerKeyBlobImportText}
-                identityKeyBlobImportText={identityKeyBlobImportText}
-                setIdentityKeyBlobImportText={setIdentityKeyBlobImportText}
-                deviceSigningKeyBlobImportText={deviceSigningKeyBlobImportText}
-                setDeviceSigningKeyBlobImportText={setDeviceSigningKeyBlobImportText}
-                localIdentityChainPromiseRef={localIdentityChainPromiseRef}
-                inviteImportText={inviteImportText}
-                setInviteImportText={setInviteImportText}
-                importInviteLink={importInviteLink}
-                grantRecipientKey={grantRecipientKey}
-                setGrantRecipientKey={setGrantRecipientKey}
-                grantSubtreeToReplicaPubkey={grantSubtreeToReplicaPubkey}
-                nodeLabelForId={nodeLabelForId}
-              />
-            )}
-            <div ref={treeParentRef} className="max-h-[560px] overflow-auto">
-              <div
-                style={{ height: `${treeVirtualizer.getTotalSize()}px`, position: "relative" }}
-                className="w-full"
-              >
-                {treeVirtualizer.getVirtualItems().map((item) => {
-                  const entry = visibleNodes[item.index];
-                  if (!entry) return null;
-                  return (
-                    <div
-                      key={item.key}
-                      data-index={item.index}
-                      ref={treeVirtualizer.measureElement}
-                      className="absolute left-0 top-0 w-full"
-                      style={{ transform: `translateY(${item.start}px)` }}
-                    >
-	                      <TreeRow
-	                        node={entry.node}
-	                        depth={entry.depth}
-	                        collapse={collapse}
-	                        onToggle={toggleCollapse}
-	                        onShare={openShareForNode}
-	                        onSetValue={handleSetValue}
-	                        onAddChild={(id) => {
-	                          setParentChoice(id);
-	                          void handleInsert(id);
-	                        }}
-	                        onDelete={handleDelete}
-	                        onMove={handleMove}
-	                        onMoveToRoot={handleMoveToRoot}
-	                        onToggleLiveChildren={toggleLiveChildren}
-	                        privateRoots={privateRoots}
-	                        onTogglePrivateRoot={togglePrivateRoot}
-	                        scopeRootId={viewRootId}
-	                        canWritePayload={canWritePayload}
-	                        canWriteStructure={canWriteStructure}
-	                        canDelete={canDelete}
-	                        liveChildren={liveChildrenParents.has(entry.node.id)}
-	                        meta={index}
-	                        childrenByParent={childrenByParent}
-	                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+          <TreePanel
+            totalNodes={totalNodes}
+            loadedNodes={Math.max(0, nodeList.length - 1)}
+            privateRootsCount={privateRootsCount}
+            online={online}
+            setOnline={setOnline}
+            ready={status === "ready"}
+            busy={busy}
+            syncBusy={syncBusy}
+            peerCount={peers.length}
+            authCanSyncAll={authCanSyncAll}
+            onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
+            liveAllEnabled={liveAllEnabled}
+            setLiveAllEnabled={setLiveAllEnabled}
+            showPeersPanel={showPeersPanel}
+            setShowPeersPanel={setShowPeersPanel}
+            peerTotal={peerTotal}
+            showAuthPanel={showAuthPanel}
+            setShowAuthPanel={setShowAuthPanel}
+            authEnabled={authEnabled}
+            openNewPeerTab={openNewPeerTab}
+            openNewIsolatedPeerTab={openNewIsolatedPeerTab}
+            authCanIssue={authCanIssue}
+            authCanDelegate={authCanDelegate}
+            showOpsPanel={showOpsPanel}
+            setShowOpsPanel={setShowOpsPanel}
+            syncError={syncError}
+            peersPanelProps={{
+              docId,
+              selfPeerId,
+              joinMode,
+              profileId,
+              authEnabled,
+              authTokenCount,
+              authScopeTitle,
+              authScopeSummary,
+              authSummaryBadges,
+              authCanIssue,
+              authCanDelegate,
+              openNewIsolatedPeerTab,
+              openNewPeerTab,
+              peers,
+            }}
+            sharingAuthPanelProps={{
+              docId,
+              authEnabled,
+              setAuthEnabled,
+              authBusy,
+              resetAuth,
+              authNeedsInvite,
+              authError,
+              authInfo,
+              setAuthError,
+              authCanIssue,
+              authCanDelegate,
+              authIssuerPkHex,
+              authLocalKeyIdHex,
+              authLocalTokenIdHex,
+              authTokenCount,
+              authTokenScope,
+              authTokenActions,
+              authScopeSummary,
+              authScopeTitle,
+              authSummaryBadges,
+              selfPeerId,
+              revealIdentity,
+              setRevealIdentity,
+              openMintingPeerTab,
+              showAuthAdvanced,
+              setShowAuthAdvanced,
+              showInviteOptions,
+              setShowInviteOptions,
+              invitePanelRef,
+              nodeList,
+              inviteRoot,
+              setInviteRoot,
+              inviteMaxDepth,
+              setInviteMaxDepth,
+              inviteActions,
+              setInviteActions,
+              inviteAllowGrant,
+              setInviteAllowGrant,
+              invitePreset,
+              setInvitePreset,
+              inviteExcludeNodeIds,
+              inviteLink,
+              generateInviteLink,
+              applyInvitePreset,
+              copyToClipboard,
+              refreshAuthMaterial,
+              refreshPendingOps,
+              client,
+              pendingOps,
+              showPrivateRootsPanel,
+              setShowPrivateRootsPanel,
+              privateRootsCount,
+              privateRootEntries,
+              togglePrivateRoot,
+              clearPrivateRoots,
+              wrapKeyImportText,
+              setWrapKeyImportText,
+              issuerKeyBlobImportText,
+              setIssuerKeyBlobImportText,
+              identityKeyBlobImportText,
+              setIdentityKeyBlobImportText,
+              deviceSigningKeyBlobImportText,
+              setDeviceSigningKeyBlobImportText,
+              localIdentityChainPromiseRef,
+              inviteImportText,
+              setInviteImportText,
+              importInviteLink,
+              grantRecipientKey,
+              setGrantRecipientKey,
+              grantSubtreeToReplicaPubkey,
+              nodeLabelForId,
+            }}
+            treeParentRef={treeParentRef}
+            treeVirtualizer={treeVirtualizer}
+            visibleNodes={visibleNodes}
+            collapse={collapse}
+            toggleCollapse={toggleCollapse}
+            openShareForNode={openShareForNode}
+            onSetValue={handleSetValue}
+            onAddChild={(id) => {
+              setParentChoice(id);
+              void handleInsert(id);
+            }}
+            onDelete={handleDelete}
+            onMove={handleMove}
+            onMoveToRoot={handleMoveToRoot}
+            onToggleLiveChildren={toggleLiveChildren}
+            privateRoots={privateRoots}
+            togglePrivateRoot={togglePrivateRoot}
+            scopeRootId={viewRootId}
+            canWritePayload={canWritePayload}
+            canWriteStructure={canWriteStructure}
+            canDelete={canDelete}
+            liveChildrenParents={liveChildrenParents}
+            meta={index}
+            childrenByParent={childrenByParent}
+          />
         </section>
 
         {showOpsPanel && (
-          <aside className="space-y-3 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-            <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Operations</div>
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Ops: {ops.length}</span>
-              <span>Head lamport: {headLamport}</span>
-            </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 shadow-inner shadow-black/30">
-              <div ref={opsParentRef} className="max-h-[520px] overflow-auto pr-2 text-xs">
-                {ops.length === 0 && <div className="text-slate-500">No operations yet.</div>}
-                {ops.length > 0 && (
-                  <div
-                    style={{ height: `${opsVirtualizer.getTotalSize()}px`, position: "relative" }}
-                    className="w-full"
-                  >
-                    {opsVirtualizer.getVirtualItems().map((item) => {
-                      const op = ops[item.index];
-                      if (!op) return null;
-	                      const signerHex = bytesToHex(op.meta.id.replica);
-	                      const signerShort =
-	                        signerHex.length > 24 ? `${signerHex.slice(0, 12)}…${signerHex.slice(-8)}` : signerHex;
-	                      const signerKeyIdHex = bytesToHex(deriveKeyIdV1(op.meta.id.replica));
-	                      const signerKeyIdShort =
-	                        signerKeyIdHex.length > 16 ? `${signerKeyIdHex.slice(0, 8)}…${signerKeyIdHex.slice(-4)}` : signerKeyIdHex;
-	                      const identity = identityByReplicaRef.current.get(signerHex);
-	                      const identityKeyIdHex = identity ? bytesToHex(deriveKeyIdV1(identity.identityPk)) : null;
-	                      const identityKeyIdShort =
-	                        identityKeyIdHex && identityKeyIdHex.length > 16
-	                          ? `${identityKeyIdHex.slice(0, 8)}…${identityKeyIdHex.slice(-4)}`
-	                          : identityKeyIdHex;
-	                      const identityPkHex = identity ? bytesToHex(identity.identityPk) : null;
-	                      const isLocalSigner = localReplicaHex ? signerHex === localReplicaHex : false;
-	                      return (
-                        <div
-                          key={item.key}
-                          data-index={item.index}
-                          ref={opsVirtualizer.measureElement}
-                          className="absolute left-0 top-0 w-full"
-                          style={{ transform: `translateY(${item.start}px)` }}
-                        >
-                          <div className="mb-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-slate-100">
-                            <div className="flex items-center justify-between">
-                              <span className="font-semibold text-accent">{op.kind.type}</span>
-                              <div className="flex items-center gap-2">
-                                {authEnabled ? (
-                                  <span
-                                    className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-100"
-                                    title={
-                                      isLocalSigner
-                                        ? "Auth enabled: this op will be signed when syncing"
-                                        : "Auth enabled: this op was verified before apply"
-                                    }
-                                  >
-                                    signed
-                                  </span>
-                                ) : (
-                                  <span
-                                    className="rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] font-semibold text-slate-300"
-                                    title="Auth disabled: ops are not required to carry signatures/capabilities"
-                                  >
-                                    unsigned
-                                  </span>
-                                )}
-                                <span className="font-mono text-slate-400">lamport {op.meta.lamport}</span>
-                              </div>
-                            </div>
-                            <div className="mt-1 text-slate-300">{renderKind(op.kind)}</div>
-                            <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500">
-                              <span className="font-mono">counter {op.meta.id.counter}</span>
-                              <span className="font-mono" title={signerHex}>
-                                signer {signerShort}
-                                {isLocalSigner ? " (local)" : ""}
-                              </span>
-                            </div>
-	                            <div className="mt-0.5 text-[10px] text-slate-500">
-	                              <span className="font-mono" title={signerKeyIdHex}>
-	                                keyId {signerKeyIdShort}
-	                              </span>
-	                            </div>
-	                            {identity && identityKeyIdHex && (
-	                              <div className="mt-0.5 text-[10px] text-slate-500">
-	                                <span className="font-mono" title={identityPkHex ?? ""}>
-	                                  identity {identityKeyIdShort}
-	                                </span>
-	                              </div>
-	                            )}
-	                          </div>
-	                        </div>
-	                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          </aside>
+          <OpsPanel
+            ops={ops}
+            headLamport={headLamport}
+            authEnabled={authEnabled}
+            localReplicaHex={localReplicaHex}
+            getIdentityByReplicaHex={(replicaHex) => identityByReplicaRef.current.get(replicaHex)}
+            opsParentRef={opsParentRef}
+            opsVirtualizer={opsVirtualizer}
+          />
         )}
       </div>
 
-      {toast && (
-        <div
-          className={`fixed bottom-4 right-4 z-50 w-[min(420px,calc(100vw-2rem))] rounded-xl border px-4 py-3 shadow-lg shadow-black/40 ring-1 ${
-            toast.kind === "success"
-              ? "border-emerald-400/50 bg-emerald-500/10 ring-emerald-500/10"
-              : toast.kind === "error"
-                ? "border-rose-400/50 bg-rose-500/10 ring-rose-500/10"
-                : "border-slate-700/70 bg-slate-900/70 ring-slate-800/60"
-          }`}
-          role="status"
-          aria-live="polite"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-white">{toast.title}</div>
-              {toast.message ? <div className="mt-1 text-xs text-slate-200">{toast.message}</div> : null}
-            </div>
-            <button
-              type="button"
-              className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-              onClick={() => setToast(null)}
-              aria-label="Dismiss notification"
-              title="Dismiss"
-            >
-              ×
-            </button>
-          </div>
-          {toast.actions && toast.actions.length > 0 && (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              {toast.actions.includes("sync") && (
-                <button
-                  type="button"
-                  className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-                  onClick={() => {
-                    setToast(null);
-                    void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
-                  }}
-                  disabled={status !== "ready" || busy || syncBusy || peers.length === 0 || !online}
-                  title="Sync now"
-                >
-                  Sync now
-                </button>
-              )}
-              {toast.actions.includes("details") && (
-                <button
-                  type="button"
-                  className="rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-                  onClick={() => {
-                    setToast(null);
-                    setShowAuthPanel(true);
-                  }}
-                  title="Open Sharing & Auth panel"
-                >
-                  Details
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      <PlaygroundToast
+        toast={toast}
+        setToast={setToast}
+        onSync={() => {
+          void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
+        }}
+        canSync={status === "ready" && !busy && !syncBusy && peers.length > 0 && online}
+        onDetails={() => setShowAuthPanel(true)}
+      />
     </div>
   );
 }

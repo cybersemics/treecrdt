@@ -12,8 +12,8 @@ import {
   setSealedIdentityKeyB64,
   setSealedIssuerKeyB64,
 } from "../../auth";
+import type { InvitePreset } from "../invite";
 
-type InvitePreset = "read" | "read_write" | "admin" | "custom";
 type InviteActions = { write_structure: boolean; write_payload: boolean; delete: boolean; tombstone: boolean };
 
 type AuthTokenScope = {
