@@ -1,7 +1,8 @@
 import type { Operation } from "@treecrdt/interface";
-import { bytesToHex } from "@treecrdt/interface/ids";
+import { bytesToHex, hexToBytes } from "@treecrdt/interface/ids";
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 
+import { deriveOpRefV0 } from "./opref.js";
 import { createTreecrdtSyncSqlitePendingOpsStore } from "./sqlite.js";
 import type { Filter, OpRef, SyncBackend } from "./types.js";
 
@@ -20,6 +21,55 @@ export type TreecrdtSyncBackendClient = {
     appendMany: (ops: Operation[]) => Promise<void>;
   };
 };
+
+async function maybeLoadNodePayloadWriterOpRef(opts: {
+  runner: SqliteRunner;
+  docId: string;
+  nodeBytes: Uint8Array;
+}): Promise<Uint8Array | null> {
+  // `tree_payload` is a derived table; ensure it is up-to-date before reading.
+  try {
+    await opts.runner.getText("SELECT treecrdt_ensure_materialized()");
+  } catch {
+    // Best-effort. Some backends may not expose this UDF (non-SQLite); callers will ignore null.
+  }
+
+  const json = await opts.runner.getText(
+    "SELECT json_object('replica', lower(hex(last_replica)), 'counter', CAST(last_counter AS TEXT)) \
+     FROM tree_payload \
+     WHERE node = ?1",
+    [opts.nodeBytes]
+  );
+  if (!json) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const replicaHex = (parsed as any).replica;
+  const counterText = (parsed as any).counter;
+  if (typeof replicaHex !== "string" || typeof counterText !== "string") return null;
+  if (replicaHex.length === 0) return null;
+
+  let counter: bigint;
+  try {
+    counter = BigInt(counterText);
+  } catch {
+    return null;
+  }
+
+  let replica: Uint8Array;
+  try {
+    replica = hexToBytes(replicaHex);
+  } catch {
+    return null;
+  }
+
+  return deriveOpRefV0(opts.docId, { replica, counter });
+}
 
 export function createTreecrdtSyncBackendFromClient(
   client: TreecrdtSyncBackendClient,
@@ -71,7 +121,24 @@ export function createTreecrdtSyncBackendFromClient(
         return Array.from(byHex.values());
       }
 
-      return client.opRefs.children(bytesToHex(filter.children.parent));
+      const parentHex = bytesToHex(filter.children.parent);
+      const refs = await client.opRefs.children(parentHex);
+
+      // Scoped sync often starts at a subtree root where the node's own payload opRef is not
+      // discoverable via its parent (which may be outside scope). Include the node's latest
+      // payload-writer opRef so `children(node)` can render the scope root label/value.
+      if (!client.runner) return refs;
+      const payloadWriter = await maybeLoadNodePayloadWriterOpRef({
+        runner: client.runner,
+        docId,
+        nodeBytes: filter.children.parent,
+      });
+      if (!payloadWriter) return refs;
+
+      const seen = new Set(refs.map((r) => bytesToHex(r)));
+      const hex = bytesToHex(payloadWriter);
+      if (seen.has(hex)) return refs;
+      return [...refs, payloadWriter];
     },
 
     getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
@@ -99,4 +166,3 @@ export function createTreecrdtSyncBackendFromClient(
       : {}),
   };
 }
-
