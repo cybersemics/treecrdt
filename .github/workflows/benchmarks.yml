@@ -240,24 +240,22 @@ jobs:
                 ? '-'
                 : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 
-            const colorForDelta = (pct) => {
-              if (pct === null || pct === undefined || Number.isNaN(pct)) return null;
+            const severityLevel = (pct) => {
+              if (pct === null || pct === undefined || Number.isNaN(pct)) return 0;
               const abs = Math.abs(pct);
-              if (abs >= 30) return '#ffcdd2';
-              if (abs >= 10) return '#ffe0b2';
-              if (abs >= 5) return '#fff9c4';
-              return null;
+              if (abs >= 30) return 3;
+              if (abs >= 10) return 2;
+              if (abs >= 5) return 1;
+              return 0;
             };
-            const cellPct = (value) => {
-              const text = formatPct(value);
-              if (text === '-') return text;
-              const bg = colorForDelta(value);
-              return bg ? `<span style="background-color:${bg};padding:0 4px;border-radius:2px">${text}</span>` : text;
+            const statusEmoji = (deltaOps, deltaMs) => {
+              const level = Math.max(severityLevel(deltaOps), severityLevel(deltaMs));
+              return level === 3 ? '🔴' : level === 2 ? '🟠' : level === 1 ? '🟡' : '✅';
             };
 
             const lines = [];
-            lines.push('| Impl | Storage | Workload | Base ops/s | Head ops/s | Δ ops/s | Base p50 ms | Head p50 ms | Δ p50 |');
-            lines.push('|---|---|---|---:|---:|---:|---:|---:|---:|');
+            lines.push('| Impl | Storage | Workload | Base ops/s | Head ops/s | Δ ops/s | Base p50 ms | Head p50 ms | Δ p50 | Status |');
+            lines.push('|---|---|---|---:|---:|---:|---:|---:|---:|---:|');
 
             let improved = 0;
             let regressed = 0;
@@ -282,8 +280,9 @@ jobs:
                 baseMs !== null && headMs !== null ? ((headMs - baseMs) / baseMs) * 100 : null;
 
               const [impl, storage, workload] = key.split('|').map((s) => s.trim());
+              const status = statusEmoji(deltaOps, deltaMs);
               lines.push(
-                `| ${impl} | ${storage} | ${workload} | ${format(baseOps)} | ${format(headOps)} | ${cellPct(deltaOps)} | ${format(baseMs)} | ${format(headMs)} | ${cellPct(deltaMs)} |`,
+                `| ${impl} | ${storage} | ${workload} | ${format(baseOps)} | ${format(headOps)} | ${formatPct(deltaOps)} | ${format(baseMs)} | ${format(headMs)} | ${formatPct(deltaMs)} | ${status} |`,
               );
             }
 
@@ -308,6 +307,7 @@ jobs:
               parts.push('_No benchmark results were found. Check the workflow logs for details._', '');
             } else {
               parts.push(lines.join('\n'), '');
+              parts.push('**Status:** ✅ &lt;5% change | 🟡 5–10% | 🟠 10–30% | 🔴 &gt;30%', '');
             }
 
             parts.push(
