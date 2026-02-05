@@ -83,6 +83,8 @@ export default function App() {
 
   const joinMode =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).get("join") === "1";
+  const autoSyncJoin =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("autosync") === "1";
   const profileId = useMemo(() => getPlaygroundProfileId(), []);
 
   useEffect(() => {
@@ -506,6 +508,7 @@ export default function App() {
     status,
     docId,
     selfPeerId,
+    autoSyncJoin,
     online,
     getMaxLamport,
     authEnabled,

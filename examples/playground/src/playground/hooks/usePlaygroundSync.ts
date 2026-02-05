@@ -73,6 +73,7 @@ export type UsePlaygroundSyncOptions = {
   status: "booting" | "ready" | "error";
   docId: string;
   selfPeerId: string | null;
+  autoSyncJoin?: boolean;
   online: boolean;
   getMaxLamport: () => bigint;
   authEnabled: boolean;
@@ -101,6 +102,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     status,
     docId,
     selfPeerId,
+    autoSyncJoin = false,
     online,
     getMaxLamport,
     authEnabled,
@@ -130,6 +132,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     onlineRef.current = online;
   }, [online]);
 
+  const autoSyncJoinInitial = useRef(autoSyncJoin).current;
+
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const presenceMeshRef = useRef<ReturnType<typeof createBroadcastPresenceMesh<any>> | null>(null);
 
@@ -141,6 +145,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
   const liveAllStartingRef = useRef<Set<string>>(new Set());
   const liveChildrenStartingRef = useRef<Set<string>>(new Set());
+  const autoSyncTriggeredRef = useRef(false);
+  const autoSyncPeerIdRef = useRef<string | null>(null);
 
   const stopLiveAllForPeer = (peerId: string) => {
     const existing = liveAllSubsRef.current.get(peerId);
@@ -465,6 +471,77 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   useEffect(() => {
+    if (!autoSyncJoinInitial || !joinMode) return;
+    if (autoSyncTriggeredRef.current) return;
+    if (!onlineRef.current) return;
+    if (syncBusy) return;
+
+    const peerId = autoSyncPeerIdRef.current;
+    if (!peerId) return;
+
+    const peer = syncPeerRef.current;
+    const conn = syncConnRef.current.get(peerId);
+    if (!peer || !conn) return;
+
+    if (!authCanSyncAll) {
+      const clean = viewRootId.toLowerCase();
+      if (clean === ROOT_ID || !/^[0-9a-f]{32}$/.test(clean)) return;
+    }
+
+    autoSyncTriggeredRef.current = true;
+
+    void (async () => {
+      setSyncBusy(true);
+      setSyncError(null);
+      try {
+        if (authCanSyncAll) {
+          await withTimeout(
+            peer.syncOnce(conn.transport, { all: {} }, {
+              maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+              maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+              codewordsPerMessage: 2048,
+            }),
+            30_000,
+            `auto sync with ${peerId.slice(0, 8)}… timed out`
+          );
+        } else {
+          await withTimeout(
+            peer.syncOnce(
+              conn.transport,
+              { children: { parent: hexToBytes16(viewRootId) } },
+              {
+                maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+                maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+                codewordsPerMessage: 2048,
+              }
+            ),
+            30_000,
+            `auto sync(children ${viewRootId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`
+          );
+        }
+
+        await refreshMeta();
+        const parentIds = new Set(Object.keys(treeStateRef.current.childrenByParent));
+        parentIds.add(viewRootId);
+        await refreshParents(Array.from(parentIds));
+        await refreshNodeCount();
+
+        if (typeof window !== "undefined") {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("autosync");
+          window.history.replaceState({}, "", url);
+        }
+      } catch (err) {
+        console.error("Auto sync failed", err);
+        setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSyncBusy(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authCanSyncAll, joinMode, peers.length, refreshMeta, refreshNodeCount, refreshParents, syncBusy, viewRootId]);
+
+  useEffect(() => {
     liveChildrenParentsRef.current = liveChildrenParents;
 
     const connections = syncConnRef.current;
@@ -645,6 +722,14 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       },
       onPeerReady: (peerId) => {
         maybeStartLiveForPeer(peerId);
+        if (
+          autoSyncJoinInitial &&
+          joinMode &&
+          !autoSyncTriggeredRef.current &&
+          autoSyncPeerIdRef.current === null
+        ) {
+          autoSyncPeerIdRef.current = peerId;
+        }
       },
       onPeerTransport: (peerId, transport) => {
         const detach = sharedPeer.attach(transport);
@@ -694,8 +779,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     authEnabled,
-    authError,
-    authMaterial,
+    // Avoid restarting the mesh when `authMaterial` is re-read with the same values.
+    authMaterial.issuerPkB64,
+    authMaterial.localPkB64,
+    authMaterial.localSkB64,
+    authMaterial.localTokensB64.join(","),
     client,
     docId,
     getLocalIdentityChain,

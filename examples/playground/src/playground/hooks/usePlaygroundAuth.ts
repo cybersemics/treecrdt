@@ -1184,11 +1184,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     url.searchParams.set("profile", makeNewProfileId());
     url.searchParams.set("join", "1");
     url.searchParams.set("auth", "1");
+    url.searchParams.delete("autosync");
     url.hash = "";
 
     if (opts2.autoInvite) {
       try {
         // Auto-invite makes the common "simulate another device" flow 1 click.
+        url.searchParams.set("autosync", "1");
         url.hash = `invite=${await buildInviteB64({ rootNodeId: opts2.rootNodeId ?? ROOT_ID })}`;
       } catch (err) {
         // Fall back to a blank join-only tab and show the reason on the current tab.
@@ -1295,4 +1297,3 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     onAuthGrantMessage,
   };
 }
-
