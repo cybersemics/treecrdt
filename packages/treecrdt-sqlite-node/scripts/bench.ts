@@ -1,32 +1,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { makeWorkload, runBenchmark } from "@treecrdt/benchmark";
+import { makeWorkload, quantile, runBenchmark } from "@treecrdt/benchmark";
 import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
 import { createSqliteNodeApi, loadTreecrdtExtension } from "../dist/index.js";
 
 type StorageKind = "memory" | "file";
 
-const CI_CONFIG: ReadonlyArray<[number, number]> = [
-  [100, 5],
-  [1_000, 5],
-  [10_000, 1],
-];
-
-const LOCAL_CONFIG: ReadonlyArray<[number, number]> = [
-  [1, 1],
-  [10, 1],
-  [100, 1],
-  [1_000, 1],
-  [10_000, 1],
+const INSERT_MOVE_BENCH_CONFIG: ReadonlyArray<[number, number]> = [
+  [100, 10],
+  [1_000, 10],
+  [10_000, 10],
 ];
 
 const WORKLOAD: "insert-move" = "insert-move";
 const STORAGES: ReadonlyArray<StorageKind> = ["memory", "file"];
-
-function isCi(): boolean {
-  return process.env.CI === "true";
-}
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
@@ -69,8 +57,7 @@ async function main() {
   const argv = process.argv.slice(2);
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const baseConfig = isCi() ? CI_CONFIG : LOCAL_CONFIG;
-  const config: Array<[number, number]> = parseConfigFromArgv(argv) ?? [...baseConfig];
+  const config: Array<[number, number]> = parseConfigFromArgv(argv) ?? [...INSERT_MOVE_BENCH_CONFIG];
 
   for (const [size, iterations] of config) {
     const workload = makeWorkload(WORKLOAD, size);
@@ -109,22 +96,22 @@ async function main() {
           const r = await runBenchmark(adapterFactory, workload);
           durations.push(r.durationMs);
         }
-        const avgDurationMs = durations.reduce((a, b) => a + b, 0) / durations.length;
+        const medianDurationMs = quantile(durations, 0.5);
         const totalOps = workload.totalOps ?? -1;
         result = {
           name: workload.name,
           totalOps,
-          durationMs: avgDurationMs,
+          durationMs: medianDurationMs,
           opsPerSec:
-            totalOps > 0 && avgDurationMs > 0
-              ? (totalOps / avgDurationMs) * 1000
-              : avgDurationMs > 0
-                ? 1000 / avgDurationMs
+            totalOps > 0 && medianDurationMs > 0
+              ? (totalOps / medianDurationMs) * 1000
+              : medianDurationMs > 0
+                ? 1000 / medianDurationMs
                 : Infinity,
           extra: {
             count: totalOps > 0 ? totalOps : undefined,
             iterations,
-            avgDurationMs,
+            avgDurationMs: medianDurationMs,
             samplesMs: durations,
           },
         };

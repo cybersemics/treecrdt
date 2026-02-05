@@ -42,10 +42,11 @@ export async function runWaSqliteBench(
   console.info(`[bench] starting run storage=${storage} baseUrl=${baseUrl}`);
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./opfs-worker.ts", import.meta.url), { type: "module" });
+    // Tiny workloads now run 5+ iterations (new adapter per iteration); OPFS create is slow, so allow more time.
     const timeout = setTimeout(() => {
       worker.terminate();
       reject(new Error("wa-sqlite bench worker timed out"));
-    }, 90_000);
+    }, 300_000);
 
     worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
       clearTimeout(timeout);
