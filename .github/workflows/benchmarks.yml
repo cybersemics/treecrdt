@@ -240,6 +240,21 @@ jobs:
                 ? '-'
                 : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 
+            const colorForDelta = (pct) => {
+              if (pct === null || pct === undefined || Number.isNaN(pct)) return null;
+              const abs = Math.abs(pct);
+              if (abs >= 30) return '#ffcdd2';
+              if (abs >= 10) return '#ffe0b2';
+              if (abs >= 5) return '#fff9c4';
+              return null;
+            };
+            const cellPct = (value) => {
+              const text = formatPct(value);
+              if (text === '-') return text;
+              const bg = colorForDelta(value);
+              return bg ? `<span style="background-color:${bg};padding:0 4px;border-radius:2px">${text}</span>` : text;
+            };
+
             const lines = [];
             lines.push('| Impl | Storage | Workload | Base ops/s | Head ops/s | Δ ops/s | Base p50 ms | Head p50 ms | Δ p50 |');
             lines.push('|---|---|---|---:|---:|---:|---:|---:|---:|');
@@ -268,7 +283,7 @@ jobs:
 
               const [impl, storage, workload] = key.split('|').map((s) => s.trim());
               lines.push(
-                `| ${impl} | ${storage} | ${workload} | ${format(baseOps)} | ${format(headOps)} | ${formatPct(deltaOps)} | ${format(baseMs)} | ${format(headMs)} | ${formatPct(deltaMs)} |`,
+                `| ${impl} | ${storage} | ${workload} | ${format(baseOps)} | ${format(headOps)} | ${cellPct(deltaOps)} | ${format(baseMs)} | ${format(headMs)} | ${cellPct(deltaMs)} |`,
               );
             }
 

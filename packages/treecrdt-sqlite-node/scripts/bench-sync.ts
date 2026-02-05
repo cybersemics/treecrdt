@@ -30,24 +30,13 @@ import {
 type StorageKind = "memory" | "file";
 type ConfigEntry = [number, number];
 
-const CI_CONFIG: ReadonlyArray<ConfigEntry> = [
+const SYNC_BENCH_CONFIG: ReadonlyArray<ConfigEntry> = [
   [100, 10],
-  [1_000, 10],
-  [10_000, 1],
+  [1_000, 5],
+  [10_000, 10],
 ];
 
-const LOCAL_CONFIG: ReadonlyArray<ConfigEntry> = [
-  [100, 1],
-  [1_000, 1],
-  [10_000, 1],
-];
-
-const CI_ROOT_CONFIG: ReadonlyArray<ConfigEntry> = [[1110, 1]];
-const LOCAL_ROOT_CONFIG: ReadonlyArray<ConfigEntry> = [[1110, 1]];
-
-function isCi(): boolean {
-  return process.env.CI === "true";
-}
+const SYNC_BENCH_ROOT_CONFIG: ReadonlyArray<ConfigEntry> = [[1110, 10]];
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
@@ -230,9 +219,7 @@ async function runBenchCase(
   }
 
   const durationMs =
-    iterations > 1
-      ? samplesMs.reduce((a, b) => a + b, 0) / samplesMs.length
-      : samplesMs[0] ?? 0;
+    iterations > 1 ? quantile(samplesMs, 0.5) : samplesMs[0] ?? 0;
   const opsPerSec = durationMs > 0 ? (bench.totalOps / durationMs) * 1000 : Infinity;
 
   return {
@@ -259,11 +246,8 @@ async function main() {
   const argv = process.argv.slice(2);
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const isCiEnv = isCi();
-  const baseConfig = !isCiEnv ? CI_CONFIG : LOCAL_CONFIG;
-  const baseRootConfig = isCiEnv ? CI_ROOT_CONFIG : LOCAL_ROOT_CONFIG;
-  const config = parseConfigFromArgv(argv) ?? [...baseConfig];
-  const rootConfig = [...baseRootConfig];
+  const config = parseConfigFromArgv(argv) ?? [...SYNC_BENCH_CONFIG];
+  const rootConfig = [...SYNC_BENCH_ROOT_CONFIG];
 
   const cases: BenchCase[] = [];
   for (const storage of ["memory", "file"] as const) {

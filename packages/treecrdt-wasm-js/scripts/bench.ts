@@ -13,10 +13,11 @@ async function main() {
   });
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const timing = benchTiming({ defaultIterations: 3 });
+  const timing = benchTiming({ defaultIterations: 7 });
   const workloadDefs = buildWorkloads(opts.workloads, opts.sizes);
   for (const w of workloadDefs) {
-    w.iterations = timing.iterations;
+    const totalOps = w.totalOps ?? 0;
+    w.iterations = totalOps >= 10000 ? 10 : timing.iterations;
     w.warmupIterations = timing.warmupIterations;
   }
 
