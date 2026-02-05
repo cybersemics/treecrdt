@@ -627,6 +627,45 @@ test("isolated peer tab uses separate storage namespace and requires invite", as
   }
 });
 
+test("open device auto-syncs so the scoped root label is visible", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-open-device");
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+
+  try {
+    await waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("AASD");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const rowA = treeRowByLabel(pageA, "AASD");
+    await expect(rowA).toBeVisible({ timeout: 30_000 });
+
+    const nodeId = await rowA.getAttribute("data-node-id");
+    if (!nodeId) throw new Error("expected node id");
+
+    await treeRowByNodeId(pageA, nodeId).getByRole("button", { name: "Share subtree (invite)" }).click();
+    const textarea = pageA.getByPlaceholder("Invite link will appear here…");
+    await expect(textarea).toHaveValue(/invite=/, { timeout: 30_000 });
+
+    const [pageB] = await Promise.all([
+      pageA.waitForEvent("popup"),
+      pageA.getByRole("button", { name: "Open device", exact: true }).click(),
+    ]);
+
+    await pageB.bringToFront();
+    await expect(pageB.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
+
+    const rowB = treeRowByNodeId(pageB, nodeId);
+    await expect(rowB.getByRole("button", { name: "AASD" })).toBeVisible({ timeout: 60_000 });
+  } finally {
+    await context.close();
+  }
+});
+
 test("delegated invite can be reshared (A → B → C) and sync is bidirectional", async ({ browser }) => {
   test.setTimeout(240_000);
 
