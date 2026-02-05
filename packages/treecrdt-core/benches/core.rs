@@ -5,9 +5,7 @@ use std::time::Instant;
 
 use treecrdt_core::{Lamport, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
 
-const CI_CONFIG: &[(u64, u64)] = &[(100, 5), (1_000, 1), (10_000, 1)];
-
-const LOCAL_CONFIG: &[(u64, u64)] = &[(1, 1), (10, 1), (100, 1), (1_000, 1), (10_000, 1)];
+const BENCH_CONFIG: &[(u64, u64)] = &[(100, 10), (1_000, 10), (10_000, 10)];
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,10 +39,6 @@ fn hex_id(n: u64) -> NodeId {
     NodeId(u128::from_be_bytes(bytes))
 }
 
-fn is_ci() -> bool {
-    env::var("CI").map(|v| v == "true").unwrap_or(false)
-}
-
 fn default_out_dir() -> PathBuf {
     env::current_dir()
         .ok()
@@ -74,9 +68,6 @@ fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
 }
 
 fn main() {
-    let is_ci_env = is_ci();
-    let config: &[(u64, u64)] = if is_ci_env { CI_CONFIG } else { LOCAL_CONFIG };
-
     let mut out_dir: Option<PathBuf> = None;
     let mut custom_config: Option<Vec<(u64, u64)>> = None;
     for arg in env::args().skip(1) {
@@ -97,20 +88,18 @@ fn main() {
         }
     }
 
-    let config = custom_config.as_deref().unwrap_or(config);
+    let config = custom_config.as_deref().unwrap_or(BENCH_CONFIG);
     let out_dir = out_dir.unwrap_or_else(default_out_dir);
     fs::create_dir_all(&out_dir).expect("mkdirs");
 
     let replica = ReplicaId::new(b"core");
     for &(count, iterations) in config {
         let (duration_ms, iterations_opt, avg_duration_ms) = if iterations > 1 {
-            // Run multiple iterations and average
-            let mut durations = Vec::new();
-            for _ in 0..iterations {
-                durations.push(run_benchmark(&replica, count));
-            }
-            let avg = durations.iter().sum::<f64>() / durations.len() as f64;
-            (avg, Some(iterations), Some(avg))
+            let mut durations: Vec<f64> =
+                (0..iterations).map(|_| run_benchmark(&replica, count)).collect();
+            durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = durations[durations.len() / 2];
+            (median, Some(iterations), Some(median))
         } else {
             // Single run
             let duration = run_benchmark(&replica, count);
