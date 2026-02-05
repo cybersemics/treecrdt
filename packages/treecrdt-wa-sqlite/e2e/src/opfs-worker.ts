@@ -26,7 +26,7 @@ type BenchPayload = BenchmarkResult & {
   extra?: Record<string, unknown>;
 };
 
-const defaultSizes = [1, 10, 100, 1_000];
+const defaultSizes = [100, 1_000];
 const defaultWorkloads: WorkloadName[] = ["insert-move", "insert-chain", "replay-log"];
 
 async function createAdapter(
@@ -110,36 +110,22 @@ async function runWaSqliteBenchInWorker(
 
   for (const workload of workloadDefs) {
     console.info(`[opfs-worker] workload ${workload.name} start`);
-    // Per-workload isolation: open a fresh adapter, run the workload, then close.
-    const adapter = await createAdapter(storage, baseUrl);
-    try {
-      // Warm-up to reduce first-write effects: a tiny opsSince(0).
-      await adapter.opsSince(0);
-      const res = await runWorkloads(async () => adapter, [workload]);
-      const [result] = res;
-      const mergedExtra =
-        result.extra && workload.totalOps
-          ? { ...result.extra, count: workload.totalOps }
-          : result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined);
-      results.push({
-        ...result,
-        implementation: "wa-sqlite",
-        storage,
-        workload: workload.name,
-        extra: mergedExtra,
-      });
-      console.info(`[opfs-worker] workload ${workload.name} done`);
-    } catch (err) {
-      console.error(`[opfs-worker] workload ${workload.name} failed`, err);
-      if (adapter.close) {
-        try {
-          await adapter.close();
-        } catch {
-          // ignore cleanup errors on failure
-        }
-      }
-      throw err;
-    }
+    // Factory must return a NEW adapter each time: runBenchmark calls it per iteration and closes after each.
+    const adapterFactory = () => createAdapter(storage, baseUrl);
+    const res = await runWorkloads(adapterFactory, [workload]);
+    const [result] = res;
+    const mergedExtra =
+      result.extra && workload.totalOps
+        ? { ...result.extra, count: workload.totalOps }
+        : result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined);
+    results.push({
+      ...result,
+      implementation: "wa-sqlite",
+      storage,
+      workload: workload.name,
+      extra: mergedExtra,
+    });
+    console.info(`[opfs-worker] workload ${workload.name} done`);
   }
 
   return results;

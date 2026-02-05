@@ -31,7 +31,7 @@ export function syncBenchTiming(opts: { defaultIterations?: number } = {}): { it
   return benchTiming({
     iterationsEnv: ["SYNC_BENCH_ITERATIONS", "BENCH_ITERATIONS"],
     warmupEnv: ["SYNC_BENCH_WARMUP", "BENCH_WARMUP"],
-    defaultIterations: opts.defaultIterations ?? 3,
+    defaultIterations: opts.defaultIterations ?? 10,
   });
 }
 
