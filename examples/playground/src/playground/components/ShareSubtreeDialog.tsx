@@ -2,7 +2,9 @@ import type { Dispatch, SetStateAction } from "react";
 import { MdContentCopy, MdLockOutline } from "react-icons/md";
 
 import { ROOT_ID } from "../constants";
-import type { InvitePreset } from "../invite";
+import type { InviteActions, InvitePreset } from "../invite";
+
+import { InvitePermissionsEditor } from "./InvitePermissionsEditor";
 
 export type { InvitePreset } from "../invite";
 
@@ -31,6 +33,8 @@ export type ShareSubtreeDialogProps = {
 
   invitePreset: InvitePreset;
   applyInvitePreset: (preset: InvitePreset) => void;
+  inviteActions: InviteActions;
+  setInviteActions: Dispatch<SetStateAction<InviteActions>>;
   inviteAllowGrant: boolean;
   setInviteAllowGrant: Dispatch<SetStateAction<boolean>>;
 
@@ -67,6 +71,8 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
     setAuthError,
     invitePreset,
     applyInvitePreset,
+    inviteActions,
+    setInviteActions,
     inviteAllowGrant,
     setInviteAllowGrant,
     openNewIsolatedPeerTab,
@@ -174,37 +180,16 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
         )}
 
         {authEnabled && (
-          <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="w-full space-y-2 text-sm text-slate-200 md:w-44">
-                <span>Permission</span>
-                <select
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  value={invitePreset}
-                  onChange={(e) => applyInvitePreset(e.target.value as InvitePreset)}
-                  disabled={authBusy}
-                >
-                  <option value="read">Read</option>
-                  <option value="read_write">Read + Write</option>
-                  <option value="admin">Admin</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-2 pb-2 text-sm text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={inviteAllowGrant}
-                  onChange={(e) => setInviteAllowGrant(e.target.checked)}
-                  disabled={authBusy}
-                />
-                <span className="text-[13px]">
-                  Allow resharing <span className="text-[11px] text-slate-500">(grant)</span>
-                </span>
-              </label>
-            </div>
-            <div className="mt-2 text-[11px] text-slate-500">
-              Grant permission lets the recipient mint delegated invites/grants within their scope.
-            </div>
+          <div className="mt-3">
+            <InvitePermissionsEditor
+              busy={authBusy}
+              invitePreset={invitePreset}
+              inviteActions={inviteActions}
+              setInviteActions={setInviteActions}
+              applyInvitePreset={applyInvitePreset}
+              inviteAllowGrant={inviteAllowGrant}
+              setInviteAllowGrant={setInviteAllowGrant}
+            />
           </div>
         )}
 

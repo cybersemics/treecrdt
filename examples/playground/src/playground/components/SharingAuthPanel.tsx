@@ -12,9 +12,9 @@ import {
   setSealedIdentityKeyB64,
   setSealedIssuerKeyB64,
 } from "../../auth";
-import type { InvitePreset } from "../invite";
+import type { InviteActions, InvitePreset } from "../invite";
 
-type InviteActions = { write_structure: boolean; write_payload: boolean; delete: boolean; tombstone: boolean };
+import { InvitePermissionsEditor } from "./InvitePermissionsEditor";
 
 type AuthTokenScope = {
   docId: string;
@@ -772,32 +772,6 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     	                      </select>
     	                    </label>
     
-    		                    <label className="w-full md:w-44 space-y-2 text-sm text-slate-200">
-    		                      <span>Permission</span>
-    		                      <select
-    		                        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-    		                        value={invitePreset}
-    		                        onChange={(e) => applyInvitePreset(e.target.value as InvitePreset)}
-    		                        disabled={authBusy}
-    		                      >
-    		                        <option value="read">Read</option>
-    		                        <option value="read_write">Read + Write</option>
-    		                        <option value="admin">Admin</option>
-    		                        <option value="custom">Custom</option>
-    		                      </select>
-    		                    </label>
-    		                    <label className="flex items-center gap-2 pb-2 text-sm text-slate-200">
-    		                      <input
-    		                        type="checkbox"
-    		                        checked={inviteAllowGrant}
-    		                        onChange={(e) => setInviteAllowGrant(e.target.checked)}
-    		                        disabled={authBusy}
-    		                      />
-    		                      <span className="text-[13px]">
-    		                        Allow resharing <span className="text-[11px] text-slate-500">(grant)</span>
-    		                      </span>
-    		                    </label>
-    
     			                    <button
     			                      className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
     			                      type="button"
@@ -821,9 +795,21 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     		                      {showInviteOptions ? "Hide options" : "Options"}
     		                    </button>
     		                  </div>
+
+    		                  <div className="mt-3">
+    		                    <InvitePermissionsEditor
+    		                      busy={authBusy}
+    		                      invitePreset={invitePreset}
+    		                      inviteActions={inviteActions}
+    		                      setInviteActions={setInviteActions}
+    		                      applyInvitePreset={applyInvitePreset}
+    		                      inviteAllowGrant={inviteAllowGrant}
+    		                      setInviteAllowGrant={setInviteAllowGrant}
+    		                    />
+    		                  </div>
     
     		                  {showInviteOptions && (
-    		                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+    		                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
     		                      <label className="space-y-2 text-sm text-slate-200">
     		                        <span>Max depth (optional)</span>
     		                        <input
@@ -836,31 +822,6 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     		                          disabled={authBusy}
     		                        />
     		                      </label>
-    		                      <div className="md:col-span-2 space-y-2 text-sm text-slate-200">
-    		                        <div className="text-sm">Actions</div>
-    		                        {invitePreset === "custom" ? (
-    		                          <div className="flex flex-wrap gap-3 text-xs text-slate-200">
-    		                            {(["write_structure", "write_payload", "delete", "tombstone"] as const).map((name) => (
-    		                              <label key={name} className="flex items-center gap-2">
-    		                                <input
-    		                                  type="checkbox"
-    		                                  checked={inviteActions[name]}
-    		                                  onChange={(e) => {
-    		                                    setInvitePreset("custom");
-    		                                    setInviteActions((prev) => ({ ...prev, [name]: e.target.checked }));
-    		                                  }}
-    		                                  disabled={authBusy}
-    		                                />
-    		                                <span className="font-mono text-[11px]">{name}</span>
-    		                              </label>
-    		                            ))}
-    		                          </div>
-    		                        ) : (
-    		                          <div className="text-[11px] text-slate-500">
-    		                            Preset actions. Select <span className="font-semibold text-slate-300">Custom</span> to edit.
-    		                          </div>
-    		                        )}
-    		                      </div>
     		                    </div>
     		                  )}
     

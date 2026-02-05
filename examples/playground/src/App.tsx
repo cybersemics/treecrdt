@@ -1056,6 +1056,8 @@ export default function App() {
         setAuthError={setAuthError}
         invitePreset={invitePreset}
         applyInvitePreset={applyInvitePreset}
+        inviteActions={inviteActions}
+        setInviteActions={setInviteActions}
         inviteAllowGrant={inviteAllowGrant}
         setInviteAllowGrant={setInviteAllowGrant}
         openNewIsolatedPeerTab={openNewIsolatedPeerTab}
