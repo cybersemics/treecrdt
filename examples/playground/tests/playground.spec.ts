@@ -680,21 +680,9 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
       expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
     ]);
 
-    // Sync so B can fetch the secret subtree root payload.
-    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
-    const syncErrorA = pageA.getByTestId("sync-error");
-    const syncErrorB = pageB.getByTestId("sync-error");
-    await Promise.race([
-      treeRowByLabel(pageB, "secret-root").waitFor({ state: "visible", timeout: 30_000 }),
-      (async () => {
-        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
-        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
-      })(),
-      (async () => {
-        await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
-        throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
-      })(),
-    ]);
+    // B should be able to pull the scoped root payload by syncing its own `children(scopeRoot)` filter.
+    await clickSync(pageB, "B");
+    await expect(treeRowByLabel(pageB, "secret-root")).toBeVisible({ timeout: 30_000 });
 
     const secretRootRowB = treeRowByNodeId(pageB, secretNodeId);
     await expect(secretRootRowB.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
@@ -714,20 +702,9 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
       expect(pageC.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
     ]);
 
-    // Sync so C can fetch the secret subtree root payload.
-    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
-    const syncErrorC = pageC.getByTestId("sync-error");
-    await Promise.race([
-      treeRowByLabel(pageC, "secret-root").waitFor({ state: "visible", timeout: 30_000 }),
-      (async () => {
-        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
-        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
-      })(),
-      (async () => {
-        await syncErrorC.waitFor({ state: "visible", timeout: 30_000 });
-        throw new Error(`sync error (C): ${await syncErrorC.textContent()}`);
-      })(),
-    ]);
+    // C should also be able to pull the scoped root payload by syncing its own scope.
+    await clickSync(pageC, "C");
+    await expect(treeRowByLabel(pageC, "secret-root")).toBeVisible({ timeout: 30_000 });
     const secretRootRowC = treeRowByNodeId(pageC, secretNodeId);
     await expect(secretRootRowC.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(secretRootRowC.getByText("private root", { exact: true })).toBeVisible({ timeout: 30_000 });
