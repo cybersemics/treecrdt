@@ -103,7 +103,7 @@ export function TreeRow({
   return (
     <div
       className="group rounded-lg bg-slate-950/40 px-2 py-2 ring-1 ring-slate-800/50 transition hover:bg-slate-950/55 hover:ring-slate-700/70"
-      style={{ paddingLeft: `${depth * 16}px` }}
+      style={{ paddingLeft: `${8 + depth * 16}px` }}
       data-testid="tree-row"
       data-node-id={node.id}
     >

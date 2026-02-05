@@ -40,9 +40,14 @@ export function ComposerPanel({
   canWritePayload: boolean;
   canWriteStructure: boolean;
 }) {
+  const containerPadding = composerOpen ? "p-5" : "p-3";
+  const headerMargin = composerOpen ? "mb-3" : "mb-0";
+
   return (
-    <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <div
+      className={`rounded-2xl bg-slate-900/60 shadow-lg shadow-black/20 ring-1 ring-slate-800/60 ${containerPadding}`}
+    >
+      <div className={`${headerMargin} flex flex-wrap items-center justify-between gap-2`}>
         <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Composer</div>
         <button
           type="button"
@@ -124,4 +129,3 @@ export function ComposerPanel({
     </div>
   );
 }
-
