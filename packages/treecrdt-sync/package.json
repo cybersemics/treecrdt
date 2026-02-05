@@ -10,6 +10,10 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./browser": {
+      "import": "./dist/browser.js",
+      "types": "./dist/browser.d.ts"
+    },
     "./in-memory": {
       "import": "./dist/in-memory.js",
       "types": "./dist/in-memory.d.ts"

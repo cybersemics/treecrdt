@@ -10,21 +10,20 @@ import {
 } from "@treecrdt/auth";
 import {
   SyncPeer,
+  createTreecrdtSyncBackendFromClient,
   createTreecrdtSyncSqliteOpAuthStore,
   type Filter,
   type SyncSubscription,
 } from "@treecrdt/sync";
+import type { BroadcastPresenceAckMessageV1, BroadcastPresenceMessageV1 } from "@treecrdt/sync/browser";
+import { createBroadcastPresenceMesh } from "@treecrdt/sync/browser";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { DuplexTransport } from "@treecrdt/sync/transport";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {
-  createBroadcastDuplex,
-  createPlaygroundBackend,
   hexToBytes16,
   type AuthGrantMessageV1,
-  type PresenceAckMessage,
-  type PresenceMessage,
 } from "../../sync-v0";
 import {
   PLAYGROUND_PEER_TIMEOUT_MS,
@@ -64,7 +63,9 @@ export type PlaygroundSyncApi = {
   notifyLocalUpdate: () => void;
   handleSync: (filter: Filter) => Promise<void>;
   handleScopedSync: () => Promise<void>;
-  postBroadcastMessage: (msg: PresenceMessage | PresenceAckMessage | AuthGrantMessageV1) => boolean;
+  postBroadcastMessage: (
+    msg: BroadcastPresenceMessageV1 | BroadcastPresenceAckMessageV1 | AuthGrantMessageV1
+  ) => boolean;
 };
 
 export type UsePlaygroundSyncOptions = {
@@ -130,6 +131,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   }, [online]);
 
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const presenceMeshRef = useRef<ReturnType<typeof createBroadcastPresenceMesh<any>> | null>(null);
 
   const syncPeerRef = useRef<SyncPeer<Operation> | null>(null);
   const syncConnRef = useRef<Map<string, { transport: DuplexTransport<any>; detach: () => void }>>(new Map());
@@ -139,8 +141,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
   const liveAllStartingRef = useRef<Set<string>>(new Set());
   const liveChildrenStartingRef = useRef<Set<string>>(new Set());
-  const peerReadyRef = useRef<Set<string>>(new Set());
-  const peerAckSentRef = useRef<Set<string>>(new Set());
 
   const stopLiveAllForPeer = (peerId: string) => {
     const existing = liveAllSubsRef.current.get(peerId);
@@ -290,6 +290,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const dropPeerConnection = (peerId: string) => {
+    const mesh = presenceMeshRef.current;
+    if (mesh) {
+      mesh.disconnectPeer(peerId);
+      return;
+    }
+
     const connections = syncConnRef.current;
     const conn = connections.get(peerId);
     if (!conn) return;
@@ -304,8 +310,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       // ignore
     }
     connections.delete(peerId);
-    peerReadyRef.current.delete(peerId);
-    peerAckSentRef.current.delete(peerId);
     stopLiveAllForPeer(peerId);
     stopLiveChildrenForPeer(peerId);
     setPeers((prev) => prev.filter((p) => p.id !== peerId));
@@ -451,7 +455,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     }
   };
 
-  const postBroadcastMessage = (msg: PresenceMessage | PresenceAckMessage | AuthGrantMessageV1) => {
+  const postBroadcastMessage = (
+    msg: BroadcastPresenceMessageV1 | BroadcastPresenceAckMessageV1 | AuthGrantMessageV1
+  ) => {
     const channel = broadcastChannelRef.current;
     if (!channel) return false;
     channel.postMessage(msg);
@@ -547,12 +553,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
     broadcastChannelRef.current = channel;
-    const baseBackend = createPlaygroundBackend(client, docId, { enablePendingSidecar: authEnabled });
+    const baseBackend = createTreecrdtSyncBackendFromClient(client, docId, {
+      enablePendingSidecar: authEnabled,
+      maxLamport: getMaxLamport,
+    });
     const backend = {
       ...baseBackend,
-      maxLamport: async () => {
-        return getMaxLamport();
-      },
       listOpRefs: async (filter: Filter) => {
         const refs = await baseBackend.listOpRefs(filter);
         if (debugSync) {
@@ -619,73 +625,43 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     syncPeerRef.current = sharedPeer;
 
     const connections = new Map<string, { transport: DuplexTransport<any>; detach: () => void }>();
-    const lastSeen = new Map<string, number>();
     syncConnRef.current = connections;
-    peerReadyRef.current.clear();
-    peerAckSentRef.current.clear();
-
-    const updatePeers = () => {
-      setPeers(
-        Array.from(lastSeen.entries())
-          .map(([id, ts]) => ({ id, lastSeen: ts }))
-          .sort((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1))
-      );
-    };
 
     const maybeStartLiveForPeer = (peerId: string) => {
-      if (!peerReadyRef.current.has(peerId)) return;
+      const mesh = presenceMeshRef.current;
+      if (!mesh || !mesh.isPeerReady(peerId)) return;
       if (liveAllEnabledRef.current) startLiveAll(peerId);
       for (const parentId of liveChildrenParentsRef.current) startLiveChildren(peerId, parentId);
     };
 
-    const sendPresenceAck = (toPeerId: string) => {
-      const msg = {
-        t: "presence_ack",
-        peer_id: selfPeerId,
-        to_peer_id: toPeerId,
-        ts: Date.now(),
-      } as const satisfies PresenceAckMessage;
-      channel.postMessage(msg);
-    };
+    const mesh = createBroadcastPresenceMesh({
+      channel,
+      selfId: selfPeerId,
+      codec: treecrdtSyncV0ProtobufCodec,
+      isOnline: () => onlineRef.current,
+      peerTimeoutMs: PLAYGROUND_PEER_TIMEOUT_MS,
+      onPeersChanged: (next) => {
+        setPeers(next.map((p) => ({ id: p.id, lastSeen: p.lastSeen })));
+      },
+      onPeerReady: (peerId) => {
+        maybeStartLiveForPeer(peerId);
+      },
+      onPeerTransport: (peerId, transport) => {
+        const detach = sharedPeer.attach(transport);
+        connections.set(peerId, { transport, detach });
+        maybeStartLiveForPeer(peerId);
+        return detach;
+      },
+      onPeerDisconnected: (peerId) => {
+        connections.delete(peerId);
+        stopLiveAllForPeer(peerId);
+        stopLiveChildrenForPeer(peerId);
+      },
+      onBroadcastMessage: (data) => {
+        if (!data || typeof data !== "object") return;
+        const msg = data as Partial<AuthGrantMessageV1>;
+        if (msg.t !== "auth_grant_v1") return;
 
-    const ensureAckSent = (peerId: string) => {
-      if (!peerId || peerId === selfPeerId) return;
-      if (peerAckSentRef.current.has(peerId)) return;
-      peerAckSentRef.current.add(peerId);
-      sendPresenceAck(peerId);
-    };
-
-    const ensureConnection = (peerId: string) => {
-      if (!peerId || peerId === selfPeerId) return;
-      if (connections.has(peerId)) return;
-
-      const rawTransport = createBroadcastDuplex<Operation>(channel, selfPeerId, peerId, treecrdtSyncV0ProtobufCodec);
-      const transport: DuplexTransport<any> = {
-        ...rawTransport,
-        async send(msg) {
-          if (!onlineRef.current) return;
-          return rawTransport.send(msg);
-        },
-        onMessage(handler) {
-          return rawTransport.onMessage((msg) => {
-            if (!onlineRef.current) return;
-            lastSeen.set(peerId, Date.now());
-            return handler(msg);
-          });
-        },
-      };
-      const detach = sharedPeer.attach(transport);
-      connections.set(peerId, { transport, detach });
-
-      maybeStartLiveForPeer(peerId);
-    };
-
-    const onBroadcast = (ev: MessageEvent<any>) => {
-      const data = ev.data as unknown;
-      if (!data || typeof data !== "object") return;
-      const msg = data as Partial<PresenceMessage | PresenceAckMessage | AuthGrantMessageV1>;
-
-      if (msg.t === "auth_grant_v1") {
         const grant = msg as Partial<AuthGrantMessageV1>;
         if (typeof grant.doc_id !== "string") return;
         if (grant.doc_id !== docId) return;
@@ -697,82 +673,21 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (!localReplicaHex) return;
         if (grant.to_replica_pk_hex.toLowerCase() !== localReplicaHex.toLowerCase()) return;
 
-        if (onAuthGrantMessage) onAuthGrantMessage(grant as AuthGrantMessageV1);
-        return;
-      }
-
-      if (msg.t === "presence") {
-        if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
-        if (msg.peer_id === selfPeerId) return;
-        lastSeen.set(msg.peer_id, msg.ts);
-        ensureConnection(msg.peer_id);
-        ensureAckSent(msg.peer_id);
-        maybeStartLiveForPeer(msg.peer_id);
-        updatePeers();
-        return;
-      }
-
-      if (msg.t === "presence_ack") {
-        const toPeerId = (msg as Partial<PresenceAckMessage>).to_peer_id;
-        if (typeof msg.peer_id !== "string" || typeof toPeerId !== "string" || typeof msg.ts !== "number") return;
-        if (msg.peer_id === selfPeerId) return;
-        if (toPeerId !== selfPeerId) return;
-        lastSeen.set(msg.peer_id, msg.ts);
-        ensureConnection(msg.peer_id);
-        peerReadyRef.current.add(msg.peer_id);
-        ensureAckSent(msg.peer_id);
-        maybeStartLiveForPeer(msg.peer_id);
-        updatePeers();
-      }
-    };
-
-    channel.addEventListener("message", onBroadcast);
-
-    const sendPresence = () => {
-      if (!onlineRef.current) return;
-      const msg: PresenceMessage = { t: "presence", peer_id: selfPeerId, ts: Date.now() };
-      channel.postMessage(msg);
-    };
-
-    sendPresence();
-    const interval = window.setInterval(sendPresence, 1000);
-    const pruneInterval = window.setInterval(() => {
-      const now = Date.now();
-      for (const [id, ts] of lastSeen) {
-        if (now - ts > PLAYGROUND_PEER_TIMEOUT_MS) {
-          lastSeen.delete(id);
-          peerReadyRef.current.delete(id);
-          peerAckSentRef.current.delete(id);
-          const conn = connections.get(id);
-          if (conn) {
-            conn.detach();
-            connections.delete(id);
-          }
-          stopLiveAllForPeer(id);
-          stopLiveChildrenForPeer(id);
-        }
-      }
-      updatePeers();
-    }, 2000);
+        onAuthGrantMessage?.(grant as AuthGrantMessageV1);
+      },
+    });
+    presenceMeshRef.current = mesh;
 
     return () => {
-      window.clearInterval(interval);
-      window.clearInterval(pruneInterval);
-      channel.removeEventListener("message", onBroadcast);
       stopAllLiveAll();
       stopAllLiveChildren();
+      if (presenceMeshRef.current === mesh) presenceMeshRef.current = null;
+      mesh.stop();
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
       if (syncPeerRef.current === sharedPeer) syncPeerRef.current = null;
       channel.close();
       liveAllStartingRef.current.clear();
       liveChildrenStartingRef.current.clear();
-      peerReadyRef.current.clear();
-      peerAckSentRef.current.clear();
-
-      for (const conn of connections.values()) {
-        conn.detach();
-        (conn.transport as any).close?.();
-      }
       connections.clear();
       setPeers([]);
     };
