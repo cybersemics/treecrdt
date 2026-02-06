@@ -64,9 +64,24 @@ export type RibltStatus = {
     | { case: "failed"; value: RibltFailed };
 };
 
+export type OpAuth = {
+  sig: Bytes;
+  proofRef?: Bytes;
+};
+
+export type PendingOpReason = "missing_context";
+
+export type PendingOp<Op> = {
+  op: Op;
+  auth: OpAuth;
+  reason: PendingOpReason;
+  message?: string;
+};
+
 export type OpsBatch<Op> = {
   filterId: string;
   ops: Op[];
+  auth?: OpAuth[];
   done: boolean;
 };
 
@@ -114,4 +129,27 @@ export interface SyncBackend<Op> {
   listOpRefs(filter: Filter): Promise<OpRef[]>;
   getOpsByOpRefs(opRefs: OpRef[]): Promise<Op[]>;
   applyOps(ops: Op[]): Promise<void>;
+
+  /**
+   * Optional: persist ops that were structurally valid (signatures/capabilities)
+   * but could not be authorized due to missing local context (fail-closed).
+   *
+   * Implementations SHOULD store these in the same SQLite database as the CRDT
+   * state (sidecar tables), not as separate files.
+   */
+  storePendingOps?: (ops: PendingOp<Op>[]) => Promise<void>;
+
+  /**
+   * Optional: return ops previously stored via `storePendingOps`.
+   *
+   * These ops MUST NOT be applied to CRDT state until re-verified.
+   */
+  listPendingOps?: () => Promise<PendingOp<Op>[]>;
+
+  /**
+   * Optional: remove pending ops after they have been applied.
+   *
+   * Implementations SHOULD identify ops by op_id/op_ref and ignore unknown entries.
+   */
+  deletePendingOps?: (ops: Op[]) => Promise<void>;
 }

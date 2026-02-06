@@ -2,7 +2,7 @@ import type { Operation, OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 
 function replicaKey(replica: Operation["meta"]["id"]["replica"]): string {
-  return typeof replica === "string" ? replica : bytesToHex(replica);
+  return bytesToHex(replica);
 }
 
 export function opKey(op: Operation): string {

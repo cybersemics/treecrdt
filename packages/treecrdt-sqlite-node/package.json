@@ -14,8 +14,8 @@
     "copy:ext": "node ./scripts/copy-ext.mjs",
     "build:ts": "pnpm -C ../treecrdt-sqlite-conformance run build && tsc -p tsconfig.json",
     "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
-    "test": "pnpm run build && vitest run",
-    "benchmark": "pnpm run build && tsx ./scripts/bench.ts && tsx ./scripts/bench-sync.ts"
+    "test": "pnpm -C ../treecrdt-sync run build && pnpm run build && vitest run",
+    "benchmark": "pnpm -C ../treecrdt-sync run build && pnpm run build && tsx ./scripts/bench.ts && tsx ./scripts/bench-sync.ts"
   },
   "peerDependencies": {
     "better-sqlite3": "^9.0.0"
@@ -24,12 +24,16 @@
     "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
+    "@noble/ed25519": "^3.0.0",
+    "@noble/hashes": "^1.8.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^20.19.25",
+    "@treecrdt/auth": "workspace:*",
     "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/sqlite-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "better-sqlite3": "^9.0.0",
+    "cborg": "^4.3.2",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"

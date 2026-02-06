@@ -45,6 +45,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   storage: StorageMode;
   docId: string;
+  runner: SqliteRunner;
   ops: TreecrdtOpsApi;
   opRefs: TreecrdtOpRefsApi;
   tree: TreecrdtTreeApi;
@@ -207,7 +208,7 @@ async function createDirectClient(opts: {
   const adapter = opened.api;
   const runner: SqliteRunner = { exec: (sql) => db.exec(sql), getText: (sql, params = []) => dbGetText(db, sql, params) };
   const localWriters = new Map<string, TreecrdtSqliteWriter>();
-  const localWriterKey = (replica: ReplicaId) => (typeof replica === "string" ? replica : bytesToHex(replica));
+  const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
   const localWriterFor = (replica: ReplicaId) => {
     const key = localWriterKey(replica);
     const existing = localWriters.get(key);
@@ -230,6 +231,27 @@ async function createDirectClient(opts: {
   const call: RpcCall = async (method, params) => {
     try {
       switch (method) {
+        case "sqlExec": {
+          const [sql] = params as RpcParams<"sqlExec">;
+          await db.exec(sql);
+          return undefined as any;
+        }
+        case "sqlGetText": {
+          const [sql, rawParams] = params as RpcParams<"sqlGetText">;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const stmt: any = await db.prepare(sql);
+          try {
+            let idx = 1;
+            for (const p of rawParams ?? []) {
+              await db.bind(stmt, idx++, p);
+            }
+            const row = await db.step(stmt);
+            if (row === 0) return null as any;
+            return (await db.column_text(stmt, 0)) as any;
+          } finally {
+            await db.finalize(stmt);
+          }
+        }
         case "append": {
           const [op] = params as RpcParams<"append">;
           await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
@@ -276,29 +298,25 @@ async function createDirectClient(opts: {
           return (await adapter.headLamport()) as any;
         case "replicaMaxCounter": {
           const [rawReplica] = params as RpcParams<"replicaMaxCounter">;
-          const replica =
-            typeof rawReplica === "string" ? replicaIdToBytes(rawReplica) : Uint8Array.from(rawReplica);
-          return (await adapter.replicaMaxCounter(replica)) as any;
+          return (await adapter.replicaMaxCounter(Uint8Array.from(rawReplica))) as any;
         }
         case "localInsert": {
           const [replica, parent, node, placement, payload] = params as RpcParams<"localInsert">;
-          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
-          return (await localWriterFor(rid).insert(parent, node, placement, payload ? { payload } : {})) as any;
+          return (
+            await localWriterFor(Uint8Array.from(replica)).insert(parent, node, placement, payload ? { payload } : {})
+          ) as any;
         }
         case "localMove": {
           const [replica, node, newParent, placement] = params as RpcParams<"localMove">;
-          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
-          return (await localWriterFor(rid).move(node, newParent, placement)) as any;
+          return (await localWriterFor(Uint8Array.from(replica)).move(node, newParent, placement)) as any;
         }
         case "localDelete": {
           const [replica, node] = params as RpcParams<"localDelete">;
-          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
-          return (await localWriterFor(rid).delete(node)) as any;
+          return (await localWriterFor(Uint8Array.from(replica)).delete(node)) as any;
         }
         case "localPayload": {
           const [replica, node, payload] = params as RpcParams<"localPayload">;
-          const rid: ReplicaId = typeof replica === "string" ? replica : Uint8Array.from(replica);
-          return (await localWriterFor(rid).payload(node, payload)) as any;
+          return (await localWriterFor(Uint8Array.from(replica)).payload(node, payload)) as any;
         }
         case "close":
           if (db.close) await db.close();
@@ -333,6 +351,11 @@ function makeTreecrdtClientFromCall(opts: {
 }): TreecrdtClient {
   const call = opts.call;
 
+  const runner: SqliteRunner = {
+    exec: (sql) => call("sqlExec", [sql]).then(() => undefined),
+    getText: (sql, params = []) => call("sqlGetText", [sql, params]),
+  };
+
   const opsSinceImpl = async (lamport: number, root?: string) => {
     const rows = await call("opsSince", [lamport, root]);
     return decodeSqliteOps(rows);
@@ -362,19 +385,19 @@ function makeTreecrdtClientFromCall(opts: {
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null
   ) => {
-    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    const rid = Array.from(replica);
     return (await call("localInsert", [rid, parent, node, placement, payload])) as unknown as Operation;
   };
   const localMoveImpl = async (replica: ReplicaId, node: string, newParent: string, placement: TreecrdtSqlitePlacement) => {
-    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    const rid = Array.from(replica);
     return (await call("localMove", [rid, node, newParent, placement])) as unknown as Operation;
   };
   const localDeleteImpl = async (replica: ReplicaId, node: string) => {
-    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    const rid = Array.from(replica);
     return (await call("localDelete", [rid, node])) as unknown as Operation;
   };
   const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) => {
-    const rid = typeof replica === "string" ? replica : Array.from(replica);
+    const rid = Array.from(replica);
     return (await call("localPayload", [rid, node, payload])) as unknown as Operation;
   };
 
@@ -382,6 +405,7 @@ function makeTreecrdtClientFromCall(opts: {
     mode: opts.mode,
     storage: opts.storage,
     docId: opts.docId,
+    runner,
     ops: {
       append: (op) => call("append", [op]).then(() => undefined),
       appendMany: (ops) => call("appendMany", [ops]).then(() => undefined),

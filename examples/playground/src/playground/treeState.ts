@@ -72,14 +72,22 @@ export function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<st
 
 export function flattenForSelectState(
   childrenByParent: Record<string, string[]>,
-  getLabel?: (id: string) => string
+  getLabel?: (id: string) => string,
+  opts: { rootId?: string } = {}
 ): Array<{ id: string; label: string; depth: number }> {
   const acc: Array<{ id: string; label: string; depth: number }> = [];
-  const stack: Array<{ id: string; depth: number }> = [{ id: ROOT_ID, depth: 0 }];
+  const rootId = opts.rootId ?? ROOT_ID;
+  const stack: Array<{ id: string; depth: number }> = [{ id: rootId, depth: 0 }];
   while (stack.length > 0) {
     const entry = stack.pop();
     if (!entry) break;
-    const label = getLabel ? getLabel(entry.id) : entry.id === ROOT_ID ? "Root" : entry.id.slice(0, 6);
+    const label = getLabel
+      ? getLabel(entry.id)
+      : entry.id === rootId
+        ? rootId === ROOT_ID
+          ? "Root"
+          : "Scope root"
+        : entry.id.slice(0, 6);
     acc.push({ id: entry.id, label, depth: entry.depth });
     const kids = childrenByParent[entry.id] ?? [];
     for (let i = kids.length - 1; i >= 0; i--) {
@@ -88,4 +96,3 @@ export function flattenForSelectState(
   }
   return acc;
 }
-

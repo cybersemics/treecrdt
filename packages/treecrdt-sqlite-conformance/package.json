@@ -16,10 +16,12 @@
     "src"
   ],
   "scripts": {
-    "build": "pnpm -C ../treecrdt-ts run build && tsc -p tsconfig.json"
+    "build": "pnpm -C ../treecrdt-auth run build && tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/auth": "workspace:*",
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

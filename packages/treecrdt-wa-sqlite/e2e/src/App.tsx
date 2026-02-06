@@ -13,6 +13,14 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
+function replicaFromLabel(label: string): Uint8Array {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const [ops, setOps] = useState<ViewOp[]>([]);
@@ -45,7 +53,7 @@ export default function App() {
   const runDemo = async () => {
     if (!client) return;
 
-    const replica = new TextEncoder().encode("demo");
+    const replica = replicaFromLabel("demo");
     const rootId = "0".padStart(32, "0");
     const childId = "1".padStart(32, "0");
 
@@ -70,7 +78,7 @@ export default function App() {
   const runPayloadDemo = async () => {
     if (!client) return;
 
-    const replica = new TextEncoder().encode("demo");
+    const replica = replicaFromLabel("demo");
     const rootId = "0".padStart(32, "0");
     const childId = "1".padStart(32, "0");
 
@@ -94,7 +102,7 @@ export default function App() {
   const runInsertWithPayloadDemo = async () => {
     if (!client) return;
 
-    const replica = new TextEncoder().encode("demo");
+    const replica = replicaFromLabel("demo");
     const rootId = "0".padStart(32, "0");
     const childId = "1".padStart(32, "0");
 
@@ -141,8 +149,7 @@ export default function App() {
 }
 
 function makeJsonFriendlyOp(op: Operation): unknown {
-  const replica = op.meta.id.replica;
-  const outReplica = replica instanceof Uint8Array ? Array.from(replica) : replica;
+  const outReplica = Array.from(op.meta.id.replica);
   const kind = op.kind;
   if (kind.type === "payload") {
     return {

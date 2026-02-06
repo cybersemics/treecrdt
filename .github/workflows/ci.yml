@@ -81,6 +81,8 @@ jobs:
     - name: Build TypeScript deps for playground typecheck
       run: |
         pnpm -C packages/treecrdt-sync run build
+        pnpm -C packages/treecrdt-auth run build
+        pnpm -C packages/treecrdt-crypto run build
         pnpm -C packages/treecrdt-wa-sqlite run build:ts
 
     - name: Typecheck playground
