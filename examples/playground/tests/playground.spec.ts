@@ -3,7 +3,10 @@ import { expect, test } from "@playwright/test";
 const ROOT_ID = "00000000000000000000000000000000";
 
 function uniqueDocId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  // Use crypto for uniqueness to avoid collisions when tests run in quick succession.
+  // Date.now() alone can collide (ms resolution) and Math.random can be deterministically seeded.
+  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
+  return `${prefix}-${suffix}`;
 }
 
 async function waitForReady(page: import("@playwright/test").Page, path: string) {

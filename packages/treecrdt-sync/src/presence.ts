@@ -71,7 +71,6 @@ export function createBroadcastPresenceMesh<M>(opts: {
   const connections = new Map<string, Connection<M>>();
   const lastSeen = new Map<string, number>();
   const peerReady = new Set<string>();
-  const peerAckSent = new Set<string>();
 
   const updatePeers = () => {
     const peers = Array.from(lastSeen.entries())
@@ -90,13 +89,6 @@ export function createBroadcastPresenceMesh<M>(opts: {
       ts: nowMs(),
     } as const satisfies BroadcastPresenceAckMessageV1;
     channel.postMessage(msg);
-  };
-
-  const ensureAckSent = (peerId: string) => {
-    if (!peerId || peerId === selfId) return;
-    if (peerAckSent.has(peerId)) return;
-    peerAckSent.add(peerId);
-    sendPresenceAck(peerId);
   };
 
   const ensureConnection = (peerId: string) => {
@@ -140,7 +132,6 @@ export function createBroadcastPresenceMesh<M>(opts: {
     }
     lastSeen.delete(peerId);
     peerReady.delete(peerId);
-    peerAckSent.delete(peerId);
     opts.onPeerDisconnected?.(peerId);
     updatePeers();
   };
@@ -161,7 +152,9 @@ export function createBroadcastPresenceMesh<M>(opts: {
 
       lastSeen.set(peerId, ts);
       ensureConnection(peerId);
-      ensureAckSent(peerId);
+      // Presence acks may be missed if the receiver isn't listening yet (new tab startup).
+      // Retry on every presence message (at most once per `presenceIntervalMs` per peer).
+      sendPresenceAck(peerId);
       updatePeers();
       return;
     }
@@ -180,7 +173,6 @@ export function createBroadcastPresenceMesh<M>(opts: {
       peerReady.add(peerId);
       if (!wasReady) opts.onPeerReady?.(peerId);
 
-      ensureAckSent(peerId);
       updatePeers();
       return;
     }
@@ -206,7 +198,6 @@ export function createBroadcastPresenceMesh<M>(opts: {
       if (now - ts <= peerTimeoutMs) continue;
       lastSeen.delete(id);
       peerReady.delete(id);
-      peerAckSent.delete(id);
       const conn = connections.get(id);
       if (conn) {
         try {
@@ -249,7 +240,6 @@ export function createBroadcastPresenceMesh<M>(opts: {
       }
       lastSeen.clear();
       peerReady.clear();
-      peerAckSent.clear();
       updatePeers();
     },
   };

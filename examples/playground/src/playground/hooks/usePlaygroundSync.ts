@@ -491,17 +491,21 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const mesh = presenceMeshRef.current;
 
     let peerId = autoSyncPeerIdRef.current;
+    const connections = syncConnRef.current;
+    if (peerId && !connections.has(peerId)) {
+      autoSyncPeerIdRef.current = null;
+      peerId = null;
+    }
     if (!peerId) {
-      const candidates = Array.from(syncConnRef.current.keys());
+      const candidates = Array.from(connections.keys());
       peerId = candidates.find((id) => !mesh || mesh.isPeerReady(id)) ?? null;
-      if (peerId) autoSyncPeerIdRef.current = peerId;
+      autoSyncPeerIdRef.current = peerId;
     }
     if (!peerId) return;
 
     const peer = syncPeerRef.current;
-    const conn = syncConnRef.current.get(peerId);
+    const conn = connections.get(peerId);
     if (!peer || !conn) return;
-    if (mesh && !mesh.isPeerReady(peerId)) return;
 
     if (!authCanSyncAll) {
       const clean = viewRootId.toLowerCase();
@@ -557,6 +561,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       } catch (err) {
         console.error("Auto sync failed", err);
         setSyncError(err instanceof Error ? err.message : String(err));
+        autoSyncPeerIdRef.current = null;
         dropPeerConnection(peerId);
       } finally {
         autoSyncInFlightRef.current = false;
