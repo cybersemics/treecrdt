@@ -89,14 +89,33 @@ Reference encoding:
 cap = {
   res: {
     doc_id: "...",
-    // If `root` is omitted, this cap is doc-wide.
-    root: <NodeId bytes>,        // optional
+    // `root` is required; doc-wide access is represented by ROOT + no extra scope restrictions.
+    root: <NodeId bytes>,        // required (ROOT means doc-wide)
     max_depth: <u32>,            // optional
     exclude: [<NodeId bytes>],   // optional
   },
-  actions: ["write_structure", "write_payload", "delete", "tombstone", ...]
+  actions: ["write_structure", "write_payload", "delete", "tombstone", "grant", ...]
 }
 ```
+
+### Delegation / resharing (optional)
+
+This extension supports delegated (“reshared”) capability tokens.
+
+High-level idea:
+
+- An **issuer** can mint a token for a subject key.
+- If that token includes the `grant` action, the subject key can mint a **delegated token** for another subject key.
+- The delegated token MUST be a subset of the proof token (same `doc_id`, narrower-or-equal scope, subset of actions, and time bounds within the proof).
+
+Wire format (reference implementation):
+
+- Delegated tokens are still COSE_Sign1 + CWT, but they are signed by the **subject key** of a *proof token*.
+- The delegated token carries exactly one proof token in the COSE unprotected header:
+  - key: `"treecrdt.delegation_proof_v1"`
+  - value: a single `bstr` (or a 1-element array of `bstr`) containing the proof token bytes
+- Proof tokens can themselves be delegated (chained), but they must ultimately verify against an issuer key.
+  Implementations SHOULD enforce a maximum chain depth and reject cycles.
 
 ### Token id (`proof_ref`)
 
@@ -193,6 +212,7 @@ Two useful sidecar concepts:
 
 1) **Verified proof cache** (optional): re-verify later without re-downloading proofs.
 2) **Pending ops** (recommended): store ops that are validly signed and well-formed but not yet authorizable.
+3) **Op auth cache** (recommended for forwarders): persist per-op auth (`sig` + `proof_ref`) for already-applied ops so a peer/server can re-serve ops it did not author after restart.
 
 ### Suggested SQLite schema (illustrative)
 
@@ -213,6 +233,20 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   proof_ref BLOB,
   reason TEXT NOT NULL,              -- e.g. "missing_context"
   message TEXT,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (doc_id, op_ref)
+);
+```
+
+If a peer/server forwards ops (or needs to re-serve verified ops after restart), it SHOULD also store the `OpAuth`
+metadata for already-applied ops:
+
+```sql
+CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
+  doc_id TEXT NOT NULL,
+  op_ref BLOB NOT NULL,              -- 16 bytes
+  sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
+  proof_ref BLOB,                    -- 16 bytes (token id), nullable
   created_at_ms INTEGER NOT NULL,
   PRIMARY KEY (doc_id, op_ref)
 );
