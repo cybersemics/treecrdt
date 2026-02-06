@@ -126,6 +126,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [liveChildrenParents, setLiveChildrenParents] = useState<Set<string>>(() => new Set());
   const [liveAllEnabled, setLiveAllEnabled] = useState(false);
+  const [autoSyncJoinTick, bumpAutoSyncJoinTick] = useState(0);
 
   const onlineRef = useRef(true);
   useEffect(() => {
@@ -145,7 +146,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
   const liveAllStartingRef = useRef<Set<string>>(new Set());
   const liveChildrenStartingRef = useRef<Set<string>>(new Set());
-  const autoSyncTriggeredRef = useRef(false);
+  const autoSyncDoneRef = useRef(false);
+  const autoSyncInFlightRef = useRef(false);
+  const autoSyncAttemptRef = useRef(0);
   const autoSyncPeerIdRef = useRef<string | null>(null);
 
   const stopLiveAllForPeer = (peerId: string) => {
@@ -472,23 +475,42 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   useEffect(() => {
     if (!autoSyncJoinInitial || !joinMode) return;
-    if (autoSyncTriggeredRef.current) return;
+    if (autoSyncDoneRef.current) return;
+    if (autoSyncInFlightRef.current) return;
     if (!onlineRef.current) return;
     if (syncBusy) return;
 
-    const peerId = autoSyncPeerIdRef.current;
+    const authReady =
+      !authEnabled ||
+      (authMaterial.issuerPkB64 &&
+        authMaterial.localSkB64 &&
+        authMaterial.localPkB64 &&
+        authMaterial.localTokensB64.length > 0);
+    if (!authReady) return;
+
+    const mesh = presenceMeshRef.current;
+
+    let peerId = autoSyncPeerIdRef.current;
+    if (!peerId) {
+      const candidates = Array.from(syncConnRef.current.keys());
+      peerId = candidates.find((id) => !mesh || mesh.isPeerReady(id)) ?? null;
+      if (peerId) autoSyncPeerIdRef.current = peerId;
+    }
     if (!peerId) return;
 
     const peer = syncPeerRef.current;
     const conn = syncConnRef.current.get(peerId);
     if (!peer || !conn) return;
+    if (mesh && !mesh.isPeerReady(peerId)) return;
 
     if (!authCanSyncAll) {
       const clean = viewRootId.toLowerCase();
       if (clean === ROOT_ID || !/^[0-9a-f]{32}$/.test(clean)) return;
     }
 
-    autoSyncTriggeredRef.current = true;
+    if (autoSyncAttemptRef.current >= 3) return;
+    autoSyncAttemptRef.current += 1;
+    autoSyncInFlightRef.current = true;
 
     void (async () => {
       setSyncBusy(true);
@@ -526,6 +548,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         await refreshParents(Array.from(parentIds));
         await refreshNodeCount();
 
+        autoSyncDoneRef.current = true;
         if (typeof window !== "undefined") {
           const url = new URL(window.location.href);
           url.searchParams.delete("autosync");
@@ -534,12 +557,28 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       } catch (err) {
         console.error("Auto sync failed", err);
         setSyncError(err instanceof Error ? err.message : String(err));
+        dropPeerConnection(peerId);
       } finally {
+        autoSyncInFlightRef.current = false;
         setSyncBusy(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authCanSyncAll, joinMode, peers.length, refreshMeta, refreshNodeCount, refreshParents, syncBusy, viewRootId]);
+  }, [
+    authEnabled,
+    authCanSyncAll,
+    authMaterial.issuerPkB64,
+    authMaterial.localPkB64,
+    authMaterial.localSkB64,
+    authMaterial.localTokensB64.length,
+    autoSyncJoinTick,
+    joinMode,
+    refreshMeta,
+    refreshNodeCount,
+    refreshParents,
+    syncBusy,
+    viewRootId,
+  ]);
 
   useEffect(() => {
     liveChildrenParentsRef.current = liveChildrenParents;
@@ -722,19 +761,20 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       },
       onPeerReady: (peerId) => {
         maybeStartLiveForPeer(peerId);
-        if (
-          autoSyncJoinInitial &&
-          joinMode &&
-          !autoSyncTriggeredRef.current &&
-          autoSyncPeerIdRef.current === null
-        ) {
+        if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
           autoSyncPeerIdRef.current = peerId;
+          // Ensure the auto-sync effect runs even if peer readiness toggles without changing `peers.length`.
+          bumpAutoSyncJoinTick((t) => t + 1);
         }
       },
       onPeerTransport: (peerId, transport) => {
         const detach = sharedPeer.attach(transport);
         connections.set(peerId, { transport, detach });
         maybeStartLiveForPeer(peerId);
+        if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
+          autoSyncPeerIdRef.current = peerId;
+          bumpAutoSyncJoinTick((t) => t + 1);
+        }
         return detach;
       },
       onPeerDisconnected: (peerId) => {
