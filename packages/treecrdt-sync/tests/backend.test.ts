@@ -107,3 +107,45 @@ test("backend children(parent) does not duplicate the parent's payload opRef", a
   expect(refs.map(bytesToHex).filter((h) => h === payloadWriterHex).length).toBe(1);
 });
 
+test("backend children(parent) falls back to ops table when tree_payload is missing", async () => {
+  const docId = "doc-backend-payload-fallback";
+  const parentHex = "33".repeat(16);
+  const parentBytes = nodeIdToBytes16(parentHex);
+
+  const payloadWriterOpRef: OpRef = new Uint8Array(16).fill(9);
+  const payloadWriterHex = bytesToHex(payloadWriterOpRef);
+
+  const childRefs: OpRef[] = [new Uint8Array(16).fill(1)];
+
+  const runnerCalls: string[] = [];
+  const runner: SqliteRunner = {
+    exec: async () => {},
+    getText: async (sql: string) => {
+      runnerCalls.push(sql);
+      if (sql.includes("treecrdt_ensure_materialized")) return "1";
+      if (sql.includes("FROM tree_payload")) return null;
+      if (sql.includes("FROM ops")) return payloadWriterHex;
+      return null;
+    },
+  };
+
+  const backend = createTreecrdtSyncBackendFromClient(
+    {
+      runner,
+      opRefs: {
+        all: async () => [],
+        children: async () => childRefs,
+      },
+      ops: {
+        get: async () => [],
+        appendMany: async () => {},
+      },
+    },
+    docId
+  );
+
+  const refs = await backend.listOpRefs({ children: { parent: parentBytes } });
+  expect(refs.map(bytesToHex)).toContain(payloadWriterHex);
+  expect(runnerCalls.some((s) => s.includes("FROM tree_payload"))).toBe(true);
+  expect(runnerCalls.some((s) => s.includes("FROM ops"))).toBe(true);
+});

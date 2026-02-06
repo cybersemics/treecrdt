@@ -34,41 +34,61 @@ async function maybeLoadNodePayloadWriterOpRef(opts: {
     // Best-effort. Some backends may not expose this UDF (non-SQLite); callers will ignore null.
   }
 
+  // Fast path: use the materialized payload table if present.
   const json = await opts.runner.getText(
     "SELECT json_object('replica', lower(hex(last_replica)), 'counter', CAST(last_counter AS TEXT)) \
      FROM tree_payload \
      WHERE node = ?1",
     [opts.nodeBytes]
   );
-  if (!json) return null;
+  if (json) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      // fall through to ops-table fallback
+      parsed = null;
+    }
+    if (parsed && typeof parsed === "object") {
+      const replicaHex = (parsed as any).replica;
+      const counterText = (parsed as any).counter;
+      if (typeof replicaHex === "string" && typeof counterText === "string" && replicaHex.length > 0) {
+        let counter: bigint;
+        try {
+          counter = BigInt(counterText);
+        } catch {
+          counter = 0n;
+        }
 
-  let parsed: unknown;
+        if (counter > 0n) {
+          try {
+            const replica = hexToBytes(replicaHex);
+            return deriveOpRefV0(opts.docId, { replica, counter });
+          } catch {
+            // fall through to ops-table fallback
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: query the op-log directly. This avoids relying on derived state (which can be stale
+  // if materialization fails or is unavailable in a given environment).
+  const opRefHex = await opts.runner.getText(
+    "SELECT lower(hex(op_ref)) \
+     FROM ops \
+     WHERE node = ?1 AND op_ref IS NOT NULL AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+     ORDER BY lamport DESC, replica DESC, counter DESC \
+     LIMIT 1",
+    [opts.nodeBytes]
+  );
+  if (!opRefHex || typeof opRefHex !== "string") return null;
   try {
-    parsed = JSON.parse(json);
+    const opRef = hexToBytes(opRefHex);
+    return opRef.length === 16 ? opRef : null;
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object") return null;
-  const replicaHex = (parsed as any).replica;
-  const counterText = (parsed as any).counter;
-  if (typeof replicaHex !== "string" || typeof counterText !== "string") return null;
-  if (replicaHex.length === 0) return null;
-
-  let counter: bigint;
-  try {
-    counter = BigInt(counterText);
-  } catch {
-    return null;
-  }
-
-  let replica: Uint8Array;
-  try {
-    replica = hexToBytes(replicaHex);
-  } catch {
-    return null;
-  }
-
-  return deriveOpRefV0(opts.docId, { replica, counter });
 }
 
 export function createTreecrdtSyncBackendFromClient(
