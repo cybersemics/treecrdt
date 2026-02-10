@@ -607,7 +607,15 @@ export default function App() {
         maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
         maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
       });
-      const detach = peer.attach(transport);
+      const detach = peer.attach(transport, {
+        onError: (err, msgCtx) => {
+          console.error("Playground sync message handler failed", {
+            peerId,
+            type: msgCtx.message.payload.case,
+            err,
+          });
+        },
+      });
       connections.set(peerId, { transport, peer, detach });
 
       if (liveAllEnabledRef.current) startLiveAll(peerId);
