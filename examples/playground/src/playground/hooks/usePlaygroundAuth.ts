@@ -38,7 +38,7 @@ import {
   saveDocPayloadKeyB64,
   type StoredAuthMaterial,
 } from "../../auth";
-import { hexToBytes16, type AuthGrantMessageV1 } from "../../sync-v0";
+import { hexToBytes16, type AuthGrantMessageV1, type AuthInviteRequestMessageV1 } from "../../sync-v0";
 import { ROOT_ID } from "../constants";
 import { loadPrivateRoots, persistPrivateRoots } from "../persist";
 import { prefixPlaygroundStorageKey } from "../storage";
@@ -200,10 +200,19 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
   const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
+  const inviteRequestId = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const raw = new URLSearchParams(window.location.search).get("invite_req");
+    if (!raw) return null;
+    const clean = raw.trim();
+    return clean.length > 0 ? clean : null;
+  }, []);
   const [showAuthPanel, setShowAuthPanel] = useState(() => {
     if (typeof window === "undefined") return false;
     if (!joinMode) return false;
-    return !new URLSearchParams(window.location.hash.slice(1)).has("invite");
+    const hasInvite = new URLSearchParams(window.location.hash.slice(1)).has("invite");
+    const hasInviteReq = new URLSearchParams(window.location.search).has("invite_req");
+    return !hasInvite && !hasInviteReq;
   });
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showAuthAdvanced, setShowAuthAdvanced] = useState(false);
@@ -1063,6 +1072,154 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     [docId, refreshAuthMaterial, refreshDocPayloadKey, rememberScopedPrivateRootsFromToken]
   );
 
+  useEffect(() => {
+    if (!authEnabled) return;
+    if (!joinMode) return;
+    if (!inviteRequestId) return;
+    if (!selfPeerId) return;
+    if (authMaterial.localTokensB64.length > 0) return;
+    if (typeof BroadcastChannel === "undefined") return;
+
+    const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const handleMessage = (ev: MessageEvent) => {
+      const data = (ev as MessageEvent<unknown>).data;
+      if (!data || typeof data !== "object") return;
+      const msg = data as Partial<AuthGrantMessageV1>;
+      if (msg.t !== "auth_grant_v1") return;
+      if (msg.doc_id !== docId) return;
+      if (typeof msg.to_replica_pk_hex !== "string") return;
+      if (msg.to_replica_pk_hex.toLowerCase() !== selfPeerId.toLowerCase()) return;
+      if (typeof msg.issuer_pk_b64 !== "string") return;
+      if (typeof msg.token_b64 !== "string") return;
+
+      if (timer) clearInterval(timer);
+      channel.removeEventListener("message", handleMessage);
+      channel.close();
+      onAuthGrantMessage(msg as AuthGrantMessageV1);
+    };
+
+    channel.addEventListener("message", handleMessage);
+
+    const req: AuthInviteRequestMessageV1 = {
+      t: "auth_invite_request_v1",
+      doc_id: docId,
+      request_id: inviteRequestId,
+      from_replica_pk_hex: selfPeerId,
+      ts: Date.now(),
+    };
+
+    const sendRequest = () => {
+      try {
+        channel.postMessage(req);
+      } catch {
+        // ignore
+      }
+    };
+
+    sendRequest();
+    timer = setInterval(sendRequest, 1_000);
+
+    return () => {
+      if (timer) clearInterval(timer);
+      channel.removeEventListener("message", handleMessage);
+      channel.close();
+    };
+  }, [authEnabled, authMaterial.localTokensB64.length, docId, inviteRequestId, joinMode, onAuthGrantMessage, selfPeerId]);
+
+  const buildGrantMessageV1 = async (opts2: { subjectPk: Uint8Array; rootNodeId: string }): Promise<AuthGrantMessageV1> => {
+    if (!authEnabled) throw new Error("auth is disabled");
+    if (typeof window === "undefined") throw new Error("window is not available");
+
+    if (!selfPeerId) throw new Error("local replica public key is not ready yet");
+
+    const issuerPkB64 = authMaterial.issuerPkB64;
+    const issuerSkB64 = authMaterial.issuerSkB64;
+    if (!issuerPkB64) throw new Error("issuer public key is missing; import an invite link first");
+
+    const { actions, maxDepth, excludeNodeIds } = readInviteConfig(opts2.rootNodeId);
+
+    let tokenBytes: Uint8Array;
+    if (issuerSkB64) {
+      const issuerSk = base64urlDecode(issuerSkB64);
+      tokenBytes = createCapabilityTokenV1({
+        issuerPrivateKey: issuerSk,
+        subjectPublicKey: opts2.subjectPk,
+        docId,
+        rootNodeId: opts2.rootNodeId,
+        actions,
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
+      });
+    } else {
+      const localSkB64 = authMaterial.localSkB64;
+      const proofTokenB64 = authMaterial.localTokensB64[0] ?? null;
+      if (!localSkB64 || !proofTokenB64) {
+        throw new Error("cannot delegate grants without local keys/tokens; import an invite link first");
+      }
+
+      const issuerPk = base64urlDecode(issuerPkB64);
+      const proofTokenBytes = base64urlDecode(proofTokenB64);
+      const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
+      const proofDesc = await describeTreecrdtCapabilityTokenV1({
+        tokenBytes: proofTokenBytes,
+        issuerPublicKeys: [issuerPk],
+        docId,
+        scopeEvaluator,
+      });
+      const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
+      if (!proofActions.has("grant")) {
+        throw new Error("this tab cannot delegate grants (missing grant permission)");
+      }
+
+      const proofScope = proofDesc.caps?.[0]?.res ?? null;
+      const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
+      const proofDocWide =
+        proofRootId === ROOT_ID && proofScope?.maxDepth === undefined && (proofScope?.excludeNodeIds?.length ?? 0) === 0;
+      if (!proofDocWide && opts2.rootNodeId.toLowerCase() !== proofRootId) {
+        if (proofScope?.maxDepth !== undefined) {
+          throw new Error("this tab can only delegate grants for its current subtree scope (maxDepth)");
+        }
+        if (!scopeEvaluator) {
+          throw new Error("this tab can only delegate grants for its current subtree scope");
+        }
+        const tri = await scopeEvaluator({
+          docId,
+          node: hexToBytes16(opts2.rootNodeId),
+          scope: {
+            root: hexToBytes16(proofRootId),
+            ...(proofScope?.excludeNodeIds?.length ? { exclude: proofScope.excludeNodeIds.map((id) => hexToBytes16(id)) } : {}),
+          },
+        });
+        if (tri === "deny") throw new Error("this tab can only delegate grants within its granted subtree scope");
+        if (tri === "unknown") throw new Error("missing subtree context to delegate grants for that node");
+      }
+
+      tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
+        delegatorPrivateKey: base64urlDecode(localSkB64),
+        delegatorProofToken: proofTokenBytes,
+        subjectPublicKey: opts2.subjectPk,
+        docId,
+        rootNodeId: opts2.rootNodeId,
+        actions,
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+        ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
+      });
+    }
+
+    return {
+      t: "auth_grant_v1",
+      doc_id: docId,
+      to_replica_pk_hex: bytesToHex(opts2.subjectPk),
+      issuer_pk_b64: issuerPkB64,
+      token_b64: base64urlEncode(tokenBytes),
+      payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
+      from_peer_id: selfPeerId,
+      ts: Date.now(),
+    };
+  };
+
   const grantSubtreeToReplicaPubkey = async (sendGrant: (msg: AuthGrantMessageV1) => boolean) => {
     if (!authEnabled) return;
     if (typeof window === "undefined") return;
@@ -1072,96 +1229,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setAuthInfo(null);
 
     try {
-      if (!selfPeerId) throw new Error("local replica public key is not ready yet");
-
-      const issuerPkB64 = authMaterial.issuerPkB64;
-      const issuerSkB64 = authMaterial.issuerSkB64;
-      if (!issuerPkB64) throw new Error("issuer public key is missing; import an invite link first");
-
       const subjectPk = parseReplicaPublicKeyInput(grantRecipientKey);
-      const rootNodeId = inviteRoot;
-      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
-
-      let tokenBytes: Uint8Array;
-      if (issuerSkB64) {
-        const issuerSk = base64urlDecode(issuerSkB64);
-        tokenBytes = createCapabilityTokenV1({
-          issuerPrivateKey: issuerSk,
-          subjectPublicKey: subjectPk,
-          docId,
-          rootNodeId,
-          actions,
-          ...(maxDepth !== undefined ? { maxDepth } : {}),
-          ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
-        });
-      } else {
-        const localSkB64 = authMaterial.localSkB64;
-        const proofTokenB64 = authMaterial.localTokensB64[0] ?? null;
-        if (!localSkB64 || !proofTokenB64) {
-          throw new Error("cannot delegate grants without local keys/tokens; import an invite link first");
-        }
-
-        const issuerPk = base64urlDecode(issuerPkB64);
-        const proofTokenBytes = base64urlDecode(proofTokenB64);
-        const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
-        const proofDesc = await describeTreecrdtCapabilityTokenV1({
-          tokenBytes: proofTokenBytes,
-          issuerPublicKeys: [issuerPk],
-          docId,
-          scopeEvaluator,
-        });
-        const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
-        if (!proofActions.has("grant")) {
-          throw new Error("this tab cannot delegate grants (missing grant permission)");
-        }
-
-        const proofScope = proofDesc.caps?.[0]?.res ?? null;
-        const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
-        const proofDocWide =
-          proofRootId === ROOT_ID && proofScope?.maxDepth === undefined && (proofScope?.excludeNodeIds?.length ?? 0) === 0;
-        if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
-          if (proofScope?.maxDepth !== undefined) {
-            throw new Error("this tab can only delegate grants for its current subtree scope (maxDepth)");
-          }
-          if (!scopeEvaluator) {
-            throw new Error("this tab can only delegate grants for its current subtree scope");
-          }
-          const tri = await scopeEvaluator({
-            docId,
-            node: hexToBytes16(rootNodeId),
-            scope: {
-              root: hexToBytes16(proofRootId),
-              ...(proofScope?.excludeNodeIds?.length
-                ? { exclude: proofScope.excludeNodeIds.map((id) => hexToBytes16(id)) }
-                : {}),
-            },
-          });
-          if (tri === "deny") throw new Error("this tab can only delegate grants within its granted subtree scope");
-          if (tri === "unknown") throw new Error("missing subtree context to delegate grants for that node");
-        }
-
-        tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
-          delegatorPrivateKey: base64urlDecode(localSkB64),
-          delegatorProofToken: proofTokenBytes,
-          subjectPublicKey: subjectPk,
-          docId,
-          rootNodeId,
-          actions,
-          ...(maxDepth !== undefined ? { maxDepth } : {}),
-          ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
-        });
-      }
-
-      const msg: AuthGrantMessageV1 = {
-        t: "auth_grant_v1",
-        doc_id: docId,
-        to_replica_pk_hex: bytesToHex(subjectPk),
-        issuer_pk_b64: issuerPkB64,
-        token_b64: base64urlEncode(tokenBytes),
-        payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
-        from_peer_id: selfPeerId,
-        ts: Date.now(),
-      };
+      const msg = await buildGrantMessageV1({ subjectPk, rootNodeId: inviteRoot });
 
       if (!sendGrant(msg)) throw new Error("sync channel is not ready yet");
       setGrantRecipientKey("");
@@ -1173,7 +1242,12 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     }
   };
 
-  const makeNewProfileId = () => `profile-${crypto.randomUUID().slice(0, 8)}`;
+  const shortRandomId = () => {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID().slice(0, 8);
+    return Math.random().toString(16).slice(2, 10);
+  };
+  const makeNewProfileId = () => `profile-${shortRandomId()}`;
+  const makeInviteRequestId = () => `invite-${shortRandomId()}`;
 
   const openNewIsolatedPeerTab = async (opts2: { autoInvite: boolean; rootNodeId?: string }) => {
     if (typeof window === "undefined") return;
@@ -1185,18 +1259,69 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     url.searchParams.set("join", "1");
     url.searchParams.set("auth", "1");
     url.searchParams.delete("autosync");
+    url.searchParams.delete("invite_req");
     url.hash = "";
 
     if (opts2.autoInvite) {
+      const requestId = makeInviteRequestId();
+      url.searchParams.set("autosync", "1");
+      url.searchParams.set("invite_req", requestId);
+
+      setAuthBusy(true);
+      setAuthError(null);
+      setAuthInfo(null);
+
+      let bc: BroadcastChannel | null = null;
+      let onInviteRequest: ((ev: MessageEvent) => void) | null = null;
+      let waitTimeout: ReturnType<typeof setTimeout> | null = null;
+
       try {
-        // Auto-invite makes the common "simulate another device" flow 1 click.
-        url.searchParams.set("autosync", "1");
-        url.hash = `invite=${await buildInviteB64({ rootNodeId: opts2.rootNodeId ?? ROOT_ID })}`;
+        if (typeof BroadcastChannel === "undefined") {
+          throw new Error("BroadcastChannel is not available in this environment.");
+        }
+
+        const rootNodeId = opts2.rootNodeId ?? ROOT_ID;
+        const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
+        bc = channel;
+
+        const waitForReplicaPkHex = new Promise<string>((resolve, reject) => {
+          waitTimeout = setTimeout(() => reject(new Error("Timed out waiting for the new device to request access.")), 15_000);
+
+          const handleInviteRequest = (ev: MessageEvent) => {
+            const data = (ev as MessageEvent<unknown>).data;
+            if (!data || typeof data !== "object") return;
+            const msg = data as Partial<AuthInviteRequestMessageV1>;
+            if (msg.t !== "auth_invite_request_v1") return;
+            if (msg.doc_id !== docId) return;
+            if (msg.request_id !== requestId) return;
+            if (typeof msg.from_replica_pk_hex !== "string") return;
+
+            if (waitTimeout) clearTimeout(waitTimeout);
+            channel.removeEventListener("message", handleInviteRequest);
+            resolve(msg.from_replica_pk_hex);
+          };
+
+          onInviteRequest = handleInviteRequest;
+          channel.addEventListener("message", handleInviteRequest);
+        });
+
+        // Open the tab before awaiting so browsers don't block the popup.
+        window.open(url.toString(), "_blank", "noopener,noreferrer");
+
+        const replicaPkHex = await waitForReplicaPkHex;
+        const grant = await buildGrantMessageV1({ subjectPk: parseReplicaPublicKeyInput(replicaPkHex), rootNodeId });
+        channel.postMessage(grant);
       } catch (err) {
-        // Fall back to a blank join-only tab and show the reason on the current tab.
         setAuthError(err instanceof Error ? err.message : String(err));
         setShowAuthPanel(true);
+        // Fall back: the opened tab can still import a copied invite link.
+      } finally {
+        if (waitTimeout) clearTimeout(waitTimeout);
+        if (bc && onInviteRequest) bc.removeEventListener("message", onInviteRequest);
+        bc?.close();
+        setAuthBusy(false);
       }
+      return;
     }
 
     window.open(url.toString(), "_blank", "noopener,noreferrer");
