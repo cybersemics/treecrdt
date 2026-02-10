@@ -11,6 +11,14 @@ export type AuthGrantMessageV1 = {
   ts: number;
 };
 
+export type AuthInviteRequestMessageV1 = {
+  t: "auth_invite_request_v1";
+  doc_id: string;
+  request_id: string;
+  from_replica_pk_hex: string;
+  ts: number;
+};
+
 export function hexToBytes16(hex: string): Uint8Array {
   return nodeIdToBytes16(hex);
 }

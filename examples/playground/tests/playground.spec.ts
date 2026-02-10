@@ -661,6 +661,8 @@ test("open device auto-syncs so the scoped root label is visible", async ({ brow
 
     await pageB.bringToFront();
     await expect(pageB.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
+    await expect.poll(() => pageB.url()).toContain("invite_req=");
+    await expect.poll(() => pageB.url()).not.toContain("#invite=");
 
     const rowB = treeRowByNodeId(pageB, nodeId);
     await expect(rowB.getByRole("button", { name: "AASD" })).toBeVisible({ timeout: 60_000 });

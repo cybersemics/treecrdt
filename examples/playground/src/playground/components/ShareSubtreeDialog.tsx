@@ -209,7 +209,7 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
                 disabled={authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
                 title={
                   authCanIssue || authCanDelegate
-                    ? "Open an isolated device tab and auto-import the invite"
+                    ? "Open an isolated device tab and auto-grant access"
                     : "This tab can’t mint invites (verify-only)"
                 }
               >
