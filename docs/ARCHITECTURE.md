@@ -43,11 +43,6 @@ flowchart TD
     bench["@treecrdt/benchmark"]
   end
 
-  %% Apps / examples
-  subgraph Apps["Apps and examples"]
-    playground["examples/playground (@treecrdt/playground)"]
-  end
-
   %% Runtime dependencies
   sync --> iface
   sync --> riblt_pkg
@@ -58,11 +53,6 @@ flowchart TD
   conformance --> auth
   conformance --> sync
   conformance --> iface
-  playground --> auth
-  playground --> sync
-  playground --> crypto
-  playground --> wa
-  playground --> iface
 
   %% Build-time connections (how artifacts are produced)
   riblt_pkg -. wasm-pack build .-> riblt_crate
