@@ -3,6 +3,9 @@ import type { TreecrdtSqlitePlacement } from "@treecrdt/interface/sqlite";
 
 export type RpcStorageMode = "memory" | "opfs";
 
+export type RpcSqlParam = number | string | null | Uint8Array;
+export type RpcSqlParams = RpcSqlParam[];
+
 export type RpcInitParams = {
   baseUrl: string;
   filename?: string;
@@ -17,6 +20,8 @@ export type RpcSchema = {
     params: [baseUrl: string, filename: string | undefined, storage: RpcStorageMode, docId: string];
     result: RpcInitResult;
   };
+  sqlExec: { params: [sql: string]; result: void };
+  sqlGetText: { params: [sql: string, params?: RpcSqlParams]; result: string | null };
   append: { params: [op: Operation]; result: void };
   appendMany: { params: [ops: Operation[]]; result: void };
   opsSince: { params: [lamport: number, root?: string]; result: unknown[] };
@@ -31,17 +36,17 @@ export type RpcSchema = {
   treeDump: { params: []; result: unknown[] };
   treeNodeCount: { params: []; result: number };
   headLamport: { params: []; result: number };
-  replicaMaxCounter: { params: [replica: number[] | string]; result: number };
+  replicaMaxCounter: { params: [replica: number[]]; result: number };
   localInsert: {
-    params: [replica: number[] | string, parent: string, node: string, placement: TreecrdtSqlitePlacement, payload: Uint8Array | null];
+    params: [replica: number[], parent: string, node: string, placement: TreecrdtSqlitePlacement, payload: Uint8Array | null];
     result: Operation;
   };
   localMove: {
-    params: [replica: number[] | string, node: string, newParent: string, placement: TreecrdtSqlitePlacement];
+    params: [replica: number[], node: string, newParent: string, placement: TreecrdtSqlitePlacement];
     result: Operation;
   };
-  localDelete: { params: [replica: number[] | string, node: string]; result: Operation };
-  localPayload: { params: [replica: number[] | string, node: string, payload: Uint8Array | null]; result: Operation };
+  localDelete: { params: [replica: number[], node: string]; result: Operation };
+  localPayload: { params: [replica: number[], node: string, payload: Uint8Array | null]; result: Operation };
   close: { params: []; result: void };
 };
 

@@ -45,9 +45,9 @@ export function createInMemoryConnectedPeers<Op>(opts: {
   backendA: SyncBackend<Op>;
   backendB: SyncBackend<Op>;
   codec: WireCodec<SyncMessage<Op>, Uint8Array>;
-  peerOptions?: SyncPeerOptions;
-  peerAOptions?: SyncPeerOptions;
-  peerBOptions?: SyncPeerOptions;
+  peerOptions?: SyncPeerOptions<Op>;
+  peerAOptions?: SyncPeerOptions<Op>;
+  peerBOptions?: SyncPeerOptions<Op>;
 }): InMemoryConnectedPeers<Op> {
   const [wireA, wireB] = createInMemoryDuplex<Uint8Array>();
   const transportA = wrapDuplexTransportWithCodec(wireA, opts.codec);
@@ -72,4 +72,3 @@ export function createInMemoryConnectedPeers<Op>(opts: {
     },
   };
 }
-

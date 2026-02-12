@@ -1,7 +1,6 @@
 import type { ReplicaId } from "./index.js";
 
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+const ED25519_PUBLIC_KEY_LEN = 32;
 
 function stripHexPrefix(hex: string): string {
   return hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
@@ -98,17 +97,27 @@ export function decodeNodeId(val: unknown): string {
   return bytesToHex(bytes);
 }
 
+function assertReplicaIdBytes(bytes: Uint8Array): ReplicaId {
+  if (bytes.length !== ED25519_PUBLIC_KEY_LEN) {
+    throw new Error(`ReplicaId must be ${ED25519_PUBLIC_KEY_LEN} bytes (ed25519 pubkey), got ${bytes.length}`);
+  }
+  return bytes as ReplicaId;
+}
+
 export function replicaIdToBytes(replica: ReplicaId): Uint8Array {
-  return typeof replica === "string" ? textEncoder.encode(replica) : replica;
+  return assertReplicaIdBytes(replica);
 }
 
-export function replicaIdFromBytes(bytes: Uint8Array): string {
-  return textDecoder.decode(bytes);
+export function replicaIdFromBytes(bytes: Uint8Array): ReplicaId {
+  return assertReplicaIdBytes(bytes);
 }
 
-export function decodeReplicaId(val: unknown): string {
-  if (val === null || val === undefined) return "";
-  if (typeof val === "string") return val;
-  const bytes = val instanceof Uint8Array ? val : Uint8Array.from(val as any);
-  return replicaIdFromBytes(bytes);
+export function decodeReplicaId(val: unknown): ReplicaId {
+  if (val === null || val === undefined) throw new Error("ReplicaId missing");
+  if (val instanceof Uint8Array) return assertReplicaIdBytes(val);
+  if (typeof val === "string") {
+    throw new Error("ReplicaId must be bytes (ed25519 pubkey); string form is not supported");
+  }
+  const bytes = Uint8Array.from(val as any);
+  return assertReplicaIdBytes(bytes);
 }
