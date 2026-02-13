@@ -249,7 +249,7 @@ export function TreePanel({
             title={
               authEnabled && !(authCanIssue || authCanDelegate)
                 ? "Verify-only tabs can’t mint invites. Open a minting peer (or import a grant with share permission)."
-                : "New device (isolated): separate storage (no shared keys/private-roots). Auto-invite; Alt+click opens join-only."
+                : "New device (isolated): separate storage (no shared keys/private-roots). Auto-grant; Alt+click opens join-only."
             }
             aria-label="New device (isolated)"
           >

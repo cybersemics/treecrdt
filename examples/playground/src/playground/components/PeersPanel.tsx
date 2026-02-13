@@ -95,7 +95,7 @@ export function PeersPanel({
             title={
               authEnabled && !(authCanIssue || authCanDelegate)
                 ? "Verify-only tabs can’t mint invites. Open a minting peer (or import a grant with share permission)."
-                : "New device (isolated): separate storage, auto-invite"
+                : "New device (isolated): separate storage, auto-grant"
             }
           >
             <MdLockOutline className="text-[16px]" />
@@ -133,4 +133,3 @@ export function PeersPanel({
     </div>
   );
 }
-
