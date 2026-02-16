@@ -10,6 +10,10 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./browser": {
+      "import": "./dist/browser.js",
+      "types": "./dist/browser.d.ts"
+    },
     "./in-memory": {
       "import": "./dist/in-memory.js",
       "types": "./dist/in-memory.d.ts"
@@ -38,8 +42,8 @@
     "@treecrdt/riblt-wasm": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
+    "@types/node": "^20.19.25",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"
   }

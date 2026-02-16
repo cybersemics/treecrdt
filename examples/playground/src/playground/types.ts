@@ -32,5 +32,5 @@ export type PayloadRecord = {
   replica: string;
   counter: number;
   payload: Uint8Array | null;
+  encrypted?: boolean;
 };
-

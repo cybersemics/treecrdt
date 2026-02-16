@@ -1,4 +1,5 @@
-export type ReplicaId = string | Uint8Array;
+// Replica identity for v0/v1 sync: Ed25519 public key bytes (32 bytes).
+export type ReplicaId = Uint8Array;
 export type NodeId = string;
 export type Lamport = number;
 

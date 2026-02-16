@@ -1,0 +1,33 @@
+{
+  "name": "@treecrdt/crypto",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm run build && vitest run"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^3.0.0",
+    "@noble/hashes": "^1.8.0",
+    "cborg": "^4.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.25",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  }
+}
+

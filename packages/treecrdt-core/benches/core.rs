@@ -95,7 +95,8 @@ fn main() {
     let replica = ReplicaId::new(b"core");
     for &(count, iterations) in config {
         let (duration_ms, iterations_opt, avg_duration_ms) = if iterations > 1 {
-            let mut durations: Vec<f64> = (0..iterations).map(|_| run_benchmark(&replica, count)).collect();
+            let mut durations: Vec<f64> =
+                (0..iterations).map(|_| run_benchmark(&replica, count)).collect();
             durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let median = durations[durations.len() / 2];
             (median, Some(iterations), Some(median))

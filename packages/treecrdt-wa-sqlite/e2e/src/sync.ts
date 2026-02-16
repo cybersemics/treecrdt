@@ -39,8 +39,23 @@ function hexToBytes(hex: string): Uint8Array {
   return nodeIdToBytes16(hex);
 }
 
-function hasOp(ops: Operation[], replica: string, counter: number): boolean {
-  return ops.some((op) => op.meta.id.replica === replica && op.meta.id.counter === counter);
+function replicaFromLabel(label: string): Uint8Array {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
+}
+
+const replicas = {
+  a: replicaFromLabel("a"),
+  b: replicaFromLabel("b"),
+  m: replicaFromLabel("m"),
+};
+
+function hasOp(ops: Operation[], replica: Uint8Array, counter: number): boolean {
+  const targetHex = bytesToHex(replica);
+  return ops.some((op) => bytesToHex(op.meta.id.replica) === targetHex && op.meta.id.counter === counter);
 }
 
 function orderKeyFromPosition(position: number): Uint8Array {
@@ -76,8 +91,12 @@ async function runAllE2e(): Promise<void> {
   const b = await createTreecrdtClient({ storage: "memory", docId });
   try {
     const root = "0".repeat(32);
-    const aOps = [makeOp("a", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) })];
-    const bOps = [makeOp("b", 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) })];
+    const aOps = [
+      makeOp(replicas.a, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    ];
+    const bOps = [
+      makeOp(replicas.b, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    ];
     await a.ops.appendMany(aOps);
     await b.ops.appendMany(bOps);
 
@@ -104,8 +123,8 @@ async function runAllE2e(): Promise<void> {
     if (finalA.length !== 2 || finalB.length !== 2) {
       throw new Error(`sync-all: expected both sides to have 2 ops, got a=${finalA.length} b=${finalB.length}`);
     }
-    if (!hasOp(finalA, "a", 1) || !hasOp(finalA, "b", 1)) throw new Error("sync-all: A missing ops");
-    if (!hasOp(finalB, "a", 1) || !hasOp(finalB, "b", 1)) throw new Error("sync-all: B missing ops");
+    if (!hasOp(finalA, replicas.a, 1) || !hasOp(finalA, replicas.b, 1)) throw new Error("sync-all: A missing ops");
+    if (!hasOp(finalB, replicas.a, 1) || !hasOp(finalB, replicas.b, 1)) throw new Error("sync-all: B missing ops");
   } finally {
     await Promise.allSettled([a.close(), b.close()]);
   }
@@ -119,12 +138,12 @@ async function runChildrenE2e(): Promise<void> {
     const parentAHex = "a0".repeat(16);
     const parentBHex = "b0".repeat(16);
     const aOps = [
-      makeOp("a", 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-      makeOp("a", 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+      makeOp(replicas.a, 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+      makeOp(replicas.a, 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
     ];
     const bOps = [
-      makeOp("b", 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-      makeOp("b", 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), orderKey: orderKeyFromPosition(0) }),
+      makeOp(replicas.b, 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+      makeOp(replicas.b, 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), orderKey: orderKeyFromPosition(0) }),
     ];
     await a.ops.appendMany(aOps);
     await b.ops.appendMany(bOps);
@@ -151,10 +170,10 @@ async function runChildrenE2e(): Promise<void> {
 
     const finalA = await a.ops.all();
     const finalB = await b.ops.all();
-    if (!hasOp(finalA, "b", 1)) throw new Error("sync-children: expected A to receive b:1");
-    if (hasOp(finalA, "b", 2)) throw new Error("sync-children: A should not receive b:2");
-    if (!hasOp(finalB, "a", 1)) throw new Error("sync-children: expected B to receive a:1");
-    if (hasOp(finalB, "a", 2)) throw new Error("sync-children: B should not receive a:2");
+    if (!hasOp(finalA, replicas.b, 1)) throw new Error("sync-children: expected A to receive b:1");
+    if (hasOp(finalA, replicas.b, 2)) throw new Error("sync-children: A should not receive b:2");
+    if (!hasOp(finalB, replicas.a, 1)) throw new Error("sync-children: expected B to receive a:1");
+    if (hasOp(finalB, replicas.a, 2)) throw new Error("sync-children: B should not receive a:2");
   } finally {
     await Promise.allSettled([a.close(), b.close()]);
   }
@@ -172,7 +191,7 @@ async function runLargeFanoutAllE2e(): Promise<void> {
 
   try {
     const root = "0".repeat(32);
-    const opsA = buildFanoutInsertTreeOps({ replica: "a", size, fanout, root });
+    const opsA = buildFanoutInsertTreeOps({ replica: replicas.a, size, fanout, root });
     await a.ops.appendMany(opsA);
 
     const backendA = makeBackend(a, docId, maxLamport(opsA));
@@ -253,12 +272,17 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
         codewordsPerMessage: SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
       });
       try {
-        const op1 = makeOp("b", 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) });
+        const op1 = makeOp(replicas.b, 1, 1, {
+          type: "insert",
+          parent: root,
+          node: nodeIdFromInt(1),
+          orderKey: orderKeyFromPosition(0),
+        });
         await b.ops.append(op1);
         await pb.notifyLocalUpdate();
         await waitUntil(async () => {
           const opsA = await a.ops.all();
-          return hasOp(opsA, "b", 1);
+          return hasOp(opsA, replicas.b, 1);
         }, { message: "expected subscription(all) to deliver b:1 to A" });
       } finally {
         subAll.stop();
@@ -276,21 +300,21 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
       );
       try {
         const otherParent = "a0".repeat(16);
-        const outside = makeOp("b", 2, 2, { type: "insert", parent: otherParent, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) });
+        const outside = makeOp(replicas.b, 2, 2, { type: "insert", parent: otherParent, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(outside);
         await pb.notifyLocalUpdate();
 
         // Give the subscription loop time to run at least once; we should not see the op.
         await sleep(250);
         const opsAfterOutside = await a.ops.all();
-        if (hasOp(opsAfterOutside, "b", 2)) throw new Error("subscription(children) should not deliver ops outside filter");
+        if (hasOp(opsAfterOutside, replicas.b, 2)) throw new Error("subscription(children) should not deliver ops outside filter");
 
-        const inside = makeOp("b", 3, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) });
+        const inside = makeOp(replicas.b, 3, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(inside);
         await pb.notifyLocalUpdate();
         await waitUntil(async () => {
           const opsA = await a.ops.all();
-          return hasOp(opsA, "b", 3);
+          return hasOp(opsA, replicas.b, 3);
         }, { message: "expected subscription(children) to deliver root child insert to A" });
       } finally {
         subChildren.stop();
@@ -299,13 +323,13 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
 
       // Subscribe to "children(non-root)" and verify that we can pull grandchildren on demand.
       const parent = nodeIdFromInt(10);
-      const parentInsert = makeOp("b", 4, 4, { type: "insert", parent: root, node: parent, orderKey: orderKeyFromPosition(0) });
+      const parentInsert = makeOp(replicas.b, 4, 4, { type: "insert", parent: root, node: parent, orderKey: orderKeyFromPosition(0) });
       await b.ops.append(parentInsert);
       await pa.syncOnce(ta, { children: { parent: hexToBytes(root) } }, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       });
-      await waitUntil(async () => hasOp(await a.ops.all(), "b", 4), {
+      await waitUntil(async () => hasOp(await a.ops.all(), replicas.b, 4), {
         message: "expected children(ROOT) to deliver parent insert before subscribing to children(parent)",
       });
 
@@ -318,18 +342,18 @@ export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
         }
       );
       try {
-        const outside = makeOp("b", 5, 5, { type: "insert", parent: nodeIdFromInt(11), node: nodeIdFromInt(12), orderKey: orderKeyFromPosition(0) });
+        const outside = makeOp(replicas.b, 5, 5, { type: "insert", parent: nodeIdFromInt(11), node: nodeIdFromInt(12), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(outside);
         await pb.notifyLocalUpdate();
         await sleep(250);
-        if (hasOp(await a.ops.all(), "b", 5)) {
+        if (hasOp(await a.ops.all(), replicas.b, 5)) {
           throw new Error("subscription(children(non-root)) should not deliver ops outside filter");
         }
 
-        const inside = makeOp("b", 6, 6, { type: "insert", parent, node: nodeIdFromInt(13), orderKey: orderKeyFromPosition(0) });
+        const inside = makeOp(replicas.b, 6, 6, { type: "insert", parent, node: nodeIdFromInt(13), orderKey: orderKeyFromPosition(0) });
         await b.ops.append(inside);
         await pb.notifyLocalUpdate();
-        await waitUntil(async () => hasOp(await a.ops.all(), "b", 6), {
+        await waitUntil(async () => hasOp(await a.ops.all(), replicas.b, 6), {
           message: "expected subscription(children(non-root)) to deliver child insert under parent to A",
         });
       } finally {
@@ -382,7 +406,7 @@ async function runBenchOnce(
 
       if (workload === "sync-root-children-fanout10") {
         const finalB = await b.ops.all();
-        if (!hasOp(finalB, "m", 1) || !hasOp(finalB, "m", 2)) {
+        if (!hasOp(finalB, replicas.m, 1) || !hasOp(finalB, replicas.m, 2)) {
           throw new Error("sync-root-children-fanout10: expected B to receive boundary-crossing moves");
         }
       }

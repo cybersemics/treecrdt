@@ -3,32 +3,23 @@ import { type Operation, type OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
-import { SyncPeer, type Filter, type SyncSubscription } from "@treecrdt/sync";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import type { DuplexTransport } from "@treecrdt/sync/transport";
-import {
-  MdCloudOff,
-  MdCloudQueue,
-  MdGroup,
-  MdOpenInNew,
-  MdOutlineRssFeed,
-  MdSync,
-} from "react-icons/md";
-import { IoMdGitBranch } from "react-icons/io";
+import { base64urlDecode } from "@treecrdt/auth";
+import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from "@treecrdt/crypto";
 
-import { createBroadcastDuplex, createPlaygroundBackend, hexToBytes16, type PresenceMessage } from "./sync-v0";
+import { loadOrCreateDocPayloadKeyB64 } from "./auth";
+import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
-import {
-  MAX_COMPOSER_NODE_COUNT,
-  PLAYGROUND_PEER_TIMEOUT_MS,
-  PLAYGROUND_SYNC_MAX_CODEWORDS,
-  PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-  ROOT_ID,
-} from "./playground/constants";
-import { ParentPicker } from "./playground/components/ParentPicker";
-import { TreeRow } from "./playground/components/TreeRow";
-import { compareOps, mergeSortedOps, opKey, renderKind } from "./playground/ops";
+import { MAX_COMPOSER_NODE_COUNT, ROOT_ID } from "./playground/constants";
+import { ComposerPanel } from "./playground/components/ComposerPanel";
+import { OpsPanel } from "./playground/components/OpsPanel";
+import { PlaygroundHeader } from "./playground/components/PlaygroundHeader";
+import { ShareSubtreeDialog } from "./playground/components/ShareSubtreeDialog";
+import { PlaygroundToast } from "./playground/components/PlaygroundToast";
+import { TreePanel } from "./playground/components/TreePanel";
+import { usePlaygroundAuth } from "./playground/hooks/usePlaygroundAuth";
+import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
+import { compareOps, mergeSortedOps, opKey } from "./playground/ops";
 import { compareOpMeta } from "./playground/payload";
 import {
   ensureOpfsKey,
@@ -39,15 +30,13 @@ import {
   persistDocId,
   persistOpfsKey,
   persistStorage,
-  pickReplicaId,
 } from "./playground/persist";
+import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
 import { applyChildrenLoaded, flattenForSelectState, parentsAffectedByOps } from "./playground/treeState";
 import type {
   CollapseState,
   DisplayNode,
-  NodeMeta,
   PayloadRecord,
-  PeerInfo,
   Status,
   StorageMode,
   TreeState,
@@ -76,78 +65,240 @@ export default function App() {
     overrides: new Set([ROOT_ID]),
   }));
   const [busy, setBusy] = useState(false);
-  const [syncBusy, setSyncBusy] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [nodeCount, setNodeCount] = useState(1);
   const [fanout, setFanout] = useState(10);
   const [newNodeValue, setNewNodeValue] = useState("");
-  const [liveChildrenParents, setLiveChildrenParents] = useState<Set<string>>(() => new Set());
-  const [liveAllEnabled, setLiveAllEnabled] = useState(false);
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
+    const stored = window.localStorage.getItem(key);
+    if (stored === "0") return false;
+    if (stored === "1") return true;
+    return false;
+  });
   const [online, setOnline] = useState(true);
   const [payloadVersion, setPayloadVersion] = useState(0);
 
+  const joinMode =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("join") === "1";
+  const autoSyncJoin =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("autosync") === "1";
+  const profileId = useMemo(() => getPlaygroundProfileId(), []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
+    window.localStorage.setItem(key, composerOpen ? "1" : "0");
+  }, [composerOpen]);
+
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
-  const onlineRef = useRef(true);
-  const replicaId = useMemo(pickReplicaId, []);
   const opfsSupport = useMemo(detectOpfsSupport, []);
+  const docPayloadKeyRef = useRef<Uint8Array | null>(null);
+  const refreshDocPayloadKey = React.useCallback(async () => {
+    const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
+    docPayloadKeyRef.current = base64urlDecode(keyB64);
+    return docPayloadKeyRef.current;
+  }, [docId]);
+
+  const {
+    authEnabled,
+    setAuthEnabled,
+    revealIdentity,
+    setRevealIdentity,
+    showAuthPanel,
+    setShowAuthPanel,
+    showShareDialog,
+    setShowShareDialog,
+    showAuthAdvanced,
+    setShowAuthAdvanced,
+    authInfo,
+    authError,
+    setAuthError,
+    authBusy,
+    toast,
+    setToast,
+    wrapKeyImportText,
+    setWrapKeyImportText,
+    issuerKeyBlobImportText,
+    setIssuerKeyBlobImportText,
+    identityKeyBlobImportText,
+    setIdentityKeyBlobImportText,
+    deviceSigningKeyBlobImportText,
+    setDeviceSigningKeyBlobImportText,
+    authMaterial,
+    refreshAuthMaterial,
+    localIdentityChainPromiseRef,
+    getLocalIdentityChain,
+    authToken,
+    replica,
+    selfPeerId,
+    authActionSet,
+    viewRootId,
+    authCanSyncAll,
+    canWriteStructure,
+    canWritePayload,
+    canDelete,
+    isScopedAccess,
+    authCanIssue,
+    authCanDelegate,
+    authIssuerPkHex,
+    authLocalKeyIdHex,
+    authLocalTokenIdHex,
+    authTokenCount,
+    authTokenScope,
+    authTokenActions,
+    authNeedsInvite,
+    pendingOps,
+    refreshPendingOps,
+    privateRoots,
+    privateRootsCount,
+    showPrivateRootsPanel,
+    setShowPrivateRootsPanel,
+    togglePrivateRoot,
+    clearPrivateRoots,
+    inviteRoot,
+    setInviteRoot,
+    inviteMaxDepth,
+    setInviteMaxDepth,
+    inviteActions,
+    setInviteActions,
+    inviteAllowGrant,
+    setInviteAllowGrant,
+    invitePreset,
+    setInvitePreset,
+    showInviteOptions,
+    setShowInviteOptions,
+    inviteExcludeNodeIds,
+    inviteLink,
+    generateInviteLink,
+    applyInvitePreset,
+    invitePanelRef,
+    inviteImportText,
+    setInviteImportText,
+    importInviteLink,
+    grantRecipientKey,
+    setGrantRecipientKey,
+    grantSubtreeToReplicaPubkey: grantSubtreeToReplicaPubkeyRaw,
+    resetAuth,
+    openMintingPeerTab,
+    openNewIsolatedPeerTab,
+    openShareForNode,
+    verifyLocalOps,
+    copyToClipboard,
+    onAuthGrantMessage,
+  } = usePlaygroundAuth({ docId, joinMode, client, refreshDocPayloadKey });
+
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
 
+  const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
+  const [, bumpIdentityVersion] = useState(0);
+  const onPeerIdentityChain = React.useCallback(
+    (chain: { identityPublicKey: Uint8Array; devicePublicKey: Uint8Array; replicaPublicKey: Uint8Array }) => {
+      const replicaHex = bytesToHex(chain.replicaPublicKey);
+      const existing = identityByReplicaRef.current.get(replicaHex);
+      if (
+        existing &&
+        bytesToHex(existing.identityPk) === bytesToHex(chain.identityPublicKey) &&
+        bytesToHex(existing.devicePk) === bytesToHex(chain.devicePublicKey)
+      ) {
+        return;
+      }
+      identityByReplicaRef.current.set(replicaHex, { identityPk: chain.identityPublicKey, devicePk: chain.devicePublicKey });
+      bumpIdentityVersion((v) => v + 1);
+    },
+    []
+  );
+
+  useEffect(() => {
+    docPayloadKeyRef.current = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
+        if (cancelled) return;
+        docPayloadKeyRef.current = base64urlDecode(keyB64);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [docId]);
+
   const replicaKey = useMemo(
-    () => (replica: Operation["meta"]["id"]["replica"]) => (typeof replica === "string" ? replica : bytesToHex(replica)),
+    () => (replica: Operation["meta"]["id"]["replica"]) => bytesToHex(replica),
     []
   );
 
   const payloadByNodeRef = useRef<Map<string, PayloadRecord>>(new Map());
 
-  const ingestPayloadOps = React.useCallback((incoming: Operation[]) => {
-    if (incoming.length === 0) return;
-    const payloads = payloadByNodeRef.current;
-    let changed = false;
-    for (const op of incoming) {
-      const kind = op.kind;
-      const node = kind.type === "payload" ? kind.node : kind.type === "insert" ? kind.node : null;
-      const payload =
-        kind.type === "payload"
-          ? kind.payload
-          : kind.type === "insert"
-            ? kind.payload
-            : undefined;
-      if (!node || payload === undefined) continue;
-      const candidate: PayloadRecord = {
-        lamport: op.meta.lamport,
-        replica: replicaKey(op.meta.id.replica),
-        counter: op.meta.id.counter,
-        payload,
-      };
-      const existing = payloads.get(node);
-      if (!existing || compareOpMeta(candidate, existing) > 0) {
-        payloads.set(node, candidate);
-        changed = true;
+  const requireDocPayloadKey = React.useCallback(async (): Promise<Uint8Array> => {
+    if (docPayloadKeyRef.current) return docPayloadKeyRef.current;
+    const next = await refreshDocPayloadKey();
+    if (!next) throw new Error("doc payload key is missing");
+    return next;
+  }, [refreshDocPayloadKey]);
+
+  const ingestPayloadOps = React.useCallback(
+    async (incoming: Operation[]) => {
+      if (incoming.length === 0) return;
+      const payloads = payloadByNodeRef.current;
+      let changed = false;
+
+      for (const op of incoming) {
+        const kind = op.kind;
+        const node = kind.type === "payload" ? kind.node : kind.type === "insert" ? kind.node : null;
+        const payload =
+          kind.type === "payload" ? kind.payload : kind.type === "insert" ? kind.payload : undefined;
+        if (!node || payload === undefined) continue;
+
+        const meta = {
+          lamport: op.meta.lamport,
+          replica: replicaKey(op.meta.id.replica),
+          counter: op.meta.id.counter,
+        };
+
+        const existing = payloads.get(node);
+        if (existing && compareOpMeta(meta, existing) <= 0) continue;
+
+        if (payload === null) {
+          payloads.set(node, { ...meta, payload: null, encrypted: false });
+          changed = true;
+          continue;
+        }
+
+        try {
+          const key = await requireDocPayloadKey();
+          const res = await maybeDecryptTreecrdtPayloadV1({ docId, payloadKey: key, bytes: payload });
+          payloads.set(node, { ...meta, payload: res.plaintext, encrypted: res.encrypted });
+          changed = true;
+        } catch {
+          payloads.set(node, { ...meta, payload: null, encrypted: true });
+          changed = true;
+        }
       }
-    }
-    if (changed) setPayloadVersion((v) => v + 1);
-  }, []);
 
-  useEffect(() => {
-    onlineRef.current = online;
-  }, [online]);
+      if (changed) setPayloadVersion((v) => v + 1);
+    },
+    [docId, replicaKey, requireDocPayloadKey]
+  );
 
-  const syncConnRef = useRef<
-    Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>
-  >(new Map());
+  const encryptPayloadBytes = React.useCallback(
+    async (payload: Uint8Array | null): Promise<Uint8Array | null> => {
+      if (payload === null) return null;
+      const key = await requireDocPayloadKey();
+      return await encryptTreecrdtPayloadV1({ docId, payloadKey: key, plaintext: payload });
+    },
+    [docId, requireDocPayloadKey]
+  );
   const knownOpsRef = useRef<Set<string>>(new Set());
-  const liveChildrenParentsRef = useRef<Set<string>>(new Set());
-  const liveChildSubsRef = useRef<Map<string, Map<string, SyncSubscription>>>(new Map());
-  const liveAllEnabledRef = useRef(false);
-  const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
-  const liveAllStartingRef = useRef<Set<string>>(new Set());
-  const liveChildrenStartingRef = useRef<Set<string>>(new Set());
 
   const treeStateRef = useRef<TreeState>(treeState);
   useEffect(() => {
@@ -200,7 +351,7 @@ export default function App() {
         if (children.length > 0) {
           try {
             const ops = await active.ops.children(parentId);
-            ingestPayloadOps(ops);
+            await ingestPayloadOps(ops);
           } catch (err) {
             console.error("Failed to load child payloads", err);
           }
@@ -263,7 +414,7 @@ export default function App() {
       try {
         const [lamport, counter] = await Promise.all([
           active.meta.headLamport(),
-          active.meta.replicaMaxCounter(replicaId),
+          replica ? active.meta.replicaMaxCounter(replica) : Promise.resolve(0),
         ]);
         lamportRef.current = Math.max(lamportRef.current, lamport);
         setHeadLamport(lamportRef.current);
@@ -272,7 +423,7 @@ export default function App() {
         console.error("Failed to refresh meta", err);
       }
     },
-    [client, replicaId]
+    [client, replica]
   );
 
   const refreshParentsScheduledRef = useRef(false);
@@ -307,171 +458,140 @@ export default function App() {
     });
   }, [refreshNodeCount]);
 
-  const stopLiveAllForPeer = (peerId: string) => {
-    const existing = liveAllSubsRef.current.get(peerId);
-    if (!existing) return;
-    existing.stop();
-    liveAllSubsRef.current.delete(peerId);
-  };
+  const getMaxLamport = React.useCallback(() => BigInt(lamportRef.current), []);
 
-  const stopAllLiveAll = () => {
-    for (const sub of liveAllSubsRef.current.values()) sub.stop();
-    liveAllSubsRef.current.clear();
-  };
-
-  const startLiveAll = (peerId: string) => {
-    const conn = syncConnRef.current.get(peerId);
-    if (!conn) return;
-
-    if (liveAllSubsRef.current.has(peerId)) return;
-    if (liveAllStartingRef.current.has(peerId)) return;
-    liveAllStartingRef.current.add(peerId);
-
-    void (async () => {
-      try {
-        await conn.peer.syncOnce(conn.transport, { all: {} }, {
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        });
-      } catch (err) {
-        console.error("Live sync(all) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
-        return;
+  const onRemoteOpsApplied = React.useCallback(
+    async (appliedOps: Operation[]) => {
+      await ingestPayloadOps(appliedOps);
+      ingestOps(appliedOps);
+      if (appliedOps.length > 0) {
+        let max = 0;
+        for (const op of appliedOps) max = Math.max(max, op.meta.lamport);
+        lamportRef.current = Math.max(lamportRef.current, max);
+        setHeadLamport(lamportRef.current);
       }
-
-      const sub = conn.peer.subscribe(
-        conn.transport,
-        { all: {} },
-        {
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        }
-      );
-      liveAllSubsRef.current.set(peerId, sub);
-      void sub.done.catch((err) => {
-        console.error("Live sync(all) failed", err);
-        stopLiveAllForPeer(peerId);
-        setSyncError(err instanceof Error ? err.message : String(err));
-      });
-    })().finally(() => {
-      liveAllStartingRef.current.delete(peerId);
-    });
-  };
-
-  const stopLiveChildrenForPeer = (peerId: string) => {
-    const byParent = liveChildSubsRef.current.get(peerId);
-    if (!byParent) return;
-    for (const sub of byParent.values()) sub.stop();
-    liveChildSubsRef.current.delete(peerId);
-  };
-
-  const stopLiveChildren = (peerId: string, parentId: string) => {
-    const byParent = liveChildSubsRef.current.get(peerId);
-    if (!byParent) return;
-    const sub = byParent.get(parentId);
-    if (!sub) return;
-    sub.stop();
-    byParent.delete(parentId);
-    if (byParent.size === 0) liveChildSubsRef.current.delete(peerId);
-  };
-
-  const stopAllLiveChildren = () => {
-    for (const peerId of Array.from(liveChildSubsRef.current.keys())) stopLiveChildrenForPeer(peerId);
-  };
-
-  const startLiveChildren = (peerId: string, parentId: string) => {
-    const conn = syncConnRef.current.get(peerId);
-    if (!conn) return;
-
-    const existing = liveChildSubsRef.current.get(peerId);
-    if (existing?.has(parentId)) return;
-    const startKey = `${peerId}\u0000${parentId}`;
-    if (liveChildrenStartingRef.current.has(startKey)) return;
-    liveChildrenStartingRef.current.add(startKey);
-
-    const byParent = existing ?? new Map<string, SyncSubscription>();
-    void (async () => {
-      try {
-        await conn.peer.syncOnce(conn.transport, { children: { parent: hexToBytes16(parentId) } }, {
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        });
-      } catch (err) {
-        console.error("Live sync(children) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
-        return;
-      }
-
-      const sub = conn.peer.subscribe(
-        conn.transport,
-        { children: { parent: hexToBytes16(parentId) } },
-        {
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
-        }
-      );
-      byParent.set(parentId, sub);
-      liveChildSubsRef.current.set(peerId, byParent);
-
-      void sub.done.catch((err) => {
-        console.error("Live sync failed", err);
-        stopLiveChildren(peerId, parentId);
-        setSyncError(err instanceof Error ? err.message : String(err));
-      });
-    })().finally(() => {
-      liveChildrenStartingRef.current.delete(startKey);
-    });
-  };
-
-  const toggleLiveChildren = (parentId: string) => {
-    setLiveChildrenParents((prev) => {
-      const next = new Set(prev);
-      if (next.has(parentId)) next.delete(parentId);
-      else next.add(parentId);
-      return next;
-    });
-  };
-
-  const makeNewReplicaId = () => `replica-${crypto.randomUUID().slice(0, 8)}`;
+      scheduleRefreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      scheduleRefreshNodeCount();
+    },
+    [ingestOps, ingestPayloadOps, scheduleRefreshNodeCount, scheduleRefreshParents]
+  );
 
   const openNewPeerTab = () => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
-    url.searchParams.set("replica", makeNewReplicaId());
+    url.searchParams.set("fresh", "1");
+    url.searchParams.delete("replica");
+    url.searchParams.delete("auth");
+    url.hash = "";
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
   const { index, childrenByParent } = treeState;
 
+  const {
+    peers,
+    syncBusy,
+    syncError,
+    setSyncError,
+    liveChildrenParents,
+    setLiveChildrenParents,
+    liveAllEnabled,
+    setLiveAllEnabled,
+    toggleLiveChildren,
+    notifyLocalUpdate,
+    handleSync,
+    handleScopedSync,
+    postBroadcastMessage,
+  } = usePlaygroundSync({
+    client,
+    status,
+    docId,
+    selfPeerId,
+    autoSyncJoin,
+    online,
+    getMaxLamport,
+    authEnabled,
+    authMaterial,
+    authError,
+    joinMode,
+    authCanSyncAll,
+    viewRootId,
+    treeStateRef,
+    refreshMeta,
+    refreshParents,
+    refreshNodeCount,
+    getLocalIdentityChain,
+    onPeerIdentityChain,
+    onAuthGrantMessage,
+    onRemoteOpsApplied,
+  });
+
+  const grantSubtreeToReplicaPubkey = React.useCallback(async () => {
+    await grantSubtreeToReplicaPubkeyRaw(postBroadcastMessage);
+  }, [grantSubtreeToReplicaPubkeyRaw, postBroadcastMessage]);
+
+  useEffect(() => {
+    if (viewRootId === ROOT_ID) return;
+    setCollapse((prev) => {
+      if (!prev.defaultCollapsed) return prev;
+      if (prev.overrides.has(viewRootId)) return prev;
+      const overrides = new Set(prev.overrides);
+      overrides.add(viewRootId);
+      return { ...prev, overrides };
+    });
+    setParentChoice((prev) => (prev === ROOT_ID ? viewRootId : prev));
+    void ensureChildrenLoaded(viewRootId);
+  }, [ensureChildrenLoaded, viewRootId]);
+
   const nodeLabelForId = React.useCallback(
     (id: string) => {
       if (id === ROOT_ID) return "Root";
-      const payload = payloadByNodeRef.current.get(id)?.payload ?? null;
-      const decoded = payload === null ? null : textDecoder.decode(payload);
-      if (decoded === null) return id;
+      const record = payloadByNodeRef.current.get(id);
+      const payload = record?.payload ?? null;
+      if (payload === null) return record?.encrypted ? "(encrypted)" : id;
+      const decoded = textDecoder.decode(payload);
       return decoded.length === 0 ? "(empty)" : decoded;
     },
     [payloadVersion, textDecoder]
   );
 
-  const nodeList = useMemo(() => flattenForSelectState(childrenByParent, nodeLabelForId), [childrenByParent, nodeLabelForId]);
+  const nodeList = useMemo(
+    () => flattenForSelectState(childrenByParent, nodeLabelForId, { rootId: viewRootId }),
+    [childrenByParent, nodeLabelForId, viewRootId]
+  );
+  const privateRootEntries = useMemo(() => {
+    const roots = Array.from(privateRoots).filter((id) => id !== ROOT_ID);
+    roots.sort((a, b) => {
+      const la = nodeLabelForId(a);
+      const lb = nodeLabelForId(b);
+      if (la === lb) return a.localeCompare(b);
+      return la.localeCompare(lb);
+    });
+    return roots.map((id) => ({ id, label: nodeLabelForId(id) }));
+  }, [privateRoots, nodeLabelForId]);
   const visibleNodes = useMemo(() => {
     const acc: Array<{ node: DisplayNode; depth: number }> = [];
     const isCollapsed = (id: string) => {
       return collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
     };
-    const stack: Array<{ id: string; depth: number }> = [{ id: ROOT_ID, depth: 0 }];
+    const stack: Array<{ id: string; depth: number }> = [{ id: viewRootId, depth: 0 }];
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
-      const payload = payloadByNodeRef.current.get(entry.id)?.payload ?? null;
+      const record = payloadByNodeRef.current.get(entry.id);
+      const payload = record?.payload ?? null;
       const value = payload === null ? "" : textDecoder.decode(payload);
-      const label = entry.id === ROOT_ID ? "Root" : payload === null ? entry.id : value.length === 0 ? "(empty)" : value;
+      const label =
+        entry.id === ROOT_ID
+          ? "Root"
+          : payload === null
+            ? record?.encrypted
+              ? "(encrypted)"
+              : entry.id
+            : value.length === 0
+              ? "(empty)"
+              : value;
       acc.push({ node: { id: entry.id, label, value, children: [] }, depth: entry.depth });
       if (isCollapsed(entry.id)) continue;
       const kids = childrenByParent[entry.id] ?? [];
@@ -522,156 +642,6 @@ export default function App() {
   useEffect(() => {
     persistDocId(docId);
   }, [docId]);
-
-  useEffect(() => {
-    if (!client || status !== "ready") return;
-    if (!docId) return;
-    if (typeof BroadcastChannel === "undefined") {
-      setSyncError("BroadcastChannel is not available in this environment.");
-      return;
-    }
-
-    const debugSync =
-      typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
-
-    const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
-    const baseBackend = createPlaygroundBackend(client, docId);
-    const backend = {
-      ...baseBackend,
-      maxLamport: async () => BigInt(lamportRef.current),
-      listOpRefs: async (filter: Filter) => {
-        const refs = await baseBackend.listOpRefs(filter);
-        if (debugSync) {
-          const name =
-            "all" in filter
-              ? "all"
-              : `children(${bytesToHex(filter.children.parent)})`;
-          console.debug(`[sync:${replicaId}] listOpRefs(${name}) -> ${refs.length}`);
-        }
-        return refs;
-      },
-      applyOps: async (ops: Operation[]) => {
-        if (debugSync && ops.length > 0) {
-          console.debug(`[sync:${replicaId}] applyOps(${ops.length})`);
-        }
-        await baseBackend.applyOps(ops);
-        ingestPayloadOps(ops);
-        ingestOps(ops);
-        if (ops.length > 0) {
-          let max = 0;
-          for (const op of ops) max = Math.max(max, op.meta.lamport);
-          lamportRef.current = Math.max(lamportRef.current, max);
-          setHeadLamport(lamportRef.current);
-        }
-        scheduleRefreshParents(Object.keys(treeStateRef.current.childrenByParent));
-        scheduleRefreshNodeCount();
-      },
-    };
-    const connections = new Map<string, { transport: DuplexTransport<any>; peer: SyncPeer<Operation>; detach: () => void }>();
-    const lastSeen = new Map<string, number>();
-    syncConnRef.current = connections;
-
-    const updatePeers = () => {
-      setPeers(
-        Array.from(lastSeen.entries())
-          .map(([id, ts]) => ({ id, lastSeen: ts }))
-          .sort((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1))
-      );
-    };
-
-    const ensureConnection = (peerId: string) => {
-      if (!peerId || peerId === replicaId) return;
-      if (connections.has(peerId)) return;
-
-      const rawTransport = createBroadcastDuplex<Operation>(
-        channel,
-        replicaId,
-        peerId,
-        treecrdtSyncV0ProtobufCodec
-      );
-      const transport: DuplexTransport<any> = {
-        ...rawTransport,
-        async send(msg) {
-          if (!onlineRef.current) return;
-          return rawTransport.send(msg);
-        },
-        onMessage(handler) {
-          return rawTransport.onMessage((msg) => {
-            if (!onlineRef.current) return;
-            lastSeen.set(peerId, Date.now());
-            return handler(msg);
-          });
-        },
-      };
-      const peer = new SyncPeer<Operation>(backend, {
-        maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-      });
-      const detach = peer.attach(transport);
-      connections.set(peerId, { transport, peer, detach });
-
-      if (liveAllEnabledRef.current) startLiveAll(peerId);
-      for (const parentId of liveChildrenParentsRef.current) {
-        startLiveChildren(peerId, parentId);
-      }
-    };
-
-    const onPresence = (ev: MessageEvent<any>) => {
-      if (!onlineRef.current) return;
-      const data = ev.data as unknown;
-      if (!data || typeof data !== "object") return;
-      const msg = data as Partial<PresenceMessage>;
-      if (msg.t !== "presence") return;
-      if (typeof msg.peer_id !== "string" || typeof msg.ts !== "number") return;
-      if (msg.peer_id === replicaId) return;
-      lastSeen.set(msg.peer_id, msg.ts);
-      ensureConnection(msg.peer_id);
-      updatePeers();
-    };
-
-    channel.addEventListener("message", onPresence);
-
-    const sendPresence = () => {
-      if (!onlineRef.current) return;
-      const msg: PresenceMessage = { t: "presence", peer_id: replicaId, ts: Date.now() };
-      channel.postMessage(msg);
-    };
-
-    sendPresence();
-    const interval = window.setInterval(sendPresence, 1000);
-    const pruneInterval = window.setInterval(() => {
-      const now = Date.now();
-      for (const [id, ts] of lastSeen) {
-        if (now - ts > PLAYGROUND_PEER_TIMEOUT_MS) {
-          lastSeen.delete(id);
-          const conn = connections.get(id);
-          if (conn) {
-            conn.detach();
-            connections.delete(id);
-          }
-          stopLiveAllForPeer(id);
-          stopLiveChildrenForPeer(id);
-        }
-      }
-      updatePeers();
-    }, 2000);
-
-    return () => {
-      window.clearInterval(interval);
-      window.clearInterval(pruneInterval);
-      channel.removeEventListener("message", onPresence);
-      stopAllLiveAll();
-      stopAllLiveChildren();
-      channel.close();
-
-      for (const conn of connections.values()) {
-        conn.detach();
-        (conn.transport as any).close?.();
-      }
-      connections.clear();
-      setPeers([]);
-    };
-  }, [client, docId, replicaId, status]);
 
   useEffect(() => {
     return () => {
@@ -747,7 +717,7 @@ export default function App() {
       fetched.sort(compareOps);
       setOps(fetched);
       knownOpsRef.current = new Set(fetched.map(opKey));
-      ingestPayloadOps(fetched);
+      await ingestPayloadOps(fetched);
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
@@ -762,62 +732,32 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showOpsPanel, client, status]);
 
-  useEffect(() => {
-    liveChildrenParentsRef.current = liveChildrenParents;
-
-    const connections = syncConnRef.current;
-
-    for (const peerId of connections.keys()) {
-      for (const parentId of liveChildrenParents) {
-        startLiveChildren(peerId, parentId);
-      }
-    }
-
-    for (const peerId of Array.from(liveChildSubsRef.current.keys())) {
-      if (!connections.has(peerId)) {
-        stopLiveChildrenForPeer(peerId);
-        continue;
-      }
-      const byParent = liveChildSubsRef.current.get(peerId);
-      if (!byParent) continue;
-      for (const parentId of Array.from(byParent.keys())) {
-        if (!liveChildrenParents.has(parentId)) stopLiveChildren(peerId, parentId);
-      }
-    }
-  }, [liveChildrenParents]);
-
-  useEffect(() => {
-    liveAllEnabledRef.current = liveAllEnabled;
-    const connections = syncConnRef.current;
-    if (liveAllEnabled) {
-      for (const peerId of connections.keys()) startLiveAll(peerId);
-    } else {
-      stopAllLiveAll();
-    }
-  }, [liveAllEnabled]);
-
   const appendOperation = async (kind: OperationKind) => {
-    if (!client) return;
+    if (!client || !replica) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
+
       let op: Operation;
       if (kind.type === "payload") {
-        op = await client.local.payload(replicaId, kind.node, kind.payload);
+        const encryptedPayload = await encryptPayloadBytes(kind.payload);
+        op = await client.local.payload(replica, kind.node, encryptedPayload);
       } else if (kind.type === "delete") {
-        op = await client.local.delete(replicaId, kind.node);
+        op = await client.local.delete(replica, kind.node);
       } else {
         throw new Error(`unsupported operation kind: ${kind.type}`);
       }
+      await verifyLocalOps([op]);
 
-      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps([op]);
-      ingestOps([op], { assumeSorted: true });
-      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
-      scheduleRefreshNodeCount();
       lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
       counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
+
+      notifyLocalUpdate();
+      await ingestPayloadOps([op]);
+      ingestOps([op], { assumeSorted: true });
+      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
+      scheduleRefreshNodeCount();
     } catch (err) {
       console.error("Failed to append op", err);
       setError("Failed to append operation (see console)");
@@ -827,14 +767,15 @@ export default function App() {
   };
 
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {
-    if (!client) return;
+    if (!client || !replica) return;
+    if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
-      const op = await client.local.move(replicaId, nodeId, newParent, placement);
-      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps([op]);
+      const op = await client.local.move(replica, nodeId, newParent, placement);
+      notifyLocalUpdate();
+      await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
@@ -850,7 +791,8 @@ export default function App() {
   };
 
   const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
-    if (!client) return;
+    if (!client || !replica) return;
+    if (authEnabled && !canWriteStructure) return;
     const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
     setBusy(true);
@@ -858,15 +800,16 @@ export default function App() {
       const stateBefore = treeStateRef.current;
       const ops: Operation[] = [];
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
-      const valueBase = newNodeValue.trim();
-      const shouldSetValue = valueBase.length > 0;
+      const valueBase = canWritePayload ? newNodeValue.trim() : "";
+      const shouldSetValue = canWritePayload && valueBase.length > 0;
 
       if (fanoutLimit <= 0) {
         for (let i = 0; i < normalizedCount; i++) {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          ops.push(await client.local.insert(replicaId, parentId, nodeId, { type: "last" }, payload));
+          const encryptedPayload = await encryptPayloadBytes(payload);
+          ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload));
         }
       } else {
         const expanded = new Set<string>();
@@ -906,7 +849,8 @@ export default function App() {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          ops.push(await client.local.insert(replicaId, targetParent, nodeId, { type: "last" }, payload));
+          const encryptedPayload = await encryptPayloadBytes(payload);
+          ops.push(await client.local.insert(replica, targetParent, nodeId, { type: "last" }, encryptedPayload));
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
@@ -919,8 +863,8 @@ export default function App() {
       }
       setHeadLamport(lamportRef.current);
 
-      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps(ops);
+      notifyLocalUpdate();
+      await ingestPayloadOps(ops);
       ingestOps(ops, { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
       scheduleRefreshNodeCount();
@@ -948,16 +892,18 @@ export default function App() {
   };
 
   const handleInsert = async (parentId: string) => {
-    if (!client) return;
+    if (!client || !replica) return;
+    if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
-      const valueBase = newNodeValue.trim();
+      const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
+      const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
-      const op = await client.local.insert(replicaId, parentId, nodeId, { type: "last" }, payload);
-      for (const conn of syncConnRef.current.values()) void conn.peer.notifyLocalUpdate();
-      ingestPayloadOps([op]);
+      const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
+      notifyLocalUpdate();
+      await ingestPayloadOps([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
@@ -1015,47 +961,14 @@ export default function App() {
 
   const handleMoveToRoot = async (nodeId: string) => {
     if (nodeId === ROOT_ID) return;
+    if (authEnabled && (!canWriteStructure || isScopedAccess)) return;
     const siblings = childrenByParent[ROOT_ID] ?? [];
     const without = siblings.filter((id) => id !== nodeId);
     const after = without.length === 0 ? null : without[without.length - 1]!;
     await appendMoveAfter(nodeId, ROOT_ID, after);
   };
 
-  const handleSync = async (filter: Filter) => {
-    if (!onlineRef.current) {
-      setSyncError("Offline: toggle Online to sync.");
-      return;
-    }
-    const connections = syncConnRef.current;
-    if (connections.size === 0) {
-      setSyncError("No peers discovered yet.");
-      return;
-    }
-
-    setSyncBusy(true);
-    setSyncError(null);
-    try {
-      for (const conn of connections.values()) {
-        await conn.peer.syncOnce(conn.transport, filter, {
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 2048,
-        });
-      }
-      await refreshMeta();
-      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
-      await refreshNodeCount();
-    } catch (err) {
-      console.error("Sync failed", err);
-      setSyncError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSyncBusy(false);
-    }
-  };
-
   const handleReset = async () => {
-    stopAllLiveAll();
-    stopAllLiveChildren();
     setLiveChildrenParents(new Set());
     setLiveAllEnabled(false);
     await resetAndInit(storage, { resetKey: true });
@@ -1071,7 +984,11 @@ export default function App() {
 
   const toggleCollapse = (id: string) => {
     const currentlyCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
-    if (currentlyCollapsed) void ensureChildrenLoaded(id);
+    if (currentlyCollapsed) {
+      void ensureChildrenLoaded(id);
+      // For scoped tokens, expanding a node should opportunistically sync its children.
+      if (!authCanSyncAll) void handleSync({ children: { parent: hexToBytes16(id) } });
+    }
     setCollapse((prev) => {
       const overrides = new Set(prev.overrides);
       const currentlyCollapsed = prev.defaultCollapsed ? !overrides.has(id) : overrides.has(id);
@@ -1084,368 +1001,285 @@ export default function App() {
   };
 
   const expandAll = () => setCollapse({ defaultCollapsed: false, overrides: new Set() });
-  const collapseAll = () => setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
+  const collapseAll = () => setCollapse({ defaultCollapsed: true, overrides: new Set([viewRootId]) });
 
-  const stateBadge = status === "ready" ? "bg-emerald-500/80" : status === "error" ? "bg-rose-500/80" : "bg-amber-400/80";
+  const selfPeerIdShort = selfPeerId
+    ? selfPeerId.length > 20
+      ? `${selfPeerId.slice(0, 8)}…${selfPeerId.slice(-6)}`
+      : selfPeerId
+    : null;
   const peerTotal = peers.length + 1;
+  const authScopeSummary = (() => {
+    if (!authTokenScope) return "-";
+    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
+    if (rootId === ROOT_ID) return "doc-wide";
+    const label = nodeLabelForId(rootId);
+    if (label && label !== rootId) return `subtree ${label}`;
+    return `subtree ${rootId.slice(0, 8)}…`;
+  })();
+  const authScopeTitle = (() => {
+    if (!authTokenScope) return "";
+    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
+    const parts = [`root=${rootId}`];
+    if (authTokenScope.maxDepth !== undefined) parts.push(`maxDepth=${authTokenScope.maxDepth}`);
+    const excludeCount = authTokenScope.excludeNodeIds?.length ?? 0;
+    if (excludeCount > 0) parts.push(`exclude=${excludeCount}`);
+    return parts.join(" ");
+  })();
+  const authSummaryBadges = (() => {
+    if (!Array.isArray(authTokenActions)) return [];
+    const set = new Set(authTokenActions.map(String));
+    const out: string[] = [];
+    if (set.has("write_structure") || set.has("write_payload")) out.push("write");
+    if (set.has("delete")) out.push("delete");
+    if (set.has("tombstone")) out.push("tombstone");
+    return out;
+  })();
+  const localReplicaHex = selfPeerId;
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 space-y-6">
-      <header className="flex flex-col gap-3 rounded-2xl bg-slate-900/60 p-6 shadow-xl shadow-black/20 ring-1 ring-slate-800/60 backdrop-blur">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-lg font-semibold text-slate-50">TreeCRDT</div>
-        </div>
-        <div className="flex flex-col items-start gap-3 text-xs text-slate-400">
-          <div>
-            Replica: <span className="font-mono text-slate-200">{replicaId}</span>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-            onClick={handleReset}
-            disabled={status !== "ready"}
-          >
-            Reset session
-          </button>
-          <button
-            className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-            onClick={expandAll}
-          >
-            Expand all
-          </button>
-          <button
-            className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-            onClick={collapseAll}
-          >
-            Collapse all
-          </button>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-semibold text-slate-200">Memory</span>
-            <button
-              type="button"
-              className={`relative h-7 w-12 rounded-full border border-slate-700 transition ${
-                storage === "opfs" ? "bg-emerald-500/30" : "bg-slate-800/70"
-              } ${!opfsSupport.available ? "opacity-70" : "hover:border-accent"}`}
-              onClick={() => handleStorageToggle(storage === "opfs" ? "memory" : "opfs")}
-              disabled={status === "booting"}
-              title={
-                opfsSupport.available
-                  ? "Toggle storage (memory ↔ persistent OPFS)"
-                  : "Will attempt OPFS via worker; may fall back to memory if browser blocks sync handles."
-              }
-              aria-label={storage === "opfs" ? "Switch to in-memory storage" : "Switch to persistent storage (OPFS)"}
-            >
-              <span
-                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition ${
-                  storage === "opfs" ? "right-0.5" : "left-0.5"
-                }`}
-              />
-            </button>
-            <span className="text-[11px] font-semibold text-slate-200">Persistent</span>
-          </div>
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold text-slate-900 ${stateBadge}`}>
-            {status === "ready"
-              ? storage === "opfs"
-                ? "Ready (OPFS)"
-                : "Ready (memory)"
-              : status === "booting"
-                ? "Starting wasm"
-                : "Error"}
-          </span>
-        </div>
-        {error && <div className="rounded-lg border border-rose-400/50 bg-rose-500/10 px-4 py-2 text-sm text-rose-50">{error}</div>}
-      </header>
+      <ShareSubtreeDialog
+        open={showShareDialog}
+        onClose={() => setShowShareDialog(false)}
+        inviteRoot={inviteRoot}
+        nodeLabelForId={nodeLabelForId}
+        joinMode={joinMode}
+        authEnabled={authEnabled}
+        authBusy={authBusy}
+        authCanIssue={authCanIssue}
+        authCanDelegate={authCanDelegate}
+        authScopeTitle={authScopeTitle}
+        authScopeSummary={authScopeSummary}
+        inviteExcludeNodeIds={inviteExcludeNodeIds}
+        onEnableAuth={() => setAuthEnabled(true)}
+        openMintingPeerTab={openMintingPeerTab}
+        authInfo={authInfo}
+        authError={authError}
+        setAuthError={setAuthError}
+        invitePreset={invitePreset}
+        applyInvitePreset={applyInvitePreset}
+        inviteActions={inviteActions}
+        setInviteActions={setInviteActions}
+        inviteAllowGrant={inviteAllowGrant}
+        setInviteAllowGrant={setInviteAllowGrant}
+        openNewIsolatedPeerTab={openNewIsolatedPeerTab}
+        generateInviteLink={generateInviteLink}
+        inviteLink={inviteLink}
+        copyToClipboard={copyToClipboard}
+        grantRecipientKey={grantRecipientKey}
+        setGrantRecipientKey={setGrantRecipientKey}
+        grantSubtreeToReplicaPubkey={grantSubtreeToReplicaPubkey}
+        selfPeerId={selfPeerId}
+      />
+
+      <PlaygroundHeader
+        status={status}
+        storage={storage}
+        opfsAvailable={opfsSupport.available}
+        joinMode={joinMode}
+        profileId={profileId}
+        selfPeerId={selfPeerId}
+        selfPeerIdShort={selfPeerIdShort}
+        onCopyPubkey={() =>
+          void (selfPeerId ? copyToClipboard(selfPeerId) : Promise.resolve()).catch((err) =>
+            setSyncError(err instanceof Error ? err.message : String(err))
+          )
+        }
+        onSelectStorage={handleStorageToggle}
+        onReset={handleReset}
+        onExpandAll={expandAll}
+        onCollapseAll={collapseAll}
+        error={error}
+      />
 
       <div className="grid gap-6 md:grid-cols-3">
         <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} space-y-4`}>
-          <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-            <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Composer</div>
-            <form
-              className="flex flex-col gap-3 md:flex-row md:items-end"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void handleAddNodes(parentChoice, nodeCount, { fanout });
-              }}
-            >
-              <ParentPicker nodeList={nodeList} value={parentChoice} onChange={setParentChoice} disabled={status !== "ready"} />
-              <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
-                <span>Value (optional)</span>
-                <input
-                  type="text"
-                  value={newNodeValue}
-                  onChange={(e) => setNewNodeValue(e.target.value)}
-                  placeholder="Stored as payload bytes"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={status !== "ready" || busy}
-                />
-              </label>
-              <label className="flex flex-col text-sm text-slate-200">
-                <span>Node count</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={MAX_COMPOSER_NODE_COUNT}
-                  value={nodeCount}
-                  onChange={(e) => {
-                    const next = Number(e.target.value);
-                    if (!Number.isFinite(next)) {
-                      setNodeCount(0);
-                      return;
-                    }
-                    setNodeCount(Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(next))));
-                  }}
-                  className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={status !== "ready" || busy}
-                />
-              </label>
-              <label className="flex flex-col text-sm text-slate-200">
-                <span>Fanout</span>
-                <select
-                  value={fanout}
-                  onChange={(e) => setFanout(Number(e.target.value) || 0)}
-                  className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={status !== "ready" || busy}
-                  title="Fanout > 0 distributes nodes in a k-ary tree; 0 inserts all nodes under the chosen parent."
-                >
-                  <option value={0}>Flat</option>
-                  <option value={2}>2</option>
-                  <option value={3}>3</option>
-                  <option value={5}>5</option>
-                  <option value={10}>10</option>
-                  <option value={20}>20</option>
-                  <option value={50}>50</option>
-                </select>
-              </label>
-              <button
-                type="submit"
-                className="flex-shrink-0 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-                disabled={status !== "ready" || busy || nodeCount <= 0}
-              >
-                Add node{nodeCount > 1 ? "s" : ""}
-              </button>
-            </form>
-          </div>
+          <ComposerPanel
+            composerOpen={composerOpen}
+            setComposerOpen={setComposerOpen}
+            nodeList={nodeList}
+            parentChoice={parentChoice}
+            setParentChoice={setParentChoice}
+            newNodeValue={newNodeValue}
+            setNewNodeValue={setNewNodeValue}
+            nodeCount={nodeCount}
+            setNodeCount={setNodeCount}
+            maxNodeCount={MAX_COMPOSER_NODE_COUNT}
+            fanout={fanout}
+            setFanout={setFanout}
+            onAddNodes={handleAddNodes}
+            ready={status === "ready"}
+            busy={busy}
+            canWritePayload={canWritePayload}
+            canWriteStructure={canWriteStructure}
+          />
 
-          <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-	            <div className="flex items-center gap-3">
-	              <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Tree</div>
-	              <div className="text-xs text-slate-500">
-	                {totalNodes === null ? "…" : totalNodes} nodes
-	                <span className="text-slate-600"> · {nodeList.length - 1} loaded</span>
-	              </div>
-		            </div>
-		            <div className="flex items-center gap-2">
-                  <button
-                    className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-50 ${
-                      online
-                        ? "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
-                        : "border-amber-500/60 bg-amber-500/10 text-amber-100 hover:border-amber-400"
-                    }`}
-                    onClick={() => setOnline((v) => !v)}
-                    disabled={status !== "ready" || busy}
-                    title={online ? "Go offline (simulate no sync)" : "Go online (resume sync)"}
-                    type="button"
-                  >
-                    {online ? <MdCloudQueue className="text-[18px]" /> : <MdCloudOff className="text-[18px]" />}
-                    <span>{online ? "Online" : "Offline"}</span>
-                  </button>
-                <button
-                  className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  onClick={() => void handleSync({ all: {} })}
-                  disabled={status !== "ready" || busy || syncBusy || peers.length === 0 || !online}
-                  title="Sync all (one-shot)"
-                >
-                  <MdSync className="text-[18px]" />
-                  <span>Sync</span>
-                </button>
-                <button
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition disabled:opacity-50 ${
-                    liveAllEnabled
-                      ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
-                      : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
-                  }`}
-                  onClick={() => setLiveAllEnabled((v) => !v)}
-                  disabled={status !== "ready" || busy || !online}
-                  aria-label="Live sync all"
-                  aria-pressed={liveAllEnabled}
-                  title="Live sync all (polling)"
-                >
-                  <MdOutlineRssFeed className="text-[20px]" />
-                </button>
-                <button
-                  className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
-                    showPeersPanel
-                      ? "border-slate-600 bg-slate-800/90 text-white"
-                      : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
-                  }`}
-                  onClick={() => setShowPeersPanel((v) => !v)}
-                  type="button"
-                  title="Peers"
-                >
-                  <MdGroup className="text-[18px]" />
-                  <span className="font-mono">{peerTotal}</span>
-                </button>
-                <button
-                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  onClick={openNewPeerTab}
-                  disabled={typeof window === "undefined"}
-                  type="button"
-                  title="Open a new peer tab"
-                >
-                  <MdOpenInNew className="text-[18px]" />
-                </button>
-                <button
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
-                    showOpsPanel
-                      ? "border-slate-600 bg-slate-800/90 text-white"
-                      : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
-                  }`}
-                  onClick={() => setShowOpsPanel((v) => !v)}
-                  type="button"
-                  title="Toggle operations panel"
-                >
-                  <IoMdGitBranch className="text-[18px]" />
-                </button>
-              </div>
-            </div>
-            {syncError && (
-              <div className="mb-3 rounded-lg border border-rose-400/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-50">
-                {syncError}
-              </div>
-            )}
-            {showPeersPanel && (
-              <div className="mb-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Document</div>
-                    <div className="font-mono text-slate-200">{docId}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Replica</div>
-                    <div className="font-mono text-slate-200">{replicaId}</div>
-                  </div>
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <div className="text-slate-400">Peers</div>
-                  <button
-                    className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-                    type="button"
-                    onClick={openNewPeerTab}
-                  >
-                    Create peer
-                  </button>
-                </div>
-                <div className="mt-2 max-h-32 overflow-auto pr-1">
-                  <div className="flex items-center justify-between gap-2 py-1">
-                    <span className="font-mono text-slate-200">
-                      {replicaId} <span className="text-[10px] text-slate-500">(you)</span>
-                    </span>
-                    <span className="text-[10px] text-slate-500">-</span>
-                  </div>
-                  {peers.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between gap-2 py-1">
-                      <span className="font-mono text-slate-200">{p.id}</span>
-                      <span className="text-[10px] text-slate-500">{Math.max(0, Date.now() - p.lastSeen)}ms</span>
-                    </div>
-                  ))}
-                </div>
-                {peers.length === 0 && (
-                  <div className="mt-2 text-slate-500">
-                    Only you right now. Open another tab (same `doc`, different `replica`).
-                  </div>
-                )}
-              </div>
-            )}
-            <div ref={treeParentRef} className="max-h-[560px] overflow-auto">
-              <div
-                style={{ height: `${treeVirtualizer.getTotalSize()}px`, position: "relative" }}
-                className="w-full"
-              >
-                {treeVirtualizer.getVirtualItems().map((item) => {
-                  const entry = visibleNodes[item.index];
-                  if (!entry) return null;
-                  return (
-                    <div
-                      key={item.key}
-                      data-index={item.index}
-                      ref={treeVirtualizer.measureElement}
-                      className="absolute left-0 top-0 w-full"
-                      style={{ transform: `translateY(${item.start}px)` }}
-                    >
-                      <TreeRow
-                        node={entry.node}
-                        depth={entry.depth}
-                        collapse={collapse}
-                        onToggle={toggleCollapse}
-                        onSetValue={handleSetValue}
-                        onAddChild={(id) => {
-                          setParentChoice(id);
-                          void handleInsert(id);
-                        }}
-                        onDelete={handleDelete}
-                        onMove={handleMove}
-                        onMoveToRoot={handleMoveToRoot}
-                        onToggleLiveChildren={toggleLiveChildren}
-                        liveChildren={liveChildrenParents.has(entry.node.id)}
-                        meta={index}
-                        childrenByParent={childrenByParent}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+          <TreePanel
+            totalNodes={totalNodes}
+            loadedNodes={Math.max(0, nodeList.length - 1)}
+            privateRootsCount={privateRootsCount}
+            online={online}
+            setOnline={setOnline}
+            ready={status === "ready"}
+            busy={busy}
+            syncBusy={syncBusy}
+            peerCount={peers.length}
+            authCanSyncAll={authCanSyncAll}
+            onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
+            liveAllEnabled={liveAllEnabled}
+            setLiveAllEnabled={setLiveAllEnabled}
+            showPeersPanel={showPeersPanel}
+            setShowPeersPanel={setShowPeersPanel}
+            peerTotal={peerTotal}
+            showAuthPanel={showAuthPanel}
+            setShowAuthPanel={setShowAuthPanel}
+            authEnabled={authEnabled}
+            openNewPeerTab={openNewPeerTab}
+            openNewIsolatedPeerTab={openNewIsolatedPeerTab}
+            authCanIssue={authCanIssue}
+            authCanDelegate={authCanDelegate}
+            showOpsPanel={showOpsPanel}
+            setShowOpsPanel={setShowOpsPanel}
+            syncError={syncError}
+            peersPanelProps={{
+              docId,
+              selfPeerId,
+              joinMode,
+              profileId,
+              authEnabled,
+              authTokenCount,
+              authScopeTitle,
+              authScopeSummary,
+              authSummaryBadges,
+              authCanIssue,
+              authCanDelegate,
+              openNewIsolatedPeerTab,
+              openNewPeerTab,
+              peers,
+            }}
+            sharingAuthPanelProps={{
+              docId,
+              authEnabled,
+              setAuthEnabled,
+              authBusy,
+              resetAuth,
+              authNeedsInvite,
+              authError,
+              authInfo,
+              setAuthError,
+              authCanIssue,
+              authCanDelegate,
+              authIssuerPkHex,
+              authLocalKeyIdHex,
+              authLocalTokenIdHex,
+              authTokenCount,
+              authTokenScope,
+              authTokenActions,
+              authScopeSummary,
+              authScopeTitle,
+              authSummaryBadges,
+              selfPeerId,
+              revealIdentity,
+              setRevealIdentity,
+              openMintingPeerTab,
+              showAuthAdvanced,
+              setShowAuthAdvanced,
+              showInviteOptions,
+              setShowInviteOptions,
+              invitePanelRef,
+              nodeList,
+              inviteRoot,
+              setInviteRoot,
+              inviteMaxDepth,
+              setInviteMaxDepth,
+              inviteActions,
+              setInviteActions,
+              inviteAllowGrant,
+              setInviteAllowGrant,
+              invitePreset,
+              setInvitePreset,
+              inviteExcludeNodeIds,
+              inviteLink,
+              generateInviteLink,
+              applyInvitePreset,
+              copyToClipboard,
+              refreshAuthMaterial,
+              refreshPendingOps,
+              client,
+              pendingOps,
+              showPrivateRootsPanel,
+              setShowPrivateRootsPanel,
+              privateRootsCount,
+              privateRootEntries,
+              togglePrivateRoot,
+              clearPrivateRoots,
+              wrapKeyImportText,
+              setWrapKeyImportText,
+              issuerKeyBlobImportText,
+              setIssuerKeyBlobImportText,
+              identityKeyBlobImportText,
+              setIdentityKeyBlobImportText,
+              deviceSigningKeyBlobImportText,
+              setDeviceSigningKeyBlobImportText,
+              localIdentityChainPromiseRef,
+              inviteImportText,
+              setInviteImportText,
+              importInviteLink,
+              grantRecipientKey,
+              setGrantRecipientKey,
+              grantSubtreeToReplicaPubkey,
+              nodeLabelForId,
+            }}
+            treeParentRef={treeParentRef}
+            treeVirtualizer={treeVirtualizer}
+            visibleNodes={visibleNodes}
+            collapse={collapse}
+            toggleCollapse={toggleCollapse}
+            openShareForNode={openShareForNode}
+            onSetValue={handleSetValue}
+            onAddChild={(id) => {
+              setParentChoice(id);
+              void handleInsert(id);
+            }}
+            onDelete={handleDelete}
+            onMove={handleMove}
+            onMoveToRoot={handleMoveToRoot}
+            onToggleLiveChildren={toggleLiveChildren}
+            privateRoots={privateRoots}
+            togglePrivateRoot={togglePrivateRoot}
+            scopeRootId={viewRootId}
+            canWritePayload={canWritePayload}
+            canWriteStructure={canWriteStructure}
+            canDelete={canDelete}
+            liveChildrenParents={liveChildrenParents}
+            meta={index}
+            childrenByParent={childrenByParent}
+          />
         </section>
 
         {showOpsPanel && (
-          <aside className="space-y-3 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
-            <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Operations</div>
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Ops: {ops.length}</span>
-              <span>Head lamport: {headLamport}</span>
-            </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 shadow-inner shadow-black/30">
-              <div ref={opsParentRef} className="max-h-[520px] overflow-auto pr-2 text-xs">
-                {ops.length === 0 && <div className="text-slate-500">No operations yet.</div>}
-                {ops.length > 0 && (
-                  <div
-                    style={{ height: `${opsVirtualizer.getTotalSize()}px`, position: "relative" }}
-                    className="w-full"
-                  >
-                    {opsVirtualizer.getVirtualItems().map((item) => {
-                      const op = ops[item.index];
-                      if (!op) return null;
-                      return (
-                        <div
-                          key={item.key}
-                          data-index={item.index}
-                          ref={opsVirtualizer.measureElement}
-                          className="absolute left-0 top-0 w-full"
-                          style={{ transform: `translateY(${item.start}px)` }}
-                        >
-                          <div className="mb-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-slate-100">
-                            <div className="flex items-center justify-between">
-                              <span className="font-semibold text-accent">{op.kind.type}</span>
-                              <span className="font-mono text-slate-400">lamport {op.meta.lamport}</span>
-                            </div>
-                            <div className="mt-1 text-slate-300">{renderKind(op.kind)}</div>
-                            <div className="text-[10px] text-slate-500">counter {op.meta.id.counter}</div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          </aside>
+          <OpsPanel
+            ops={ops}
+            headLamport={headLamport}
+            authEnabled={authEnabled}
+            localReplicaHex={localReplicaHex}
+            getIdentityByReplicaHex={(replicaHex) => identityByReplicaRef.current.get(replicaHex)}
+            opsParentRef={opsParentRef}
+            opsVirtualizer={opsVirtualizer}
+          />
         )}
       </div>
+
+      <PlaygroundToast
+        toast={toast}
+        setToast={setToast}
+        onSync={() => {
+          void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
+        }}
+        canSync={status === "ready" && !busy && !syncBusy && peers.length > 0 && online}
+        onDetails={() => setShowAuthPanel(true)}
+      />
     </div>
   );
 }

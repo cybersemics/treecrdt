@@ -7,7 +7,7 @@ package treecrdt.sync.v0;
 // Encoding notes:
 // - NodeId.bytes MUST be exactly 16 bytes (big-endian u128). ROOT is 16 zero bytes.
 // - TRASH is 16 bytes of 0xFF (big-endian u128::MAX).
-// - ReplicaId.bytes is opaque (may be any length).
+// - ReplicaId.bytes MUST be exactly 32 bytes (Ed25519 public key / verifying key).
 // - OpRef.bytes MUST be exactly 16 bytes (reconciliation symbol width).
 //   Canonical v0 derivation (from doc_id + opId):
 //     opIdBytes = u32_be(len(replicaId)) || replicaId || u64_be(counter)

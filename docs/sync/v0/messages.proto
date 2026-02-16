@@ -90,7 +90,26 @@ enum RibltFailureReason {
 message OpsBatch {
   string filter_id = 1;
   repeated Operation ops = 2;
+  // Optional auth metadata aligned with `ops` by index.
+  //
+  // If present, `auth` MUST be either empty (no auth) or exactly the same length
+  // as `ops` (one entry per operation).
+  repeated OpAuth auth = 4;
   bool done = 3;
+}
+
+// Auth metadata attached to a single operation.
+//
+// This is an optional extension to Sync v0. Implementations that do not support
+// auth MUST ignore these fields.
+message OpAuth {
+  reserved 1;
+
+  // Signature bytes (Ed25519: 64 bytes) over the canonical signing input.
+  bytes sig = 2;
+
+  // Optional reference to an authorization proof (e.g. token id / hash).
+  bytes proof_ref = 3;
 }
 
 // Push-based subscription for live updates.
@@ -129,4 +148,5 @@ enum ErrorCode {
   RECONCILIATION_DECODE_FAILED = 4;
   RATE_LIMITED = 5;
   DOC_NOT_FOUND = 6;
+  UNAUTHORIZED = 7;
 }

@@ -1,6 +1,20 @@
 import type { TreecrdtEngine } from "@treecrdt/interface/engine";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
-import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { SqliteRunner } from "@treecrdt/interface/sqlite";
+
+import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
+import {
+  createTreecrdtCoseCwtAuth,
+  createTreecrdtSqliteSubtreeScopeEvaluator,
+  getEd25519PublicKey,
+  issueTreecrdtCapabilityTokenV1,
+  randomEd25519SecretKey,
+  type TreecrdtScopeEvaluator,
+} from "@treecrdt/auth";
+import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import { createTreecrdtSyncSqliteOpAuthStore, createTreecrdtSyncSqlitePendingOpsStore } from "@treecrdt/sync";
 
 export function conformanceSlugify(input: string): string {
   return input
@@ -75,6 +89,30 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
       run: scenarioSyncKnownStatePropagation,
     },
     {
+      name: "sync auth: signed ops converge (COSE+CWT)",
+      run: scenarioSyncAuthSignedOps,
+    },
+    {
+      name: "sync auth: scoped token rejects filter(all)",
+      run: scenarioSyncAuthScopedTokenRejectsAllFilter,
+    },
+    {
+      name: "sync auth: excluded root is not synced to scoped peer",
+      run: scenarioSyncAuthExcludedRootNotSynced,
+    },
+    {
+      name: "auth: sqlite subtree evaluator allow/deny/unknown",
+      run: scenarioAuthSqliteSubtreeEvaluator,
+    },
+    {
+      name: "sync auth: pending_context ops use sqlite sidecar + reprocess",
+      run: scenarioSyncAuthPendingContextSidecar,
+    },
+    {
+      name: "sync auth: restart relay re-serves signed ops using sqlite op-auth store",
+      run: scenarioSyncAuthRestartRelayReServesSignedOps,
+    },
+    {
       name: "persistence: materialized tree persists across reopen",
       run: scenarioPersistenceMaterializedTreeReopen,
     },
@@ -88,6 +126,14 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
 function nodeIdFromInt(n: number): string {
   if (!Number.isInteger(n) || n < 0) throw new Error(`invalid node int: ${n}`);
   return n.toString(16).padStart(32, "0");
+}
+
+function replicaFromLabel(label: string): ReplicaId {
+  const encoded = new TextEncoder().encode(label);
+  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
+  return out;
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -122,6 +168,14 @@ function assertBytesEqual(actual: Uint8Array | null, expected: Uint8Array | null
   for (let i = 0; i < actual.length; i++) {
     if (actual[i] !== expected[i]) throw new Error(`${message}: mismatch at byte ${i}`);
   }
+}
+
+function engineRunnerOrNull(engine: TreecrdtEngine): SqliteRunner | null {
+  const candidate = (engine as any)?.runner as Partial<SqliteRunner> | undefined;
+  if (!candidate) return null;
+  if (typeof candidate.exec !== "function") return null;
+  if (typeof candidate.getText !== "function") return null;
+  return candidate as SqliteRunner;
 }
 
 function orderKeyFromPosition(position: number): Uint8Array {
@@ -199,7 +253,7 @@ function makePayloadOp(opts: { replica: ReplicaId; counter: number; lamport: num
 
 async function scenarioLocalOpsBasic(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const a = nodeIdFromInt(1);
   const b = nodeIdFromInt(2);
@@ -264,7 +318,7 @@ async function scenarioLocalOpsBasic(ctx: SqliteConformanceContext): Promise<voi
 
 async function scenarioLocalInsertWithPayload(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const a = nodeIdFromInt(1);
   const payload = new TextEncoder().encode("hello");
@@ -286,7 +340,7 @@ async function scenarioChildrenPagination(ctx: SqliteConformanceContext): Promis
   const engine = ctx.engine;
   assert(engine.tree.childrenPage, "engine.tree.childrenPage not implemented");
 
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const nodes = Array.from({ length: 10 }, (_, i) => nodeIdFromInt(i + 1));
   for (const node of nodes) {
@@ -334,7 +388,7 @@ async function scenarioChildrenPagination(ctx: SqliteConformanceContext): Promis
 
 async function scenarioOutOfOrderOpsRebuild(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
   const n2 = nodeIdFromInt(2);
@@ -370,7 +424,7 @@ async function scenarioOutOfOrderOpsRebuild(ctx: SqliteConformanceContext): Prom
 
 async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
   const n2 = nodeIdFromInt(2);
@@ -414,7 +468,7 @@ async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext
 
 async function scenarioOpRefsChildrenIncludesPayloadAfterMove(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const p1 = nodeIdFromInt(1);
   const p2 = nodeIdFromInt(2);
@@ -441,7 +495,7 @@ async function scenarioOpRefsChildrenIncludesPayloadAfterMove(ctx: SqliteConform
 
 async function scenarioRejectsDeleteWithoutKnownState(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "rA";
+  const replica = replicaFromLabel("rA");
   const root = nodeIdFromInt(0);
   const node = nodeIdFromInt(1);
 
@@ -466,7 +520,7 @@ async function scenarioRejectsDeleteWithoutKnownState(ctx: SqliteConformanceCont
 
 async function scenarioDefensiveDeleteMoveRestores(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
 
@@ -480,7 +534,7 @@ async function scenarioDefensiveDeleteMoveRestores(ctx: SqliteConformanceContext
 
 async function scenarioDefensiveDeleteReactiveInsert(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
@@ -510,8 +564,8 @@ async function scenarioDefensiveDeleteReactiveInsert(ctx: SqliteConformanceConte
 
 async function scenarioDefensiveDeleteOutOfOrderChildInsert(ctx: SqliteConformanceContext): Promise<void> {
   const engine = ctx.engine;
-  const rA: ReplicaId = "rA";
-  const rB: ReplicaId = "rB";
+  const rA = replicaFromLabel("rA");
+  const rB = replicaFromLabel("rB");
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
@@ -548,8 +602,8 @@ async function scenarioSyncKnownStatePropagation(ctx: SqliteConformanceContext):
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
-  const rA: ReplicaId = "rA";
-  const rB: ReplicaId = "rB";
+  const rA = replicaFromLabel("rA");
+  const rB = replicaFromLabel("rB");
 
   // Replica B inserts parent, then syncs it to A.
   await b.local.insert(rB, root, parent, { type: "last" }, null);
@@ -572,7 +626,7 @@ async function scenarioSyncKnownStatePropagation(ctx: SqliteConformanceContext):
 async function scenarioPersistenceMaterializedTreeReopen(ctx: SqliteConformanceContext): Promise<void> {
   if (!ctx.createPersistentEngine) return;
 
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
 
@@ -590,7 +644,7 @@ async function scenarioPersistenceMaterializedTreeReopen(ctx: SqliteConformanceC
 async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): Promise<void> {
   if (!ctx.createPersistentEngine) return;
 
-  const replica: ReplicaId = "r1";
+  const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
 
@@ -612,4 +666,612 @@ async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): 
   assert(payloadOp, "expected payload op after reopen");
   if (!payloadOp || payloadOp.kind.type !== "payload") throw new Error("expected payload op");
   assertEqual(new TextDecoder().decode(payloadOp.kind.payload ?? new Uint8Array()), "hello", "payload contents after reopen");
+}
+
+function makeCapabilityTokenV1(opts: { issuerPrivateKey: Uint8Array; subjectPublicKey: Uint8Array; docId: string }): Uint8Array {
+  return issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: opts.issuerPrivateKey,
+    subjectPublicKey: opts.subjectPublicKey,
+    docId: opts.docId,
+    actions: ["write_structure", "write_payload", "delete", "tombstone"],
+  });
+}
+
+function createEngineSyncBackend(engine: TreecrdtEngine): SyncBackend<Operation> {
+  return {
+    docId: engine.docId,
+    maxLamport: async () => BigInt(await engine.meta.headLamport()),
+    listOpRefs: async (filter: Filter) => {
+      if ("all" in filter) return engine.opRefs.all();
+      return engine.opRefs.children(bytesToHex(filter.children.parent));
+    },
+    getOpsByOpRefs: async (opRefs: OpRef[]) => engine.ops.get(opRefs),
+    applyOps: async (ops: Operation[]) => engine.ops.appendMany(ops),
+  };
+}
+
+async function findDepthBfs(opts: {
+  engine: TreecrdtEngine;
+  root: string;
+  target: string;
+}): Promise<number | null> {
+  if (opts.root === opts.target) return 0;
+
+  const seen = new Set<string>([opts.root]);
+  const queue: Array<{ id: string; depth: number }> = [{ id: opts.root, depth: 0 }];
+
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (!cur) break;
+
+    const children = await opts.engine.tree.children(cur.id);
+    for (const child of children) {
+      if (child === opts.target) return cur.depth + 1;
+      if (seen.has(child)) continue;
+      seen.add(child);
+      queue.push({ id: child, depth: cur.depth + 1 });
+    }
+  }
+
+  return null;
+}
+
+function createEngineScopeEvaluator(engine: TreecrdtEngine): TreecrdtScopeEvaluator {
+  return async (opts) => {
+    const rootHex = bytesToHex(opts.scope.root);
+    const nodeHex = bytesToHex(opts.node);
+
+    const depth = await findDepthBfs({ engine, root: rootHex, target: nodeHex });
+    if (depth === null) return "unknown";
+    if (opts.scope.maxDepth !== undefined && depth > opts.scope.maxDepth) return "deny";
+
+    if (opts.scope.exclude && opts.scope.exclude.length > 0) {
+      for (const ex of opts.scope.exclude) {
+        const exHex = bytesToHex(ex);
+        const exDepth = await findDepthBfs({ engine, root: exHex, target: nodeHex });
+        if (exDepth !== null) return "deny";
+      }
+    }
+
+    return "allow";
+  };
+}
+
+function latestPayloadForNode(ops: Operation[], node: string): Uint8Array | null | undefined {
+  let bestLamport = -1;
+  let bestCounter = -1;
+  let bestPayload: Uint8Array | null | undefined = undefined;
+
+  for (const op of ops) {
+    if (op.kind.type !== "payload") continue;
+    if (op.kind.node !== node) continue;
+    const lamport = op.meta.lamport;
+    const counter = Number(op.meta.id.counter);
+    if (lamport > bestLamport || (lamport === bestLamport && counter > bestCounter)) {
+      bestLamport = lamport;
+      bestCounter = counter;
+      bestPayload = op.kind.payload;
+    }
+  }
+
+  return bestPayload;
+}
+
+async function scenarioSyncAuthSignedOps(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
+
+  const root = nodeIdFromInt(0);
+  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: "last" }, null);
+  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: "last" }, null);
+  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: "last" }, null);
+
+  const tokenA = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
+  const tokenB = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+  });
+
+  const backendA = createEngineSyncBackend(a);
+  const backendB = createEngineSyncBackend(b);
+
+  const { peerA, transportA, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+  });
+
+  try {
+    await peerA.syncOnce(transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+  } finally {
+    detach();
+  }
+
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    const [aRefs, bRefs] = await Promise.all([a.opRefs.all(), b.opRefs.all()]);
+    const aSet = new Set(aRefs.map((r) => bytesToHex(r)));
+    const bSet = new Set(bRefs.map((r) => bytesToHex(r)));
+    if (aSet.size === bSet.size && Array.from(aSet).every((r) => bSet.has(r))) return;
+    if (Date.now() > deadline) throw new Error("sync auth conformance: expected peers to converge");
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function scenarioSyncAuthScopedTokenRejectsAllFilter(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
+
+  const root = nodeIdFromInt(0);
+  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: "last" }, null);
+  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: "last" }, null);
+
+  // Scoped tokens must not be allowed to use `filter(all)`; they should use `children(parent)` instead.
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["write_structure", "write_payload", "delete", "tombstone"],
+    rootNodeId: root,
+    maxDepth: 1,
+  });
+  const tokenB = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+  });
+
+  const backendA = createEngineSyncBackend(a);
+  const backendB = createEngineSyncBackend(b);
+
+  const { peerA, transportA, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB },
+  });
+
+  try {
+    let threw = false;
+    try {
+      await peerA.syncOnce(transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    } catch (err: any) {
+      threw = true;
+      const msg = String(err?.message ?? err ?? "");
+      assert(/unauthorized/i.test(msg), `expected UNAUTHORIZED, got: ${msg}`);
+    }
+    assert(threw, "expected syncOnce(all) to be rejected for scoped token");
+  } finally {
+    detach();
+  }
+}
+
+async function scenarioAuthSqliteSubtreeEvaluator(ctx: SqliteConformanceContext): Promise<void> {
+  const runner = engineRunnerOrNull(ctx.engine);
+  if (!runner) return;
+
+  const docId = ctx.docId;
+  const engine = ctx.engine;
+  const evalScope = createTreecrdtSqliteSubtreeScopeEvaluator(runner);
+
+  const root = nodeIdFromInt(0);
+  const subtreeRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  const unrelated = nodeIdFromInt(3);
+
+  // Missing node => unknown context.
+  assertEqual(
+    await evalScope({ docId, node: nodeIdToBytes16(child), scope: { root: nodeIdToBytes16(subtreeRoot) } }),
+    "unknown",
+    "sqlite scope evaluator: missing node should be unknown"
+  );
+
+  // Insert child under subtreeRoot (root node itself need not exist as a row).
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: replicaFromLabel("r1"),
+      counter: 1,
+      lamport: 1,
+      parent: subtreeRoot,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+  assertEqual(
+    await evalScope({ docId, node: nodeIdToBytes16(child), scope: { root: nodeIdToBytes16(subtreeRoot) } }),
+    "allow",
+    "sqlite scope evaluator: expected child to be within subtree"
+  );
+
+  // Insert unrelated node under ROOT; should be outside subtreeRoot.
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: replicaFromLabel("r1"),
+      counter: 2,
+      lamport: 2,
+      parent: root,
+      node: unrelated,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+  assertEqual(
+    await evalScope({ docId, node: nodeIdToBytes16(unrelated), scope: { root: nodeIdToBytes16(subtreeRoot) } }),
+    "deny",
+    "sqlite scope evaluator: expected unrelated node to be outside subtree"
+  );
+}
+
+async function scenarioSyncAuthPendingContextSidecar(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const runnerB = engineRunnerOrNull(b);
+  if (!runnerB) return;
+
+  const pendingB = createTreecrdtSyncSqlitePendingOpsStore({ runner: runnerB, docId });
+  await pendingB.init();
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
+  const aPkHex = bytesToHex(aPk);
+
+  const subtreeRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+
+  // A is scoped to a subtree; B is doc-wide. When B receives an op for an unknown node, it must fail closed
+  // (pending_context) until the node's placement is known.
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ["write_structure", "write_payload"],
+    rootNodeId: subtreeRoot,
+  });
+  const tokenB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: bPk,
+    docId,
+    actions: ["write_structure", "write_payload"],
+  });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+    scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(runnerB),
+  });
+
+  const backendA = createEngineSyncBackend(a);
+
+  const backendB: SyncBackend<Operation> = {
+    ...createEngineSyncBackend(b),
+    storePendingOps: pendingB.storePendingOps,
+    listPendingOps: pendingB.listPendingOps,
+    deletePendingOps: pendingB.deletePendingOps,
+  };
+
+  const { peerB, transportB, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA, maxOpsPerBatch: 1 },
+    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+  });
+
+  try {
+    // Exchange capabilities first (so B learns A's token for verifying A's ops).
+    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    // Payload arrives before insert => pending_context.
+    await a.ops.appendMany([
+      makePayloadOp({ replica: aPk, counter: 1, lamport: 1, node: child, payload: new Uint8Array([1, 2, 3]) }),
+    ]);
+
+    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    const pendingAfterPayload = await pendingB.listPendingOps();
+    assertEqual(pendingAfterPayload.length, 1, "expected payload op to be stored as pending");
+    assertEqual(bytesToHex(pendingAfterPayload[0]!.op.meta.id.replica), aPkHex, "pending op replica");
+    assertEqual(pendingAfterPayload[0]!.op.meta.id.counter, 1, "pending op counter");
+
+    // Now insert arrives; should apply insert and then reprocess pending payload.
+    await a.ops.appendMany([
+      makeInsertOp({ replica: aPk, counter: 2, lamport: 2, parent: subtreeRoot, node: child, orderKey: orderKeyFromPosition(0) }),
+    ]);
+
+    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    const deadline = Date.now() + 2_000;
+    while (true) {
+      const ops = await b.ops.all();
+      const hasPayload = ops.some((o) => bytesToHex(o.meta.id.replica) === aPkHex && o.meta.id.counter === 1);
+      const hasInsert = ops.some((o) => bytesToHex(o.meta.id.replica) === aPkHex && o.meta.id.counter === 2);
+      const pendingCount = (await pendingB.listPendingOps()).length;
+
+      if (hasPayload && hasInsert && pendingCount === 0) break;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `expected insert+payload to apply and pending to drain (hasPayload=${hasPayload}, hasInsert=${hasInsert}, pending=${pendingCount})`
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  } finally {
+    detach();
+  }
+}
+
+async function scenarioSyncAuthRestartRelayReServesSignedOps(ctx: SqliteConformanceContext): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+
+  const docId = ctx.docId;
+  const a = ctx.engine;
+
+  const relay1 = await ctx.createPersistentEngine({ docId, name: "relay" });
+  const runnerRelay1 = engineRunnerOrNull(relay1);
+  if (!runnerRelay1) return;
+  const opAuthRelay1 = createTreecrdtSyncSqliteOpAuthStore({ runner: runnerRelay1, docId });
+  await opAuthRelay1.init();
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
+  const cSk = randomEd25519SecretKey();
+  const cPk = await getEd25519PublicKey(cSk);
+
+  const tokenA = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
+  const tokenB = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: bPk, docId });
+  const tokenC = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: cPk, docId });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+
+  const authRelay1 = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    // Advertise tokenA so downstream peers can verify A's ops (A is offline after relay restart).
+    localCapabilityTokens: [tokenB, tokenA],
+    requireProofRef: true,
+    opAuthStore: opAuthRelay1,
+  });
+
+  const root = nodeIdFromInt(0);
+  const subtreeRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  await a.local.insert(aPk, root, subtreeRoot, { type: "last" }, null);
+  await a.local.insert(aPk, subtreeRoot, child, { type: "last" }, null);
+
+  const backendA = createEngineSyncBackend(a);
+  const backendRelay1 = createEngineSyncBackend(relay1);
+
+  const { peerB: peerRelay1, transportB: transportRelay1, detach: detach1 } = createInMemoryConnectedPeers({
+    backendA,
+    backendB: backendRelay1,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authRelay1 },
+  });
+
+  try {
+    await peerRelay1.syncOnce(transportRelay1, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+  } finally {
+    detach1();
+  }
+
+  // Close and reopen the relay to simulate a restart.
+  await relay1.close();
+
+  const relay2 = await ctx.createPersistentEngine({ docId, name: "relay" });
+  const runnerRelay2 = engineRunnerOrNull(relay2);
+  if (!runnerRelay2) return;
+  const opAuthRelay2 = createTreecrdtSyncSqliteOpAuthStore({ runner: runnerRelay2, docId });
+  await opAuthRelay2.init();
+
+  const authRelay2 = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB, tokenA],
+    requireProofRef: true,
+    opAuthStore: opAuthRelay2,
+  });
+
+  const authC = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: cSk,
+    localPublicKey: cPk,
+    localCapabilityTokens: [tokenC],
+    requireProofRef: true,
+  });
+
+  const c = await ctx.createEngine({ docId, name: "peer-c" });
+
+  const backendRelay2 = createEngineSyncBackend(relay2);
+  const backendC = createEngineSyncBackend(c);
+
+  const { peerB: peerC, transportB: transportC, detach: detach2 } = createInMemoryConnectedPeers({
+    backendA: backendRelay2,
+    backendB: backendC,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authRelay2 },
+    peerBOptions: { auth: authC },
+  });
+
+  try {
+    await peerC.syncOnce(transportC, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+  } finally {
+    detach2();
+  }
+
+  assertArrayEqual(await c.tree.children(root), [subtreeRoot], "receiver sees subtree root after relay restart");
+  assertArrayEqual(await c.tree.children(subtreeRoot), [child], "receiver sees child under subtree after relay restart");
+}
+
+async function scenarioSyncAuthExcludedRootNotSynced(ctx: SqliteConformanceContext): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: "peer-b" });
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+
+  const aSk = randomEd25519SecretKey();
+  const aPk = await getEd25519PublicKey(aSk);
+  const bSk = randomEd25519SecretKey();
+  const bPk = await getEd25519PublicKey(bSk);
+
+  const root = nodeIdFromInt(0);
+  const publicNode = nodeIdFromInt(1);
+  const secretRoot = nodeIdFromInt(2);
+
+  await a.local.insert(aPk, root, publicNode, { type: "last" }, null);
+  await a.local.insert(aPk, root, secretRoot, { type: "last" }, null);
+  await a.local.insert(aPk, secretRoot, nodeIdFromInt(3), { type: "last" }, null);
+
+  const tokenA = makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: aPk, docId });
+  const tokenB = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: bPk,
+    docId,
+    actions: ["write_structure", "write_payload", "delete", "tombstone"],
+    rootNodeId: root,
+    excludeNodeIds: [secretRoot],
+  });
+
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    scopeEvaluator: createEngineScopeEvaluator(a),
+    requireProofRef: true,
+  });
+
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    localCapabilityTokens: [tokenB],
+    requireProofRef: true,
+  });
+
+  const backendA = createEngineSyncBackend(a);
+  const backendB = createEngineSyncBackend(b);
+
+  const { peerA, peerB, transportA, transportB, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+  });
+
+  try {
+    // A pushes ops to B, but B's capability excludes `secretRoot`.
+    await peerA.syncOnce(transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    const bKids = await b.tree.children(root);
+    assertArrayEqual(bKids, [publicNode], "scoped peer should only see public node");
+
+    // B can still write to the allowed node and sync back using `children(root)`.
+    const updated = new TextEncoder().encode("public-updated");
+    await b.local.payload(bPk, publicNode, updated);
+    // Sanity: the payload update must be discoverable under `children(root)`; otherwise scoped sync cannot propagate it.
+    {
+      const refs = await b.opRefs.children(root);
+      const ops = await b.ops.get(refs);
+      const latestLocal = latestPayloadForNode(ops, publicNode);
+      assertBytesEqual(latestLocal ?? null, updated, "expected local payload to be discoverable under opRefs.children(root)");
+    }
+
+    await peerB.syncOnce(transportB, { children: { parent: nodeIdToBytes16(root) } }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    // `syncOnce` does not guarantee the responder has fully applied the initiator's ops when using async backends
+    // (e.g. wa-sqlite worker/OPFS). Poll briefly for the update to become visible.
+    const expectedHex = bytesToHex(updated);
+    const deadline = Date.now() + 2_000;
+    while (true) {
+      const ops = await a.ops.all();
+      const latest = latestPayloadForNode(ops, publicNode);
+      if (latest && bytesToHex(latest) === expectedHex) break;
+      if (Date.now() > deadline) {
+        assertBytesEqual(latest ?? null, updated, "expected payload update to propagate to full peer");
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  } finally {
+    detach();
+  }
 }

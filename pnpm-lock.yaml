@@ -20,6 +20,12 @@ importers:
       '@tanstack/react-virtual':
         specifier: ^3.13.13
         version: 3.13.13(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-auth
+      '@treecrdt/crypto':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-crypto
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../packages/treecrdt-ts
@@ -73,6 +79,37 @@ importers:
         specifier: ^7.2.7
         version: 7.2.7(@types/node@20.19.25)(jiti@1.21.7)(tsx@4.21.0)
 
+  packages/treecrdt-auth:
+    dependencies:
+      '@noble/ed25519':
+        specifier: ^3.0.0
+        version: 3.0.0
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../treecrdt-sync
+      cborg:
+        specifier: ^4.3.2
+        version: 4.3.2
+    devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
   packages/treecrdt-benchmark:
     dependencies:
       '@treecrdt/interface':
@@ -89,6 +126,28 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/treecrdt-crypto:
+    dependencies:
+      '@noble/ed25519':
+        specifier: ^3.0.0
+        version: 3.0.0
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
+      cborg:
+        specifier: ^4.3.2
+        version: 4.3.2
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
   packages/treecrdt-riblt-wasm-js:
     devDependencies:
       '@types/node':
@@ -103,9 +162,15 @@ importers:
 
   packages/treecrdt-sqlite-conformance:
     dependencies:
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../treecrdt-auth
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../treecrdt-sync
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -117,6 +182,15 @@ importers:
         specifier: workspace:*
         version: link:../treecrdt-ts
     devDependencies:
+      '@noble/ed25519':
+        specifier: ^3.0.0
+        version: 3.0.0
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../treecrdt-auth
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
@@ -135,6 +209,9 @@ importers:
       better-sqlite3:
         specifier: ^9.0.0
         version: 9.6.0
+      cborg:
+        specifier: ^4.3.2
+        version: 4.3.2
       tsx:
         specifier: ^4.19.2
         version: 4.21.0
@@ -890,6 +967,9 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
+  '@noble/ed25519@3.0.0':
+    resolution: {integrity: sha512-QyteqMNm0GLqfa5SoYbSC3+Pvykwpn95Zgth4MFVSMKBB75ELl9tX1LAVsN4c3HXOrakHsF2gL4zWDAYCcsnzg==}
+
   '@noble/hashes@1.8.0':
     resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
     engines: {node: ^14.21.3 || >=16}
@@ -1185,6 +1265,10 @@ packages:
 
   caniuse-lite@1.0.30001759:
     resolution: {integrity: sha512-Pzfx9fOKoKvevQf8oCXoyNRQ5QyxJj+3O0Rqx2V5oxT61KGx8+n6hV/IUyJeifUci2clnmmKVpvtiqRzgiWjSw==}
+
+  cborg@4.3.2:
+    resolution: {integrity: sha512-l+QzebEAG0vb09YKkaOrMi2zmm80UNjmbvocMIeW5hO7JOXWdrQ/H49yOKfYX0MBgrj/KWgatBnEgRXyNyKD+A==}
+    hasBin: true
 
   chai@4.5.0:
     resolution: {integrity: sha512-RITGBfijLkBddZvnn8jdqoTypxvqbOLYQkGGxXzeFjVHvudaPw0HNFD9x928/eUwYWd2dPCugVqspGALTZZQKw==}
@@ -2492,6 +2576,8 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
+  '@noble/ed25519@3.0.0': {}
+
   '@noble/hashes@1.8.0': {}
 
   '@nodelib/fs.scandir@2.1.5':
@@ -2768,6 +2854,8 @@ snapshots:
   camelcase-css@2.0.1: {}
 
   caniuse-lite@1.0.30001759: {}
+
+  cborg@4.3.2: {}
 
   chai@4.5.0:
     dependencies:

@@ -117,7 +117,7 @@ export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {})
 export function createTreecrdtClient(
   db: any,
   opts: { docId?: string; maxBulkOps?: number } = {}
-): Promise<TreecrdtEngine> {
+): Promise<TreecrdtEngine & { runner: SqliteRunner }> {
   const runner = createRunner(db);
   const adapter = createTreecrdtSqliteAdapter(runner, { maxBulkOps: opts.maxBulkOps });
   const docId = opts.docId ?? "treecrdt";
@@ -125,8 +125,7 @@ export function createTreecrdtClient(
   const ready = Promise.resolve(adapter.setDocId(docId));
 
   const localWriters = new Map<string, TreecrdtSqliteWriter>();
-  const localWriterKey = (replica: ReplicaId) =>
-    typeof replica === "string" ? replica : bytesToHex(replica);
+  const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
   const localWriterFor = (replica: ReplicaId) => {
     const key = localWriterKey(replica);
     const existing = localWriters.get(key);
@@ -190,6 +189,7 @@ export function createTreecrdtClient(
       delete: localDeleteImpl,
       payload: localPayloadImpl,
     },
+    runner,
     close: async () => {
       if (typeof db?.close === "function") db.close();
     },
