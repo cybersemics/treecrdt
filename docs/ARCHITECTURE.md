@@ -69,6 +69,10 @@ flowchart TD
   sqlite_node -. conformance tests .-> conformance
 ```
 
+Notes:
+- `@treecrdt/crypto` is currently consumed by example/app flows (for payload encryption), not by `@treecrdt/auth`.
+- The playground app is intentionally omitted from this diagram to keep the package map focused on library/runtime crates.
+
 ## Core CRDT shape
 - Operation log with `(OperationId { replica, counter }, lamport, kind)`; kinds: insert/move/delete/tombstone.
 - Deterministic application rules following Kleppmann Tree CRDT; extend to support alternative tombstone semantics if needed (per linked proposal).
