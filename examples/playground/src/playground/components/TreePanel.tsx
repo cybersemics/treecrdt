@@ -58,6 +58,7 @@ export function TreePanel({
   collapse,
   toggleCollapse,
   openShareForNode,
+  grantSubtreeToReplicaPubkey,
   onSetValue,
   onAddChild,
   onDelete,
@@ -66,6 +67,13 @@ export function TreePanel({
   onToggleLiveChildren,
   privateRoots,
   togglePrivateRoot,
+  peers,
+  selfPeerId,
+  canManageCapabilities,
+  authBusy,
+  issuedGrantRecords,
+  hardRevokedTokenIds,
+  toggleHardRevokedTokenId,
   scopeRootId,
   canWritePayload,
   canWriteStructure,
@@ -123,6 +131,11 @@ export function TreePanel({
   collapse: CollapseState;
   toggleCollapse: (id: string) => void;
   openShareForNode: (nodeId: string) => void;
+  grantSubtreeToReplicaPubkey: (opts: {
+    recipientKey: string;
+    rootNodeId: string;
+    actions?: string[];
+  }) => Promise<void>;
   onSetValue: (nodeId: string, value: string) => void | Promise<void>;
   onAddChild: (nodeId: string) => void;
   onDelete: (nodeId: string) => void;
@@ -131,6 +144,21 @@ export function TreePanel({
   onToggleLiveChildren: (nodeId: string) => void;
   privateRoots: Set<string>;
   togglePrivateRoot: (nodeId: string) => void;
+  peers: PeerInfo[];
+  selfPeerId: string | null;
+  canManageCapabilities: boolean;
+  authBusy: boolean;
+  issuedGrantRecords: Array<{
+    recipientPkHex: string;
+    tokenIdHex: string;
+    rootNodeId: string;
+    actions: string[];
+    maxDepth?: number;
+    excludeCount: number;
+    ts: number;
+  }>;
+  hardRevokedTokenIds: string[];
+  toggleHardRevokedTokenId: (tokenIdHex: string) => void;
   scopeRootId: string;
   canWritePayload: boolean;
   canWriteStructure: boolean;
@@ -307,6 +335,15 @@ export function TreePanel({
                   onToggleLiveChildren={onToggleLiveChildren}
                   privateRoots={privateRoots}
                   onTogglePrivateRoot={togglePrivateRoot}
+                  peers={peers}
+                  selfPeerId={selfPeerId}
+                  authEnabled={authEnabled}
+                  canManageCapabilities={canManageCapabilities}
+                  authBusy={authBusy}
+                  issuedGrantRecords={issuedGrantRecords}
+                  hardRevokedTokenIds={hardRevokedTokenIds}
+                  onToggleHardRevokedTokenId={toggleHardRevokedTokenId}
+                  onGrantToReplicaPubkey={grantSubtreeToReplicaPubkey}
                   scopeRootId={scopeRootId}
                   canWritePayload={canWritePayload}
                   canWriteStructure={canWriteStructure}

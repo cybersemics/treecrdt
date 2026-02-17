@@ -168,32 +168,17 @@ export default function App() {
     refreshPendingOps,
     privateRoots,
     privateRootsCount,
-    showPrivateRootsPanel,
-    setShowPrivateRootsPanel,
     togglePrivateRoot,
-    clearPrivateRoots,
     inviteRoot,
-    setInviteRoot,
-    inviteMaxDepth,
-    setInviteMaxDepth,
     inviteActions,
     setInviteActions,
     inviteAllowGrant,
     setInviteAllowGrant,
     invitePreset,
-    setInvitePreset,
-    showInviteOptions,
-    setShowInviteOptions,
-    inviteExcludeNodeIds,
     inviteLink,
     generateInviteLink,
     applyInvitePreset,
-    invitePanelRef,
-    inviteImportText,
-    setInviteImportText,
-    importInviteLink,
-    grantRecipientKey,
-    setGrantRecipientKey,
+    issuedGrantRecords,
     grantSubtreeToReplicaPubkey: grantSubtreeToReplicaPubkeyRaw,
     resetAuth,
     openMintingPeerTab,
@@ -544,9 +529,12 @@ export default function App() {
     onRemoteOpsApplied,
   });
 
-  const grantSubtreeToReplicaPubkey = React.useCallback(async () => {
-    await grantSubtreeToReplicaPubkeyRaw(postBroadcastMessage);
-  }, [grantSubtreeToReplicaPubkeyRaw, postBroadcastMessage]);
+  const grantSubtreeToReplicaPubkey = React.useCallback(
+    async (opts?: { recipientKey?: string; rootNodeId?: string; actions?: string[] }) => {
+      await grantSubtreeToReplicaPubkeyRaw(postBroadcastMessage, opts);
+    },
+    [grantSubtreeToReplicaPubkeyRaw, postBroadcastMessage]
+  );
 
   useEffect(() => {
     if (viewRootId === ROOT_ID) return;
@@ -1049,9 +1037,9 @@ export default function App() {
     const out: string[] = [];
     if (set.has("write_structure") || set.has("write_payload")) out.push("write");
     if (set.has("delete")) out.push("delete");
-    if (set.has("tombstone")) out.push("tombstone");
     return out;
   })();
+  const canManageCapabilities = authEnabled && (authCanIssue || authCanDelegate);
   const localReplicaHex = selfPeerId;
 
   return (
@@ -1061,19 +1049,14 @@ export default function App() {
         onClose={() => setShowShareDialog(false)}
         inviteRoot={inviteRoot}
         nodeLabelForId={nodeLabelForId}
-        joinMode={joinMode}
         authEnabled={authEnabled}
         authBusy={authBusy}
         authCanIssue={authCanIssue}
         authCanDelegate={authCanDelegate}
-        authScopeTitle={authScopeTitle}
-        authScopeSummary={authScopeSummary}
-        inviteExcludeNodeIds={inviteExcludeNodeIds}
         onEnableAuth={() => setAuthEnabled(true)}
         openMintingPeerTab={openMintingPeerTab}
         authInfo={authInfo}
         authError={authError}
-        setAuthError={setAuthError}
         invitePreset={invitePreset}
         applyInvitePreset={applyInvitePreset}
         inviteActions={inviteActions}
@@ -1083,11 +1066,6 @@ export default function App() {
         openNewIsolatedPeerTab={openNewIsolatedPeerTab}
         generateInviteLink={generateInviteLink}
         inviteLink={inviteLink}
-        copyToClipboard={copyToClipboard}
-        grantRecipientKey={grantRecipientKey}
-        setGrantRecipientKey={setGrantRecipientKey}
-        grantSubtreeToReplicaPubkey={grantSubtreeToReplicaPubkey}
-        selfPeerId={selfPeerId}
       />
 
       <PlaygroundHeader
@@ -1193,19 +1171,6 @@ export default function App() {
               authTokenCount,
               authTokenScope,
               authTokenActions,
-              revocationKnownTokenIds,
-              hardRevokedTokenIds,
-              toggleHardRevokedTokenId,
-              clearHardRevokedTokenIds,
-              revocationTokenInput,
-              setRevocationTokenInput,
-              addHardRevokedTokenId,
-              revocationCutoverEnabled,
-              setRevocationCutoverEnabled,
-              revocationCutoverTokenId,
-              setRevocationCutoverTokenId,
-              revocationCutoverCounter,
-              setRevocationCutoverCounter,
               authScopeSummary,
               authScopeTitle,
               authSummaryBadges,
@@ -1215,35 +1180,11 @@ export default function App() {
               openMintingPeerTab,
               showAuthAdvanced,
               setShowAuthAdvanced,
-              showInviteOptions,
-              setShowInviteOptions,
-              invitePanelRef,
-              nodeList,
-              inviteRoot,
-              setInviteRoot,
-              inviteMaxDepth,
-              setInviteMaxDepth,
-              inviteActions,
-              setInviteActions,
-              inviteAllowGrant,
-              setInviteAllowGrant,
-              invitePreset,
-              setInvitePreset,
-              inviteExcludeNodeIds,
-              inviteLink,
-              generateInviteLink,
-              applyInvitePreset,
               copyToClipboard,
               refreshAuthMaterial,
               refreshPendingOps,
               client,
               pendingOps,
-              showPrivateRootsPanel,
-              setShowPrivateRootsPanel,
-              privateRootsCount,
-              privateRootEntries,
-              togglePrivateRoot,
-              clearPrivateRoots,
               wrapKeyImportText,
               setWrapKeyImportText,
               issuerKeyBlobImportText,
@@ -1253,13 +1194,6 @@ export default function App() {
               deviceSigningKeyBlobImportText,
               setDeviceSigningKeyBlobImportText,
               localIdentityChainPromiseRef,
-              inviteImportText,
-              setInviteImportText,
-              importInviteLink,
-              grantRecipientKey,
-              setGrantRecipientKey,
-              grantSubtreeToReplicaPubkey,
-              nodeLabelForId,
             }}
             treeParentRef={treeParentRef}
             treeVirtualizer={treeVirtualizer}
@@ -1267,6 +1201,7 @@ export default function App() {
             collapse={collapse}
             toggleCollapse={toggleCollapse}
             openShareForNode={openShareForNode}
+            grantSubtreeToReplicaPubkey={grantSubtreeToReplicaPubkey}
             onSetValue={handleSetValue}
             onAddChild={(id) => {
               setParentChoice(id);
@@ -1278,6 +1213,13 @@ export default function App() {
             onToggleLiveChildren={toggleLiveChildren}
             privateRoots={privateRoots}
             togglePrivateRoot={togglePrivateRoot}
+            peers={peers}
+            selfPeerId={selfPeerId}
+            canManageCapabilities={canManageCapabilities}
+            authBusy={authBusy}
+            issuedGrantRecords={issuedGrantRecords}
+            hardRevokedTokenIds={hardRevokedTokenIds}
+            toggleHardRevokedTokenId={toggleHardRevokedTokenId}
             scopeRootId={viewRootId}
             canWritePayload={canWritePayload}
             canWriteStructure={canWriteStructure}

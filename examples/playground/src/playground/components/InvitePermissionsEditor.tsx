@@ -1,19 +1,42 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo } from "react";
+import { MdAccountTree, MdCheck, MdDeleteOutline, MdEdit, MdShare } from "react-icons/md";
 
 import type { InviteActions, InvitePreset } from "../invite";
 
+type InviteCapability = keyof InviteActions | "grant";
+
+const PRESET_ORDER: InvitePreset[] = ["read", "read_write", "admin"];
+
+const PRESET_LABEL: Record<Exclude<InvitePreset, "custom">, string> = {
+  read: "Read",
+  read_write: "Read + Write",
+  admin: "Admin",
+};
+
+const CAPABILITY_ORDER: InviteCapability[] = ["write_structure", "write_payload", "delete", "grant"];
+
+const CAPABILITY_META: Record<
+  InviteCapability,
+  { label: string; icon: React.ComponentType<{ className?: string }> }
+> = {
+  write_structure: { label: "Write structure", icon: MdAccountTree },
+  write_payload: { label: "Write payload", icon: MdEdit },
+  delete: { label: "Delete", icon: MdDeleteOutline },
+  grant: { label: "Grant (reshare)", icon: MdShare },
+};
+
 function presetToActions(preset: InvitePreset, custom: InviteActions): InviteActions {
-  if (preset === "read") return { write_structure: false, write_payload: false, delete: false, tombstone: false };
-  if (preset === "read_write") return { write_structure: true, write_payload: true, delete: false, tombstone: false };
-  if (preset === "admin") return { write_structure: true, write_payload: true, delete: true, tombstone: true };
+  if (preset === "read") return { write_structure: false, write_payload: false, delete: false };
+  if (preset === "read_write") return { write_structure: true, write_payload: true, delete: false };
+  if (preset === "admin") return { write_structure: true, write_payload: true, delete: true };
   return custom;
 }
 
 function inferPreset(actions: InviteActions): InvitePreset {
-  const { write_structure, write_payload, delete: canDelete, tombstone } = actions;
-  if (!write_structure && !write_payload && !canDelete && !tombstone) return "read";
-  if (write_structure && write_payload && !canDelete && !tombstone) return "read_write";
-  if (write_structure && write_payload && canDelete && tombstone) return "admin";
+  const { write_structure, write_payload, delete: canDelete } = actions;
+  if (!write_structure && !write_payload && !canDelete) return "read";
+  if (write_structure && write_payload && !canDelete) return "read_write";
+  if (write_structure && write_payload && canDelete) return "admin";
   return "custom";
 }
 
@@ -25,7 +48,11 @@ export function InvitePermissionsEditor({
   applyInvitePreset,
   inviteAllowGrant,
   setInviteAllowGrant,
-  showAdvancedByDefault,
+  showPresets = true,
+  showContainer = true,
+  showHeader = true,
+  showCapabilitiesLabel = true,
+  showHint = true,
 }: {
   busy: boolean;
   invitePreset: InvitePreset;
@@ -34,18 +61,13 @@ export function InvitePermissionsEditor({
   applyInvitePreset: (preset: InvitePreset) => void;
   inviteAllowGrant: boolean;
   setInviteAllowGrant: React.Dispatch<React.SetStateAction<boolean>>;
-  showAdvancedByDefault?: boolean;
+  showPresets?: boolean;
+  showContainer?: boolean;
+  showHeader?: boolean;
+  showCapabilitiesLabel?: boolean;
+  showHint?: boolean;
 }) {
   const effective = useMemo(() => presetToActions(invitePreset, inviteActions), [invitePreset, inviteActions]);
-  const writeEnabled = effective.write_structure || effective.write_payload;
-  const writeMasterRef = useRef<HTMLInputElement>(null);
-  const [showAdvanced, setShowAdvanced] = useState(Boolean(showAdvancedByDefault));
-
-  useEffect(() => {
-    const el = writeMasterRef.current;
-    if (!el) return;
-    el.indeterminate = writeEnabled && !(effective.write_structure && effective.write_payload);
-  }, [writeEnabled, effective.write_structure, effective.write_payload]);
 
   const setNextActions = (next: InviteActions) => {
     const preset = inferPreset(next);
@@ -57,136 +79,88 @@ export function InvitePermissionsEditor({
     applyInvitePreset(preset);
   };
 
-  const toggleWriteMaster = (checked: boolean) => {
-    setNextActions({
-      ...effective,
-      write_structure: checked,
-      write_payload: checked,
-    });
+  const toggleCapability = (name: InviteCapability) => {
+    if (name === "grant") {
+      setInviteAllowGrant((v) => !v);
+      return;
+    }
+    setNextActions({ ...effective, [name]: !effective[name] });
   };
 
-  const toggleAction = (name: keyof InviteActions, checked: boolean) => {
-    setNextActions({ ...effective, [name]: checked });
-  };
-
-  return (
-    <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Permissions</div>
-
-      <div className="mt-2 grid gap-2 md:grid-cols-2">
-        <label className="flex items-start gap-2 text-sm text-slate-200">
-          <input type="checkbox" checked disabled />
-          <span className="leading-tight">
-            <span className="font-semibold">Read</span>
-            <span className="mt-0.5 block text-[11px] text-slate-500">Always included (structure + values).</span>
-          </span>
-        </label>
-
-        <label className="flex items-start gap-2 text-sm text-slate-200">
-          <input
-            ref={writeMasterRef}
-            type="checkbox"
-            checked={writeEnabled}
-            onChange={(e) => toggleWriteMaster(e.target.checked)}
-            disabled={busy}
-          />
-          <span className="leading-tight">
-            <span className="font-semibold">Write</span>
-            <span className="mt-0.5 block text-[11px] text-slate-500">Enable edits. Fine-tune below.</span>
-          </span>
-        </label>
-      </div>
-
-      {writeEnabled ? (
-        <div className="mt-2 grid gap-2 border-t border-slate-800/70 pt-2 md:grid-cols-2">
-          <label className="flex items-start gap-2 text-sm text-slate-200">
-            <input
-              type="checkbox"
-              checked={effective.write_structure}
-              onChange={(e) => toggleAction("write_structure", e.target.checked)}
-              disabled={busy}
-            />
-            <span className="leading-tight">
-              <span className="font-semibold">Edit tree</span>{" "}
-              <span className="font-mono text-[11px] text-slate-500">write_structure</span>
-              <span className="mt-0.5 block text-[11px] text-slate-500">Create/move nodes (tree shape).</span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm text-slate-200">
-            <input
-              type="checkbox"
-              checked={effective.write_payload}
-              onChange={(e) => toggleAction("write_payload", e.target.checked)}
-              disabled={busy}
-            />
-            <span className="leading-tight">
-              <span className="font-semibold">Edit values</span>{" "}
-              <span className="font-mono text-[11px] text-slate-500">write_payload</span>
-              <span className="mt-0.5 block text-[11px] text-slate-500">Edit node values (payload bytes).</span>
-            </span>
-          </label>
+  const content = (
+    <>
+      {showHeader && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Permissions</div>
+          <div className="text-[11px] text-slate-500">Read always included</div>
         </div>
-      ) : null}
+      )}
 
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-2">
-        <label className="flex items-center gap-2 text-sm text-slate-200">
-          <input
-            type="checkbox"
-            checked={inviteAllowGrant}
-            onChange={(e) => setInviteAllowGrant(e.target.checked)}
-            disabled={busy}
-          />
-          <span className="text-[13px]">
-            Allow resharing <span className="text-[11px] text-slate-500">(grant)</span>
-          </span>
-        </label>
-
-        <button
-          type="button"
-          className="text-xs font-semibold text-slate-300 transition hover:text-white"
-          onClick={() => setShowAdvanced((v) => !v)}
-          aria-expanded={showAdvanced}
-        >
-          {showAdvanced ? "Hide extra actions" : "Extra actions"}
-        </button>
-      </div>
-
-      {showAdvanced ? (
-        <div className="mt-2 grid gap-2 md:grid-cols-2">
-          <label className="flex items-start gap-2 text-sm text-slate-200">
-            <input
-              type="checkbox"
-              checked={effective.delete}
-              onChange={(e) => toggleAction("delete", e.target.checked)}
-              disabled={busy}
-            />
-            <span className="leading-tight">
-              <span className="font-semibold">Delete nodes</span>{" "}
-              <span className="font-mono text-[11px] text-slate-500">delete</span>
-              <span className="mt-0.5 block text-[11px] text-slate-500">Remove nodes (soft delete).</span>
+      {showPresets && (
+        <div className={`${showHeader ? "mt-2" : ""} flex flex-wrap gap-1.5`}>
+          {PRESET_ORDER.map((preset) => {
+            if (preset === "custom") return null;
+            const selected = invitePreset === preset;
+            return (
+              <button
+                key={preset}
+                type="button"
+                className={`h-8 rounded-lg border px-3 text-[11px] font-semibold transition ${
+                  selected
+                    ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
+                    : "border-slate-700 bg-slate-800/60 text-slate-200 hover:border-accent hover:text-white"
+                }`}
+                onClick={() => applyInvitePreset(preset)}
+                disabled={busy}
+              >
+                {PRESET_LABEL[preset]}
+              </button>
+            );
+          })}
+          {invitePreset === "custom" && (
+            <span className="inline-flex h-8 items-center rounded-lg border border-slate-700 bg-slate-900/60 px-3 text-[11px] font-semibold text-slate-300">
+              Custom
             </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm text-slate-200">
-            <input
-              type="checkbox"
-              checked={effective.tombstone}
-              onChange={(e) => toggleAction("tombstone", e.target.checked)}
-              disabled={busy}
-            />
-            <span className="leading-tight">
-              <span className="font-semibold">Tombstone nodes</span>{" "}
-              <span className="font-mono text-[11px] text-slate-500">tombstone</span>
-              <span className="mt-0.5 block text-[11px] text-slate-500">Permanently hide nodes.</span>
-            </span>
-          </label>
+          )}
         </div>
-      ) : null}
+      )}
 
-      <div className="mt-2 text-[11px] text-slate-500">
-        Tip: “Structure” = insert/move/delete; “payload” = the node’s value/content bytes.
+      <div className={`${showHeader || showPresets ? "mt-2" : ""}`}>
+        {showCapabilitiesLabel && <div className="text-[10px] uppercase tracking-wide text-slate-500">Capabilities</div>}
+        <div className={`${showCapabilitiesLabel ? "mt-1" : ""} flex flex-wrap gap-1`}>
+          {CAPABILITY_ORDER.map((name) => {
+            const enabled = name === "grant" ? inviteAllowGrant : Boolean(effective[name]);
+            const Icon = CAPABILITY_META[name].icon;
+            return (
+              <button
+                key={name}
+                type="button"
+                className={`relative flex h-8 w-8 items-center justify-center rounded-md border text-slate-100 transition ${
+                  enabled ? "border-emerald-400/70 bg-emerald-500/10" : "border-slate-700 bg-slate-800/60 hover:border-accent"
+                }`}
+                title={CAPABILITY_META[name].label}
+                aria-label={CAPABILITY_META[name].label}
+                aria-pressed={enabled}
+                onClick={() => toggleCapability(name)}
+                disabled={busy}
+              >
+                <Icon className="text-[15px]" />
+                {enabled && <MdCheck className="absolute -right-1 -top-1 text-[12px] text-emerald-300" />}
+              </button>
+            );
+          })}
+        </div>
       </div>
-    </div>
+
+      {showHint && (
+        <div className="mt-2 text-[11px] text-slate-500">
+          Delete uses defensive delete; tombstone handling is internal to token encoding.
+        </div>
+      )}
+    </>
   );
+
+  if (!showContainer) return content;
+
+  return <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">{content}</div>;
 }
