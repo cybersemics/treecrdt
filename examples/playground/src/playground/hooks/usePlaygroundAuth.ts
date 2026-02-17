@@ -72,6 +72,12 @@ function parseReplicaPublicKeyInput(input: string): Uint8Array {
   }
 }
 
+function normalizeTokenIdHex(input: string): string | null {
+  const clean = input.trim().toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{32}$/.test(clean)) return null;
+  return clean;
+}
+
 async function copyToClipboard(text: string): Promise<void> {
   if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
     throw new Error("clipboard API is not available");
@@ -135,6 +141,19 @@ export type PlaygroundAuthApi = {
   authTokenScope: TreecrdtCapabilityTokenV1["caps"][number]["res"] | null;
   authTokenActions: TreecrdtCapabilityTokenV1["caps"][number]["actions"] | null;
   authNeedsInvite: boolean;
+  revocationKnownTokenIds: string[];
+  hardRevokedTokenIds: string[];
+  toggleHardRevokedTokenId: (tokenIdHex: string) => void;
+  clearHardRevokedTokenIds: () => void;
+  revocationTokenInput: string;
+  setRevocationTokenInput: React.Dispatch<React.SetStateAction<string>>;
+  addHardRevokedTokenId: () => void;
+  revocationCutoverEnabled: boolean;
+  setRevocationCutoverEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+  revocationCutoverTokenId: string;
+  setRevocationCutoverTokenId: React.Dispatch<React.SetStateAction<string>>;
+  revocationCutoverCounter: string;
+  setRevocationCutoverCounter: React.Dispatch<React.SetStateAction<string>>;
 
   pendingOps: Array<{ id: string; kind: string; message?: string }>;
   refreshPendingOps: () => Promise<void>;
@@ -231,6 +250,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   >(null);
 
   const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
+  const [hardRevokedTokenIds, setHardRevokedTokenIds] = useState<string[]>([]);
+  const [revocationTokenInput, setRevocationTokenInput] = useState("");
+  const [revocationCutoverEnabled, setRevocationCutoverEnabled] = useState(false);
+  const [revocationCutoverTokenId, setRevocationCutoverTokenId] = useState("");
+  const [revocationCutoverCounter, setRevocationCutoverCounter] = useState("");
 
   const invitePanelRef = useRef<HTMLDivElement>(null!);
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
@@ -424,6 +448,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         localPrivateKey: localSk,
         localPublicKey: localPk,
         localCapabilityTokens: localTokens,
+        revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
+        isCapabilityTokenRevoked: runtimeCutoverRevocationChecker,
         requireProofRef: true,
         scopeEvaluator,
         opAuthStore,
@@ -441,6 +467,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authMaterial.localSkB64,
     authMaterial.localPkB64,
     authMaterial.localTokensB64.join(","),
+    hardRevokedTokenIds.join(","),
+    revocationCutoverEnabled,
+    revocationCutoverTokenId,
+    revocationCutoverCounter,
   ]);
 
   const replica = useMemo(() => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null), [
@@ -549,6 +579,82 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const authTokenScope = authToken?.caps?.[0]?.res ?? null;
   const authTokenActions = authToken?.caps?.[0]?.actions ?? null;
   const authNeedsInvite = Boolean(authEnabled && joinMode && authTokenCount === 0);
+
+  const revocationKnownTokenIds = useMemo(() => {
+    const seen = new Set<string>();
+    for (const tokenB64 of authMaterial.localTokensB64) {
+      try {
+        seen.add(bytesToHex(deriveTokenIdV1(base64urlDecode(tokenB64))));
+      } catch {
+        // ignore malformed local token bytes
+      }
+    }
+    return Array.from(seen.values());
+  }, [authMaterial.localTokensB64.join(",")]);
+
+  useEffect(() => {
+    setHardRevokedTokenIds([]);
+    setRevocationTokenInput("");
+    setRevocationCutoverEnabled(false);
+    setRevocationCutoverTokenId("");
+    setRevocationCutoverCounter("");
+  }, [docId]);
+
+  useEffect(() => {
+    if (revocationCutoverTokenId) return;
+    if (revocationKnownTokenIds.length === 0) return;
+    setRevocationCutoverTokenId(revocationKnownTokenIds[0]!);
+  }, [revocationCutoverTokenId, revocationKnownTokenIds]);
+
+  const toggleHardRevokedTokenId = React.useCallback((tokenIdHex: string) => {
+    const normalized = normalizeTokenIdHex(tokenIdHex);
+    if (!normalized) return;
+    setHardRevokedTokenIds((prev) => {
+      if (prev.includes(normalized)) return prev.filter((v) => v !== normalized);
+      return [...prev, normalized];
+    });
+  }, []);
+
+  const clearHardRevokedTokenIds = React.useCallback(() => {
+    setHardRevokedTokenIds([]);
+  }, []);
+
+  const addHardRevokedTokenId = React.useCallback(() => {
+    const normalized = normalizeTokenIdHex(revocationTokenInput);
+    if (!normalized) {
+      setAuthError("Token id must be exactly 32 hex chars (16 bytes).");
+      return;
+    }
+    setHardRevokedTokenIds((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    setRevocationTokenInput("");
+    setAuthError(null);
+  }, [revocationTokenInput]);
+
+  const hardRevokedTokenIdBytes = useMemo(() => hardRevokedTokenIds.map((hex) => hexToBytes16(hex)), [hardRevokedTokenIds]);
+  const revocationCutoverTokenIdNormalized = useMemo(
+    () => normalizeTokenIdHex(revocationCutoverTokenId),
+    [revocationCutoverTokenId]
+  );
+  const revocationCutoverCounterValue = useMemo(() => {
+    const text = revocationCutoverCounter.trim();
+    if (text.length === 0) return null;
+    const parsed = Number(text);
+    if (!Number.isInteger(parsed) || parsed < 0) return null;
+    return parsed;
+  }, [revocationCutoverCounter]);
+
+  const runtimeCutoverRevocationChecker = React.useCallback(
+    (ctx: { stage: "parse" | "runtime"; tokenIdHex: string; op?: Operation }) => {
+      if (ctx.stage !== "runtime") return false;
+      if (!revocationCutoverEnabled) return false;
+      if (!revocationCutoverTokenIdNormalized) return false;
+      if (revocationCutoverCounterValue === null) return false;
+      if (ctx.tokenIdHex !== revocationCutoverTokenIdNormalized) return false;
+      if (!ctx.op) return false;
+      return ctx.op.meta.id.counter >= revocationCutoverCounterValue;
+    },
+    [revocationCutoverCounterValue, revocationCutoverEnabled, revocationCutoverTokenIdNormalized]
+  );
 
   const importInvitePayload = React.useCallback(
     async (inviteB64: string, opts2: { clearHash?: boolean } = {}) => {
@@ -1257,6 +1363,19 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authTokenScope,
     authTokenActions,
     authNeedsInvite,
+    revocationKnownTokenIds,
+    hardRevokedTokenIds,
+    toggleHardRevokedTokenId,
+    clearHardRevokedTokenIds,
+    revocationTokenInput,
+    setRevocationTokenInput,
+    addHardRevokedTokenId,
+    revocationCutoverEnabled,
+    setRevocationCutoverEnabled,
+    revocationCutoverTokenId,
+    setRevocationCutoverTokenId,
+    revocationCutoverCounter,
+    setRevocationCutoverCounter,
     pendingOps,
     refreshPendingOps,
     privateRoots,
