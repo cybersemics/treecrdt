@@ -132,6 +132,43 @@ Verifiers SHOULD cache `token_id -> parsed claims` for efficiency.
 Implementations SHOULD support token-id-based revocation (denylist) in addition to `exp`/`nbf`.
 Revoking a proof token must also invalidate delegated tokens that depend on that proof chain.
 
+Recommended policy modes:
+
+- `hard`: token is invalid for all checks (retroactive if re-verified).
+- `write_cutover`: token remains valid for ops strictly before `effective_from`, and is rejected at/after `effective_from`.
+
+`write_cutover` can be anchored by:
+
+- `(replica_id, counter)` (preferred: deterministic and clock-free), or
+- `lamport` (acceptable if all peers use the same lamport interpretation).
+
+For convergence across peers, revocations SHOULD be exchanged as signed records (not only local denylist state).
+
+Proposed record shape (draft):
+
+- capability: `name="auth.revocation"`, `value=base64url(COSE_Sign1(CWT))`
+- claims:
+  - `doc_id`
+  - `token_id`
+  - `mode` (`hard` or `write_cutover`)
+  - `effective_from_counter` + `effective_from_replica` (or `effective_from_lamport`)
+  - `iat`
+  - monotonic `rev_seq` (per issuer/doc), to avoid ambiguity on conflicting records
+
+Deterministic verifier rule:
+
+- verify record signature against issuer trust roots
+- pick highest `rev_seq` for `(doc_id, token_id)`
+- enforce by mode:
+  - `hard`: reject always
+  - `write_cutover`: reject only ops at/after cutover boundary
+
+Reference implementation status:
+
+- supports hard revocation now (`revokedCapabilityTokenIds`)
+- supports custom runtime cutover logic via `isCapabilityTokenRevoked` callback with op context (`op`, `purpose`)
+- does not yet standardize `auth.revocation` wire records
+
 ## Signed operations
 
 Ops are signed with the doc-scoped Ed25519 key. The signature covers:

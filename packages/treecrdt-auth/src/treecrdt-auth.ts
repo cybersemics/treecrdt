@@ -15,5 +15,10 @@ export { encodeTreecrdtOpSigInputV1, signTreecrdtOpV1, verifyTreecrdtOpV1 } from
 
 export type { TreecrdtScopeEvaluator } from "./internal/scope.js";
 
-export type { TreecrdtCoseCwtAuthOptions } from "./internal/cose-cwt-auth.js";
+export type {
+  TreecrdtCoseCwtAuthOptions,
+  TreecrdtCoseCwtParseRevocationCheckContext,
+  TreecrdtCoseCwtRuntimeRevocationCheckContext,
+  TreecrdtCoseCwtRevocationCheckContext,
+} from "./internal/cose-cwt-auth.js";
 export { createTreecrdtCoseCwtAuth } from "./internal/cose-cwt-auth.js";

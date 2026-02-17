@@ -58,13 +58,31 @@ export type TreecrdtCoseCwtAuthOptions = {
     getOpAuthByOpRefs: (opRefs: OpRef[]) => Promise<Array<OpAuth | null>>;
   };
   revokedCapabilityTokenIds?: Uint8Array[];
+  /**
+   * Optional revocation hook. Runtime checks include operation context, so
+   * apps can enforce cutover policies (e.g. revoke from a given counter/lamport).
+   */
   isCapabilityTokenRevoked?: (
-    ctx: TreecrdtCapabilityRevocationCheckContext & { stage: "parse" | "runtime" }
+    ctx: TreecrdtCoseCwtRevocationCheckContext
   ) => boolean | Promise<boolean>;
   allowUnsigned?: boolean;
   requireProofRef?: boolean;
   now?: () => number;
 };
+
+export type TreecrdtCoseCwtParseRevocationCheckContext = TreecrdtCapabilityRevocationCheckContext & {
+  stage: "parse";
+};
+
+export type TreecrdtCoseCwtRuntimeRevocationCheckContext = TreecrdtCapabilityRevocationCheckContext & {
+  stage: "runtime";
+  purpose: "sign_op" | "verify_op";
+  op: Operation;
+};
+
+export type TreecrdtCoseCwtRevocationCheckContext =
+  | TreecrdtCoseCwtParseRevocationCheckContext
+  | TreecrdtCoseCwtRuntimeRevocationCheckContext;
 
 export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): SyncAuth<Operation> {
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
@@ -85,7 +103,13 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   let localTokensRecordedForDoc: string | null = null;
   let opAuthStoreInitPromise: Promise<void> | null = null;
 
-  const isGrantRevoked = async (grant: CapabilityGrant, docId: string): Promise<boolean> => {
+  const isGrantRevoked = async (opts2: {
+    grant: CapabilityGrant;
+    docId: string;
+    purpose: "sign_op" | "verify_op";
+    op: Operation;
+  }): Promise<boolean> => {
+    const { grant, docId, purpose, op } = opts2;
     const tokenIdHex = bytesToHex(grant.tokenId);
     if (revokedTokenIdHexes?.has(tokenIdHex)) return true;
     if (!opts.isCapabilityTokenRevoked) return false;
@@ -94,6 +118,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       tokenId: grant.tokenId,
       tokenIdHex,
       docId,
+      purpose,
+      op,
     });
   };
 
@@ -161,13 +187,21 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     docId: string;
     op: Operation;
     candidates: CapabilityGrant[];
+    purpose: "sign_op" | "verify_op";
   }): Promise<CapabilityGrant> => {
     const nowSec = now();
     let bestUnknown: CapabilityGrant | null = null;
     let sawRevoked = false;
 
     for (const grant of opts2.candidates) {
-      if (await isGrantRevoked(grant, opts2.docId)) {
+      if (
+        await isGrantRevoked({
+          grant,
+          docId: opts2.docId,
+          purpose: opts2.purpose,
+          op: opts2.op,
+        })
+      ) {
         sawRevoked = true;
         continue;
       }
@@ -391,6 +425,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             docId: ctx.docId,
             op,
             candidates: Array.from(byToken.values()),
+            purpose: "sign_op",
           });
           proofRef = selected.tokenId;
         }
@@ -445,7 +480,16 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           if (!a.proofRef) throw new Error("missing proof_ref");
           const g = byToken.get(bytesToHex(a.proofRef));
           if (!g) throw new Error("proof_ref does not match known token");
-          if (await isGrantRevoked(g, ctx.docId)) throw new Error("capability token revoked");
+          if (
+            await isGrantRevoked({
+              grant: g,
+              docId: ctx.docId,
+              purpose: "verify_op",
+              op,
+            })
+          ) {
+            throw new Error("capability token revoked");
+          }
           grant = g;
         } else {
           const preferred = a.proofRef ? byToken.get(bytesToHex(a.proofRef)) : undefined;
@@ -456,6 +500,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             docId: ctx.docId,
             op,
             candidates: orderedCandidates,
+            purpose: "verify_op",
           });
         }
 
