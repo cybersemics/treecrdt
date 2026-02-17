@@ -21,7 +21,12 @@ import {
   type TreecrdtIdentityChainV1,
   type VerifiedTreecrdtIdentityChainV1,
 } from "../identity.js";
-import { deriveKeyIdV1, parseAndVerifyCapabilityToken, type CapabilityGrant } from "./capability.js";
+import {
+  deriveKeyIdV1,
+  parseAndVerifyCapabilityToken,
+  type CapabilityGrant,
+  type TreecrdtCapabilityRevocationCheckContext,
+} from "./capability.js";
 import { signTreecrdtOpV1, verifyTreecrdtOpV1 } from "./op-sig.js";
 import { getField } from "./claims.js";
 import {
@@ -52,6 +57,10 @@ export type TreecrdtCoseCwtAuthOptions = {
     storeOpAuth: (entries: Array<{ opRef: OpRef; auth: OpAuth }>) => Promise<void>;
     getOpAuthByOpRefs: (opRefs: OpRef[]) => Promise<Array<OpAuth | null>>;
   };
+  revokedCapabilityTokenIds?: Uint8Array[];
+  isCapabilityTokenRevoked?: (
+    ctx: TreecrdtCapabilityRevocationCheckContext & { stage: "parse" | "runtime" }
+  ) => boolean | Promise<boolean>;
   allowUnsigned?: boolean;
   requireProofRef?: boolean;
   now?: () => number;
@@ -64,11 +73,29 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
+  const revokedTokenIdHexes = opts.revokedCapabilityTokenIds
+    ? new Set(opts.revokedCapabilityTokenIds.map((id) => bytesToHex(id)))
+    : undefined;
+  const parseStageRevocationChecker = opts.isCapabilityTokenRevoked
+    ? (ctx: TreecrdtCapabilityRevocationCheckContext) => opts.isCapabilityTokenRevoked!({ ...ctx, stage: "parse" })
+    : undefined;
 
   const grantsByKeyIdHex = new Map<string, Map<string, CapabilityGrant>>();
   const opAuthByOpRefHex = new Map<string, OpAuth>();
   let localTokensRecordedForDoc: string | null = null;
   let opAuthStoreInitPromise: Promise<void> | null = null;
+
+  const isGrantRevoked = async (grant: CapabilityGrant, docId: string): Promise<boolean> => {
+    const tokenIdHex = bytesToHex(grant.tokenId);
+    if (revokedTokenIdHexes?.has(tokenIdHex)) return true;
+    if (!opts.isCapabilityTokenRevoked) return false;
+    return await opts.isCapabilityTokenRevoked({
+      stage: "runtime",
+      tokenId: grant.tokenId,
+      tokenIdHex,
+      docId,
+    });
+  };
 
   const recordToken = async (tokenBytes: Uint8Array, docId: string) => {
     const grant = await parseAndVerifyCapabilityToken({
@@ -77,6 +104,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       docId,
       scopeEvaluator: opts.scopeEvaluator,
       nowSec: now(),
+      revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
+      isCapabilityTokenRevoked: parseStageRevocationChecker,
     });
     const keyHex = bytesToHex(grant.keyId);
     const tokenHex = bytesToHex(grant.tokenId);
@@ -135,8 +164,13 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   }): Promise<CapabilityGrant> => {
     const nowSec = now();
     let bestUnknown: CapabilityGrant | null = null;
+    let sawRevoked = false;
 
     for (const grant of opts2.candidates) {
+      if (await isGrantRevoked(grant, opts2.docId)) {
+        sawRevoked = true;
+        continue;
+      }
       if (grant.exp !== undefined && nowSec > grant.exp) continue;
       if (grant.nbf !== undefined && nowSec < grant.nbf) continue;
 
@@ -151,6 +185,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     }
 
     if (bestUnknown) return bestUnknown;
+    if (sawRevoked) throw new Error("capability token revoked");
     throw new Error("capability does not allow op");
   };
 
@@ -178,6 +213,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             docId: ctx.docId,
             scopeEvaluator: opts.scopeEvaluator,
             nowSec: now(),
+            revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
+            isCapabilityTokenRevoked: parseStageRevocationChecker,
           })
         );
       }
@@ -251,6 +288,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             docId: ctx.docId,
             scopeEvaluator: opts.scopeEvaluator,
             nowSec: now(),
+            revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
+            isCapabilityTokenRevoked: parseStageRevocationChecker,
           })
         );
       }
@@ -406,6 +445,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           if (!a.proofRef) throw new Error("missing proof_ref");
           const g = byToken.get(bytesToHex(a.proofRef));
           if (!g) throw new Error("proof_ref does not match known token");
+          if (await isGrantRevoked(g, ctx.docId)) throw new Error("capability token revoked");
           grant = g;
         } else {
           const preferred = a.proofRef ? byToken.get(bytesToHex(a.proofRef)) : undefined;

@@ -1162,6 +1162,112 @@ test("auth: delegation proof can itself be delegated (chain)", async () => {
   expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
 });
 
+test("auth: revoked token id is rejected by describeTreecrdtCapabilityTokenV1", async () => {
+  const docId = "doc-auth-revoked-token";
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const subjectPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  const token = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: subjectPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  await expect(
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes: token,
+      issuerPublicKeys: [issuerPk],
+      docId,
+      revokedCapabilityTokenIds: [deriveTokenIdV1(token)],
+    })
+  ).rejects.toThrow(/capability token revoked/i);
+});
+
+test("auth: delegated token is rejected when proof token is revoked", async () => {
+  const docId = "doc-auth-revoked-proof";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const delegatorSk = ed25519Utils.randomSecretKey();
+  const delegatorPk = await getPublicKey(delegatorSk);
+  const recipientPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  const proof = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: delegatorPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure", "grant"],
+  });
+
+  const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proof,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  await expect(
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes: delegated,
+      issuerPublicKeys: [issuerPk],
+      docId,
+      revokedCapabilityTokenIds: [deriveTokenIdV1(proof)],
+    })
+  ).rejects.toThrow(/capability token revoked/i);
+});
+
+test("auth: onHello rejects revoked peer capability tokens", async () => {
+  const docId = "doc-auth-revoked-hello";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const senderSk = ed25519Utils.randomSecretKey();
+  const senderPk = await getPublicKey(senderSk);
+  const receiverSk = ed25519Utils.randomSecretKey();
+  const receiverPk = await getPublicKey(receiverSk);
+
+  const tokenSender = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: senderPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const authSender = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: senderSk,
+    localPublicKey: senderPk,
+    localCapabilityTokens: [tokenSender],
+    requireProofRef: true,
+  });
+
+  const authReceiver = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: receiverSk,
+    localPublicKey: receiverPk,
+    revokedCapabilityTokenIds: [deriveTokenIdV1(tokenSender)],
+    requireProofRef: true,
+  });
+
+  const helloCaps = await authSender.helloCapabilities?.({ docId });
+  expect(helloCaps).toBeTruthy();
+
+  await expect(
+    authReceiver.onHello!({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId })
+  ).rejects.toThrow(/capability token revoked/i);
+});
+
 test("auth: delegated capability root may be a descendant of proof root (with scope evaluator)", async () => {
   const docId = "doc-auth-delegation-narrow-root";
   const root = nodeIdFromInt(1);

@@ -127,6 +127,11 @@ Reference derivation (v1):
 
 Verifiers SHOULD cache `token_id -> parsed claims` for efficiency.
 
+### Revocation
+
+Implementations SHOULD support token-id-based revocation (denylist) in addition to `exp`/`nbf`.
+Revoking a proof token must also invalidate delegated tokens that depend on that proof chain.
+
 ## Signed operations
 
 Ops are signed with the doc-scoped Ed25519 key. The signature covers:

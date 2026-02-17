@@ -144,6 +144,21 @@ export type CapabilityGrant = {
   nbf?: number;
 };
 
+export type TreecrdtCapabilityRevocationCheckContext = {
+  tokenId: Uint8Array;
+  tokenIdHex: string;
+  tokenBytes?: Uint8Array;
+  docId: string;
+  depth?: number;
+};
+
+export type TreecrdtCapabilityRevocationOptions = {
+  revokedCapabilityTokenIds?: Uint8Array[];
+  isCapabilityTokenRevoked?: (
+    ctx: TreecrdtCapabilityRevocationCheckContext
+  ) => boolean | Promise<boolean>;
+};
+
 const MAX_DELEGATION_PROOF_CHAIN = 8;
 
 export async function parseAndVerifyCapabilityToken(opts: {
@@ -152,9 +167,17 @@ export async function parseAndVerifyCapabilityToken(opts: {
   docId: string;
   nowSec: number;
   scopeEvaluator?: TreecrdtScopeEvaluator;
-}): Promise<CapabilityGrant> {
+} & TreecrdtCapabilityRevocationOptions): Promise<CapabilityGrant> {
   const seenTokenIds = new Set<string>();
-  return parseAndVerifyCapabilityTokenDepth({ ...opts, depth: 0, seenTokenIds });
+  const revokedTokenIdHexes = opts.revokedCapabilityTokenIds
+    ? new Set(opts.revokedCapabilityTokenIds.map((id) => bytesToHex(id)))
+    : undefined;
+  return parseAndVerifyCapabilityTokenDepth({
+    ...opts,
+    depth: 0,
+    seenTokenIds,
+    revokedTokenIdHexes,
+  });
 }
 
 async function parseAndVerifyCapabilityTokenDepth(opts: {
@@ -163,15 +186,31 @@ async function parseAndVerifyCapabilityTokenDepth(opts: {
   docId: string;
   nowSec: number;
   scopeEvaluator?: TreecrdtScopeEvaluator;
+  isCapabilityTokenRevoked?: (
+    ctx: TreecrdtCapabilityRevocationCheckContext
+  ) => boolean | Promise<boolean>;
   depth: number;
   seenTokenIds: Set<string>;
+  revokedTokenIdHexes?: Set<string>;
 }): Promise<CapabilityGrant> {
   if (opts.issuerPublicKeys.length === 0) throw new Error("issuerPublicKeys is empty");
   if (opts.depth > MAX_DELEGATION_PROOF_CHAIN) throw new Error("delegation proof chain is too deep");
 
-  const tokenIdHex = bytesToHex(deriveTokenIdV1(opts.tokenBytes));
+  const tokenId = deriveTokenIdV1(opts.tokenBytes);
+  const tokenIdHex = bytesToHex(tokenId);
   if (opts.seenTokenIds.has(tokenIdHex)) throw new Error("delegation proof cycle detected");
   opts.seenTokenIds.add(tokenIdHex);
+  if (opts.revokedTokenIdHexes?.has(tokenIdHex)) throw new Error("capability token revoked");
+  if (opts.isCapabilityTokenRevoked) {
+    const revoked = await opts.isCapabilityTokenRevoked({
+      tokenId,
+      tokenIdHex,
+      tokenBytes: opts.tokenBytes,
+      docId: opts.docId,
+      depth: opts.depth,
+    });
+    if (revoked) throw new Error("capability token revoked");
+  }
 
   const verifyWithIssuers = async (): Promise<{ payload: Uint8Array } | null> => {
     for (const issuerPk of opts.issuerPublicKeys) {
@@ -189,6 +228,7 @@ async function parseAndVerifyCapabilityTokenDepth(opts: {
   if (issuerVerified) {
     return parseCapabilityGrantFromClaims({
       tokenBytes: opts.tokenBytes,
+      tokenId,
       claimsBytes: issuerVerified.payload,
       docId: opts.docId,
       nowSec: opts.nowSec,
@@ -218,13 +258,16 @@ async function parseAndVerifyCapabilityTokenDepth(opts: {
     docId: opts.docId,
     nowSec: opts.nowSec,
     scopeEvaluator: opts.scopeEvaluator,
+    isCapabilityTokenRevoked: opts.isCapabilityTokenRevoked,
     depth: opts.depth + 1,
     seenTokenIds: opts.seenTokenIds,
+    revokedTokenIdHexes: opts.revokedTokenIdHexes,
   });
 
   const delegatedPayload = await coseVerifySign1Ed25519({ bytes: opts.tokenBytes, publicKey: proofGrant.publicKey });
   const delegatedGrant = parseCapabilityGrantFromClaims({
     tokenBytes: opts.tokenBytes,
+    tokenId,
     claimsBytes: delegatedPayload,
     docId: opts.docId,
     nowSec: opts.nowSec,
@@ -242,6 +285,7 @@ async function parseAndVerifyCapabilityTokenDepth(opts: {
 
 function parseCapabilityGrantFromClaims(opts: {
   tokenBytes: Uint8Array;
+  tokenId?: Uint8Array;
   claimsBytes: Uint8Array;
   docId: string;
   nowSec: number;
@@ -288,7 +332,7 @@ function parseCapabilityGrantFromClaims(opts: {
     throw new Error("capability token caps claim missing or invalid");
   }
   return {
-    tokenId: deriveTokenIdV1(opts.tokenBytes),
+    tokenId: opts.tokenId ?? deriveTokenIdV1(opts.tokenBytes),
     keyId,
     publicKey: pub,
     caps,
@@ -402,15 +446,17 @@ export async function describeTreecrdtCapabilityTokenV1(opts: {
   docId: string;
   scopeEvaluator?: TreecrdtScopeEvaluator;
   nowSec?: number;
-}): Promise<TreecrdtCapabilityTokenV1> {
+} & TreecrdtCapabilityRevocationOptions): Promise<TreecrdtCapabilityTokenV1> {
   const grant = await parseAndVerifyCapabilityToken({
     tokenBytes: opts.tokenBytes,
     issuerPublicKeys: opts.issuerPublicKeys,
     docId: opts.docId,
     scopeEvaluator: opts.scopeEvaluator,
     nowSec: opts.nowSec ?? Math.floor(Date.now() / 1000),
+    revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
+    isCapabilityTokenRevoked: opts.isCapabilityTokenRevoked,
   });
-
+  
   if (!Array.isArray(grant.caps) || grant.caps.length === 0) {
     throw new Error("capability token must be a v1 capability token");
   }
@@ -446,4 +492,3 @@ export async function describeTreecrdtCapabilityTokenV1(opts: {
     ...(grant.nbf !== undefined ? { nbf: grant.nbf } : {}),
   };
 }
-

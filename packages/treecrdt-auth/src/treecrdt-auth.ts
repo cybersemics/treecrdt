@@ -4,7 +4,12 @@ export {
   issueTreecrdtCapabilityTokenV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
 } from "./internal/capability.js";
-export type { TreecrdtCapabilityTokenV1, TreecrdtCapabilityV1 } from "./internal/capability.js";
+export type {
+  TreecrdtCapabilityTokenV1,
+  TreecrdtCapabilityV1,
+  TreecrdtCapabilityRevocationCheckContext,
+  TreecrdtCapabilityRevocationOptions,
+} from "./internal/capability.js";
 
 export { encodeTreecrdtOpSigInputV1, signTreecrdtOpV1, verifyTreecrdtOpV1 } from "./internal/op-sig.js";
 
