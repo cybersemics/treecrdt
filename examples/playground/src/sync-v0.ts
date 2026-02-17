@@ -7,6 +7,7 @@ export type AuthGrantMessageV1 = {
   issuer_pk_b64: string;
   token_b64: string;
   payload_key_b64?: string;
+  payload_key_kid?: string;
   from_peer_id: string;
   ts: number;
 };

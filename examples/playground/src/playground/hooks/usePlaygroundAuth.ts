@@ -26,9 +26,9 @@ import {
   encodeInvitePayload,
   generateEd25519KeyPair,
   deriveEd25519PublicKey,
+  getDocPayloadActiveKeyInfoB64,
   initialAuthEnabled,
   initialRevealIdentity,
-  loadOrCreateDocPayloadKeyB64,
   loadAuthMaterial,
   persistRevealIdentity,
   persistAuthEnabled,
@@ -558,7 +558,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       }
 
       if (payload.payloadKeyB64) {
-        await saveDocPayloadKeyB64(docId, payload.payloadKeyB64);
+        await saveDocPayloadKeyB64(docId, payload.payloadKeyB64, payload.payloadKeyKid);
         await refreshDocPayloadKey();
       }
 
@@ -898,6 +898,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
       });
 
+      const { payloadKeyB64, payloadKeyKid } = await getDocPayloadActiveKeyInfoB64(docId);
       return encodeInvitePayload({
         v: 1,
         t: "treecrdt.playground.invite",
@@ -905,7 +906,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         issuerPkB64,
         subjectSkB64: base64urlEncode(subjectSk),
         tokenB64: base64urlEncode(tokenBytes),
-        payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
+        payloadKeyB64,
+        payloadKeyKid,
       });
     }
     if (!issuerSkB64 || !issuerPkB64) {
@@ -927,6 +929,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
     });
 
+    const { payloadKeyB64, payloadKeyKid } = await getDocPayloadActiveKeyInfoB64(docId);
     return encodeInvitePayload({
       v: 1,
       t: "treecrdt.playground.invite",
@@ -934,7 +937,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       issuerPkB64,
       subjectSkB64: base64urlEncode(subjectSk),
       tokenB64: base64urlEncode(tokenBytes),
-      payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
+      payloadKeyB64,
+      payloadKeyKid,
     });
   };
 
@@ -1023,6 +1027,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const issuerPkB64 = grant.issuer_pk_b64;
       const tokenB64 = grant.token_b64;
       const payloadKeyB64 = typeof grant.payload_key_b64 === "string" ? grant.payload_key_b64 : null;
+      const payloadKeyKid = typeof grant.payload_key_kid === "string" ? grant.payload_key_kid : undefined;
 
       void (async () => {
         setAuthBusy(true);
@@ -1032,7 +1037,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           await saveIssuerKeys(docId, issuerPkB64);
 
           if (payloadKeyB64) {
-            await saveDocPayloadKeyB64(docId, payloadKeyB64);
+            await saveDocPayloadKeyB64(docId, payloadKeyB64, payloadKeyKid);
             await refreshDocPayloadKey();
           }
 
@@ -1152,13 +1157,15 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         });
       }
 
+      const { payloadKeyB64, payloadKeyKid } = await getDocPayloadActiveKeyInfoB64(docId);
       const msg: AuthGrantMessageV1 = {
         t: "auth_grant_v1",
         doc_id: docId,
         to_replica_pk_hex: bytesToHex(subjectPk),
         issuer_pk_b64: issuerPkB64,
         token_b64: base64urlEncode(tokenBytes),
-        payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
+        payload_key_b64: payloadKeyB64,
+        payload_key_kid: payloadKeyKid,
         from_peer_id: selfPeerId,
         ts: Date.now(),
       };

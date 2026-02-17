@@ -44,6 +44,9 @@ export type SharingAuthPanelProps = {
   authTokenCount: number;
   authTokenScope: AuthTokenScope | null;
   authTokenActions: string[] | null;
+  payloadKeyKid: string | null;
+  payloadRotateBusy: boolean;
+  rotatePayloadKey: () => Promise<void>;
   authScopeSummary: string;
   authScopeTitle: string;
   authSummaryBadges: string[];
@@ -138,6 +141,9 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     authTokenCount,
     authTokenScope,
     authTokenActions,
+    payloadKeyKid,
+    payloadRotateBusy,
+    rotatePayloadKey,
     authScopeSummary,
     authScopeTitle,
     authSummaryBadges,
@@ -316,7 +322,7 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     	                    </button>
     	                  </div>
     
-    	                  <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+	    	                  <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
     	                    <span
     	                      className={`rounded-full border px-2 py-0.5 font-semibold ${
     	                        authEnabled
@@ -341,18 +347,49 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     	                    >
     	                      scope {authScopeSummary}
     	                    </span>
-    	                    {authSummaryBadges.map((name) => (
+	    	                    {authSummaryBadges.map((name) => (
     	                      <span
     	                        key={name}
     	                        className="rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 font-semibold text-slate-200"
     	                      >
     	                        {name}
     	                      </span>
-    	                    ))}
-    	                  </div>
-    	                </div>
-    
-    		                {showAuthAdvanced && (
+	    	                    ))}
+	    	                  </div>
+	    	                </div>
+
+                    <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Payload key</div>
+                          <div className="mt-1 text-[11px] text-slate-400">
+                            Active key id: <span className="font-mono text-slate-200">{payloadKeyKid ?? "-"}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            Rotation affects future writes only. Re-share invite/grant to distribute the new key.
+                          </div>
+                        </div>
+                        <button
+                          className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                          type="button"
+                          onClick={() =>
+                            void rotatePayloadKey().catch((err) =>
+                              setAuthError(err instanceof Error ? err.message : String(err))
+                            )
+                          }
+                          disabled={!authEnabled || authBusy || payloadRotateBusy || !authCanIssue}
+                          title={
+                            authCanIssue
+                              ? "Rotate doc payload key (future writes use the new key)"
+                              : "Only minting peers can rotate payload keys"
+                          }
+                        >
+                          {payloadRotateBusy ? "Rotating..." : "Rotate key"}
+                        </button>
+                      </div>
+                    </div>
+	    
+	    		                {showAuthAdvanced && (
     		                  <>
     			                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
     			                  <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 px-3 py-2">

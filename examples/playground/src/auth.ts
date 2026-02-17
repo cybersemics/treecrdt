@@ -1,13 +1,17 @@
 import {
+  createTreecrdtPayloadKeyringV1,
   generateTreecrdtDeviceWrapKeyV1,
   generateTreecrdtDocPayloadKeyV1,
   openTreecrdtDocPayloadKeyV1,
   openTreecrdtIssuerKeyV1,
   openTreecrdtLocalIdentityV1,
+  rotateTreecrdtPayloadKeyringV1,
   sealTreecrdtDocPayloadKeyV1,
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
   type TreecrdtDeviceWrapKeyV1,
+  type TreecrdtPayloadKeyringV1,
+  upsertTreecrdtPayloadKeyringKeyV1,
 } from "@treecrdt/crypto";
 import {
   base64urlDecode,
@@ -30,6 +34,8 @@ const ISSUER_PK_KEY_PREFIX = "treecrdt-playground-auth-issuer-pk:";
 const ISSUER_SK_SEALED_KEY_PREFIX = "treecrdt-playground-auth-issuer-sk-sealed:";
 const LOCAL_IDENTITY_SEALED_KEY_PREFIX = "treecrdt-playground-auth-local-identity-sealed:";
 const DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX = "treecrdt-playground-e2ee-doc-payload-key-sealed:";
+const DOC_PAYLOAD_KEYRING_META_KEY_PREFIX = "treecrdt-playground-e2ee-doc-payload-keyring-meta:";
+const DOC_PAYLOAD_KEYRING_SEALED_KEY_PREFIX = "treecrdt-playground-e2ee-doc-payload-keyring-sealed:";
 const IDENTITY_SK_SEALED_KEY = "treecrdt-playground-identity-sk-sealed:v1";
 const DEVICE_SIGNING_SK_SEALED_KEY = "treecrdt-playground-device-signing-sk-sealed:v1";
 const LOCAL_IDENTITY_LABEL_V1 = "replica";
@@ -155,37 +161,232 @@ export function clearDeviceWrapKey() {
   gsDel(DEVICE_WRAP_KEY_KEY);
 }
 
-export async function loadOrCreateDocPayloadKeyB64(docId: string): Promise<string> {
+type StoredDocPayloadKeyringMetaV1 = {
+  v: 1;
+  activeKid: string;
+  kids: string[];
+};
+
+function docPayloadKeyringMetaStorageKey(docId: string): string {
+  return `${DOC_PAYLOAD_KEYRING_META_KEY_PREFIX}${docId}`;
+}
+
+function docPayloadKeyringEntryStorageKey(docId: string, kid: string): string {
+  return `${DOC_PAYLOAD_KEYRING_SEALED_KEY_PREFIX}${docId}:${kid}`;
+}
+
+function parseDocPayloadKeyringMeta(raw: string | null): StoredDocPayloadKeyringMetaV1 | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredDocPayloadKeyringMetaV1>;
+    if (parsed.v !== 1) return null;
+    if (typeof parsed.activeKid !== "string" || parsed.activeKid.trim().length === 0) return null;
+    if (!Array.isArray(parsed.kids) || parsed.kids.some((kid) => typeof kid !== "string" || kid.trim().length === 0)) return null;
+    return { v: 1, activeKid: parsed.activeKid, kids: parsed.kids };
+  } catch {
+    return null;
+  }
+}
+
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function generateImportedPayloadKeyKid(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `import-${crypto.randomUUID().slice(0, 8)}`;
+  return `import-${Date.now().toString(36)}`;
+}
+
+function findPayloadKeyKidInKeyring(keyring: TreecrdtPayloadKeyringV1, payloadKey: Uint8Array): string | null {
+  for (const [kid, candidate] of Object.entries(keyring.keys)) {
+    if (equalBytes(candidate, payloadKey)) return kid;
+  }
+  return null;
+}
+
+async function writeDocPayloadKeyringV1(opts: {
+  docId: string;
+  wrapKey: TreecrdtDeviceWrapKeyV1;
+  keyring: TreecrdtPayloadKeyringV1;
+}) {
+  const metaKey = docPayloadKeyringMetaStorageKey(opts.docId);
+  const prevMeta = parseDocPayloadKeyringMeta(gsGet(metaKey));
+
+  const kids = Object.keys(opts.keyring.keys).sort();
+  for (const kid of kids) {
+    const payloadKey = opts.keyring.keys[kid];
+    if (!payloadKey) continue;
+    const sealed = await sealTreecrdtDocPayloadKeyV1({
+      wrapKey: opts.wrapKey,
+      docId: opts.docId,
+      payloadKey,
+    });
+    gsSet(docPayloadKeyringEntryStorageKey(opts.docId, kid), base64urlEncode(sealed));
+  }
+
+  if (prevMeta) {
+    const nextKidSet = new Set(kids);
+    for (const oldKid of prevMeta.kids) {
+      if (!nextKidSet.has(oldKid)) gsDel(docPayloadKeyringEntryStorageKey(opts.docId, oldKid));
+    }
+  }
+
+  const nextMeta: StoredDocPayloadKeyringMetaV1 = {
+    v: 1,
+    activeKid: opts.keyring.activeKid,
+    kids,
+  };
+  gsSet(metaKey, JSON.stringify(nextMeta));
+}
+
+async function readDocPayloadKeyringV1OrNull(opts: {
+  docId: string;
+  wrapKey: TreecrdtDeviceWrapKeyV1;
+}): Promise<TreecrdtPayloadKeyringV1 | null> {
+  const meta = parseDocPayloadKeyringMeta(gsGet(docPayloadKeyringMetaStorageKey(opts.docId)));
+  if (meta) {
+    const decodedKeys: Record<string, Uint8Array> = {};
+    for (const kid of meta.kids) {
+      const sealedB64 = gsGet(docPayloadKeyringEntryStorageKey(opts.docId, kid));
+      if (!sealedB64) continue;
+      const sealedBytes = base64urlDecodeSafe(sealedB64);
+      if (!sealedBytes) continue;
+      const opened = await openTreecrdtDocPayloadKeyV1({ wrapKey: opts.wrapKey, docId: opts.docId, sealed: sealedBytes });
+      decodedKeys[kid] = opened.payloadKey;
+    }
+
+    const decodedKids = Object.keys(decodedKeys);
+    if (decodedKids.length > 0) {
+      const initialKid = decodedKids[0]!;
+      let keyring = createTreecrdtPayloadKeyringV1({
+        payloadKey: decodedKeys[initialKid]!,
+        activeKid: initialKid,
+      });
+      for (const kid of decodedKids) {
+        if (kid === initialKid) continue;
+        keyring = upsertTreecrdtPayloadKeyringKeyV1({
+          keyring,
+          kid,
+          payloadKey: decodedKeys[kid]!,
+        });
+      }
+      if (decodedKeys[meta.activeKid]) {
+        keyring = upsertTreecrdtPayloadKeyringKeyV1({
+          keyring,
+          kid: meta.activeKid,
+          payloadKey: decodedKeys[meta.activeKid]!,
+          makeActive: true,
+        });
+      }
+      return keyring;
+    }
+  }
+
+  const legacySealedB64 = gsGet(`${DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX}${opts.docId}`);
+  if (!legacySealedB64) return null;
+  const legacySealedBytes = base64urlDecodeSafe(legacySealedB64);
+  if (!legacySealedBytes) throw new Error("legacy doc payload key blob is not valid base64url");
+  const opened = await openTreecrdtDocPayloadKeyV1({ wrapKey: opts.wrapKey, docId: opts.docId, sealed: legacySealedBytes });
+
+  return createTreecrdtPayloadKeyringV1({
+    payloadKey: opened.payloadKey,
+    activeKid: "legacy-k0",
+  });
+}
+
+async function loadOrCreateDocPayloadKeyringV1Unlocked(opts: {
+  docId: string;
+  wrapKey: TreecrdtDeviceWrapKeyV1;
+}): Promise<TreecrdtPayloadKeyringV1> {
+  const existing = await readDocPayloadKeyringV1OrNull(opts);
+  if (existing) {
+    await writeDocPayloadKeyringV1({ docId: opts.docId, wrapKey: opts.wrapKey, keyring: existing });
+    return existing;
+  }
+
+  const { payloadKey } = generateTreecrdtDocPayloadKeyV1({ docId: opts.docId });
+  const created = createTreecrdtPayloadKeyringV1({ payloadKey });
+  await writeDocPayloadKeyringV1({ docId: opts.docId, wrapKey: opts.wrapKey, keyring: created });
+  return created;
+}
+
+export async function loadOrCreateDocPayloadKeyringV1(docId: string): Promise<TreecrdtPayloadKeyringV1> {
   if (!docId || docId.trim().length === 0) throw new Error("docId must not be empty");
 
   return await withGlobalLock(`treecrdt-playground-doc-payload-key:${docId}`, async () => {
     const wrapKey = await requireDeviceWrapKeyBytes();
-    const sealedKey = `${DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX}${docId}`;
-
-    if (!gsGet(sealedKey)) {
-      const { payloadKey } = generateTreecrdtDocPayloadKeyV1({ docId });
-      const sealed = await sealTreecrdtDocPayloadKeyV1({ wrapKey, docId, payloadKey });
-      gsSet(sealedKey, base64urlEncode(sealed));
-    }
-
-    const sealedB64 = gsGet(sealedKey);
-    if (!sealedB64) throw new Error("doc payload key is missing after initialization");
-    const sealedBytes = base64urlDecodeSafe(sealedB64);
-    if (!sealedBytes) throw new Error("doc payload key blob is not valid base64url");
-
-    const opened = await openTreecrdtDocPayloadKeyV1({ wrapKey, docId, sealed: sealedBytes });
-    return base64urlEncode(opened.payloadKey);
+    return await loadOrCreateDocPayloadKeyringV1Unlocked({ docId, wrapKey });
   });
 }
 
-export async function saveDocPayloadKeyB64(docId: string, payloadKeyB64: string) {
+export async function loadOrCreateDocPayloadKeyB64(docId: string): Promise<string> {
+  const keyring = await loadOrCreateDocPayloadKeyringV1(docId);
+  const active = keyring.keys[keyring.activeKid];
+  if (!active) throw new Error("doc payload active key is missing");
+  return base64urlEncode(active);
+}
+
+export async function getDocPayloadActiveKeyInfoB64(docId: string): Promise<{
+  payloadKeyB64: string;
+  payloadKeyKid: string;
+}> {
+  const keyring = await loadOrCreateDocPayloadKeyringV1(docId);
+  const active = keyring.keys[keyring.activeKid];
+  if (!active) throw new Error("doc payload active key is missing");
+  return {
+    payloadKeyB64: base64urlEncode(active),
+    payloadKeyKid: keyring.activeKid,
+  };
+}
+
+export async function rotateDocPayloadKeyB64(docId: string): Promise<{
+  payloadKeyB64: string;
+  payloadKeyKid: string;
+}> {
+  if (!docId || docId.trim().length === 0) throw new Error("docId must not be empty");
+
+  return await withGlobalLock(`treecrdt-playground-doc-payload-key:${docId}`, async () => {
+    const wrapKey = await requireDeviceWrapKeyBytes();
+    const current = await loadOrCreateDocPayloadKeyringV1Unlocked({ docId, wrapKey });
+    const rotated = rotateTreecrdtPayloadKeyringV1({ keyring: current });
+    await writeDocPayloadKeyringV1({ docId, wrapKey, keyring: rotated.keyring });
+    return {
+      payloadKeyB64: base64urlEncode(rotated.rotatedPayloadKey),
+      payloadKeyKid: rotated.rotatedKid,
+    };
+  });
+}
+
+export async function saveDocPayloadKeyB64(docId: string, payloadKeyB64: string, payloadKeyKid?: string) {
   if (!docId || docId.trim().length === 0) throw new Error("docId must not be empty");
   const payloadKey = base64urlDecodeSafe(payloadKeyB64.trim());
   if (!payloadKey || payloadKey.length !== 32) throw new Error("payload key must be a base64url-encoded 32-byte value");
 
-  const wrapKey = await requireDeviceWrapKeyBytes();
-  const sealed = await sealTreecrdtDocPayloadKeyV1({ wrapKey, docId, payloadKey });
-  gsSet(`${DOC_PAYLOAD_KEY_SEALED_KEY_PREFIX}${docId}`, base64urlEncode(sealed));
+  await withGlobalLock(`treecrdt-playground-doc-payload-key:${docId}`, async () => {
+    const wrapKey = await requireDeviceWrapKeyBytes();
+    let keyring = await loadOrCreateDocPayloadKeyringV1Unlocked({ docId, wrapKey });
+
+    let kid: string;
+    if (typeof payloadKeyKid === "string" && payloadKeyKid.trim().length > 0) {
+      kid = payloadKeyKid;
+    } else {
+      const existingKid = findPayloadKeyKidInKeyring(keyring, payloadKey);
+      kid = existingKid ?? generateImportedPayloadKeyKid();
+    }
+
+    keyring = upsertTreecrdtPayloadKeyringKeyV1({
+      keyring,
+      kid,
+      payloadKey,
+      makeActive: true,
+    });
+
+    await writeDocPayloadKeyringV1({ docId, wrapKey, keyring });
+  });
 }
 
 export function initialAuthEnabled(): boolean {
@@ -477,6 +678,7 @@ export type InvitePayloadV1 = {
   subjectSkB64: string;
   tokenB64: string;
   payloadKeyB64?: string;
+  payloadKeyKid?: string;
 };
 
 export function encodeInvitePayload(payload: InvitePayloadV1): string {
@@ -497,6 +699,9 @@ export function decodeInvitePayload(inviteB64: string): InvitePayloadV1 {
   if (!parsed.tokenB64 || typeof parsed.tokenB64 !== "string") throw new Error("invite tokenB64 missing");
   if (parsed.payloadKeyB64 !== undefined && typeof parsed.payloadKeyB64 !== "string") {
     throw new Error("invite payloadKeyB64 must be a string if present");
+  }
+  if (parsed.payloadKeyKid !== undefined && typeof parsed.payloadKeyKid !== "string") {
+    throw new Error("invite payloadKeyKid must be a string if present");
   }
   return parsed as InvitePayloadV1;
 }

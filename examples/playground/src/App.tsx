@@ -3,10 +3,13 @@ import { type Operation, type OperationKind } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
-import { base64urlDecode } from "@treecrdt/auth";
-import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from "@treecrdt/crypto";
+import {
+  encryptTreecrdtPayloadWithKeyringV1,
+  maybeDecryptTreecrdtPayloadWithKeyringV1,
+  type TreecrdtPayloadKeyringV1,
+} from "@treecrdt/crypto";
 
-import { loadOrCreateDocPayloadKeyB64 } from "./auth";
+import { loadOrCreateDocPayloadKeyringV1, rotateDocPayloadKeyB64 } from "./auth";
 import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
@@ -80,6 +83,8 @@ export default function App() {
   });
   const [online, setOnline] = useState(true);
   const [payloadVersion, setPayloadVersion] = useState(0);
+  const [payloadRotateBusy, setPayloadRotateBusy] = useState(false);
+  const [payloadKeyKid, setPayloadKeyKid] = useState<string | null>(null);
 
   const joinMode =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).get("join") === "1";
@@ -96,11 +101,12 @@ export default function App() {
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
   const opfsSupport = useMemo(detectOpfsSupport, []);
-  const docPayloadKeyRef = useRef<Uint8Array | null>(null);
+  const docPayloadKeyringRef = useRef<TreecrdtPayloadKeyringV1 | null>(null);
   const refreshDocPayloadKey = React.useCallback(async () => {
-    const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
-    docPayloadKeyRef.current = base64urlDecode(keyB64);
-    return docPayloadKeyRef.current;
+    const keyring = await loadOrCreateDocPayloadKeyringV1(docId);
+    docPayloadKeyringRef.current = keyring;
+    setPayloadKeyKid(keyring.activeKid);
+    return keyring.keys[keyring.activeKid] ?? null;
   }, [docId]);
 
   const {
@@ -115,6 +121,7 @@ export default function App() {
     showAuthAdvanced,
     setShowAuthAdvanced,
     authInfo,
+    setAuthInfo,
     authError,
     setAuthError,
     authBusy,
@@ -215,13 +222,15 @@ export default function App() {
   );
 
   useEffect(() => {
-    docPayloadKeyRef.current = null;
+    docPayloadKeyringRef.current = null;
+    setPayloadKeyKid(null);
     let cancelled = false;
     void (async () => {
       try {
-        const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
+        const keyring = await loadOrCreateDocPayloadKeyringV1(docId);
         if (cancelled) return;
-        docPayloadKeyRef.current = base64urlDecode(keyB64);
+        docPayloadKeyringRef.current = keyring;
+        setPayloadKeyKid(keyring.activeKid);
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
@@ -239,12 +248,13 @@ export default function App() {
 
   const payloadByNodeRef = useRef<Map<string, PayloadRecord>>(new Map());
 
-  const requireDocPayloadKey = React.useCallback(async (): Promise<Uint8Array> => {
-    if (docPayloadKeyRef.current) return docPayloadKeyRef.current;
-    const next = await refreshDocPayloadKey();
-    if (!next) throw new Error("doc payload key is missing");
+  const requireDocPayloadKeyring = React.useCallback(async (): Promise<TreecrdtPayloadKeyringV1> => {
+    if (docPayloadKeyringRef.current) return docPayloadKeyringRef.current;
+    const next = await loadOrCreateDocPayloadKeyringV1(docId);
+    docPayloadKeyringRef.current = next;
+    setPayloadKeyKid(next.activeKid);
     return next;
-  }, [refreshDocPayloadKey]);
+  }, [docId]);
 
   const ingestPayloadOps = React.useCallback(
     async (incoming: Operation[]) => {
@@ -275,9 +285,13 @@ export default function App() {
         }
 
         try {
-          const key = await requireDocPayloadKey();
-          const res = await maybeDecryptTreecrdtPayloadV1({ docId, payloadKey: key, bytes: payload });
-          payloads.set(node, { ...meta, payload: res.plaintext, encrypted: res.encrypted });
+          const keyring = await requireDocPayloadKeyring();
+          const res = await maybeDecryptTreecrdtPayloadWithKeyringV1({ docId, keyring, bytes: payload });
+          if (res.encrypted && res.keyMissing) {
+            payloads.set(node, { ...meta, payload: null, encrypted: true });
+          } else {
+            payloads.set(node, { ...meta, payload: res.plaintext, encrypted: res.encrypted });
+          }
           changed = true;
         } catch {
           payloads.set(node, { ...meta, payload: null, encrypted: true });
@@ -287,17 +301,31 @@ export default function App() {
 
       if (changed) setPayloadVersion((v) => v + 1);
     },
-    [docId, replicaKey, requireDocPayloadKey]
+    [docId, replicaKey, requireDocPayloadKeyring]
   );
 
   const encryptPayloadBytes = React.useCallback(
     async (payload: Uint8Array | null): Promise<Uint8Array | null> => {
       if (payload === null) return null;
-      const key = await requireDocPayloadKey();
-      return await encryptTreecrdtPayloadV1({ docId, payloadKey: key, plaintext: payload });
+      const keyring = await requireDocPayloadKeyring();
+      return await encryptTreecrdtPayloadWithKeyringV1({ docId, keyring, plaintext: payload });
     },
-    [docId, requireDocPayloadKey]
+    [docId, requireDocPayloadKeyring]
   );
+
+  const handleRotatePayloadKey = React.useCallback(async () => {
+    setPayloadRotateBusy(true);
+    setAuthError(null);
+    try {
+      const rotated = await rotateDocPayloadKeyB64(docId);
+      await refreshDocPayloadKey();
+      setAuthInfo(`Rotated payload key (${rotated.payloadKeyKid}). Share a new invite/grant for peers.`);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPayloadRotateBusy(false);
+    }
+  }, [docId, refreshDocPayloadKey, setAuthError, setAuthInfo]);
   const knownOpsRef = useRef<Set<string>>(new Set());
 
   const treeStateRef = useRef<TreeState>(treeState);
@@ -1176,6 +1204,9 @@ export default function App() {
               authTokenCount,
               authTokenScope,
               authTokenActions,
+              payloadKeyKid,
+              payloadRotateBusy,
+              rotatePayloadKey: handleRotatePayloadKey,
               authScopeSummary,
               authScopeTitle,
               authSummaryBadges,
