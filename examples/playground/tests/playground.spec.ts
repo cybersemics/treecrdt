@@ -50,7 +50,7 @@ async function ensureAuthAdvancedOpen(page: import("@playwright/test").Page) {
 }
 
 async function waitForLocalAuthTokens(page: import("@playwright/test").Page) {
-  await ensureAuthPanelOpen(page);
+  await ensureAuthAdvancedOpen(page);
   const tokenCount = page.getByTestId("auth-token-count");
   await expect(tokenCount).toContainText(/tokens\s*[1-9]/i, { timeout: 30_000 });
   await page.getByRole("button", { name: "Auth", exact: true }).click();
@@ -108,6 +108,11 @@ async function shareSubtreeInvite(page: import("@playwright/test").Page, nodeId:
   const link = await textarea.inputValue();
   await page.getByRole("button", { name: "Close", exact: true }).click();
   return link;
+}
+
+async function joinViaInviteLink(page: import("@playwright/test").Page, inviteLink: string) {
+  await waitForReady(page, inviteLink);
+  await waitForLocalAuthTokens(page);
 }
 
 async function clickSync(page: import("@playwright/test").Page, label: string) {
@@ -258,16 +263,8 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
     await privacyToggleA.click();
     await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
 
-    await pageA.getByRole("button", { name: "Auth", exact: true }).click();
-    await pageA.getByRole("button", { name: "Generate" }).click();
-    await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
-    const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
-
-    await ensureAuthPanelOpen(pageB);
-    const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
-    await inviteInput.fill(inviteLink);
-    await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();
-    await waitForLocalAuthTokens(pageB);
+    const inviteLink = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageB, inviteLink);
 
     await Promise.all([
       expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
@@ -362,16 +359,8 @@ test("grant by public key reveals a private subtree on resync", async ({ browser
     await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
 
     // Invite B with private roots excluded (default behavior).
-    await ensureAuthPanelOpen(pageA);
-    await pageA.getByRole("button", { name: "Generate" }).click();
-    await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
-    const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
-
-    await ensureAuthPanelOpen(pageB);
-    const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
-    await inviteInput.fill(inviteLink);
-    await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();
-    await waitForLocalAuthTokens(pageB);
+    const inviteLink = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageB, inviteLink);
 
     // Wait for peer discovery and sync public ops.
     await Promise.all([
@@ -397,13 +386,21 @@ test("grant by public key reveals a private subtree on resync", async ({ browser
     ]);
 
     await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
+    await pageB.getByRole("button", { name: "Sync", exact: true }).click();
 
     // Grant access to B's public key for the secret subtree.
     const recipientPkHex = await readReplicaPubkeyHex(pageB);
-    await ensureAuthPanelOpen(pageA);
-    await pageA.getByLabel("Subtree root").selectOption(secretNodeId);
-    await pageA.getByPlaceholder("Recipient public key (hex or base64url)").fill(recipientPkHex);
-    await pageA.getByRole("button", { name: "Grant", exact: true }).click();
+    await secretRowA.getByRole("button", { name: "Members and capabilities" }).click();
+    const peerRow = pageA
+      .locator("div")
+      .filter({ hasText: recipientPkHex })
+      .filter({ has: pageA.getByRole("button", { name: "Share…" }) })
+      .first();
+    await expect(peerRow).toBeVisible({ timeout: 30_000 });
+    const peerGrantButton = peerRow.locator("button").filter({ hasText: /^Grant$/ });
+    await expect(peerGrantButton).toHaveCount(1);
+    await peerGrantButton.first().evaluate((el) => (el as HTMLButtonElement).click());
+    await expect(peerRow.getByText("active")).toBeVisible({ timeout: 30_000 });
 
     const toast = pageB.getByRole("status");
     await expect(toast).toContainText("Access granted", { timeout: 30_000 });
@@ -568,16 +565,8 @@ test("isolated peer tab uses separate storage namespace and requires invite", as
     await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
 
     // Generate invite link on A.
-    await ensureAuthPanelOpen(pageA);
-    await pageA.getByRole("button", { name: "Generate" }).click();
-    await expect(pageA.locator("textarea[readonly]")).toBeVisible({ timeout: 30_000 });
-    const inviteLink = await pageA.locator("textarea[readonly]").inputValue();
-
-    // Import invite link on B (isolated storage namespace; join-mode requires invite).
-    await ensureAuthPanelOpen(pageB);
-    const inviteInput = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
-    await inviteInput.fill(inviteLink);
-    await inviteInput.locator("..").getByRole("button", { name: "Import" }).click();
+    const inviteLink = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageB, inviteLink);
 
     // Wait for peer discovery (Sync button enabled).
     await Promise.all([
@@ -711,11 +700,7 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
     // A shares the secret subtree to B (invite includes grant so B can reshare).
     const inviteToB = await shareSubtreeInvite(pageA, secretNodeId);
 
-    await ensureAuthPanelOpen(pageB);
-    const inviteInputB = pageB.getByPlaceholder("Paste an invite URL (or invite=...)");
-    await inviteInputB.fill(inviteToB);
-    await inviteInputB.locator("..").getByRole("button", { name: "Import" }).click();
-    await waitForLocalAuthTokens(pageB);
+    await joinViaInviteLink(pageB, inviteToB);
 
     await Promise.all([
       expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
@@ -733,11 +718,7 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
     // B reshared invite to C (delegated).
     const inviteToC = await shareSubtreeInvite(pageB, secretNodeId);
 
-    await ensureAuthPanelOpen(pageC);
-    const inviteInputC = pageC.getByPlaceholder("Paste an invite URL (or invite=...)");
-    await inviteInputC.fill(inviteToC);
-    await inviteInputC.locator("..").getByRole("button", { name: "Import" }).click();
-    await waitForLocalAuthTokens(pageC);
+    await joinViaInviteLink(pageC, inviteToC);
 
     await Promise.all([
       expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
