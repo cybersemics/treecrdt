@@ -11,6 +11,8 @@ and by any server that chooses to validate inbound ops.
 
 Status: draft. Backwards compatibility is not guaranteed.
 
+TODO: add first-class capability revocation semantics (see #81).
+
 ## Threat model (baseline)
 
 - The sync server is untrusted: it may reorder, drop, replay, and inject messages.
