@@ -15,6 +15,19 @@ export { encodeTreecrdtOpSigInputV1, signTreecrdtOpV1, verifyTreecrdtOpV1 } from
 
 export type { TreecrdtScopeEvaluator } from "./internal/scope.js";
 
+export {
+  TREECRDT_REVOCATION_CAPABILITY,
+  createTreecrdtRevocationCapabilityV1,
+  issueTreecrdtRevocationRecordV1,
+  verifyTreecrdtRevocationCapabilityV1,
+  verifyTreecrdtRevocationRecordV1,
+} from "./revocation.js";
+export type {
+  TreecrdtRevocationModeV1,
+  TreecrdtRevocationRecordV1,
+  VerifiedTreecrdtRevocationRecordV1,
+} from "./revocation.js";
+
 export type {
   TreecrdtCoseCwtAuthOptions,
   TreecrdtCoseCwtParseRevocationCheckContext,

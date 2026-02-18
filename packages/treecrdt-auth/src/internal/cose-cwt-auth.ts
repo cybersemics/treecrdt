@@ -22,6 +22,13 @@ import {
   type VerifiedTreecrdtIdentityChainV1,
 } from "../identity.js";
 import {
+  createTreecrdtRevocationCapabilityV1,
+  TREECRDT_REVOCATION_CAPABILITY,
+  verifyTreecrdtRevocationCapabilityV1,
+  verifyTreecrdtRevocationRecordV1,
+  type VerifiedTreecrdtRevocationRecordV1,
+} from "../revocation.js";
+import {
   deriveKeyIdV1,
   parseAndVerifyCapabilityToken,
   type CapabilityGrant,
@@ -57,6 +64,8 @@ export type TreecrdtCoseCwtAuthOptions = {
     storeOpAuth: (entries: Array<{ opRef: OpRef; auth: OpAuth }>) => Promise<void>;
     getOpAuthByOpRefs: (opRefs: OpRef[]) => Promise<Array<OpAuth | null>>;
   };
+  localRevocationRecords?: Uint8Array[];
+  onPeerRevocationRecord?: (record: VerifiedTreecrdtRevocationRecordV1) => void;
   revokedCapabilityTokenIds?: Uint8Array[];
   /**
    * Optional revocation hook. Runtime checks include operation context, so
@@ -91,17 +100,79 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
+  const localRevocationRecords = opts.localRevocationRecords ?? [];
   const revokedTokenIdHexes = opts.revokedCapabilityTokenIds
     ? new Set(opts.revokedCapabilityTokenIds.map((id) => bytesToHex(id)))
-    : undefined;
-  const parseStageRevocationChecker = opts.isCapabilityTokenRevoked
-    ? (ctx: TreecrdtCapabilityRevocationCheckContext) => opts.isCapabilityTokenRevoked!({ ...ctx, stage: "parse" })
     : undefined;
 
   const grantsByKeyIdHex = new Map<string, Map<string, CapabilityGrant>>();
   const opAuthByOpRefHex = new Map<string, OpAuth>();
+  const revocationByTokenHex = new Map<
+    string,
+    {
+      record: VerifiedTreecrdtRevocationRecordV1;
+      recordBytes: Uint8Array;
+    }
+  >();
   let localTokensRecordedForDoc: string | null = null;
+  let localRevocationsRecordedForDoc: string | null = null;
   let opAuthStoreInitPromise: Promise<void> | null = null;
+
+  const compareBytes = (a: Uint8Array, b: Uint8Array): number => {
+    const limit = Math.min(a.length, b.length);
+    for (let i = 0; i < limit; i += 1) {
+      if (a[i] !== b[i]) return a[i]! - b[i]!;
+    }
+    return a.length - b.length;
+  };
+
+  const applyRevocationRecord = (record: VerifiedTreecrdtRevocationRecordV1, recordBytes: Uint8Array): void => {
+    const tokenIdHex = bytesToHex(record.tokenId);
+    const existing = revocationByTokenHex.get(tokenIdHex);
+    if (!existing) {
+      revocationByTokenHex.set(tokenIdHex, { record, recordBytes });
+      return;
+    }
+    if (record.revSeq > existing.record.revSeq) {
+      revocationByTokenHex.set(tokenIdHex, { record, recordBytes });
+      return;
+    }
+    if (record.revSeq < existing.record.revSeq) return;
+
+    // Tie-break by lexical record bytes to keep behavior deterministic.
+    if (compareBytes(recordBytes, existing.recordBytes) > 0) {
+      revocationByTokenHex.set(tokenIdHex, { record, recordBytes });
+    }
+  };
+
+  const isRevokedByStandardPolicy = (opts2: {
+    tokenIdHex: string;
+    op?: Operation;
+  }): boolean => {
+    if (revokedTokenIdHexes?.has(opts2.tokenIdHex)) return true;
+
+    const revocation = revocationByTokenHex.get(opts2.tokenIdHex)?.record;
+    if (!revocation) return false;
+    if (revocation.mode === "hard") return true;
+    if (!opts2.op) return false;
+
+    if (revocation.effectiveFromLamport !== undefined) {
+      return opts2.op.meta.lamport >= revocation.effectiveFromLamport;
+    }
+    if (revocation.effectiveFromCounter === undefined) return false;
+    if (revocation.effectiveFromReplica) {
+      const opReplicaHex = bytesToHex(replicaIdToBytes(opts2.op.meta.id.replica));
+      const targetReplicaHex = bytesToHex(revocation.effectiveFromReplica);
+      if (opReplicaHex !== targetReplicaHex) return false;
+    }
+    return opts2.op.meta.id.counter >= revocation.effectiveFromCounter;
+  };
+
+  const parseStageRevocationChecker = async (ctx: TreecrdtCapabilityRevocationCheckContext) => {
+    if (isRevokedByStandardPolicy({ tokenIdHex: ctx.tokenIdHex })) return true;
+    if (!opts.isCapabilityTokenRevoked) return false;
+    return await opts.isCapabilityTokenRevoked({ ...ctx, stage: "parse" });
+  };
 
   const isGrantRevoked = async (opts2: {
     grant: CapabilityGrant;
@@ -111,7 +182,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   }): Promise<boolean> => {
     const { grant, docId, purpose, op } = opts2;
     const tokenIdHex = bytesToHex(grant.tokenId);
-    if (revokedTokenIdHexes?.has(tokenIdHex)) return true;
+    if (isRevokedByStandardPolicy({ tokenIdHex, op })) return true;
     if (!opts.isCapabilityTokenRevoked) return false;
     return await opts.isCapabilityTokenRevoked({
       stage: "runtime",
@@ -145,8 +216,23 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const ensureLocalTokensRecorded = async (docId: string) => {
     if (localTokensRecordedForDoc === docId) return;
+    await ensureLocalRevocationsRecorded(docId);
     for (const t of localTokens) await recordToken(t, docId);
     localTokensRecordedForDoc = docId;
+  };
+
+  const ensureLocalRevocationsRecorded = async (docId: string) => {
+    if (localRevocationsRecordedForDoc === docId) return;
+    for (const recordBytes of localRevocationRecords) {
+      const record = await verifyTreecrdtRevocationRecordV1({
+        recordBytes,
+        issuerPublicKeys: opts.issuerPublicKeys,
+        expectedDocId: docId,
+        nowSec: now,
+      });
+      applyRevocationRecord(record, recordBytes);
+    }
+    localRevocationsRecordedForDoc = docId;
   };
 
   const ensureOpAuthStoreReady = async () => {
@@ -157,6 +243,21 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   };
 
   const recordCapabilities = async (caps: Capability[], docId: string) => {
+    await ensureLocalRevocationsRecorded(docId);
+
+    for (const cap of caps) {
+      if (cap.name !== TREECRDT_REVOCATION_CAPABILITY) continue;
+      const recordBytes = base64urlDecode(cap.value);
+      const record = await verifyTreecrdtRevocationCapabilityV1({
+        capability: cap,
+        issuerPublicKeys: opts.issuerPublicKeys,
+        docId,
+        nowSec: now,
+      });
+      applyRevocationRecord(record, recordBytes);
+      opts.onPeerRevocationRecord?.(record);
+    }
+
     for (const cap of caps) {
       if (cap.name === "auth.capability") {
         const tokenBytes = base64urlDecode(cap.value);
@@ -175,8 +276,12 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     }
   };
 
-  const helloCaps = (): Capability[] => {
+  const helloCaps = async (docId: string): Promise<Capability[]> => {
+    await ensureLocalRevocationsRecorded(docId);
     const caps = localTokens.map((t) => ({ name: "auth.capability", value: base64urlEncode(t) }));
+    for (const entry of revocationByTokenHex.values()) {
+      caps.push(createTreecrdtRevocationCapabilityV1(entry.recordBytes));
+    }
     if (opts.localIdentityChain) {
       caps.push(createTreecrdtIdentityChainCapabilityV1(opts.localIdentityChain));
     }
@@ -224,11 +329,11 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   };
 
   return {
-    helloCapabilities: async (_ctx) => helloCaps(),
+    helloCapabilities: async (ctx) => helloCaps(ctx.docId),
     onHello: async (hello: Hello, ctx) => {
       await recordCapabilities(hello.capabilities, ctx.docId);
       // Also advertise local tokens back so the initiator can verify responder ops.
-      return helloCaps();
+      return helloCaps(ctx.docId);
     },
     onHelloAck: async (ack: HelloAck, ctx) => {
       await recordCapabilities(ack.capabilities, ctx.docId);

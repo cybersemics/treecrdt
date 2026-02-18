@@ -144,7 +144,7 @@ Recommended policy modes:
 
 For convergence across peers, revocations SHOULD be exchanged as signed records (not only local denylist state).
 
-Proposed record shape (draft):
+Record shape (reference v1):
 
 - capability: `name="auth.revocation"`, `value=base64url(COSE_Sign1(CWT))`
 - claims:
@@ -167,7 +167,8 @@ Reference implementation status:
 
 - supports hard revocation now (`revokedCapabilityTokenIds`)
 - supports custom runtime cutover logic via `isCapabilityTokenRevoked` callback with op context (`op`, `purpose`)
-- does not yet standardize `auth.revocation` wire records
+- supports `auth.revocation` wire records in `Hello.capabilities` / `HelloAck.capabilities`
+- merges by highest `rev_seq` per `(doc_id, token_id)` (deterministic tie-break by lexical record bytes)
 
 ## Signed operations
 
