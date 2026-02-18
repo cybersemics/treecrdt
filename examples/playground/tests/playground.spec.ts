@@ -418,9 +418,9 @@ test("grant by public key reveals a private subtree on resync", async ({ browser
       .filter({ has: pageA.getByRole("button", { name: "Share…" }) })
       .first();
     await expect(peerRow).toBeVisible({ timeout: 30_000 });
-    const peerGrantButton = peerRow.locator("button").filter({ hasText: /^Grant$/ });
-    await expect(peerGrantButton).toHaveCount(1);
-    await peerGrantButton.first().evaluate((el) => (el as HTMLButtonElement).click());
+    const peerGrantButton = peerRow.getByRole("button", { name: "Grant", exact: true }).first();
+    await expect(peerGrantButton).toBeVisible({ timeout: 30_000 });
+    await peerGrantButton.click();
     await expect(peerRow.getByText("active")).toBeVisible({ timeout: 30_000 });
 
     const toast = pageB.getByRole("status");
