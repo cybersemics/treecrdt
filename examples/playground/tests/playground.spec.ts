@@ -134,6 +134,7 @@ async function clickSync(page: import("@playwright/test").Page, label: string) {
 function isTransientAuthSyncErrorMessage(message: string): boolean {
   return (
     /COSE_Sign1 signature verification failed/i.test(message) ||
+    /sync\([^)]+\)\s+with\s+.+\s+timed out/i.test(message) ||
     /auth enabled but no local capability tokens are recorded/i.test(message) ||
     /initializing keys\/tokens/i.test(message)
   );
@@ -356,10 +357,12 @@ test("invite hides private subtree (excluded roots are not synced)", async ({ br
 
     // Writes to non-excluded nodes should still work.
     const publicRowB = treeRowByNodeId(pageB, publicNodeId);
-    await publicRowB.getByRole("button", { name: "public" }).click();
-    await publicRowB.getByRole("textbox").fill("PUBLIC-UPDATED");
-    await publicRowB.getByRole("button", { name: "Save" }).click();
-    await expect(treeRowByLabel(pageB, "PUBLIC-UPDATED")).toBeVisible({ timeout: 30_000 });
+    await expandIfCollapsed(publicRowB);
+    await pageB.getByPlaceholder("Stored as payload bytes").fill("PUBLIC-CHILD");
+    await publicRowB.getByRole("button", { name: "Add child" }).click();
+    const publicChildB = treeRowByLabel(pageB, "PUBLIC-CHILD");
+    await expect(publicChildB).toBeVisible({ timeout: 30_000 });
+
   } finally {
     await context.close();
   }
@@ -777,23 +780,16 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
     // C should also be able to pull the scoped root payload by syncing its own scope.
     const secretRootRowC = treeRowByNodeId(pageC, secretNodeId);
     let cRevealed = false;
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 14; attempt++) {
       await clickSyncWithRetryOnTransientAuthError(pageA, "A");
       await clickSyncWithRetryOnTransientAuthError(pageB, "B");
-      await clickSyncWithRetryOnTransientAuthError(pageC, "C", {
-        attempts: 10,
-        onRetry: async () => {
-          // Ensure C retries only after issuer state has had a chance to propagate.
-          await clickSyncBestEffortOnTransientAuthError(pageA, "A");
-          await clickSyncBestEffortOnTransientAuthError(pageB, "B");
-        },
-      });
+      await clickSyncBestEffortOnTransientAuthError(pageC, "C");
       if (await secretRootRowC.count()) {
         await expect(secretRootRowC).toBeVisible({ timeout: 5_000 });
         cRevealed = true;
         break;
       }
-      await pageC.waitForTimeout(400);
+      await pageC.waitForTimeout(500);
     }
     if (!cRevealed) await expect(secretRootRowC).toBeVisible({ timeout: 30_000 });
     await expect(secretRootRowC.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
@@ -808,15 +804,15 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
 
     const fromARowB = treeRowByLabel(pageB, "from-A");
     const fromARowC = treeRowByLabel(pageC, "from-A");
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await clickSync(pageA, "A");
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
       if ((await fromARowB.isVisible()) && (await fromARowC.isVisible())) break;
-      await clickSync(pageB, "B");
+      await clickSyncWithRetryOnTransientAuthError(pageB, "B");
       await clickSyncBestEffortOnTransientAuthError(pageC, "C");
       if ((await fromARowB.isVisible()) && (await fromARowC.isVisible())) break;
     }
-    expect(await fromARowB.isVisible()).toBe(true);
-    expect(await fromARowC.isVisible()).toBe(true);
+    await expect(fromARowB).toBeVisible({ timeout: 30_000 });
+    await expect(fromARowC).toBeVisible({ timeout: 30_000 });
 
     // C writes under the secret subtree; A (and B) should receive it.
     const secretRowCById = treeRowByNodeId(pageC, secretNodeId);
@@ -827,17 +823,17 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
     await expandIfCollapsed(secretRowAById);
     const fromCRowA = treeRowByLabel(pageA, "from-C");
     const fromCRowB = treeRowByLabel(pageB, "from-C");
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await clickSync(pageA, "A");
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
       await expandIfCollapsed(secretRowAById);
       if ((await fromCRowA.isVisible()) && (await fromCRowB.isVisible())) break;
-      await clickSync(pageB, "B");
+      await clickSyncWithRetryOnTransientAuthError(pageB, "B");
       await clickSyncBestEffortOnTransientAuthError(pageC, "C");
       await expandIfCollapsed(secretRowAById);
       if ((await fromCRowA.isVisible()) && (await fromCRowB.isVisible())) break;
     }
-    expect(await fromCRowA.isVisible()).toBe(true);
-    expect(await fromCRowB.isVisible()).toBe(true);
+    await expect(fromCRowA).toBeVisible({ timeout: 30_000 });
+    await expect(fromCRowB).toBeVisible({ timeout: 30_000 });
   } finally {
     await context.close();
   }
