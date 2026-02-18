@@ -131,6 +131,27 @@ async function clickSync(page: import("@playwright/test").Page, label: string) {
   }
 }
 
+async function clickSyncWithRetryOnTransientAuthError(
+  page: import("@playwright/test").Page,
+  label: string,
+  attempts = 4
+) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await clickSync(page, label);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isRetryable =
+        /COSE_Sign1 signature verification failed/i.test(message) ||
+        /auth enabled but no local capability tokens are recorded/i.test(message);
+      if (!isRetryable || attempt === attempts) throw err;
+      await waitForLocalAuthTokens(page);
+      await page.waitForTimeout(300);
+    }
+  }
+}
+
 test("insert and delete node", async ({ page }) => {
   test.setTimeout(90_000);
 
@@ -726,7 +747,7 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
     ]);
 
     // C should also be able to pull the scoped root payload by syncing its own scope.
-    await clickSync(pageC, "C");
+    await clickSyncWithRetryOnTransientAuthError(pageC, "C");
     await expect(treeRowByLabel(pageC, "secret-root")).toBeVisible({ timeout: 30_000 });
     const secretRootRowC = treeRowByNodeId(pageC, secretNodeId);
     await expect(secretRootRowC.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
@@ -745,7 +766,7 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
       await clickSync(pageA, "A");
       if ((await fromARowB.isVisible()) && (await fromARowC.isVisible())) break;
       await clickSync(pageB, "B");
-      await clickSync(pageC, "C");
+      await clickSyncWithRetryOnTransientAuthError(pageC, "C");
       if ((await fromARowB.isVisible()) && (await fromARowC.isVisible())) break;
     }
     expect(await fromARowB.isVisible()).toBe(true);
@@ -765,7 +786,7 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
       await expandIfCollapsed(secretRowAById);
       if ((await fromCRowA.isVisible()) && (await fromCRowB.isVisible())) break;
       await clickSync(pageB, "B");
-      await clickSync(pageC, "C");
+      await clickSyncWithRetryOnTransientAuthError(pageC, "C");
       await expandIfCollapsed(secretRowAById);
       if ((await fromCRowA.isVisible()) && (await fromCRowB.isVisible())) break;
     }
