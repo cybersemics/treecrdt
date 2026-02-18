@@ -1140,13 +1140,7 @@ export default function App() {
             peersPanelProps={{
               docId,
               selfPeerId,
-              joinMode,
-              profileId,
               authEnabled,
-              authTokenCount,
-              authScopeTitle,
-              authScopeSummary,
-              authSummaryBadges,
               authCanIssue,
               authCanDelegate,
               openNewIsolatedPeerTab,

@@ -66,6 +66,7 @@ type MembersMenuLayout = {
   top: number;
   left: number;
   width: number;
+  maxHeight: number;
   listMaxHeight: number;
 };
 
@@ -199,16 +200,7 @@ export function TreeRow({
       lastSeen: seenByPeer.get(id) ?? null,
       latest: latestScopedGrantByPeer.get(id) ?? null,
     }));
-    rows.sort((a, b) => {
-      const aSeen = typeof a.lastSeen === "number";
-      const bSeen = typeof b.lastSeen === "number";
-      if (aSeen !== bSeen) return aSeen ? -1 : 1;
-      if (aSeen && bSeen && a.lastSeen !== b.lastSeen) return (b.lastSeen ?? 0) - (a.lastSeen ?? 0);
-      const aGrant = a.latest?.ts ?? 0;
-      const bGrant = b.latest?.ts ?? 0;
-      if (aGrant !== bGrant) return bGrant - aGrant;
-      return a.id.localeCompare(b.id);
-    });
+    rows.sort((a, b) => a.id.localeCompare(b.id));
     return rows;
   }, [discoveredPeers, latestScopedGrantByPeer]);
   const getDefaultActionsForPeer = useCallback(
@@ -232,16 +224,23 @@ export function TreeRow({
 
     const rect = button.getBoundingClientRect();
     const viewportPadding = 8;
+    const anchorGap = 8;
     const preferredWidth = 340;
     const width = Math.max(260, Math.min(preferredWidth, window.innerWidth - viewportPadding * 2));
     const left = Math.max(
       viewportPadding,
       Math.min(rect.right - width, window.innerWidth - width - viewportPadding)
     );
-    const top = Math.max(viewportPadding, rect.bottom + 8);
-    const availableHeight = Math.max(200, window.innerHeight - top - viewportPadding);
-    const listMaxHeight = Math.max(120, Math.min(260, availableHeight - 130));
-    setMembersMenuLayout({ top, left, width, listMaxHeight });
+    const spaceBelow = window.innerHeight - rect.bottom - anchorGap - viewportPadding;
+    const spaceAbove = rect.top - anchorGap - viewportPadding;
+    const placeAbove = spaceBelow < 280 && spaceAbove > spaceBelow;
+    const maxViewportHeight = Math.max(180, window.innerHeight - viewportPadding * 2);
+    const chosenSpace = placeAbove ? spaceAbove : spaceBelow;
+    const maxHeight = Math.max(180, Math.min(560, maxViewportHeight, Math.max(chosenSpace, 180)));
+    const unclampedTop = placeAbove ? rect.top - anchorGap - maxHeight : rect.bottom + anchorGap;
+    const top = Math.max(viewportPadding, Math.min(unclampedTop, window.innerHeight - viewportPadding - maxHeight));
+    const listMaxHeight = Math.max(100, Math.min(320, maxHeight - 220));
+    setMembersMenuLayout({ top, left, width, maxHeight, listMaxHeight });
   }, []);
 
   useEffect(() => {
@@ -438,11 +437,12 @@ export function TreeRow({
                 createPortal(
                   <div
                     ref={membersMenuRef}
-                    className="fixed z-[120] rounded-xl border border-slate-700/80 bg-slate-950/95 p-3 shadow-2xl shadow-black/50"
+                    className="fixed z-[120] flex flex-col overflow-y-auto rounded-xl border border-slate-700/80 bg-slate-950/95 p-3 shadow-2xl shadow-black/50"
                     style={{
                       top: `${membersMenuLayout.top}px`,
                       left: `${membersMenuLayout.left}px`,
                       width: `${membersMenuLayout.width}px`,
+                      maxHeight: `${membersMenuLayout.maxHeight}px`,
                     }}
                   >
                   <div className="flex items-start justify-between gap-2">

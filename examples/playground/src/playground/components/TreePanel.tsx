@@ -108,22 +108,7 @@ export function TreePanel({
   showOpsPanel: boolean;
   setShowOpsPanel: React.Dispatch<React.SetStateAction<boolean>>;
   syncError: string | null;
-  peersPanelProps: {
-    docId: string;
-    selfPeerId: string | null;
-    joinMode: boolean;
-    profileId: string | null;
-    authEnabled: boolean;
-    authTokenCount: number;
-    authScopeTitle: string;
-    authScopeSummary: string;
-    authSummaryBadges: string[];
-    authCanIssue: boolean;
-    authCanDelegate: boolean;
-    openNewIsolatedPeerTab: (opts: { autoInvite: boolean; rootNodeId?: string }) => Promise<void>;
-    openNewPeerTab: () => void;
-    peers: PeerInfo[];
-  };
+  peersPanelProps: React.ComponentProps<typeof PeersPanel>;
   sharingAuthPanelProps: React.ComponentProps<typeof SharingAuthPanel>;
   treeParentRef: React.RefObject<HTMLDivElement>;
   treeVirtualizer: Virtualizer<HTMLDivElement, Element>;
