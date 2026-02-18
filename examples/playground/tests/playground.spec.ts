@@ -134,7 +134,7 @@ async function clickSync(page: import("@playwright/test").Page, label: string) {
 function isTransientAuthSyncErrorMessage(message: string): boolean {
   return (
     /COSE_Sign1 signature verification failed/i.test(message) ||
-    /sync\([^)]+\)\s+with\s+.+\s+timed out/i.test(message) ||
+    /sync(?:\([^)]+\))?\s+with\s+.+\s+timed out/i.test(message) ||
     /auth enabled but no local capability tokens are recorded/i.test(message) ||
     /initializing keys\/tokens/i.test(message)
   );
@@ -170,6 +170,17 @@ async function clickSyncBestEffortOnTransientAuthError(page: import("@playwright
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (!isTransientAuthSyncErrorMessage(message)) throw err;
+  }
+}
+
+async function clickSyncAllowRevokedCapabilityTokenError(page: import("@playwright/test").Page, label: string) {
+  try {
+    await clickSync(page, label);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/capability token revoked/i.test(message)) return;
+    if (isTransientAuthSyncErrorMessage(message)) return;
+    throw err;
   }
 }
 
@@ -461,6 +472,95 @@ test("grant by public key reveals a private subtree on resync", async ({ browser
       await pageB.waitForTimeout(250);
     }
     if (!revealed) await expect(secretRowB).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("revoked invited token blocks subsequent writes from that peer", async ({ browser }) => {
+  test.setTimeout(300_000);
+
+  const doc = uniqueDocId("pw-playground-revoke-write");
+  const profileB = `pw-revoke-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileB)}&join=1`),
+    ]);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    // Create a private subtree root on A.
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-revoke-root");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const secretRootRowA = treeRowByLabel(pageA, "secret-revoke-root");
+    await expect(secretRootRowA).toBeVisible({ timeout: 30_000 });
+    const secretNodeId = await secretRootRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+
+    const privacyToggleA = treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    // Invite B to private subtree and ensure B can access it.
+    const inviteToB = await shareSubtreeInvite(pageA, secretNodeId);
+    await joinViaInviteLink(pageB, inviteToB);
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+    const secretRootRowB = treeRowByNodeId(pageB, secretNodeId);
+    await expect(secretRootRowB).toBeVisible({ timeout: 30_000 });
+
+    // B writes under secret subtree; A receives it.
+    await pageB.getByPlaceholder("Stored as payload bytes").fill("from-B-before-revoke");
+    await secretRootRowB.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageB, "from-B-before-revoke")).toBeVisible({ timeout: 30_000 });
+
+    const beforeRowA = treeRowByLabel(pageA, "from-B-before-revoke");
+    await expandIfCollapsed(treeRowByNodeId(pageA, secretNodeId));
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+      await expandIfCollapsed(treeRowByNodeId(pageA, secretNodeId));
+      if (await beforeRowA.count()) break;
+      await pageA.waitForTimeout(250);
+    }
+    await expect(beforeRowA).toBeVisible({ timeout: 30_000 });
+
+    // A revokes B's currently issued token for this scope (token-level revoke).
+    const recipientPkHex = await readReplicaPubkeyHex(pageB);
+    await treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Members and capabilities" }).click();
+    const peerRow = pageA
+      .getByText(recipientPkHex, { exact: true })
+      .first()
+      .locator("xpath=ancestor::div[.//button[normalize-space()='Share…']][1]");
+    await expect(peerRow).toBeVisible({ timeout: 30_000 });
+    const revokeButton = peerRow.getByRole("button", { name: "Revoke", exact: true });
+    await expect(revokeButton).toBeEnabled({ timeout: 30_000 });
+    await revokeButton.click();
+    await expect(peerRow.getByText("revoked", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await pageA.keyboard.press("Escape");
+
+    // B can still append locally, but A should reject that write after revoke.
+    await pageB.getByPlaceholder("Stored as payload bytes").fill("from-B-after-revoke");
+    await secretRootRowB.getByRole("button", { name: "Add child" }).click();
+    const afterRowB = treeRowByLabel(pageB, "from-B-after-revoke");
+    await expect(afterRowB).toBeVisible({ timeout: 30_000 });
+
+    const afterRowA = treeRowByLabel(pageA, "from-B-after-revoke");
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await clickSyncAllowRevokedCapabilityTokenError(pageB, "B");
+      await clickSyncAllowRevokedCapabilityTokenError(pageA, "A");
+      if (await afterRowA.count()) break;
+      await pageA.waitForTimeout(250);
+    }
+    await expect(afterRowA).toHaveCount(0);
   } finally {
     await context.close();
   }

@@ -120,7 +120,7 @@ export function TreePanel({
     recipientKey: string;
     rootNodeId: string;
     actions?: string[];
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   onSetValue: (nodeId: string, value: string) => void | Promise<void>;
   onAddChild: (nodeId: string) => void;
   onDelete: (nodeId: string) => void;

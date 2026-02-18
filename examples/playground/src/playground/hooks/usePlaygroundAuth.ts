@@ -276,7 +276,7 @@ export type PlaygroundAuthApi = {
   grantSubtreeToReplicaPubkey: (
     sendGrant: (msg: AuthGrantMessageV1) => boolean,
     opts?: { recipientKey?: string; rootNodeId?: string; actions?: string[] }
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 
   resetAuth: () => void;
   openMintingPeerTab: () => void;
@@ -1334,8 +1334,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     sendGrant: (msg: AuthGrantMessageV1) => boolean,
     opts2?: { recipientKey?: string; rootNodeId?: string; actions?: string[] }
   ) => {
-    if (!authEnabled) return;
-    if (typeof window === "undefined") return;
+    if (!authEnabled) return false;
+    if (typeof window === "undefined") return false;
 
     setAuthBusy(true);
     setAuthError(null);
@@ -1453,8 +1453,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         excludeNodeIds,
       });
       setAuthInfo("Grant sent. The recipient should sync again to receive newly authorized ops.");
+      return true;
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setAuthBusy(false);
     }

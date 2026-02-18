@@ -531,7 +531,7 @@ export default function App() {
 
   const grantSubtreeToReplicaPubkey = React.useCallback(
     async (opts?: { recipientKey?: string; rootNodeId?: string; actions?: string[] }) => {
-      await grantSubtreeToReplicaPubkeyRaw(postBroadcastMessage, opts);
+      return await grantSubtreeToReplicaPubkeyRaw(postBroadcastMessage, opts);
     },
     [grantSubtreeToReplicaPubkeyRaw, postBroadcastMessage]
   );

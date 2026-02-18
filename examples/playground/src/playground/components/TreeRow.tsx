@@ -123,7 +123,7 @@ export function TreeRow({
   issuedGrantRecords: IssuedGrantRecordRow[];
   hardRevokedTokenIds: string[];
   onToggleHardRevokedTokenId: (tokenIdHex: string) => void;
-  onGrantToReplicaPubkey: (opts: { recipientKey: string; rootNodeId: string; actions?: string[] }) => Promise<void>;
+  onGrantToReplicaPubkey: (opts: { recipientKey: string; rootNodeId: string; actions?: string[] }) => Promise<boolean>;
   scopeRootId: string;
   canWritePayload: boolean;
   canWriteStructure: boolean;
@@ -215,6 +215,46 @@ export function TreeRow({
   const getSelectedActionsForPeer = useCallback(
     (peerId: string): CapabilityAction[] => memberGrantActions[peerId] ?? getDefaultActionsForPeer(peerId),
     [getDefaultActionsForPeer, memberGrantActions]
+  );
+
+  const replaceMemberAccess = useCallback(
+    async (peerId: string, actions: CapabilityAction[]) => {
+      if (!canManageCapabilities || authBusy || actions.length === 0) return;
+
+      const priorActiveTokenIds = Array.from(
+        new Set(
+          issuedGrantRecords
+            .filter(
+              (record) =>
+                record.recipientPkHex === peerId &&
+                record.rootNodeId === nodeIdLower &&
+                !hardRevokedTokenIds.includes(record.tokenIdHex)
+            )
+            .map((record) => record.tokenIdHex)
+        )
+      );
+
+      const granted = await onGrantToReplicaPubkey({
+        recipientKey: peerId,
+        rootNodeId: node.id,
+        actions: [...actions],
+      });
+      if (!granted) return;
+
+      for (const tokenId of priorActiveTokenIds) {
+        if (!hardRevokedTokenIds.includes(tokenId)) onToggleHardRevokedTokenId(tokenId);
+      }
+    },
+    [
+      authBusy,
+      canManageCapabilities,
+      hardRevokedTokenIds,
+      issuedGrantRecords,
+      node.id,
+      nodeIdLower,
+      onGrantToReplicaPubkey,
+      onToggleHardRevokedTokenId,
+    ]
   );
 
   const updateMembersMenuLayout = useCallback(() => {
@@ -617,16 +657,11 @@ export function TreeRow({
                               <button
                                 className="h-7 rounded-lg border border-slate-700 bg-slate-800/70 px-2 text-[10px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                                 type="button"
-                                onClick={() =>
-                                  void onGrantToReplicaPubkey({
-                                    recipientKey: row.id,
-                                    rootNodeId: node.id,
-                                    actions: [...selectedActions],
-                                  })
-                                }
+                                onClick={() => void replaceMemberAccess(row.id, selectedActions)}
                                 disabled={!canManageCapabilities || authBusy || selectedActions.length === 0}
+                                title="Replace access: issue new token and revoke prior active tokens for this member in this scope"
                               >
-                                Grant
+                                Update
                               </button>
                               <button
                                 className="h-7 rounded-lg border border-slate-700 bg-slate-800/70 px-2 text-[10px] font-semibold text-slate-200 transition hover:border-accent hover:text-white"
