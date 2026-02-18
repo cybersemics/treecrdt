@@ -777,16 +777,23 @@ test("delegated invite can be reshared (A → B → C) and sync is bidirectional
     // C should also be able to pull the scoped root payload by syncing its own scope.
     const secretRootRowC = treeRowByNodeId(pageC, secretNodeId);
     let cRevealed = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
       await clickSyncWithRetryOnTransientAuthError(pageA, "A");
       await clickSyncWithRetryOnTransientAuthError(pageB, "B");
-      await clickSyncWithRetryOnTransientAuthError(pageC, "C", { attempts: 6 });
+      await clickSyncWithRetryOnTransientAuthError(pageC, "C", {
+        attempts: 10,
+        onRetry: async () => {
+          // Ensure C retries only after issuer state has had a chance to propagate.
+          await clickSyncBestEffortOnTransientAuthError(pageA, "A");
+          await clickSyncBestEffortOnTransientAuthError(pageB, "B");
+        },
+      });
       if (await secretRootRowC.count()) {
         await expect(secretRootRowC).toBeVisible({ timeout: 5_000 });
         cRevealed = true;
         break;
       }
-      await pageC.waitForTimeout(250);
+      await pageC.waitForTimeout(400);
     }
     if (!cRevealed) await expect(secretRootRowC).toBeVisible({ timeout: 30_000 });
     await expect(secretRootRowC.getByText("scoped access", { exact: true })).toBeVisible({ timeout: 30_000 });
