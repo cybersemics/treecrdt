@@ -831,6 +831,83 @@ test("members counter is consistent across tabs for private subtree invites", as
   }
 });
 
+test("both tabs can subscribe to a private subtree and receive child additions", async ({ browser }) => {
+  test.setTimeout(300_000);
+
+  const doc = uniqueDocId("pw-playground-private-live-subscribe");
+  const profileB = `pw-private-live-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileB)}&join=1`),
+    ]);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-live-root");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const secretRootRowA = treeRowByLabel(pageA, "secret-live-root");
+    await expect(secretRootRowA).toBeVisible({ timeout: 30_000 });
+    const secretNodeId = await secretRootRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+
+    const privacyToggleA = treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    const inviteToB = await shareSubtreeInvite(pageA, secretNodeId);
+    await joinViaInviteLink(pageB, inviteToB);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    const secretRootByIdA = treeRowByNodeId(pageA, secretNodeId);
+    const secretRootByIdB = treeRowByNodeId(pageB, secretNodeId);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+      if (await secretRootByIdB.count()) break;
+      await pageB.waitForTimeout(250);
+    }
+    await expect(secretRootByIdB).toBeVisible({ timeout: 30_000 });
+
+    await Promise.all([expandIfCollapsed(secretRootByIdA), expandIfCollapsed(secretRootByIdB)]);
+
+    const liveA = secretRootByIdA.getByRole("button", { name: "Live sync children" });
+    const liveB = secretRootByIdB.getByRole("button", { name: "Live sync children" });
+    await liveA.click();
+    await liveB.click();
+    await expect(liveA).toHaveAttribute("aria-pressed", "true");
+    await expect(liveB).toHaveAttribute("aria-pressed", "true");
+
+    await expect(pageA.getByTestId("sync-error")).toBeHidden({ timeout: 30_000 });
+    await expect(pageB.getByTestId("sync-error")).toBeHidden({ timeout: 30_000 });
+
+    const fromA = `live-from-A-${Date.now()}`;
+    await pageA.getByPlaceholder("Stored as payload bytes").fill(fromA);
+    await secretRootByIdA.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, fromA)).toBeVisible({ timeout: 30_000 });
+    await expect(treeRowByLabel(pageB, fromA)).toBeVisible({ timeout: 60_000 });
+
+    const fromB = `live-from-B-${Date.now()}`;
+    await pageB.getByPlaceholder("Stored as payload bytes").fill(fromB);
+    await secretRootByIdB.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageB, fromB)).toBeVisible({ timeout: 30_000 });
+    await expect(treeRowByLabel(pageA, fromB)).toBeVisible({ timeout: 60_000 });
+
+    await expect(pageA.getByTestId("sync-error")).toBeHidden();
+    await expect(pageB.getByTestId("sync-error")).toBeHidden();
+  } finally {
+    await context.close();
+  }
+});
+
 test("identity chain is shown when peers reveal identity", async ({ browser }) => {
   test.setTimeout(240_000);
 
@@ -1165,6 +1242,77 @@ test("open device does not create an extra unknown member entry", async ({ brows
 
     // When Open device reuses the invite, A should only have one member entry for this subtree.
     await expectMembersBadgeCount(pageA, secretNodeId, 1);
+  } finally {
+    await context.close();
+  }
+});
+
+test("open device: private subtree live children sync receives child updates on original tab", async ({ browser }) => {
+  test.setTimeout(300_000);
+
+  const doc = uniqueDocId("pw-playground-open-device-live-children");
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+
+  try {
+    await waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("OPEN-DEVICE-LIVE-ROOT");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const secretRowA = treeRowByLabel(pageA, "OPEN-DEVICE-LIVE-ROOT");
+    await expect(secretRowA).toBeVisible({ timeout: 30_000 });
+    const secretNodeId = await secretRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+
+    const secretByIdA = treeRowByNodeId(pageA, secretNodeId);
+    const privacyToggleA = secretByIdA.getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    await secretByIdA.getByRole("button", { name: "Share subtree (invite)" }).click();
+    const textarea = pageA.getByPlaceholder("Invite link will appear here…");
+    await expect(textarea).toHaveValue(/invite=/, { timeout: 30_000 });
+
+    const [pageB] = await Promise.all([
+      pageA.waitForEvent("popup"),
+      pageA.getByRole("button", { name: "Open device", exact: true }).click(),
+    ]);
+    await pageA.getByRole("button", { name: "Close", exact: true }).click();
+
+    await pageB.bringToFront();
+    await expect(pageB.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
+    const showComposerB = pageB.getByRole("button", { name: "Show", exact: true });
+    if ((await showComposerB.count()) > 0) await showComposerB.click();
+    await waitForLocalAuthTokens(pageB);
+    await expect(treeRowByNodeId(pageB, secretNodeId)).toBeVisible({ timeout: 60_000 });
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+    await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+
+    const secretByIdB = treeRowByNodeId(pageB, secretNodeId);
+    await Promise.all([expandIfCollapsed(secretByIdA), expandIfCollapsed(secretByIdB)]);
+
+    const liveA = secretByIdA.getByRole("button", { name: "Live sync children" });
+    const liveB = secretByIdB.getByRole("button", { name: "Live sync children" });
+    await liveA.click();
+    await liveB.click();
+    await expect(liveA).toHaveAttribute("aria-pressed", "true");
+    await expect(liveB).toHaveAttribute("aria-pressed", "true");
+
+    const fromB = `OPEN-LIVE-FROM-B-${Date.now()}`;
+    await pageB.getByPlaceholder("Stored as payload bytes").fill(fromB);
+    await secretByIdB.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageB, fromB)).toBeVisible({ timeout: 30_000 });
+    await expect(treeRowByLabel(pageA, fromB)).toBeVisible({ timeout: 60_000 });
+
+    await expect(pageA.getByTestId("sync-error")).toBeHidden();
+    await expect(pageB.getByTestId("sync-error")).toBeHidden();
   } finally {
     await context.close();
   }
