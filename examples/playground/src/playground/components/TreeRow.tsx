@@ -172,6 +172,7 @@ export function TreeRow({
     return out;
   }, [issuedGrantRecords, nodeIdLower]);
   const scopedGrantCount = latestScopedGrantByPeer.size;
+  const membersBadgeCount = scopedGrantCount;
   const memberRows = useMemo(() => {
     const seenByPeer = new Map(discoveredPeers.map((peer) => [peer.id, peer.lastSeen]));
     const ids = new Set<string>();
@@ -452,11 +453,11 @@ export function TreeRow({
                 }
                 aria-label="Members and capabilities"
                 aria-expanded={showMembersMenu}
-                title="Members for this private subtree"
+                title="Scoped grants for this private subtree"
                 type="button"
               >
                 <MdGroup className="text-[18px]" />
-                <span className="font-mono text-[10px] font-semibold">{memberRows.length}</span>
+                <span className="font-mono text-[10px] font-semibold">{membersBadgeCount}</span>
               </button>
               {showMembersMenu &&
                 membersMenuLayout &&

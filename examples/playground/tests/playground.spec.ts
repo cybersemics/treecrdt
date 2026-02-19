@@ -122,27 +122,6 @@ async function expectMembersBadgeCount(
     .toBe(expected);
 }
 
-async function expectMembersBadgeCountsAligned(
-  pageA: import("@playwright/test").Page,
-  pageB: import("@playwright/test").Page,
-  nodeId: string,
-  opts?: { minCount?: number }
-) {
-  const minCount = Math.max(1, opts?.minCount ?? 1);
-  await expect
-    .poll(
-      async () => {
-        const [countA, countB] = await Promise.all([readMembersBadgeCount(pageA, nodeId), readMembersBadgeCount(pageB, nodeId)]);
-        return countA !== null && countB !== null && countA >= minCount && countA === countB;
-      },
-      {
-        timeout: 30_000,
-        message: `expected aligned members badge counts >= ${minCount} for node ${nodeId}`,
-      }
-    )
-    .toBe(true);
-}
-
 async function readLatestIssuedGrantActions(
   page: import("@playwright/test").Page,
   opts: { docId: string; rootNodeId: string; recipientPkHex: string }
@@ -784,7 +763,7 @@ test("updating a member to read-only keeps sync working and blocks new writes", 
   }
 });
 
-test("members counter is consistent across tabs for private subtree invites", async ({ browser }) => {
+test("members badge reflects scoped grants issued by this tab", async ({ browser }) => {
   test.setTimeout(300_000);
 
   const doc = uniqueDocId("pw-playground-members-counter");
@@ -830,8 +809,9 @@ test("members counter is consistent across tabs for private subtree invites", as
     }
     await expect(secretRootRowB).toBeVisible({ timeout: 30_000 });
 
-    // Both tabs should converge on the same non-empty member count for this private subtree.
-    await expectMembersBadgeCountsAligned(pageA, pageB, secretNodeId, { minCount: 1 });
+    // Badge is deterministic and auth-derived: it counts scoped grants issued by the current tab.
+    await expectMembersBadgeCount(pageA, secretNodeId, 1);
+    await expectMembersBadgeCount(pageB, secretNodeId, 0);
 
     // B writes under the private subtree; A should receive it after sync.
     await expandIfCollapsed(secretRootRowB);
@@ -851,8 +831,9 @@ test("members counter is consistent across tabs for private subtree invites", as
     }
     await expect(childRowA).toBeVisible({ timeout: 30_000 });
 
-    // Counter remains aligned after private-subtree writes/sync.
-    await expectMembersBadgeCountsAligned(pageA, pageB, secretNodeId, { minCount: 1 });
+    // Count stays stable after subtree writes/sync.
+    await expectMembersBadgeCount(pageA, secretNodeId, 1);
+    await expectMembersBadgeCount(pageB, secretNodeId, 0);
   } finally {
     await context.close();
   }
