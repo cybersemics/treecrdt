@@ -275,7 +275,7 @@ export type PlaygroundAuthApi = {
   issuedGrantRecords: IssuedGrantRecord[];
   grantSubtreeToReplicaPubkey: (
     sendGrant: (msg: AuthGrantMessageV1) => boolean,
-    opts?: { recipientKey?: string; rootNodeId?: string; actions?: string[] }
+    opts?: { recipientKey?: string; rootNodeId?: string; actions?: string[]; supersedesTokenIds?: string[] }
   ) => Promise<boolean>;
 
   resetAuth: () => void;
@@ -1290,6 +1290,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const issuerPkB64 = grant.issuer_pk_b64;
       const tokenB64 = grant.token_b64;
       const payloadKeyB64 = typeof grant.payload_key_b64 === "string" ? grant.payload_key_b64 : null;
+      const supersededTokenIds = Array.isArray(grant.supersedes_token_ids_hex)
+        ? grant.supersedes_token_ids_hex
+            .map((id) => normalizeTokenIdHex(id))
+            .filter((id): id is string => typeof id === "string")
+        : [];
 
       void (async () => {
         setAuthBusy(true);
@@ -1309,15 +1314,33 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           }
 
           const merged = new Set<string>(current.localTokensB64);
+          if (supersededTokenIds.length > 0) {
+            const superseded = new Set(supersededTokenIds);
+            for (const existingTokenB64 of Array.from(merged.values())) {
+              try {
+                const existingTokenIdHex = bytesToHex(deriveTokenIdV1(base64urlDecode(existingTokenB64)));
+                if (superseded.has(existingTokenIdHex)) merged.delete(existingTokenB64);
+              } catch {
+                // ignore malformed token bytes
+              }
+            }
+          }
           merged.add(tokenB64);
           await saveLocalTokens(docId, Array.from(merged));
           await rememberScopedPrivateRootsFromToken(issuerPkB64, tokenB64);
           await refreshAuthMaterial();
-          setAuthInfo("Access grant received. Click Sync to fetch newly authorized ops.");
+          setAuthInfo(
+            supersededTokenIds.length > 0
+              ? "Access updated. Click Sync to refresh with your latest capability."
+              : "Access grant received. Click Sync to fetch newly authorized ops."
+          );
           setToast({
             kind: "success",
-            title: "Access granted",
-            message: "Sync to fetch newly authorized ops.",
+            title: supersededTokenIds.length > 0 ? "Access updated" : "Access granted",
+            message:
+              supersededTokenIds.length > 0
+                ? "Sync to refresh using your latest capability."
+                : "Sync to fetch newly authorized ops.",
             actions: ["sync", "details"],
           });
         } catch (err) {
@@ -1332,7 +1355,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
   const grantSubtreeToReplicaPubkey = async (
     sendGrant: (msg: AuthGrantMessageV1) => boolean,
-    opts2?: { recipientKey?: string; rootNodeId?: string; actions?: string[] }
+    opts2?: { recipientKey?: string; rootNodeId?: string; actions?: string[]; supersedesTokenIds?: string[] }
   ) => {
     if (!authEnabled) return false;
     if (typeof window === "undefined") return false;
@@ -1354,6 +1377,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       }
       const subjectPk = parseReplicaPublicKeyInput(recipientInput);
       const rootNodeId = opts2?.rootNodeId ?? inviteRoot;
+      const supersedesTokenIds = Array.isArray(opts2?.supersedesTokenIds)
+        ? opts2.supersedesTokenIds
+            .map((id) => normalizeTokenIdHex(id))
+            .filter((id): id is string => typeof id === "string")
+        : [];
       const inviteConfig = readInviteConfig(rootNodeId);
       const actions =
         Array.isArray(opts2?.actions) && opts2.actions.length > 0
@@ -1438,6 +1466,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         to_replica_pk_hex: bytesToHex(subjectPk),
         issuer_pk_b64: issuerPkB64,
         token_b64: base64urlEncode(tokenBytes),
+        ...(supersedesTokenIds.length > 0 ? { supersedes_token_ids_hex: supersedesTokenIds } : {}),
         payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
         from_peer_id: selfPeerId,
         ts: Date.now(),

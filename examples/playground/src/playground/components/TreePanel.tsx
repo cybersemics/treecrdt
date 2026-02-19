@@ -120,6 +120,7 @@ export function TreePanel({
     recipientKey: string;
     rootNodeId: string;
     actions?: string[];
+    supersedesTokenIds?: string[];
   }) => Promise<boolean>;
   onSetValue: (nodeId: string, value: string) => void | Promise<void>;
   onAddChild: (nodeId: string) => void;
@@ -152,6 +153,21 @@ export function TreePanel({
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
+  const measureTreeElement = React.useCallback(
+    (element: Element | null) => {
+      if (!element) return;
+      // Defer measurement to avoid virtualizer-triggered state updates during React render.
+      if (typeof window !== "undefined") {
+        window.requestAnimationFrame(() => {
+          treeVirtualizer.measureElement(element);
+        });
+        return;
+      }
+      treeVirtualizer.measureElement(element);
+    },
+    [treeVirtualizer]
+  );
+
   return (
     <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -302,7 +318,7 @@ export function TreePanel({
               <div
                 key={item.key}
                 data-index={item.index}
-                ref={treeVirtualizer.measureElement}
+                ref={measureTreeElement}
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${item.start}px)` }}
               >

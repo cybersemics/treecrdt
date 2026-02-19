@@ -50,6 +50,21 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   });
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isCapabilityRevokedError(err: unknown): boolean {
+  return /capability token revoked/i.test(errorMessage(err));
+}
+
+function formatSyncError(err: unknown): string {
+  if (isCapabilityRevokedError(err)) {
+    return "Access revoked for this capability. Import/update access, then sync again.";
+  }
+  return errorMessage(err);
+}
+
 export type PlaygroundSyncApi = {
   peers: PeerInfo[];
   syncBusy: boolean;
@@ -193,7 +208,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         );
       } catch (err) {
         console.error("Live sync(all) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
         return;
       }
 
@@ -212,7 +227,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       void sub.done.catch((err) => {
         console.error("Live sync(all) failed", err);
         stopLiveAllForPeer(peerId);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
       });
     })().finally(() => {
       liveAllStartingRef.current.delete(peerId);
@@ -265,7 +280,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         );
       } catch (err) {
         console.error("Live sync(children) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
         return;
       }
 
@@ -286,7 +301,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       void sub.done.catch((err) => {
         console.error("Live sync failed", err);
         stopLiveChildren(peerId, parentId);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
       });
     })().finally(() => {
       liveChildrenStartingRef.current.delete(startKey);
@@ -378,7 +393,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Sync failed for peer", peerId, err);
-          dropPeerConnection(peerId);
+          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -390,7 +405,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       await refreshNodeCount();
     } catch (err) {
       console.error("Sync failed", err);
-      setSyncError(err instanceof Error ? err.message : String(err));
+      setSyncError(formatSyncError(err));
     } finally {
       setSyncBusy(false);
     }
@@ -454,7 +469,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Scoped sync failed for peer", peerId, err);
-          dropPeerConnection(peerId);
+          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -466,7 +481,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       await refreshNodeCount();
     } catch (err) {
       console.error("Scoped sync failed", err);
-      setSyncError(err instanceof Error ? err.message : String(err));
+      setSyncError(formatSyncError(err));
     } finally {
       setSyncBusy(false);
     }
@@ -568,9 +583,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         }
       } catch (err) {
         console.error("Auto sync failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
         autoSyncPeerIdRef.current = null;
-        dropPeerConnection(peerId);
+        if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
       } finally {
         autoSyncInFlightRef.current = false;
         setSyncBusy(false);

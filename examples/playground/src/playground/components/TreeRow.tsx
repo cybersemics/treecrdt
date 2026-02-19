@@ -123,7 +123,12 @@ export function TreeRow({
   issuedGrantRecords: IssuedGrantRecordRow[];
   hardRevokedTokenIds: string[];
   onToggleHardRevokedTokenId: (tokenIdHex: string) => void;
-  onGrantToReplicaPubkey: (opts: { recipientKey: string; rootNodeId: string; actions?: string[] }) => Promise<boolean>;
+  onGrantToReplicaPubkey: (opts: {
+    recipientKey: string;
+    rootNodeId: string;
+    actions?: string[];
+    supersedesTokenIds?: string[];
+  }) => Promise<boolean>;
   scopeRootId: string;
   canWritePayload: boolean;
   canWriteStructure: boolean;
@@ -238,6 +243,7 @@ export function TreeRow({
         recipientKey: peerId,
         rootNodeId: node.id,
         actions: [...actions],
+        supersedesTokenIds: priorActiveTokenIds,
       });
       if (!granted) return;
 
