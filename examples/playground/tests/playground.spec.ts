@@ -122,6 +122,32 @@ async function expectMembersBadgeCount(
     .toBe(expected);
 }
 
+async function readLatestIssuedGrantActions(
+  page: import("@playwright/test").Page,
+  opts: { docId: string; rootNodeId: string; recipientPkHex: string }
+): Promise<string[] | null> {
+  return await page.evaluate(({ docId, rootNodeId, recipientPkHex }) => {
+    const profile = new URLSearchParams(window.location.search).get("profile");
+    const keyBase = `treecrdt-playground-issued-grants:${docId}`;
+    const storageKey = profile ? `treecrdt-playground-profile:${profile}:${keyBase}` : keyBase;
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const root = rootNodeId.toLowerCase();
+    const recipient = recipientPkHex.toLowerCase();
+    const row = parsed.find(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        String((entry as { rootNodeId?: string }).rootNodeId ?? "").toLowerCase() === root &&
+        String((entry as { recipientPkHex?: string }).recipientPkHex ?? "").toLowerCase() === recipient
+    ) as { actions?: unknown } | undefined;
+    if (!row || !Array.isArray(row.actions)) return null;
+    return row.actions.filter((value): value is string => typeof value === "string");
+  }, opts);
+}
+
 async function expandIfCollapsed(row: import("@playwright/test").Locator) {
   const expand = row.getByRole("button", { name: "Expand node" });
   if (await expand.count()) await expand.click();
@@ -588,6 +614,142 @@ test("revoked invited token blocks subsequent writes from that peer", async ({ b
       await pageA.waitForTimeout(250);
     }
     await expect(afterRowA).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("updating a member to read-only keeps sync working and blocks new writes", async ({ browser }) => {
+  test.setTimeout(300_000);
+
+  const doc = uniqueDocId("pw-playground-update-read-only");
+  const profileB = `pw-update-read-only-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileB)}&join=1`),
+    ]);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    // Create a private subtree root on A.
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("secret-update-root");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const secretRootRowA = treeRowByLabel(pageA, "secret-update-root");
+    await expect(secretRootRowA).toBeVisible({ timeout: 30_000 });
+    const secretNodeId = await secretRootRowA.getAttribute("data-node-id");
+    if (!secretNodeId) throw new Error("expected secret node id");
+
+    const privacyToggleA = treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    // Invite B and ensure B can access the private subtree.
+    const inviteToB = await shareSubtreeInvite(pageA, secretNodeId);
+    await joinViaInviteLink(pageB, inviteToB);
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    const secretRootRowB = treeRowByNodeId(pageB, secretNodeId);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+      if (await secretRootRowB.count()) break;
+      await pageB.waitForTimeout(250);
+    }
+    await expect(secretRootRowB).toBeVisible({ timeout: 30_000 });
+
+    // Baseline: B can write under the private subtree and A receives it.
+    await expandIfCollapsed(secretRootRowB);
+    await pageB.getByPlaceholder("Stored as payload bytes").fill("from-B-before-read-only");
+    await secretRootRowB.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageB, "from-B-before-read-only")).toBeVisible({ timeout: 30_000 });
+
+    const beforeRowA = treeRowByLabel(pageA, "from-B-before-read-only");
+    await expandIfCollapsed(treeRowByNodeId(pageA, secretNodeId));
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+      await expandIfCollapsed(treeRowByNodeId(pageA, secretNodeId));
+      if (await beforeRowA.count()) break;
+      await pageA.waitForTimeout(250);
+    }
+    await expect(beforeRowA).toBeVisible({ timeout: 30_000 });
+
+    // A updates B's capability to read-only (removes write actions, keeps read).
+    const recipientPkHex = await readReplicaPubkeyHex(pageB);
+    await treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Members and capabilities" }).click();
+    const peerRow = pageA
+      .getByText(recipientPkHex, { exact: true })
+      .first()
+      .locator("xpath=ancestor::div[.//button[normalize-space()='Share…']][1]");
+    await expect(peerRow).toBeVisible({ timeout: 30_000 });
+
+    const readButton = peerRow.getByRole("button", { name: "Read", exact: true });
+    const writeStructureButton = peerRow.getByRole("button", { name: "Write structure", exact: true });
+    const writePayloadButton = peerRow.getByRole("button", { name: "Write payload", exact: true });
+    await expect(readButton).toHaveAttribute("aria-pressed", "true", { timeout: 30_000 });
+    await expect(writeStructureButton).toHaveAttribute("aria-pressed", "true", { timeout: 30_000 });
+    await expect(writePayloadButton).toHaveAttribute("aria-pressed", "true", { timeout: 30_000 });
+
+    await writeStructureButton.click();
+    await writePayloadButton.click();
+    await expect(readButton).toHaveAttribute("aria-pressed", "true");
+    await expect(writeStructureButton).toHaveAttribute("aria-pressed", "false");
+    await expect(writePayloadButton).toHaveAttribute("aria-pressed", "false");
+
+    await peerRow.getByRole("button", { name: "Update", exact: true }).click();
+
+    await expect
+      .poll(
+        () =>
+          readLatestIssuedGrantActions(pageA, {
+            docId: doc,
+            rootNodeId: secretNodeId,
+            recipientPkHex,
+          }),
+        { timeout: 30_000 }
+      )
+      .toEqual(expect.arrayContaining(["read_structure", "read_payload"]));
+    const latestActions = await readLatestIssuedGrantActions(pageA, {
+      docId: doc,
+      rootNodeId: secretNodeId,
+      recipientPkHex,
+    });
+    expect(latestActions).not.toEqual(expect.arrayContaining(["write_structure"]));
+    expect(latestActions).not.toEqual(expect.arrayContaining(["write_payload"]));
+
+    await pageA.keyboard.press("Escape");
+
+    // Allow one transition round where B might still present a superseded token,
+    // but ensure there is no capability-filter auth failure while syncing.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await clickSyncAllowRevokedCapabilityTokenError(pageB, "B");
+      await clickSyncAllowRevokedCapabilityTokenError(pageA, "A");
+      await pageB.waitForTimeout(150);
+    }
+
+    // Read still works: A writes, B can sync and see it.
+    const secretRootByIdA = treeRowByNodeId(pageA, secretNodeId);
+    await expandIfCollapsed(secretRootByIdA);
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("from-A-after-read-only");
+    await secretRootByIdA.getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, "from-A-after-read-only")).toBeVisible({ timeout: 30_000 });
+
+    const fromAOnB = treeRowByLabel(pageB, "from-A-after-read-only");
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await clickSyncAllowRevokedCapabilityTokenError(pageB, "B");
+      await clickSyncAllowRevokedCapabilityTokenError(pageA, "A");
+      if (await fromAOnB.count()) break;
+      await pageB.waitForTimeout(250);
+    }
+    await expect(fromAOnB).toBeVisible({ timeout: 30_000 });
   } finally {
     await context.close();
   }

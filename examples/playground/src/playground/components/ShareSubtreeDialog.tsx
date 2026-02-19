@@ -2,11 +2,9 @@ import type { Dispatch, SetStateAction } from "react";
 import { MdContentCopy, MdLockOutline } from "react-icons/md";
 
 import { ROOT_ID } from "../constants";
-import type { InviteActions, InvitePreset } from "../invite";
+import type { InviteActions } from "../invite";
 
 import { InvitePermissionsEditor } from "./InvitePermissionsEditor";
-
-export type { InvitePreset } from "../invite";
 
 export type ShareSubtreeDialogProps = {
   open: boolean;
@@ -27,8 +25,6 @@ export type ShareSubtreeDialogProps = {
   authInfo: string | null;
   authError: string | null;
 
-  invitePreset: InvitePreset;
-  applyInvitePreset: (preset: InvitePreset) => void;
   inviteActions: InviteActions;
   setInviteActions: Dispatch<SetStateAction<InviteActions>>;
   inviteAllowGrant: boolean;
@@ -54,8 +50,6 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
     openMintingPeerTab,
     authInfo,
     authError,
-    invitePreset,
-    applyInvitePreset,
     inviteActions,
     setInviteActions,
     inviteAllowGrant,
@@ -143,17 +137,10 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
           <div className="mt-3 flex items-center">
             <InvitePermissionsEditor
               busy={authBusy}
-              invitePreset={invitePreset}
               inviteActions={inviteActions}
               setInviteActions={setInviteActions}
-              applyInvitePreset={applyInvitePreset}
               inviteAllowGrant={inviteAllowGrant}
               setInviteAllowGrant={setInviteAllowGrant}
-              showPresets={false}
-              showContainer={false}
-              showHeader={false}
-              showCapabilitiesLabel={false}
-              showHint={false}
             />
           </div>
         )}

@@ -42,7 +42,7 @@ import { hexToBytes16, type AuthGrantMessageV1 } from "../../sync-v0";
 import { ROOT_ID } from "../constants";
 import { loadPrivateRoots, persistPrivateRoots } from "../persist";
 import { prefixPlaygroundStorageKey } from "../storage";
-import type { InviteActions, InvitePreset } from "../invite";
+import type { InviteActions } from "../invite";
 import type { ToastState } from "../components/PlaygroundToast";
 
 function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: string): string[] {
@@ -122,6 +122,12 @@ function normalizeGrantActions(input: string[]): string[] {
 
 function expandInternalCompatActions(input: string[]): string[] {
   const out = normalizeGrantActions(input);
+  const hasAnyAction = out.length > 0;
+  if (hasAnyAction) {
+    // Playground permission model: read is always included whenever any capability is issued.
+    if (!out.includes("read_structure")) out.push("read_structure");
+    if (!out.includes("read_payload")) out.push("read_payload");
+  }
   if (out.includes("delete") && !out.includes("tombstone")) out.push("tombstone");
   return out;
 }
@@ -269,16 +275,10 @@ export type PlaygroundAuthApi = {
   setInviteActions: React.Dispatch<React.SetStateAction<InviteActions>>;
   inviteAllowGrant: boolean;
   setInviteAllowGrant: React.Dispatch<React.SetStateAction<boolean>>;
-  invitePreset: InvitePreset;
-  setInvitePreset: React.Dispatch<React.SetStateAction<InvitePreset>>;
-  showInviteOptions: boolean;
-  setShowInviteOptions: React.Dispatch<React.SetStateAction<boolean>>;
   inviteExcludeNodeIds: string[];
   inviteLink: string;
   generateInviteLink: (opts?: { rootNodeId?: string; copyToClipboard?: boolean }) => Promise<void>;
-  applyInvitePreset: (preset: InvitePreset) => void;
 
-  invitePanelRef: React.RefObject<HTMLDivElement>;
   inviteImportText: string;
   setInviteImportText: React.Dispatch<React.SetStateAction<string>>;
   importInviteLink: () => Promise<void>;
@@ -352,7 +352,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const [revocationCutoverTokenId, setRevocationCutoverTokenId] = useState("");
   const [revocationCutoverCounter, setRevocationCutoverCounter] = useState("");
 
-  const invitePanelRef = useRef<HTMLDivElement>(null!);
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
   const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
   const [inviteActions, setInviteActions] = useState<InviteActions>({
@@ -361,8 +360,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     delete: false,
   });
   const [inviteAllowGrant, setInviteAllowGrant] = useState(true);
-  const [invitePreset, setInvitePreset] = useState<InvitePreset>("read_write");
-  const [showInviteOptions, setShowInviteOptions] = useState(false);
   const [inviteLink, setInviteLink] = useState<string>("");
   const inviteLinkConfigKeyRef = useRef<string | null>(null);
   const [inviteImportText, setInviteImportText] = useState<string>("");
@@ -1002,39 +999,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
-  const applyInvitePreset = (preset: InvitePreset) => {
-    setInvitePreset(preset);
-    if (preset === "custom") {
-      setShowInviteOptions(true);
-      return;
-    }
-    if (preset === "read") {
-      setInviteActions({ write_structure: false, write_payload: false, delete: false });
-      return;
-    }
-    if (preset === "admin") {
-      setInviteActions({ write_structure: true, write_payload: true, delete: true });
-      return;
-    }
-    setInviteActions({ write_structure: true, write_payload: true, delete: false });
-  };
-
   const readInviteConfig = (rootNodeId: string) => {
-    let actions: string[];
-    if (invitePreset === "read") {
-      actions = ["read_structure", "read_payload"];
-    } else if (invitePreset === "read_write") {
-      actions = ["write_structure", "write_payload"];
-    } else if (invitePreset === "admin") {
-      actions = ["write_structure", "write_payload", "delete"];
-    } else {
-      actions = Object.entries(inviteActions)
-        .filter(([, enabled]) => enabled)
-        .map(([name]) => name);
-      if (actions.length === 0) throw new Error("select at least one action");
-    }
+    let actions = Object.entries(inviteActions)
+      .filter(([, enabled]) => enabled)
+      .map(([name]) => name);
     if (inviteAllowGrant && !actions.includes("grant")) actions.push("grant");
     actions = expandInternalCompatActions(actions);
+    if (actions.length === 0) actions = ["read_structure", "read_payload"];
 
     const maxDepthText = inviteMaxDepth.trim();
     let maxDepth: number | undefined;
@@ -1624,15 +1595,9 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setInviteActions,
     inviteAllowGrant,
     setInviteAllowGrant,
-    invitePreset,
-    setInvitePreset,
-    showInviteOptions,
-    setShowInviteOptions,
     inviteExcludeNodeIds,
     inviteLink,
     generateInviteLink,
-    applyInvitePreset,
-    invitePanelRef,
     inviteImportText,
     setInviteImportText,
     importInviteLink,

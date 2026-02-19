@@ -174,10 +174,8 @@ export default function App() {
     setInviteActions,
     inviteAllowGrant,
     setInviteAllowGrant,
-    invitePreset,
     inviteLink,
     generateInviteLink,
-    applyInvitePreset,
     issuedGrantRecords,
     grantSubtreeToReplicaPubkey: grantSubtreeToReplicaPubkeyRaw,
     resetAuth,
@@ -1063,8 +1061,6 @@ export default function App() {
         openMintingPeerTab={openMintingPeerTab}
         authInfo={authInfo}
         authError={authError}
-        invitePreset={invitePreset}
-        applyInvitePreset={applyInvitePreset}
         inviteActions={inviteActions}
         setInviteActions={setInviteActions}
         inviteAllowGrant={inviteAllowGrant}

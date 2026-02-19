@@ -1,12 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  MdAccountTree,
   MdAdd,
   MdChevronRight,
   MdCheck,
   MdDeleteOutline,
-  MdEdit,
   MdExpandMore,
   MdGroup,
   MdHome,
@@ -18,6 +16,15 @@ import {
   MdShare,
 } from "react-icons/md";
 
+import {
+  CAPABILITY_ACTION_ORDER,
+  CAPABILITY_META,
+  DEFAULT_MEMBER_CAPABILITY_ACTIONS,
+  capabilityActionsFromGrantActions,
+  grantActionsFromCapabilityActions,
+  toggleCapabilityAction,
+  type CapabilityAction,
+} from "../capabilities";
 import { ROOT_ID } from "../constants";
 import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
 
@@ -30,37 +37,6 @@ type IssuedGrantRecordRow = {
   excludeCount: number;
   ts: number;
 };
-
-type CapabilityAction = "write_structure" | "write_payload" | "delete" | "grant";
-
-const CAPABILITY_ACTION_ORDER: CapabilityAction[] = [
-  "write_structure",
-  "write_payload",
-  "delete",
-  "grant",
-];
-const DEFAULT_CAPABILITY_ACTIONS: CapabilityAction[] = ["write_structure", "write_payload", "grant"];
-
-const CAPABILITY_META: Record<
-  CapabilityAction,
-  { label: string; icon: React.ComponentType<{ className?: string }> }
-> = {
-  write_structure: { label: "Write structure", icon: MdAccountTree },
-  write_payload: { label: "Write payload", icon: MdEdit },
-  delete: { label: "Delete", icon: MdDeleteOutline },
-  grant: { label: "Grant", icon: MdShare },
-};
-
-function isCapabilityAction(value: string): value is CapabilityAction {
-  return CAPABILITY_ACTION_ORDER.includes(value as CapabilityAction);
-}
-
-function toggleCapabilityAction(actions: CapabilityAction[], action: CapabilityAction): CapabilityAction[] {
-  const set = new Set(actions);
-  if (set.has(action)) set.delete(action);
-  else set.add(action);
-  return CAPABILITY_ACTION_ORDER.filter((name) => set.has(name));
-}
 
 type MembersMenuLayout = {
   top: number;
@@ -169,7 +145,7 @@ export function TreeRow({
   const [draftValue, setDraftValue] = useState(node.value);
   const [showMembersMenu, setShowMembersMenu] = useState(false);
   const [manualRecipientKey, setManualRecipientKey] = useState("");
-  const [manualGrantActions, setManualGrantActions] = useState<CapabilityAction[]>(DEFAULT_CAPABILITY_ACTIONS);
+  const [manualGrantActions, setManualGrantActions] = useState<CapabilityAction[]>(DEFAULT_MEMBER_CAPABILITY_ACTIONS);
   const [memberGrantActions, setMemberGrantActions] = useState<Record<string, CapabilityAction[]>>({});
   const [membersMenuLayout, setMembersMenuLayout] = useState<MembersMenuLayout | null>(null);
   const membersButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -213,9 +189,9 @@ export function TreeRow({
   const getDefaultActionsForPeer = useCallback(
     (peerId: string): CapabilityAction[] => {
       const latest = latestScopedGrantByPeer.get(peerId);
-      const fromLatest = latest?.actions.filter((action): action is CapabilityAction => isCapabilityAction(action)) ?? [];
-      if (fromLatest.length > 0) return CAPABILITY_ACTION_ORDER.filter((action) => fromLatest.includes(action));
-      return [...DEFAULT_CAPABILITY_ACTIONS];
+      const fromLatest = latest ? capabilityActionsFromGrantActions(latest.actions) : [];
+      if (fromLatest.length > 0) return fromLatest;
+      return [...DEFAULT_MEMBER_CAPABILITY_ACTIONS];
     },
     [latestScopedGrantByPeer]
   );
@@ -227,6 +203,8 @@ export function TreeRow({
   const replaceMemberAccess = useCallback(
     async (peerId: string, actions: CapabilityAction[]) => {
       if (!canManageCapabilities || authBusy || actions.length === 0) return;
+      const grantActions = grantActionsFromCapabilityActions(actions);
+      if (grantActions.length === 0) return;
 
       const priorActiveTokenIds = Array.from(
         new Set(
@@ -244,7 +222,7 @@ export function TreeRow({
       const granted = await onGrantToReplicaPubkey({
         recipientKey: peerId,
         rootNodeId: node.id,
-        actions: [...actions],
+        actions: grantActions,
         supersedesTokenIds: priorActiveTokenIds,
       });
       if (!granted) return;
@@ -534,10 +512,12 @@ export function TreeRow({
                         onClick={() => {
                           const recipientKey = manualRecipientKey.trim();
                           if (!recipientKey) return;
+                          const grantActions = grantActionsFromCapabilityActions(manualGrantActions);
+                          if (grantActions.length === 0) return;
                           void onGrantToReplicaPubkey({
                             recipientKey,
                             rootNodeId: node.id,
-                            actions: [...manualGrantActions],
+                            actions: grantActions,
                           });
                           setManualRecipientKey("");
                         }}
