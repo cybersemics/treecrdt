@@ -1,7 +1,6 @@
 import type { Operation, OperationKind, ReplicaId } from "@treecrdt/interface";
 import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import { envIntList } from "./stats.js";
-import { benchTiming } from "./timing.js";
 
 export type SyncBenchWorkload =
   | "sync-all"
@@ -25,14 +24,6 @@ export function syncBenchSizesFromEnv(): number[] {
 
 export function syncBenchRootChildrenSizesFromEnv(): number[] {
   return envIntList("SYNC_BENCH_ROOT_CHILDREN_SIZES") ?? Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES);
-}
-
-export function syncBenchTiming(opts: { defaultIterations?: number } = {}): { iterations: number; warmupIterations: number } {
-  return benchTiming({
-    iterationsEnv: ["SYNC_BENCH_ITERATIONS", "BENCH_ITERATIONS"],
-    warmupEnv: ["SYNC_BENCH_WARMUP", "BENCH_WARMUP"],
-    defaultIterations: opts.defaultIterations ?? 10,
-  });
 }
 
 export type SyncFilter =

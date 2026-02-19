@@ -1,6 +1,5 @@
 import type { TreecrdtAdapter, SerializeNodeId, SerializeReplica, Operation } from "@treecrdt/interface";
 import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
-import { envInt, quantile } from "./stats.js";
 import type { WorkloadName } from "./workloads.js";
 
 export type BenchmarkResult = {
@@ -14,8 +13,6 @@ export type BenchmarkResult = {
 export type BenchmarkWorkload = {
   name: string;
   totalOps?: number;
-  iterations?: number;
-  warmupIterations?: number;
   prepare?: () => Promise<void> | void;
   run: (adapter: TreecrdtAdapter) => Promise<void | { extra?: Record<string, unknown> }>;
   cleanup?: () => Promise<void> | void;
@@ -47,33 +44,21 @@ export async function runBenchmark(
 ): Promise<BenchmarkResult> {
   const totalOps = workload.totalOps ?? -1;
 
-  const envIterations = envInt("BENCH_ITERATIONS");
-  const envWarmup = envInt("BENCH_WARMUP");
-  const rawIterations = Math.max(1, workload.iterations ?? envIterations ?? 1);
-  const minIterationsForTiny =
-    totalOps >= 1 && totalOps <= 100 ? 10 : totalOps <= 1000 ? 7 : 1;
-  const iterations = Math.max(minIterationsForTiny, rawIterations);
-  const warmupIterations = Math.max(0, workload.warmupIterations ?? envWarmup ?? (iterations > 1 ? 1 : 0));
-
-  const samplesMs: number[] = [];
+  const adapter = await adapterFactory();
+  let durationMs: number;
   let lastExtra: Record<string, unknown> | undefined;
-
-  for (let i = 0; i < warmupIterations + iterations; i += 1) {
-    const adapter = await adapterFactory();
-    try {
-      if (workload.prepare) await workload.prepare();
-      const start = performance.now();
-      const runResult = await workload.run(adapter);
-      const end = performance.now();
-      if (runResult && typeof runResult === "object" && runResult.extra) lastExtra = runResult.extra;
-      if (workload.cleanup) await workload.cleanup();
-      if (i >= warmupIterations) samplesMs.push(end - start);
-    } finally {
-      if (adapter.close) await adapter.close();
-    }
+  try {
+    if (workload.prepare) await workload.prepare();
+    const start = performance.now();
+    const runResult = await workload.run(adapter);
+    const end = performance.now();
+    durationMs = end - start;
+    if (runResult && typeof runResult === "object" && runResult.extra) lastExtra = runResult.extra;
+    if (workload.cleanup) await workload.cleanup();
+  } finally {
+    if (adapter.close) await adapter.close();
   }
 
-  const durationMs = quantile(samplesMs, 0.5);
   const opsPerSec =
     totalOps > 0 && durationMs > 0
       ? (totalOps / durationMs) * 1000
@@ -85,18 +70,7 @@ export async function runBenchmark(
     totalOps,
     durationMs,
     opsPerSec,
-    extra:
-      lastExtra || samplesMs.length > 1
-        ? {
-            ...(lastExtra ?? {}),
-            iterations,
-            warmupIterations,
-            samplesMs,
-            p95Ms: quantile(samplesMs, 0.95),
-            minMs: Math.min(...samplesMs),
-            maxMs: Math.max(...samplesMs),
-          }
-        : undefined,
+    extra: lastExtra ?? undefined,
   };
 }
 
@@ -278,6 +252,5 @@ export async function runWorkloads(
 }
 
 export { DEFAULT_BENCH_SIZES, WORKLOAD_NAMES, type WorkloadName } from "./workloads.js";
-export { benchTiming } from "./timing.js";
 export * from "./sync.js";
 export * from "./stats.js";

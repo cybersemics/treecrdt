@@ -8,7 +8,6 @@ import {
   SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
   SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
   maxLamport,
-  quantile,
   type SyncBenchWorkload,
 } from "@treecrdt/benchmark";
 import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
@@ -28,58 +27,33 @@ import {
 } from "../dist/index.js";
 
 type StorageKind = "memory" | "file";
-type ConfigEntry = [number, number];
 
-const SYNC_BENCH_CONFIG: ReadonlyArray<ConfigEntry> = [
-  [100, 10],
-  [1_000, 5],
-  [10_000, 10],
-];
+const SYNC_BENCH_COUNTS: readonly number[] = [100, 1_000, 10_000];
+const SYNC_BENCH_ROOT_COUNTS: readonly number[] = [1110];
 
-const SYNC_BENCH_ROOT_CONFIG: ReadonlyArray<ConfigEntry> = [[1110, 10]];
-
-function envInt(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw == null || raw === "") return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function parseConfigFromArgv(argv: string[]): Array<ConfigEntry> | null {
-  let customConfig: Array<ConfigEntry> | null = null;
-  const defaultIterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 1);
+function parseCountsFromArgv(argv: string[]): number[] | null {
   for (const arg of argv) {
     if (arg.startsWith("--count=")) {
       const val = arg.slice("--count=".length).trim();
       const count = val ? Number(val) : 500;
-      customConfig = [[Number.isFinite(count) && count > 0 ? count : 500, defaultIterations]];
-      break;
+      return [Number.isFinite(count) && count > 0 ? count : 500];
     }
     if (arg.startsWith("--counts=")) {
-      const vals = arg
+      const nums = arg
         .slice("--counts=".length)
         .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      const parsed = vals
-        .map((s) => {
-          const n = Number(s);
-          return Number.isFinite(n) && n > 0 ? n : null;
-        })
-        .filter((n): n is number => n != null)
-        .map((c) => [c, defaultIterations] as ConfigEntry);
-      if (parsed.length > 0) customConfig = parsed;
-      break;
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (nums.length > 0) return nums;
     }
   }
-  return customConfig;
+  return null;
 }
 
 type BenchCase = {
   storage: StorageKind;
   workload: SyncBenchWorkload;
   size: number;
-  iterations: number;
 };
 
 type SyncBenchResult = {
@@ -211,15 +185,7 @@ async function runBenchCase(
   benchCase: BenchCase
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({ workload: benchCase.workload, size: benchCase.size });
-  const { size, iterations } = benchCase;
-
-  const samplesMs: number[] = [];
-  for (let i = 0; i < iterations; i += 1) {
-    samplesMs.push(await runBenchOnce(repoRoot, benchCase, bench));
-  }
-
-  const durationMs =
-    iterations > 1 ? quantile(samplesMs, 0.5) : samplesMs[0] ?? 0;
+  const durationMs = await runBenchOnce(repoRoot, benchCase, bench);
   const opsPerSec = durationMs > 0 ? (bench.totalOps / durationMs) * 1000 : Infinity;
 
   return {
@@ -229,15 +195,9 @@ async function runBenchCase(
     opsPerSec,
     extra: {
       ...bench.extra,
-      count: size,
+      count: benchCase.size,
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
-      iterations: iterations > 1 ? iterations : undefined,
-      avgDurationMs: iterations > 1 ? durationMs : undefined,
-      samplesMs,
-      p95Ms: quantile(samplesMs, 0.95),
-      minMs: Math.min(...samplesMs),
-      maxMs: Math.max(...samplesMs),
     },
   };
 }
@@ -246,19 +206,19 @@ async function main() {
   const argv = process.argv.slice(2);
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const config = parseConfigFromArgv(argv) ?? [...SYNC_BENCH_CONFIG];
-  const rootConfig = [...SYNC_BENCH_ROOT_CONFIG];
+  const counts = parseCountsFromArgv(argv) ?? [...SYNC_BENCH_COUNTS];
+  const rootCounts = [...SYNC_BENCH_ROOT_COUNTS];
 
   const cases: BenchCase[] = [];
   for (const storage of ["memory", "file"] as const) {
     for (const workload of DEFAULT_SYNC_BENCH_WORKLOADS) {
-      for (const [size, iterations] of config) {
-        cases.push({ storage, workload, size, iterations });
+      for (const size of counts) {
+        cases.push({ storage, workload, size });
       }
     }
     for (const workload of DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS) {
-      for (const [size, iterations] of rootConfig) {
-        cases.push({ storage, workload, size, iterations });
+      for (const size of rootCounts) {
+        cases.push({ storage, workload, size });
       }
     }
   }
