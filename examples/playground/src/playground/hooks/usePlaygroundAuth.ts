@@ -78,6 +78,17 @@ function normalizeTokenIdHex(input: string): string | null {
   return clean;
 }
 
+function extractInviteB64FromLink(link: string): string | null {
+  if (!link) return null;
+  try {
+    const url = new URL(link);
+    const invite = new URLSearchParams(url.hash.slice(1)).get("invite");
+    return typeof invite === "string" && invite.length > 0 ? invite : null;
+  } catch {
+    return null;
+  }
+}
+
 export type IssuedGrantRecord = {
   recipientPkHex: string;
   tokenIdHex: string;
@@ -1508,8 +1519,17 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     if (opts2.autoInvite) {
       try {
         // Auto-invite makes the common "simulate another device" flow 1 click.
+        const rootNodeId = opts2.rootNodeId ?? ROOT_ID;
+        const configKey = inviteConfigCacheKey(rootNodeId);
         url.searchParams.set("autosync", "1");
-        url.hash = `invite=${await buildInviteB64({ rootNodeId: opts2.rootNodeId ?? ROOT_ID })}`;
+        let inviteB64: string | null = null;
+        if (inviteLink && inviteLinkConfigKeyRef.current === configKey) {
+          inviteB64 = extractInviteB64FromLink(inviteLink);
+        }
+        if (!inviteB64) {
+          inviteB64 = await buildInviteB64({ rootNodeId });
+        }
+        url.hash = `invite=${inviteB64}`;
       } catch (err) {
         // Fall back to a blank join-only tab and show the reason on the current tab.
         setAuthError(err instanceof Error ? err.message : String(err));
