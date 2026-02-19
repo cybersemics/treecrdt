@@ -2,11 +2,19 @@ use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::op_storage::SqliteOpStorage;
 use super::payload_store::SqlitePayloadStore;
+<<<<<<< HEAD
 use super::util::sqlite_result_json;
+=======
+use super::util::{
+    read_blob, read_blob16, read_optional_blob16, read_required_blob, read_text, sqlite_err_from_core,
+    sqlite_result_json,
+};
+>>>>>>> 4ee92d1 (refactor: move functions to util)
 use super::*;
 use treecrdt_core::ParentOpIndex;
 use treecrdt_core::{LamportClock, Operation, OperationId, OperationKind, ReplicaId, TreeCrdt};
 
+<<<<<<< HEAD
 fn read_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
     unsafe {
         if sqlite_value_type(val) == SQLITE_NULL as c_int {
@@ -58,6 +66,8 @@ fn read_text(val: *mut sqlite3_value) -> String {
     }
 }
 
+=======
+>>>>>>> 4ee92d1 (refactor: move functions to util)
 #[derive(serde::Serialize)]
 struct JsonOp {
     replica: Vec<u8>,
@@ -72,10 +82,13 @@ struct JsonOp {
     payload: Option<Vec<u8>>,
 }
 
+<<<<<<< HEAD
 fn sqlite_err_from_core(_: treecrdt_core::Error) -> c_int {
     SQLITE_ERROR as c_int
 }
 
+=======
+>>>>>>> 4ee92d1 (refactor: move functions to util)
 type LocalCrdt = TreeCrdt<SqliteOpStorage, LamportClock, SqliteNodeStore, SqlitePayloadStore>;
 
 struct LocalOpSession {
