@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { expect, test } from "vitest";
+import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
@@ -10,7 +11,7 @@ import { sha512 } from "@noble/hashes/sha512";
 
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { deriveTokenIdV1 } from "../dist/cose.js";
+import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
 import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
 import {
   createTreecrdtCoseCwtAuth,
@@ -18,6 +19,7 @@ import {
   issueTreecrdtCapabilityTokenV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   issueTreecrdtRevocationRecordV1,
+  verifyTreecrdtRevocationRecordV1,
 } from "../dist/treecrdt-auth.js";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
@@ -1487,6 +1489,36 @@ test("auth: revocation record from hello capabilities hard-revokes token across 
   await expect(authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
     /capability token revoked/i
   );
+});
+
+test("auth: revocation records reject unknown claims", async () => {
+  const docId = "doc-auth-wire-revocation-unknown-claim";
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const tokenId = ed25519Utils.randomSecretKey().slice(0, 16);
+
+  const claims = new Map<unknown, unknown>();
+  claims.set("v", 1);
+  claims.set("t", "treecrdt/revocation/v1");
+  claims.set("doc_id", docId);
+  claims.set("token_id", tokenId);
+  claims.set("mode", "write_cutover");
+  claims.set("rev_seq", 1);
+  claims.set("effective_from_counter", 5);
+  claims.set("unexpected_claim", "nope");
+
+  const recordBytes = coseSign1Ed25519({
+    payload: cborEncode(claims, rfc8949EncodeOptions),
+    privateKey: issuerSk,
+  });
+
+  await expect(
+    verifyTreecrdtRevocationRecordV1({
+      recordBytes,
+      issuerPublicKeys: [issuerPk],
+      expectedDocId: docId,
+    })
+  ).rejects.toThrow(/unknown claim/i);
 });
 
 test("auth: highest rev_seq revocation record wins for a token", async () => {

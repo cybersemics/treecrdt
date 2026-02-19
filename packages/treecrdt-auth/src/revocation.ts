@@ -9,6 +9,34 @@ const TREECRDT_REVOCATION_RECORD_V1_TAG = "treecrdt/revocation/v1";
 const REVOCATION_TOKEN_ID_LEN = 16;
 const ED25519_PUBLIC_KEY_LEN = 32;
 
+// Canonical claim keys for signed revocation records (v1).
+// These keys are wire-level protocol names and must stay stable for interop.
+const REVOCATION_V1_CLAIM = {
+  VERSION: "v",
+  TYPE_TAG: "t",
+  DOC_ID: "doc_id",
+  TOKEN_ID: "token_id",
+  MODE: "mode",
+  REV_SEQ: "rev_seq",
+  IAT: "iat",
+  EFFECTIVE_FROM_COUNTER: "effective_from_counter",
+  EFFECTIVE_FROM_REPLICA: "effective_from_replica",
+} as const;
+
+const REVOCATION_RECORD_V1_CONTEXT = "RevocationRecordV1";
+
+const REVOCATION_V1_ALLOWED_CLAIMS = new Set<string>([
+  REVOCATION_V1_CLAIM.VERSION,
+  REVOCATION_V1_CLAIM.TYPE_TAG,
+  REVOCATION_V1_CLAIM.DOC_ID,
+  REVOCATION_V1_CLAIM.TOKEN_ID,
+  REVOCATION_V1_CLAIM.MODE,
+  REVOCATION_V1_CLAIM.REV_SEQ,
+  REVOCATION_V1_CLAIM.IAT,
+  REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER,
+  REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA,
+]);
+
 export const TREECRDT_REVOCATION_CAPABILITY = "auth.revocation";
 
 export type TreecrdtRevocationModeV1 = "hard" | "write_cutover";
@@ -21,7 +49,6 @@ export type TreecrdtRevocationRecordV1 = {
   iat?: number;
   effectiveFromCounter?: number;
   effectiveFromReplica?: Uint8Array;
-  effectiveFromLamport?: number;
 };
 
 export type VerifiedTreecrdtRevocationRecordV1 = TreecrdtRevocationRecordV1 & {
@@ -43,6 +70,13 @@ function mapGet(map: Map<unknown, unknown>, key: string): unknown {
 function assertPayloadMap(payload: unknown, ctx: string): Map<unknown, unknown> {
   if (!(payload instanceof Map)) throw new Error(`${ctx} payload must be a CBOR map`);
   return payload;
+}
+
+function assertNoUnknownClaims(payloadMap: Map<unknown, unknown>, ctx: string): void {
+  for (const key of payloadMap.keys()) {
+    if (typeof key !== "string") throw new Error(`${ctx} contains non-string claim key`);
+    if (!REVOCATION_V1_ALLOWED_CLAIMS.has(key)) throw new Error(`${ctx} contains unknown claim: ${key}`);
+  }
 }
 
 function assertString(val: unknown, field: string): string {
@@ -71,14 +105,12 @@ function parseRevocationMode(value: unknown): TreecrdtRevocationModeV1 {
 function validateModeFields(mode: TreecrdtRevocationModeV1, record: {
   effectiveFromCounter?: number;
   effectiveFromReplica?: Uint8Array;
-  effectiveFromLamport?: number;
 }) {
   if (mode === "hard") return;
 
   const hasCounter = record.effectiveFromCounter !== undefined;
-  const hasLamport = record.effectiveFromLamport !== undefined;
-  if (!hasCounter && !hasLamport) {
-    throw new Error("RevocationRecordV1.write_cutover requires effective_from_counter or effective_from_lamport");
+  if (!hasCounter) {
+    throw new Error("RevocationRecordV1.write_cutover requires effective_from_counter");
   }
   if (record.effectiveFromReplica && !hasCounter) {
     throw new Error("RevocationRecordV1.effective_from_replica requires effective_from_counter");
@@ -94,7 +126,6 @@ export function issueTreecrdtRevocationRecordV1(opts: {
   iat?: number;
   effectiveFromCounter?: number;
   effectiveFromReplica?: Uint8Array;
-  effectiveFromLamport?: number;
 }): Uint8Array {
   if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
   const tokenId = assertBytesLen(opts.tokenId, REVOCATION_TOKEN_ID_LEN, "tokenId");
@@ -109,24 +140,19 @@ export function issueTreecrdtRevocationRecordV1(opts: {
     opts.effectiveFromReplica === undefined
       ? undefined
       : assertBytesLen(opts.effectiveFromReplica, ED25519_PUBLIC_KEY_LEN, "effectiveFromReplica");
-  const effectiveFromLamport =
-    opts.effectiveFromLamport === undefined
-      ? undefined
-      : assertInteger(opts.effectiveFromLamport, "effectiveFromLamport");
 
-  validateModeFields(mode, { effectiveFromCounter, effectiveFromReplica, effectiveFromLamport });
+  validateModeFields(mode, { effectiveFromCounter, effectiveFromReplica });
 
   const claims = new Map<unknown, unknown>();
-  claims.set("v", 1);
-  claims.set("t", TREECRDT_REVOCATION_RECORD_V1_TAG);
-  claims.set("doc_id", opts.docId);
-  claims.set("token_id", tokenId);
-  claims.set("mode", mode);
-  claims.set("rev_seq", revSeq);
-  if (iat !== undefined) claims.set("iat", iat);
-  if (effectiveFromCounter !== undefined) claims.set("effective_from_counter", effectiveFromCounter);
-  if (effectiveFromReplica !== undefined) claims.set("effective_from_replica", effectiveFromReplica);
-  if (effectiveFromLamport !== undefined) claims.set("effective_from_lamport", effectiveFromLamport);
+  claims.set(REVOCATION_V1_CLAIM.VERSION, 1);
+  claims.set(REVOCATION_V1_CLAIM.TYPE_TAG, TREECRDT_REVOCATION_RECORD_V1_TAG);
+  claims.set(REVOCATION_V1_CLAIM.DOC_ID, opts.docId);
+  claims.set(REVOCATION_V1_CLAIM.TOKEN_ID, tokenId);
+  claims.set(REVOCATION_V1_CLAIM.MODE, mode);
+  claims.set(REVOCATION_V1_CLAIM.REV_SEQ, revSeq);
+  if (iat !== undefined) claims.set(REVOCATION_V1_CLAIM.IAT, iat);
+  if (effectiveFromCounter !== undefined) claims.set(REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER, effectiveFromCounter);
+  if (effectiveFromReplica !== undefined) claims.set(REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA, effectiveFromReplica);
 
   return coseSign1Ed25519({ payload: encodeCbor(claims), privateKey: opts.issuerPrivateKey });
 }
@@ -153,40 +179,59 @@ export async function verifyTreecrdtRevocationRecordV1(opts: {
   if (!payloadBytes || !verifiedBy) throw new Error("revocation record signature verification failed");
 
   const decoded = decodeCbor(payloadBytes);
-  const map = assertPayloadMap(decoded, "RevocationRecordV1");
+  const map = assertPayloadMap(decoded, REVOCATION_RECORD_V1_CONTEXT);
+  assertNoUnknownClaims(map, REVOCATION_RECORD_V1_CONTEXT);
 
-  const v = mapGet(map, "v");
-  if (v !== 1) throw new Error("RevocationRecordV1.v must be 1");
-  const t = assertString(mapGet(map, "t"), "RevocationRecordV1.t");
+  const v = mapGet(map, REVOCATION_V1_CLAIM.VERSION);
+  if (v !== 1) throw new Error(`${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.VERSION} must be 1`);
+  const t = assertString(
+    mapGet(map, REVOCATION_V1_CLAIM.TYPE_TAG),
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.TYPE_TAG}`
+  );
   if (t !== TREECRDT_REVOCATION_RECORD_V1_TAG) throw new Error("RevocationRecordV1.t mismatch");
 
-  const docId = assertString(mapGet(map, "doc_id"), "RevocationRecordV1.doc_id");
+  const docId = assertString(
+    mapGet(map, REVOCATION_V1_CLAIM.DOC_ID),
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.DOC_ID}`
+  );
   if (opts.expectedDocId !== undefined && docId !== opts.expectedDocId) {
     throw new Error("RevocationRecordV1.doc_id mismatch");
   }
-  const tokenId = assertBytesLen(mapGet(map, "token_id"), REVOCATION_TOKEN_ID_LEN, "RevocationRecordV1.token_id");
-  const mode = parseRevocationMode(mapGet(map, "mode"));
-  const revSeq = assertInteger(mapGet(map, "rev_seq"), "RevocationRecordV1.rev_seq");
-  const iatRaw = mapGet(map, "iat");
-  const iat = iatRaw === undefined ? undefined : assertInteger(iatRaw, "RevocationRecordV1.iat");
+  const tokenId = assertBytesLen(
+    mapGet(map, REVOCATION_V1_CLAIM.TOKEN_ID),
+    REVOCATION_TOKEN_ID_LEN,
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.TOKEN_ID}`
+  );
+  const mode = parseRevocationMode(mapGet(map, REVOCATION_V1_CLAIM.MODE));
+  const revSeq = assertInteger(
+    mapGet(map, REVOCATION_V1_CLAIM.REV_SEQ),
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.REV_SEQ}`
+  );
+  const iatRaw = mapGet(map, REVOCATION_V1_CLAIM.IAT);
+  const iat =
+    iatRaw === undefined
+      ? undefined
+      : assertInteger(iatRaw, `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.IAT}`);
 
-  const effectiveFromCounterRaw = mapGet(map, "effective_from_counter");
+  const effectiveFromCounterRaw = mapGet(map, REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER);
   const effectiveFromCounter =
     effectiveFromCounterRaw === undefined
       ? undefined
-      : assertInteger(effectiveFromCounterRaw, "RevocationRecordV1.effective_from_counter");
-  const effectiveFromReplicaRaw = mapGet(map, "effective_from_replica");
+      : assertInteger(
+          effectiveFromCounterRaw,
+          `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER}`
+        );
+  const effectiveFromReplicaRaw = mapGet(map, REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA);
   const effectiveFromReplica =
     effectiveFromReplicaRaw === undefined
       ? undefined
-      : assertBytesLen(effectiveFromReplicaRaw, ED25519_PUBLIC_KEY_LEN, "RevocationRecordV1.effective_from_replica");
-  const effectiveFromLamportRaw = mapGet(map, "effective_from_lamport");
-  const effectiveFromLamport =
-    effectiveFromLamportRaw === undefined
-      ? undefined
-      : assertInteger(effectiveFromLamportRaw, "RevocationRecordV1.effective_from_lamport");
+      : assertBytesLen(
+          effectiveFromReplicaRaw,
+          ED25519_PUBLIC_KEY_LEN,
+          `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA}`
+        );
 
-  validateModeFields(mode, { effectiveFromCounter, effectiveFromReplica, effectiveFromLamport });
+  validateModeFields(mode, { effectiveFromCounter, effectiveFromReplica });
   if (opts.nowSec && iat !== undefined && iat > opts.nowSec()) {
     throw new Error("RevocationRecordV1.iat is in the future");
   }
@@ -199,7 +244,6 @@ export async function verifyTreecrdtRevocationRecordV1(opts: {
     ...(iat !== undefined ? { iat } : {}),
     ...(effectiveFromCounter !== undefined ? { effectiveFromCounter } : {}),
     ...(effectiveFromReplica !== undefined ? { effectiveFromReplica } : {}),
-    ...(effectiveFromLamport !== undefined ? { effectiveFromLamport } : {}),
     issuerPublicKey: verifiedBy,
   };
 }
@@ -225,4 +269,3 @@ export async function verifyTreecrdtRevocationCapabilityV1(opts: {
     ...(opts.nowSec ? { nowSec: opts.nowSec } : {}),
   });
 }
-

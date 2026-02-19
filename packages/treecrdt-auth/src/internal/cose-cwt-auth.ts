@@ -156,9 +156,6 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     if (revocation.mode === "hard") return true;
     if (!opts2.op) return false;
 
-    if (revocation.effectiveFromLamport !== undefined) {
-      return opts2.op.meta.lamport >= revocation.effectiveFromLamport;
-    }
     if (revocation.effectiveFromCounter === undefined) return false;
     if (revocation.effectiveFromReplica) {
       const opReplicaHex = bytesToHex(replicaIdToBytes(opts2.op.meta.id.replica));

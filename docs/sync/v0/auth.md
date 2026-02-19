@@ -139,8 +139,8 @@ Recommended policy modes:
 
 `write_cutover` can be anchored by:
 
-- `(replica_id, counter)` (preferred: deterministic and clock-free), or
-- `lamport` (acceptable if all peers use the same lamport interpretation).
+- `(replica_id, counter)` only (deterministic and clock-free).
+- Lamport-based cutover is intentionally not part of v1.
 
 For convergence across peers, revocations SHOULD be exchanged as signed records (not only local denylist state).
 
@@ -151,7 +151,7 @@ Record shape (reference v1):
   - `doc_id`
   - `token_id`
   - `mode` (`hard` or `write_cutover`)
-  - `effective_from_counter` + `effective_from_replica` (or `effective_from_lamport`)
+  - `effective_from_counter` + optional `effective_from_replica`
   - `iat`
   - monotonic `rev_seq` (per issuer/doc), to avoid ambiguity on conflicting records
 
