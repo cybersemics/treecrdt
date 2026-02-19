@@ -14,7 +14,6 @@ mod op_index;
 mod op_storage;
 mod oprefs;
 mod ops;
-mod order_key;
 mod payload_store;
 mod schema;
 mod sqlite_api;
