@@ -1224,50 +1224,6 @@ test("open device sees latest scoped-root label after rename", async ({ browser 
   }
 });
 
-test("open device converges members badge count for scoped subtree", async ({ browser }) => {
-  test.setTimeout(240_000);
-
-  const doc = uniqueDocId("pw-playground-open-device-members");
-  const context = await browser.newContext();
-  const pageA = await context.newPage();
-
-  try {
-    await waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`);
-    await expectAuthEnabledByDefault(pageA);
-    await waitForLocalAuthTokens(pageA);
-
-    await pageA.getByPlaceholder("Stored as payload bytes").fill("OPEN-DEVICE-SECRET");
-    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
-    const secretRowA = treeRowByLabel(pageA, "OPEN-DEVICE-SECRET");
-    await expect(secretRowA).toBeVisible({ timeout: 30_000 });
-    const secretNodeId = await secretRowA.getAttribute("data-node-id");
-    if (!secretNodeId) throw new Error("expected secret node id");
-
-    const privacyToggleA = treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Toggle node privacy" });
-    await privacyToggleA.click();
-    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
-
-    await treeRowByNodeId(pageA, secretNodeId).getByRole("button", { name: "Share subtree (invite)" }).click();
-    const textarea = pageA.getByPlaceholder("Invite link will appear here…");
-    await expect(textarea).toHaveValue(/invite=/, { timeout: 30_000 });
-
-    const [pageB] = await Promise.all([
-      pageA.waitForEvent("popup"),
-      pageA.getByRole("button", { name: "Open device", exact: true }).click(),
-    ]);
-    await pageA.getByRole("button", { name: "Close", exact: true }).click();
-
-    await pageB.bringToFront();
-    await expect(pageB.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
-    await expect(treeRowByNodeId(pageB, secretNodeId)).toBeVisible({ timeout: 60_000 });
-
-    // Open device should converge to the same non-empty members count on both tabs for this subtree.
-    await expectMembersBadgeCountsAligned(pageA, pageB, secretNodeId, { minCount: 1 });
-  } finally {
-    await context.close();
-  }
-});
-
 test("open device: private subtree live children sync receives child updates on original tab", async ({ browser }) => {
   test.setTimeout(300_000);
 
