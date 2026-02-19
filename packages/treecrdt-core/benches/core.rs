@@ -71,10 +71,7 @@ fn main() {
             let count = val.parse().unwrap_or(500);
             custom_counts = Some(vec![count]);
         } else if let Some(val) = arg.strip_prefix("--counts=") {
-            let parsed: Vec<u64> = val
-                .split(',')
-                .filter_map(|s| s.trim().parse().ok())
-                .collect();
+            let parsed: Vec<u64> = val.split(',').filter_map(|s| s.trim().parse().ok()).collect();
             if !parsed.is_empty() {
                 custom_counts = Some(parsed);
             }
