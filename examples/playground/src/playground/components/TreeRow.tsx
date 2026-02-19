@@ -544,6 +544,7 @@ export function TreeRow({
                         {CAPABILITY_ACTION_ORDER.map((action) => {
                           const enabled = manualGrantActions.includes(action);
                           const Icon = CAPABILITY_META[action].icon;
+                          const readLocked = action === "read";
                           return (
                             <button
                               key={`manual-${action}`}
@@ -553,13 +554,13 @@ export function TreeRow({
                                   ? "border-emerald-400/70 bg-emerald-500/10"
                                   : "border-slate-700 bg-slate-800/60 hover:border-accent"
                               }`}
-                              title={CAPABILITY_META[action].label}
+                              title={readLocked ? "Read (always included)" : CAPABILITY_META[action].label}
                               aria-label={CAPABILITY_META[action].label}
                               aria-pressed={enabled}
                               onClick={() =>
                                 setManualGrantActions((prev) => toggleCapabilityAction(prev, action))
                               }
-                              disabled={authBusy}
+                              disabled={authBusy || readLocked}
                             >
                               <Icon className="text-[14px]" />
                               {enabled && <MdCheck className="absolute -right-1 -top-1 text-[12px] text-emerald-300" />}
@@ -613,6 +614,7 @@ export function TreeRow({
                                 {CAPABILITY_ACTION_ORDER.map((action) => {
                                   const enabled = selectedActions.includes(action);
                                   const Icon = CAPABILITY_META[action].icon;
+                                  const readLocked = action === "read";
                                   return (
                                     <button
                                       key={`${row.id}-${action}`}
@@ -622,7 +624,11 @@ export function TreeRow({
                                           ? "border-emerald-400/70 bg-emerald-500/10"
                                           : "border-slate-700 bg-slate-800/60 hover:border-accent"
                                       }`}
-                                      title={CAPABILITY_META[action].label}
+                                      title={
+                                        readLocked
+                                          ? "Read (always included). Use Revoke to remove all access."
+                                          : CAPABILITY_META[action].label
+                                      }
                                       aria-label={CAPABILITY_META[action].label}
                                       aria-pressed={enabled}
                                       onClick={() =>
@@ -631,7 +637,7 @@ export function TreeRow({
                                           [row.id]: toggleCapabilityAction(getSelectedActionsForPeer(row.id), action),
                                         }))
                                       }
-                                      disabled={authBusy}
+                                      disabled={authBusy || readLocked}
                                     >
                                       <Icon className="text-[14px]" />
                                       {enabled && (
