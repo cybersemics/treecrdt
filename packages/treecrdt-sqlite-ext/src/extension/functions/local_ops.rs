@@ -2,72 +2,14 @@ use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::op_storage::SqliteOpStorage;
 use super::payload_store::SqlitePayloadStore;
-<<<<<<< HEAD
-use super::util::sqlite_result_json;
-=======
 use super::util::{
-    read_blob, read_blob16, read_optional_blob16, read_required_blob, read_text, sqlite_err_from_core,
-    sqlite_result_json,
+    read_blob, read_blob16, read_optional_blob16, read_required_blob, read_text,
+    sqlite_err_from_core, sqlite_result_json,
 };
->>>>>>> 4ee92d1 (refactor: move functions to util)
 use super::*;
 use treecrdt_core::ParentOpIndex;
 use treecrdt_core::{LamportClock, Operation, OperationId, OperationKind, ReplicaId, TreeCrdt};
 
-<<<<<<< HEAD
-fn read_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
-    unsafe {
-        if sqlite_value_type(val) == SQLITE_NULL as c_int {
-            return None;
-        }
-        let ptr = sqlite_value_blob(val) as *const u8;
-        let len = sqlite_value_bytes(val) as usize;
-        if ptr.is_null() {
-            return None;
-        }
-        Some(slice::from_raw_parts(ptr, len).to_vec())
-    }
-}
-
-fn read_required_blob(val: *mut sqlite3_value) -> Result<Vec<u8>, ()> {
-    match read_blob(val) {
-        Some(v) => Ok(v),
-        None => Err(()),
-    }
-}
-
-fn read_blob16(val: *mut sqlite3_value) -> Result<[u8; 16], ()> {
-    let bytes = read_required_blob(val)?;
-    if bytes.len() != 16 {
-        return Err(());
-    }
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes);
-    Ok(out)
-}
-
-fn read_optional_blob16(val: *mut sqlite3_value) -> Result<Option<[u8; 16]>, ()> {
-    unsafe {
-        if sqlite_value_type(val) == SQLITE_NULL as c_int {
-            return Ok(None);
-        }
-    }
-    Ok(Some(read_blob16(val)?))
-}
-
-fn read_text(val: *mut sqlite3_value) -> String {
-    unsafe {
-        let ptr = sqlite_value_text(val) as *const u8;
-        let len = sqlite_value_bytes(val) as usize;
-        if ptr.is_null() || len == 0 {
-            return String::new();
-        }
-        std::str::from_utf8(slice::from_raw_parts(ptr, len)).unwrap_or("").to_string()
-    }
-}
-
-=======
->>>>>>> 4ee92d1 (refactor: move functions to util)
 #[derive(serde::Serialize)]
 struct JsonOp {
     replica: Vec<u8>,
@@ -82,13 +24,6 @@ struct JsonOp {
     payload: Option<Vec<u8>>,
 }
 
-<<<<<<< HEAD
-fn sqlite_err_from_core(_: treecrdt_core::Error) -> c_int {
-    SQLITE_ERROR as c_int
-}
-
-=======
->>>>>>> 4ee92d1 (refactor: move functions to util)
 type LocalCrdt = TreeCrdt<SqliteOpStorage, LamportClock, SqliteNodeStore, SqlitePayloadStore>;
 
 struct LocalOpSession {
