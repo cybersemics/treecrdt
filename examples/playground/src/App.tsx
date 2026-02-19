@@ -1052,6 +1052,7 @@ export default function App() {
       <ShareSubtreeDialog
         open={showShareDialog}
         onClose={() => setShowShareDialog(false)}
+        busy={busy}
         inviteRoot={inviteRoot}
         nodeLabelForId={nodeLabelForId}
         authEnabled={authEnabled}

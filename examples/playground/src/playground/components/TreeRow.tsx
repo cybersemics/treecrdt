@@ -87,6 +87,7 @@ export function TreeRow({
   onShare,
   peers,
   selfPeerId,
+  busy,
   authEnabled,
   canManageCapabilities,
   authBusy,
@@ -117,6 +118,7 @@ export function TreeRow({
   onShare: (id: string) => void;
   peers: PeerInfo[];
   selfPeerId: string | null;
+  busy: boolean;
   authEnabled: boolean;
   canManageCapabilities: boolean;
   authBusy: boolean;
@@ -376,10 +378,10 @@ export function TreeRow({
               ) : isEditing ? (
                 <form
                   className="flex items-center gap-2"
-                  onSubmit={(e) => {
+                  onSubmit={async (e) => {
                     e.preventDefault();
                     setIsEditing(false);
-                    void onSetValue(node.id, draftValue);
+                    await onSetValue(node.id, draftValue);
                   }}
                 >
                   <input
@@ -446,10 +448,11 @@ export function TreeRow({
         </div>
         <div className="flex flex-wrap gap-1.5">
           <button
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
             onClick={() => onShare(node.id)}
             aria-label="Share subtree (invite)"
             title="Share subtree invite link and permissions"
+            disabled={busy}
           >
             <MdShare className="text-[20px]" />
           </button>

@@ -913,6 +913,57 @@ test("open device auto-syncs so the scoped root label is visible", async ({ brow
   }
 });
 
+test("open device sees latest scoped-root label after rename", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-open-device-rename");
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+
+  try {
+    await waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("OLD-LABEL");
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    const scopedRowA = treeRowByLabel(pageA, "OLD-LABEL");
+    await expect(scopedRowA).toBeVisible({ timeout: 30_000 });
+
+    const scopedNodeId = await scopedRowA.getAttribute("data-node-id");
+    if (!scopedNodeId) throw new Error("expected scoped node id");
+    const scopedByIdA = treeRowByNodeId(pageA, scopedNodeId);
+
+    const privacyToggleA = scopedByIdA.getByRole("button", { name: "Toggle node privacy" });
+    await privacyToggleA.click();
+    await expect(privacyToggleA).toHaveAttribute("aria-pressed", "true");
+
+    // Rename and immediately share via Open device. Share controls should wait until local write settles.
+    await scopedByIdA.getByRole("button", { name: "OLD-LABEL", exact: true }).click();
+    await scopedByIdA.getByRole("textbox").fill("NEW-LABEL");
+    await scopedByIdA.getByRole("button", { name: "Save", exact: true }).click();
+
+    await scopedByIdA.getByRole("button", { name: "Share subtree (invite)" }).click();
+    const textarea = pageA.getByPlaceholder("Invite link will appear here…");
+    await expect(textarea).toHaveValue(/invite=/, { timeout: 30_000 });
+
+    const [pageB] = await Promise.all([
+      pageA.waitForEvent("popup"),
+      pageA.getByRole("button", { name: "Open device", exact: true }).click(),
+    ]);
+
+    await pageB.bringToFront();
+    await expect(pageB.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
+
+    const scopedByIdB = treeRowByNodeId(pageB, scopedNodeId);
+    await expect(scopedByIdB.getByRole("button", { name: "NEW-LABEL", exact: true })).toBeVisible({
+      timeout: 60_000,
+    });
+  } finally {
+    await context.close();
+  }
+});
+
 test("open device does not create an extra unknown member entry", async ({ browser }) => {
   test.setTimeout(240_000);
 

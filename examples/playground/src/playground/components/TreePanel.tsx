@@ -338,6 +338,7 @@ export function TreePanel({
                   onTogglePrivateRoot={togglePrivateRoot}
                   peers={peers}
                   selfPeerId={selfPeerId}
+                  busy={busy}
                   authEnabled={authEnabled}
                   canManageCapabilities={canManageCapabilities}
                   authBusy={authBusy}

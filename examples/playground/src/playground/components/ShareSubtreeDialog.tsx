@@ -11,6 +11,7 @@ export type { InvitePreset } from "../invite";
 export type ShareSubtreeDialogProps = {
   open: boolean;
   onClose: () => void;
+  busy: boolean;
 
   inviteRoot: string;
   nodeLabelForId: (id: string) => string;
@@ -42,6 +43,7 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
   const {
     open,
     onClose,
+    busy,
     inviteRoot,
     nodeLabelForId,
     authEnabled,
@@ -100,7 +102,7 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
               className="mt-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-50 transition hover:border-amber-300/60"
               type="button"
               onClick={onEnableAuth}
-              disabled={authBusy}
+              disabled={authBusy || busy}
             >
               Enable Auth
             </button>
@@ -118,7 +120,7 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
               className="mt-2 rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-50 transition hover:border-sky-300/60"
               type="button"
               onClick={openMintingPeerTab}
-              disabled={typeof window === "undefined"}
+              disabled={typeof window === "undefined" || busy}
             >
               Open minting peer
             </button>
@@ -162,7 +164,7 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
               className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
               type="button"
               onClick={() => void openNewIsolatedPeerTab({ autoInvite: true, rootNodeId: inviteRoot })}
-              disabled={authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
+              disabled={busy || authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
               title={
                 authCanIssue || authCanDelegate
                   ? "Open an isolated device tab and auto-import the invite"
@@ -176,7 +178,7 @@ export function ShareSubtreeDialog(props: ShareSubtreeDialogProps) {
               className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
               type="button"
               onClick={() => void generateInviteLink({ rootNodeId: inviteRoot, copyToClipboard: true })}
-              disabled={authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
+              disabled={busy || authBusy || !authEnabled || !(authCanIssue || authCanDelegate)}
               title={
                 !authEnabled
                   ? "Enable Auth to mint invites"
