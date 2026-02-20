@@ -1,15 +1,11 @@
-import path from "node:path";
-import {
-  benchTiming,
-  buildWorkloads,
-  runWorkloads,
-} from "@treecrdt/benchmark";
-import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
-import { createWasmAdapter } from "../dist/index.js";
+import path from 'node:path';
+import { benchTiming, buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
+import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
+import { createWasmAdapter } from '../dist/index.js';
 
 async function main() {
   const opts = parseBenchCliArgs({
-    defaultWorkloads: ["insert-move", "insert-chain"] as const,
+    defaultWorkloads: ['insert-move', 'insert-chain'] as const,
   });
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
@@ -23,10 +19,11 @@ async function main() {
 
   const results = await runWorkloads(() => createWasmAdapter(), workloadDefs);
   for (const result of results) {
-    const outFile = opts.outFile ?? path.join(repoRoot, "benchmarks", "wasm", `${result.name}.json`);
+    const outFile =
+      opts.outFile ?? path.join(repoRoot, 'benchmarks', 'wasm', `${result.name}.json`);
     const payload = await writeResult(result, {
-      implementation: "wasm",
-      storage: "memory",
+      implementation: 'wasm',
+      storage: 'memory',
       workload: result.name,
       outFile,
       extra: { count: result.totalOps },

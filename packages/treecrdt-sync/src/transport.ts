@@ -13,8 +13,8 @@ export type WireCodec<Message, Wire> = {
 export type BroadcastChannelLike = {
   readonly name: string;
   postMessage(message: unknown): void;
-  addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
-  removeEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
+  addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+  removeEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
   close(): void;
 };
 
@@ -36,13 +36,15 @@ export function createBroadcastDuplex<Message>(
     debug?: boolean;
     log?: (line: string) => void;
     createChannel?: (name: string) => BroadcastChannelLike;
-  } = {}
+  } = {},
 ): DuplexTransport<Message> & { close: () => void } {
   const createChannel =
     opts.createChannel ??
     ((name) => {
-      const Ctor = (globalThis as any).BroadcastChannel as undefined | (new (name: string) => BroadcastChannelLike);
-      if (!Ctor) throw new Error("BroadcastChannel is not available in this environment");
+      const Ctor = (globalThis as any).BroadcastChannel as
+        | undefined
+        | (new (name: string) => BroadcastChannelLike);
+      if (!Ctor) throw new Error('BroadcastChannel is not available in this environment');
       return new Ctor(name);
     });
 
@@ -74,14 +76,14 @@ export function createBroadcastDuplex<Message>(
     onMessage(handler) {
       handlers.add(handler);
       if (!listening) {
-        incoming.addEventListener("message", onMessage);
+        incoming.addEventListener('message', onMessage);
         listening = true;
       }
 
       return () => {
         handlers.delete(handler);
         if (handlers.size === 0 && listening) {
-          incoming.removeEventListener("message", onMessage);
+          incoming.removeEventListener('message', onMessage);
           listening = false;
         }
       };
@@ -95,7 +97,7 @@ export function createBroadcastDuplex<Message>(
 
 export function wrapDuplexTransportWithCodec<Wire, Message>(
   transport: DuplexTransport<Wire>,
-  codec: WireCodec<Message, Wire>
+  codec: WireCodec<Message, Wire>,
 ): DuplexTransport<Message> {
   return {
     send: async (msg) => transport.send(codec.encode(msg)),

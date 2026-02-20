@@ -1,7 +1,7 @@
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest';
 
-import { createBroadcastPresenceMesh } from "../dist/presence.js";
-import type { BroadcastChannelLike, WireCodec } from "../dist/transport.js";
+import { createBroadcastPresenceMesh } from '../dist/presence.js';
+import type { BroadcastChannelLike, WireCodec } from '../dist/transport.js';
 
 type MessageListener = (event: { data: unknown }) => void;
 
@@ -38,13 +38,13 @@ class MockBroadcastBus {
 
   private shouldDropMessage(message: unknown, target: MockBroadcastChannel): boolean {
     if (!this.dropFirstAckAToB) return false;
-    if (!message || typeof message !== "object") return false;
+    if (!message || typeof message !== 'object') return false;
     const t = (message as any).t;
-    if (t !== "presence_ack") return false;
+    if (t !== 'presence_ack') return false;
     const peerId = (message as any).peer_id;
     const toPeerId = (message as any).to_peer_id;
-    if (peerId !== "a" || toPeerId !== "b") return false;
-    if (target.instanceId !== "b") return false;
+    if (peerId !== 'a' || toPeerId !== 'b') return false;
+    if (target.instanceId !== 'b') return false;
     this.dropFirstAckAToB = false;
     return true;
   }
@@ -59,25 +59,25 @@ class MockBroadcastChannel implements BroadcastChannelLike {
   constructor(
     private readonly bus: MockBroadcastBus,
     name: string,
-    instanceId: string
+    instanceId: string,
   ) {
     this.name = name;
     this.instanceId = instanceId;
   }
 
   postMessage(message: unknown): void {
-    if (this.closed) throw new Error("Channel is closed");
+    if (this.closed) throw new Error('Channel is closed');
     this.bus.post(this, message);
   }
 
-  addEventListener(type: "message", listener: MessageListener): void {
-    if (this.closed) throw new Error("Channel is closed");
-    if (type !== "message") return;
+  addEventListener(type: 'message', listener: MessageListener): void {
+    if (this.closed) throw new Error('Channel is closed');
+    if (type !== 'message') return;
     this.listeners.add(listener);
   }
 
-  removeEventListener(type: "message", listener: MessageListener): void {
-    if (type !== "message") return;
+  removeEventListener(type: 'message', listener: MessageListener): void {
+    if (type !== 'message') return;
     this.listeners.delete(listener);
   }
 
@@ -96,7 +96,7 @@ class MockBroadcastChannel implements BroadcastChannelLike {
 
 async function waitUntil(
   predicate: () => Promise<boolean> | boolean,
-  opts: { timeoutMs?: number; intervalMs?: number } = {}
+  opts: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 250;
   const intervalMs = opts.intervalMs ?? 5;
@@ -115,44 +115,44 @@ const noopCodec: WireCodec<unknown, Uint8Array> = {
   decode: () => ({}),
 };
 
-test("presence mesh retries ack delivery so peers become ready after missed ack", async () => {
+test('presence mesh retries ack delivery so peers become ready after missed ack', async () => {
   const bus = new MockBroadcastBus();
 
   let readyA = false;
   let readyB = false;
 
-  const channelA = bus.createChannel("presence", "a");
+  const channelA = bus.createChannel('presence', 'a');
   const meshA = createBroadcastPresenceMesh({
     channel: channelA,
-    selfId: "a",
+    selfId: 'a',
     codec: noopCodec,
     presenceIntervalMs: 10,
     pruneIntervalMs: 50,
     peerTimeoutMs: 200,
-    createChannel: (name) => bus.createChannel(name, "a"),
+    createChannel: (name) => bus.createChannel(name, 'a'),
     onPeerReady: (peerId) => {
-      if (peerId === "b") readyA = true;
+      if (peerId === 'b') readyA = true;
     },
   });
 
-  const channelB = bus.createChannel("presence", "b");
+  const channelB = bus.createChannel('presence', 'b');
   const meshB = createBroadcastPresenceMesh({
     channel: channelB,
-    selfId: "b",
+    selfId: 'b',
     codec: noopCodec,
     presenceIntervalMs: 10,
     pruneIntervalMs: 50,
     peerTimeoutMs: 200,
-    createChannel: (name) => bus.createChannel(name, "b"),
+    createChannel: (name) => bus.createChannel(name, 'b'),
     onPeerReady: (peerId) => {
-      if (peerId === "a") readyB = true;
+      if (peerId === 'a') readyB = true;
     },
   });
 
   try {
     await waitUntil(() => readyA && readyB, { timeoutMs: 500 });
-    expect(meshA.isPeerReady("b")).toBe(true);
-    expect(meshB.isPeerReady("a")).toBe(true);
+    expect(meshA.isPeerReady('b')).toBe(true);
+    expect(meshB.isPeerReady('a')).toBe(true);
   } finally {
     meshA.stop();
     meshB.stop();
@@ -160,4 +160,3 @@ test("presence mesh retries ack delivery so peers become ready after missed ack"
     channelB.close();
   }
 });
-

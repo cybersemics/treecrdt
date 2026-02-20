@@ -1,7 +1,12 @@
-import type { TreecrdtAdapter, SerializeNodeId, SerializeReplica, Operation } from "@treecrdt/interface";
-import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
-import { envInt, quantile } from "./stats.js";
-import type { WorkloadName } from "./workloads.js";
+import type {
+  TreecrdtAdapter,
+  SerializeNodeId,
+  SerializeReplica,
+  Operation,
+} from '@treecrdt/interface';
+import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import { envInt, quantile } from './stats.js';
+import type { WorkloadName } from './workloads.js';
 
 export type BenchmarkResult = {
   name: string;
@@ -35,7 +40,7 @@ function orderKeyFromPosition(position: number): Uint8Array {
 
 function replicaFromLabel(label: string): Uint8Array {
   const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error("label must not be empty");
+  if (encoded.length === 0) throw new Error('label must not be empty');
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
@@ -43,17 +48,19 @@ function replicaFromLabel(label: string): Uint8Array {
 
 export async function runBenchmark(
   adapterFactory: () => Promise<TreecrdtAdapter> | TreecrdtAdapter,
-  workload: BenchmarkWorkload
+  workload: BenchmarkWorkload,
 ): Promise<BenchmarkResult> {
   const totalOps = workload.totalOps ?? -1;
 
-  const envIterations = envInt("BENCH_ITERATIONS");
-  const envWarmup = envInt("BENCH_WARMUP");
+  const envIterations = envInt('BENCH_ITERATIONS');
+  const envWarmup = envInt('BENCH_WARMUP');
   const rawIterations = Math.max(1, workload.iterations ?? envIterations ?? 1);
-  const minIterationsForTiny =
-    totalOps >= 1 && totalOps <= 100 ? 10 : totalOps <= 1000 ? 7 : 1;
+  const minIterationsForTiny = totalOps >= 1 && totalOps <= 100 ? 10 : totalOps <= 1000 ? 7 : 1;
   const iterations = Math.max(minIterationsForTiny, rawIterations);
-  const warmupIterations = Math.max(0, workload.warmupIterations ?? envWarmup ?? (iterations > 1 ? 1 : 0));
+  const warmupIterations = Math.max(
+    0,
+    workload.warmupIterations ?? envWarmup ?? (iterations > 1 ? 1 : 0),
+  );
 
   const samplesMs: number[] = [];
   let lastExtra: Record<string, unknown> | undefined;
@@ -65,7 +72,8 @@ export async function runBenchmark(
       const start = performance.now();
       const runResult = await workload.run(adapter);
       const end = performance.now();
-      if (runResult && typeof runResult === "object" && runResult.extra) lastExtra = runResult.extra;
+      if (runResult && typeof runResult === 'object' && runResult.extra)
+        lastExtra = runResult.extra;
       if (workload.cleanup) await workload.cleanup();
       if (i >= warmupIterations) samplesMs.push(end - start);
     } finally {
@@ -109,9 +117,9 @@ export function makeInsertMoveWorkload(opts: {
 }): BenchmarkWorkload {
   const serializeNodeId = opts.serializeNodeId ?? defaultSerializeNodeId;
   const serializeReplica = opts.serializeReplica ?? defaultSerializeReplica;
-  const replica = opts.replica ?? replicaFromLabel("bench");
+  const replica = opts.replica ?? replicaFromLabel('bench');
 
-  const mkOp = (kind: Operation["kind"], counter: number, lamport: number): Operation => ({
+  const mkOp = (kind: Operation['kind'], counter: number, lamport: number): Operation => ({
     meta: { id: { replica, counter }, lamport },
     kind,
   });
@@ -123,22 +131,22 @@ export function makeInsertMoveWorkload(opts: {
       // Pre-build ops so we can batch when supported.
       const ops: Operation[] = [];
       for (let i = 0; i < opts.count; i++) {
-        const nodeHex = (i + 1).toString(16).padStart(32, "0");
-        const parentHex = "0".padStart(32, "0");
+        const nodeHex = (i + 1).toString(16).padStart(32, '0');
+        const parentHex = '0'.padStart(32, '0');
         const insert = mkOp(
-          { type: "insert", parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(i) },
+          { type: 'insert', parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(i) },
           i + 1,
-          i + 1
+          i + 1,
         );
         ops.push(insert);
       }
       for (let i = 0; i < opts.count; i++) {
-        const nodeHex = (i + 1).toString(16).padStart(32, "0");
-        const parentHex = "0".padStart(32, "0");
+        const nodeHex = (i + 1).toString(16).padStart(32, '0');
+        const parentHex = '0'.padStart(32, '0');
         const mv = mkOp(
-          { type: "move", node: nodeHex, newParent: parentHex, orderKey: orderKeyFromPosition(0) },
+          { type: 'move', node: nodeHex, newParent: parentHex, orderKey: orderKeyFromPosition(0) },
           opts.count + i + 1,
-          opts.count + i + 1
+          opts.count + i + 1,
         );
         ops.push(mv);
       }
@@ -151,7 +159,7 @@ export function makeInsertMoveWorkload(opts: {
         }
       }
       await adapter.opsSince(0);
-      return { extra: { mode: usedBatch ? "batch" : "sequential" } };
+      return { extra: { mode: usedBatch ? 'batch' : 'sequential' } };
     },
   };
 }
@@ -165,9 +173,9 @@ export function makeInsertChainWorkload(opts: {
 }): BenchmarkWorkload {
   const serializeNodeId = opts.serializeNodeId ?? defaultSerializeNodeId;
   const serializeReplica = opts.serializeReplica ?? defaultSerializeReplica;
-  const replica = opts.replica ?? replicaFromLabel("bench");
+  const replica = opts.replica ?? replicaFromLabel('bench');
 
-  const mkOp = (kind: Operation["kind"], counter: number, lamport: number): Operation => ({
+  const mkOp = (kind: Operation['kind'], counter: number, lamport: number): Operation => ({
     meta: { id: { replica, counter }, lamport },
     kind,
   });
@@ -176,14 +184,14 @@ export function makeInsertChainWorkload(opts: {
     name: `insert-chain-${opts.count}`,
     totalOps: opts.count,
     run: async (adapter) => {
-      let parentHex = "0".padStart(32, "0");
+      let parentHex = '0'.padStart(32, '0');
       const ops: Operation[] = [];
       for (let i = 0; i < opts.count; i++) {
-        const nodeHex = (i + 1).toString(16).padStart(32, "0");
+        const nodeHex = (i + 1).toString(16).padStart(32, '0');
         const insert = mkOp(
-          { type: "insert", parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(0) },
+          { type: 'insert', parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(0) },
           i + 1,
-          i + 1
+          i + 1,
         );
         ops.push(insert);
         parentHex = nodeHex;
@@ -197,7 +205,7 @@ export function makeInsertChainWorkload(opts: {
         }
       }
       await adapter.opsSince(0);
-      return { extra: { mode: usedBatch ? "batch" : "sequential" } };
+      return { extra: { mode: usedBatch ? 'batch' : 'sequential' } };
     },
   };
 }
@@ -211,21 +219,21 @@ export function makeReplayLogWorkload(opts: {
 }): BenchmarkWorkload {
   const serializeNodeId = opts.serializeNodeId ?? defaultSerializeNodeId;
   const serializeReplica = opts.serializeReplica ?? defaultSerializeReplica;
-  const replica = opts.replica ?? replicaFromLabel("bench");
+  const replica = opts.replica ?? replicaFromLabel('bench');
 
-  const mkOp = (kind: Operation["kind"], counter: number, lamport: number): Operation => ({
+  const mkOp = (kind: Operation['kind'], counter: number, lamport: number): Operation => ({
     meta: { id: { replica, counter }, lamport },
     kind,
   });
 
   const ops: Operation[] = [];
-  let parentHex = "0".padStart(32, "0");
+  let parentHex = '0'.padStart(32, '0');
   for (let i = 0; i < opts.count; i++) {
-    const nodeHex = (i + 1).toString(16).padStart(32, "0");
+    const nodeHex = (i + 1).toString(16).padStart(32, '0');
     const insert = mkOp(
-      { type: "insert", parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(0) },
+      { type: 'insert', parent: parentHex, node: nodeHex, orderKey: orderKeyFromPosition(0) },
       i + 1,
-      i + 1
+      i + 1,
     );
     ops.push(insert);
     parentHex = nodeHex;
@@ -244,14 +252,14 @@ export function makeReplayLogWorkload(opts: {
         }
       }
       await adapter.opsSince(0);
-      return { extra: { mode: usedBatch ? "batch" : "sequential" } };
+      return { extra: { mode: usedBatch ? 'batch' : 'sequential' } };
     },
   };
 }
 
 export function makeWorkload(name: WorkloadName, count: number): BenchmarkWorkload {
-  if (name === "insert-chain") return makeInsertChainWorkload({ count });
-  if (name === "replay-log") return makeReplayLogWorkload({ count });
+  if (name === 'insert-chain') return makeInsertChainWorkload({ count });
+  if (name === 'replay-log') return makeReplayLogWorkload({ count });
   return makeInsertMoveWorkload({ count });
 }
 
@@ -267,7 +275,7 @@ export function buildWorkloads(names: WorkloadName[], sizes: number[]): Benchmar
 
 export async function runWorkloads(
   adapterFactory: () => Promise<TreecrdtAdapter> | TreecrdtAdapter,
-  workloads: BenchmarkWorkload[]
+  workloads: BenchmarkWorkload[],
 ): Promise<BenchmarkResult[]> {
   const results: BenchmarkResult[] = [];
   for (const workload of workloads) {
@@ -277,7 +285,7 @@ export async function runWorkloads(
   return results;
 }
 
-export { DEFAULT_BENCH_SIZES, WORKLOAD_NAMES, type WorkloadName } from "./workloads.js";
-export { benchTiming } from "./timing.js";
-export * from "./sync.js";
-export * from "./stats.js";
+export { DEFAULT_BENCH_SIZES, WORKLOAD_NAMES, type WorkloadName } from './workloads.js';
+export { benchTiming } from './timing.js';
+export * from './sync.js';
+export * from './stats.js';

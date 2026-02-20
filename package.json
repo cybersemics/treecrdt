@@ -7,8 +7,10 @@
   ],
   "scripts": {
     "lint": "echo \"TODO: add linting\"",
-    "fmt": "cargo fmt --all",
-    "fmt:check": "cargo fmt --check --all",
+    "fmt:rust": "cargo fmt --all",
+    "fmt:ts": "prettier --write \"packages/**/*.{ts,tsx,cts,mts}\"",
+    "fmt:check:rust": "cargo fmt --check --all",
+    "fmt:check:ts": "prettier --check \"packages/**/*.{ts,tsx,cts,mts}\"",
     "clippy": "cargo clippy --workspace --all-targets -- -D warnings -D clippy::panic -D clippy::todo -D clippy::unimplemented",
     "clippy:fix": "cargo clippy --fix --workspace --all-targets -- -D warnings -D clippy::panic -D clippy::todo -D clippy::unimplemented",
     "proto:generate": "buf generate",
@@ -25,6 +27,7 @@
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.61.0",
-    "@bufbuild/protoc-gen-es": "^2.10.2"
+    "@bufbuild/protoc-gen-es": "^2.10.2",
+    "prettier": "^3.8.1"
   }
 }

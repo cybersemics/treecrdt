@@ -1,7 +1,12 @@
-import { ROOT_NODE_ID_HEX, TRASH_NODE_ID_HEX, bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
-import type { SqliteRunner } from "@treecrdt/interface/sqlite";
+import {
+  ROOT_NODE_ID_HEX,
+  TRASH_NODE_ID_HEX,
+  bytesToHex,
+  nodeIdToBytes16,
+} from '@treecrdt/interface/ids';
+import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
-import type { TreecrdtScopeEvaluator } from "./treecrdt-auth.js";
+import type { TreecrdtScopeEvaluator } from './treecrdt-auth.js';
 
 /**
  * Creates a subtree scope evaluator backed by the SQLite materialized tree state (`tree_nodes`).
@@ -26,7 +31,9 @@ import type { TreecrdtScopeEvaluator } from "./treecrdt-auth.js";
  * - Replace hop-by-hop queries with a single recursive CTE to walk ancestors.
  * - Add memoization / caching for repeated `(scope, node)` checks during a sync.
  */
-export function createTreecrdtSqliteSubtreeScopeEvaluator(runner: SqliteRunner): TreecrdtScopeEvaluator {
+export function createTreecrdtSqliteSubtreeScopeEvaluator(
+  runner: SqliteRunner,
+): TreecrdtScopeEvaluator {
   // Return a deterministic string so we can distinguish:
   // - missing row (no local context for that node) => "missing"
   // - NULL parent (chain end) => "null"
@@ -54,23 +61,23 @@ LEFT JOIN tree_nodes AS t ON t.node = ?1
     let distance = 0;
 
     for (let hops = 0; hops < maxHops; hops += 1) {
-      if (excludeHex.has(curHex)) return "deny";
+      if (excludeHex.has(curHex)) return 'deny';
       if (curHex === rootHex) {
-        if (maxDepth !== undefined && distance > maxDepth) return "deny";
-        return "allow";
+        if (maxDepth !== undefined && distance > maxDepth) return 'deny';
+        return 'allow';
       }
 
       // Treat the reserved ids as chain terminators even if they are not materialized.
-      if (curHex === ROOT_NODE_ID_HEX || curHex === TRASH_NODE_ID_HEX) return "deny";
+      if (curHex === ROOT_NODE_ID_HEX || curHex === TRASH_NODE_ID_HEX) return 'deny';
 
       // If we already traversed `maxDepth` edges without reaching `root`, the node cannot be within scope.
-      if (maxDepth !== undefined && distance >= maxDepth) return "deny";
+      if (maxDepth !== undefined && distance >= maxDepth) return 'deny';
 
       const parentHex = await runner.getText(parentSql, [curBytes]);
-      if (!parentHex) throw new Error("scope evaluator query returned empty result");
+      if (!parentHex) throw new Error('scope evaluator query returned empty result');
 
-      if (parentHex === "missing") return "unknown";
-      if (parentHex === "null") return "deny";
+      if (parentHex === 'missing') return 'unknown';
+      if (parentHex === 'null') return 'deny';
 
       // `tree_nodes.parent` is a NodeId (16 bytes).
       curBytes = nodeIdToBytes16(parentHex);
@@ -79,6 +86,6 @@ LEFT JOIN tree_nodes AS t ON t.node = ?1
     }
 
     // Defensive: cycles or extreme depth.
-    return "unknown";
+    return 'unknown';
   };
 }

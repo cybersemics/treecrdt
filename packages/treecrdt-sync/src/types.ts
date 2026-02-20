@@ -1,14 +1,12 @@
-import type { RibltCodeword16 } from "@treecrdt/riblt-wasm";
-import type { ErrorCode, RibltFailureReason } from "./gen/sync/v0/messages_pb.js";
+import type { RibltCodeword16 } from '@treecrdt/riblt-wasm';
+import type { ErrorCode, RibltFailureReason } from './gen/sync/v0/messages_pb.js';
 
-export { ErrorCode, RibltFailureReason } from "./gen/sync/v0/messages_pb.js";
+export { ErrorCode, RibltFailureReason } from './gen/sync/v0/messages_pb.js';
 
 export type Bytes = Uint8Array;
 export type OpRef = Bytes; // fixed-width (16 bytes in v0)
 
-export type Filter =
-  | { all: Record<string, never> }
-  | { children: { parent: Bytes } };
+export type Filter = { all: Record<string, never> } | { children: { parent: Bytes } };
 
 export type FilterSpec = {
   id: string;
@@ -59,9 +57,7 @@ export type RibltFailed = {
 export type RibltStatus = {
   filterId: string;
   round: number;
-  payload:
-    | { case: "decoded"; value: RibltDecoded }
-    | { case: "failed"; value: RibltFailed };
+  payload: { case: 'decoded'; value: RibltDecoded } | { case: 'failed'; value: RibltFailed };
 };
 
 export type OpAuth = {
@@ -69,7 +65,7 @@ export type OpAuth = {
   proofRef?: Bytes;
 };
 
-export type PendingOpReason = "missing_context";
+export type PendingOpReason = 'missing_context';
 
 export type PendingOp<Op> = {
   op: Op;
@@ -107,15 +103,15 @@ export type SyncError = {
 };
 
 export type SyncMessagePayload<Op> =
-  | { case: "hello"; value: Hello }
-  | { case: "helloAck"; value: HelloAck }
-  | { case: "ribltCodewords"; value: RibltCodewords }
-  | { case: "ribltStatus"; value: RibltStatus }
-  | { case: "opsBatch"; value: OpsBatch<Op> }
-  | { case: "subscribe"; value: Subscribe }
-  | { case: "subscribeAck"; value: SubscribeAck }
-  | { case: "unsubscribe"; value: Unsubscribe }
-  | { case: "error"; value: SyncError };
+  | { case: 'hello'; value: Hello }
+  | { case: 'helloAck'; value: HelloAck }
+  | { case: 'ribltCodewords'; value: RibltCodewords }
+  | { case: 'ribltStatus'; value: RibltStatus }
+  | { case: 'opsBatch'; value: OpsBatch<Op> }
+  | { case: 'subscribe'; value: Subscribe }
+  | { case: 'subscribeAck'; value: SubscribeAck }
+  | { case: 'unsubscribe'; value: Unsubscribe }
+  | { case: 'error'; value: SyncError };
 
 export type SyncMessage<Op> = {
   v: 0;

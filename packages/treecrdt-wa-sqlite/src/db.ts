@@ -1,4 +1,4 @@
-import type { Database } from "./index.js";
+import type { Database } from './index.js';
 
 export function makeDbAdapter(sqlite3: any, handle: number): Database {
   const prepare = async (sql: string) => {

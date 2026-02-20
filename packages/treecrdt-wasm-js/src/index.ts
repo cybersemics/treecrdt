@@ -1,26 +1,26 @@
-import type { Operation, TreecrdtAdapter } from "@treecrdt/interface";
-import { bytesToHex, hexToBytes, normalizeNodeId } from "@treecrdt/interface/ids";
-import { WasmTree } from "../pkg/treecrdt_wasm.js";
-import { createHash } from "node:crypto";
+import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
+import { bytesToHex, hexToBytes, normalizeNodeId } from '@treecrdt/interface/ids';
+import { WasmTree } from '../pkg/treecrdt_wasm.js';
+import { createHash } from 'node:crypto';
 
 type LoadOptions = {
   replicaHex?: string;
 };
 
 export async function createWasmAdapter(opts: LoadOptions = {}): Promise<TreecrdtAdapter> {
-  const tree = new WasmTree(opts.replicaHex ?? "7761736d"); // "wasm" in hex
-  let docId = "treecrdt";
+  const tree = new WasmTree(opts.replicaHex ?? '7761736d'); // "wasm" in hex
+  let docId = 'treecrdt';
 
   const allOps = (): JsOp[] => {
     const ops = tree.opsSince(0n);
     return Array.isArray(ops) ? (ops as JsOp[]) : [];
   };
 
-  const normalizeReplicaHex = (hex: string): string => hex.replace(/^0x/i, "").toLowerCase();
+  const normalizeReplicaHex = (hex: string): string => hex.replace(/^0x/i, '').toLowerCase();
 
   const opRefFor = (op: JsOp): Uint8Array => {
-    const h = createHash("sha256");
-    h.update("treecrdt/opref/wasm-adapter/v0");
+    const h = createHash('sha256');
+    h.update('treecrdt/opref/wasm-adapter/v0');
     h.update(docId);
     h.update(hexToBytes(normalizeReplicaHex(op.replica)));
     const counterBytes = new Uint8Array(8);
@@ -30,13 +30,15 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
   };
 
   const sortedOps = (): JsOp[] =>
-    allOps().slice().sort((a, b) => {
-      if (a.lamport !== b.lamport) return a.lamport - b.lamport;
-      const ar = normalizeReplicaHex(a.replica);
-      const br = normalizeReplicaHex(b.replica);
-      if (ar !== br) return ar < br ? -1 : 1;
-      return a.counter - b.counter;
-    });
+    allOps()
+      .slice()
+      .sort((a, b) => {
+        if (a.lamport !== b.lamport) return a.lamport - b.lamport;
+        const ar = normalizeReplicaHex(a.replica);
+        const br = normalizeReplicaHex(b.replica);
+        if (ar !== br) return ar < br ? -1 : 1;
+        return a.counter - b.counter;
+      });
 
   return {
     setDocId: (next) => {
@@ -47,8 +49,8 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     opRefsChildren: async (parent) => {
       const parentHex = bytesToHex(parent);
       const filtered = sortedOps().filter((op) => {
-        if (op.kind === "insert") return op.parent === parentHex;
-        if (op.kind === "move") return op.new_parent === parentHex;
+        if (op.kind === 'insert') return op.parent === parentHex;
+        if (op.kind === 'move') return op.new_parent === parentHex;
         return false;
       });
       return filtered.map((op) => Array.from(opRefFor(op)));
@@ -77,9 +79,9 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     },
     appendOp: async (op, serializeNodeId, serializeReplica) => {
       const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-      if (op.kind.type === "delete") {
+      if (op.kind.type === 'delete') {
         if (!op.meta.knownState || op.meta.knownState.length === 0) {
-          throw new Error("treecrdt: delete operations require meta.knownState");
+          throw new Error('treecrdt: delete operations require meta.knownState');
         }
         jsOp.known_state = Array.from(op.meta.knownState);
       }
@@ -88,9 +90,9 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
       for (const op of ops) {
         const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-        if (op.kind.type === "delete") {
+        if (op.kind.type === 'delete') {
           if (!op.meta.knownState || op.meta.knownState.length === 0) {
-            throw new Error("treecrdt: delete operations require meta.knownState");
+            throw new Error('treecrdt: delete operations require meta.knownState');
           }
           jsOp.known_state = Array.from(op.meta.knownState);
         }
@@ -127,7 +129,7 @@ function toHex(bytes: Uint8Array): string {
 function toJsOp(
   op: Operation,
   _serializeNodeId: (id: string) => Uint8Array,
-  serializeReplica: (replica: Operation["meta"]["id"]["replica"]) => Uint8Array
+  serializeReplica: (replica: Operation['meta']['id']['replica']) => Uint8Array,
 ): JsOp {
   const base = {
     replica: toHex(serializeReplica(op.meta.id.replica)),
@@ -136,42 +138,42 @@ function toJsOp(
   };
 
   switch (op.kind.type) {
-    case "insert":
+    case 'insert':
       return {
         ...base,
-        kind: "insert",
+        kind: 'insert',
         parent: normalizeNodeId(op.kind.parent),
         node: normalizeNodeId(op.kind.node),
         order_key: toHex(op.kind.orderKey),
       };
-    case "move":
+    case 'move':
       return {
         ...base,
-        kind: "move",
+        kind: 'move',
         node: normalizeNodeId(op.kind.node),
         new_parent: normalizeNodeId(op.kind.newParent),
         order_key: toHex(op.kind.orderKey),
       };
-    case "delete":
+    case 'delete':
       return {
         ...base,
-        kind: "delete",
+        kind: 'delete',
         node: normalizeNodeId(op.kind.node),
       };
-    case "tombstone":
+    case 'tombstone':
       return {
         ...base,
-        kind: "tombstone",
+        kind: 'tombstone',
         node: normalizeNodeId(op.kind.node),
       };
-    case "payload":
+    case 'payload':
       return {
         ...base,
-        kind: "payload",
+        kind: 'payload',
         node: normalizeNodeId(op.kind.node),
         payload: op.kind.payload === null ? null : toHex(op.kind.payload),
       };
     default:
-      throw new Error("unknown op kind");
+      throw new Error('unknown op kind');
   }
 }

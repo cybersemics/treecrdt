@@ -1,14 +1,14 @@
-import type { BroadcastChannelLike, DuplexTransport, WireCodec } from "./transport.js";
-import { createBroadcastDuplex } from "./transport.js";
+import type { BroadcastChannelLike, DuplexTransport, WireCodec } from './transport.js';
+import { createBroadcastDuplex } from './transport.js';
 
 export type BroadcastPresenceMessageV1 = {
-  t: "presence";
+  t: 'presence';
   peer_id: string;
   ts: number;
 };
 
 export type BroadcastPresenceAckMessageV1 = {
-  t: "presence_ack";
+  t: 'presence_ack';
   peer_id: string;
   to_peer_id: string;
   ts: number;
@@ -26,11 +26,11 @@ type Connection<M> = {
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
+  return Boolean(value) && typeof value === 'object';
 }
 
 function safePeerId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
+  if (typeof value !== 'string') return null;
   const clean = value.trim();
   if (!clean) return null;
   return clean;
@@ -83,7 +83,7 @@ export function createBroadcastPresenceMesh<M>(opts: {
 
   const sendPresenceAck = (toPeerId: string) => {
     const msg = {
-      t: "presence_ack",
+      t: 'presence_ack',
       peer_id: selfId,
       to_peer_id: toPeerId,
       ts: nowMs(),
@@ -117,7 +117,10 @@ export function createBroadcastPresenceMesh<M>(opts: {
     };
 
     const detach = opts.onPeerTransport?.(peerId, transport) ?? (() => {});
-    connections.set(peerId, { transport, detach: typeof detach === "function" ? detach : () => {} });
+    connections.set(peerId, {
+      transport,
+      detach: typeof detach === 'function' ? detach : () => {},
+    });
   };
 
   const disconnectPeer = (peerId: string) => {
@@ -145,9 +148,9 @@ export function createBroadcastPresenceMesh<M>(opts: {
     }
 
     const t = data.t;
-    if (t === "presence") {
+    if (t === 'presence') {
       const peerId = safePeerId(data.peer_id);
-      const ts = typeof data.ts === "number" ? data.ts : null;
+      const ts = typeof data.ts === 'number' ? data.ts : null;
       if (!peerId || peerId === selfId || ts === null) return;
 
       lastSeen.set(peerId, ts);
@@ -159,10 +162,10 @@ export function createBroadcastPresenceMesh<M>(opts: {
       return;
     }
 
-    if (t === "presence_ack") {
+    if (t === 'presence_ack') {
       const peerId = safePeerId(data.peer_id);
       const toPeerId = safePeerId(data.to_peer_id);
-      const ts = typeof data.ts === "number" ? data.ts : null;
+      const ts = typeof data.ts === 'number' ? data.ts : null;
       if (!peerId || peerId === selfId || !toPeerId || ts === null) return;
       if (toPeerId !== selfId) return;
 
@@ -180,11 +183,11 @@ export function createBroadcastPresenceMesh<M>(opts: {
     opts.onBroadcastMessage?.(data);
   };
 
-  channel.addEventListener("message", onBroadcast);
+  channel.addEventListener('message', onBroadcast);
 
   const sendPresence = () => {
     if (!isOnline()) return;
-    const msg: BroadcastPresenceMessageV1 = { t: "presence", peer_id: selfId, ts: nowMs() };
+    const msg: BroadcastPresenceMessageV1 = { t: 'presence', peer_id: selfId, ts: nowMs() };
     channel.postMessage(msg);
   };
 
@@ -228,7 +231,7 @@ export function createBroadcastPresenceMesh<M>(opts: {
     stop: () => {
       clearInterval(presenceTimer);
       clearInterval(pruneTimer);
-      channel.removeEventListener("message", onBroadcast);
+      channel.removeEventListener('message', onBroadcast);
 
       for (const [peerId, conn] of connections) {
         try {

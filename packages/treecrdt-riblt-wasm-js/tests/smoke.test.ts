@@ -1,6 +1,6 @@
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest';
 
-import { RibltDecoder16, RibltEncoder16 } from "../dist/index.js";
+import { RibltDecoder16, RibltEncoder16 } from '../dist/index.js';
 
 function u64be16(n: bigint): Uint8Array {
   const out = new Uint8Array(16);
@@ -20,7 +20,7 @@ function readU64be(bytes16: Uint8Array): bigint {
   return n;
 }
 
-test("riblt wasm: reconciles symmetric difference", () => {
+test('riblt wasm: reconciles symmetric difference', () => {
   const alice = [1n, 2n, 3n].map(u64be16);
   const bob = [1n, 3n, 4n].map(u64be16);
 
@@ -35,7 +35,7 @@ test("riblt wasm: reconciles symmetric difference", () => {
     steps += 1;
     dec.addCodeword(enc.nextCodeword());
     dec.tryDecode();
-    if (steps > 50) throw new Error("decode did not converge");
+    if (steps > 50) throw new Error('decode did not converge');
   } while (!dec.decoded());
 
   const remoteOnly = dec.remoteMissing() as Uint8Array[];

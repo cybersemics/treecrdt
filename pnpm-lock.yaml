@@ -14,6 +14,9 @@ importers:
       '@bufbuild/protoc-gen-es':
         specifier: ^2.10.2
         version: 2.10.2(@bufbuild/protobuf@2.10.2)
+      prettier:
+        specifier: ^3.8.1
+        version: 3.8.1
 
   examples/playground:
     dependencies:
@@ -1809,6 +1812,11 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
+  prettier@3.8.1:
+    resolution: {integrity: sha512-UOnG6LftzbdaHZcKoPFtOcCKztrQ57WkHDeRD9t/PTQtmT0NHSeWWepj6pS0z/N7+08BHFDQVUrfmfMRcZwbMg==}
+    engines: {node: '>=14'}
+    hasBin: true
+
   pretty-format@29.7.0:
     resolution: {integrity: sha512-Pdlw/oPxN+aXdmM9R00JVC9WVFoCLTKJvDVLgmJ+qAffBMxsV85l/Lu7sNx4zSzPyoL2euImuEwHhOXdEgNFZQ==}
     engines: {node: ^14.15.0 || ^16.10.0 || >=18.0.0}
@@ -3402,6 +3410,8 @@ snapshots:
       simple-get: 4.0.1
       tar-fs: 2.1.4
       tunnel-agent: 0.6.0
+
+  prettier@3.8.1: {}
 
   pretty-format@29.7.0:
     dependencies:

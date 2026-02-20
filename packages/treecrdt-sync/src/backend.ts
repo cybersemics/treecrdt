@@ -1,10 +1,10 @@
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex, hexToBytes } from "@treecrdt/interface/ids";
-import type { SqliteRunner } from "@treecrdt/interface/sqlite";
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex, hexToBytes } from '@treecrdt/interface/ids';
+import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
-import { deriveOpRefV0 } from "./opref.js";
-import { createTreecrdtSyncSqlitePendingOpsStore } from "./sqlite.js";
-import type { Filter, OpRef, SyncBackend } from "./types.js";
+import { deriveOpRefV0 } from './opref.js';
+import { createTreecrdtSyncSqlitePendingOpsStore } from './sqlite.js';
+import type { Filter, OpRef, SyncBackend } from './types.js';
 
 export type TreecrdtSyncBackendClient = {
   runner?: SqliteRunner;
@@ -29,7 +29,7 @@ async function maybeLoadNodePayloadWriterOpRef(opts: {
 }): Promise<Uint8Array | null> {
   // `tree_payload` is a derived table; ensure it is up-to-date before reading.
   try {
-    await opts.runner.getText("SELECT treecrdt_ensure_materialized()");
+    await opts.runner.getText('SELECT treecrdt_ensure_materialized()');
   } catch {
     // Best-effort. Some backends may not expose this UDF (non-SQLite); callers will ignore null.
   }
@@ -39,7 +39,7 @@ async function maybeLoadNodePayloadWriterOpRef(opts: {
     "SELECT json_object('replica', lower(hex(last_replica)), 'counter', CAST(last_counter AS TEXT)) \
      FROM tree_payload \
      WHERE node = ?1",
-    [opts.nodeBytes]
+    [opts.nodeBytes],
   );
   if (json) {
     let parsed: unknown;
@@ -49,10 +49,14 @@ async function maybeLoadNodePayloadWriterOpRef(opts: {
       // fall through to ops-table fallback
       parsed = null;
     }
-    if (parsed && typeof parsed === "object") {
+    if (parsed && typeof parsed === 'object') {
       const replicaHex = (parsed as any).replica;
       const counterText = (parsed as any).counter;
-      if (typeof replicaHex === "string" && typeof counterText === "string" && replicaHex.length > 0) {
+      if (
+        typeof replicaHex === 'string' &&
+        typeof counterText === 'string' &&
+        replicaHex.length > 0
+      ) {
         let counter: bigint;
         try {
           counter = BigInt(counterText);
@@ -80,9 +84,9 @@ async function maybeLoadNodePayloadWriterOpRef(opts: {
      WHERE node = ?1 AND op_ref IS NOT NULL AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
      ORDER BY lamport DESC, replica DESC, counter DESC \
      LIMIT 1",
-    [opts.nodeBytes]
+    [opts.nodeBytes],
   );
-  if (!opRefHex || typeof opRefHex !== "string") return null;
+  if (!opRefHex || typeof opRefHex !== 'string') return null;
   try {
     const opRef = hexToBytes(opRefHex);
     return opRef.length === 16 ? opRef : null;
@@ -97,11 +101,11 @@ export function createTreecrdtSyncBackendFromClient(
   opts: {
     enablePendingSidecar?: boolean;
     maxLamport?: () => Promise<bigint> | bigint;
-  } = {}
+  } = {},
 ): SyncBackend<Operation> {
   const pending = opts.enablePendingSidecar
     ? (() => {
-        if (!client.runner) throw new Error("enablePendingSidecar requires client.runner");
+        if (!client.runner) throw new Error('enablePendingSidecar requires client.runner');
         return createTreecrdtSyncSqlitePendingOpsStore({ runner: client.runner, docId });
       })()
     : null;
@@ -120,7 +124,7 @@ export function createTreecrdtSyncBackendFromClient(
       const max = ops.reduce((acc, op) => Math.max(acc, op.meta.lamport), 0);
       return BigInt(max);
     }
-    throw new Error("maxLamport: missing client.meta.headLamport and client.ops.all");
+    throw new Error('maxLamport: missing client.meta.headLamport and client.ops.all');
   };
 
   return {
@@ -129,7 +133,7 @@ export function createTreecrdtSyncBackendFromClient(
     maxLamport: async () => (opts.maxLamport ? await opts.maxLamport() : await defaultMaxLamport()),
 
     listOpRefs: async (filter: Filter) => {
-      if ("all" in filter) {
+      if ('all' in filter) {
         const refs = await client.opRefs.all();
         if (!pending) return refs;
         await ensurePendingReady();

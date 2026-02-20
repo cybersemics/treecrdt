@@ -1,7 +1,7 @@
 export function toNumber(val: unknown, field: string): number | undefined {
   if (val === undefined || val === null) return undefined;
-  if (typeof val === "number") return val;
-  if (typeof val === "bigint") {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'bigint') {
     if (val > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(`${field} too large`);
     return Number(val);
   }
@@ -17,7 +17,7 @@ export function getClaim(map: Map<unknown, unknown>, numKey: number, strKey: str
 }
 
 export function getField(obj: unknown, key: string): unknown {
-  if (!obj || typeof obj !== "object") return undefined;
+  if (!obj || typeof obj !== 'object') return undefined;
   if (obj instanceof Map) return mapGet(obj, key);
   return (obj as any)[key];
 }

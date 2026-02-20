@@ -1,5 +1,10 @@
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
+import type { Operation } from '@treecrdt/interface';
+import {
+  bytesToHex,
+  nodeIdToBytes16,
+  replicaIdToBytes,
+  ROOT_NODE_ID_HEX,
+} from '@treecrdt/interface/ids';
 
 import {
   deriveOpRefV0,
@@ -10,20 +15,24 @@ import {
   type OpAuth,
   type OpRef,
   type SyncAuth,
-} from "@treecrdt/sync";
+} from '@treecrdt/sync';
 
-import { base64urlDecode, base64urlEncode } from "../base64url.js";
-import { deriveTokenIdV1 } from "../cose.js";
+import { base64urlDecode, base64urlEncode } from '../base64url.js';
+import { deriveTokenIdV1 } from '../cose.js';
 import {
   createTreecrdtIdentityChainCapabilityV1,
   TREECRDT_IDENTITY_CHAIN_CAPABILITY,
   verifyTreecrdtIdentityChainCapabilityV1,
   type TreecrdtIdentityChainV1,
   type VerifiedTreecrdtIdentityChainV1,
-} from "../identity.js";
-import { deriveKeyIdV1, parseAndVerifyCapabilityToken, type CapabilityGrant } from "./capability.js";
-import { signTreecrdtOpV1, verifyTreecrdtOpV1 } from "./op-sig.js";
-import { getField } from "./claims.js";
+} from '../identity.js';
+import {
+  deriveKeyIdV1,
+  parseAndVerifyCapabilityToken,
+  type CapabilityGrant,
+} from './capability.js';
+import { signTreecrdtOpV1, verifyTreecrdtOpV1 } from './op-sig.js';
+import { getField } from './claims.js';
 import {
   capAllowsNode,
   capsAllowsNodeAccess,
@@ -33,7 +42,7 @@ import {
   triOr,
   type ScopeTri,
   type TreecrdtScopeEvaluator,
-} from "./scope.js";
+} from './scope.js';
 
 export type TreecrdtCoseCwtAuthOptions = {
   issuerPublicKeys: Uint8Array[];
@@ -103,7 +112,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const recordCapabilities = async (caps: Capability[], docId: string) => {
     for (const cap of caps) {
-      if (cap.name === "auth.capability") {
+      if (cap.name === 'auth.capability') {
         const tokenBytes = base64urlDecode(cap.value);
         await recordToken(tokenBytes, docId);
         continue;
@@ -111,7 +120,11 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
       if (cap.name === TREECRDT_IDENTITY_CHAIN_CAPABILITY && opts.onPeerIdentityChain) {
         try {
-          const chain = await verifyTreecrdtIdentityChainCapabilityV1({ capability: cap, docId, nowSec: now });
+          const chain = await verifyTreecrdtIdentityChainCapabilityV1({
+            capability: cap,
+            docId,
+            nowSec: now,
+          });
           opts.onPeerIdentityChain(chain);
         } catch {
           // Identity chains are optional and best-effort; ignore invalid entries.
@@ -121,7 +134,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   };
 
   const helloCaps = (): Capability[] => {
-    const caps = localTokens.map((t) => ({ name: "auth.capability", value: base64urlEncode(t) }));
+    const caps = localTokens.map((t) => ({ name: 'auth.capability', value: base64urlEncode(t) }));
     if (opts.localIdentityChain) {
       caps.push(createTreecrdtIdentityChainCapabilityV1(opts.localIdentityChain));
     }
@@ -146,12 +159,12 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         op: opts2.op,
         scopeEvaluator: opts.scopeEvaluator,
       });
-      if (scopeRes === "allow") return grant;
-      if (scopeRes === "unknown" && !bestUnknown) bestUnknown = grant;
+      if (scopeRes === 'allow') return grant;
+      if (scopeRes === 'unknown' && !bestUnknown) bestUnknown = grant;
     }
 
     if (bestUnknown) return bestUnknown;
-    throw new Error("capability does not allow op");
+    throw new Error('capability does not allow op');
   };
 
   return {
@@ -165,7 +178,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       await recordCapabilities(ack.capabilities, ctx.docId);
     },
     authorizeFilter: async (filter: Filter, ctx) => {
-      const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
+      const tokenCaps = ctx.capabilities.filter((c) => c.name === 'auth.capability');
       if (tokenCaps.length === 0) throw new Error('missing "auth.capability" token');
 
       const grants: CapabilityGrant[] = [];
@@ -178,28 +191,28 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             docId: ctx.docId,
             scopeEvaluator: opts.scopeEvaluator,
             nowSec: now(),
-          })
+          }),
         );
       }
 
-      const requiredActions = ["read_structure"];
+      const requiredActions = ['read_structure'];
       const node =
-        "all" in filter
+        'all' in filter
           ? nodeIdToBytes16(ROOT_NODE_ID_HEX)
-          : "children" in filter
+          : 'children' in filter
             ? filter.children.parent
             : (() => {
-                throw new Error("unsupported filter");
+                throw new Error('unsupported filter');
               })();
 
       // `filter(all)` is only safe for doc-wide scopes. If a token has any scope restrictions
       // (e.g. `max_depth`/`exclude` or a non-root `root`), allow it to use `children(parent)` instead.
-      if ("all" in filter) {
+      if ('all' in filter) {
         for (const grant of grants) {
           for (const cap of grant.caps) {
-            const res = getField(cap, "res");
-            if (!res || typeof res !== "object") continue;
-            if (getField(res, "doc_id") !== ctx.docId) continue;
+            const res = getField(cap, 'res');
+            if (!res || typeof res !== 'object') continue;
+            if (getField(res, 'doc_id') !== ctx.docId) continue;
 
             const scope = parseScope(res);
             if (!isDocWideScope(scope)) continue;
@@ -211,13 +224,13 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
               requiredActions,
               scopeEvaluator: opts.scopeEvaluator,
             });
-            if (tri === "allow") return;
+            if (tri === 'allow') return;
           }
         }
-        throw new Error("capability does not allow filter");
+        throw new Error('capability does not allow filter');
       }
 
-      let best: ScopeTri = "deny";
+      let best: ScopeTri = 'deny';
       for (const grant of grants) {
         best = triOr(
           best,
@@ -227,18 +240,18 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             node,
             requiredActions,
             scopeEvaluator: opts.scopeEvaluator,
-          })
+          }),
         );
-        if (best === "allow") return;
+        if (best === 'allow') return;
       }
 
-      if (best === "unknown") {
-        throw new Error("missing subtree context to authorize filter");
+      if (best === 'unknown') {
+        throw new Error('missing subtree context to authorize filter');
       }
-      throw new Error("capability does not allow filter");
+      throw new Error('capability does not allow filter');
     },
     filterOutgoingOps: async (ops, ctx) => {
-      const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
+      const tokenCaps = ctx.capabilities.filter((c) => c.name === 'auth.capability');
       if (tokenCaps.length === 0) return ops.map(() => true);
 
       const grants: CapabilityGrant[] = [];
@@ -251,17 +264,17 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             docId: ctx.docId,
             scopeEvaluator: opts.scopeEvaluator,
             nowSec: now(),
-          })
+          }),
         );
       }
 
       // Fast path: if the peer has any doc-wide read_structure capability, we don't need to filter.
-      const requiredStructure = ["read_structure"];
+      const requiredStructure = ['read_structure'];
       for (const grant of grants) {
         for (const cap of grant.caps) {
-          const res = getField(cap, "res");
-          if (!res || typeof res !== "object") continue;
-          if (getField(res, "doc_id") !== ctx.docId) continue;
+          const res = getField(cap, 'res');
+          if (!res || typeof res !== 'object') continue;
+          if (getField(res, 'doc_id') !== ctx.docId) continue;
 
           const scope = parseScope(res);
           if (!isDocWideScope(scope)) continue;
@@ -273,12 +286,15 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             requiredActions: requiredStructure,
             scopeEvaluator: opts.scopeEvaluator,
           });
-          if (tri === "allow") return ops.map(() => true);
+          if (tri === 'allow') return ops.map(() => true);
         }
       }
 
-      const allowNode = async (node: Uint8Array, requiredActions: readonly string[]): Promise<boolean> => {
-        let best: ScopeTri = "deny";
+      const allowNode = async (
+        node: Uint8Array,
+        requiredActions: readonly string[],
+      ): Promise<boolean> => {
+        let best: ScopeTri = 'deny';
         for (const grant of grants) {
           best = triOr(
             best,
@@ -288,9 +304,9 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
               node,
               requiredActions,
               scopeEvaluator: opts.scopeEvaluator,
-            })
+            }),
           );
-          if (best === "allow") return true;
+          if (best === 'allow') return true;
         }
         // Fail closed: if scope membership is unknown, do not reveal the op.
         return false;
@@ -301,11 +317,11 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         // For `children(parent)` we still need to hide ops for nodes outside scope
         // (e.g. excluded private roots) so peers cannot discover them by syncing the parent's children.
         switch (op.kind.type) {
-          case "insert":
-          case "payload":
-          case "move":
-          case "delete":
-          case "tombstone":
+          case 'insert':
+          case 'payload':
+          case 'move':
+          case 'delete':
+          case 'tombstone':
             out.push(await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure));
             break;
           default: {
@@ -347,7 +363,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         let proofRef: Uint8Array | undefined;
         if (localTokenIds.length > 0) {
           const byToken = grantsByKeyIdHex.get(localKeyIdHex);
-          if (!byToken || byToken.size === 0) throw new Error("auth enabled but no local capability tokens are recorded");
+          if (!byToken || byToken.size === 0)
+            throw new Error('auth enabled but no local capability tokens are recorded');
           const selected = await selectGrantForOp({
             docId: ctx.docId,
             op,
@@ -355,7 +372,11 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           });
           proofRef = selected.tokenId;
         }
-        const sig = await signTreecrdtOpV1({ docId: ctx.docId, op, privateKey: opts.localPrivateKey });
+        const sig = await signTreecrdtOpV1({
+          docId: ctx.docId,
+          op,
+          privateKey: opts.localPrivateKey,
+        });
         const entry: OpAuth = { sig, ...(proofRef ? { proofRef } : {}) };
         opAuthByOpRefHex.set(opRefHex, entry);
         out[i] = entry;
@@ -364,14 +385,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       if (missingOpRefs.length > 0) {
         const store = opts.opAuthStore;
         if (!store) {
-          throw new Error("missing op auth for non-local replica; cannot forward unsigned op");
+          throw new Error('missing op auth for non-local replica; cannot forward unsigned op');
         }
         await ensureOpAuthStoreReady();
         const listed = await store.getOpAuthByOpRefs(missingOpRefs);
         for (let j = 0; j < listed.length; j += 1) {
           const found = listed[j];
           if (!found) {
-            throw new Error("missing op auth for non-local replica; cannot forward unsigned op");
+            throw new Error('missing op auth for non-local replica; cannot forward unsigned op');
           }
           const opRefHex = bytesToHex(missingOpRefs[j]!);
           opAuthByOpRefHex.set(opRefHex, found);
@@ -385,10 +406,12 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       if (ops.length === 0) return;
       if (!auth) {
         if (allowUnsigned) return;
-        throw new Error("missing op auth");
+        throw new Error('missing op auth');
       }
 
-      const dispositions: Array<{ status: "allow" } | { status: "pending_context"; message?: string }> = [];
+      const dispositions: Array<
+        { status: 'allow' } | { status: 'pending_context'; message?: string }
+      > = [];
       const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
@@ -403,14 +426,19 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         let grant: CapabilityGrant;
 
         if (requireProofRef) {
-          if (!a.proofRef) throw new Error("missing proof_ref");
+          if (!a.proofRef) throw new Error('missing proof_ref');
           const g = byToken.get(bytesToHex(a.proofRef));
-          if (!g) throw new Error("proof_ref does not match known token");
+          if (!g) throw new Error('proof_ref does not match known token');
           grant = g;
         } else {
           const preferred = a.proofRef ? byToken.get(bytesToHex(a.proofRef)) : undefined;
           const orderedCandidates = preferred
-            ? [preferred, ...candidates.filter((c) => bytesToHex(c.tokenId) !== bytesToHex(preferred.tokenId))]
+            ? [
+                preferred,
+                ...candidates.filter(
+                  (c) => bytesToHex(c.tokenId) !== bytesToHex(preferred.tokenId),
+                ),
+              ]
             : candidates;
           grant = await selectGrantForOp({
             docId: ctx.docId,
@@ -420,12 +448,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         }
 
         if (bytesToHex(grant.publicKey) !== bytesToHex(replica)) {
-          throw new Error("author public key does not match op replica_id");
+          throw new Error('author public key does not match op replica_id');
         }
 
         const nowSec = now();
-        if (grant.exp !== undefined && nowSec > grant.exp) throw new Error("capability token expired");
-        if (grant.nbf !== undefined && nowSec < grant.nbf) throw new Error("capability token not yet valid");
+        if (grant.exp !== undefined && nowSec > grant.exp)
+          throw new Error('capability token expired');
+        if (grant.nbf !== undefined && nowSec < grant.nbf)
+          throw new Error('capability token not yet valid');
 
         const scopeRes = await capsAllowsOp({
           caps: grant.caps,
@@ -433,22 +463,30 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           op,
           scopeEvaluator: opts.scopeEvaluator,
         });
-        if (scopeRes === "deny") throw new Error("capability does not allow op");
+        if (scopeRes === 'deny') throw new Error('capability does not allow op');
 
-        const ok = await verifyTreecrdtOpV1({ docId: ctx.docId, op, signature: a.sig, publicKey: replica });
-        if (!ok) throw new Error("invalid op signature");
+        const ok = await verifyTreecrdtOpV1({
+          docId: ctx.docId,
+          op,
+          signature: a.sig,
+          publicKey: replica,
+        });
+        if (!ok) throw new Error('invalid op signature');
         const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
         opAuthByOpRefHex.set(bytesToHex(opRef), a);
         if (opts.opAuthStore) toPersist.push({ opRef, auth: a });
 
-        if (scopeRes === "unknown") {
-          dispositions.push({ status: "pending_context", message: "missing subtree context to authorize op" });
+        if (scopeRes === 'unknown') {
+          dispositions.push({
+            status: 'pending_context',
+            message: 'missing subtree context to authorize op',
+          });
         } else {
-          dispositions.push({ status: "allow" });
+          dispositions.push({ status: 'allow' });
         }
       }
 
-      if (dispositions.some((d) => d.status !== "allow")) {
+      if (dispositions.some((d) => d.status !== 'allow')) {
         if (opts.opAuthStore && toPersist.length > 0) {
           await ensureOpAuthStoreReady();
           await opts.opAuthStore.storeOpAuth(toPersist);

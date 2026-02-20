@@ -1,13 +1,13 @@
-import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
-import type { Operation } from "@treecrdt/interface";
+import { create, fromBinary, toBinary, type MessageInitShape } from '@bufbuild/protobuf';
+import type { Operation } from '@treecrdt/interface';
 import {
   nodeIdFromBytes16,
   nodeIdToBytes16 as nodeIdToBytes16Impl,
   replicaIdFromBytes,
   replicaIdToBytes,
-} from "@treecrdt/interface/ids";
+} from '@treecrdt/interface/ids';
 
-import type { WireCodec } from "./transport.js";
+import type { WireCodec } from './transport.js';
 import type {
   Bytes,
   Filter,
@@ -22,9 +22,9 @@ import type {
   SubscribeAck,
   SyncMessage,
   Unsubscribe,
-} from "./types.js";
+} from './types.js';
 
-import { SyncMessageSchema } from "./gen/sync/v0_pb.js";
+import { SyncMessageSchema } from './gen/sync/v0_pb.js';
 import {
   CapabilitySchema,
   FilterSpecSchema,
@@ -43,8 +43,12 @@ import {
   SubscribeSchema,
   SyncErrorSchema,
   UnsubscribeSchema,
-} from "./gen/sync/v0/messages_pb.js";
-import { ChildrenFilterSchema, FilterSchema, FullSyncFilterSchema } from "./gen/sync/v0/filters_pb.js";
+} from './gen/sync/v0/messages_pb.js';
+import {
+  ChildrenFilterSchema,
+  FilterSchema,
+  FullSyncFilterSchema,
+} from './gen/sync/v0/filters_pb.js';
 import {
   ClearPayloadSchema,
   DeleteOpSchema,
@@ -53,8 +57,14 @@ import {
   OperationSchema,
   PayloadOpSchema,
   TombstoneOpSchema,
-} from "./gen/sync/v0/ops_pb.js";
-import { NodeIdSchema, OpRefSchema, OperationIdSchema, OperationMetadataSchema, ReplicaIdSchema } from "./gen/sync/v0/types_pb.js";
+} from './gen/sync/v0/ops_pb.js';
+import {
+  NodeIdSchema,
+  OpRefSchema,
+  OperationIdSchema,
+  OperationMetadataSchema,
+  ReplicaIdSchema,
+} from './gen/sync/v0/types_pb.js';
 
 function u64ToNumber(v: bigint, field: string): number {
   if (v > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -64,7 +74,8 @@ function u64ToNumber(v: bigint, field: string): number {
 }
 
 function u64FromNumber(v: number, field: string): bigint {
-  if (!Number.isSafeInteger(v) || v < 0) throw new Error(`${field} must be a safe non-negative integer, got: ${v}`);
+  if (!Number.isSafeInteger(v) || v < 0)
+    throw new Error(`${field} must be a safe non-negative integer, got: ${v}`);
   return BigInt(v);
 }
 
@@ -77,44 +88,49 @@ function fromProtoOpRef(opRef: { bytes: Uint8Array }): OpRef {
 }
 
 function toProtoFilter(filter: Filter) {
-  if ("all" in filter) {
-    return create(FilterSchema, { kind: { case: "all", value: create(FullSyncFilterSchema, {}) } });
+  if ('all' in filter) {
+    return create(FilterSchema, { kind: { case: 'all', value: create(FullSyncFilterSchema, {}) } });
   }
   return create(FilterSchema, {
     kind: {
-      case: "children",
-      value: create(ChildrenFilterSchema, { parent: create(NodeIdSchema, { bytes: filter.children.parent }) }),
+      case: 'children',
+      value: create(ChildrenFilterSchema, {
+        parent: create(NodeIdSchema, { bytes: filter.children.parent }),
+      }),
     },
   });
 }
 
 function fromProtoFilter(filter: { kind: { case?: string; value?: any } }): Filter {
   switch (filter.kind.case) {
-    case "all":
+    case 'all':
       return { all: {} };
-    case "children": {
+    case 'children': {
       const parent = filter.kind.value?.parent?.bytes as Uint8Array | undefined;
-      if (!parent) throw new Error("Filter.children.parent missing");
+      if (!parent) throw new Error('Filter.children.parent missing');
       return { children: { parent } };
     }
     default:
-      throw new Error("Filter: missing kind");
+      throw new Error('Filter: missing kind');
   }
 }
 
 function toProtoHello(hello: Hello) {
   const capabilities = hello.capabilities.map((cap) => create(CapabilitySchema, cap));
   const filters = hello.filters.map((spec) =>
-    create(FilterSpecSchema, { id: spec.id, filter: toProtoFilter(spec.filter) })
+    create(FilterSpecSchema, { id: spec.id, filter: toProtoFilter(spec.filter) }),
   );
   return create(HelloSchema, { capabilities, filters, maxLamport: hello.maxLamport });
 }
 
 function fromProtoHello(hello: any): Hello {
   return {
-    capabilities: (hello.capabilities ?? []).map((cap: any) => ({ name: cap.name, value: cap.value })),
+    capabilities: (hello.capabilities ?? []).map((cap: any) => ({
+      name: cap.name,
+      value: cap.value,
+    })),
     filters: hello.filters.map((spec: any) => {
-      if (!spec.filter) throw new Error("Hello.FilterSpec missing filter");
+      if (!spec.filter) throw new Error('Hello.FilterSpec missing filter');
       return { id: spec.id, filter: fromProtoFilter(spec.filter) };
     }),
     maxLamport: hello.maxLamport,
@@ -128,8 +144,8 @@ function toProtoHelloAck(ack: HelloAck) {
     create(RejectedFilterSchema, {
       id: rej.id,
       reason: rej.reason,
-      message: rej.message ?? "",
-    })
+      message: rej.message ?? '',
+    }),
   );
 
   return create(HelloAckSchema, {
@@ -142,7 +158,10 @@ function toProtoHelloAck(ack: HelloAck) {
 
 function fromProtoHelloAck(ack: any): HelloAck {
   return {
-    capabilities: (ack.capabilities ?? []).map((cap: any) => ({ name: cap.name, value: cap.value })),
+    capabilities: (ack.capabilities ?? []).map((cap: any) => ({
+      name: cap.name,
+      value: cap.value,
+    })),
     acceptedFilters: ack.acceptedFilters,
     rejectedFilters: (ack.rejectedFilters ?? []).map((rej: any) => ({
       id: rej.id,
@@ -154,22 +173,22 @@ function fromProtoHelloAck(ack: any): HelloAck {
 }
 
 function toProtoOperation(op: Operation) {
-  if (op.kind.type === "delete") {
+  if (op.kind.type === 'delete') {
     if (!op.meta.knownState || op.meta.knownState.length === 0) {
-      throw new Error("Delete operations require meta.knownState");
+      throw new Error('Delete operations require meta.knownState');
     }
   }
   const meta = create(OperationMetadataSchema, {
     id: create(OperationIdSchema, {
       replica: create(ReplicaIdSchema, { bytes: replicaIdToBytes(op.meta.id.replica) }),
-      counter: u64FromNumber(op.meta.id.counter, "OperationId.counter"),
+      counter: u64FromNumber(op.meta.id.counter, 'OperationId.counter'),
     }),
-    lamport: u64FromNumber(op.meta.lamport, "OperationMetadata.lamport"),
+    lamport: u64FromNumber(op.meta.lamport, 'OperationMetadata.lamport'),
     knownState: op.meta.knownState ?? new Uint8Array(),
   });
 
   switch (op.kind.type) {
-    case "insert": {
+    case 'insert': {
       const insertOp = {
         parent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.parent) }),
         node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
@@ -180,16 +199,16 @@ function toProtoOperation(op: Operation) {
       return create(OperationSchema, {
         meta,
         kind: {
-          case: "insert",
+          case: 'insert',
           value: create(InsertOpSchema, insertOp),
         },
       });
     }
-    case "move":
+    case 'move':
       return create(OperationSchema, {
         meta,
         kind: {
-          case: "move",
+          case: 'move',
           value: create(MoveOpSchema, {
             node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
             newParent: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.newParent) }),
@@ -197,33 +216,37 @@ function toProtoOperation(op: Operation) {
           }),
         },
       });
-    case "delete":
+    case 'delete':
       return create(OperationSchema, {
         meta,
         kind: {
-          case: "delete",
-          value: create(DeleteOpSchema, { node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }) }),
+          case: 'delete',
+          value: create(DeleteOpSchema, {
+            node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
+          }),
         },
       });
-    case "tombstone":
+    case 'tombstone':
       return create(OperationSchema, {
         meta,
         kind: {
-          case: "tombstone",
-          value: create(TombstoneOpSchema, { node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }) }),
+          case: 'tombstone',
+          value: create(TombstoneOpSchema, {
+            node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
+          }),
         },
       });
-    case "payload":
+    case 'payload':
       return create(OperationSchema, {
         meta,
         kind: {
-          case: "payload",
+          case: 'payload',
           value: create(PayloadOpSchema, {
             node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
             value:
               op.kind.payload === null
-                ? { case: "clear", value: create(ClearPayloadSchema, {}) }
-                : { case: "payload", value: op.kind.payload },
+                ? { case: 'clear', value: create(ClearPayloadSchema, {}) }
+                : { case: 'payload', value: op.kind.payload },
           }),
         },
       });
@@ -238,31 +261,34 @@ function fromProtoOperation(op: any): Operation {
   const meta = op.meta;
   const id = meta?.id;
   const replica = id?.replica?.bytes as Uint8Array | undefined;
-  if (!replica) throw new Error("Operation.meta.id.replica missing");
+  if (!replica) throw new Error('Operation.meta.id.replica missing');
 
   const counter = id?.counter as bigint | undefined;
   const lamport = meta?.lamport as bigint | undefined;
-  if (counter === undefined) throw new Error("Operation.meta.id.counter missing");
-  if (lamport === undefined) throw new Error("Operation.meta.lamport missing");
+  if (counter === undefined) throw new Error('Operation.meta.id.counter missing');
+  if (lamport === undefined) throw new Error('Operation.meta.lamport missing');
 
   const knownState = (meta?.knownState as Uint8Array | undefined) ?? undefined;
   const outMeta = {
-    id: { replica: replicaIdFromBytes(replica), counter: u64ToNumber(counter, "OperationId.counter") },
-    lamport: u64ToNumber(lamport, "OperationMetadata.lamport"),
+    id: {
+      replica: replicaIdFromBytes(replica),
+      counter: u64ToNumber(counter, 'OperationId.counter'),
+    },
+    lamport: u64ToNumber(lamport, 'OperationMetadata.lamport'),
     ...(knownState && knownState.length > 0 ? { knownState } : {}),
   };
 
   switch (op.kind.case) {
-    case "insert": {
+    case 'insert': {
       const parentBytes = op.kind.value?.parent?.bytes as Uint8Array | undefined;
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
-      if (!parentBytes || !nodeBytes) throw new Error("InsertOp missing node ids");
+      if (!parentBytes || !nodeBytes) throw new Error('InsertOp missing node ids');
       const payloadBytes = op.kind.value?.payload as Uint8Array | undefined;
       const orderKey = (op.kind.value?.orderKey as Uint8Array | undefined) ?? new Uint8Array();
       return {
         meta: outMeta,
         kind: {
-          type: "insert",
+          type: 'insert',
           parent: nodeIdFromBytes16(parentBytes),
           node: nodeIdFromBytes16(nodeBytes),
           orderKey,
@@ -270,51 +296,57 @@ function fromProtoOperation(op: any): Operation {
         },
       };
     }
-    case "move": {
+    case 'move': {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
       const parentBytes = op.kind.value?.newParent?.bytes as Uint8Array | undefined;
-      if (!nodeBytes || !parentBytes) throw new Error("MoveOp missing node ids");
+      if (!nodeBytes || !parentBytes) throw new Error('MoveOp missing node ids');
       const orderKey = (op.kind.value?.orderKey as Uint8Array | undefined) ?? new Uint8Array();
       return {
         meta: outMeta,
         kind: {
-          type: "move",
+          type: 'move',
           node: nodeIdFromBytes16(nodeBytes),
           newParent: nodeIdFromBytes16(parentBytes),
           orderKey,
         },
       };
     }
-    case "delete": {
+    case 'delete': {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
-      if (!nodeBytes) throw new Error("DeleteOp missing node id");
+      if (!nodeBytes) throw new Error('DeleteOp missing node id');
       if (!knownState || knownState.length === 0) {
-        throw new Error("DeleteOp missing knownState");
+        throw new Error('DeleteOp missing knownState');
       }
-      return { meta: outMeta, kind: { type: "delete", node: nodeIdFromBytes16(nodeBytes) } };
+      return { meta: outMeta, kind: { type: 'delete', node: nodeIdFromBytes16(nodeBytes) } };
     }
-    case "tombstone": {
+    case 'tombstone': {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
-      if (!nodeBytes) throw new Error("TombstoneOp missing node id");
-      return { meta: outMeta, kind: { type: "tombstone", node: nodeIdFromBytes16(nodeBytes) } };
+      if (!nodeBytes) throw new Error('TombstoneOp missing node id');
+      return { meta: outMeta, kind: { type: 'tombstone', node: nodeIdFromBytes16(nodeBytes) } };
     }
-    case "payload": {
+    case 'payload': {
       const nodeBytes = op.kind.value?.node?.bytes as Uint8Array | undefined;
-      if (!nodeBytes) throw new Error("PayloadOp missing node id");
+      if (!nodeBytes) throw new Error('PayloadOp missing node id');
       const value = op.kind.value?.value as { case?: string; value?: any } | undefined;
-      if (!value || !value.case) throw new Error("PayloadOp missing value");
-      if (value.case === "clear") {
-        return { meta: outMeta, kind: { type: "payload", node: nodeIdFromBytes16(nodeBytes), payload: null } };
+      if (!value || !value.case) throw new Error('PayloadOp missing value');
+      if (value.case === 'clear') {
+        return {
+          meta: outMeta,
+          kind: { type: 'payload', node: nodeIdFromBytes16(nodeBytes), payload: null },
+        };
       }
-      if (value.case === "payload") {
+      if (value.case === 'payload') {
         const payload = value.value as Uint8Array | undefined;
-        if (!payload) throw new Error("PayloadOp missing payload bytes");
-        return { meta: outMeta, kind: { type: "payload", node: nodeIdFromBytes16(nodeBytes), payload } };
+        if (!payload) throw new Error('PayloadOp missing payload bytes');
+        return {
+          meta: outMeta,
+          kind: { type: 'payload', node: nodeIdFromBytes16(nodeBytes), payload },
+        };
       }
       throw new Error(`PayloadOp: unknown value case: ${String(value.case)}`);
     }
     default:
-      throw new Error("Operation: missing kind");
+      throw new Error('Operation: missing kind');
   }
 }
 
@@ -328,7 +360,7 @@ function toProtoOpAuth(auth: OpAuth) {
 function fromProtoOpAuth(auth: any): OpAuth {
   const sig = auth.sig as Uint8Array | undefined;
   const proofRef = auth.proofRef as Uint8Array | undefined;
-  if (!sig) throw new Error("OpAuth.sig missing");
+  if (!sig) throw new Error('OpAuth.sig missing');
   return {
     sig,
     ...(proofRef && proofRef.length > 0 ? { proofRef } : {}),
@@ -362,7 +394,7 @@ function toProtoSubscribe(sub: Subscribe) {
 }
 
 function fromProtoSubscribe(sub: any): Subscribe {
-  if (!sub.filter) throw new Error("Subscribe.filter missing");
+  if (!sub.filter) throw new Error('Subscribe.filter missing');
   return {
     subscriptionId: sub.subscriptionId,
     filter: fromProtoFilter(sub.filter),
@@ -397,7 +429,7 @@ function toProtoRibltCodewords(msg: RibltCodewords) {
     round: msg.round,
     startIndex: msg.startIndex,
     codewords: msg.codewords.map((cw) =>
-      create(RibltCodewordSchema, { count: cw.count, keySum: cw.keySum, valueSum: cw.valueSum })
+      create(RibltCodewordSchema, { count: cw.count, keySum: cw.keySum, valueSum: cw.valueSum }),
     ),
   });
 }
@@ -416,12 +448,12 @@ function fromProtoRibltCodewords(msg: any): RibltCodewords {
 }
 
 function toProtoRibltStatus(status: RibltStatus) {
-  if (status.payload.case === "decoded") {
+  if (status.payload.case === 'decoded') {
     return create(RibltStatusSchema, {
       filterId: status.filterId,
       round: status.round,
       payload: {
-        case: "decoded",
+        case: 'decoded',
         value: create(RibltDecodedSchema, {
           senderMissing: status.payload.value.senderMissing.map(toProtoOpRef),
           receiverMissing: status.payload.value.receiverMissing.map(toProtoOpRef),
@@ -435,23 +467,23 @@ function toProtoRibltStatus(status: RibltStatus) {
     filterId: status.filterId,
     round: status.round,
     payload: {
-      case: "failed",
+      case: 'failed',
       value: create(RibltFailedSchema, {
         reason: status.payload.value.reason,
-        message: status.payload.value.message ?? "",
+        message: status.payload.value.message ?? '',
       }),
     },
   });
 }
 
 function fromProtoRibltStatus(status: any): RibltStatus {
-  if (status.payload.case === "decoded") {
+  if (status.payload.case === 'decoded') {
     const decoded = status.payload.value;
     return {
       filterId: status.filterId,
       round: status.round,
       payload: {
-        case: "decoded",
+        case: 'decoded',
         value: {
           senderMissing: decoded.senderMissing.map(fromProtoOpRef),
           receiverMissing: decoded.receiverMissing.map(fromProtoOpRef),
@@ -460,13 +492,13 @@ function fromProtoRibltStatus(status: any): RibltStatus {
       },
     };
   }
-  if (status.payload.case === "failed") {
+  if (status.payload.case === 'failed') {
     const failed = status.payload.value;
     return {
       filterId: status.filterId,
       round: status.round,
       payload: {
-        case: "failed",
+        case: 'failed',
         value: {
           reason: failed.reason,
           message: failed.message?.length > 0 ? failed.message : undefined,
@@ -477,7 +509,7 @@ function fromProtoRibltStatus(status: any): RibltStatus {
   return {
     filterId: status.filterId,
     round: status.round,
-    payload: { case: "failed", value: { reason: RibltFailureReason.DECODE_FAILED } },
+    payload: { case: 'failed', value: { reason: RibltFailureReason.DECODE_FAILED } },
   };
 }
 
@@ -489,64 +521,81 @@ export function encodeTreecrdtSyncV0(msg: SyncMessage<Operation>): Uint8Array {
   const base = { v: 0, docId: msg.docId };
 
   switch (msg.payload.case) {
-    case "hello": {
-      const proto = create(SyncMessageSchema, { ...base, payload: { case: "hello", value: toProtoHello(msg.payload.value) } });
-      return toBinary(SyncMessageSchema, proto);
-    }
-    case "helloAck": {
+    case 'hello': {
       const proto = create(SyncMessageSchema, {
         ...base,
-        payload: { case: "helloAck", value: toProtoHelloAck(msg.payload.value) },
+        payload: { case: 'hello', value: toProtoHello(msg.payload.value) },
       });
       return toBinary(SyncMessageSchema, proto);
     }
-    case "ribltCodewords": {
+    case 'helloAck': {
       const proto = create(SyncMessageSchema, {
         ...base,
-        payload: { case: "ribltCodewords", value: toProtoRibltCodewords(msg.payload.value) },
+        payload: { case: 'helloAck', value: toProtoHelloAck(msg.payload.value) },
       });
       return toBinary(SyncMessageSchema, proto);
     }
-    case "ribltStatus": {
+    case 'ribltCodewords': {
       const proto = create(SyncMessageSchema, {
         ...base,
-        payload: { case: "ribltStatus", value: toProtoRibltStatus(msg.payload.value) },
+        payload: { case: 'ribltCodewords', value: toProtoRibltCodewords(msg.payload.value) },
       });
       return toBinary(SyncMessageSchema, proto);
     }
-    case "opsBatch": {
-      const proto = create(SyncMessageSchema, { ...base, payload: { case: "opsBatch", value: toProtoOpsBatch(msg.payload.value) } });
-      return toBinary(SyncMessageSchema, proto);
-    }
-    case "subscribe": {
-      const proto = create(SyncMessageSchema, { ...base, payload: { case: "subscribe", value: toProtoSubscribe(msg.payload.value) } });
-      return toBinary(SyncMessageSchema, proto);
-    }
-    case "subscribeAck": {
+    case 'ribltStatus': {
       const proto = create(SyncMessageSchema, {
         ...base,
-        payload: { case: "subscribeAck", value: toProtoSubscribeAck(msg.payload.value) },
+        payload: { case: 'ribltStatus', value: toProtoRibltStatus(msg.payload.value) },
       });
       return toBinary(SyncMessageSchema, proto);
     }
-    case "unsubscribe": {
-      const proto = create(SyncMessageSchema, { ...base, payload: { case: "unsubscribe", value: toProtoUnsubscribe(msg.payload.value) } });
+    case 'opsBatch': {
+      const proto = create(SyncMessageSchema, {
+        ...base,
+        payload: { case: 'opsBatch', value: toProtoOpsBatch(msg.payload.value) },
+      });
       return toBinary(SyncMessageSchema, proto);
     }
-    case "error": {
+    case 'subscribe': {
+      const proto = create(SyncMessageSchema, {
+        ...base,
+        payload: { case: 'subscribe', value: toProtoSubscribe(msg.payload.value) },
+      });
+      return toBinary(SyncMessageSchema, proto);
+    }
+    case 'subscribeAck': {
+      const proto = create(SyncMessageSchema, {
+        ...base,
+        payload: { case: 'subscribeAck', value: toProtoSubscribeAck(msg.payload.value) },
+      });
+      return toBinary(SyncMessageSchema, proto);
+    }
+    case 'unsubscribe': {
+      const proto = create(SyncMessageSchema, {
+        ...base,
+        payload: { case: 'unsubscribe', value: toProtoUnsubscribe(msg.payload.value) },
+      });
+      return toBinary(SyncMessageSchema, proto);
+    }
+    case 'error': {
       const err = msg.payload.value;
       const protoErr = create(SyncErrorSchema, {
         code: err.code,
         message: err.message,
-        filterId: err.filterId ?? "",
-        subscriptionId: err.subscriptionId ?? "",
+        filterId: err.filterId ?? '',
+        subscriptionId: err.subscriptionId ?? '',
       });
-      const proto = create(SyncMessageSchema, { ...base, payload: { case: "error", value: protoErr } });
+      const proto = create(SyncMessageSchema, {
+        ...base,
+        payload: { case: 'error', value: protoErr },
+      });
       return toBinary(SyncMessageSchema, proto);
     }
     default: {
       const _exhaustive: never = msg.payload;
-      throw new Error(`encodeTreecrdtSyncV0: unsupported payload: ${String((_exhaustive as any)?.case)}`);
+      throw new Error(
+        `encodeTreecrdtSyncV0: unsupported payload: ${String((_exhaustive as any)?.case)}`,
+      );
     }
   }
 }
@@ -559,28 +608,49 @@ export function decodeTreecrdtSyncV0(bytes: Uint8Array): SyncMessage<Operation> 
   const base = { v: 0 as const, docId: msg.docId } as const;
 
   switch (msg.payload.case) {
-    case "hello":
-      return { ...base, payload: { case: "hello", value: fromProtoHello(msg.payload.value) } };
-    case "helloAck":
-      return { ...base, payload: { case: "helloAck", value: fromProtoHelloAck(msg.payload.value) } };
-    case "ribltCodewords":
-      return { ...base, payload: { case: "ribltCodewords", value: fromProtoRibltCodewords(msg.payload.value) } };
-    case "ribltStatus":
-      return { ...base, payload: { case: "ribltStatus", value: fromProtoRibltStatus(msg.payload.value) } };
-    case "opsBatch":
-      return { ...base, payload: { case: "opsBatch", value: fromProtoOpsBatch(msg.payload.value) } };
-    case "subscribe":
-      return { ...base, payload: { case: "subscribe", value: fromProtoSubscribe(msg.payload.value) } };
-    case "subscribeAck":
-      return { ...base, payload: { case: "subscribeAck", value: fromProtoSubscribeAck(msg.payload.value) } };
-    case "unsubscribe":
-      return { ...base, payload: { case: "unsubscribe", value: fromProtoUnsubscribe(msg.payload.value) } };
-    case "error": {
+    case 'hello':
+      return { ...base, payload: { case: 'hello', value: fromProtoHello(msg.payload.value) } };
+    case 'helloAck':
+      return {
+        ...base,
+        payload: { case: 'helloAck', value: fromProtoHelloAck(msg.payload.value) },
+      };
+    case 'ribltCodewords':
+      return {
+        ...base,
+        payload: { case: 'ribltCodewords', value: fromProtoRibltCodewords(msg.payload.value) },
+      };
+    case 'ribltStatus':
+      return {
+        ...base,
+        payload: { case: 'ribltStatus', value: fromProtoRibltStatus(msg.payload.value) },
+      };
+    case 'opsBatch':
+      return {
+        ...base,
+        payload: { case: 'opsBatch', value: fromProtoOpsBatch(msg.payload.value) },
+      };
+    case 'subscribe':
+      return {
+        ...base,
+        payload: { case: 'subscribe', value: fromProtoSubscribe(msg.payload.value) },
+      };
+    case 'subscribeAck':
+      return {
+        ...base,
+        payload: { case: 'subscribeAck', value: fromProtoSubscribeAck(msg.payload.value) },
+      };
+    case 'unsubscribe':
+      return {
+        ...base,
+        payload: { case: 'unsubscribe', value: fromProtoUnsubscribe(msg.payload.value) },
+      };
+    case 'error': {
       const err = msg.payload.value;
       return {
         ...base,
         payload: {
-          case: "error",
+          case: 'error',
           value: {
             code: err.code,
             message: err.message,

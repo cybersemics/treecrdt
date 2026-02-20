@@ -1,23 +1,26 @@
 /// <reference lib="webworker" />
 
-import { buildWorkloads, runWorkloads, type BenchmarkResult, type WorkloadName } from "@treecrdt/benchmark";
-import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
-import type { TreecrdtAdapter } from "@treecrdt/interface";
-import { bytesToHex } from "@treecrdt/interface/ids";
+import {
+  buildWorkloads,
+  runWorkloads,
+  type BenchmarkResult,
+  type WorkloadName,
+} from '@treecrdt/benchmark';
+import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import type { TreecrdtAdapter } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
 
-type StorageKind = "browser-opfs-coop-sync" | "browser-memory";
+type StorageKind = 'browser-opfs-coop-sync' | 'browser-memory';
 
 type WorkerRequest = {
-  type: "run";
+  type: 'run';
   storage?: StorageKind;
   sizes?: number[];
   workloads?: WorkloadName[];
   baseUrl?: string;
 };
 
-type WorkerResponse =
-  | { ok: true; results: BenchPayload[] }
-  | { ok: false; error: string };
+type WorkerResponse = { ok: true; results: BenchPayload[] } | { ok: false; error: string };
 
 type BenchPayload = BenchmarkResult & {
   implementation: string;
@@ -27,22 +30,29 @@ type BenchPayload = BenchmarkResult & {
 };
 
 const defaultSizes = [100, 1_000];
-const defaultWorkloads: WorkloadName[] = ["insert-move", "insert-chain", "replay-log"];
+const defaultWorkloads: WorkloadName[] = ['insert-move', 'insert-chain', 'replay-log'];
 
 async function createAdapter(
   storage: StorageKind,
-  baseUrl?: string
+  baseUrl?: string,
 ): Promise<TreecrdtAdapter & { close: () => Promise<void> }> {
-  const clientStorage = storage === "browser-opfs-coop-sync" ? "opfs" : "memory";
+  const clientStorage = storage === 'browser-opfs-coop-sync' ? 'opfs' : 'memory';
   let client: TreecrdtClient | null = null;
   const effectiveBase =
     baseUrl ??
-    (typeof self !== "undefined" && "location" in self ? new URL("/", (self as any).location.href).href : "/");
-  const filename = clientStorage === "opfs" ? `/bench-${crypto.randomUUID()}.db` : undefined;
+    (typeof self !== 'undefined' && 'location' in self
+      ? new URL('/', (self as any).location.href).href
+      : '/');
+  const filename = clientStorage === 'opfs' ? `/bench-${crypto.randomUUID()}.db` : undefined;
   const docId = `bench-${crypto.randomUUID()}`;
   try {
     console.info(`[opfs-worker] creating client storage=${clientStorage} base=${effectiveBase}`);
-    client = await createTreecrdtClient({ storage: clientStorage, baseUrl: effectiveBase, filename, docId });
+    client = await createTreecrdtClient({
+      storage: clientStorage,
+      baseUrl: effectiveBase,
+      filename,
+      docId,
+    });
     // sanity check to ensure DB is valid
     await client.ops.all();
   } catch (err) {
@@ -53,17 +63,19 @@ async function createAdapter(
     console.error(`createAdapter failed (${clientStorage}) base=${effectiveBase}:`, err);
     throw new Error(
       JSON.stringify({
-        where: "createAdapter",
+        where: 'createAdapter',
         storage: clientStorage,
         base: effectiveBase,
         message: reason,
-      })
+      }),
     );
   }
   return {
     setDocId: async (nextDocId) => {
       if (nextDocId !== client.docId) {
-        throw new Error(`docId is fixed at client creation (expected ${client.docId}, got ${nextDocId})`);
+        throw new Error(
+          `docId is fixed at client creation (expected ${client.docId}, got ${nextDocId})`,
+        );
       }
     },
     docId: async () => client.docId,
@@ -90,8 +102,11 @@ async function createAdapter(
       await client.ops.appendMany(
         ops.map((op) => ({
           ...op,
-          meta: { ...op.meta, id: { replica: serializeReplica(op.meta.id.replica), counter: op.meta.id.counter } },
-        }))
+          meta: {
+            ...op.meta,
+            id: { replica: serializeReplica(op.meta.id.replica), counter: op.meta.id.counter },
+          },
+        })),
       );
     },
     opsSince: async (lamport, root) => client.ops.since(lamport, root),
@@ -103,7 +118,7 @@ async function runWaSqliteBenchInWorker(
   storage: StorageKind,
   baseUrl: string | undefined,
   sizes: number[] = defaultSizes,
-  workloads: WorkloadName[] = defaultWorkloads
+  workloads: WorkloadName[] = defaultWorkloads,
 ): Promise<BenchPayload[]> {
   const workloadDefs = buildWorkloads(workloads, sizes);
   const results: BenchPayload[] = [];
@@ -117,10 +132,10 @@ async function runWaSqliteBenchInWorker(
     const mergedExtra =
       result.extra && workload.totalOps
         ? { ...result.extra, count: workload.totalOps }
-        : result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined);
+        : (result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined));
     results.push({
       ...result,
-      implementation: "wa-sqlite",
+      implementation: 'wa-sqlite',
       storage,
       workload: workload.name,
       extra: mergedExtra,
@@ -132,15 +147,23 @@ async function runWaSqliteBenchInWorker(
 }
 
 self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
-  if (ev.data?.type !== "run") return;
-  const storage: StorageKind = ev.data.storage ?? "browser-opfs-coop-sync";
+  if (ev.data?.type !== 'run') return;
+  const storage: StorageKind = ev.data.storage ?? 'browser-opfs-coop-sync';
   try {
-    const results = await runWaSqliteBenchInWorker(storage, ev.data.baseUrl, ev.data.sizes, ev.data.workloads);
+    const results = await runWaSqliteBenchInWorker(
+      storage,
+      ev.data.baseUrl,
+      ev.data.sizes,
+      ev.data.workloads,
+    );
     const response: WorkerResponse = { ok: true, results };
     self.postMessage(response);
   } catch (err) {
-    console.error("[opfs-worker] bench failed", err);
-    const response: WorkerResponse = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    console.error('[opfs-worker] bench failed', err);
+    const response: WorkerResponse = {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
     self.postMessage(response);
   }
 };

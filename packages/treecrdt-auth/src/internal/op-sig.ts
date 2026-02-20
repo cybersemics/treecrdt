@@ -1,12 +1,12 @@
-import { utf8ToBytes } from "@noble/hashes/utils";
+import { utf8ToBytes } from '@noble/hashes/utils';
 
-import type { Operation } from "@treecrdt/interface";
-import { nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { Operation } from '@treecrdt/interface';
+import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 
-import { signEd25519, verifyEd25519 } from "../ed25519.js";
-import { concatBytes, u32be, u64be, u8 } from "./bytes.js";
+import { signEd25519, verifyEd25519 } from '../ed25519.js';
+import { concatBytes, u32be, u64be, u8 } from './bytes.js';
 
-const OP_SIG_V1_DOMAIN = utf8ToBytes("treecrdt/op-sig/v1");
+const OP_SIG_V1_DOMAIN = utf8ToBytes('treecrdt/op-sig/v1');
 
 export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation }): Uint8Array {
   const docIdBytes = utf8ToBytes(opts.docId);
@@ -19,7 +19,7 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
   let kindFields: Uint8Array;
 
   switch (opts.op.kind.type) {
-    case "insert": {
+    case 'insert': {
       kindTag = 1;
       const parent = nodeIdToBytes16(opts.op.kind.parent);
       const node = nodeIdToBytes16(opts.op.kind.node);
@@ -27,13 +27,21 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
       const orderKeyLen = u32be(orderKey.length);
       const payload = opts.op.kind.payload;
       if (payload) {
-        kindFields = concatBytes(parent, node, orderKeyLen, orderKey, u8(1), u32be(payload.length), payload);
+        kindFields = concatBytes(
+          parent,
+          node,
+          orderKeyLen,
+          orderKey,
+          u8(1),
+          u32be(payload.length),
+          payload,
+        );
       } else {
         kindFields = concatBytes(parent, node, orderKeyLen, orderKey, u8(0));
       }
       break;
     }
-    case "move": {
+    case 'move': {
       kindTag = 2;
       const node = nodeIdToBytes16(opts.op.kind.node);
       const newParent = nodeIdToBytes16(opts.op.kind.newParent);
@@ -42,19 +50,19 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
       kindFields = concatBytes(node, newParent, orderKeyLen, orderKey);
       break;
     }
-    case "delete": {
+    case 'delete': {
       kindTag = 3;
       const node = nodeIdToBytes16(opts.op.kind.node);
       kindFields = node;
       break;
     }
-    case "tombstone": {
+    case 'tombstone': {
       kindTag = 4;
       const node = nodeIdToBytes16(opts.op.kind.node);
       kindFields = node;
       break;
     }
-    case "payload": {
+    case 'payload': {
       kindTag = 5;
       const node = nodeIdToBytes16(opts.op.kind.node);
       const payload = opts.op.kind.payload;
@@ -81,11 +89,15 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
     u64be(counter),
     u64be(lamport),
     u8(kindTag),
-    kindFields
+    kindFields,
   );
 }
 
-export async function signTreecrdtOpV1(opts: { docId: string; op: Operation; privateKey: Uint8Array }): Promise<Uint8Array> {
+export async function signTreecrdtOpV1(opts: {
+  docId: string;
+  op: Operation;
+  privateKey: Uint8Array;
+}): Promise<Uint8Array> {
   const msg = encodeTreecrdtOpSigInputV1({ docId: opts.docId, op: opts.op });
   return signEd25519(msg, opts.privateKey);
 }
@@ -99,4 +111,3 @@ export async function verifyTreecrdtOpV1(opts: {
   const msg = encodeTreecrdtOpSigInputV1({ docId: opts.docId, op: opts.op });
   return await verifyEd25519(opts.signature, msg, opts.publicKey);
 }
-
