@@ -139,6 +139,8 @@ export type CapabilityGrant = {
   tokenId: Uint8Array;
   keyId: Uint8Array;
   publicKey: Uint8Array;
+  // Raw decoded `caps` claim payload from CWT.
+  // Kept as unknown here and normalized/validated at the edge where a v1 view is required.
   caps: unknown[];
   exp?: number;
   nbf?: number;
@@ -153,21 +155,39 @@ export type TreecrdtCapabilityRevocationCheckContext = {
 };
 
 export type TreecrdtCapabilityRevocationOptions = {
-  revokedCapabilityTokenIds?: Uint8Array[];
+  revokedCapabilityTokenIds?: readonly Uint8Array[];
   isCapabilityTokenRevoked?: (
     ctx: TreecrdtCapabilityRevocationCheckContext
   ) => boolean | Promise<boolean>;
 };
 
-const MAX_DELEGATION_PROOF_CHAIN = 8;
-
-export async function parseAndVerifyCapabilityToken(opts: {
+type ParseAndVerifyCapabilityTokenOptions = {
   tokenBytes: Uint8Array;
-  issuerPublicKeys: Uint8Array[];
+  issuerPublicKeys: readonly Uint8Array[];
   docId: string;
   nowSec: number;
   scopeEvaluator?: TreecrdtScopeEvaluator;
-} & TreecrdtCapabilityRevocationOptions): Promise<CapabilityGrant> {
+} & TreecrdtCapabilityRevocationOptions;
+
+type ParseAndVerifyCapabilityTokenDepthOptions = {
+  tokenBytes: Uint8Array;
+  issuerPublicKeys: readonly Uint8Array[];
+  docId: string;
+  nowSec: number;
+  scopeEvaluator?: TreecrdtScopeEvaluator;
+  isCapabilityTokenRevoked?: (
+    ctx: TreecrdtCapabilityRevocationCheckContext
+  ) => boolean | Promise<boolean>;
+  depth: number;
+  seenTokenIds: Set<string>;
+  revokedTokenIdHexes?: ReadonlySet<string>;
+};
+
+const MAX_DELEGATION_PROOF_CHAIN = 8;
+
+export async function parseAndVerifyCapabilityToken(
+  opts: ParseAndVerifyCapabilityTokenOptions
+): Promise<CapabilityGrant> {
   const seenTokenIds = new Set<string>();
   const revokedTokenIdHexes = opts.revokedCapabilityTokenIds
     ? new Set(opts.revokedCapabilityTokenIds.map((id) => bytesToHex(id)))
@@ -180,19 +200,9 @@ export async function parseAndVerifyCapabilityToken(opts: {
   });
 }
 
-async function parseAndVerifyCapabilityTokenDepth(opts: {
-  tokenBytes: Uint8Array;
-  issuerPublicKeys: Uint8Array[];
-  docId: string;
-  nowSec: number;
-  scopeEvaluator?: TreecrdtScopeEvaluator;
-  isCapabilityTokenRevoked?: (
-    ctx: TreecrdtCapabilityRevocationCheckContext
-  ) => boolean | Promise<boolean>;
-  depth: number;
-  seenTokenIds: Set<string>;
-  revokedTokenIdHexes?: Set<string>;
-}): Promise<CapabilityGrant> {
+async function parseAndVerifyCapabilityTokenDepth(
+  opts: ParseAndVerifyCapabilityTokenDepthOptions
+): Promise<CapabilityGrant> {
   if (opts.issuerPublicKeys.length === 0) throw new Error("issuerPublicKeys is empty");
   if (opts.depth > MAX_DELEGATION_PROOF_CHAIN) throw new Error("delegation proof chain is too deep");
 
@@ -442,7 +452,7 @@ async function assertDelegatedGrantWithinProof(opts: {
 
 export async function describeTreecrdtCapabilityTokenV1(opts: {
   tokenBytes: Uint8Array;
-  issuerPublicKeys: Uint8Array[];
+  issuerPublicKeys: readonly Uint8Array[];
   docId: string;
   scopeEvaluator?: TreecrdtScopeEvaluator;
   nowSec?: number;
