@@ -4,3 +4,4 @@ build
 coverage
 vendor
 packages/**/generated
+packages/treecrdt-wa-sqlite-vendor
