@@ -42,7 +42,7 @@ import { hexToBytes16, type AuthGrantMessageV1 } from "../../sync-v0";
 import { ROOT_ID } from "../constants";
 import { loadPrivateRoots, persistPrivateRoots } from "../persist";
 import { prefixPlaygroundStorageKey } from "../storage";
-import type { InvitePreset } from "../invite";
+import type { InviteActions } from "../invite";
 import type { ToastState } from "../components/PlaygroundToast";
 
 function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: string): string[] {
@@ -69,6 +69,114 @@ function parseReplicaPublicKeyInput(input: string): Uint8Array {
     return bytes;
   } catch {
     throw new Error("replica public key must be 64 hex chars (or base64url-encoded 32 bytes)");
+  }
+}
+
+function normalizeTokenIdHex(input: string): string | null {
+  const clean = input.trim().toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{32}$/.test(clean)) return null;
+  return clean;
+}
+
+function extractInviteB64FromLink(link: string): string | null {
+  if (!link) return null;
+  try {
+    const url = new URL(link);
+    const invite = new URLSearchParams(url.hash.slice(1)).get("invite");
+    return typeof invite === "string" && invite.length > 0 ? invite : null;
+  } catch {
+    return null;
+  }
+}
+
+export type IssuedGrantRecord = {
+  recipientPkHex: string;
+  tokenIdHex: string;
+  rootNodeId: string;
+  actions: string[];
+  maxDepth?: number;
+  excludeCount: number;
+  ts: number;
+};
+
+const ALLOWED_GRANT_ACTIONS = new Set([
+  "write_structure",
+  "write_payload",
+  "delete",
+  "tombstone",
+  "grant",
+  "read_structure",
+  "read_payload",
+]);
+
+function normalizeGrantActions(input: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of input) {
+    const action = String(raw).trim();
+    if (!ALLOWED_GRANT_ACTIONS.has(action)) continue;
+    if (out.includes(action)) continue;
+    out.push(action);
+  }
+  return out;
+}
+
+function expandInternalCompatActions(input: string[]): string[] {
+  const out = normalizeGrantActions(input);
+  const hasAnyAction = out.length > 0;
+  if (hasAnyAction) {
+    // Playground permission model: read is always included whenever any capability is issued.
+    if (!out.includes("read_structure")) out.push("read_structure");
+    if (!out.includes("read_payload")) out.push("read_payload");
+  }
+  if (out.includes("delete") && !out.includes("tombstone")) out.push("tombstone");
+  return out;
+}
+
+function issuedGrantsStorageKey(docId: string): string {
+  return prefixPlaygroundStorageKey(`treecrdt-playground-issued-grants:${docId}`);
+}
+
+function loadIssuedGrantRecords(docId: string): IssuedGrantRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(issuedGrantsStorageKey(docId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: IssuedGrantRecord[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const row = item as Partial<IssuedGrantRecord>;
+      const recipientPkHex = typeof row.recipientPkHex === "string" ? row.recipientPkHex.toLowerCase() : "";
+      const tokenIdHex = typeof row.tokenIdHex === "string" ? row.tokenIdHex.toLowerCase() : "";
+      const rootNodeId = typeof row.rootNodeId === "string" ? row.rootNodeId.toLowerCase() : "";
+      const actions = Array.isArray(row.actions)
+        ? Array.from(new Set(row.actions.filter((v): v is string => typeof v === "string")))
+        : [];
+      const maxDepth =
+        typeof row.maxDepth === "number" && Number.isInteger(row.maxDepth) && row.maxDepth >= 0 ? row.maxDepth : undefined;
+      const excludeCount =
+        typeof row.excludeCount === "number" && Number.isInteger(row.excludeCount) && row.excludeCount >= 0 ? row.excludeCount : 0;
+      const ts = typeof row.ts === "number" && Number.isFinite(row.ts) ? row.ts : 0;
+      if (!/^[0-9a-f]{64}$/.test(recipientPkHex)) continue;
+      if (!/^[0-9a-f]{32}$/.test(tokenIdHex)) continue;
+      if (!/^[0-9a-f]{32}$/.test(rootNodeId)) continue;
+      if (ts <= 0) continue;
+      out.push({ recipientPkHex, tokenIdHex, rootNodeId, actions, maxDepth, excludeCount, ts });
+    }
+    out.sort((a, b) => b.ts - a.ts);
+    return out.slice(0, 256);
+  } catch {
+    return [];
+  }
+}
+
+function persistIssuedGrantRecords(docId: string, rows: IssuedGrantRecord[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(issuedGrantsStorageKey(docId), JSON.stringify(rows.slice(0, 256)));
+  } catch {
+    // ignore storage failures
   }
 }
 
@@ -135,6 +243,19 @@ export type PlaygroundAuthApi = {
   authTokenScope: TreecrdtCapabilityTokenV1["caps"][number]["res"] | null;
   authTokenActions: TreecrdtCapabilityTokenV1["caps"][number]["actions"] | null;
   authNeedsInvite: boolean;
+  revocationKnownTokenIds: string[];
+  hardRevokedTokenIds: string[];
+  toggleHardRevokedTokenId: (tokenIdHex: string) => void;
+  clearHardRevokedTokenIds: () => void;
+  revocationTokenInput: string;
+  setRevocationTokenInput: React.Dispatch<React.SetStateAction<string>>;
+  addHardRevokedTokenId: () => void;
+  revocationCutoverEnabled: boolean;
+  setRevocationCutoverEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+  revocationCutoverTokenId: string;
+  setRevocationCutoverTokenId: React.Dispatch<React.SetStateAction<string>>;
+  revocationCutoverCounter: string;
+  setRevocationCutoverCounter: React.Dispatch<React.SetStateAction<string>>;
 
   pendingOps: Array<{ id: string; kind: string; message?: string }>;
   refreshPendingOps: () => Promise<void>;
@@ -150,29 +271,23 @@ export type PlaygroundAuthApi = {
   setInviteRoot: React.Dispatch<React.SetStateAction<string>>;
   inviteMaxDepth: string;
   setInviteMaxDepth: React.Dispatch<React.SetStateAction<string>>;
-  inviteActions: Record<"write_structure" | "write_payload" | "delete" | "tombstone", boolean>;
-  setInviteActions: React.Dispatch<
-    React.SetStateAction<Record<"write_structure" | "write_payload" | "delete" | "tombstone", boolean>>
-  >;
+  inviteActions: InviteActions;
+  setInviteActions: React.Dispatch<React.SetStateAction<InviteActions>>;
   inviteAllowGrant: boolean;
   setInviteAllowGrant: React.Dispatch<React.SetStateAction<boolean>>;
-  invitePreset: InvitePreset;
-  setInvitePreset: React.Dispatch<React.SetStateAction<InvitePreset>>;
-  showInviteOptions: boolean;
-  setShowInviteOptions: React.Dispatch<React.SetStateAction<boolean>>;
   inviteExcludeNodeIds: string[];
   inviteLink: string;
   generateInviteLink: (opts?: { rootNodeId?: string; copyToClipboard?: boolean }) => Promise<void>;
-  applyInvitePreset: (preset: InvitePreset) => void;
 
-  invitePanelRef: React.RefObject<HTMLDivElement>;
   inviteImportText: string;
   setInviteImportText: React.Dispatch<React.SetStateAction<string>>;
   importInviteLink: () => Promise<void>;
 
-  grantRecipientKey: string;
-  setGrantRecipientKey: React.Dispatch<React.SetStateAction<string>>;
-  grantSubtreeToReplicaPubkey: (sendGrant: (msg: AuthGrantMessageV1) => boolean) => Promise<void>;
+  issuedGrantRecords: IssuedGrantRecord[];
+  grantSubtreeToReplicaPubkey: (
+    sendGrant: (msg: AuthGrantMessageV1) => boolean,
+    opts?: { recipientKey?: string; rootNodeId?: string; actions?: string[]; supersedesTokenIds?: string[] }
+  ) => Promise<boolean>;
 
   resetAuth: () => void;
   openMintingPeerTab: () => void;
@@ -231,24 +346,24 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   >(null);
 
   const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
+  const [hardRevokedTokenIds, setHardRevokedTokenIds] = useState<string[]>([]);
+  const [revocationTokenInput, setRevocationTokenInput] = useState("");
+  const [revocationCutoverEnabled, setRevocationCutoverEnabled] = useState(false);
+  const [revocationCutoverTokenId, setRevocationCutoverTokenId] = useState("");
+  const [revocationCutoverCounter, setRevocationCutoverCounter] = useState("");
 
-  const invitePanelRef = useRef<HTMLDivElement>(null!);
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
   const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
-  const [inviteActions, setInviteActions] = useState<
-    Record<"write_structure" | "write_payload" | "delete" | "tombstone", boolean>
-  >({
+  const [inviteActions, setInviteActions] = useState<InviteActions>({
     write_structure: true,
     write_payload: true,
     delete: false,
-    tombstone: false,
   });
   const [inviteAllowGrant, setInviteAllowGrant] = useState(true);
-  const [invitePreset, setInvitePreset] = useState<InvitePreset>("read_write");
-  const [showInviteOptions, setShowInviteOptions] = useState(false);
   const [inviteLink, setInviteLink] = useState<string>("");
+  const inviteLinkConfigKeyRef = useRef<string | null>(null);
   const [inviteImportText, setInviteImportText] = useState<string>("");
-  const [grantRecipientKey, setGrantRecipientKey] = useState<string>("");
+  const [issuedGrantRecords, setIssuedGrantRecords] = useState<IssuedGrantRecord[]>(() => loadIssuedGrantRecords(docId));
   const [pendingOps, setPendingOps] = useState<Array<{ id: string; kind: string; message?: string }>>([]);
 
   const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
@@ -272,6 +387,42 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   useEffect(() => {
     setPrivateRoots(loadPrivateRoots(docId));
   }, [docId]);
+
+  useEffect(() => {
+    setIssuedGrantRecords(loadIssuedGrantRecords(docId));
+  }, [docId]);
+
+  const rememberIssuedGrantRecord = React.useCallback(
+    (opts2: {
+      recipientPk: Uint8Array;
+      tokenBytes: Uint8Array;
+      rootNodeId: string;
+      actions: string[];
+      maxDepth?: number;
+      excludeNodeIds: string[];
+    }) => {
+      const { recipientPk, tokenBytes, rootNodeId, actions, maxDepth, excludeNodeIds } = opts2;
+      const recipientPkHex = bytesToHex(recipientPk).toLowerCase();
+      const tokenIdHex = bytesToHex(deriveTokenIdV1(tokenBytes)).toLowerCase();
+      setIssuedGrantRecords((prev) => {
+        const next: IssuedGrantRecord[] = [
+          {
+            recipientPkHex,
+            tokenIdHex,
+            rootNodeId: rootNodeId.toLowerCase(),
+            actions: [...actions],
+            ...(maxDepth !== undefined ? { maxDepth } : {}),
+            excludeCount: excludeNodeIds.length,
+            ts: Date.now(),
+          },
+          ...prev.filter((r) => r.tokenIdHex !== tokenIdHex),
+        ].slice(0, 256);
+        persistIssuedGrantRecords(docId, next);
+        return next;
+      });
+    },
+    [docId]
+  );
 
   useEffect(() => {
     // Local identity chains are doc-bound (replica cert includes `docId`) and depend on the current replica key.
@@ -424,6 +575,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         localPrivateKey: localSk,
         localPublicKey: localPk,
         localCapabilityTokens: localTokens,
+        revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
+        isCapabilityTokenRevoked: runtimeCutoverRevocationChecker,
         requireProofRef: true,
         scopeEvaluator,
         opAuthStore,
@@ -441,6 +594,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authMaterial.localSkB64,
     authMaterial.localPkB64,
     authMaterial.localTokensB64.join(","),
+    hardRevokedTokenIds.join(","),
+    revocationCutoverEnabled,
+    revocationCutoverTokenId,
+    revocationCutoverCounter,
   ]);
 
   const replica = useMemo(() => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null), [
@@ -549,6 +706,82 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const authTokenScope = authToken?.caps?.[0]?.res ?? null;
   const authTokenActions = authToken?.caps?.[0]?.actions ?? null;
   const authNeedsInvite = Boolean(authEnabled && joinMode && authTokenCount === 0);
+
+  const revocationKnownTokenIds = useMemo(() => {
+    const seen = new Set<string>();
+    for (const tokenB64 of authMaterial.localTokensB64) {
+      try {
+        seen.add(bytesToHex(deriveTokenIdV1(base64urlDecode(tokenB64))));
+      } catch {
+        // ignore malformed local token bytes
+      }
+    }
+    return Array.from(seen.values());
+  }, [authMaterial.localTokensB64.join(",")]);
+
+  useEffect(() => {
+    setHardRevokedTokenIds([]);
+    setRevocationTokenInput("");
+    setRevocationCutoverEnabled(false);
+    setRevocationCutoverTokenId("");
+    setRevocationCutoverCounter("");
+  }, [docId]);
+
+  useEffect(() => {
+    if (revocationCutoverTokenId) return;
+    if (revocationKnownTokenIds.length === 0) return;
+    setRevocationCutoverTokenId(revocationKnownTokenIds[0]!);
+  }, [revocationCutoverTokenId, revocationKnownTokenIds]);
+
+  const toggleHardRevokedTokenId = React.useCallback((tokenIdHex: string) => {
+    const normalized = normalizeTokenIdHex(tokenIdHex);
+    if (!normalized) return;
+    setHardRevokedTokenIds((prev) => {
+      if (prev.includes(normalized)) return prev.filter((v) => v !== normalized);
+      return [...prev, normalized];
+    });
+  }, []);
+
+  const clearHardRevokedTokenIds = React.useCallback(() => {
+    setHardRevokedTokenIds([]);
+  }, []);
+
+  const addHardRevokedTokenId = React.useCallback(() => {
+    const normalized = normalizeTokenIdHex(revocationTokenInput);
+    if (!normalized) {
+      setAuthError("Token id must be exactly 32 hex chars (16 bytes).");
+      return;
+    }
+    setHardRevokedTokenIds((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    setRevocationTokenInput("");
+    setAuthError(null);
+  }, [revocationTokenInput]);
+
+  const hardRevokedTokenIdBytes = useMemo(() => hardRevokedTokenIds.map((hex) => hexToBytes16(hex)), [hardRevokedTokenIds]);
+  const revocationCutoverTokenIdNormalized = useMemo(
+    () => normalizeTokenIdHex(revocationCutoverTokenId),
+    [revocationCutoverTokenId]
+  );
+  const revocationCutoverCounterValue = useMemo(() => {
+    const text = revocationCutoverCounter.trim();
+    if (text.length === 0) return null;
+    const parsed = Number(text);
+    if (!Number.isInteger(parsed) || parsed < 0) return null;
+    return parsed;
+  }, [revocationCutoverCounter]);
+
+  const runtimeCutoverRevocationChecker = React.useCallback(
+    (ctx: { stage: "parse" | "runtime"; tokenIdHex: string; op?: Operation }) => {
+      if (ctx.stage !== "runtime") return false;
+      if (!revocationCutoverEnabled) return false;
+      if (!revocationCutoverTokenIdNormalized) return false;
+      if (revocationCutoverCounterValue === null) return false;
+      if (ctx.tokenIdHex !== revocationCutoverTokenIdNormalized) return false;
+      if (!ctx.op) return false;
+      return ctx.op.meta.id.counter >= revocationCutoverCounterValue;
+    },
+    [revocationCutoverCounterValue, revocationCutoverEnabled, revocationCutoverTokenIdNormalized]
+  );
 
   const importInvitePayload = React.useCallback(
     async (inviteB64: string, opts2: { clearHash?: boolean } = {}) => {
@@ -748,6 +981,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const resetAuth = () => {
     clearAuthMaterial(docId);
     setInviteLink("");
+    inviteLinkConfigKeyRef.current = null;
     setInviteImportText("");
     setAuthEnabled(false);
     setAuthError(null);
@@ -765,38 +999,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
-  const applyInvitePreset = (preset: InvitePreset) => {
-    setInvitePreset(preset);
-    if (preset === "custom") {
-      setShowInviteOptions(true);
-      return;
-    }
-    if (preset === "read") {
-      setInviteActions({ write_structure: false, write_payload: false, delete: false, tombstone: false });
-      return;
-    }
-    if (preset === "admin") {
-      setInviteActions({ write_structure: true, write_payload: true, delete: true, tombstone: true });
-      return;
-    }
-    setInviteActions({ write_structure: true, write_payload: true, delete: false, tombstone: false });
-  };
-
   const readInviteConfig = (rootNodeId: string) => {
-    let actions: string[];
-    if (invitePreset === "read") {
-      actions = ["read_structure", "read_payload"];
-    } else if (invitePreset === "read_write") {
-      actions = ["write_structure", "write_payload"];
-    } else if (invitePreset === "admin") {
-      actions = ["write_structure", "write_payload", "delete", "tombstone"];
-    } else {
-      actions = Object.entries(inviteActions)
-        .filter(([, enabled]) => enabled)
-        .map(([name]) => name);
-      if (actions.length === 0) throw new Error("select at least one action");
-    }
+    let actions = Object.entries(inviteActions)
+      .filter(([, enabled]) => enabled)
+      .map(([name]) => name);
     if (inviteAllowGrant && !actions.includes("grant")) actions.push("grant");
+    actions = expandInternalCompatActions(actions);
+    if (actions.length === 0) actions = ["read_structure", "read_payload"];
 
     const maxDepthText = inviteMaxDepth.trim();
     let maxDepth: number | undefined;
@@ -808,6 +1017,17 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
     const excludeNodeIds = computeInviteExcludeNodeIds(privateRoots, rootNodeId);
     return { actions, maxDepth, excludeNodeIds };
+  };
+
+  const inviteConfigCacheKey = (rootNodeId: string): string => {
+    const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
+    return JSON.stringify({
+      docId,
+      rootNodeId: rootNodeId.toLowerCase(),
+      actions: [...actions].sort(),
+      maxDepth: maxDepth ?? null,
+      excludeNodeIds: [...excludeNodeIds].sort(),
+    });
   };
 
   const buildInviteB64 = async (opts2: { rootNodeId?: string } = {}): Promise<string> => {
@@ -898,6 +1118,15 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
       });
 
+      rememberIssuedGrantRecord({
+        recipientPk: subjectPk,
+        tokenBytes,
+        rootNodeId,
+        actions,
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+        excludeNodeIds,
+      });
+
       return encodeInvitePayload({
         v: 1,
         t: "treecrdt.playground.invite",
@@ -927,6 +1156,15 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       ...(excludeNodeIds.length > 0 ? { excludeNodeIds } : {}),
     });
 
+    rememberIssuedGrantRecord({
+      recipientPk: subjectPk,
+      tokenBytes,
+      rootNodeId,
+      actions,
+      ...(maxDepth !== undefined ? { maxDepth } : {}),
+      excludeNodeIds,
+    });
+
     return encodeInvitePayload({
       v: 1,
       t: "treecrdt.playground.invite",
@@ -943,9 +1181,19 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setAuthBusy(true);
     setAuthError(null);
     setAuthInfo(null);
-    setInviteLink("");
     try {
-      const inviteB64 = await buildInviteB64({ rootNodeId: opts2.rootNodeId });
+      const rootNodeId = opts2.rootNodeId ?? inviteRoot;
+      const configKey = inviteConfigCacheKey(rootNodeId);
+
+      if (inviteLink && inviteLinkConfigKeyRef.current === configKey) {
+        if (opts2.copyToClipboard) {
+          await copyToClipboard(inviteLink);
+          setAuthInfo("Invite link copied to clipboard.");
+        }
+        return;
+      }
+
+      const inviteB64 = await buildInviteB64({ rootNodeId });
 
       const url = new URL(window.location.href);
       url.searchParams.set("doc", docId);
@@ -957,6 +1205,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       url.hash = `invite=${inviteB64}`;
       const link = url.toString();
       setInviteLink(link);
+      inviteLinkConfigKeyRef.current = configKey;
       if (opts2.copyToClipboard) {
         await copyToClipboard(link);
         setAuthInfo("Invite link copied to clipboard.");
@@ -1023,6 +1272,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const issuerPkB64 = grant.issuer_pk_b64;
       const tokenB64 = grant.token_b64;
       const payloadKeyB64 = typeof grant.payload_key_b64 === "string" ? grant.payload_key_b64 : null;
+      const supersededTokenIds = Array.isArray(grant.supersedes_token_ids_hex)
+        ? grant.supersedes_token_ids_hex
+            .map((id) => normalizeTokenIdHex(id))
+            .filter((id): id is string => typeof id === "string")
+        : [];
 
       void (async () => {
         setAuthBusy(true);
@@ -1042,15 +1296,33 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           }
 
           const merged = new Set<string>(current.localTokensB64);
+          if (supersededTokenIds.length > 0) {
+            const superseded = new Set(supersededTokenIds);
+            for (const existingTokenB64 of Array.from(merged.values())) {
+              try {
+                const existingTokenIdHex = bytesToHex(deriveTokenIdV1(base64urlDecode(existingTokenB64)));
+                if (superseded.has(existingTokenIdHex)) merged.delete(existingTokenB64);
+              } catch {
+                // ignore malformed token bytes
+              }
+            }
+          }
           merged.add(tokenB64);
           await saveLocalTokens(docId, Array.from(merged));
           await rememberScopedPrivateRootsFromToken(issuerPkB64, tokenB64);
           await refreshAuthMaterial();
-          setAuthInfo("Access grant received. Click Sync to fetch newly authorized ops.");
+          setAuthInfo(
+            supersededTokenIds.length > 0
+              ? "Access updated. Click Sync to refresh with your latest capability."
+              : "Access grant received. Click Sync to fetch newly authorized ops."
+          );
           setToast({
             kind: "success",
-            title: "Access granted",
-            message: "Sync to fetch newly authorized ops.",
+            title: supersededTokenIds.length > 0 ? "Access updated" : "Access granted",
+            message:
+              supersededTokenIds.length > 0
+                ? "Sync to refresh using your latest capability."
+                : "Sync to fetch newly authorized ops.",
             actions: ["sync", "details"],
           });
         } catch (err) {
@@ -1063,9 +1335,12 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     [docId, refreshAuthMaterial, refreshDocPayloadKey, rememberScopedPrivateRootsFromToken]
   );
 
-  const grantSubtreeToReplicaPubkey = async (sendGrant: (msg: AuthGrantMessageV1) => boolean) => {
-    if (!authEnabled) return;
-    if (typeof window === "undefined") return;
+  const grantSubtreeToReplicaPubkey = async (
+    sendGrant: (msg: AuthGrantMessageV1) => boolean,
+    opts2?: { recipientKey?: string; rootNodeId?: string; actions?: string[]; supersedesTokenIds?: string[] }
+  ) => {
+    if (!authEnabled) return false;
+    if (typeof window === "undefined") return false;
 
     setAuthBusy(true);
     setAuthError(null);
@@ -1078,9 +1353,24 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const issuerSkB64 = authMaterial.issuerSkB64;
       if (!issuerPkB64) throw new Error("issuer public key is missing; import an invite link first");
 
-      const subjectPk = parseReplicaPublicKeyInput(grantRecipientKey);
-      const rootNodeId = inviteRoot;
-      const { actions, maxDepth, excludeNodeIds } = readInviteConfig(rootNodeId);
+      const recipientInput = opts2?.recipientKey;
+      if (!recipientInput || recipientInput.trim().length === 0) {
+        throw new Error("recipient public key is required");
+      }
+      const subjectPk = parseReplicaPublicKeyInput(recipientInput);
+      const rootNodeId = opts2?.rootNodeId ?? inviteRoot;
+      const supersedesTokenIds = Array.isArray(opts2?.supersedesTokenIds)
+        ? opts2.supersedesTokenIds
+            .map((id) => normalizeTokenIdHex(id))
+            .filter((id): id is string => typeof id === "string")
+        : [];
+      const inviteConfig = readInviteConfig(rootNodeId);
+      const actions =
+        Array.isArray(opts2?.actions) && opts2.actions.length > 0
+          ? expandInternalCompatActions(opts2.actions)
+          : inviteConfig.actions;
+      if (actions.length === 0) throw new Error("select at least one capability action");
+      const { maxDepth, excludeNodeIds } = inviteConfig;
 
       let tokenBytes: Uint8Array;
       if (issuerSkB64) {
@@ -1158,16 +1448,26 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         to_replica_pk_hex: bytesToHex(subjectPk),
         issuer_pk_b64: issuerPkB64,
         token_b64: base64urlEncode(tokenBytes),
+        ...(supersedesTokenIds.length > 0 ? { supersedes_token_ids_hex: supersedesTokenIds } : {}),
         payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
         from_peer_id: selfPeerId,
         ts: Date.now(),
       };
 
       if (!sendGrant(msg)) throw new Error("sync channel is not ready yet");
-      setGrantRecipientKey("");
+      rememberIssuedGrantRecord({
+        recipientPk: subjectPk,
+        tokenBytes,
+        rootNodeId,
+        actions,
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+        excludeNodeIds,
+      });
       setAuthInfo("Grant sent. The recipient should sync again to receive newly authorized ops.");
+      return true;
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setAuthBusy(false);
     }
@@ -1190,8 +1490,17 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     if (opts2.autoInvite) {
       try {
         // Auto-invite makes the common "simulate another device" flow 1 click.
+        const rootNodeId = opts2.rootNodeId ?? ROOT_ID;
+        const configKey = inviteConfigCacheKey(rootNodeId);
         url.searchParams.set("autosync", "1");
-        url.hash = `invite=${await buildInviteB64({ rootNodeId: opts2.rootNodeId ?? ROOT_ID })}`;
+        let inviteB64: string | null = null;
+        if (inviteLink && inviteLinkConfigKeyRef.current === configKey) {
+          inviteB64 = extractInviteB64FromLink(inviteLink);
+        }
+        if (!inviteB64) {
+          inviteB64 = await buildInviteB64({ rootNodeId });
+        }
+        url.hash = `invite=${inviteB64}`;
       } catch (err) {
         // Fall back to a blank join-only tab and show the reason on the current tab.
         setAuthError(err instanceof Error ? err.message : String(err));
@@ -1257,6 +1566,19 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authTokenScope,
     authTokenActions,
     authNeedsInvite,
+    revocationKnownTokenIds,
+    hardRevokedTokenIds,
+    toggleHardRevokedTokenId,
+    clearHardRevokedTokenIds,
+    revocationTokenInput,
+    setRevocationTokenInput,
+    addHardRevokedTokenId,
+    revocationCutoverEnabled,
+    setRevocationCutoverEnabled,
+    revocationCutoverTokenId,
+    setRevocationCutoverTokenId,
+    revocationCutoverCounter,
+    setRevocationCutoverCounter,
     pendingOps,
     refreshPendingOps,
     privateRoots,
@@ -1273,20 +1595,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setInviteActions,
     inviteAllowGrant,
     setInviteAllowGrant,
-    invitePreset,
-    setInvitePreset,
-    showInviteOptions,
-    setShowInviteOptions,
     inviteExcludeNodeIds,
     inviteLink,
     generateInviteLink,
-    applyInvitePreset,
-    invitePanelRef,
     inviteImportText,
     setInviteImportText,
     importInviteLink,
-    grantRecipientKey,
-    setGrantRecipientKey,
+    issuedGrantRecords,
     grantSubtreeToReplicaPubkey,
     resetAuth,
     openMintingPeerTab,

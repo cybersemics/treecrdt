@@ -30,11 +30,9 @@ function useVirtualizerBase<TScrollElement extends Element | Window, TItemElemen
   const resolvedOptions: VirtualizerOptions<TScrollElement, TItemElement> = {
     ...options,
     onChange: (instance, sync) => {
-      // TanStack Virtual's React hook uses `flushSync` while scrolling; this can
-      // produce warnings when React is already rendering. We instead schedule
-      // sync updates in a microtask.
-      if (sync) scheduleRerender();
-      else rerender();
+      // TanStack Virtual can trigger onChange during render/commit paths.
+      // Always defer rerenders to avoid React "setState during render" warnings.
+      scheduleRerender();
       options.onChange?.(instance, sync);
     },
   };
