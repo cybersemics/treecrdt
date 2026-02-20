@@ -1,5 +1,5 @@
-import type { Operation, ReplicaId } from "./index.js";
-import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from "./sqlite.js";
+import type { Operation, ReplicaId } from './index.js';
+import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
 
 export type TreecrdtEngineOps = {
   append: (op: Operation) => Promise<void>;
@@ -20,7 +20,7 @@ export type TreecrdtEngineTree = {
   childrenPage?: (
     parent: string,
     cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
-    limit: number
+    limit: number,
   ) => Promise<SqliteTreeChildRow[]>;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
@@ -37,13 +37,13 @@ export type TreecrdtEngineLocal = {
     parent: string,
     node: string,
     placement: TreecrdtSqlitePlacement,
-    payload: Uint8Array | null
+    payload: Uint8Array | null,
   ) => Promise<Operation>;
   move: (
     replica: ReplicaId,
     node: string,
     newParent: string,
-    placement: TreecrdtSqlitePlacement
+    placement: TreecrdtSqlitePlacement,
   ) => Promise<Operation>;
   delete: (replica: ReplicaId, node: string) => Promise<Operation>;
   payload: (replica: ReplicaId, node: string, payload: Uint8Array | null) => Promise<Operation>;
@@ -66,4 +66,3 @@ export type TreecrdtEngine = {
   local: TreecrdtEngineLocal;
   close: () => Promise<void>;
 };
-

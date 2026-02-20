@@ -1,20 +1,21 @@
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex, hexToBytes, replicaIdToBytes } from "@treecrdt/interface/ids";
-import type { SqliteRunner } from "@treecrdt/interface/sqlite";
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex, hexToBytes, replicaIdToBytes } from '@treecrdt/interface/ids';
+import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
-import { deriveOpRefV0 } from "./opref.js";
-import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from "./protobuf.js";
-import type { OpAuth, OpRef, PendingOp } from "./types.js";
+import { deriveOpRefV0 } from './opref.js';
+import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from './protobuf.js';
+import type { OpAuth, OpRef, PendingOp } from './types.js';
 
 function hexToBytesStrict(hex: string, expectedLen: number, field: string): Uint8Array {
   const clean = hex.trim();
   if (clean.length !== expectedLen * 2) {
     throw new Error(
-      `${field}: expected ${expectedLen} bytes (${expectedLen * 2} hex chars), got ${clean.length}: ${hex}`
+      `${field}: expected ${expectedLen} bytes (${expectedLen * 2} hex chars), got ${clean.length}: ${hex}`,
     );
   }
   const bytes = hexToBytes(clean);
-  if (bytes.length !== expectedLen) throw new Error(`${field}: expected ${expectedLen} bytes, got ${bytes.length}`);
+  if (bytes.length !== expectedLen)
+    throw new Error(`${field}: expected ${expectedLen} bytes, got ${bytes.length}`);
   return bytes;
 }
 
@@ -113,7 +114,7 @@ RETURNING 1
     storePendingOps: async (pending) => {
       if (pending.length === 0) return;
 
-      await opts.runner.exec("BEGIN");
+      await opts.runner.exec('BEGIN');
       try {
         for (const p of pending) {
           const opRef = opRefForOp(p.op);
@@ -131,9 +132,9 @@ RETURNING 1
             nowMs(),
           ]);
         }
-        await opts.runner.exec("COMMIT");
+        await opts.runner.exec('COMMIT');
       } catch (err) {
-        await opts.runner.exec("ROLLBACK");
+        await opts.runner.exec('ROLLBACK');
         throw err;
       }
     },
@@ -153,17 +154,19 @@ RETURNING 1
         const opBytes = hexToBytes(r.op_hex);
         const op = decodeTreecrdtSyncV0Operation(opBytes);
 
-        const sig = hexToBytesStrict(r.sig_hex, 64, "pending sig");
-        const proofRef = r.proof_ref_hex ? hexToBytesStrict(r.proof_ref_hex, 16, "pending proof_ref") : undefined;
+        const sig = hexToBytesStrict(r.sig_hex, 64, 'pending sig');
+        const proofRef = r.proof_ref_hex
+          ? hexToBytesStrict(r.proof_ref_hex, 16, 'pending proof_ref')
+          : undefined;
 
-        if (r.reason !== "missing_context") {
+        if (r.reason !== 'missing_context') {
           throw new Error(`unexpected pending reason: ${r.reason}`);
         }
 
         return {
           op,
           auth: { sig, ...(proofRef ? { proofRef } : {}) },
-          reason: "missing_context",
+          reason: 'missing_context',
           ...(r.message ? { message: r.message } : {}),
         } satisfies PendingOp<Operation>;
       });
@@ -173,19 +176,19 @@ RETURNING 1
       const text = await opts.runner.getText(listRefsSql, [opts.docId]);
       if (!text) return [];
       const hexes = JSON.parse(text) as string[];
-      return hexes.map((h) => hexToBytesStrict(h, 16, "pending op_ref"));
+      return hexes.map((h) => hexToBytesStrict(h, 16, 'pending op_ref'));
     },
 
     deletePendingOps: async (ops) => {
       if (ops.length === 0) return;
-      await opts.runner.exec("BEGIN");
+      await opts.runner.exec('BEGIN');
       try {
         for (const op of ops) {
           await opts.runner.getText(deleteSql, [opts.docId, opRefForOp(op)]);
         }
-        await opts.runner.exec("COMMIT");
+        await opts.runner.exec('COMMIT');
       } catch (err) {
-        await opts.runner.exec("ROLLBACK");
+        await opts.runner.exec('ROLLBACK');
         throw err;
       }
     },
@@ -208,8 +211,8 @@ RETURNING 1
 
   const selectByRefsSql = (n: number) => {
     if (!Number.isInteger(n) || n < 0) throw new Error(`invalid opRefs length: ${n}`);
-    if (n === 0) throw new Error("selectByRefsSql requires at least 1 opRef");
-    const placeholders = Array.from({ length: n }, (_v, i) => `?${i + 2}`).join(", ");
+    if (n === 0) throw new Error('selectByRefsSql requires at least 1 opRef');
+    const placeholders = Array.from({ length: n }, (_v, i) => `?${i + 2}`).join(', ');
     return `
 SELECT COALESCE(json_group_array(json(obj)), '[]') AS json
 FROM (
@@ -232,15 +235,21 @@ FROM (
     storeOpAuth: async (entries) => {
       if (entries.length === 0) return;
 
-      await opts.runner.exec("BEGIN");
+      await opts.runner.exec('BEGIN');
       try {
         for (const e of entries) {
           const proofRef = e.auth.proofRef ?? null;
-          await opts.runner.getText(insertSql, [opts.docId, e.opRef, e.auth.sig, proofRef, nowMs()]);
+          await opts.runner.getText(insertSql, [
+            opts.docId,
+            e.opRef,
+            e.auth.sig,
+            proofRef,
+            nowMs(),
+          ]);
         }
-        await opts.runner.exec("COMMIT");
+        await opts.runner.exec('COMMIT');
       } catch (err) {
-        await opts.runner.exec("ROLLBACK");
+        await opts.runner.exec('ROLLBACK');
         throw err;
       }
     },
@@ -251,13 +260,19 @@ FROM (
       const sql = selectByRefsSql(opRefs.length);
       const text = await opts.runner.getText(sql, [opts.docId, ...opRefs]);
       if (!text) return opRefs.map(() => null);
-      const rows = JSON.parse(text) as Array<{ op_ref_hex: string; sig_hex: string; proof_ref_hex: string | null }>;
+      const rows = JSON.parse(text) as Array<{
+        op_ref_hex: string;
+        sig_hex: string;
+        proof_ref_hex: string | null;
+      }>;
 
       const byHex = new Map<string, OpAuth>();
       for (const r of rows) {
         const opRefHex = String(r.op_ref_hex).toLowerCase();
-        const sig = hexToBytesStrict(r.sig_hex, 64, "op_auth sig");
-        const proofRef = r.proof_ref_hex ? hexToBytesStrict(r.proof_ref_hex, 16, "op_auth proof_ref") : undefined;
+        const sig = hexToBytesStrict(r.sig_hex, 64, 'op_auth sig');
+        const proofRef = r.proof_ref_hex
+          ? hexToBytesStrict(r.proof_ref_hex, 16, 'op_auth proof_ref')
+          : undefined;
         byHex.set(opRefHex, { sig, ...(proofRef ? { proofRef } : {}) });
       }
 

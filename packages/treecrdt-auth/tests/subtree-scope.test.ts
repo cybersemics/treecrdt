@@ -1,24 +1,30 @@
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest';
 
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX, TRASH_NODE_ID_HEX } from "@treecrdt/interface/ids";
-import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
-import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
-import { sha512 } from "@noble/hashes/sha512";
-import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
+import type { Operation } from '@treecrdt/interface';
+import {
+  bytesToHex,
+  nodeIdToBytes16,
+  replicaIdToBytes,
+  ROOT_NODE_ID_HEX,
+  TRASH_NODE_ID_HEX,
+} from '@treecrdt/interface/ids';
+import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
+import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
+import { sha512 } from '@noble/hashes/sha512';
+import { encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
-import { deriveOpRefV0 } from "@treecrdt/sync";
-import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { coseSign1Ed25519 } from "../dist/cose.js";
-import { createTreecrdtCoseCwtAuth } from "../dist/treecrdt-auth.js";
-import type { Filter, OpAuth, OpRef, PendingOp, SyncBackend } from "@treecrdt/sync";
+import { deriveOpRefV0 } from '@treecrdt/sync';
+import { createInMemoryConnectedPeers } from '@treecrdt/sync/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
+import { coseSign1Ed25519 } from '../dist/cose.js';
+import { createTreecrdtCoseCwtAuth } from '../dist/treecrdt-auth.js';
+import type { Filter, OpAuth, OpRef, PendingOp, SyncBackend } from '@treecrdt/sync';
 
 ed25519Hashes.sha512 = sha512;
 
 function replicaFromLabel(label: string): Uint8Array {
   const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  if (encoded.length === 0) throw new Error('replica label must not be empty');
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
@@ -42,7 +48,7 @@ function opRefForOp(docId: string, op: Operation): OpRef {
 
 async function waitUntil(
   predicate: () => Promise<boolean> | boolean,
-  opts: { timeoutMs?: number; intervalMs?: number; message?: string } = {}
+  opts: { timeoutMs?: number; intervalMs?: number; message?: string } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 2_000;
   const intervalMs = opts.intervalMs ?? 10;
@@ -78,13 +84,13 @@ class TreeBackend implements SyncBackend<Operation> {
 
   hasOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.opsByRefHex.values()).some(
-      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter,
     );
   }
 
   hasPendingOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.pendingByRefHex.values()).some(
-      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter,
     );
   }
 
@@ -94,17 +100,17 @@ class TreeBackend implements SyncBackend<Operation> {
 
   private noteParentEdge(op: Operation): void {
     switch (op.kind.type) {
-      case "insert":
+      case 'insert':
         this.parentByNodeHex.set(op.kind.node, op.kind.parent);
         break;
-      case "move":
+      case 'move':
         this.parentByNodeHex.set(op.kind.node, op.kind.newParent);
         break;
-      case "delete":
-      case "tombstone":
+      case 'delete':
+      case 'tombstone':
         this.parentByNodeHex.set(op.kind.node, TRASH_NODE_ID_HEX);
         break;
-      case "payload":
+      case 'payload':
         break;
     }
   }
@@ -118,7 +124,8 @@ class TreeBackend implements SyncBackend<Operation> {
   }
 
   async listOpRefs(filter: Filter): Promise<OpRef[]> {
-    if (!("all" in filter)) throw new Error("TreeBackend only supports filter { all: {} } in tests");
+    if (!('all' in filter))
+      throw new Error('TreeBackend only supports filter { all: {} } in tests');
     const opRefs = Array.from(this.opsByRefHex.values(), (v) => v.opRef);
     const pendingRefs = Array.from(this.pendingByRefHex.values(), (p) => this.opRefForOp(p.op));
     return opRefs.concat(pendingRefs);
@@ -179,16 +186,16 @@ function makeSubtreeCapabilityToken(opts: {
   root: string;
   actions: string[];
 }): Uint8Array {
-  const cnf = new Map<unknown, unknown>([["pub", opts.subjectPublicKey]]);
+  const cnf = new Map<unknown, unknown>([['pub', opts.subjectPublicKey]]);
 
   const res = new Map<unknown, unknown>([
-    ["doc_id", opts.docId],
-    ["root", nodeIdToBytes16(opts.root)],
+    ['doc_id', opts.docId],
+    ['root', nodeIdToBytes16(opts.root)],
   ]);
 
   const cap = new Map<unknown, unknown>([
-    ["res", res],
-    ["actions", opts.actions],
+    ['res', res],
+    ['actions', opts.actions],
   ]);
 
   const claims = new Map<unknown, unknown>([
@@ -207,9 +214,15 @@ function makeCapabilityTokenFromCaps(opts: {
   docId: string;
   caps: Array<{ res: Map<unknown, unknown>; actions: string[] }>;
 }): Uint8Array {
-  const cnf = new Map<unknown, unknown>([["pub", opts.subjectPublicKey]]);
+  const cnf = new Map<unknown, unknown>([['pub', opts.subjectPublicKey]]);
 
-  const caps = opts.caps.map((c) => new Map<unknown, unknown>([["res", c.res], ["actions", c.actions]]));
+  const caps = opts.caps.map(
+    (c) =>
+      new Map<unknown, unknown>([
+        ['res', c.res],
+        ['actions', c.actions],
+      ]),
+  );
 
   const claims = new Map<unknown, unknown>([
     [3, opts.docId], // CWT `aud`
@@ -221,8 +234,8 @@ function makeCapabilityTokenFromCaps(opts: {
   return coseSign1Ed25519({ payload, privateKey: opts.issuerPrivateKey });
 }
 
-test("subtree scope: pending_context ops are stored and later applied when context arrives", async () => {
-  const docId = "doc-subtree-pending";
+test('subtree scope: pending_context ops are stored and later applied when context arrives', async () => {
+  const docId = 'doc-subtree-pending';
   const root = ROOT_NODE_ID_HEX;
   const subtreeRoot = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
@@ -246,32 +259,32 @@ test("subtree scope: pending_context ops are stored and later applied when conte
     subjectPublicKey: aPk,
     docId,
     root: subtreeRoot,
-    actions: ["write_structure", "write_payload"],
+    actions: ['write_structure', 'write_payload'],
   });
   const tokenB = makeSubtreeCapabilityToken({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: bPk,
     docId,
     root,
-    actions: ["write_structure", "write_payload"],
+    actions: ['write_structure', 'write_payload'],
   });
 
   const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
     const nodeHex = bytesToHex(node);
     const scopeRootHex = bytesToHex(scope.root);
-    if (nodeHex === scopeRootHex) return "allow" as const;
-    if (nodeHex === ROOT_NODE_ID_HEX) return "deny" as const;
-    if (nodeHex === TRASH_NODE_ID_HEX) return "deny" as const;
+    if (nodeHex === scopeRootHex) return 'allow' as const;
+    if (nodeHex === ROOT_NODE_ID_HEX) return 'deny' as const;
+    if (nodeHex === TRASH_NODE_ID_HEX) return 'deny' as const;
 
     let cur = nodeHex;
     for (let depth = 0; depth < 10_000; depth += 1) {
       const parent = b.getParentHex(cur);
-      if (!parent) return "unknown" as const;
-      if (parent === scopeRootHex) return "allow" as const;
-      if (parent === ROOT_NODE_ID_HEX || parent === TRASH_NODE_ID_HEX) return "deny" as const;
+      if (!parent) return 'unknown' as const;
+      if (parent === scopeRootHex) return 'allow' as const;
+      if (parent === ROOT_NODE_ID_HEX || parent === TRASH_NODE_ID_HEX) return 'deny' as const;
       cur = parent;
     }
-    return "unknown" as const;
+    return 'unknown' as const;
   };
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -301,23 +314,33 @@ test("subtree scope: pending_context ops are stored and later applied when conte
 
   try {
     // Establish capabilities via Hello/HelloAck before using push subscriptions.
-    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    await peerB.syncOnce(
+      transportB,
+      { all: {} },
+      { maxCodewords: 10_000, codewordsPerMessage: 256 },
+    );
 
     // Start push subscription without running syncOnce again (capabilities already known).
     const sub = peerB.subscribe(transportB, { all: {} }, { immediate: false, intervalMs: 0 });
 
     // Ensure the subscription is registered on the responder before applying any ops.
     await waitUntil(() => (peerA as any).responderSubscriptions?.size === 1, {
-      message: "expected responder subscription to be registered",
+      message: 'expected responder subscription to be registered',
     });
 
     // Deliver the payload op first (out-of-order relative to structure), so it must be
     // stored as pending until the insert arrives and provides ancestry context.
-    const payloadOp = makeOp(aReplica, 1, 1, { type: "payload", node: child, payload: new Uint8Array([1, 2, 3]) });
+    const payloadOp = makeOp(aReplica, 1, 1, {
+      type: 'payload',
+      node: child,
+      payload: new Uint8Array([1, 2, 3]),
+    });
     await a.applyOps([payloadOp]);
     void peerA.notifyLocalUpdate();
 
-    await waitUntil(() => b.hasPendingOp(aHex, 1), { message: "expected payload op to be stored pending" });
+    await waitUntil(() => b.hasPendingOp(aHex, 1), {
+      message: 'expected payload op to be stored pending',
+    });
     expect(b.hasPendingOp(aHex, 1)).toBe(true);
     expect(b.hasOp(aHex, 1)).toBe(false);
     expect(b.hasOp(aHex, 2)).toBe(false);
@@ -325,7 +348,7 @@ test("subtree scope: pending_context ops are stored and later applied when conte
     // Now deliver the structural insert; this should allow the pending payload to be
     // reprocessed and applied.
     const insertChild = makeOp(aReplica, 2, 2, {
-      type: "insert",
+      type: 'insert',
       parent: subtreeRoot,
       node: child,
       orderKey: orderKeyFromPosition(0),
@@ -333,9 +356,13 @@ test("subtree scope: pending_context ops are stored and later applied when conte
     await a.applyOps([insertChild]);
     void peerA.notifyLocalUpdate();
 
-    await waitUntil(() => b.hasOp(aHex, 2), { message: "expected insert op to be applied" });
-    await waitUntil(() => b.hasOp(aHex, 1), { message: "expected pending payload op to be reprocessed and applied" });
-    await waitUntil(async () => (await b.listPendingOps?.())?.length === 0, { message: "expected pending store to drain" });
+    await waitUntil(() => b.hasOp(aHex, 2), { message: 'expected insert op to be applied' });
+    await waitUntil(() => b.hasOp(aHex, 1), {
+      message: 'expected pending payload op to be reprocessed and applied',
+    });
+    await waitUntil(async () => (await b.listPendingOps?.())?.length === 0, {
+      message: 'expected pending store to drain',
+    });
 
     sub.stop();
     await sub.done;
@@ -344,8 +371,8 @@ test("subtree scope: pending_context ops are stored and later applied when conte
   }
 });
 
-test("subtree scope: pending ops are dropped once context proves they are unauthorized", async () => {
-  const docId = "doc-subtree-drop";
+test('subtree scope: pending ops are dropped once context proves they are unauthorized', async () => {
+  const docId = 'doc-subtree-drop';
   const root = ROOT_NODE_ID_HEX;
   const subtreeRoot = nodeIdFromInt(1);
   const node = nodeIdFromInt(2);
@@ -372,18 +399,18 @@ test("subtree scope: pending ops are dropped once context proves they are unauth
       // Doc-wide: allow structure writes anywhere.
       {
         res: new Map<unknown, unknown>([
-          ["doc_id", docId],
-          ["root", nodeIdToBytes16(root)],
+          ['doc_id', docId],
+          ['root', nodeIdToBytes16(root)],
         ]),
-        actions: ["write_structure"],
+        actions: ['write_structure'],
       },
       // Subtree-scoped: allow payload writes under `subtreeRoot` only.
       {
         res: new Map<unknown, unknown>([
-          ["doc_id", docId],
-          ["root", nodeIdToBytes16(subtreeRoot)],
+          ['doc_id', docId],
+          ['root', nodeIdToBytes16(subtreeRoot)],
         ]),
-        actions: ["write_payload"],
+        actions: ['write_payload'],
       },
     ],
   });
@@ -393,25 +420,31 @@ test("subtree scope: pending ops are dropped once context proves they are unauth
     subjectPublicKey: bPk,
     docId,
     root,
-    actions: ["write_structure", "write_payload"],
+    actions: ['write_structure', 'write_payload'],
   });
 
-  const scopeEvaluator = ({ node: n, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+  const scopeEvaluator = ({
+    node: n,
+    scope,
+  }: {
+    node: Uint8Array;
+    scope: { root: Uint8Array };
+  }) => {
     const nodeHex = bytesToHex(n);
     const scopeRootHex = bytesToHex(scope.root);
-    if (nodeHex === scopeRootHex) return "allow" as const;
-    if (nodeHex === ROOT_NODE_ID_HEX) return "deny" as const;
-    if (nodeHex === TRASH_NODE_ID_HEX) return "deny" as const;
+    if (nodeHex === scopeRootHex) return 'allow' as const;
+    if (nodeHex === ROOT_NODE_ID_HEX) return 'deny' as const;
+    if (nodeHex === TRASH_NODE_ID_HEX) return 'deny' as const;
 
     let cur = nodeHex;
     for (let depth = 0; depth < 10_000; depth += 1) {
       const parent = b.getParentHex(cur);
-      if (!parent) return "unknown" as const;
-      if (parent === scopeRootHex) return "allow" as const;
-      if (parent === ROOT_NODE_ID_HEX || parent === TRASH_NODE_ID_HEX) return "deny" as const;
+      if (!parent) return 'unknown' as const;
+      if (parent === scopeRootHex) return 'allow' as const;
+      if (parent === ROOT_NODE_ID_HEX || parent === TRASH_NODE_ID_HEX) return 'deny' as const;
       cur = parent;
     }
-    return "unknown" as const;
+    return 'unknown' as const;
   };
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -441,25 +474,42 @@ test("subtree scope: pending ops are dropped once context proves they are unauth
 
   try {
     // Exchange capabilities first so B can verify A's ops.
-    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    await peerB.syncOnce(
+      transportB,
+      { all: {} },
+      { maxCodewords: 10_000, codewordsPerMessage: 256 },
+    );
 
     const sub = peerB.subscribe(transportB, { all: {} }, { immediate: false, intervalMs: 0 });
     await waitUntil(() => (peerA as any).responderSubscriptions?.size === 1, {
-      message: "expected responder subscription to be registered",
+      message: 'expected responder subscription to be registered',
     });
 
     // A sets a payload on `node` before any ancestry is known: pending_context.
-    await a.applyOps([makeOp(aReplica, 1, 1, { type: "payload", node, payload: new Uint8Array([9]) })]);
+    await a.applyOps([
+      makeOp(aReplica, 1, 1, { type: 'payload', node, payload: new Uint8Array([9]) }),
+    ]);
     void peerA.notifyLocalUpdate();
-    await waitUntil(() => b.hasPendingOp(aHex, 1), { message: "expected payload op to be stored pending" });
+    await waitUntil(() => b.hasPendingOp(aHex, 1), {
+      message: 'expected payload op to be stored pending',
+    });
     expect(b.hasOp(aHex, 1)).toBe(false);
 
     // Later, `node` is inserted under ROOT. This provides enough context to prove
     // the pending payload is outside the authorized subtree, so it is dropped.
-    await a.applyOps([makeOp(aReplica, 2, 2, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) })]);
+    await a.applyOps([
+      makeOp(aReplica, 2, 2, {
+        type: 'insert',
+        parent: root,
+        node,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    ]);
     void peerA.notifyLocalUpdate();
-    await waitUntil(() => b.hasOp(aHex, 2), { message: "expected insert op to be applied" });
-    await waitUntil(async () => (await b.listPendingOps?.())?.length === 0, { message: "expected pending store to drain" });
+    await waitUntil(() => b.hasOp(aHex, 2), { message: 'expected insert op to be applied' });
+    await waitUntil(async () => (await b.listPendingOps?.())?.length === 0, {
+      message: 'expected pending store to drain',
+    });
     expect(b.hasOp(aHex, 1)).toBe(false);
 
     sub.stop();
@@ -469,8 +519,8 @@ test("subtree scope: pending ops are dropped once context proves they are unauth
   }
 });
 
-test("subtree scope: ops outside scope are rejected (fail closed)", async () => {
-  const docId = "doc-subtree-deny";
+test('subtree scope: ops outside scope are rejected (fail closed)', async () => {
+  const docId = 'doc-subtree-deny';
   const root = ROOT_NODE_ID_HEX;
   const subtreeRoot = nodeIdFromInt(1);
   const node = nodeIdFromInt(2);
@@ -494,22 +544,28 @@ test("subtree scope: ops outside scope are rejected (fail closed)", async () => 
     subjectPublicKey: aPk,
     docId,
     root: subtreeRoot,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const tokenB = makeSubtreeCapabilityToken({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: bPk,
     docId,
     root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
-  const scopeEvaluator = ({ node: n, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+  const scopeEvaluator = ({
+    node: n,
+    scope,
+  }: {
+    node: Uint8Array;
+    scope: { root: Uint8Array };
+  }) => {
     const nodeHex = bytesToHex(n);
     const scopeRootHex = bytesToHex(scope.root);
-    if (nodeHex === scopeRootHex) return "allow" as const;
-    if (nodeHex === ROOT_NODE_ID_HEX) return "deny" as const;
-    return "unknown" as const;
+    if (nodeHex === scopeRootHex) return 'allow' as const;
+    if (nodeHex === ROOT_NODE_ID_HEX) return 'deny' as const;
+    return 'unknown' as const;
   };
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -537,15 +593,26 @@ test("subtree scope: ops outside scope are rejected (fail closed)", async () => 
   });
 
   try {
-    await peerB.syncOnce(transportB, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    await peerB.syncOnce(
+      transportB,
+      { all: {} },
+      { maxCodewords: 10_000, codewordsPerMessage: 256 },
+    );
 
     // Attempt an op that touches ROOT (insert under ROOT) with a subtree-root token.
     const sub = peerB.subscribe(transportB, { all: {} }, { immediate: false, intervalMs: 0 });
     await waitUntil(() => (peerA as any).responderSubscriptions?.size === 1, {
-      message: "expected responder subscription to be registered",
+      message: 'expected responder subscription to be registered',
     });
 
-    await a.applyOps([makeOp(aReplica, 1, 1, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) })]);
+    await a.applyOps([
+      makeOp(aReplica, 1, 1, {
+        type: 'insert',
+        parent: root,
+        node,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    ]);
     void peerA.notifyLocalUpdate();
 
     await expect(sub.done).rejects.toThrow(/capability does not allow op/i);

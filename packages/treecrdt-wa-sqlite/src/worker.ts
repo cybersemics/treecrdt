@@ -1,18 +1,16 @@
 /// <reference lib="webworker" />
-import {
-  type Database,
-} from "./index.js";
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
-import type { Operation, ReplicaId } from "@treecrdt/interface";
-import type { TreecrdtAdapter } from "@treecrdt/interface";
+import { type Database } from './index.js';
+import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import type { Operation, ReplicaId } from '@treecrdt/interface';
+import type { TreecrdtAdapter } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteWriter,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
-} from "@treecrdt/interface/sqlite";
-import type { RpcMethod, RpcRequest, RpcSqlParams } from "./rpc.js";
-import { openTreecrdtDb } from "./open.js";
+} from '@treecrdt/interface/sqlite';
+import type { RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
+import { openTreecrdtDb } from './open.js';
 
 let db: Database | null = null;
 let api: TreecrdtAdapter | null = null;
@@ -64,9 +62,9 @@ self.onmessage = async (ev: MessageEvent<RpcRequest>) => {
 async function init(
   baseUrl: string,
   filename: string | undefined,
-  storageParam: "memory" | "opfs",
-  docId: string
-): Promise<{ storage: "memory" | "opfs"; opfsError?: string }> {
+  storageParam: 'memory' | 'opfs',
+  docId: string,
+): Promise<{ storage: 'memory' | 'opfs'; opfsError?: string }> {
   if (db) {
     if (db.close) await db.close();
     db = null;
@@ -84,7 +82,9 @@ async function init(
   api = opened.api;
   runner = makeRunner(opened.db);
   localWriters.clear();
-  return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
+  return opened.opfsError
+    ? { storage: opened.storage, opfsError: opened.opfsError }
+    : { storage: opened.storage };
 }
 
 async function sqlExec(sql: string) {
@@ -138,7 +138,7 @@ async function treeChildren(parent: string) {
 async function treeChildrenPage(
   parent: string,
   cursor: { orderKey: number[]; node: number[] } | null,
-  limit: number
+  limit: number,
 ) {
   const api = ensureApi();
   const cursorBytes = cursor
@@ -175,13 +175,18 @@ async function localInsert(
   parent: string,
   node: string,
   placement: TreecrdtSqlitePlacement,
-  payload: Uint8Array | null
+  payload: Uint8Array | null,
 ) {
   const writer = ensureLocalWriter(Uint8Array.from(replica));
   return await writer.insert(parent, node, placement, payload ? { payload } : {});
 }
 
-async function localMove(replica: number[], node: string, newParent: string, placement: TreecrdtSqlitePlacement) {
+async function localMove(
+  replica: number[],
+  node: string,
+  newParent: string,
+  placement: TreecrdtSqlitePlacement,
+) {
   const writer = ensureLocalWriter(Uint8Array.from(replica));
   return await writer.move(node, newParent, placement);
 }
@@ -206,17 +211,17 @@ async function close() {
 }
 
 function ensureApi(): TreecrdtAdapter {
-  if (!db || !api) throw new Error("db not initialized");
+  if (!db || !api) throw new Error('db not initialized');
   return api;
 }
 
 function ensureDb(): Database {
-  if (!db) throw new Error("db not initialized");
+  if (!db) throw new Error('db not initialized');
   return db;
 }
 
 function ensureRunner(): SqliteRunner {
-  if (!runner) throw new Error("db not initialized");
+  if (!runner) throw new Error('db not initialized');
   return runner;
 }
 
@@ -240,7 +245,11 @@ function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
   return writer;
 }
 
-async function dbGetText(db: Database, sql: string, params: RpcSqlParams = []): Promise<string | null> {
+async function dbGetText(
+  db: Database,
+  sql: string,
+  params: RpcSqlParams = [],
+): Promise<string | null> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stmt: any = await db.prepare(sql);
   try {

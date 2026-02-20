@@ -1,24 +1,28 @@
-import { test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { conformanceSlugify, sqliteEngineConformanceScenarios } from "@treecrdt/sqlite-conformance";
-import { createTreecrdtClient, defaultExtensionPath, loadTreecrdtExtension } from "../dist/index.js";
+import { test } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { conformanceSlugify, sqliteEngineConformanceScenarios } from '@treecrdt/sqlite-conformance';
+import {
+  createTreecrdtClient,
+  defaultExtensionPath,
+  loadTreecrdtExtension,
+} from '../dist/index.js';
 
 async function createNodeEngine(opts: { docId: string; path?: string }) {
-  const { default: Database } = await import("better-sqlite3").catch((err) => {
+  const { default: Database } = await import('better-sqlite3').catch((err) => {
     throw new Error(
-      `better-sqlite3 native binding not available; ensure it is installed/built before running native tests: ${err}`
+      `better-sqlite3 native binding not available; ensure it is installed/built before running native tests: ${err}`,
     );
   });
 
-  const db = new Database(opts.path ?? ":memory:");
+  const db = new Database(opts.path ?? ':memory:');
   loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
   return await createTreecrdtClient(db, { docId: opts.docId });
 }
 
 function docIdFromScenario(name: string): string {
-  return `treecrdt-node-conformance-${conformanceSlugify(name) || "scenario"}`;
+  return `treecrdt-node-conformance-${conformanceSlugify(name) || 'scenario'}`;
 }
 
 function track(engine: Awaited<ReturnType<typeof createNodeEngine>>, engines: any[]) {
@@ -41,7 +45,7 @@ for (const scenario of sqliteEngineConformanceScenarios()) {
     const persistentPaths = new Map<string, string>();
     const ensurePersistentDir = () => {
       if (persistentDir) return persistentDir;
-      persistentDir = mkdtempSync(join(tmpdir(), "treecrdt-node-conformance-"));
+      persistentDir = mkdtempSync(join(tmpdir(), 'treecrdt-node-conformance-'));
       return persistentDir;
     };
 
@@ -53,7 +57,7 @@ for (const scenario of sqliteEngineConformanceScenarios()) {
         createEngine: ({ docId }) => createNodeEngine({ docId }).then((e) => track(e, engines)),
         createPersistentEngine: ({ docId, name }) => {
           const dir = ensurePersistentDir();
-          const key = conformanceSlugify(name || "db");
+          const key = conformanceSlugify(name || 'db');
           const existing = persistentPaths.get(key);
           const path = existing ?? join(dir, `${key}.sqlite`);
           persistentPaths.set(key, path);

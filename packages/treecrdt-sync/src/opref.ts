@@ -1,8 +1,8 @@
-import { blake3 } from "@noble/hashes/blake3";
-import { utf8ToBytes } from "@noble/hashes/utils";
+import { blake3 } from '@noble/hashes/blake3';
+import { utf8ToBytes } from '@noble/hashes/utils';
 
 export const OPREF_V0_WIDTH_BYTES = 16;
-const OPREF_V0_DOMAIN = utf8ToBytes("treecrdt/opref/v0");
+const OPREF_V0_DOMAIN = utf8ToBytes('treecrdt/opref/v0');
 
 export type OperationIdBytes = {
   replica: Uint8Array;
@@ -28,8 +28,9 @@ function u32be(n: number): Uint8Array {
 }
 
 function normalizeU64(n: bigint | number): bigint {
-  if (typeof n === "number") {
-    if (!Number.isSafeInteger(n) || n < 0) throw new Error(`u64 must be a safe non-negative integer, got: ${n}`);
+  if (typeof n === 'number') {
+    if (!Number.isSafeInteger(n) || n < 0)
+      throw new Error(`u64 must be a safe non-negative integer, got: ${n}`);
     return BigInt(n);
   }
   if (n < 0n) throw new Error(`u64 must be non-negative, got: ${n}`);
@@ -61,4 +62,3 @@ export function deriveOpRefV0(docId: string, id: OperationIdBytes): Uint8Array {
   const opIdBytes = encodeOperationIdV0(id);
   return blake3(concatBytes(OPREF_V0_DOMAIN, docIdBytes, opIdBytes)).slice(0, OPREF_V0_WIDTH_BYTES);
 }
-

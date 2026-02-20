@@ -1,4 +1,4 @@
-import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from "./adapter.js";
+import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
 import {
   decodeNodeId,
   decodeReplicaId,
@@ -6,8 +6,8 @@ import {
   nodeIdToBytes16,
   ROOT_NODE_ID_HEX,
   replicaIdToBytes,
-} from "./ids.js";
-import type { Operation, OperationKind, ReplicaId } from "./index.js";
+} from './ids.js';
+import type { Operation, OperationKind, ReplicaId } from './index.js';
 
 export type SqlCall = {
   sql: string;
@@ -16,13 +16,13 @@ export type SqlCall = {
 
 export type SqliteRunner = {
   exec: (sql: string) => Promise<void> | void;
-  getText: (sql: string, params?: SqlCall["params"]) => Promise<string | null> | string | null;
+  getText: (sql: string, params?: SqlCall['params']) => Promise<string | null> | string | null;
 };
 
 async function sqliteGetJson<T>(
   runner: SqliteRunner,
   sql: string,
-  params?: SqlCall["params"]
+  params?: SqlCall['params'],
 ): Promise<T> {
   const text = await runner.getText(sql, params);
   if (!text) throw new Error(`expected JSON result for query: ${sql}`);
@@ -32,17 +32,17 @@ async function sqliteGetJson<T>(
 async function sqliteGetJsonOrEmpty<T>(
   runner: SqliteRunner,
   sql: string,
-  params?: SqlCall["params"]
+  params?: SqlCall['params'],
 ): Promise<T> {
   const text = await runner.getText(sql, params);
-  if (!text) return JSON.parse("[]") as T;
+  if (!text) return JSON.parse('[]') as T;
   return JSON.parse(text) as T;
 }
 
 async function sqliteGetNumber(
   runner: SqliteRunner,
   sql: string,
-  params?: SqlCall["params"]
+  params?: SqlCall['params'],
 ): Promise<number> {
   const text = await runner.getText(sql, params);
   if (!text) return 0;
@@ -61,7 +61,7 @@ function buildAppendOp(
     lamport: number;
     serializeNodeId: SerializeNodeId;
     knownState: Uint8Array | null;
-  }
+  },
 ): SqlCall {
   const base = [opts.replica, opts.counter, opts.lamport] as (
     | number
@@ -71,13 +71,13 @@ function buildAppendOp(
   )[];
 
   switch (kind.type) {
-    case "insert":
+    case 'insert':
       if (kind.payload !== undefined) {
         return {
-          sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)",
+          sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
           params: [
             ...base,
-            "insert",
+            'insert',
             opts.serializeNodeId(kind.parent),
             opts.serializeNodeId(kind.node),
             kind.orderKey,
@@ -86,55 +86,59 @@ function buildAppendOp(
         };
       }
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)",
+        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
         params: [
           ...base,
-          "insert",
+          'insert',
           opts.serializeNodeId(kind.parent),
           opts.serializeNodeId(kind.node),
           kind.orderKey,
         ],
       };
-    case "move":
+    case 'move':
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)",
+        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
         params: [
           ...base,
-          "move",
+          'move',
           opts.serializeNodeId(kind.node),
           opts.serializeNodeId(kind.newParent),
           kind.orderKey,
         ],
       };
-    case "delete":
+    case 'delete':
       if (!opts.knownState || opts.knownState.length === 0) {
-        throw new Error("treecrdt: delete operations require meta.knownState");
+        throw new Error('treecrdt: delete operations require meta.knownState');
       }
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
-        params: [...base, "delete", opts.serializeNodeId(kind.node), opts.knownState],
+        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
+        params: [...base, 'delete', opts.serializeNodeId(kind.node), opts.knownState],
       };
-    case "tombstone":
+    case 'tombstone':
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
-        params: [...base, "tombstone", opts.serializeNodeId(kind.node), opts.knownState],
+        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
+        params: [...base, 'tombstone', opts.serializeNodeId(kind.node), opts.knownState],
       };
-    case "payload":
+    case 'payload':
       return {
-        sql: "SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)",
-        params: [...base, "payload", opts.serializeNodeId(kind.node), kind.payload],
+        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
+        params: [...base, 'payload', opts.serializeNodeId(kind.node), kind.payload],
       };
     default:
-      throw new Error("unsupported operation kind");
+      throw new Error('unsupported operation kind');
   }
 }
 
-function buildOpsSince(filter: { lamport: number; root?: string; serializeNodeId: SerializeNodeId }): SqlCall {
+function buildOpsSince(filter: {
+  lamport: number;
+  root?: string;
+  serializeNodeId: SerializeNodeId;
+}): SqlCall {
   if (filter.root === undefined) {
-    return { sql: "SELECT treecrdt_ops_since(?1)", params: [filter.lamport] };
+    return { sql: 'SELECT treecrdt_ops_since(?1)', params: [filter.lamport] };
   }
   return {
-    sql: "SELECT treecrdt_ops_since(?1, ?2)",
+    sql: 'SELECT treecrdt_ops_since(?1, ?2)',
     params: [filter.lamport, filter.serializeNodeId(filter.root)],
   };
 }
@@ -142,7 +146,7 @@ function buildOpsSince(filter: { lamport: number; root?: string; serializeNodeId
 function buildAppendOpsPayload(
   ops: Operation[],
   serializeNodeId: SerializeNodeId,
-  serializeReplica: SerializeReplica
+  serializeReplica: SerializeReplica,
 ): unknown[] {
   const serialize = (val: string) => Array.from(serializeNodeId(val));
   return ops.map((op) => {
@@ -156,10 +160,10 @@ function buildAppendOpsPayload(
       counter,
       lamport,
       kind: kind.type,
-      order_key: "orderKey" in kind ? Array.from(kind.orderKey) : null,
+      order_key: 'orderKey' in kind ? Array.from(kind.orderKey) : null,
       ...(knownState && knownState.length > 0 ? { known_state: Array.from(knownState) } : {}),
     };
-    if (kind.type === "insert") {
+    if (kind.type === 'insert') {
       const payload = kind.payload ? Array.from(kind.payload) : undefined;
       return {
         ...base,
@@ -168,11 +172,16 @@ function buildAppendOpsPayload(
         new_parent: null,
         ...(payload ? { payload } : {}),
       };
-    } else if (kind.type === "move") {
-      return { ...base, parent: null, node: serialize(kind.node), new_parent: serialize(kind.newParent) };
-    } else if (kind.type === "delete") {
+    } else if (kind.type === 'move') {
+      return {
+        ...base,
+        parent: null,
+        node: serialize(kind.node),
+        new_parent: serialize(kind.newParent),
+      };
+    } else if (kind.type === 'delete') {
       return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
-    } else if (kind.type === "payload") {
+    } else if (kind.type === 'payload') {
       return {
         ...base,
         parent: null,
@@ -189,10 +198,10 @@ async function treecrdtAppendOp(
   runner: SqliteRunner,
   op: Operation,
   serializeNodeId: SerializeNodeId,
-  serializeReplica: SerializeReplica
+  serializeReplica: SerializeReplica,
 ): Promise<void> {
-  if (op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0)) {
-    throw new Error("treecrdt: delete operations require meta.knownState");
+  if (op.kind.type === 'delete' && (!op.meta.knownState || op.meta.knownState.length === 0)) {
+    throw new Error('treecrdt: delete operations require meta.knownState');
   }
   const { meta, kind } = op;
   const { id, lamport } = meta;
@@ -214,17 +223,19 @@ async function treecrdtAppendOps(
   ops: Operation[],
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
-  opts: { maxBulkOps?: number } = {}
+  opts: { maxBulkOps?: number } = {},
 ): Promise<void> {
   if (ops.length === 0) return;
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
-  const bulkSql = "SELECT treecrdt_append_ops(?1)";
+  const bulkSql = 'SELECT treecrdt_append_ops(?1)';
 
   if (
-    ops.some((op) => op.kind.type === "delete" && (!op.meta.knownState || op.meta.knownState.length === 0))
+    ops.some(
+      (op) => op.kind.type === 'delete' && (!op.meta.knownState || op.meta.knownState.length === 0),
+    )
   ) {
-    throw new Error("treecrdt: delete operations require meta.knownState");
+    throw new Error('treecrdt: delete operations require meta.knownState');
   }
 
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
@@ -242,21 +253,21 @@ async function treecrdtAppendOps(
   if (bulkFailedAt === null) return;
 
   const remaining = ops.slice(bulkFailedAt);
-  await runner.exec("BEGIN");
+  await runner.exec('BEGIN');
   try {
     for (const op of remaining) {
       await treecrdtAppendOp(runner, op, serializeNodeId, serializeReplica);
     }
-    await runner.exec("COMMIT");
+    await runner.exec('COMMIT');
   } catch (err) {
-    await runner.exec("ROLLBACK");
+    await runner.exec('ROLLBACK');
     throw err;
   }
 }
 
 async function treecrdtOpsSince(
   runner: SqliteRunner,
-  filter: { lamport: number; root?: string }
+  filter: { lamport: number; root?: string },
 ): Promise<unknown[]> {
   const { sql, params } = buildOpsSince({
     lamport: filter.lamport,
@@ -269,7 +280,7 @@ async function treecrdtOpsSince(
 
 export function createTreecrdtSqliteAdapter(
   runner: SqliteRunner,
-  opts: { maxBulkOps?: number } = {}
+  opts: { maxBulkOps?: number } = {},
 ): TreecrdtAdapter {
   return {
     setDocId: (docId) => treecrdtSetDocId(runner, docId),
@@ -298,15 +309,15 @@ export function createTreecrdtSqliteAdapter(
  * This MUST be stable for the lifetime of the database, since it affects opRef hashes.
  */
 async function treecrdtSetDocId(runner: SqliteRunner, docId: string): Promise<void> {
-  await runner.getText("SELECT treecrdt_set_doc_id(?1)", [docId]);
+  await runner.getText('SELECT treecrdt_set_doc_id(?1)', [docId]);
 }
 
 async function treecrdtDocId(runner: SqliteRunner): Promise<string | null> {
-  return runner.getText("SELECT treecrdt_doc_id()");
+  return runner.getText('SELECT treecrdt_doc_id()');
 }
 
 async function treecrdtEnsureMaterialized(runner: SqliteRunner): Promise<void> {
-  await runner.getText("SELECT treecrdt_ensure_materialized()");
+  await runner.getText('SELECT treecrdt_ensure_materialized()');
 }
 
 /**
@@ -314,15 +325,18 @@ async function treecrdtEnsureMaterialized(runner: SqliteRunner): Promise<void> {
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
 async function treecrdtOpRefsAll(runner: SqliteRunner): Promise<unknown[]> {
-  return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_oprefs_all()");
+  return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_all()');
 }
 
 /**
  * Fetch opRefs relevant to the `children(parent)` filter from the extension.
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
-async function treecrdtOpRefsChildren(runner: SqliteRunner, parent: Uint8Array): Promise<unknown[]> {
-  return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_oprefs_children(?1)", [parent]);
+async function treecrdtOpRefsChildren(
+  runner: SqliteRunner,
+  parent: Uint8Array,
+): Promise<unknown[]> {
+  return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_children(?1)', [parent]);
 }
 
 /**
@@ -331,7 +345,9 @@ async function treecrdtOpRefsChildren(runner: SqliteRunner, parent: Uint8Array):
  */
 async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): Promise<unknown[]> {
   const payload = opRefs.map((r) => Array.from(r));
-  return sqliteGetJsonOrEmpty(runner, "SELECT treecrdt_ops_by_oprefs(?1)", [JSON.stringify(payload)]);
+  return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_ops_by_oprefs(?1)', [
+    JSON.stringify(payload),
+  ]);
 }
 
 /**
@@ -350,7 +366,7 @@ async function treecrdtTreeChildren(runner: SqliteRunner, parent: Uint8Array): P
      WHERE parent = ?1 AND tombstone = 0 \
      ORDER BY order_key, node\
      )",
-    [parent]
+    [parent],
   );
 }
 
@@ -363,7 +379,7 @@ async function treecrdtTreeChildrenPage(
   runner: SqliteRunner,
   parent: Uint8Array,
   cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
-  limit: number
+  limit: number,
 ): Promise<unknown[]> {
   await treecrdtEnsureMaterialized(runner);
   const afterOrderKey = cursor?.orderKey ?? null;
@@ -383,7 +399,7 @@ async function treecrdtTreeChildrenPage(
        ORDER BY order_key, node \
        LIMIT ?4\
      )",
-    [parent, afterOrderKey, afterNode, limit]
+    [parent, afterOrderKey, afterNode, limit],
   );
 }
 
@@ -404,7 +420,7 @@ async function treecrdtTreeDump(runner: SqliteRunner): Promise<unknown[]> {
          tombstone \
        FROM tree_nodes \
        ORDER BY node\
-     )"
+     )",
   );
 }
 
@@ -415,8 +431,8 @@ async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
   await treecrdtEnsureMaterialized(runner);
   return sqliteGetNumber(
     runner,
-    "SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node <> ?1",
-    [ROOT_NODE_BYTES]
+    'SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node <> ?1',
+    [ROOT_NODE_BYTES],
   );
 }
 
@@ -424,38 +440,46 @@ async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
  * Fetch the maximum lamport seen in the op log.
  */
 async function treecrdtHeadLamport(runner: SqliteRunner): Promise<number> {
-  return sqliteGetNumber(runner, "SELECT COALESCE(MAX(lamport), 0) FROM ops");
+  return sqliteGetNumber(runner, 'SELECT COALESCE(MAX(lamport), 0) FROM ops');
 }
 
 /**
  * Fetch the maximum counter observed for a replica id.
  */
-async function treecrdtReplicaMaxCounter(runner: SqliteRunner, replica: Uint8Array): Promise<number> {
-  return sqliteGetNumber(runner, "SELECT COALESCE(MAX(counter), 0) FROM ops WHERE replica = ?1", [replica]);
+async function treecrdtReplicaMaxCounter(
+  runner: SqliteRunner,
+  replica: Uint8Array,
+): Promise<number> {
+  return sqliteGetNumber(runner, 'SELECT COALESCE(MAX(counter), 0) FROM ops WHERE replica = ?1', [
+    replica,
+  ]);
 }
 
 export type TreecrdtSqlitePlacement =
-  | { type: "first" }
-  | { type: "last" }
-  | { type: "after"; after: string };
+  | { type: 'first' }
+  | { type: 'last' }
+  | { type: 'after'; after: string };
 
 export type TreecrdtSqliteWriter = {
   insert: (
     parent: string,
     node: string,
     placement: TreecrdtSqlitePlacement,
-    opts?: { payload?: Uint8Array }
+    opts?: { payload?: Uint8Array },
   ) => Promise<Operation>;
   move: (node: string, newParent: string, placement: TreecrdtSqlitePlacement) => Promise<Operation>;
   delete: (node: string) => Promise<Operation>;
   payload: (node: string, payload: Uint8Array | null) => Promise<Operation>;
 };
 
-export function createTreecrdtSqliteWriter(runner: SqliteRunner, opts: { replica: ReplicaId }): TreecrdtSqliteWriter {
+export function createTreecrdtSqliteWriter(
+  runner: SqliteRunner,
+  opts: { replica: ReplicaId },
+): TreecrdtSqliteWriter {
   const replica = opts.replica;
   const replicaBytes = replicaIdToBytes(replica);
 
-  const getLocalOp = async (sql: string, params: SqlCall["params"]) => {
+  const getLocalOp = async (sql: string, params: SqlCall['params']) => {
     const raw = await sqliteGetJson<unknown[]>(runner, sql, params);
     const ops = decodeSqliteOps(raw);
     if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
@@ -466,11 +490,11 @@ export function createTreecrdtSqliteWriter(runner: SqliteRunner, opts: { replica
     parent: string,
     node: string,
     placement: TreecrdtSqlitePlacement,
-    o: { payload?: Uint8Array } = {}
+    o: { payload?: Uint8Array } = {},
   ) => {
-    const afterNode = placement.type === "after" ? nodeIdToBytes16(placement.after) : null;
+    const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
     const payload = o.payload ?? null;
-    return getLocalOp("SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)", [
+    return getLocalOp('SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)', [
       replicaBytes,
       nodeIdToBytes16(parent),
       nodeIdToBytes16(node),
@@ -481,8 +505,8 @@ export function createTreecrdtSqliteWriter(runner: SqliteRunner, opts: { replica
   };
 
   const move = async (node: string, newParent: string, placement: TreecrdtSqlitePlacement) => {
-    const afterNode = placement.type === "after" ? nodeIdToBytes16(placement.after) : null;
-    return getLocalOp("SELECT treecrdt_local_move(?1,?2,?3,?4,?5)", [
+    const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
+    return getLocalOp('SELECT treecrdt_local_move(?1,?2,?3,?4,?5)', [
       replicaBytes,
       nodeIdToBytes16(node),
       nodeIdToBytes16(newParent),
@@ -492,11 +516,11 @@ export function createTreecrdtSqliteWriter(runner: SqliteRunner, opts: { replica
   };
 
   const del = async (node: string) => {
-    return getLocalOp("SELECT treecrdt_local_delete(?1,?2)", [replicaBytes, nodeIdToBytes16(node)]);
+    return getLocalOp('SELECT treecrdt_local_delete(?1,?2)', [replicaBytes, nodeIdToBytes16(node)]);
   };
 
   const payload = async (node: string, next: Uint8Array | null) => {
-    return getLocalOp("SELECT treecrdt_local_payload(?1,?2,?3)", [
+    return getLocalOp('SELECT treecrdt_local_payload(?1,?2,?3)', [
       replicaBytes,
       nodeIdToBytes16(node),
       next,
@@ -531,11 +555,11 @@ export function decodeSqliteTreeChildRows(raw: unknown): SqliteTreeChildRow[] {
     const orderKey =
       rawOrderKey === null || rawOrderKey === undefined
         ? null
-        : typeof rawOrderKey === "string"
+        : typeof rawOrderKey === 'string'
           ? hexToBytes(rawOrderKey)
-        : rawOrderKey instanceof Uint8Array
-          ? rawOrderKey
-          : Uint8Array.from(rawOrderKey as any);
+          : rawOrderKey instanceof Uint8Array
+            ? rawOrderKey
+            : Uint8Array.from(rawOrderKey as any);
     return { node, orderKey };
   });
 }
@@ -556,11 +580,11 @@ export function decodeSqliteTreeRows(raw: unknown): SqliteTreeRow[] {
     const orderKey =
       rawOrderKey === null || rawOrderKey === undefined
         ? null
-        : typeof rawOrderKey === "string"
+        : typeof rawOrderKey === 'string'
           ? hexToBytes(rawOrderKey)
-        : rawOrderKey instanceof Uint8Array
-          ? rawOrderKey
-          : Uint8Array.from(rawOrderKey as any);
+          : rawOrderKey instanceof Uint8Array
+            ? rawOrderKey
+            : Uint8Array.from(rawOrderKey as any);
     const tombstone = Boolean(row.tombstone);
     return { node, parent, orderKey, tombstone };
   });
@@ -573,9 +597,12 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
     const counter = Number(row.counter);
     const lamport = Number(row.lamport);
     const knownState =
-      row.known_state && (row.known_state instanceof Uint8Array ? row.known_state : Uint8Array.from(row.known_state));
-    const base = { meta: { id: { replica, counter }, lamport, ...(knownState ? { knownState } : {}) } } as Operation;
-    if (row.kind === "insert") {
+      row.known_state &&
+      (row.known_state instanceof Uint8Array ? row.known_state : Uint8Array.from(row.known_state));
+    const base = {
+      meta: { id: { replica, counter }, lamport, ...(knownState ? { knownState } : {}) },
+    } as Operation;
+    if (row.kind === 'insert') {
       const rawPayload = row.payload;
       const payload =
         rawPayload === null || rawPayload === undefined
@@ -585,13 +612,14 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
             : Uint8Array.from(rawPayload as any);
       const rawOrderKey = row.order_key;
       if (rawOrderKey === null || rawOrderKey === undefined) {
-        throw new Error("missing order_key for insert op from sqlite");
+        throw new Error('missing order_key for insert op from sqlite');
       }
-      const orderKey = rawOrderKey instanceof Uint8Array ? rawOrderKey : Uint8Array.from(rawOrderKey as any);
+      const orderKey =
+        rawOrderKey instanceof Uint8Array ? rawOrderKey : Uint8Array.from(rawOrderKey as any);
       return {
         ...base,
         kind: {
-          type: "insert",
+          type: 'insert',
           parent: decodeNodeId(row.parent),
           node: decodeNodeId(row.node),
           orderKey,
@@ -599,35 +627,43 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
         },
       } as Operation;
     }
-    if (row.kind === "move") {
+    if (row.kind === 'move') {
       const rawOrderKey = row.order_key;
       if (rawOrderKey === null || rawOrderKey === undefined) {
-        throw new Error("missing order_key for move op from sqlite");
+        throw new Error('missing order_key for move op from sqlite');
       }
-      const orderKey = rawOrderKey instanceof Uint8Array ? rawOrderKey : Uint8Array.from(rawOrderKey as any);
+      const orderKey =
+        rawOrderKey instanceof Uint8Array ? rawOrderKey : Uint8Array.from(rawOrderKey as any);
       return {
         ...base,
         kind: {
-          type: "move",
+          type: 'move',
           node: decodeNodeId(row.node),
           newParent: decodeNodeId(row.new_parent),
           orderKey,
         },
       } as Operation;
     }
-    if (row.kind === "delete") {
-      return { ...base, kind: { type: "delete", node: decodeNodeId(row.node) } } as Operation;
+    if (row.kind === 'delete') {
+      return { ...base, kind: { type: 'delete', node: decodeNodeId(row.node) } } as Operation;
     }
-    if (row.kind === "tombstone") {
-      return { ...base, kind: { type: "tombstone", node: decodeNodeId(row.node) } } as Operation;
+    if (row.kind === 'tombstone') {
+      return { ...base, kind: { type: 'tombstone', node: decodeNodeId(row.node) } } as Operation;
     }
-    if (row.kind === "payload") {
+    if (row.kind === 'payload') {
       const rawPayload = row.payload;
       if (rawPayload === null || rawPayload === undefined) {
-        return { ...base, kind: { type: "payload", node: decodeNodeId(row.node), payload: null } } as Operation;
+        return {
+          ...base,
+          kind: { type: 'payload', node: decodeNodeId(row.node), payload: null },
+        } as Operation;
       }
-      const bytes = rawPayload instanceof Uint8Array ? rawPayload : Uint8Array.from(rawPayload as any);
-      return { ...base, kind: { type: "payload", node: decodeNodeId(row.node), payload: bytes } } as Operation;
+      const bytes =
+        rawPayload instanceof Uint8Array ? rawPayload : Uint8Array.from(rawPayload as any);
+      return {
+        ...base,
+        kind: { type: 'payload', node: decodeNodeId(row.node), payload: bytes },
+      } as Operation;
     }
     throw new Error(`unknown op kind from sqlite: ${String(row.kind)}`);
   });
