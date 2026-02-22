@@ -1,12 +1,12 @@
-import { decode, encode, rfc8949EncodeOptions } from "cborg";
+import { decode, encode, rfc8949EncodeOptions } from 'cborg';
 
-import { blake3 } from "@noble/hashes/blake3";
-import { utf8ToBytes } from "@noble/hashes/utils";
+import { blake3 } from '@noble/hashes/blake3';
+import { utf8ToBytes } from '@noble/hashes/utils';
 
-import { signEd25519, verifyEd25519 } from "./ed25519.js";
+import { signEd25519, verifyEd25519 } from './ed25519.js';
 
 const COSE_EDDSA_ALG = -8;
-const COSE_SIGNATURE1 = "Signature1";
+const COSE_SIGNATURE1 = 'Signature1';
 
 export type CoseSign1 = {
   protected: Uint8Array;
@@ -44,26 +44,32 @@ export function coseSign1Ed25519(opts: {
 
 export async function coseDecodeSign1(bytes: Uint8Array): Promise<CoseSign1> {
   const value = decodeCbor(bytes);
-  if (!Array.isArray(value) || value.length !== 4) throw new Error("COSE_Sign1 must be a 4-item array");
+  if (!Array.isArray(value) || value.length !== 4)
+    throw new Error('COSE_Sign1 must be a 4-item array');
 
   const [protectedHeader, unprotectedHeader, payload, signature] = value as unknown[];
-  if (!(protectedHeader instanceof Uint8Array)) throw new Error("COSE_Sign1[0] (protected) must be bstr");
-  if (!(unprotectedHeader instanceof Map)) throw new Error("COSE_Sign1[1] (unprotected) must be map");
-  if (!(payload instanceof Uint8Array)) throw new Error("COSE_Sign1[2] (payload) must be bstr");
-  if (!(signature instanceof Uint8Array)) throw new Error("COSE_Sign1[3] (signature) must be bstr");
+  if (!(protectedHeader instanceof Uint8Array))
+    throw new Error('COSE_Sign1[0] (protected) must be bstr');
+  if (!(unprotectedHeader instanceof Map))
+    throw new Error('COSE_Sign1[1] (unprotected) must be map');
+  if (!(payload instanceof Uint8Array)) throw new Error('COSE_Sign1[2] (payload) must be bstr');
+  if (!(signature instanceof Uint8Array)) throw new Error('COSE_Sign1[3] (signature) must be bstr');
 
   return { protected: protectedHeader, unprotected: unprotectedHeader, payload, signature };
 }
 
-export async function coseVerifySign1Ed25519(opts: { bytes: Uint8Array; publicKey: Uint8Array }): Promise<Uint8Array> {
+export async function coseVerifySign1Ed25519(opts: {
+  bytes: Uint8Array;
+  publicKey: Uint8Array;
+}): Promise<Uint8Array> {
   const decoded = await coseDecodeSign1(opts.bytes);
   const toVerify = sigStructure(decoded.protected, decoded.payload);
   const ok = await verifyEd25519(decoded.signature, toVerify, opts.publicKey);
-  if (!ok) throw new Error("COSE_Sign1 signature verification failed");
+  if (!ok) throw new Error('COSE_Sign1 signature verification failed');
   return decoded.payload;
 }
 
-const TOKEN_ID_DOMAIN = utf8ToBytes("treecrdt/tokenid/v1");
+const TOKEN_ID_DOMAIN = utf8ToBytes('treecrdt/tokenid/v1');
 
 export function deriveTokenIdV1(tokenBytes: Uint8Array): Uint8Array {
   const out = new Uint8Array(TOKEN_ID_DOMAIN.length + tokenBytes.length);

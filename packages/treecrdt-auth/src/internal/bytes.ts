@@ -22,7 +22,7 @@ export function u32be(n: number): Uint8Array {
 }
 
 export function u64be(n: bigint | number): Uint8Array {
-  const v = typeof n === "bigint" ? n : BigInt(n);
+  const v = typeof n === 'bigint' ? n : BigInt(n);
   if (v < 0n || v > 0xffff_ffff_ffff_ffffn) throw new Error(`u64 out of range: ${v}`);
   const out = new Uint8Array(8);
   new DataView(out.buffer).setBigUint64(0, v, false);

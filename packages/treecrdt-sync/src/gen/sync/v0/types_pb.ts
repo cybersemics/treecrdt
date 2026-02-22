@@ -2,20 +2,23 @@
 // @generated from file sync/v0/types.proto (package treecrdt.sync.v0, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from '@bufbuild/protobuf/codegenv2';
+import { fileDesc, messageDesc } from '@bufbuild/protobuf/codegenv2';
+import type { Message } from '@bufbuild/protobuf';
 
 /**
  * Describes the file sync/v0/types.proto.
  */
-export const file_sync_v0_types: GenFile = /*@__PURE__*/
-  fileDesc("ChNzeW5jL3YwL3R5cGVzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIhcKBk5vZGVJZBINCgVieXRlcxgBIAEoDCIaCglSZXBsaWNhSWQSDQoFYnl0ZXMYASABKAwiFgoFT3BSZWYSDQoFYnl0ZXMYASABKAwiTAoLT3BlcmF0aW9uSWQSLAoHcmVwbGljYRgBIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUmVwbGljYUlkEg8KB2NvdW50ZXIYAiABKAQiZAoRT3BlcmF0aW9uTWV0YWRhdGESKQoCaWQYASABKAsyHS50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbklkEg8KB2xhbXBvcnQYAiABKAQSEwoLa25vd25fc3RhdGUYAyABKAxiBnByb3RvMw");
+export const file_sync_v0_types: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    'ChNzeW5jL3YwL3R5cGVzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIhcKBk5vZGVJZBINCgVieXRlcxgBIAEoDCIaCglSZXBsaWNhSWQSDQoFYnl0ZXMYASABKAwiFgoFT3BSZWYSDQoFYnl0ZXMYASABKAwiTAoLT3BlcmF0aW9uSWQSLAoHcmVwbGljYRgBIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUmVwbGljYUlkEg8KB2NvdW50ZXIYAiABKAQiZAoRT3BlcmF0aW9uTWV0YWRhdGESKQoCaWQYASABKAsyHS50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbklkEg8KB2xhbXBvcnQYAiABKAQSEwoLa25vd25fc3RhdGUYAyABKAxiBnByb3RvMw',
+  );
 
 /**
  * @generated from message treecrdt.sync.v0.NodeId
  */
-export type NodeId = Message<"treecrdt.sync.v0.NodeId"> & {
+export type NodeId = Message<'treecrdt.sync.v0.NodeId'> & {
   /**
    * @generated from field: bytes bytes = 1;
    */
@@ -26,13 +29,12 @@ export type NodeId = Message<"treecrdt.sync.v0.NodeId"> & {
  * Describes the message treecrdt.sync.v0.NodeId.
  * Use `create(NodeIdSchema)` to create a new message.
  */
-export const NodeIdSchema: GenMessage<NodeId> = /*@__PURE__*/
-  messageDesc(file_sync_v0_types, 0);
+export const NodeIdSchema: GenMessage<NodeId> = /*@__PURE__*/ messageDesc(file_sync_v0_types, 0);
 
 /**
  * @generated from message treecrdt.sync.v0.ReplicaId
  */
-export type ReplicaId = Message<"treecrdt.sync.v0.ReplicaId"> & {
+export type ReplicaId = Message<'treecrdt.sync.v0.ReplicaId'> & {
   /**
    * @generated from field: bytes bytes = 1;
    */
@@ -43,13 +45,14 @@ export type ReplicaId = Message<"treecrdt.sync.v0.ReplicaId"> & {
  * Describes the message treecrdt.sync.v0.ReplicaId.
  * Use `create(ReplicaIdSchema)` to create a new message.
  */
-export const ReplicaIdSchema: GenMessage<ReplicaId> = /*@__PURE__*/
+export const ReplicaIdSchema: GenMessage<ReplicaId> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_types, 1);
 
 /**
  * @generated from message treecrdt.sync.v0.OpRef
  */
-export type OpRef = Message<"treecrdt.sync.v0.OpRef"> & {
+export type OpRef = Message<'treecrdt.sync.v0.OpRef'> & {
   /**
    * @generated from field: bytes bytes = 1;
    */
@@ -60,13 +63,12 @@ export type OpRef = Message<"treecrdt.sync.v0.OpRef"> & {
  * Describes the message treecrdt.sync.v0.OpRef.
  * Use `create(OpRefSchema)` to create a new message.
  */
-export const OpRefSchema: GenMessage<OpRef> = /*@__PURE__*/
-  messageDesc(file_sync_v0_types, 2);
+export const OpRefSchema: GenMessage<OpRef> = /*@__PURE__*/ messageDesc(file_sync_v0_types, 2);
 
 /**
  * @generated from message treecrdt.sync.v0.OperationId
  */
-export type OperationId = Message<"treecrdt.sync.v0.OperationId"> & {
+export type OperationId = Message<'treecrdt.sync.v0.OperationId'> & {
   /**
    * @generated from field: treecrdt.sync.v0.ReplicaId replica = 1;
    */
@@ -82,13 +84,14 @@ export type OperationId = Message<"treecrdt.sync.v0.OperationId"> & {
  * Describes the message treecrdt.sync.v0.OperationId.
  * Use `create(OperationIdSchema)` to create a new message.
  */
-export const OperationIdSchema: GenMessage<OperationId> = /*@__PURE__*/
+export const OperationIdSchema: GenMessage<OperationId> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_types, 3);
 
 /**
  * @generated from message treecrdt.sync.v0.OperationMetadata
  */
-export type OperationMetadata = Message<"treecrdt.sync.v0.OperationMetadata"> & {
+export type OperationMetadata = Message<'treecrdt.sync.v0.OperationMetadata'> & {
   /**
    * @generated from field: treecrdt.sync.v0.OperationId id = 1;
    */
@@ -112,6 +115,6 @@ export type OperationMetadata = Message<"treecrdt.sync.v0.OperationMetadata"> & 
  * Describes the message treecrdt.sync.v0.OperationMetadata.
  * Use `create(OperationMetadataSchema)` to create a new message.
  */
-export const OperationMetadataSchema: GenMessage<OperationMetadata> = /*@__PURE__*/
+export const OperationMetadataSchema: GenMessage<OperationMetadata> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_types, 4);
-

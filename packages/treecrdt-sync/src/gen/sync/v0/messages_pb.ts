@@ -2,26 +2,30 @@
 // @generated from file sync/v0/messages.proto (package treecrdt.sync.v0, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Filter } from "./filters_pb.js";
-import { file_sync_v0_filters } from "./filters_pb.js";
-import type { Operation } from "./ops_pb.js";
-import { file_sync_v0_ops } from "./ops_pb.js";
-import type { OpRef } from "./types_pb.js";
-import { file_sync_v0_types } from "./types_pb.js";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenEnum, GenFile, GenMessage } from '@bufbuild/protobuf/codegenv2';
+import { enumDesc, fileDesc, messageDesc } from '@bufbuild/protobuf/codegenv2';
+import type { Filter } from './filters_pb.js';
+import { file_sync_v0_filters } from './filters_pb.js';
+import type { Operation } from './ops_pb.js';
+import { file_sync_v0_ops } from './ops_pb.js';
+import type { OpRef } from './types_pb.js';
+import { file_sync_v0_types } from './types_pb.js';
+import type { Message } from '@bufbuild/protobuf';
 
 /**
  * Describes the file sync/v0/messages.proto.
  */
-export const file_sync_v0_messages: GenFile = /*@__PURE__*/
-  fileDesc("ChZzeW5jL3YwL21lc3NhZ2VzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIikKCkNhcGFiaWxpdHkSDAoEbmFtZRgBIAEoCRINCgV2YWx1ZRgCIAEoCSJCCgpGaWx0ZXJTcGVjEgoKAmlkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIn8KBUhlbGxvEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRItCgdmaWx0ZXJzGAIgAygLMhwudHJlZWNyZHQuc3luYy52MC5GaWx0ZXJTcGVjEhMKC21heF9sYW1wb3J0GAMgASgEIloKDlJlamVjdGVkRmlsdGVyEgoKAmlkGAEgASgJEisKBnJlYXNvbhgCIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAyABKAkiqQEKCEhlbGxvQWNrEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRIYChBhY2NlcHRlZF9maWx0ZXJzGAIgAygJEjoKEHJlamVjdGVkX2ZpbHRlcnMYAyADKAsyIC50cmVlY3JkdC5zeW5jLnYwLlJlamVjdGVkRmlsdGVyEhMKC21heF9sYW1wb3J0GAQgASgEIkIKDVJpYmx0Q29kZXdvcmQSDQoFY291bnQYASABKBESDwoHa2V5X3N1bRgCIAEoDBIRCgl2YWx1ZV9zdW0YAyABKAwiewoOUmlibHRDb2Rld29yZHMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEhMKC3N0YXJ0X2luZGV4GAMgASgEEjIKCWNvZGV3b3JkcxgEIAMoCzIfLnRyZWVjcmR0LnN5bmMudjAuUmlibHRDb2Rld29yZCKOAQoMUmlibHREZWNvZGVkEi8KDnNlbmRlcl9taXNzaW5nGAEgAygLMhcudHJlZWNyZHQuc3luYy52MC5PcFJlZhIxChByZWNlaXZlcl9taXNzaW5nGAIgAygLMhcudHJlZWNyZHQuc3luYy52MC5PcFJlZhIaChJjb2Rld29yZHNfcmVjZWl2ZWQYAyABKAQiVAoLUmlibHRGYWlsZWQSNAoGcmVhc29uGAEgASgOMiQudHJlZWNyZHQuc3luYy52MC5SaWJsdEZhaWx1cmVSZWFzb24SDwoHbWVzc2FnZRgCIAEoCSKeAQoLUmlibHRTdGF0dXMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEjEKB2RlY29kZWQYAyABKAsyHi50cmVlY3JkdC5zeW5jLnYwLlJpYmx0RGVjb2RlZEgAEi8KBmZhaWxlZBgEIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuUmlibHRGYWlsZWRIAEIJCgdwYXlsb2FkIn0KCE9wc0JhdGNoEhEKCWZpbHRlcl9pZBgBIAEoCRIoCgNvcHMYAiADKAsyGy50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbhImCgRhdXRoGAQgAygLMhgudHJlZWNyZHQuc3luYy52MC5PcEF1dGgSDAoEZG9uZRgDIAEoCCIuCgZPcEF1dGgSCwoDc2lnGAIgASgMEhEKCXByb29mX3JlZhgDIAEoDEoECAEQAiJOCglTdWJzY3JpYmUSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIkAKDFN1YnNjcmliZUFjaxIXCg9zdWJzY3JpcHRpb25faWQYASABKAkSFwoPY3VycmVudF9sYW1wb3J0GAIgASgEIiYKC1Vuc3Vic2NyaWJlEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCSJzCglTeW5jRXJyb3ISKQoEY29kZRgBIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAiABKAkSEQoJZmlsdGVyX2lkGAMgASgJEhcKD3N1YnNjcmlwdGlvbl9pZBgEIAEoCSp7ChJSaWJsdEZhaWx1cmVSZWFzb24SJAogUklCTFRfRkFJTFVSRV9SRUFTT05fVU5TUEVDSUZJRUQQABIaChZNQVhfQ09ERVdPUkRTX0VYQ0VFREVEEAESEQoNREVDT0RFX0ZBSUxFRBACEhAKDE9VVF9PRl9PUkRFUhADKrcBCglFcnJvckNvZGUSGgoWRVJST1JfQ09ERV9VTlNQRUNJRklFRBAAEhcKE1VOU1VQUE9SVEVEX1ZFUlNJT04QARIYChRGSUxURVJfTk9UX1NVUFBPUlRFRBACEhQKEFRPT19NQU5ZX0ZJTFRFUlMQAxIgChxSRUNPTkNJTElBVElPTl9ERUNPREVfRkFJTEVEEAQSEAoMUkFURV9MSU1JVEVEEAUSEQoNRE9DX05PVF9GT1VORBAGYgZwcm90bzM", [file_sync_v0_filters, file_sync_v0_ops, file_sync_v0_types]);
+export const file_sync_v0_messages: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    'ChZzeW5jL3YwL21lc3NhZ2VzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIikKCkNhcGFiaWxpdHkSDAoEbmFtZRgBIAEoCRINCgV2YWx1ZRgCIAEoCSJCCgpGaWx0ZXJTcGVjEgoKAmlkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIn8KBUhlbGxvEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRItCgdmaWx0ZXJzGAIgAygLMhwudHJlZWNyZHQuc3luYy52MC5GaWx0ZXJTcGVjEhMKC21heF9sYW1wb3J0GAMgASgEIloKDlJlamVjdGVkRmlsdGVyEgoKAmlkGAEgASgJEisKBnJlYXNvbhgCIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAyABKAkiqQEKCEhlbGxvQWNrEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRIYChBhY2NlcHRlZF9maWx0ZXJzGAIgAygJEjoKEHJlamVjdGVkX2ZpbHRlcnMYAyADKAsyIC50cmVlY3JkdC5zeW5jLnYwLlJlamVjdGVkRmlsdGVyEhMKC21heF9sYW1wb3J0GAQgASgEIkIKDVJpYmx0Q29kZXdvcmQSDQoFY291bnQYASABKBESDwoHa2V5X3N1bRgCIAEoDBIRCgl2YWx1ZV9zdW0YAyABKAwiewoOUmlibHRDb2Rld29yZHMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEhMKC3N0YXJ0X2luZGV4GAMgASgEEjIKCWNvZGV3b3JkcxgEIAMoCzIfLnRyZWVjcmR0LnN5bmMudjAuUmlibHRDb2Rld29yZCKOAQoMUmlibHREZWNvZGVkEi8KDnNlbmRlcl9taXNzaW5nGAEgAygLMhcudHJlZWNyZHQuc3luYy52MC5PcFJlZhIxChByZWNlaXZlcl9taXNzaW5nGAIgAygLMhcudHJlZWNyZHQuc3luYy52MC5PcFJlZhIaChJjb2Rld29yZHNfcmVjZWl2ZWQYAyABKAQiVAoLUmlibHRGYWlsZWQSNAoGcmVhc29uGAEgASgOMiQudHJlZWNyZHQuc3luYy52MC5SaWJsdEZhaWx1cmVSZWFzb24SDwoHbWVzc2FnZRgCIAEoCSKeAQoLUmlibHRTdGF0dXMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEjEKB2RlY29kZWQYAyABKAsyHi50cmVlY3JkdC5zeW5jLnYwLlJpYmx0RGVjb2RlZEgAEi8KBmZhaWxlZBgEIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuUmlibHRGYWlsZWRIAEIJCgdwYXlsb2FkIn0KCE9wc0JhdGNoEhEKCWZpbHRlcl9pZBgBIAEoCRIoCgNvcHMYAiADKAsyGy50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbhImCgRhdXRoGAQgAygLMhgudHJlZWNyZHQuc3luYy52MC5PcEF1dGgSDAoEZG9uZRgDIAEoCCIuCgZPcEF1dGgSCwoDc2lnGAIgASgMEhEKCXByb29mX3JlZhgDIAEoDEoECAEQAiJOCglTdWJzY3JpYmUSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIkAKDFN1YnNjcmliZUFjaxIXCg9zdWJzY3JpcHRpb25faWQYASABKAkSFwoPY3VycmVudF9sYW1wb3J0GAIgASgEIiYKC1Vuc3Vic2NyaWJlEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCSJzCglTeW5jRXJyb3ISKQoEY29kZRgBIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAiABKAkSEQoJZmlsdGVyX2lkGAMgASgJEhcKD3N1YnNjcmlwdGlvbl9pZBgEIAEoCSp7ChJSaWJsdEZhaWx1cmVSZWFzb24SJAogUklCTFRfRkFJTFVSRV9SRUFTT05fVU5TUEVDSUZJRUQQABIaChZNQVhfQ09ERVdPUkRTX0VYQ0VFREVEEAESEQoNREVDT0RFX0ZBSUxFRBACEhAKDE9VVF9PRl9PUkRFUhADKrcBCglFcnJvckNvZGUSGgoWRVJST1JfQ09ERV9VTlNQRUNJRklFRBAAEhcKE1VOU1VQUE9SVEVEX1ZFUlNJT04QARIYChRGSUxURVJfTk9UX1NVUFBPUlRFRBACEhQKEFRPT19NQU5ZX0ZJTFRFUlMQAxIgChxSRUNPTkNJTElBVElPTl9ERUNPREVfRkFJTEVEEAQSEAoMUkFURV9MSU1JVEVEEAUSEQoNRE9DX05PVF9GT1VORBAGYgZwcm90bzM',
+    [file_sync_v0_filters, file_sync_v0_ops, file_sync_v0_types],
+  );
 
 /**
  * @generated from message treecrdt.sync.v0.Capability
  */
-export type Capability = Message<"treecrdt.sync.v0.Capability"> & {
+export type Capability = Message<'treecrdt.sync.v0.Capability'> & {
   /**
    * @generated from field: string name = 1;
    */
@@ -37,13 +41,14 @@ export type Capability = Message<"treecrdt.sync.v0.Capability"> & {
  * Describes the message treecrdt.sync.v0.Capability.
  * Use `create(CapabilitySchema)` to create a new message.
  */
-export const CapabilitySchema: GenMessage<Capability> = /*@__PURE__*/
+export const CapabilitySchema: GenMessage<Capability> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 0);
 
 /**
  * @generated from message treecrdt.sync.v0.FilterSpec
  */
-export type FilterSpec = Message<"treecrdt.sync.v0.FilterSpec"> & {
+export type FilterSpec = Message<'treecrdt.sync.v0.FilterSpec'> & {
   /**
    * @generated from field: string id = 1;
    */
@@ -59,13 +64,14 @@ export type FilterSpec = Message<"treecrdt.sync.v0.FilterSpec"> & {
  * Describes the message treecrdt.sync.v0.FilterSpec.
  * Use `create(FilterSpecSchema)` to create a new message.
  */
-export const FilterSpecSchema: GenMessage<FilterSpec> = /*@__PURE__*/
+export const FilterSpecSchema: GenMessage<FilterSpec> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 1);
 
 /**
  * @generated from message treecrdt.sync.v0.Hello
  */
-export type Hello = Message<"treecrdt.sync.v0.Hello"> & {
+export type Hello = Message<'treecrdt.sync.v0.Hello'> & {
   /**
    * @generated from field: repeated treecrdt.sync.v0.Capability capabilities = 1;
    */
@@ -86,13 +92,12 @@ export type Hello = Message<"treecrdt.sync.v0.Hello"> & {
  * Describes the message treecrdt.sync.v0.Hello.
  * Use `create(HelloSchema)` to create a new message.
  */
-export const HelloSchema: GenMessage<Hello> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 2);
+export const HelloSchema: GenMessage<Hello> = /*@__PURE__*/ messageDesc(file_sync_v0_messages, 2);
 
 /**
  * @generated from message treecrdt.sync.v0.RejectedFilter
  */
-export type RejectedFilter = Message<"treecrdt.sync.v0.RejectedFilter"> & {
+export type RejectedFilter = Message<'treecrdt.sync.v0.RejectedFilter'> & {
   /**
    * @generated from field: string id = 1;
    */
@@ -113,13 +118,14 @@ export type RejectedFilter = Message<"treecrdt.sync.v0.RejectedFilter"> & {
  * Describes the message treecrdt.sync.v0.RejectedFilter.
  * Use `create(RejectedFilterSchema)` to create a new message.
  */
-export const RejectedFilterSchema: GenMessage<RejectedFilter> = /*@__PURE__*/
+export const RejectedFilterSchema: GenMessage<RejectedFilter> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 3);
 
 /**
  * @generated from message treecrdt.sync.v0.HelloAck
  */
-export type HelloAck = Message<"treecrdt.sync.v0.HelloAck"> & {
+export type HelloAck = Message<'treecrdt.sync.v0.HelloAck'> & {
   /**
    * @generated from field: repeated treecrdt.sync.v0.Capability capabilities = 1;
    */
@@ -145,7 +151,8 @@ export type HelloAck = Message<"treecrdt.sync.v0.HelloAck"> & {
  * Describes the message treecrdt.sync.v0.HelloAck.
  * Use `create(HelloAckSchema)` to create a new message.
  */
-export const HelloAckSchema: GenMessage<HelloAck> = /*@__PURE__*/
+export const HelloAckSchema: GenMessage<HelloAck> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 4);
 
 /**
@@ -162,7 +169,7 @@ export const HelloAckSchema: GenMessage<HelloAck> = /*@__PURE__*/
  *
  * @generated from message treecrdt.sync.v0.RibltCodeword
  */
-export type RibltCodeword = Message<"treecrdt.sync.v0.RibltCodeword"> & {
+export type RibltCodeword = Message<'treecrdt.sync.v0.RibltCodeword'> & {
   /**
    * @generated from field: sint32 count = 1;
    */
@@ -187,13 +194,14 @@ export type RibltCodeword = Message<"treecrdt.sync.v0.RibltCodeword"> & {
  * Describes the message treecrdt.sync.v0.RibltCodeword.
  * Use `create(RibltCodewordSchema)` to create a new message.
  */
-export const RibltCodewordSchema: GenMessage<RibltCodeword> = /*@__PURE__*/
+export const RibltCodewordSchema: GenMessage<RibltCodeword> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 5);
 
 /**
  * @generated from message treecrdt.sync.v0.RibltCodewords
  */
-export type RibltCodewords = Message<"treecrdt.sync.v0.RibltCodewords"> & {
+export type RibltCodewords = Message<'treecrdt.sync.v0.RibltCodewords'> & {
   /**
    * @generated from field: string filter_id = 1;
    */
@@ -221,13 +229,14 @@ export type RibltCodewords = Message<"treecrdt.sync.v0.RibltCodewords"> & {
  * Describes the message treecrdt.sync.v0.RibltCodewords.
  * Use `create(RibltCodewordsSchema)` to create a new message.
  */
-export const RibltCodewordsSchema: GenMessage<RibltCodewords> = /*@__PURE__*/
+export const RibltCodewordsSchema: GenMessage<RibltCodewords> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 6);
 
 /**
  * @generated from message treecrdt.sync.v0.RibltDecoded
  */
-export type RibltDecoded = Message<"treecrdt.sync.v0.RibltDecoded"> & {
+export type RibltDecoded = Message<'treecrdt.sync.v0.RibltDecoded'> & {
   /**
    * @generated from field: repeated treecrdt.sync.v0.OpRef sender_missing = 1;
    */
@@ -248,13 +257,14 @@ export type RibltDecoded = Message<"treecrdt.sync.v0.RibltDecoded"> & {
  * Describes the message treecrdt.sync.v0.RibltDecoded.
  * Use `create(RibltDecodedSchema)` to create a new message.
  */
-export const RibltDecodedSchema: GenMessage<RibltDecoded> = /*@__PURE__*/
+export const RibltDecodedSchema: GenMessage<RibltDecoded> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 7);
 
 /**
  * @generated from message treecrdt.sync.v0.RibltFailed
  */
-export type RibltFailed = Message<"treecrdt.sync.v0.RibltFailed"> & {
+export type RibltFailed = Message<'treecrdt.sync.v0.RibltFailed'> & {
   /**
    * @generated from field: treecrdt.sync.v0.RibltFailureReason reason = 1;
    */
@@ -270,13 +280,14 @@ export type RibltFailed = Message<"treecrdt.sync.v0.RibltFailed"> & {
  * Describes the message treecrdt.sync.v0.RibltFailed.
  * Use `create(RibltFailedSchema)` to create a new message.
  */
-export const RibltFailedSchema: GenMessage<RibltFailed> = /*@__PURE__*/
+export const RibltFailedSchema: GenMessage<RibltFailed> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 8);
 
 /**
  * @generated from message treecrdt.sync.v0.RibltStatus
  */
-export type RibltStatus = Message<"treecrdt.sync.v0.RibltStatus"> & {
+export type RibltStatus = Message<'treecrdt.sync.v0.RibltStatus'> & {
   /**
    * @generated from field: string filter_id = 1;
    */
@@ -290,32 +301,36 @@ export type RibltStatus = Message<"treecrdt.sync.v0.RibltStatus"> & {
   /**
    * @generated from oneof treecrdt.sync.v0.RibltStatus.payload
    */
-  payload: {
-    /**
-     * @generated from field: treecrdt.sync.v0.RibltDecoded decoded = 3;
-     */
-    value: RibltDecoded;
-    case: "decoded";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.RibltFailed failed = 4;
-     */
-    value: RibltFailed;
-    case: "failed";
-  } | { case: undefined; value?: undefined };
+  payload:
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.RibltDecoded decoded = 3;
+         */
+        value: RibltDecoded;
+        case: 'decoded';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.RibltFailed failed = 4;
+         */
+        value: RibltFailed;
+        case: 'failed';
+      }
+    | { case: undefined; value?: undefined };
 };
 
 /**
  * Describes the message treecrdt.sync.v0.RibltStatus.
  * Use `create(RibltStatusSchema)` to create a new message.
  */
-export const RibltStatusSchema: GenMessage<RibltStatus> = /*@__PURE__*/
+export const RibltStatusSchema: GenMessage<RibltStatus> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 9);
 
 /**
  * @generated from message treecrdt.sync.v0.OpsBatch
  */
-export type OpsBatch = Message<"treecrdt.sync.v0.OpsBatch"> & {
+export type OpsBatch = Message<'treecrdt.sync.v0.OpsBatch'> & {
   /**
    * @generated from field: string filter_id = 1;
    */
@@ -346,7 +361,8 @@ export type OpsBatch = Message<"treecrdt.sync.v0.OpsBatch"> & {
  * Describes the message treecrdt.sync.v0.OpsBatch.
  * Use `create(OpsBatchSchema)` to create a new message.
  */
-export const OpsBatchSchema: GenMessage<OpsBatch> = /*@__PURE__*/
+export const OpsBatchSchema: GenMessage<OpsBatch> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 10);
 
 /**
@@ -357,7 +373,7 @@ export const OpsBatchSchema: GenMessage<OpsBatch> = /*@__PURE__*/
  *
  * @generated from message treecrdt.sync.v0.OpAuth
  */
-export type OpAuth = Message<"treecrdt.sync.v0.OpAuth"> & {
+export type OpAuth = Message<'treecrdt.sync.v0.OpAuth'> & {
   /**
    * Signature bytes (Ed25519: 64 bytes) over the canonical signing input.
    *
@@ -377,7 +393,8 @@ export type OpAuth = Message<"treecrdt.sync.v0.OpAuth"> & {
  * Describes the message treecrdt.sync.v0.OpAuth.
  * Use `create(OpAuthSchema)` to create a new message.
  */
-export const OpAuthSchema: GenMessage<OpAuth> = /*@__PURE__*/
+export const OpAuthSchema: GenMessage<OpAuth> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 11);
 
 /**
@@ -389,7 +406,7 @@ export const OpAuthSchema: GenMessage<OpAuth> = /*@__PURE__*/
  *
  * @generated from message treecrdt.sync.v0.Subscribe
  */
-export type Subscribe = Message<"treecrdt.sync.v0.Subscribe"> & {
+export type Subscribe = Message<'treecrdt.sync.v0.Subscribe'> & {
   /**
    * @generated from field: string subscription_id = 1;
    */
@@ -405,7 +422,8 @@ export type Subscribe = Message<"treecrdt.sync.v0.Subscribe"> & {
  * Describes the message treecrdt.sync.v0.Subscribe.
  * Use `create(SubscribeSchema)` to create a new message.
  */
-export const SubscribeSchema: GenMessage<Subscribe> = /*@__PURE__*/
+export const SubscribeSchema: GenMessage<Subscribe> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 12);
 
 /**
@@ -413,7 +431,7 @@ export const SubscribeSchema: GenMessage<Subscribe> = /*@__PURE__*/
  *
  * @generated from message treecrdt.sync.v0.SubscribeAck
  */
-export type SubscribeAck = Message<"treecrdt.sync.v0.SubscribeAck"> & {
+export type SubscribeAck = Message<'treecrdt.sync.v0.SubscribeAck'> & {
   /**
    * @generated from field: string subscription_id = 1;
    */
@@ -429,7 +447,8 @@ export type SubscribeAck = Message<"treecrdt.sync.v0.SubscribeAck"> & {
  * Describes the message treecrdt.sync.v0.SubscribeAck.
  * Use `create(SubscribeAckSchema)` to create a new message.
  */
-export const SubscribeAckSchema: GenMessage<SubscribeAck> = /*@__PURE__*/
+export const SubscribeAckSchema: GenMessage<SubscribeAck> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 13);
 
 /**
@@ -437,7 +456,7 @@ export const SubscribeAckSchema: GenMessage<SubscribeAck> = /*@__PURE__*/
  *
  * @generated from message treecrdt.sync.v0.Unsubscribe
  */
-export type Unsubscribe = Message<"treecrdt.sync.v0.Unsubscribe"> & {
+export type Unsubscribe = Message<'treecrdt.sync.v0.Unsubscribe'> & {
   /**
    * @generated from field: string subscription_id = 1;
    */
@@ -448,13 +467,14 @@ export type Unsubscribe = Message<"treecrdt.sync.v0.Unsubscribe"> & {
  * Describes the message treecrdt.sync.v0.Unsubscribe.
  * Use `create(UnsubscribeSchema)` to create a new message.
  */
-export const UnsubscribeSchema: GenMessage<Unsubscribe> = /*@__PURE__*/
+export const UnsubscribeSchema: GenMessage<Unsubscribe> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 14);
 
 /**
  * @generated from message treecrdt.sync.v0.SyncError
  */
-export type SyncError = Message<"treecrdt.sync.v0.SyncError"> & {
+export type SyncError = Message<'treecrdt.sync.v0.SyncError'> & {
   /**
    * @generated from field: treecrdt.sync.v0.ErrorCode code = 1;
    */
@@ -480,7 +500,8 @@ export type SyncError = Message<"treecrdt.sync.v0.SyncError"> & {
  * Describes the message treecrdt.sync.v0.SyncError.
  * Use `create(SyncErrorSchema)` to create a new message.
  */
-export const SyncErrorSchema: GenMessage<SyncError> = /*@__PURE__*/
+export const SyncErrorSchema: GenMessage<SyncError> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 15);
 
 /**
@@ -511,7 +532,8 @@ export enum RibltFailureReason {
 /**
  * Describes the enum treecrdt.sync.v0.RibltFailureReason.
  */
-export const RibltFailureReasonSchema: GenEnum<RibltFailureReason> = /*@__PURE__*/
+export const RibltFailureReasonSchema: GenEnum<RibltFailureReason> =
+  /*@__PURE__*/
   enumDesc(file_sync_v0_messages, 0);
 
 /**
@@ -562,5 +584,4 @@ export enum ErrorCode {
 /**
  * Describes the enum treecrdt.sync.v0.ErrorCode.
  */
-export const ErrorCodeSchema: GenEnum<ErrorCode> = /*@__PURE__*/
-  enumDesc(file_sync_v0_messages, 1);
+export const ErrorCodeSchema: GenEnum<ErrorCode> = /*@__PURE__*/ enumDesc(file_sync_v0_messages, 1);

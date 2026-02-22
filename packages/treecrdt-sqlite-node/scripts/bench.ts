@@ -1,11 +1,11 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import Database from "better-sqlite3";
-import { makeWorkload, quantile, runBenchmark } from "@treecrdt/benchmark";
-import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
-import { createSqliteNodeApi, loadTreecrdtExtension } from "../dist/index.js";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import { makeWorkload, quantile, runBenchmark } from '@treecrdt/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
+import { createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
 
-type StorageKind = "memory" | "file";
+type StorageKind = 'memory' | 'file';
 
 const INSERT_MOVE_BENCH_CONFIG: ReadonlyArray<[number, number]> = [
   [100, 10],
@@ -13,30 +13,30 @@ const INSERT_MOVE_BENCH_CONFIG: ReadonlyArray<[number, number]> = [
   [10_000, 10],
 ];
 
-const WORKLOAD: "insert-move" = "insert-move";
-const STORAGES: ReadonlyArray<StorageKind> = ["memory", "file"];
+const WORKLOAD: 'insert-move' = 'insert-move';
+const STORAGES: ReadonlyArray<StorageKind> = ['memory', 'file'];
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
-  if (raw == null || raw === "") return undefined;
+  if (raw == null || raw === '') return undefined;
   const n = Number(raw);
   return Number.isFinite(n) ? n : undefined;
 }
 
 function parseConfigFromArgv(argv: string[]): Array<[number, number]> | null {
   let customConfig: Array<[number, number]> | null = null;
-  const defaultIterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 1);
+  const defaultIterations = Math.max(1, envInt('BENCH_ITERATIONS') ?? 1);
   for (const arg of argv) {
-    if (arg.startsWith("--count=")) {
-      const val = arg.slice("--count=".length).trim();
+    if (arg.startsWith('--count=')) {
+      const val = arg.slice('--count='.length).trim();
       const count = val ? Number(val) : 500;
       customConfig = [[Number.isFinite(count) && count > 0 ? count : 500, defaultIterations]];
       break;
     }
-    if (arg.startsWith("--counts=")) {
+    if (arg.startsWith('--counts=')) {
       const vals = arg
-        .slice("--counts=".length)
-        .split(",")
+        .slice('--counts='.length)
+        .split(',')
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
       const parsed = vals
@@ -57,7 +57,9 @@ async function main() {
   const argv = process.argv.slice(2);
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const config: Array<[number, number]> = parseConfigFromArgv(argv) ?? [...INSERT_MOVE_BENCH_CONFIG];
+  const config: Array<[number, number]> = parseConfigFromArgv(argv) ?? [
+    ...INSERT_MOVE_BENCH_CONFIG,
+  ];
 
   for (const [size, iterations] of config) {
     const workload = makeWorkload(WORKLOAD, size);
@@ -67,22 +69,27 @@ async function main() {
     for (const storage of STORAGES) {
       const adapterFactory = async () => {
         const dbPath =
-          storage === "memory"
-            ? ":memory:"
-            : path.join(repoRoot, "tmp", "sqlite-node-bench", `${workload.name}-${crypto.randomUUID()}.db`);
-        if (storage === "file") {
+          storage === 'memory'
+            ? ':memory:'
+            : path.join(
+                repoRoot,
+                'tmp',
+                'sqlite-node-bench',
+                `${workload.name}-${crypto.randomUUID()}.db`,
+              );
+        if (storage === 'file') {
           await fs.mkdir(path.dirname(dbPath), { recursive: true });
         }
 
         const db = new Database(dbPath);
         loadTreecrdtExtension(db);
         const api = createSqliteNodeApi(db);
-        await api.setDocId("treecrdt-sqlite-node-bench");
+        await api.setDocId('treecrdt-sqlite-node-bench');
         return {
           ...api,
           close: async () => {
             db.close();
-            if (storage === "file") {
+            if (storage === 'file') {
               await fs.rm(dbPath).catch(() => {});
             }
           },
@@ -119,9 +126,14 @@ async function main() {
         result = await runBenchmark(adapterFactory, workload);
       }
 
-      const outFile = path.join(repoRoot, "benchmarks", "sqlite-node", `${storage}-${result.name}.json`);
+      const outFile = path.join(
+        repoRoot,
+        'benchmarks',
+        'sqlite-node',
+        `${storage}-${result.name}.json`,
+      );
       const payload = await writeResult(result, {
-        implementation: "sqlite-node",
+        implementation: 'sqlite-node',
         storage,
         workload: result.name,
         outFile,

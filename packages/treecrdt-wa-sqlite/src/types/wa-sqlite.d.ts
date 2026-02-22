@@ -1,6 +1,6 @@
-import type { Database as AdapterDatabase } from "../index.js";
+import type { Database as AdapterDatabase } from '../index.js';
 
-declare module "wa-sqlite" {
+declare module 'wa-sqlite' {
   export type Statement = unknown;
 
   export interface Database extends AdapterDatabase {}
@@ -16,7 +16,7 @@ declare module "wa-sqlite" {
   export default factory;
 }
 
-declare module "wa-sqlite/sqlite-api" {
+declare module 'wa-sqlite/sqlite-api' {
   export type SQLiteAPI = any;
   export function Factory(module: any): SQLiteAPI;
 }

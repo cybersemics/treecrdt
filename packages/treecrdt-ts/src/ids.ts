@@ -1,15 +1,15 @@
-import type { ReplicaId } from "./index.js";
+import type { ReplicaId } from './index.js';
 
 const ED25519_PUBLIC_KEY_LEN = 32;
 
 function stripHexPrefix(hex: string): string {
-  return hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
+  return hex.startsWith('0x') || hex.startsWith('0X') ? hex.slice(2) : hex;
 }
 
 export function bytesToHex(bytes: Uint8Array | ArrayLike<number>): string {
   const view = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-  let out = "";
-  for (const b of view) out += b.toString(16).padStart(2, "0");
+  let out = '';
+  for (const b of view) out += b.toString(16).padStart(2, '0');
   return out;
 }
 
@@ -19,9 +19,11 @@ export function hexToBytes(hex: string): Uint8Array {
   if (!/^[0-9a-fA-F]*$/.test(clean)) throw new Error(`invalid hex: ${hex}`);
 
   // Fast path for Node.js (Buffer is a Uint8Array subclass).
-  const BufferCtor = (globalThis as any).Buffer as { from?: (data: string, encoding: string) => Uint8Array } | undefined;
-  if (typeof BufferCtor?.from === "function") {
-    return BufferCtor.from(clean, "hex");
+  const BufferCtor = (globalThis as any).Buffer as
+    | { from?: (data: string, encoding: string) => Uint8Array }
+    | undefined;
+  if (typeof BufferCtor?.from === 'function') {
+    return BufferCtor.from(clean, 'hex');
   }
 
   const out = new Uint8Array(clean.length / 2);
@@ -31,8 +33,8 @@ export function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-export const ROOT_NODE_ID_HEX = "0".repeat(32);
-export const TRASH_NODE_ID_HEX = "f".repeat(32);
+export const ROOT_NODE_ID_HEX = '0'.repeat(32);
+export const TRASH_NODE_ID_HEX = 'f'.repeat(32);
 
 /**
  * Normalize a NodeId into the canonical 16-byte (32 hex chars) big-endian form.
@@ -45,7 +47,7 @@ export const TRASH_NODE_ID_HEX = "f".repeat(32);
 export function normalizeNodeId(nodeId: string): string {
   const raw = nodeId.trim();
   const clean = stripHexPrefix(raw);
-  if (clean.length === 0) throw new Error("NodeId must not be empty");
+  if (clean.length === 0) throw new Error('NodeId must not be empty');
 
   if (/^[0-9a-fA-F]{32}$/.test(clean)) return clean.toLowerCase();
 
@@ -53,18 +55,18 @@ export function normalizeNodeId(nodeId: string): string {
     const v = BigInt(clean);
     const maxU128 = (1n << 128n) - 1n;
     if (v < 0n || v > maxU128) throw new Error(`NodeId (decimal) out of u128 range: ${raw}`);
-    return v.toString(16).padStart(32, "0");
+    return v.toString(16).padStart(32, '0');
   }
 
   if (!/^[0-9a-fA-F]+$/.test(clean)) {
     throw new Error(`NodeId must be hex (or decimal u128), got: ${raw}`);
   }
 
-  let hex = clean.replace(/^0+/, "");
-  if (hex.length === 0) hex = "0";
+  let hex = clean.replace(/^0+/, '');
+  if (hex.length === 0) hex = '0';
   if (hex.length > 32) throw new Error(`NodeId hex too long (expected <= 32 chars), got: ${raw}`);
   if (hex.length % 2 === 1) hex = `0${hex}`;
-  return hex.padStart(32, "0").toLowerCase();
+  return hex.padStart(32, '0').toLowerCase();
 }
 
 export function nodeIdToBytes16(nodeId: string): Uint8Array {
@@ -84,13 +86,13 @@ export function nodeIdFromBytes16(bytes: Uint8Array): string {
  * This mirrors the existing adapters' behavior: best-effort conversion to canonical NodeId hex.
  */
 export function decodeNodeId(val: unknown): string {
-  if (val === null || val === undefined) return "";
-  if (typeof val === "bigint") return val.toString(16).padStart(32, "0");
-  if (typeof val === "number") return BigInt(val).toString(16).padStart(32, "0");
-  if (typeof val === "string") {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'bigint') return val.toString(16).padStart(32, '0');
+  if (typeof val === 'number') return BigInt(val).toString(16).padStart(32, '0');
+  if (typeof val === 'string') {
     const clean = val.trim();
     if (/^[0-9a-fA-F]{32}$/.test(clean)) return clean.toLowerCase();
-    if (/^\d+$/.test(clean)) return BigInt(clean).toString(16).padStart(32, "0");
+    if (/^\d+$/.test(clean)) return BigInt(clean).toString(16).padStart(32, '0');
     return clean;
   }
   const bytes = val instanceof Uint8Array ? val : Uint8Array.from(val as any);
@@ -99,7 +101,9 @@ export function decodeNodeId(val: unknown): string {
 
 function assertReplicaIdBytes(bytes: Uint8Array): ReplicaId {
   if (bytes.length !== ED25519_PUBLIC_KEY_LEN) {
-    throw new Error(`ReplicaId must be ${ED25519_PUBLIC_KEY_LEN} bytes (ed25519 pubkey), got ${bytes.length}`);
+    throw new Error(
+      `ReplicaId must be ${ED25519_PUBLIC_KEY_LEN} bytes (ed25519 pubkey), got ${bytes.length}`,
+    );
   }
   return bytes as ReplicaId;
 }
@@ -113,10 +117,10 @@ export function replicaIdFromBytes(bytes: Uint8Array): ReplicaId {
 }
 
 export function decodeReplicaId(val: unknown): ReplicaId {
-  if (val === null || val === undefined) throw new Error("ReplicaId missing");
+  if (val === null || val === undefined) throw new Error('ReplicaId missing');
   if (val instanceof Uint8Array) return assertReplicaIdBytes(val);
-  if (typeof val === "string") {
-    throw new Error("ReplicaId must be bytes (ed25519 pubkey); string form is not supported");
+  if (typeof val === 'string') {
+    throw new Error('ReplicaId must be bytes (ed25519 pubkey); string form is not supported');
   }
   const bytes = Uint8Array.from(val as any);
   return assertReplicaIdBytes(bytes);

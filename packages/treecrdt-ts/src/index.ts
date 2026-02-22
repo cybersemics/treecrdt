@@ -18,7 +18,7 @@ export type OperationMetadata = {
 
 export type OperationKind =
   | {
-      type: "insert";
+      type: 'insert';
       parent: NodeId;
       node: NodeId;
       /**
@@ -36,7 +36,7 @@ export type OperationKind =
       payload?: Uint8Array;
     }
   | {
-      type: "move";
+      type: 'move';
       node: NodeId;
       newParent: NodeId;
       /**
@@ -45,11 +45,11 @@ export type OperationKind =
       orderKey: Uint8Array;
     }
   | {
-      type: "delete";
+      type: 'delete';
       node: NodeId;
     }
   | {
-      type: "tombstone";
+      type: 'tombstone';
       node: NodeId;
     }
   | {
@@ -59,7 +59,7 @@ export type OperationKind =
        * Merge semantics are last-writer-wins per node, ordered by
        * `(lamport, replica, counter)`.
        */
-      type: "payload";
+      type: 'payload';
       node: NodeId;
       /**
        * `payload = Uint8Array` sets the value, `payload = null` clears it.
@@ -93,6 +93,6 @@ export interface SyncProtocol {
   pull(since: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
 }
 
-export * from "./adapter.js";
-export * from "./ids.js";
-export * from "./engine.js";
+export * from './adapter.js';
+export * from './ids.js';
+export * from './engine.js';

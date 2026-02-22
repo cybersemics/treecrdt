@@ -1,6 +1,6 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import Database from "better-sqlite3";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import Database from 'better-sqlite3';
 import {
   buildSyncBenchCase,
   DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS,
@@ -10,24 +10,21 @@ import {
   maxLamport,
   quantile,
   type SyncBenchWorkload,
-} from "@treecrdt/benchmark";
-import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
-import type { Operation } from "@treecrdt/interface";
-import { decodeSqliteOpRefs, decodeSqliteOps } from "@treecrdt/interface/sqlite";
-import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
+} from '@treecrdt/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
+import type { Operation } from '@treecrdt/interface';
+import { decodeSqliteOpRefs, decodeSqliteOps } from '@treecrdt/interface/sqlite';
+import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import {
   createInMemoryConnectedPeers,
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
-} from "@treecrdt/sync/in-memory";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import type { Filter } from "@treecrdt/sync";
-import {
-  createSqliteNodeApi,
-  loadTreecrdtExtension,
-} from "../dist/index.js";
+} from '@treecrdt/sync/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
+import type { Filter } from '@treecrdt/sync';
+import { createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
 
-type StorageKind = "memory" | "file";
+type StorageKind = 'memory' | 'file';
 type ConfigEntry = [number, number];
 
 const SYNC_BENCH_CONFIG: ReadonlyArray<ConfigEntry> = [
@@ -40,25 +37,25 @@ const SYNC_BENCH_ROOT_CONFIG: ReadonlyArray<ConfigEntry> = [[1110, 10]];
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
-  if (raw == null || raw === "") return undefined;
+  if (raw == null || raw === '') return undefined;
   const n = Number(raw);
   return Number.isFinite(n) ? n : undefined;
 }
 
 function parseConfigFromArgv(argv: string[]): Array<ConfigEntry> | null {
   let customConfig: Array<ConfigEntry> | null = null;
-  const defaultIterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 1);
+  const defaultIterations = Math.max(1, envInt('BENCH_ITERATIONS') ?? 1);
   for (const arg of argv) {
-    if (arg.startsWith("--count=")) {
-      const val = arg.slice("--count=".length).trim();
+    if (arg.startsWith('--count=')) {
+      const val = arg.slice('--count='.length).trim();
       const count = val ? Number(val) : 500;
       customConfig = [[Number.isFinite(count) && count > 0 ? count : 500, defaultIterations]];
       break;
     }
-    if (arg.startsWith("--counts=")) {
+    if (arg.startsWith('--counts=')) {
       const vals = arg
-        .slice("--counts=".length)
-        .split(",")
+        .slice('--counts='.length)
+        .split(',')
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
       const parsed = vals
@@ -114,7 +111,7 @@ function makeBackend(opts: {
     initialMaxLamport: opts.initialMaxLamport,
     maxLamportFromOps: maxLamport,
     listOpRefs: async (filter) => {
-      if ("all" in filter) {
+      if ('all' in filter) {
         return parseOpRefs(await api.opRefsAll());
       }
       const parent = Buffer.from(filter.children.parent);
@@ -124,12 +121,17 @@ function makeBackend(opts: {
       if (opRefs.length === 0) return [];
       return parseOps(await api.opsByOpRefs(opRefs));
     },
-    applyOps: async (ops) => api.appendOps!(ops, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
+    applyOps: async (ops) =>
+      api.appendOps!(ops, hexToBytes, (r) => (typeof r === 'string' ? Buffer.from(r) : r)),
   });
 }
 
-async function openDb(opts: { storage: StorageKind; dbPath?: string; docId: string }): Promise<Database.Database> {
-  const db = new Database(opts.storage === "memory" ? ":memory:" : opts.dbPath ?? ":memory:");
+async function openDb(opts: {
+  storage: StorageKind;
+  dbPath?: string;
+  docId: string;
+}): Promise<Database.Database> {
+  const db = new Database(opts.storage === 'memory' ? ':memory:' : (opts.dbPath ?? ':memory:'));
   loadTreecrdtExtension(db);
   await createSqliteNodeApi(db).setDocId(opts.docId);
   return db;
@@ -138,15 +140,15 @@ async function openDb(opts: { storage: StorageKind; dbPath?: string; docId: stri
 async function runBenchOnce(
   repoRoot: string,
   { storage, workload, size }: BenchCase,
-  bench: ReturnType<typeof buildSyncBenchCase>
+  bench: ReturnType<typeof buildSyncBenchCase>,
 ): Promise<number> {
   const runId = crypto.randomUUID();
-  const outDir = path.join(repoRoot, "tmp", "sqlite-node-sync-bench");
+  const outDir = path.join(repoRoot, 'tmp', 'sqlite-node-sync-bench');
   const dbPathA =
-    storage === "file" ? path.join(outDir, `${runId}-${workload}-${size}-a.db`) : undefined;
+    storage === 'file' ? path.join(outDir, `${runId}-${workload}-${size}-a.db`) : undefined;
   const dbPathB =
-    storage === "file" ? path.join(outDir, `${runId}-${workload}-${size}-b.db`) : undefined;
-  if (storage === "file") {
+    storage === 'file' ? path.join(outDir, `${runId}-${workload}-${size}-b.db`) : undefined;
+  if (storage === 'file') {
     await fs.mkdir(outDir, { recursive: true });
   }
 
@@ -162,14 +164,18 @@ async function runBenchOnce(
     const apiA = createSqliteNodeApi(a);
     const apiB = createSqliteNodeApi(b);
     await Promise.all([
-      apiA.appendOps!(opsA, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
-      apiB.appendOps!(opsB, hexToBytes, (r) => (typeof r === "string" ? Buffer.from(r) : r)),
+      apiA.appendOps!(opsA, hexToBytes, (r) => (typeof r === 'string' ? Buffer.from(r) : r)),
+      apiB.appendOps!(opsB, hexToBytes, (r) => (typeof r === 'string' ? Buffer.from(r) : r)),
     ]);
 
     const backendA = makeBackend({ db: a, docId, initialMaxLamport: maxLamport(opsA) });
     const backendB = makeBackend({ db: b, docId, initialMaxLamport: maxLamport(opsB) });
 
-    const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+    const {
+      peerA: pa,
+      transportA: ta,
+      detach,
+    } = createInMemoryConnectedPeers({
       backendA,
       backendB,
       codec: treecrdtSyncV0ProtobufCodec,
@@ -184,11 +190,11 @@ async function runBenchOnce(
       await Promise.all([backendA.flush(), backendB.flush()]);
       const end = performance.now();
 
-      const countA = (a.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
-      const countB = (b.prepare("SELECT COUNT(*) AS cnt FROM ops").get() as any).cnt as number;
+      const countA = (a.prepare('SELECT COUNT(*) AS cnt FROM ops').get() as any).cnt as number;
+      const countB = (b.prepare('SELECT COUNT(*) AS cnt FROM ops').get() as any).cnt as number;
       if (countA !== bench.expectedFinalOpsA || countB !== bench.expectedFinalOpsB) {
         throw new Error(
-          `sync bench mismatch: expected a=${bench.expectedFinalOpsA} b=${bench.expectedFinalOpsB}, got a=${countA} b=${countB}`
+          `sync bench mismatch: expected a=${bench.expectedFinalOpsA} b=${bench.expectedFinalOpsB}, got a=${countA} b=${countB}`,
         );
       }
 
@@ -200,16 +206,16 @@ async function runBenchOnce(
   } finally {
     a.close();
     b.close();
-    if (storage === "file") {
-      await Promise.allSettled([dbPathA ? fs.rm(dbPathA) : Promise.resolve(), dbPathB ? fs.rm(dbPathB) : Promise.resolve()]);
+    if (storage === 'file') {
+      await Promise.allSettled([
+        dbPathA ? fs.rm(dbPathA) : Promise.resolve(),
+        dbPathB ? fs.rm(dbPathB) : Promise.resolve(),
+      ]);
     }
   }
 }
 
-async function runBenchCase(
-  repoRoot: string,
-  benchCase: BenchCase
-): Promise<SyncBenchResult> {
+async function runBenchCase(repoRoot: string, benchCase: BenchCase): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({ workload: benchCase.workload, size: benchCase.size });
   const { size, iterations } = benchCase;
 
@@ -218,8 +224,7 @@ async function runBenchCase(
     samplesMs.push(await runBenchOnce(repoRoot, benchCase, bench));
   }
 
-  const durationMs =
-    iterations > 1 ? quantile(samplesMs, 0.5) : samplesMs[0] ?? 0;
+  const durationMs = iterations > 1 ? quantile(samplesMs, 0.5) : (samplesMs[0] ?? 0);
   const opsPerSec = durationMs > 0 ? (bench.totalOps / durationMs) * 1000 : Infinity;
 
   return {
@@ -250,7 +255,7 @@ async function main() {
   const rootConfig = [...SYNC_BENCH_ROOT_CONFIG];
 
   const cases: BenchCase[] = [];
-  for (const storage of ["memory", "file"] as const) {
+  for (const storage of ['memory', 'file'] as const) {
     for (const workload of DEFAULT_SYNC_BENCH_WORKLOADS) {
       for (const [size, iterations] of config) {
         cases.push({ storage, workload, size, iterations });
@@ -267,12 +272,12 @@ async function main() {
     const result = await runBenchCase(repoRoot, benchCase);
     const outFile = path.join(
       repoRoot,
-      "benchmarks",
-      "sqlite-node-sync",
-      `${benchCase.storage}-${result.name}.json`
+      'benchmarks',
+      'sqlite-node-sync',
+      `${benchCase.storage}-${result.name}.json`,
     );
     const payload = await writeResult(result, {
-      implementation: "sqlite-node",
+      implementation: 'sqlite-node',
       storage: benchCase.storage,
       workload: result.name,
       outFile,

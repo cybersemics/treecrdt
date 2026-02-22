@@ -1,4 +1,4 @@
-import type { WorkloadName } from "@treecrdt/benchmark";
+import type { WorkloadName } from '@treecrdt/benchmark';
 
 export type BenchResult = {
   implementation: string;
@@ -11,41 +11,39 @@ export type BenchResult = {
   extra?: Record<string, unknown>;
 };
 
-type StorageKind = "browser-opfs-coop-sync" | "browser-memory";
+type StorageKind = 'browser-opfs-coop-sync' | 'browser-memory';
 
 type WorkerRequest = {
-  type: "run";
+  type: 'run';
   storage: StorageKind;
   sizes?: number[];
   workloads?: WorkloadName[];
   baseUrl?: string;
 };
 
-type WorkerResponse =
-  | { ok: true; results: BenchResult[] }
-  | { ok: false; error: string };
+type WorkerResponse = { ok: true; results: BenchResult[] } | { ok: false; error: string };
 
-const DEFAULT_STORAGE: StorageKind = "browser-opfs-coop-sync";
+const DEFAULT_STORAGE: StorageKind = 'browser-opfs-coop-sync';
 
 export async function runWaSqliteBench(
   storage: StorageKind = DEFAULT_STORAGE,
   sizes?: number[],
-  workloads?: WorkloadName[]
+  workloads?: WorkloadName[],
 ): Promise<BenchResult[]> {
   // Use absolute base URL so workers resolve wa-sqlite assets correctly.
   const baseUrl =
-    typeof window !== "undefined"
-      ? new URL("/", window.location.href).href
-      : typeof import.meta !== "undefined" && (import.meta as any).env?.BASE_URL
+    typeof window !== 'undefined'
+      ? new URL('/', window.location.href).href
+      : typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL
         ? (import.meta as any).env.BASE_URL
-        : "/";
+        : '/';
   console.info(`[bench] starting run storage=${storage} baseUrl=${baseUrl}`);
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./opfs-worker.ts", import.meta.url), { type: "module" });
+    const worker = new Worker(new URL('./opfs-worker.ts', import.meta.url), { type: 'module' });
     // Tiny workloads now run 5+ iterations (new adapter per iteration); OPFS create is slow, so allow more time.
     const timeout = setTimeout(() => {
       worker.terminate();
-      reject(new Error("wa-sqlite bench worker timed out"));
+      reject(new Error('wa-sqlite bench worker timed out'));
     }, 300_000);
 
     worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
@@ -54,7 +52,7 @@ export async function runWaSqliteBench(
       if (ev.data?.ok && Array.isArray(ev.data.results)) {
         resolve(ev.data.results);
       } else {
-        reject(new Error(ev.data?.error ?? "Unknown worker error"));
+        reject(new Error(ev.data?.error ?? 'Unknown worker error'));
       }
     };
     worker.onerror = (err) => {
@@ -63,7 +61,7 @@ export async function runWaSqliteBench(
       reject(err);
     };
 
-    const message: WorkerRequest = { type: "run", storage, sizes, workloads, baseUrl };
+    const message: WorkerRequest = { type: 'run', storage, sizes, workloads, baseUrl };
     worker.postMessage(message);
   });
 }
@@ -74,6 +72,6 @@ declare global {
   }
 }
 
-if (typeof window !== "undefined") {
+if (typeof window !== 'undefined') {
   window.runWaSqliteBench = runWaSqliteBench;
 }

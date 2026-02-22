@@ -1,8 +1,5 @@
-import type { TreecrdtAdapter } from "@treecrdt/interface";
-import {
-  createTreecrdtSqliteAdapter,
-  type SqliteRunner,
-} from "@treecrdt/interface/sqlite";
+import type { TreecrdtAdapter } from '@treecrdt/interface';
+import { createTreecrdtSqliteAdapter, type SqliteRunner } from '@treecrdt/interface/sqlite';
 
 // Minimal wa-sqlite surface needed by the adapter. Exported so consumers
 // don't need to import types from wa-sqlite directly.
@@ -37,6 +34,9 @@ function createRunner(db: Database): SqliteRunner {
   };
 }
 
-export function createWaSqliteApi(db: Database, opts: { maxBulkOps?: number } = {}): TreecrdtAdapter {
+export function createWaSqliteApi(
+  db: Database,
+  opts: { maxBulkOps?: number } = {},
+): TreecrdtAdapter {
   return createTreecrdtSqliteAdapter(createRunner(db), opts);
 }
