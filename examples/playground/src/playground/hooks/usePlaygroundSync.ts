@@ -50,6 +50,21 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   });
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isCapabilityRevokedError(err: unknown): boolean {
+  return /capability token revoked/i.test(errorMessage(err));
+}
+
+function formatSyncError(err: unknown): string {
+  if (isCapabilityRevokedError(err)) {
+    return "Access revoked for this capability. Import/update access, then sync again.";
+  }
+  return errorMessage(err);
+}
+
 export type PlaygroundSyncApi = {
   peers: PeerInfo[];
   syncBusy: boolean;
@@ -82,6 +97,10 @@ export type UsePlaygroundSyncOptions = {
   joinMode: boolean;
   authCanSyncAll: boolean;
   viewRootId: string;
+  hardRevokedTokenIds: string[];
+  revocationCutoverEnabled: boolean;
+  revocationCutoverTokenId: string;
+  revocationCutoverCounter: string;
   treeStateRef: React.MutableRefObject<TreeState>;
   refreshMeta: () => Promise<void>;
   refreshParents: (parentIds: string[]) => Promise<void>;
@@ -111,6 +130,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     joinMode,
     authCanSyncAll,
     viewRootId,
+    hardRevokedTokenIds,
+    revocationCutoverEnabled,
+    revocationCutoverTokenId,
+    revocationCutoverCounter,
     treeStateRef,
     refreshMeta,
     refreshParents,
@@ -185,7 +208,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         );
       } catch (err) {
         console.error("Live sync(all) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
         return;
       }
 
@@ -204,7 +227,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       void sub.done.catch((err) => {
         console.error("Live sync(all) failed", err);
         stopLiveAllForPeer(peerId);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
       });
     })().finally(() => {
       liveAllStartingRef.current.delete(peerId);
@@ -257,7 +280,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         );
       } catch (err) {
         console.error("Live sync(children) initial catch-up failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
         return;
       }
 
@@ -278,7 +301,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       void sub.done.catch((err) => {
         console.error("Live sync failed", err);
         stopLiveChildren(peerId, parentId);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
       });
     })().finally(() => {
       liveChildrenStartingRef.current.delete(startKey);
@@ -370,7 +393,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Sync failed for peer", peerId, err);
-          dropPeerConnection(peerId);
+          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -382,7 +405,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       await refreshNodeCount();
     } catch (err) {
       console.error("Sync failed", err);
-      setSyncError(err instanceof Error ? err.message : String(err));
+      setSyncError(formatSyncError(err));
     } finally {
       setSyncBusy(false);
     }
@@ -446,7 +469,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Scoped sync failed for peer", peerId, err);
-          dropPeerConnection(peerId);
+          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -458,7 +481,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       await refreshNodeCount();
     } catch (err) {
       console.error("Scoped sync failed", err);
-      setSyncError(err instanceof Error ? err.message : String(err));
+      setSyncError(formatSyncError(err));
     } finally {
       setSyncBusy(false);
     }
@@ -560,9 +583,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         }
       } catch (err) {
         console.error("Auto sync failed", err);
-        setSyncError(err instanceof Error ? err.message : String(err));
+        setSyncError(formatSyncError(err));
         autoSyncPeerIdRef.current = null;
-        dropPeerConnection(peerId);
+        if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
       } finally {
         autoSyncInFlightRef.current = false;
         setSyncBusy(false);
@@ -641,6 +664,15 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             localSk: base64urlDecode(authMaterial.localSkB64),
             localPk: base64urlDecode(authMaterial.localPkB64),
             localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
+            hardRevokedTokenIds: hardRevokedTokenIds.map((id) => hexToBytes16(id)),
+            cutoverRule: (() => {
+              if (!revocationCutoverEnabled) return null;
+              const tokenIdHex = revocationCutoverTokenId.trim().toLowerCase().replace(/^0x/, "");
+              if (!/^[0-9a-f]{32}$/.test(tokenIdHex)) return null;
+              const parsedCounter = Number(revocationCutoverCounter.trim());
+              if (!Number.isInteger(parsedCounter) || parsedCounter < 0) return null;
+              return { tokenIdHex, counter: parsedCounter };
+            })(),
             opAuthStore: createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId }),
             scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
             getLocalIdentityChain,
@@ -708,6 +740,13 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
                 localPrivateKey: peerAuthConfig.localSk,
                 localPublicKey: peerAuthConfig.localPk,
                 localCapabilityTokens: peerAuthConfig.localTokens,
+                revokedCapabilityTokenIds: peerAuthConfig.hardRevokedTokenIds,
+                isCapabilityTokenRevoked: (ctx) => {
+                  if (ctx.stage !== "runtime") return false;
+                  if (!peerAuthConfig.cutoverRule) return false;
+                  if (ctx.tokenIdHex !== peerAuthConfig.cutoverRule.tokenIdHex) return false;
+                  return ctx.op.meta.id.counter >= peerAuthConfig.cutoverRule.counter;
+                },
                 requireProofRef: true,
                 opAuthStore: peerAuthConfig.opAuthStore,
                 scopeEvaluator: peerAuthConfig.scopeEvaluator,
@@ -829,6 +868,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     authMaterial.localPkB64,
     authMaterial.localSkB64,
     authMaterial.localTokensB64.join(","),
+    hardRevokedTokenIds.join(","),
+    revocationCutoverEnabled,
+    revocationCutoverTokenId,
+    revocationCutoverCounter,
     client,
     docId,
     getLocalIdentityChain,

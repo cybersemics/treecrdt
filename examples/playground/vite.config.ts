@@ -10,7 +10,7 @@ export default defineConfig({
     format: "es",
   },
   server: {
-    port: 5193,
+    port: 5167,
     strictPort: true,
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",

@@ -58,6 +58,7 @@ export function TreePanel({
   collapse,
   toggleCollapse,
   openShareForNode,
+  grantSubtreeToReplicaPubkey,
   onSetValue,
   onAddChild,
   onDelete,
@@ -66,6 +67,13 @@ export function TreePanel({
   onToggleLiveChildren,
   privateRoots,
   togglePrivateRoot,
+  peers,
+  selfPeerId,
+  canManageCapabilities,
+  authBusy,
+  issuedGrantRecords,
+  hardRevokedTokenIds,
+  toggleHardRevokedTokenId,
   scopeRootId,
   canWritePayload,
   canWriteStructure,
@@ -100,22 +108,7 @@ export function TreePanel({
   showOpsPanel: boolean;
   setShowOpsPanel: React.Dispatch<React.SetStateAction<boolean>>;
   syncError: string | null;
-  peersPanelProps: {
-    docId: string;
-    selfPeerId: string | null;
-    joinMode: boolean;
-    profileId: string | null;
-    authEnabled: boolean;
-    authTokenCount: number;
-    authScopeTitle: string;
-    authScopeSummary: string;
-    authSummaryBadges: string[];
-    authCanIssue: boolean;
-    authCanDelegate: boolean;
-    openNewIsolatedPeerTab: (opts: { autoInvite: boolean; rootNodeId?: string }) => Promise<void>;
-    openNewPeerTab: () => void;
-    peers: PeerInfo[];
-  };
+  peersPanelProps: React.ComponentProps<typeof PeersPanel>;
   sharingAuthPanelProps: React.ComponentProps<typeof SharingAuthPanel>;
   treeParentRef: React.RefObject<HTMLDivElement>;
   treeVirtualizer: Virtualizer<HTMLDivElement, Element>;
@@ -123,6 +116,12 @@ export function TreePanel({
   collapse: CollapseState;
   toggleCollapse: (id: string) => void;
   openShareForNode: (nodeId: string) => void;
+  grantSubtreeToReplicaPubkey: (opts: {
+    recipientKey: string;
+    rootNodeId: string;
+    actions?: string[];
+    supersedesTokenIds?: string[];
+  }) => Promise<boolean>;
   onSetValue: (nodeId: string, value: string) => void | Promise<void>;
   onAddChild: (nodeId: string) => void;
   onDelete: (nodeId: string) => void;
@@ -131,6 +130,21 @@ export function TreePanel({
   onToggleLiveChildren: (nodeId: string) => void;
   privateRoots: Set<string>;
   togglePrivateRoot: (nodeId: string) => void;
+  peers: PeerInfo[];
+  selfPeerId: string | null;
+  canManageCapabilities: boolean;
+  authBusy: boolean;
+  issuedGrantRecords: Array<{
+    recipientPkHex: string;
+    tokenIdHex: string;
+    rootNodeId: string;
+    actions: string[];
+    maxDepth?: number;
+    excludeCount: number;
+    ts: number;
+  }>;
+  hardRevokedTokenIds: string[];
+  toggleHardRevokedTokenId: (tokenIdHex: string) => void;
   scopeRootId: string;
   canWritePayload: boolean;
   canWriteStructure: boolean;
@@ -139,6 +153,21 @@ export function TreePanel({
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
+  const measureTreeElement = React.useCallback(
+    (element: Element | null) => {
+      if (!element) return;
+      // Defer measurement to avoid virtualizer-triggered state updates during React render.
+      if (typeof window !== "undefined") {
+        window.requestAnimationFrame(() => {
+          treeVirtualizer.measureElement(element);
+        });
+        return;
+      }
+      treeVirtualizer.measureElement(element);
+    },
+    [treeVirtualizer]
+  );
+
   return (
     <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -289,7 +318,7 @@ export function TreePanel({
               <div
                 key={item.key}
                 data-index={item.index}
-                ref={treeVirtualizer.measureElement}
+                ref={measureTreeElement}
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${item.start}px)` }}
               >
@@ -307,6 +336,16 @@ export function TreePanel({
                   onToggleLiveChildren={onToggleLiveChildren}
                   privateRoots={privateRoots}
                   onTogglePrivateRoot={togglePrivateRoot}
+                  peers={peers}
+                  selfPeerId={selfPeerId}
+                  busy={busy}
+                  authEnabled={authEnabled}
+                  canManageCapabilities={canManageCapabilities}
+                  authBusy={authBusy}
+                  issuedGrantRecords={issuedGrantRecords}
+                  hardRevokedTokenIds={hardRevokedTokenIds}
+                  onToggleHardRevokedTokenId={toggleHardRevokedTokenId}
+                  onGrantToReplicaPubkey={grantSubtreeToReplicaPubkey}
                   scopeRootId={scopeRootId}
                   canWritePayload={canWritePayload}
                   canWriteStructure={canWriteStructure}

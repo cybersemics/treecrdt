@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { expect, test } from "vitest";
+import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
 
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
@@ -10,13 +11,15 @@ import { sha512 } from "@noble/hashes/sha512";
 
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { deriveTokenIdV1 } from "../dist/cose.js";
+import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
 import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
 import {
   createTreecrdtCoseCwtAuth,
   describeTreecrdtCapabilityTokenV1,
   issueTreecrdtCapabilityTokenV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
+  issueTreecrdtRevocationRecordV1,
+  verifyTreecrdtRevocationRecordV1,
 } from "../dist/treecrdt-auth.js";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
@@ -1160,6 +1163,705 @@ test("auth: delegation proof can itself be delegated (chain)", async () => {
 
   const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes: delegatedCtoD, issuerPublicKeys: [issuerPk], docId });
   expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
+});
+
+test("auth: revoked token id is rejected by describeTreecrdtCapabilityTokenV1", async () => {
+  const docId = "doc-auth-revoked-token";
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const subjectPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  const token = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: subjectPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  await expect(
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes: token,
+      issuerPublicKeys: [issuerPk],
+      docId,
+      revokedCapabilityTokenIds: [deriveTokenIdV1(token)],
+    })
+  ).rejects.toThrow(/capability token revoked/i);
+});
+
+test("auth: delegated token is rejected when proof token is revoked", async () => {
+  const docId = "doc-auth-revoked-proof";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const delegatorSk = ed25519Utils.randomSecretKey();
+  const delegatorPk = await getPublicKey(delegatorSk);
+  const recipientPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  const proof = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: delegatorPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure", "grant"],
+  });
+
+  const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proof,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  await expect(
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes: delegated,
+      issuerPublicKeys: [issuerPk],
+      docId,
+      revokedCapabilityTokenIds: [deriveTokenIdV1(proof)],
+    })
+  ).rejects.toThrow(/capability token revoked/i);
+});
+
+test("auth: onHello rejects revoked peer capability tokens", async () => {
+  const docId = "doc-auth-revoked-hello";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const senderSk = ed25519Utils.randomSecretKey();
+  const senderPk = await getPublicKey(senderSk);
+  const receiverSk = ed25519Utils.randomSecretKey();
+  const receiverPk = await getPublicKey(receiverSk);
+
+  const tokenSender = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: senderPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const authSender = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: senderSk,
+    localPublicKey: senderPk,
+    localCapabilityTokens: [tokenSender],
+    requireProofRef: true,
+  });
+
+  const authReceiver = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: receiverSk,
+    localPublicKey: receiverPk,
+    revokedCapabilityTokenIds: [deriveTokenIdV1(tokenSender)],
+    requireProofRef: true,
+  });
+
+  const helloCaps = await authSender.helloCapabilities?.({ docId });
+  expect(helloCaps).toBeTruthy();
+
+  await expect(
+    authReceiver.onHello!({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId })
+  ).rejects.toThrow(/capability token revoked/i);
+});
+
+test("auth: late hard revocation rejects future ops and re-verification of past ops", async () => {
+  const docId = "doc-auth-late-hard-revocation";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const hardRevoked = { value: false };
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+    isCapabilityTokenRevoked: ({ stage }) => stage === "runtime" && hardRevoked.value,
+  });
+
+  const helloCaps = await authWriter.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const op1: Operation = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+
+  hardRevoked.value = true;
+
+  const op2: Operation = makeOp(writerPk, 2, 2, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(2),
+    orderKey: orderKeyFromPosition(1),
+  });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+
+  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+  await expect(authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+});
+
+test("auth: runtime revocation callback supports counter cutover policy", async () => {
+  const docId = "doc-auth-revocation-counter-cutover";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+  const writerTokenIdHex = bytesToHex(deriveTokenIdV1(writerToken));
+  let revokedFromCounter: number | null = null;
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+    isCapabilityTokenRevoked: ({ stage, tokenIdHex, op }) => {
+      if (tokenIdHex !== writerTokenIdHex) return false;
+      if (stage !== "runtime") return false;
+      if (revokedFromCounter === null) return false;
+      return op.meta.id.counter >= revokedFromCounter;
+    },
+  });
+
+  const helloCaps = await authWriter.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const op1: Operation = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(3),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+
+  revokedFromCounter = 2;
+
+  const op2: Operation = makeOp(writerPk, 2, 2, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(4),
+    orderKey: orderKeyFromPosition(1),
+  });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+
+  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+});
+
+test("auth: revocation record from hello capabilities hard-revokes token across peers", async () => {
+  const docId = "doc-auth-wire-hard-revocation";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+  const revokerSk = ed25519Utils.randomSecretKey();
+  const revokerPk = await getPublicKey(revokerSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+  const revocationRecord = issueTreecrdtRevocationRecordV1({
+    issuerPrivateKey: issuerSk,
+    docId,
+    tokenId: deriveTokenIdV1(writerToken),
+    mode: "hard",
+    revSeq: 1,
+  });
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+  });
+  const authRevoker = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: revokerSk,
+    localPublicKey: revokerPk,
+    localRevocationRecords: [revocationRecord],
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const op1: Operation = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(10),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+
+  const revokerHelloCaps = await authRevoker.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: revokerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const op2: Operation = makeOp(writerPk, 2, 2, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(11),
+    orderKey: orderKeyFromPosition(1),
+  });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+
+  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+  await expect(authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+});
+
+test("auth: revocation records reject unknown claims", async () => {
+  const docId = "doc-auth-wire-revocation-unknown-claim";
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const tokenId = ed25519Utils.randomSecretKey().slice(0, 16);
+
+  const claims = new Map<unknown, unknown>();
+  claims.set("v", 1);
+  claims.set("t", "treecrdt/revocation/v1");
+  claims.set("doc_id", docId);
+  claims.set("token_id", tokenId);
+  claims.set("mode", "write_cutover");
+  claims.set("rev_seq", 1);
+  claims.set("effective_from_counter", 5);
+  claims.set("unexpected_claim", "nope");
+
+  const recordBytes = coseSign1Ed25519({
+    payload: cborEncode(claims, rfc8949EncodeOptions),
+    privateKey: issuerSk,
+  });
+
+  await expect(
+    verifyTreecrdtRevocationRecordV1({
+      recordBytes,
+      issuerPublicKeys: [issuerPk],
+      expectedDocId: docId,
+    })
+  ).rejects.toThrow(/unknown claim/i);
+});
+
+test("auth: highest rev_seq revocation record wins for a token", async () => {
+  const docId = "doc-auth-wire-rev-seq";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+  const lowSeqSk = ed25519Utils.randomSecretKey();
+  const lowSeqPk = await getPublicKey(lowSeqSk);
+  const highSeqSk = ed25519Utils.randomSecretKey();
+  const highSeqPk = await getPublicKey(highSeqSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+  const tokenId = deriveTokenIdV1(writerToken);
+
+  const lowSeqHard = issueTreecrdtRevocationRecordV1({
+    issuerPrivateKey: issuerSk,
+    docId,
+    tokenId,
+    mode: "hard",
+    revSeq: 1,
+  });
+  const highSeqCutover = issueTreecrdtRevocationRecordV1({
+    issuerPrivateKey: issuerSk,
+    docId,
+    tokenId,
+    mode: "write_cutover",
+    revSeq: 2,
+    effectiveFromCounter: 2,
+    effectiveFromReplica: writerPk,
+  });
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+  });
+  const authLowSeq = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: lowSeqSk,
+    localPublicKey: lowSeqPk,
+    localRevocationRecords: [lowSeqHard],
+    requireProofRef: true,
+  });
+  const authHighSeq = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: highSeqSk,
+    localPublicKey: highSeqPk,
+    localRevocationRecords: [highSeqCutover],
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const op1: Operation = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(20),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+
+  const highSeqCaps = await authHighSeq.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  // High-seq cutover keeps pre-cutover ops valid.
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+
+  const lowSeqCaps = await authLowSeq.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  // Lower-seq hard revoke must not override higher-seq cutover.
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+
+  const op2: Operation = makeOp(writerPk, 2, 2, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(21),
+    orderKey: orderKeyFromPosition(1),
+  });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+
+  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+});
+
+test("auth: out-of-order revocation records use highest rev_seq even when it arrives later", async () => {
+  const docId = "doc-auth-wire-rev-seq-out-of-order";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+  const lowSeqPeerSk = ed25519Utils.randomSecretKey();
+  const lowSeqPeerPk = await getPublicKey(lowSeqPeerSk);
+  const highSeqPeerSk = ed25519Utils.randomSecretKey();
+  const highSeqPeerPk = await getPublicKey(highSeqPeerSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+  const tokenId = deriveTokenIdV1(writerToken);
+
+  const lowSeqHard = issueTreecrdtRevocationRecordV1({
+    issuerPrivateKey: issuerSk,
+    docId,
+    tokenId,
+    mode: "hard",
+    revSeq: 1,
+  });
+  const highSeqCutover = issueTreecrdtRevocationRecordV1({
+    issuerPrivateKey: issuerSk,
+    docId,
+    tokenId,
+    mode: "write_cutover",
+    revSeq: 2,
+    effectiveFromCounter: 2,
+    effectiveFromReplica: writerPk,
+  });
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+  });
+  const authLowSeqPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: lowSeqPeerSk,
+    localPublicKey: lowSeqPeerPk,
+    localRevocationRecords: [lowSeqHard],
+    requireProofRef: true,
+  });
+  const authHighSeqPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: highSeqPeerSk,
+    localPublicKey: highSeqPeerPk,
+    localRevocationRecords: [highSeqCutover],
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const op1: Operation = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(30),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+
+  const lowSeqCaps = await authLowSeqPeer.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await expect(authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+
+  const highSeqCaps = await authHighSeqPeer.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.({ capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+
+  const op2: Operation = makeOp(writerPk, 2, 2, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(31),
+    orderKey: orderKeyFromPosition(1),
+  });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+});
+
+test("auth: same rev_seq revocation conflicts converge regardless delivery order", async () => {
+  const docId = "doc-auth-wire-rev-seq-tie";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+
+  const verifierASk = ed25519Utils.randomSecretKey();
+  const verifierAPk = await getPublicKey(verifierASk);
+  const verifierBSk = ed25519Utils.randomSecretKey();
+  const verifierBPk = await getPublicKey(verifierBSk);
+
+  const hardPeerSk = ed25519Utils.randomSecretKey();
+  const hardPeerPk = await getPublicKey(hardPeerSk);
+  const cutoverPeerSk = ed25519Utils.randomSecretKey();
+  const cutoverPeerPk = await getPublicKey(cutoverPeerSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+  const tokenId = deriveTokenIdV1(writerToken);
+
+  const hardRecord = issueTreecrdtRevocationRecordV1({
+    issuerPrivateKey: issuerSk,
+    docId,
+    tokenId,
+    mode: "hard",
+    revSeq: 7,
+  });
+  const cutoverRecord = issueTreecrdtRevocationRecordV1({
+    issuerPrivateKey: issuerSk,
+    docId,
+    tokenId,
+    mode: "write_cutover",
+    revSeq: 7,
+    effectiveFromCounter: 2,
+    effectiveFromReplica: writerPk,
+  });
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authVerifierA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierASk,
+    localPublicKey: verifierAPk,
+    requireProofRef: true,
+  });
+  const authVerifierB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierBSk,
+    localPublicKey: verifierBPk,
+    requireProofRef: true,
+  });
+
+  const authHardPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: hardPeerSk,
+    localPublicKey: hardPeerPk,
+    localRevocationRecords: [hardRecord],
+    requireProofRef: true,
+  });
+  const authCutoverPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: cutoverPeerSk,
+    localPublicKey: cutoverPeerPk,
+    localRevocationRecords: [cutoverRecord],
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
+  await authVerifierA.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifierB.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const op1: Operation = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(40),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+
+  const op2: Operation = makeOp(writerPk, 2, 2, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(41),
+    orderKey: orderKeyFromPosition(1),
+  });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+
+  const hardCaps = await authHardPeer.helloCapabilities?.({ docId });
+  const cutoverCaps = await authCutoverPeer.helloCapabilities?.({ docId });
+
+  // A sees hard then cutover.
+  await authVerifierA.onHello?.({ capabilities: hardCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifierA.onHello?.({ capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  // B sees cutover then hard.
+  await authVerifierB.onHello?.({ capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifierB.onHello?.({ capabilities: hardCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+
+  const winnerIsHard = bytesToHex(hardRecord) > bytesToHex(cutoverRecord);
+
+  if (winnerIsHard) {
+    await expect(authVerifierA.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+      /capability token revoked/i
+    );
+    await expect(authVerifierB.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+      /capability token revoked/i
+    );
+  } else {
+    await authVerifierA.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+    await authVerifierB.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  }
+
+  await expect(authVerifierA.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
+  await expect(authVerifierB.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
+    /capability token revoked/i
+  );
 });
 
 test("auth: delegated capability root may be a descendant of proof root (with scope evaluator)", async () => {

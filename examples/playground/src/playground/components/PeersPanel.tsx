@@ -7,13 +7,7 @@ import type { PeerInfo } from "../types";
 export function PeersPanel({
   docId,
   selfPeerId,
-  joinMode,
-  profileId,
   authEnabled,
-  authTokenCount,
-  authScopeTitle,
-  authScopeSummary,
-  authSummaryBadges,
   authCanIssue,
   authCanDelegate,
   openNewIsolatedPeerTab,
@@ -22,13 +16,7 @@ export function PeersPanel({
 }: {
   docId: string;
   selfPeerId: string | null;
-  joinMode: boolean;
-  profileId: string | null;
   authEnabled: boolean;
-  authTokenCount: number;
-  authScopeTitle: string;
-  authScopeSummary: string;
-  authSummaryBadges: string[];
   authCanIssue: boolean;
   authCanDelegate: boolean;
   openNewIsolatedPeerTab: (opts: { autoInvite: boolean; rootNodeId?: string }) => Promise<void>;
@@ -46,43 +34,6 @@ export function PeersPanel({
           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Public key</div>
           <div className="font-mono text-slate-200">{selfPeerId ?? "-"}</div>
         </div>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-400">
-        <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-          mode {joinMode ? "isolated" : "shared"}
-        </span>
-        {profileId && (
-          <span
-            className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold"
-            title={`profile=${profileId}`}
-          >
-            profile {profileId}
-          </span>
-        )}
-        <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-          auth {authEnabled ? "on" : "off"}
-        </span>
-        {authEnabled && (
-          <>
-            <span className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold">
-              tokens {authTokenCount}
-            </span>
-            <span
-              className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold"
-              title={authScopeTitle}
-            >
-              scope {authScopeSummary}
-            </span>
-            {authSummaryBadges.map((name) => (
-              <span
-                key={name}
-                className="rounded-full border border-slate-800/70 bg-slate-900/60 px-2 py-0.5 font-semibold"
-              >
-                {name}
-              </span>
-            ))}
-          </>
-        )}
       </div>
       <div className="mt-3 flex items-center justify-between gap-2">
         <div className="text-slate-400">Peers</div>
@@ -133,4 +84,3 @@ export function PeersPanel({
     </div>
   );
 }
-
