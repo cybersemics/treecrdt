@@ -20,6 +20,15 @@ struct JsonOp {
     payload: Option<Vec<u8>>,
 }
 
+fn read_tree_meta(conn: &Connection) -> (i64, i64, Vec<u8>, i64, i64) {
+    conn.query_row(
+        "SELECT dirty, head_lamport, head_replica, head_counter, head_seq FROM tree_meta WHERE id = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )
+    .unwrap()
+}
+
 #[test]
 fn append_and_fetch_ops_via_extension() {
     let conn = setup_conn();
@@ -134,6 +143,13 @@ fn local_insert_returns_appended_insert_op() {
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 1);
+
+    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
+    assert_eq!(dirty, 0);
+    assert_eq!(head_lamport, 1);
+    assert_eq!(head_replica, b"r1".to_vec());
+    assert_eq!(head_counter, 1);
+    assert_eq!(head_seq, 1);
 }
 
 #[test]
@@ -219,6 +235,24 @@ fn local_insert_last_is_deterministic_for_single_gap() {
         op.order_key.as_ref().unwrap(),
         &(0xfffeu16).to_be_bytes().to_vec()
     );
+
+    let parent_arr = <[u8; 16]>::try_from(parent.as_slice()).unwrap();
+    let node_rows: Vec<Vec<u8>> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT node FROM tree_nodes \
+                 WHERE parent = ?1 AND tombstone = 0 \
+                 ORDER BY order_key, node",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(rusqlite::params![parent_arr], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(node_rows, vec![node_a.clone(), node_b.clone()]);
 }
 
 #[test]
@@ -292,6 +326,13 @@ fn local_move_allocates_key_excluding_self() {
     };
     let expected = allocate_between(Some(&key_a), Some(&key_c), &seed).expect("allocate_between");
     assert_eq!(op.order_key.as_ref().unwrap(), &expected);
+
+    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
+    assert_eq!(dirty, 0);
+    assert_eq!(head_lamport, 4);
+    assert_eq!(head_replica, replica);
+    assert_eq!(head_counter, 4);
+    assert_eq!(head_seq, 4);
 }
 
 #[test]
@@ -357,6 +398,179 @@ fn local_delete_includes_known_state_bytes() {
     assert!(!bytes.is_empty());
     let vv: VersionVector = serde_json::from_slice(bytes).unwrap();
     assert!(vv.get(&ReplicaId::new(replica)) >= 1);
+
+    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
+    assert_eq!(dirty, 0);
+    assert_eq!(head_lamport, 2);
+    assert_eq!(head_replica, b"r1".to_vec());
+    assert_eq!(head_counter, 2);
+    assert_eq!(head_seq, 2);
+}
+
+#[test]
+fn local_delete_after_move_updates_children_visibility() {
+    let conn = setup_conn();
+
+    let replica = b"r1".to_vec();
+    let root = node_bytes(0);
+    let a = node_bytes(1);
+    let b = node_bytes(2);
+
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica.clone(), root.clone(), a.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica.clone(), root.clone(), b.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_move(?1, ?2, ?3, 'first', NULL)",
+            rusqlite::params![replica.clone(), b.clone(), root.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_delete(?1, ?2)",
+            rusqlite::params![replica, a.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let root_arr = <[u8; 16]>::try_from(root.as_slice()).unwrap();
+    let visible_children: Vec<Vec<u8>> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT node FROM tree_nodes \
+                 WHERE parent = ?1 AND tombstone = 0 \
+                 ORDER BY order_key, node",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(rusqlite::params![root_arr], |row| row.get::<_, Vec<u8>>(0))
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(visible_children, vec![b]);
+}
+
+#[test]
+fn local_payload_set_and_clear_updates_meta() {
+    let conn = setup_conn();
+
+    let replica = b"r1".to_vec();
+    let parent = node_bytes(0);
+    let node = node_bytes(1);
+
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'first', NULL, NULL)",
+            rusqlite::params![replica.clone(), parent, node.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let payload_bytes = vec![1u8, 2, 3];
+    let set_json: String = conn
+        .query_row(
+            "SELECT treecrdt_local_payload(?1, ?2, ?3)",
+            rusqlite::params![replica.clone(), node.clone(), payload_bytes.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let set_ops: Vec<JsonOp> = serde_json::from_str(&set_json).unwrap();
+    assert_eq!(set_ops.len(), 1);
+    assert_eq!(set_ops[0].kind, "payload");
+    assert_eq!(set_ops[0].payload, Some(payload_bytes));
+    assert_eq!(set_ops[0].counter, 2);
+    assert_eq!(set_ops[0].lamport, 2);
+
+    let clear_json: String = conn
+        .query_row(
+            "SELECT treecrdt_local_payload(?1, ?2, ?3)",
+            rusqlite::params![replica.clone(), node, Option::<Vec<u8>>::None],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let clear_ops: Vec<JsonOp> = serde_json::from_str(&clear_json).unwrap();
+    assert_eq!(clear_ops.len(), 1);
+    assert_eq!(clear_ops[0].kind, "payload");
+    assert_eq!(clear_ops[0].payload, None);
+    assert_eq!(clear_ops[0].counter, 3);
+    assert_eq!(clear_ops[0].lamport, 3);
+
+    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
+    assert_eq!(dirty, 0);
+    assert_eq!(head_lamport, 3);
+    assert_eq!(head_replica, replica);
+    assert_eq!(head_counter, 3);
+    assert_eq!(head_seq, 3);
+}
+
+#[test]
+fn oprefs_children_include_payload_after_move() {
+    let conn = setup_conn();
+
+    let replica = b"r1".to_vec();
+    let root = node_bytes(0);
+    let p1 = node_bytes(1);
+    let p2 = node_bytes(2);
+    let child = node_bytes(3);
+
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica.clone(), root.clone(), p1.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica.clone(), root, p2.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica.clone(), p1, child.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_payload(?1, ?2, ?3)",
+            rusqlite::params![replica.clone(), child.clone(), vec![104u8, 105u8]], // "hi"
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_move(?1, ?2, ?3, 'last', NULL)",
+            rusqlite::params![replica, child, p2.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let p2_arr = <[u8; 16]>::try_from(p2.as_slice()).unwrap();
+    let refs_json: String = conn
+        .query_row(
+            "SELECT treecrdt_oprefs_children(?1)",
+            rusqlite::params![p2_arr],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let refs: Vec<Vec<u8>> = serde_json::from_str(&refs_json).unwrap();
+    assert_eq!(refs.len(), 2);
 }
 
 fn setup_conn() -> Connection {
