@@ -117,8 +117,8 @@ test("e2ee v1 keyring: rotated keyring decrypts both old and new payloads", asyn
   expect(new TextDecoder().decode(newDecrypted.plaintext)).toBe("after rotate");
 });
 
-test("e2ee v1 keyring: legacy envelope without kid decrypts with keyring", async () => {
-  const docId = "doc-e2ee-legacy-no-kid";
+test("e2ee v1 keyring: decrypt requires matching key id", async () => {
+  const docId = "doc-e2ee-kid-required";
   const { payloadKey } = generateTreecrdtDocPayloadKeyV1({ docId });
   const keyring = createTreecrdtPayloadKeyringV1({ payloadKey, activeKid: "epoch-legacy" });
 
@@ -128,12 +128,11 @@ test("e2ee v1 keyring: legacy envelope without kid decrypts with keyring", async
     plaintext: new TextEncoder().encode("legacy format"),
   });
 
-  expect(getTreecrdtEncryptedPayloadKeyIdV1(encrypted)).toBeNull();
+  expect(getTreecrdtEncryptedPayloadKeyIdV1(encrypted)).toBe("k0");
 
   const decrypted = await maybeDecryptTreecrdtPayloadWithKeyringV1({ docId, keyring, bytes: encrypted });
   expect(decrypted.encrypted).toBe(true);
-  expect(decrypted.keyMissing).toBe(false);
-  expect(decrypted.keyId).toBe("epoch-legacy");
-  if (decrypted.plaintext === null) throw new Error("plaintext is null");
-  expect(new TextDecoder().decode(decrypted.plaintext)).toBe("legacy format");
+  expect(decrypted.keyMissing).toBe(true);
+  expect(decrypted.keyId).toBe("k0");
+  expect(decrypted.plaintext).toBeNull();
 });

@@ -108,17 +108,6 @@ function tryDecodeEncryptedPayloadV1(bytes: Uint8Array): { nonce: Uint8Array; ct
   }
 }
 
-function candidateKeyIdsForLegacyDecrypt(keyring: TreecrdtPayloadKeyringV1): string[] {
-  const out: string[] = [];
-  const push = (kid: string) => {
-    if (!out.includes(kid)) out.push(kid);
-  };
-
-  push(keyring.activeKid);
-  for (const kid of Object.keys(keyring.keys)) push(kid);
-  return out;
-}
-
 export function createTreecrdtPayloadKeyringV1(opts: {
   payloadKey: Uint8Array;
   activeKid?: string;
@@ -191,7 +180,7 @@ export async function encryptTreecrdtPayloadV1(opts: {
   if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
   assertLen(opts.payloadKey, DOC_PAYLOAD_KEY_LEN, "payloadKey");
 
-  const keyId = opts.keyId === undefined ? null : assertPayloadKeyIdV1(opts.keyId, "keyId");
+  const keyId = assertPayloadKeyIdV1(opts.keyId ?? "k0", "keyId");
   const nonce = randomBytes(AES_GCM_NONCE_LEN);
   const ciphertext = await aesGcmEncrypt({
     key: opts.payloadKey,
@@ -206,7 +195,7 @@ export async function encryptTreecrdtPayloadV1(opts: {
   envelope.set("alg", "A256GCM");
   envelope.set("nonce", nonce);
   envelope.set("ct", ciphertext);
-  if (keyId !== null) envelope.set("kid", keyId);
+  envelope.set("kid", keyId);
   return encodeCbor(envelope);
 }
 
@@ -299,59 +288,36 @@ export async function maybeDecryptTreecrdtPayloadWithKeyringV1(opts: {
 
   const keyring = clonePayloadKeyringV1(opts.keyring);
 
-  if (parsed.kid !== null) {
-    const payloadKey = keyring.keys[parsed.kid];
-    if (!payloadKey) {
-      return {
-        encrypted: true,
-        keyMissing: true,
-        keyId: parsed.kid,
-        plaintext: null,
-      };
-    }
-
-    const plaintext = await aesGcmDecrypt({
-      key: payloadKey,
-      nonce: parsed.nonce,
-      ciphertext: parsed.ct,
-      aad: payloadAadV1(opts.docId),
-    });
-
+  if (parsed.kid === null) {
     return {
       encrypted: true,
-      keyMissing: false,
-      keyId: parsed.kid,
-      plaintext,
+      keyMissing: true,
+      keyId: null,
+      plaintext: null,
     };
   }
 
-  for (const kid of candidateKeyIdsForLegacyDecrypt(keyring)) {
-    const payloadKey = keyring.keys[kid];
-    if (!payloadKey) continue;
-
-    try {
-      const plaintext = await aesGcmDecrypt({
-        key: payloadKey,
-        nonce: parsed.nonce,
-        ciphertext: parsed.ct,
-        aad: payloadAadV1(opts.docId),
-      });
-
-      return {
-        encrypted: true,
-        keyMissing: false,
-        keyId: kid,
-        plaintext,
-      };
-    } catch {
-      // Try next key in keyring.
-    }
+  const payloadKey = keyring.keys[parsed.kid];
+  if (!payloadKey) {
+    return {
+      encrypted: true,
+      keyMissing: true,
+      keyId: parsed.kid,
+      plaintext: null,
+    };
   }
+
+  const plaintext = await aesGcmDecrypt({
+    key: payloadKey,
+    nonce: parsed.nonce,
+    ciphertext: parsed.ct,
+    aad: payloadAadV1(opts.docId),
+  });
 
   return {
     encrypted: true,
-    keyMissing: true,
-    keyId: null,
-    plaintext: null,
+    keyMissing: false,
+    keyId: parsed.kid,
+    plaintext,
   };
 }

@@ -557,10 +557,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
       }
 
-      if (payload.payloadKeyB64) {
-        await saveDocPayloadKeyB64(docId, payload.payloadKeyB64, payload.payloadKeyKid);
-        await refreshDocPayloadKey();
-      }
+      await saveDocPayloadKeyB64(docId, payload.payloadKeyB64, payload.payloadKeyKid);
+      await refreshDocPayloadKey();
 
       await saveIssuerKeys(docId, payload.issuerPkB64);
 
@@ -1026,8 +1024,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     (grant: AuthGrantMessageV1) => {
       const issuerPkB64 = grant.issuer_pk_b64;
       const tokenB64 = grant.token_b64;
-      const payloadKeyB64 = typeof grant.payload_key_b64 === "string" ? grant.payload_key_b64 : null;
-      const payloadKeyKid = typeof grant.payload_key_kid === "string" ? grant.payload_key_kid : undefined;
+      const payloadKeyB64 = grant.payload_key_b64;
+      const payloadKeyKid = grant.payload_key_kid;
 
       void (async () => {
         setAuthBusy(true);
@@ -1036,10 +1034,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         try {
           await saveIssuerKeys(docId, issuerPkB64);
 
-          if (payloadKeyB64) {
-            await saveDocPayloadKeyB64(docId, payloadKeyB64, payloadKeyKid);
-            await refreshDocPayloadKey();
-          }
+          await saveDocPayloadKeyB64(docId, payloadKeyB64, payloadKeyKid);
+          await refreshDocPayloadKey();
 
           const current = await loadAuthMaterial(docId);
           if (!current.localPkB64 || !current.localSkB64) {

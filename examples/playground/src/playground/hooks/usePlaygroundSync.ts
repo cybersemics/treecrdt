@@ -798,6 +798,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (typeof grant.to_replica_pk_hex !== "string") return;
         if (typeof grant.issuer_pk_b64 !== "string") return;
         if (typeof grant.token_b64 !== "string") return;
+        if (typeof grant.payload_key_b64 !== "string") return;
+        if (typeof grant.payload_key_kid !== "string") return;
 
         const localReplicaHex = selfPeerId;
         if (!localReplicaHex) return;
