@@ -1,19 +1,10 @@
 # Architecture
 
-🚧 Work in progress 🚧 
+TreeCRDT is organized as a multi-runtime workspace with one shared model for operations, access control, and sync. The Rust crates provide the core engine and extension targets, while the TypeScript packages provide transport, auth, runtime adapters, and browser/node integration. The goal is to keep behavior consistent across native, WASM, and SQLite-backed deployments without forking protocol or data model semantics.
 
-## Goals
-- Kleppmann Tree CRDT in Rust with clean traits for storage/indexing/access control.
-- Runs native and WASM; embeddable as a SQLite/wa-sqlite extension.
-- TypeScript interface stays stable across native/WASM/SQLite builds.
-- Strong tests (unit/property/integration) and benchmarks (Rust + TS/WASM).
+## Package Map
 
-## Package map
-
-This diagram is meant to answer, "What depends on what in this repo?".
-
-Arrow direction is **depends on / uses**.
-Solid arrows are runtime dependencies. Dotted arrows are build time, dev, or test connections.
+This map answers one question: which packages depend on which others. Arrow direction means "depends on / uses." Solid edges are runtime dependencies, and dotted edges are build, dev, or test-time relationships.
 
 ```mermaid
 flowchart TD
@@ -69,30 +60,33 @@ flowchart TD
   sqlite_node -. conformance tests .-> conformance
 ```
 
-Notes:
-- `@treecrdt/crypto` is currently consumed by example/app flows (for payload encryption), not by `@treecrdt/auth`.
-- The playground app is intentionally omitted from this diagram to keep the package map focused on library/runtime crates.
+The diagram is intentionally scoped to library/runtime packages in this repository. Example applications such as Playground are left out to keep the dependency graph readable. `@treecrdt/crypto` is currently used in app/example flows for payload encryption and is not part of the runtime dependency chain between `@treecrdt/auth` and `@treecrdt/sync`.
 
-## Core CRDT shape
-- Operation log with `(OperationId { replica, counter }, lamport, kind)`; kinds: insert/move/delete/tombstone.
-- Deterministic application rules following Kleppmann Tree CRDT; extend to support alternative tombstone semantics if needed (per linked proposal).
-- Access control hooks applied before state mutation.
-- Partial sync support via subtree filters + index provider for efficient fetch.
+## Core Data Model
 
-## Trait contracts (Rust)
-- `Clock`: lamport/HLC pluggable (`LamportClock` provided).
-- `AccessControl`: guards apply/read.
-- `Storage`: append operations, load since lamport, latest_lamport.
-- `IndexProvider`: optional acceleration for subtree queries and existence checks.
-- These traits are the seam for SQLite/wa-sqlite implementations; extension just implements them over tables/indexes.
+At the center is an append-only operation log keyed by `OperationId { replica, counter }`, with Lamport ordering metadata and a kind (`insert`, `move`, `delete`, or `tombstone`). The implementation follows deterministic Tree CRDT rules so replicas converge from the same operation set, regardless of receive order. Access checks are applied before mutation, and partial replication is supported through subtree filters plus index-assisted lookups.
 
-## WASM + TypeScript bindings
-- `treecrdt-wasm`: wasm-bindgen surface mapping to `@treecrdt/interface`.
-- `@treecrdt/interface`: TS types for operations, storage adapters, sync protocol, access control.
-- Provide both in-memory adapter and SQLite-backed adapter (via wa-sqlite) to satisfy the interface.
+## Rust Integration Seams
 
-## Sync engine concept
-- Transport-agnostic: push/pull batches with causal metadata + optional subtree filters.
-- Progress hooks for UI, resumable checkpoints via lamport/head.
-- Access control enforced at responder using subtree filters and ACL callbacks.
-- Draft protocol: [`sync/v0.md`](sync/v0.md)
+The Rust core is designed around trait boundaries so the same CRDT logic can run over different storage/index backends:
+
+| Trait | Responsibility |
+| --- | --- |
+| `Clock` | Provides Lamport/HLC progression (`LamportClock` is included). |
+| `AccessControl` | Authorizes apply/read paths. |
+| `Storage` | Persists and loads operations (`append`, `load since lamport`, `latest_lamport`). |
+| `IndexProvider` | Optional acceleration for subtree queries and existence checks. |
+
+`treecrdt-sqlite-ext` and related adapters implement these seams over SQLite tables and indexes instead of re-implementing CRDT rules.
+
+## WASM and TypeScript Boundary
+
+`treecrdt-wasm` exposes the Rust engine through `wasm-bindgen`, and `@treecrdt/interface` defines the shared TypeScript contract used by adapters and sync code. This keeps browser and node clients aligned on operation shape, storage adapter behavior, and sync/auth boundaries, whether the backing store is in-memory or wa-sqlite-based.
+
+## Sync Model
+
+The sync layer is transport-agnostic and exchanges operation batches with causal progress metadata. Subtree filters limit scope when needed, and responders enforce authorization at read time using capability checks plus filter constraints. Progress/checkpoint state is structured so sessions can resume without replaying the full history. The wire-level draft is documented in [`sync/v0.md`](sync/v0.md).
+
+## Quality and Performance
+
+The repository treats conformance and benchmarking as first-class architecture concerns. Rust and TypeScript tests cover unit and integration behavior, while `@treecrdt/sqlite-conformance` and `@treecrdt/benchmark` are used to validate correctness under realistic adapter and sync conditions, including browser/WASM paths.
