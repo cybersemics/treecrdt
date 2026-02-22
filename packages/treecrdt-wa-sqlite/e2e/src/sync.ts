@@ -5,11 +5,9 @@ import {
   makeOp,
   maxLamport,
   nodeIdFromInt,
-  quantile,
   SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
   SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
   SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
-  syncBenchTiming,
   type SyncBenchWorkload,
 } from "@treecrdt/benchmark";
 import type { Operation } from "@treecrdt/interface";
@@ -432,15 +430,7 @@ async function runBenchCase(
   size: number
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({ workload, size });
-  const { iterations, warmupIterations } = syncBenchTiming();
-
-  const samplesMs: number[] = [];
-  for (let i = 0; i < warmupIterations + iterations; i += 1) {
-    const ms = await runBenchOnce(storage, workload, size, bench);
-    if (i >= warmupIterations) samplesMs.push(ms);
-  }
-
-  const durationMs = quantile(samplesMs, 0.5);
+  const durationMs = await runBenchOnce(storage, workload, size, bench);
   const opsPerSec = durationMs > 0 ? (bench.totalOps / durationMs) * 1000 : Infinity;
   return {
     implementation: "wa-sqlite",
@@ -454,12 +444,6 @@ async function runBenchCase(
       ...bench.extra,
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
-      iterations,
-      warmupIterations,
-      samplesMs,
-      p95Ms: quantile(samplesMs, 0.95),
-      minMs: Math.min(...samplesMs),
-      maxMs: Math.max(...samplesMs),
     },
   };
 }

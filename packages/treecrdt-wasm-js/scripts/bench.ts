@@ -1,9 +1,5 @@
 import path from "node:path";
-import {
-  benchTiming,
-  buildWorkloads,
-  runWorkloads,
-} from "@treecrdt/benchmark";
+import { buildWorkloads, runWorkloads } from "@treecrdt/benchmark";
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
 import { createWasmAdapter } from "../dist/index.js";
 
@@ -13,14 +9,7 @@ async function main() {
   });
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const timing = benchTiming({ defaultIterations: 7 });
   const workloadDefs = buildWorkloads(opts.workloads, opts.sizes);
-  for (const w of workloadDefs) {
-    const totalOps = w.totalOps ?? 0;
-    w.iterations = totalOps >= 10000 ? 10 : timing.iterations;
-    w.warmupIterations = timing.warmupIterations;
-  }
-
   const results = await runWorkloads(() => createWasmAdapter(), workloadDefs);
   for (const result of results) {
     const outFile = opts.outFile ?? path.join(repoRoot, "benchmarks", "wasm", `${result.name}.json`);

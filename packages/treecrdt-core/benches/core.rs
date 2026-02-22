@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use treecrdt_core::{Lamport, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
 
-const BENCH_CONFIG: &[(u64, u64)] = &[(100, 10), (1_000, 10), (10_000, 10)];
+const BENCH_COUNTS: &[u64] = &[100, 1_000, 10_000];
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,10 +27,6 @@ struct Output {
 struct Extra {
     count: u64,
     mode: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    iterations: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    avg_duration_ms: Option<f64>,
 }
 
 fn hex_id(n: u64) -> NodeId {
@@ -69,42 +65,28 @@ fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
 
 fn main() {
     let mut out_dir: Option<PathBuf> = None;
-    let mut custom_config: Option<Vec<(u64, u64)>> = None;
+    let mut custom_counts: Option<Vec<u64>> = None;
     for arg in env::args().skip(1) {
         if let Some(val) = arg.strip_prefix("--count=") {
             let count = val.parse().unwrap_or(500);
-            custom_config = Some(vec![(count, 1)]);
+            custom_counts = Some(vec![count]);
         } else if let Some(val) = arg.strip_prefix("--counts=") {
-            let parsed: Vec<(u64, u64)> = val
-                .split(',')
-                .filter_map(|s| s.trim().parse::<u64>().ok())
-                .map(|c| (c, 1))
-                .collect();
+            let parsed: Vec<u64> = val.split(',').filter_map(|s| s.trim().parse().ok()).collect();
             if !parsed.is_empty() {
-                custom_config = Some(parsed);
+                custom_counts = Some(parsed);
             }
         } else if let Some(val) = arg.strip_prefix("--out-dir=") {
             out_dir = Some(PathBuf::from(val));
         }
     }
 
-    let config = custom_config.as_deref().unwrap_or(BENCH_CONFIG);
+    let counts = custom_counts.as_deref().unwrap_or(BENCH_COUNTS);
     let out_dir = out_dir.unwrap_or_else(default_out_dir);
     fs::create_dir_all(&out_dir).expect("mkdirs");
 
     let replica = ReplicaId::new(b"core");
-    for &(count, iterations) in config {
-        let (duration_ms, iterations_opt, avg_duration_ms) = if iterations > 1 {
-            let mut durations: Vec<f64> =
-                (0..iterations).map(|_| run_benchmark(&replica, count)).collect();
-            durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let median = durations[durations.len() / 2];
-            (median, Some(iterations), Some(median))
-        } else {
-            // Single run
-            let duration = run_benchmark(&replica, count);
-            (duration, None, None)
-        };
+    for &count in counts {
+        let duration_ms = run_benchmark(&replica, count);
 
         let workload_name = format!("insert-move-{}", count);
         let out_path = out_dir.join(format!("memory-{}.json", workload_name));
@@ -125,8 +107,6 @@ fn main() {
             extra: Extra {
                 count,
                 mode: "sequential",
-                iterations: iterations_opt,
-                avg_duration_ms,
             },
             source_file: Some(out_path.display().to_string()),
         };
