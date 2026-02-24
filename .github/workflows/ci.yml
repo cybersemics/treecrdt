@@ -137,3 +137,55 @@ jobs:
 
     - name: Run native node tests
       run: pnpm run test:native-node
+
+  postgres-backend-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: treecrdt
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d treecrdt"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Rust WASM target
+      run: rustup target add wasm32-unknown-unknown
+
+    - name: Install wasm-pack
+      shell: bash
+      run: |
+        if ! command -v wasm-pack >/dev/null 2>&1; then
+          cargo install wasm-pack --locked
+        fi
+
+    - name: Use Node.js 20.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 8
+
+    - name: Install dependencies
+      run: pnpm install
+
+    - name: Run postgres backend tests
+      env:
+        TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/treecrdt
+      run: pnpm -C packages/treecrdt-postgres-napi test
