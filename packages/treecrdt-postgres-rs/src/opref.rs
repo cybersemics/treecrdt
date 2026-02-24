@@ -15,4 +15,3 @@ pub fn derive_op_ref_v0(doc_id: &str, replica: &[u8], counter: u64) -> [u8; OPRE
     out.copy_from_slice(&hash.as_bytes()[0..OPREF_V0_WIDTH]);
     out
 }
-

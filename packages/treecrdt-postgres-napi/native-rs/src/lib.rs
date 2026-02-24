@@ -3,7 +3,10 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use postgres::{Client, NoTls};
-use treecrdt_core::{Error as CoreError, Lamport, NodeId, Operation, OperationId, OperationKind, ReplicaId, Result as CoreResult, VersionVector};
+use treecrdt_core::{
+    Error as CoreError, Lamport, NodeId, Operation, OperationId, OperationKind, ReplicaId,
+    Result as CoreResult, VersionVector,
+};
 
 fn map_err(e: impl std::fmt::Display) -> napi::Error {
     napi::Error::new(Status::GenericFailure, format!("{e}"))
@@ -101,9 +104,8 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
 
     let kind = match op.kind.as_str() {
         "insert" => {
-            let parent = op
-                .parent
-                .ok_or_else(|| CoreError::Storage("insert op missing parent".into()))?;
+            let parent =
+                op.parent.ok_or_else(|| CoreError::Storage("insert op missing parent".into()))?;
             let order_key = op
                 .order_key
                 .ok_or_else(|| CoreError::Storage("insert op missing order_key".into()))?;
@@ -282,7 +284,8 @@ impl PgBackend {
     pub fn max_lamport(&self) -> napi::Result<BigInt> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
-        let lamport = treecrdt_postgres::max_lamport(&client, &self.doc_id).map_err(map_core_err)?;
+        let lamport =
+            treecrdt_postgres::max_lamport(&client, &self.doc_id).map_err(map_core_err)?;
         Ok(BigInt::from(lamport as u64))
     }
 
@@ -290,7 +293,8 @@ impl PgBackend {
     pub fn list_op_refs_all(&self) -> napi::Result<Vec<Buffer>> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
-        let refs = treecrdt_postgres::list_op_refs_all(&client, &self.doc_id).map_err(map_core_err)?;
+        let refs =
+            treecrdt_postgres::list_op_refs_all(&client, &self.doc_id).map_err(map_core_err)?;
         Ok(refs.into_iter().map(|r| Buffer::from(r.to_vec())).collect())
     }
 
@@ -299,8 +303,8 @@ impl PgBackend {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-        let refs =
-            treecrdt_postgres::list_op_refs_children(&client, &self.doc_id, parent).map_err(map_core_err)?;
+        let refs = treecrdt_postgres::list_op_refs_children(&client, &self.doc_id, parent)
+            .map_err(map_core_err)?;
         Ok(refs.into_iter().map(|r| Buffer::from(r.to_vec())).collect())
     }
 
@@ -329,11 +333,9 @@ impl PgBackend {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-        let nodes = treecrdt_postgres::tree_children(&client, &self.doc_id, parent).map_err(map_core_err)?;
-        Ok(nodes
-            .into_iter()
-            .map(|n| Buffer::from(node_to_bytes16(n).to_vec()))
-            .collect())
+        let nodes = treecrdt_postgres::tree_children(&client, &self.doc_id, parent)
+            .map_err(map_core_err)?;
+        Ok(nodes.into_iter().map(|n| Buffer::from(node_to_bytes16(n).to_vec())).collect())
     }
 
     #[napi]
@@ -386,7 +388,8 @@ impl PgBackend {
     pub fn tree_node_count(&self) -> napi::Result<BigInt> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
-        let cnt = treecrdt_postgres::tree_node_count(&client, &self.doc_id).map_err(map_core_err)?;
+        let cnt =
+            treecrdt_postgres::tree_node_count(&client, &self.doc_id).map_err(map_core_err)?;
         Ok(BigInt::from(cnt))
     }
 
@@ -394,8 +397,8 @@ impl PgBackend {
     pub fn replica_max_counter(&self, replica: Buffer) -> napi::Result<BigInt> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
-        let cnt =
-            treecrdt_postgres::replica_max_counter(&client, &self.doc_id, &replica).map_err(map_core_err)?;
+        let cnt = treecrdt_postgres::replica_max_counter(&client, &self.doc_id, &replica)
+            .map_err(map_core_err)?;
         Ok(BigInt::from(cnt))
     }
 
@@ -416,7 +419,8 @@ impl PgBackend {
             })
             .collect::<napi::Result<_>>()?;
 
-        let ops = treecrdt_postgres::get_ops_by_op_refs(&client, &self.doc_id, &refs).map_err(map_core_err)?;
+        let ops = treecrdt_postgres::get_ops_by_op_refs(&client, &self.doc_id, &refs)
+            .map_err(map_core_err)?;
         let mut out = Vec::with_capacity(ops.len());
         for op in ops {
             out.push(core_to_native_op(op).map_err(map_core_err)?);

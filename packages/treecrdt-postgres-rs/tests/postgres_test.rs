@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use treecrdt_core::{NodeId, Operation, ReplicaId, VersionVector};
 use treecrdt_postgres::{
-    append_ops, ensure_materialized, get_ops_by_op_refs, list_op_refs_all, list_op_refs_children,
-    ensure_schema, max_lamport, reset_doc_for_tests,
+    append_ops, ensure_materialized, ensure_schema, get_ops_by_op_refs, list_op_refs_all,
+    list_op_refs_children, max_lamport, reset_doc_for_tests,
 };
 
 fn order_key_from_position(position: u16) -> Vec<u8> {
@@ -204,14 +204,18 @@ fn postgres_backend_children_filter_includes_move_and_payload() {
 
     let refs_p2 = list_op_refs_children(&client, &doc_id, p2).unwrap();
     let ops_p2 = get_ops_by_op_refs(&client, &doc_id, &refs_p2).unwrap();
-    assert!(ops_p2.iter().any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
+    assert!(ops_p2
+        .iter()
+        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
     assert!(ops_p2
         .iter()
         .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Payload { .. })));
 
     let refs_p1 = list_op_refs_children(&client, &doc_id, p1).unwrap();
     let ops_p1 = get_ops_by_op_refs(&client, &doc_id, &refs_p1).unwrap();
-    assert!(ops_p1.iter().any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
+    assert!(ops_p1
+        .iter()
+        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
 }
 
 #[test]
