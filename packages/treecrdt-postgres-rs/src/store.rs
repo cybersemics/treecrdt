@@ -78,7 +78,7 @@ fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    let row = rows.get(0).ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
 
     Ok(TreeMeta {
         dirty: row.get::<_, bool>(0),
@@ -100,7 +100,7 @@ fn load_tree_meta_for_update(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
         )
         .map_err(storage_debug)?;
 
-    let row = rows.get(0).ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
 
     Ok(TreeMeta {
         dirty: row.get::<_, bool>(0),
@@ -226,7 +226,7 @@ impl PgNodeStore {
             .query(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice()])
             .map_err(storage_debug)?;
 
-        let Some(row) = rows.get(0) else {
+        let Some(row) = rows.first() else {
             return Ok(None);
         };
 
@@ -576,7 +576,7 @@ impl PgPayloadStore {
             .query(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice()])
             .map_err(storage_debug)?;
 
-        let Some(row) = rows.get(0) else {
+        let Some(row) = rows.first() else {
             return Ok(None);
         };
         let payload: Option<Vec<u8>> = row.get(0);
@@ -757,7 +757,7 @@ impl Storage for PgOpStorage {
                 &[&self.ctx.doc_id],
             )
             .ok();
-        match rows.and_then(|r| r.get(0).map(|row| row.get::<_, i64>(0))) {
+        match rows.and_then(|r| r.first().map(|row| row.get::<_, i64>(0))) {
             Some(v) => v.max(0) as Lamport,
             None => 0,
         }
@@ -771,7 +771,7 @@ impl Storage for PgOpStorage {
              FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
         )?;
         let rows = c.query(&stmt, &[&self.ctx.doc_id, &replica.0]).map_err(storage_debug)?;
-        let row = rows.get(0).ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
+        let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
         Ok(row.get::<_, i64>(0).max(0) as u64)
     }
 
@@ -853,7 +853,7 @@ fn row_to_op(row: Row) -> Result<Operation> {
 }
 
 fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
-    let lamport = row.get::<_, i64>(base + 0).max(0) as Lamport;
+    let lamport = row.get::<_, i64>(base).max(0) as Lamport;
     let replica: Vec<u8> = row.get(base + 1);
     let counter = row.get::<_, i64>(base + 2).max(0) as u64;
     let kind: String = row.get(base + 3);
@@ -916,17 +916,17 @@ fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     Ok(Operation { meta, kind })
 }
 
-fn op_kind_to_db(
-    op: &Operation,
-) -> Result<(
-    &'static str,
-    Option<Vec<u8>>,
-    Vec<u8>,
-    Option<Vec<u8>>,
-    Option<Vec<u8>>,
-    Option<Vec<u8>>,
-    Option<Vec<u8>>,
-)> {
+struct OpDbFields {
+    kind: &'static str,
+    parent: Option<Vec<u8>>,
+    node: Vec<u8>,
+    new_parent: Option<Vec<u8>>,
+    order_key: Option<Vec<u8>>,
+    payload: Option<Vec<u8>>,
+    known_state: Option<Vec<u8>>,
+}
+
+fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
     let known_state = match op.meta.known_state.as_ref() {
         None => None,
         Some(vv) => Some(vv_to_bytes(vv)?),
@@ -938,28 +938,28 @@ fn op_kind_to_db(
             node,
             order_key,
             payload,
-        } => Ok((
-            "insert",
-            Some(node_to_bytes(*parent).to_vec()),
-            node_to_bytes(*node).to_vec(),
-            None,
-            Some(order_key.clone()),
-            payload.clone(),
+        } => Ok(OpDbFields {
+            kind: "insert",
+            parent: Some(node_to_bytes(*parent).to_vec()),
+            node: node_to_bytes(*node).to_vec(),
+            new_parent: None,
+            order_key: Some(order_key.clone()),
+            payload: payload.clone(),
             known_state,
-        )),
+        }),
         OperationKind::Move {
             node,
             new_parent,
             order_key,
-        } => Ok((
-            "move",
-            None,
-            node_to_bytes(*node).to_vec(),
-            Some(node_to_bytes(*new_parent).to_vec()),
-            Some(order_key.clone()),
-            None,
+        } => Ok(OpDbFields {
+            kind: "move",
+            parent: None,
+            node: node_to_bytes(*node).to_vec(),
+            new_parent: Some(node_to_bytes(*new_parent).to_vec()),
+            order_key: Some(order_key.clone()),
+            payload: None,
             known_state,
-        )),
+        }),
         OperationKind::Delete { node } => {
             let Some(vv) = op.meta.known_state.as_ref() else {
                 return Err(Error::InvalidOperation(
@@ -972,34 +972,34 @@ fn op_kind_to_db(
                     "treecrdt: delete known_state must not be empty".into(),
                 ));
             }
-            Ok((
-                "delete",
-                None,
-                node_to_bytes(*node).to_vec(),
-                None,
-                None,
-                None,
-                Some(bytes),
-            ))
+            Ok(OpDbFields {
+                kind: "delete",
+                parent: None,
+                node: node_to_bytes(*node).to_vec(),
+                new_parent: None,
+                order_key: None,
+                payload: None,
+                known_state: Some(bytes),
+            })
         }
-        OperationKind::Tombstone { node } => Ok((
-            "tombstone",
-            None,
-            node_to_bytes(*node).to_vec(),
-            None,
-            None,
-            None,
+        OperationKind::Tombstone { node } => Ok(OpDbFields {
+            kind: "tombstone",
+            parent: None,
+            node: node_to_bytes(*node).to_vec(),
+            new_parent: None,
+            order_key: None,
+            payload: None,
             known_state,
-        )),
-        OperationKind::Payload { node, payload } => Ok((
-            "payload",
-            None,
-            node_to_bytes(*node).to_vec(),
-            None,
-            None,
-            payload.clone(),
+        }),
+        OperationKind::Payload { node, payload } => Ok(OpDbFields {
+            kind: "payload",
+            parent: None,
+            node: node_to_bytes(*node).to_vec(),
+            new_parent: None,
+            order_key: None,
+            payload: payload.clone(),
             known_state,
-        )),
+        }),
     }
 }
 
@@ -1007,7 +1007,7 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
     let replica = op.meta.id.replica.as_bytes();
     let counter = op.meta.id.counter;
     let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);
-    let (kind, parent, node, new_parent, order_key, payload, known_state) = op_kind_to_db(op)?;
+    let row = op_kind_to_db(op)?;
 
     let stmt = ctx.stmt(
         c,
@@ -1024,13 +1024,13 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
                 &(op.meta.lamport as i64),
                 &replica,
                 &(counter as i64),
-                &kind,
-                &parent,
-                &node,
-                &new_parent,
-                &order_key,
-                &payload,
-                &known_state,
+                &row.kind,
+                &row.parent,
+                &row.node,
+                &row.new_parent,
+                &row.order_key,
+                &row.payload,
+                &row.known_state,
             ],
         )
         .map_err(storage_debug)?;
@@ -1081,7 +1081,7 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, mut ops: Vec<Operation>
 
     let mut crdt = TreeCrdt::with_stores(
         ReplicaId::new(b"postgres"),
-        NoopStorage::default(),
+        NoopStorage,
         LamportClock::default(),
         nodes,
         payloads,
@@ -1259,7 +1259,7 @@ pub fn max_lamport(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport
             &[&doc_id],
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.get(0).ok_or_else(|| Error::Storage("missing MAX(lamport) row".into()))?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(lamport) row".into()))?;
     Ok(row.get::<_, i64>(0).max(0) as Lamport)
 }
 
@@ -1494,7 +1494,7 @@ pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64
             &[&doc_id, &root_bytes.as_slice()],
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.get(0).ok_or_else(|| Error::Storage("missing COUNT(*) row".into()))?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing COUNT(*) row".into()))?;
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
@@ -1511,7 +1511,7 @@ pub fn replica_max_counter(
             &[&doc_id, &replica],
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.get(0).ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
@@ -1538,7 +1538,7 @@ fn next_local_counter_in_tx(
             &[&doc_id, &replica],
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.get(0).ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
     Ok(row.get::<_, i64>(0).max(0) as u64 + 1)
 }
 
@@ -1568,7 +1568,7 @@ fn order_key_for_local_after_in_tx(
         .map_err(|e| Error::Storage(e.to_string()))?;
 
     let left_row = left_rows
-        .get(0)
+        .first()
         .ok_or_else(|| invalid_op_error("after node is not a child of parent"))?;
     let left: Option<Vec<u8>> = left_row.get(0);
     let Some(left) = left else {
@@ -1593,7 +1593,7 @@ fn order_key_for_local_after_in_tx(
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    let right = right_rows.get(0).map(|row| row.get::<_, Option<Vec<u8>>>(0)).flatten();
+    let right = right_rows.first().and_then(|row| row.get::<_, Option<Vec<u8>>>(0));
     Ok((left, right))
 }
 
@@ -1615,7 +1615,7 @@ fn order_key_for_local_first_in_tx(
             &[&doc_id, &parent_bytes.as_slice(), &exclude_bytes.as_slice()],
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(rows.get(0).and_then(|row| row.get::<_, Option<Vec<u8>>>(0)))
+    Ok(rows.first().and_then(|row| row.get::<_, Option<Vec<u8>>>(0)))
 }
 
 fn order_key_for_local_last_in_tx(
@@ -1636,7 +1636,7 @@ fn order_key_for_local_last_in_tx(
             &[&doc_id, &parent_bytes.as_slice(), &exclude_bytes.as_slice()],
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(rows.get(0).and_then(|row| row.get::<_, Option<Vec<u8>>>(0)))
+    Ok(rows.first().and_then(|row| row.get::<_, Option<Vec<u8>>>(0)))
 }
 
 fn allocate_local_order_key_in_tx(
@@ -1680,6 +1680,7 @@ fn allocate_local_order_key_in_tx(
     treecrdt_core::order_key::allocate_between(left.as_deref(), right.as_deref(), seed)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn local_insert(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
@@ -1706,7 +1707,7 @@ pub fn local_insert(
         let op = Operation::insert_with_optional_payload(
             replica, counter, lamport, parent, node, order_key, payload,
         );
-        let _ = append_ops_in_tx(client, doc_id, &[op.clone()])?;
+        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
         Ok(op)
     })();
 
@@ -1748,7 +1749,7 @@ pub fn local_move(
         )?;
 
         let op = Operation::move_node(replica, counter, lamport, node, new_parent, order_key);
-        let _ = append_ops_in_tx(client, doc_id, &[op.clone()])?;
+        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
         Ok(op)
     })();
 
@@ -1787,7 +1788,7 @@ pub fn local_delete(
         let known_state = Some(nodes.subtree_version_vector(node)?);
 
         let op = Operation::delete(replica, counter, lamport, node, known_state);
-        let _ = append_ops_in_tx(client, doc_id, &[op.clone()])?;
+        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
         Ok(op)
     })();
 
@@ -1823,7 +1824,7 @@ pub fn local_payload(
         let lamport = next_local_lamport_in_tx(client, doc_id)?;
 
         let op = Operation::payload(replica, counter, lamport, node, payload);
-        let _ = append_ops_in_tx(client, doc_id, &[op.clone()])?;
+        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
         Ok(op)
     })();
 

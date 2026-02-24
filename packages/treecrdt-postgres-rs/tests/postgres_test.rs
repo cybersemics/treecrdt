@@ -254,5 +254,5 @@ fn postgres_backend_defensive_delete_restores_parent_after_child_insert() {
         )
         .unwrap();
     let tombstone: bool = rows[0].get(0);
-    assert_eq!(tombstone, false);
+    assert!(!tombstone);
 }
