@@ -1,0 +1,39 @@
+{
+  "name": "@treecrdt/postgres-napi",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "native",
+    "src",
+    "tests",
+    "scripts",
+    "native-rs"
+  ],
+  "scripts": {
+    "build:native": "cargo build -p treecrdt-postgres-napi --release && node ./scripts/copy-native.mjs",
+    "build": "pnpm -C ../treecrdt-ts run build && pnpm -C ../treecrdt-sync run build && pnpm run build:native && tsc -p tsconfig.json",
+    "test": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && vitest run",
+    "benchmark": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench.ts"
+  },
+  "dependencies": {
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync": "workspace:*"
+  },
+  "devDependencies": {
+    "@treecrdt/benchmark": "workspace:*",
+    "@types/node": "^20.19.25",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  }
+}
