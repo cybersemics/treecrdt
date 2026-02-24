@@ -144,7 +144,7 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
 }
 
 fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
-    let lamport = BigInt::from(op.meta.lamport as u64);
+    let lamport = BigInt::from(op.meta.lamport);
     let counter = BigInt::from(op.meta.id.counter);
 
     let known_state = match op.meta.known_state.as_ref() {
