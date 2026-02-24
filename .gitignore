@@ -9,3 +9,5 @@ package-lock.json
 .turbo/
 tmp/
 benchmarks/
+playwright-report/
+test-results/
