@@ -6,8 +6,9 @@ use std::rc::Rc;
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    cmp_op_key, Error, Lamport, LamportClock, NodeId, Operation, OperationId, OperationKind,
-    NodeStore, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt, VersionVector,
+    cmp_op_key, Error, Lamport, LamportClock, NodeId, NodeStore, Operation, OperationId,
+    OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
+    VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -77,9 +78,7 @@ fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    let row = rows
-        .get(0)
-        .ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
+    let row = rows.get(0).ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
 
     Ok(TreeMeta {
         dirty: row.get::<_, bool>(0),
@@ -101,9 +100,7 @@ fn load_tree_meta_for_update(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
         )
         .map_err(storage_debug)?;
 
-    let row = rows
-        .get(0)
-        .ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
+    let row = rows.get(0).ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
 
     Ok(TreeMeta {
         dirty: row.get::<_, bool>(0),
@@ -265,11 +262,8 @@ impl treecrdt_core::NodeStore for PgNodeStore {
     fn reset(&mut self) -> Result<()> {
         self.cache.borrow_mut().clear();
         let mut c = self.ctx.client.borrow_mut();
-        let stmt = self
-            .ctx
-            .stmt(&mut c, "DELETE FROM treecrdt_nodes WHERE doc_id = $1")?;
-        c.execute(&stmt, &[&self.ctx.doc_id])
-            .map_err(storage_debug)?;
+        let stmt = self.ctx.stmt(&mut c, "DELETE FROM treecrdt_nodes WHERE doc_id = $1")?;
+        c.execute(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?;
 
         let root_bytes = node_to_bytes(NodeId::ROOT);
         let empty: &[u8] = &[];
@@ -408,7 +402,11 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             )?;
             c.execute(
                 &stmt,
-                &[&self.ctx.doc_id, &node_bytes.as_slice(), &parent_bytes.as_slice()],
+                &[
+                    &self.ctx.doc_id,
+                    &node_bytes.as_slice(),
+                    &parent_bytes.as_slice(),
+                ],
             )
             .map_err(storage_debug)?;
 
@@ -542,9 +540,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
     fn all_nodes(&self) -> Result<Vec<NodeId>> {
         let mut c = self.ctx.client.borrow_mut();
-        let stmt = self
-            .ctx
-            .stmt(&mut c, "SELECT node FROM treecrdt_nodes WHERE doc_id = $1")?;
+        let stmt = self.ctx.stmt(&mut c, "SELECT node FROM treecrdt_nodes WHERE doc_id = $1")?;
         let rows = c.query(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
@@ -609,11 +605,8 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
     fn reset(&mut self) -> Result<()> {
         self.cache.borrow_mut().clear();
         let mut c = self.ctx.client.borrow_mut();
-        let stmt = self
-            .ctx
-            .stmt(&mut c, "DELETE FROM treecrdt_payload WHERE doc_id = $1")?;
-        c.execute(&stmt, &[&self.ctx.doc_id])
-            .map_err(storage_debug)?;
+        let stmt = self.ctx.stmt(&mut c, "DELETE FROM treecrdt_payload WHERE doc_id = $1")?;
+        c.execute(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?;
         Ok(())
     }
 
@@ -692,11 +685,11 @@ impl PgParentOpIndex {
 impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
     fn reset(&mut self) -> Result<()> {
         let mut c = self.ctx.client.borrow_mut();
-        let stmt = self
-            .ctx
-            .stmt(&mut c, "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1")?;
-        c.execute(&stmt, &[&self.ctx.doc_id])
-            .map_err(storage_debug)?;
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?;
         Ok(())
     }
 
@@ -752,9 +745,7 @@ impl Storage for PgOpStorage {
             "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
              FROM treecrdt_ops WHERE doc_id = $1 AND lamport > $2 ORDER BY lamport, replica, counter",
         )?;
-        let rows = c
-            .query(&stmt, &[&self.ctx.doc_id, &(lamport as i64)])
-            .map_err(storage_debug)?;
+        let rows = c.query(&stmt, &[&self.ctx.doc_id, &(lamport as i64)]).map_err(storage_debug)?;
         rows.into_iter().map(row_to_op).collect()
     }
 
@@ -779,14 +770,16 @@ impl Storage for PgOpStorage {
             "SELECT COALESCE(MAX(counter), 0) \
              FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
         )?;
-        let rows = c
-            .query(&stmt, &[&self.ctx.doc_id, &replica.0])
-            .map_err(storage_debug)?;
+        let rows = c.query(&stmt, &[&self.ctx.doc_id, &replica.0]).map_err(storage_debug)?;
         let row = rows.get(0).ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
         Ok(row.get::<_, i64>(0).max(0) as u64)
     }
 
-    fn scan_since(&self, lamport: Lamport, visit: &mut dyn FnMut(Operation) -> Result<()>) -> Result<()> {
+    fn scan_since(
+        &self,
+        lamport: Lamport,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
         let ops = self.load_since(lamport)?;
         for op in ops {
             visit(op)?;
@@ -823,7 +816,8 @@ fn row_to_op(row: Row) -> Result<Operation> {
     let kind = match kind.as_str() {
         "insert" => {
             let parent = parent.ok_or_else(|| Error::Storage("insert op missing parent".into()))?;
-            let order_key = order_key.ok_or_else(|| Error::Storage("insert op missing order_key".into()))?;
+            let order_key =
+                order_key.ok_or_else(|| Error::Storage("insert op missing order_key".into()))?;
             OperationKind::Insert {
                 parent: bytes_to_node(&parent)?,
                 node: bytes_to_node(&node)?,
@@ -832,8 +826,10 @@ fn row_to_op(row: Row) -> Result<Operation> {
             }
         }
         "move" => {
-            let new_parent = new_parent.ok_or_else(|| Error::Storage("move op missing new_parent".into()))?;
-            let order_key = order_key.ok_or_else(|| Error::Storage("move op missing order_key".into()))?;
+            let new_parent =
+                new_parent.ok_or_else(|| Error::Storage("move op missing new_parent".into()))?;
+            let order_key =
+                order_key.ok_or_else(|| Error::Storage("move op missing order_key".into()))?;
             OperationKind::Move {
                 node: bytes_to_node(&node)?,
                 new_parent: bytes_to_node(&new_parent)?,
@@ -884,8 +880,8 @@ fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     let kind = match kind.as_str() {
         "insert" => {
             let parent = parent.ok_or_else(|| Error::Storage("insert op missing parent".into()))?;
-            let order_key = order_key
-                .ok_or_else(|| Error::Storage("insert op missing order_key".into()))?;
+            let order_key =
+                order_key.ok_or_else(|| Error::Storage("insert op missing order_key".into()))?;
             OperationKind::Insert {
                 parent: bytes_to_node(&parent)?,
                 node: bytes_to_node(&node)?,
@@ -896,7 +892,8 @@ fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
         "move" => {
             let new_parent =
                 new_parent.ok_or_else(|| Error::Storage("move op missing new_parent".into()))?;
-            let order_key = order_key.ok_or_else(|| Error::Storage("move op missing order_key".into()))?;
+            let order_key =
+                order_key.ok_or_else(|| Error::Storage("move op missing order_key".into()))?;
             OperationKind::Move {
                 node: bytes_to_node(&node)?,
                 new_parent: bytes_to_node(&new_parent)?,
@@ -919,7 +916,9 @@ fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     Ok(Operation { meta, kind })
 }
 
-fn op_kind_to_db(op: &Operation) -> Result<(
+fn op_kind_to_db(
+    op: &Operation,
+) -> Result<(
     &'static str,
     Option<Vec<u8>>,
     Vec<u8>,
@@ -973,7 +972,15 @@ fn op_kind_to_db(op: &Operation) -> Result<(
                     "treecrdt: delete known_state must not be empty".into(),
                 ));
             }
-            Ok(("delete", None, node_to_bytes(*node).to_vec(), None, None, None, Some(bytes)))
+            Ok((
+                "delete",
+                None,
+                node_to_bytes(*node).to_vec(),
+                None,
+                None,
+                None,
+                Some(bytes),
+            ))
         }
         OperationKind::Tombstone { node } => Ok((
             "tombstone",
@@ -1041,11 +1048,7 @@ fn cmp_op_key_to_meta(op: &Operation, meta: &TreeMeta) -> Ordering {
     )
 }
 
-fn materialize_ops_in_order(
-    ctx: PgCtx,
-    meta: &TreeMeta,
-    mut ops: Vec<Operation>,
-) -> Result<()> {
+fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, mut ops: Vec<Operation>) -> Result<()> {
     if ops.is_empty() {
         return Ok(());
     }
@@ -1066,7 +1069,9 @@ fn materialize_ops_in_order(
 
     if let Some(first) = ops.first() {
         if cmp_op_key_to_meta(first, meta) == Ordering::Less {
-            return Err(Error::Storage("out-of-order op before materialized head".into()));
+            return Err(Error::Storage(
+                "out-of-order op before materialized head".into(),
+            ));
         }
     }
 
@@ -1108,8 +1113,7 @@ fn materialize_ops_in_order(
 pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN")
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = append_ops_in_tx(client, doc_id, ops);
@@ -1117,8 +1121,7 @@ pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation])
     match res {
         Ok(v) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT")
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
             Ok(v)
         }
         Err(e) => {
@@ -1178,8 +1181,7 @@ fn clear_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> 
 pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN")
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = ensure_materialized_in_tx(client, doc_id);
@@ -1187,8 +1189,7 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
     match res {
         Ok(()) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT")
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
             Ok(())
         }
         Err(e) => {
@@ -1262,7 +1263,10 @@ pub fn max_lamport(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport
     Ok(row.get::<_, i64>(0).max(0) as Lamport)
 }
 
-pub fn list_op_refs_all(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
+pub fn list_op_refs_all(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
     ensure_doc_meta(client, doc_id)?;
     let mut c = client.borrow_mut();
     let rows = c
@@ -1374,7 +1378,11 @@ pub struct TreeRow {
     pub tombstone: bool,
 }
 
-pub fn tree_children(client: &Rc<RefCell<Client>>, doc_id: &str, parent: NodeId) -> Result<Vec<NodeId>> {
+pub fn tree_children(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    parent: NodeId,
+) -> Result<Vec<NodeId>> {
     ensure_materialized(client, doc_id)?;
     if parent == NodeId::TRASH {
         return Ok(Vec::new());
@@ -1490,7 +1498,11 @@ pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
-pub fn replica_max_counter(client: &Rc<RefCell<Client>>, doc_id: &str, replica: &[u8]) -> Result<u64> {
+pub fn replica_max_counter(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &[u8],
+) -> Result<u64> {
     ensure_doc_meta(client, doc_id)?;
     let mut c = client.borrow_mut();
     let rows = c
@@ -1514,7 +1526,11 @@ fn invalid_op_error(msg: &str) -> Error {
     Error::InvalidOperation(msg.to_string())
 }
 
-fn next_local_counter_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, replica: &[u8]) -> Result<u64> {
+fn next_local_counter_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &[u8],
+) -> Result<u64> {
     let mut c = client.borrow_mut();
     let rows = c
         .query(
@@ -1551,7 +1567,9 @@ fn order_key_for_local_after_in_tx(
         )
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-    let left_row = left_rows.get(0).ok_or_else(|| invalid_op_error("after node is not a child of parent"))?;
+    let left_row = left_rows
+        .get(0)
+        .ok_or_else(|| invalid_op_error("after node is not a child of parent"))?;
     let left: Option<Vec<u8>> = left_row.get(0);
     let Some(left) = left else {
         return Err(Error::Storage("after node missing order_key".into()));
@@ -1638,8 +1656,14 @@ fn allocate_local_order_key_in_tx(
     let exclude = node;
 
     let (left, right): (Option<Vec<u8>>, Option<Vec<u8>>) = match placement {
-        "first" => (None, order_key_for_local_first_in_tx(client, doc_id, parent, exclude)?),
-        "last" => (order_key_for_local_last_in_tx(client, doc_id, parent, exclude)?, None),
+        "first" => (
+            None,
+            order_key_for_local_first_in_tx(client, doc_id, parent, exclude)?,
+        ),
+        "last" => (
+            order_key_for_local_last_in_tx(client, doc_id, parent, exclude)?,
+            None,
+        ),
         "after" => {
             let Some(after) = after else {
                 return Err(invalid_op_error("missing after for placement=after"));
@@ -1668,8 +1692,7 @@ pub fn local_insert(
 ) -> Result<Operation> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN")
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = (|| -> Result<Operation> {
@@ -1677,16 +1700,11 @@ pub fn local_insert(
         let counter = next_local_counter_in_tx(client, doc_id, replica.as_bytes())?;
         let lamport = next_local_lamport_in_tx(client, doc_id)?;
         let seed = seed(replica.as_bytes(), counter);
-        let order_key = allocate_local_order_key_in_tx(client, doc_id, parent, node, placement, after, &seed)?;
+        let order_key =
+            allocate_local_order_key_in_tx(client, doc_id, parent, node, placement, after, &seed)?;
 
         let op = Operation::insert_with_optional_payload(
-            replica,
-            counter,
-            lamport,
-            parent,
-            node,
-            order_key,
-            payload,
+            replica, counter, lamport, parent, node, order_key, payload,
         );
         let _ = append_ops_in_tx(client, doc_id, &[op.clone()])?;
         Ok(op)
@@ -1695,8 +1713,7 @@ pub fn local_insert(
     match res {
         Ok(op) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT")
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
             Ok(op)
         }
         Err(e) => {
@@ -1718,8 +1735,7 @@ pub fn local_move(
 ) -> Result<Operation> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN")
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = (|| -> Result<Operation> {
@@ -1727,8 +1743,9 @@ pub fn local_move(
         let counter = next_local_counter_in_tx(client, doc_id, replica.as_bytes())?;
         let lamport = next_local_lamport_in_tx(client, doc_id)?;
         let seed = seed(replica.as_bytes(), counter);
-        let order_key =
-            allocate_local_order_key_in_tx(client, doc_id, new_parent, node, placement, after, &seed)?;
+        let order_key = allocate_local_order_key_in_tx(
+            client, doc_id, new_parent, node, placement, after, &seed,
+        )?;
 
         let op = Operation::move_node(replica, counter, lamport, node, new_parent, order_key);
         let _ = append_ops_in_tx(client, doc_id, &[op.clone()])?;
@@ -1738,8 +1755,7 @@ pub fn local_move(
     match res {
         Ok(op) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT")
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
             Ok(op)
         }
         Err(e) => {
@@ -1758,8 +1774,7 @@ pub fn local_delete(
 ) -> Result<Operation> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN")
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = (|| -> Result<Operation> {
@@ -1779,8 +1794,7 @@ pub fn local_delete(
     match res {
         Ok(op) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT")
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
             Ok(op)
         }
         Err(e) => {
@@ -1800,8 +1814,7 @@ pub fn local_payload(
 ) -> Result<Operation> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN")
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = (|| -> Result<Operation> {
@@ -1817,8 +1830,7 @@ pub fn local_payload(
     match res {
         Ok(op) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT")
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
             Ok(op)
         }
         Err(e) => {

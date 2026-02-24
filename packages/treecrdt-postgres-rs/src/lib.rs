@@ -12,6 +12,6 @@ pub use schema::{ensure_schema, reset_doc_for_tests};
 pub use store::{
     append_ops, ensure_materialized, get_ops_by_op_refs, list_op_refs_all, list_op_refs_children,
     local_delete, local_insert, local_move, local_payload, max_lamport, ops_since,
-    replica_max_counter, tree_children, tree_children_page, tree_dump, tree_node_count, TreeChildRow,
-    TreeRow,
+    replica_max_counter, tree_children, tree_children_page, tree_dump, tree_node_count,
+    TreeChildRow, TreeRow,
 };

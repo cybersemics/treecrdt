@@ -76,9 +76,7 @@ pub fn ensure_schema(client: &mut Client) -> Result<()> {
         .query_one("SELECT pg_advisory_lock($1)", &[&SCHEMA_LOCK_KEY])
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
 
-    let res = client
-        .batch_execute(SCHEMA_SQL)
-        .map_err(|e| Error::Storage(format!("{e:?}")));
+    let res = client.batch_execute(SCHEMA_SQL).map_err(|e| Error::Storage(format!("{e:?}")));
 
     // Best-effort unlock. Locks are also released when the connection is dropped.
     let _ = client.query_one("SELECT pg_advisory_unlock($1)", &[&SCHEMA_LOCK_KEY]);
@@ -88,7 +86,10 @@ pub fn ensure_schema(client: &mut Client) -> Result<()> {
 
 pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
     client
-        .execute("DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1", &[&doc_id])
+        .execute(
+            "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",
+            &[&doc_id],
+        )
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
     client
         .execute("DELETE FROM treecrdt_payload WHERE doc_id = $1", &[&doc_id])
