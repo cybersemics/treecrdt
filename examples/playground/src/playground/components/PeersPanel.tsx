@@ -7,6 +7,13 @@ import type { PeerInfo } from "../types";
 export function PeersPanel({
   docId,
   selfPeerId,
+  syncServerUrl,
+  setSyncServerUrl,
+  syncServerConnected,
+  syncServerBusy,
+  syncServerError,
+  connectSyncServer,
+  disconnectSyncServer,
   authEnabled,
   authCanIssue,
   authCanDelegate,
@@ -16,6 +23,13 @@ export function PeersPanel({
 }: {
   docId: string;
   selfPeerId: string | null;
+  syncServerUrl: string;
+  setSyncServerUrl: (next: string) => void;
+  syncServerConnected: boolean;
+  syncServerBusy: boolean;
+  syncServerError: string | null;
+  connectSyncServer: () => void;
+  disconnectSyncServer: () => void;
   authEnabled: boolean;
   authCanIssue: boolean;
   authCanDelegate: boolean;
@@ -64,6 +78,46 @@ export function PeersPanel({
           </button>
         </div>
       </div>
+
+      <div className="mt-3">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Remote sync server</div>
+        <div className="mt-1 flex items-center gap-2">
+          <input
+            className="h-8 w-full rounded-lg border border-slate-800 bg-slate-950/40 px-2 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:border-accent focus:outline-none"
+            value={syncServerUrl}
+            onChange={(e) => setSyncServerUrl(e.target.value)}
+            placeholder="wss://your-host/sync  (or https://your-host)"
+            disabled={syncServerBusy || syncServerConnected}
+            spellCheck={false}
+          />
+          {syncServerConnected ? (
+            <button
+              className="h-8 shrink-0 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+              type="button"
+              onClick={disconnectSyncServer}
+              disabled={syncServerBusy}
+              title="Disconnect"
+            >
+              Disconnect
+            </button>
+          ) : (
+            <button
+              className="h-8 shrink-0 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+              type="button"
+              onClick={connectSyncServer}
+              disabled={syncServerBusy || !syncServerUrl.trim()}
+              title="Connect"
+            >
+              {syncServerBusy ? "Connecting…" : "Connect"}
+            </button>
+          )}
+        </div>
+        {syncServerError && <div className="mt-1 text-[11px] text-rose-200">{syncServerError}</div>}
+        <div className="mt-1 text-[10px] text-slate-500">
+          If the playground is loaded over https you must use wss
+        </div>
+      </div>
+
       <div className="mt-2 max-h-32 overflow-auto pr-1">
         <div className="flex items-center justify-between gap-2 py-1">
           <span className="font-mono text-slate-200">

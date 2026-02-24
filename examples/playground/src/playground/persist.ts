@@ -42,6 +42,31 @@ export function persistStorage(mode: StorageMode) {
   window.history.replaceState({}, "", url);
 }
 
+function syncServerKey(docId: string): string {
+  return prefixPlaygroundStorageKey(`treecrdt-playground-sync-server:${docId}`);
+}
+
+export function initialSyncServerUrl(docId: string): string {
+  if (typeof window === "undefined") return "";
+  const param = new URLSearchParams(window.location.search).get("server");
+  if (param && param.trim()) return param.trim();
+  const existing = window.localStorage.getItem(syncServerKey(docId));
+  return existing ?? "";
+}
+
+export function persistSyncServerUrl(docId: string, serverUrl: string) {
+  if (typeof window === "undefined") return;
+  const key = syncServerKey(docId);
+  const clean = serverUrl.trim();
+  if (clean) window.localStorage.setItem(key, clean);
+  else window.localStorage.removeItem(key);
+
+  const url = new URL(window.location.href);
+  if (clean) url.searchParams.set("server", clean);
+  else url.searchParams.delete("server");
+  window.history.replaceState({}, "", url);
+}
+
 export function makeNodeId(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
