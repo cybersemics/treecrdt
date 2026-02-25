@@ -14,7 +14,10 @@ pub mod version_vector;
 
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
-pub use materialization::try_incremental_materialization;
+pub use materialization::{
+    apply_incremental_ops, try_incremental_materialization, MaterializationCursor,
+    MaterializationHead,
+};
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{
     Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,

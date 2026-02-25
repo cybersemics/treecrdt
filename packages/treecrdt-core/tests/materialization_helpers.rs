@@ -1,11 +1,42 @@
 use treecrdt_core::{
-    try_incremental_materialization, LamportClock, MemoryStorage, NodeId, OperationId,
-    ParentOpIndex, ReplicaId, TreeCrdt,
+    apply_incremental_ops, try_incremental_materialization, LamportClock, MaterializationCursor,
+    MemoryStorage, NodeId, Operation, OperationId, ParentOpIndex, ReplicaId, TreeCrdt,
 };
 
 #[derive(Default)]
 struct RecordingIndex {
     records: Vec<(NodeId, OperationId, u64)>,
+}
+
+#[derive(Default)]
+struct Cursor {
+    dirty: bool,
+    head_lamport: u64,
+    head_replica: Vec<u8>,
+    head_counter: u64,
+    head_seq: u64,
+}
+
+impl MaterializationCursor for Cursor {
+    fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn head_lamport(&self) -> u64 {
+        self.head_lamport
+    }
+
+    fn head_replica(&self) -> &[u8] {
+        &self.head_replica
+    }
+
+    fn head_counter(&self) -> u64 {
+        self.head_counter
+    }
+
+    fn head_seq(&self) -> u64 {
+        self.head_seq
+    }
 }
 
 impl ParentOpIndex for RecordingIndex {
@@ -90,4 +121,62 @@ fn finalize_local_materialization_records_unique_hints_and_extras() {
     assert_eq!(index.records.len(), 2);
     assert_eq!(index.records[0], (parent, op.meta.id.clone(), 42));
     assert_eq!(index.records[1], (parent, extra_op_id, 42));
+}
+
+#[test]
+fn apply_incremental_ops_sorts_and_returns_head() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut index = RecordingIndex::default();
+    let cursor = Cursor::default();
+    let replica = ReplicaId::new(b"remote");
+
+    let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
+
+    let next = apply_incremental_ops(&mut crdt, &mut index, &cursor, vec![second, first])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(next.lamport, 2);
+    assert_eq!(next.replica, replica.as_bytes());
+    assert_eq!(next.counter, 2);
+    assert_eq!(next.seq, 2);
+    assert_eq!(index.records.len(), 2);
+    assert_eq!(index.records[0].2, 1);
+    assert_eq!(index.records[1].2, 2);
+}
+
+#[test]
+fn apply_incremental_ops_rejects_before_materialized_head() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut index = RecordingIndex::default();
+    let cursor = Cursor {
+        dirty: false,
+        head_lamport: 5,
+        head_replica: b"r".to_vec(),
+        head_counter: 3,
+        head_seq: 12,
+    };
+
+    let op = Operation::insert(
+        &ReplicaId::new(b"r"),
+        2,
+        4,
+        NodeId::ROOT,
+        NodeId(9),
+        vec![0x10],
+    );
+
+    let res = apply_incremental_ops(&mut crdt, &mut index, &cursor, vec![op]);
+    assert!(res.is_err());
 }
