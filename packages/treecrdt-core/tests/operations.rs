@@ -1,4 +1,6 @@
-use treecrdt_core::{LamportClock, MemoryStorage, NodeId, Operation, ReplicaId, TreeCrdt};
+use treecrdt_core::{
+    LamportClock, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId, TreeCrdt,
+};
 
 #[test]
 fn inserts_and_moves_nodes() {
@@ -116,4 +118,34 @@ fn cycles_are_blocked() {
     assert_eq!(crdt.parent(a).unwrap(), Some(root));
     assert_eq!(crdt.parent(b).unwrap(), Some(a));
     crdt.validate_invariants().unwrap();
+}
+
+#[test]
+fn materialization_seq_advances_only_for_new_ops() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut seq = 0;
+    let mut index = NoopParentOpIndex;
+    let op = Operation::insert(
+        &ReplicaId::new(b"remote"),
+        1,
+        1,
+        NodeId::ROOT,
+        NodeId(1),
+        Vec::new(),
+    );
+
+    let first = crdt
+        .apply_remote_with_materialization_seq(op.clone(), &mut index, &mut seq)
+        .unwrap();
+    assert!(first.is_some());
+    assert_eq!(seq, 1);
+
+    let second = crdt.apply_remote_with_materialization_seq(op, &mut index, &mut seq).unwrap();
+    assert!(second.is_none());
+    assert_eq!(seq, 1);
 }

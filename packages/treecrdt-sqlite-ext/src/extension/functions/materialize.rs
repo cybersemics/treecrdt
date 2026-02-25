@@ -129,17 +129,19 @@ fn materialize_ops_in_order(
             kind: op_kind,
         };
 
-        seq += 1;
-        let applied = crdt
-            .apply_remote_with_materialization(operation, &mut op_index, seq)
+        let _ = crdt
+            .apply_remote_with_materialization_seq(operation, &mut op_index, &mut seq)
             .map_err(|_| SQLITE_ERROR as c_int)?;
-        if applied.is_none() {
-            seq -= 1;
-        }
     }
 
-    let last = ops.last().expect("ops non-empty");
-    update_tree_meta_head(db, last.lamport, &last.replica, last.counter, seq)?;
+    let last = crdt.head_op().ok_or(SQLITE_ERROR as c_int)?;
+    update_tree_meta_head(
+        db,
+        last.meta.lamport,
+        last.meta.id.replica.as_bytes(),
+        last.meta.id.counter,
+        seq,
+    )?;
     Ok(())
 }
 

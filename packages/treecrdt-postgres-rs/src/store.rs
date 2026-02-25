@@ -6,8 +6,8 @@ use std::rc::Rc;
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    cmp_op_key, Error, Lamport, LamportClock, NodeId, NodeStore, Operation, OperationId,
-    OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
+    cmp_op_key, Error, Lamport, LamportClock, NodeId, NodeStore, NoopStorage, Operation,
+    OperationId, OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
     VersionVector,
 };
 
@@ -138,23 +138,6 @@ fn update_tree_meta_head(
     )
     .map_err(|e| Error::Storage(e.to_string()))?;
     Ok(())
-}
-
-#[derive(Default)]
-struct NoopStorage;
-
-impl Storage for NoopStorage {
-    fn apply(&mut self, _op: Operation) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn load_since(&self, _lamport: Lamport) -> Result<Vec<Operation>> {
-        Ok(Vec::new())
-    }
-
-    fn latest_lamport(&self) -> Lamport {
-        0
-    }
 }
 
 #[derive(Clone)]
@@ -1081,7 +1064,7 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, mut ops: Vec<Operation>
 
     let mut crdt = TreeCrdt::with_stores(
         ReplicaId::new(b"postgres"),
-        NoopStorage,
+        NoopStorage::default(),
         LamportClock::default(),
         nodes,
         payloads,
@@ -1089,11 +1072,7 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, mut ops: Vec<Operation>
 
     let mut seq = meta.head_seq;
     for op in ops {
-        seq += 1;
-        let applied = crdt.apply_remote_with_materialization(op, &mut index, seq)?;
-        if applied.is_none() {
-            seq -= 1;
-        }
+        let _ = crdt.apply_remote_with_materialization_seq(op, &mut index, &mut seq)?;
     }
 
     let last = crdt

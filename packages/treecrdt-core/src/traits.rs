@@ -58,6 +58,27 @@ pub trait Storage {
     }
 }
 
+/// Storage adapter used when operations are already provided by the caller.
+///
+/// This is useful for incremental materialization pipelines that need core semantics
+/// (`apply_remote_with_materialization`) without persisting through `Storage::apply`.
+#[derive(Default)]
+pub struct NoopStorage;
+
+impl Storage for NoopStorage {
+    fn apply(&mut self, _op: Operation) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn load_since(&self, _lamport: Lamport) -> Result<Vec<Operation>> {
+        Ok(Vec::new())
+    }
+
+    fn latest_lamport(&self) -> Lamport {
+        0
+    }
+}
+
 /// Index provider used to accelerate subtree queries when partial sync is requested.
 pub trait IndexProvider {
     fn children_of(&self, node: NodeId) -> Result<Vec<NodeId>>;
