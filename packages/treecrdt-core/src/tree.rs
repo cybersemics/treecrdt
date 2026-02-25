@@ -336,6 +336,23 @@ where
         Ok(Some(delta))
     }
 
+    /// Apply a remote op and advance materialization sequence only when it is accepted.
+    ///
+    /// Adapters can hold `seq` in metadata and pass it by mutable reference across a batch.
+    pub fn apply_remote_with_materialization_seq<I: ParentOpIndex>(
+        &mut self,
+        op: Operation,
+        index: &mut I,
+        seq: &mut u64,
+    ) -> Result<Option<ApplyDelta>> {
+        *seq = (*seq).saturating_add(1);
+        let applied = self.apply_remote_with_materialization(op, index, *seq)?;
+        if applied.is_none() {
+            *seq = (*seq).saturating_sub(1);
+        }
+        Ok(applied)
+    }
+
     pub fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
     where
         I: IntoIterator<Item = NodeId>,
