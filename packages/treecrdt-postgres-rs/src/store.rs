@@ -1,14 +1,13 @@
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    cmp_op_key, try_incremental_materialization, Error, Lamport, LamportClock, NodeId, NodeStore,
-    NoopStorage, Operation, OperationId, OperationKind, ParentOpIndex, PayloadStore, ReplicaId,
-    Result, Storage, TreeCrdt, VersionVector,
+    apply_incremental_ops, try_incremental_materialization, Error, Lamport, LamportClock,
+    MaterializationCursor, NodeId, NodeStore, NoopStorage, Operation, OperationId, OperationKind,
+    ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -54,6 +53,28 @@ struct TreeMeta {
     head_replica: Vec<u8>,
     head_counter: u64,
     head_seq: u64,
+}
+
+impl MaterializationCursor for TreeMeta {
+    fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn head_lamport(&self) -> Lamport {
+        self.head_lamport
+    }
+
+    fn head_replica(&self) -> &[u8] {
+        &self.head_replica
+    }
+
+    fn head_counter(&self) -> u64 {
+        self.head_counter
+    }
+
+    fn head_seq(&self) -> u64 {
+        self.head_seq
+    }
 }
 
 fn ensure_doc_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
@@ -1020,42 +1041,9 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
     Ok(inserted > 0)
 }
 
-fn cmp_op_key_to_meta(op: &Operation, meta: &TreeMeta) -> Ordering {
-    cmp_op_key(
-        op.meta.lamport,
-        op.meta.id.replica.as_bytes(),
-        op.meta.id.counter,
-        meta.head_lamport,
-        &meta.head_replica,
-        meta.head_counter,
-    )
-}
-
-fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, mut ops: Vec<Operation>) -> Result<()> {
+fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) -> Result<()> {
     if ops.is_empty() {
         return Ok(());
-    }
-    if meta.dirty {
-        return Err(Error::Storage("materialize called while dirty".into()));
-    }
-
-    ops.sort_by(|a, b| {
-        cmp_op_key(
-            a.meta.lamport,
-            a.meta.id.replica.as_bytes(),
-            a.meta.id.counter,
-            b.meta.lamport,
-            b.meta.id.replica.as_bytes(),
-            b.meta.id.counter,
-        )
-    });
-
-    if let Some(first) = ops.first() {
-        if cmp_op_key_to_meta(first, meta) == Ordering::Less {
-            return Err(Error::Storage(
-                "out-of-order op before materialized head".into(),
-            ));
-        }
     }
 
     let nodes = PgNodeStore::new(ctx.clone());
@@ -1070,21 +1058,15 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, mut ops: Vec<Operation>
         payloads,
     )?;
 
-    let mut seq = meta.head_seq;
-    for op in ops {
-        let _ = crdt.apply_remote_with_materialization_seq(op, &mut index, &mut seq)?;
-    }
-
-    let last = crdt
-        .head_op()
+    let next = apply_incremental_ops(&mut crdt, &mut index, meta, ops)?
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
     update_tree_meta_head(
         &ctx.client,
         &ctx.doc_id,
-        last.meta.lamport,
-        last.meta.id.replica.as_bytes(),
-        last.meta.id.counter,
-        seq,
+        next.lamport,
+        &next.replica,
+        next.counter,
+        next.seq,
     )?;
     Ok(())
 }

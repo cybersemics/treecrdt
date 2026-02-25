@@ -40,40 +40,41 @@ struct MaterializeOp {
     payload: Option<Vec<u8>>,
 }
 
+impl treecrdt_core::MaterializationCursor for TreeMeta {
+    fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn head_lamport(&self) -> Lamport {
+        self.head_lamport
+    }
+
+    fn head_replica(&self) -> &[u8] {
+        &self.head_replica
+    }
+
+    fn head_counter(&self) -> u64 {
+        self.head_counter
+    }
+
+    fn head_seq(&self) -> u64 {
+        self.head_seq
+    }
+}
+
 fn materialize_ops_in_order(
     db: *mut sqlite3,
     doc_id: &[u8],
     meta: &TreeMeta,
-    ops: &mut [MaterializeOp],
+    ops: &[MaterializeOp],
 ) -> Result<(), c_int> {
     if ops.is_empty() {
         return Ok(());
     }
-    if meta.dirty {
-        return Err(SQLITE_ERROR as c_int);
-    }
-
-    ops.sort_by(|a, b| {
-        treecrdt_core::cmp_op_key(
-            a.lamport, &a.replica, a.counter, b.lamport, &b.replica, b.counter,
-        )
-    });
-    if let Some(first) = ops.first() {
-        if treecrdt_core::cmp_op_key(
-            first.lamport,
-            &first.replica,
-            first.counter,
-            meta.head_lamport,
-            &meta.head_replica,
-            meta.head_counter,
-        ) == std::cmp::Ordering::Less
-        {
-            return Err(SQLITE_ERROR as c_int);
-        }
-    }
 
     use treecrdt_core::{
-        LamportClock, Operation, OperationId, OperationKind, OperationMetadata, ReplicaId, TreeCrdt,
+        apply_incremental_ops, LamportClock, Operation, OperationId, OperationKind,
+        OperationMetadata, ReplicaId, TreeCrdt,
     };
     let node_store = SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
     let payload_store = SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
@@ -88,7 +89,7 @@ fn materialize_ops_in_order(
     )
     .map_err(|_| SQLITE_ERROR as c_int)?;
 
-    let mut seq = meta.head_seq;
+    let mut operations: Vec<Operation> = Vec::with_capacity(ops.len());
 
     for op in ops.iter() {
         let op_kind = match op.kind {
@@ -117,7 +118,7 @@ fn materialize_ops_in_order(
             },
         };
 
-        let operation = Operation {
+        operations.push(Operation {
             meta: OperationMetadata {
                 id: OperationId {
                     replica: ReplicaId(op.replica.clone()),
@@ -127,21 +128,13 @@ fn materialize_ops_in_order(
                 known_state: op.known_state.clone(),
             },
             kind: op_kind,
-        };
-
-        let _ = crdt
-            .apply_remote_with_materialization_seq(operation, &mut op_index, &mut seq)
-            .map_err(|_| SQLITE_ERROR as c_int)?;
+        });
     }
 
-    let last = crdt.head_op().ok_or(SQLITE_ERROR as c_int)?;
-    update_tree_meta_head(
-        db,
-        last.meta.lamport,
-        last.meta.id.replica.as_bytes(),
-        last.meta.id.counter,
-        seq,
-    )?;
+    let next = apply_incremental_ops(&mut crdt, &mut op_index, meta, operations)
+        .map_err(|_| SQLITE_ERROR as c_int)?
+        .ok_or(SQLITE_ERROR as c_int)?;
+    update_tree_meta_head(db, next.lamport, &next.replica, next.counter, next.seq)?;
     Ok(())
 }
 
@@ -508,7 +501,7 @@ pub(super) fn append_ops_impl(
     if inserted > 0 {
         let _ = treecrdt_core::try_incremental_materialization(
             meta.dirty || !materialize_ok,
-            || materialize_ops_in_order(db, doc_id, &meta, &mut materialize_ops),
+            || materialize_ops_in_order(db, doc_id, &meta, &materialize_ops),
             || {
                 let _ = set_tree_meta_dirty(db, true);
             },
