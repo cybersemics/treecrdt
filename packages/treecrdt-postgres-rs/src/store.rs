@@ -6,9 +6,9 @@ use std::rc::Rc;
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    cmp_op_key, Error, Lamport, LamportClock, NodeId, NodeStore, NoopStorage, Operation,
-    OperationId, OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
-    VersionVector,
+    cmp_op_key, try_incremental_materialization, Error, Lamport, LamportClock, NodeId, NodeStore,
+    NoopStorage, Operation, OperationId, OperationKind, ParentOpIndex, PayloadStore, ReplicaId,
+    Result, Storage, TreeCrdt, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -1132,13 +1132,13 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     }
 
     let inserted = inserted_ops.len();
-    if !meta.dirty {
-        if materialize_ops_in_order(ctx, &meta, inserted_ops).is_err() {
+    let _ = try_incremental_materialization(
+        meta.dirty,
+        || materialize_ops_in_order(ctx, &meta, inserted_ops),
+        || {
             let _ = set_tree_meta_dirty(client, doc_id, true);
-        }
-    } else {
-        let _ = set_tree_meta_dirty(client, doc_id, true);
-    }
+        },
+    );
 
     Ok(inserted.min(u64::MAX as usize) as u64)
 }

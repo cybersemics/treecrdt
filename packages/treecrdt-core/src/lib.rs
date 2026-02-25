@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod ids;
+pub mod materialization;
 pub mod ops;
 pub mod order_key;
 pub mod traits;
@@ -13,6 +14,7 @@ pub mod version_vector;
 
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
+pub use materialization::try_incremental_materialization;
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{
     Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,

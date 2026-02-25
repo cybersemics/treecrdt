@@ -353,6 +353,40 @@ where
         Ok(applied)
     }
 
+    /// Finalize adapter-owned local ops by refreshing tombstones and recording parent-op index rows.
+    ///
+    /// This is intended for adapters that execute local operations directly against core and then
+    /// need to keep external materialized indexes/metadata in sync.
+    pub fn finalize_local_materialization<I: ParentOpIndex>(
+        &mut self,
+        op: &Operation,
+        index: &mut I,
+        seq: u64,
+        parent_hints: &[NodeId],
+        extra_index_records: &[(NodeId, OperationId)],
+    ) -> Result<()> {
+        let mut refresh_starts: Vec<NodeId> = parent_hints.to_vec();
+        refresh_starts.push(op.kind.node());
+        self.refresh_tombstones_upward(refresh_starts)?;
+
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        for parent in parent_hints {
+            if *parent == NodeId::TRASH || !seen.insert(*parent) {
+                continue;
+            }
+            index.record(*parent, &op.meta.id, seq)?;
+        }
+
+        for (parent, op_id) in extra_index_records {
+            if *parent == NodeId::TRASH {
+                continue;
+            }
+            index.record(*parent, op_id, seq)?;
+        }
+
+        Ok(())
+    }
+
     pub fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
     where
         I: IntoIterator<Item = NodeId>,
