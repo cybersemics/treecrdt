@@ -3,7 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "packages/sync-server/*"
   ],
   "scripts": {
     "lint": "echo \"TODO: add linting\"",
@@ -21,7 +22,9 @@
     "benchmark:core": "cargo bench -p treecrdt-core --bench core --features bench",
     "benchmark:aggregate": "node scripts/aggregate-bench.mjs",
     "test": "pnpm run test:browser && pnpm run test:native-node",
-    "playground": "pnpm --filter @treecrdt/playground dev"
+    "playground": "pnpm --filter @treecrdt/playground dev",
+    "sync-server:postgres:setup": "pnpm -C packages/treecrdt-postgres-napi run build && pnpm -C packages/sync-server/postgres-node run build",
+    "sync-server:postgres": "pnpm --filter @treecrdt/sync-server-postgres-node dev"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.61.0",

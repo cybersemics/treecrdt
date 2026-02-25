@@ -1,0 +1,32 @@
+{
+  "name": "@treecrdt/sync-server-postgres-node",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter @treecrdt/sync-server-core build && tsx src/cli.ts",
+    "build": "pnpm -C ../../treecrdt-sync run build && pnpm --filter @treecrdt/sync-server-core build && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync": "workspace:*",
+    "@treecrdt/sync-server-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.25",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  }
+}
