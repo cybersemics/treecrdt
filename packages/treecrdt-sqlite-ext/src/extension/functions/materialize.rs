@@ -506,13 +506,13 @@ pub(super) fn append_ops_impl(
     }
 
     if inserted > 0 {
-        if materialize_ok {
-            if materialize_ops_in_order(db, doc_id, &meta, &mut materialize_ops).is_err() {
+        let _ = treecrdt_core::try_incremental_materialization(
+            meta.dirty || !materialize_ok,
+            || materialize_ops_in_order(db, doc_id, &meta, &mut materialize_ops),
+            || {
                 let _ = set_tree_meta_dirty(db, true);
-            }
-        } else {
-            let _ = set_tree_meta_dirty(db, true);
-        }
+            },
+        );
     }
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());

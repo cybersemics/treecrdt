@@ -232,44 +232,27 @@ fn finish_local_core_op(
     extra_index_records: Vec<(NodeId, OperationId)>,
 ) -> Result<JsonOp, c_int> {
     let mut post_materialization_ok = true;
-    let mut refresh_starts = parent_hints.clone();
-    refresh_starts.push(op.kind.node());
-    if session.crdt.refresh_tombstones_upward(refresh_starts).is_err() {
-        post_materialization_ok = false;
-    }
-
     let mut seq = 0u64;
     match load_tree_meta(session.db) {
         Ok(meta) => seq = meta.head_seq.saturating_add(1),
         Err(_) => post_materialization_ok = false,
     }
     if post_materialization_ok {
-        match SqliteParentOpIndex::prepare(session.db, session.doc_id.clone()) {
-            Ok(mut op_index) => {
-                let mut seen: Vec<NodeId> = Vec::new();
-                for parent in parent_hints {
-                    if parent == NodeId::TRASH || seen.contains(&parent) {
-                        continue;
-                    }
-                    seen.push(parent);
-                    if op_index.record(parent, &op.meta.id, seq).is_err() {
-                        post_materialization_ok = false;
-                        break;
-                    }
-                }
-                if post_materialization_ok {
-                    for (parent, op_id) in extra_index_records {
-                        if parent == NodeId::TRASH {
-                            continue;
-                        }
-                        if op_index.record(parent, &op_id, seq).is_err() {
-                            post_materialization_ok = false;
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(_) => post_materialization_ok = false,
+        let finalize_rc = match SqliteParentOpIndex::prepare(session.db, session.doc_id.clone()) {
+            Ok(mut op_index) => session
+                .crdt
+                .finalize_local_materialization(
+                    &op,
+                    &mut op_index,
+                    seq,
+                    &parent_hints,
+                    &extra_index_records,
+                )
+                .map_err(|_| SQLITE_ERROR as c_int),
+            Err(_) => Err(SQLITE_ERROR as c_int),
+        };
+        if finalize_rc.is_err() {
+            post_materialization_ok = false;
         }
     }
     if post_materialization_ok
