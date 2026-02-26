@@ -6,8 +6,9 @@ use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
     apply_incremental_ops, try_incremental_materialization, Error, Lamport, LamportClock,
-    MaterializationCursor, NodeId, NodeStore, NoopStorage, Operation, OperationId, OperationKind,
-    ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt, VersionVector,
+    LocalFinalizePlan, LocalPlacement, MaterializationCursor, NodeId, NodeStore, NoopStorage,
+    Operation, OperationId, OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage,
+    TreeCrdt, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -1476,10 +1477,6 @@ pub fn replica_max_counter(
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
-fn invalid_op_error(msg: &str) -> Error {
-    Error::InvalidOperation(msg.to_string())
-}
-
 type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
 
 struct LocalOpSession {
@@ -1533,49 +1530,20 @@ fn begin_local_core_op(
     Ok(LocalOpSession { ctx, meta, crdt })
 }
 
-fn resolve_after_node(
-    crdt: &LocalCrdt,
-    parent: NodeId,
-    placement: &str,
-    after: Option<NodeId>,
-    exclude: Option<NodeId>,
-) -> Result<Option<NodeId>> {
-    let out = match placement {
-        "first" => None,
-        "after" => {
-            let Some(after_id) = after else {
-                return Err(invalid_op_error("missing after for placement=after"));
-            };
-            if exclude.is_some() && exclude == Some(after_id) {
-                return Err(invalid_op_error("after cannot be excluded node"));
-            }
-            Some(after_id)
-        }
-        "last" => {
-            let mut children = crdt.children(parent)?;
-            if let Some(excluded) = exclude {
-                children.retain(|c| *c != excluded);
-            }
-            children.last().copied()
-        }
-        _ => return Err(invalid_op_error("invalid placement")),
-    };
-    Ok(out)
-}
-
-fn finish_local_core_op(
-    session: &mut LocalOpSession,
-    op: &Operation,
-    parent_hints: Vec<NodeId>,
-    extra_index_records: Vec<(NodeId, OperationId)>,
-) {
+fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: LocalFinalizePlan) {
     let mut post_materialization_ok = true;
     let seq = session.meta.head_seq.saturating_add(1);
 
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
     if session
         .crdt
-        .finalize_local_materialization(op, &mut op_index, seq, &parent_hints, &extra_index_records)
+        .finalize_local_materialization(
+            op,
+            &mut op_index,
+            seq,
+            &plan.parent_hints,
+            &plan.extra_index_records,
+        )
         .is_err()
     {
         post_materialization_ok = false;
@@ -1613,13 +1581,9 @@ pub fn local_insert(
 ) -> Result<Operation> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let after_id = resolve_after_node(&session.crdt, parent, placement, after, None)?;
-        let op = if let Some(payload) = payload {
-            session.crdt.local_insert_after_with_payload(parent, node, after_id, payload)?
-        } else {
-            session.crdt.local_insert_after(parent, node, after_id)?
-        };
-        finish_local_core_op(&mut session, &op, vec![parent], Vec::new());
+        let placement = LocalPlacement::from_parts(placement, after)?;
+        let (op, plan) = session.crdt.local_insert_with_plan(parent, node, placement, payload)?;
+        finish_local_core_op(&mut session, &op, plan);
         Ok(op)
     })
 }
@@ -1635,21 +1599,9 @@ pub fn local_move(
 ) -> Result<Operation> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let old_parent = session.crdt.parent(node)?;
-        let after_id = resolve_after_node(&session.crdt, new_parent, placement, after, Some(node))?;
-        let op = session.crdt.local_move_after(node, new_parent, after_id)?;
-
-        let mut parent_hints = vec![new_parent];
-        if let Some(parent) = old_parent {
-            parent_hints.push(parent);
-        }
-        let mut extra_index_records: Vec<(NodeId, OperationId)> = Vec::new();
-        if old_parent != Some(new_parent) && new_parent != NodeId::TRASH {
-            if let Some((_lamport, payload_id)) = session.crdt.payload_last_writer(node)? {
-                extra_index_records.push((new_parent, payload_id));
-            }
-        }
-        finish_local_core_op(&mut session, &op, parent_hints, extra_index_records);
+        let placement = LocalPlacement::from_parts(placement, after)?;
+        let (op, plan) = session.crdt.local_move_with_plan(node, new_parent, placement)?;
+        finish_local_core_op(&mut session, &op, plan);
         Ok(op)
     })
 }
@@ -1662,13 +1614,8 @@ pub fn local_delete(
 ) -> Result<Operation> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let old_parent = session.crdt.parent(node)?;
-        let op = session.crdt.local_delete(node)?;
-        let mut parent_hints = Vec::new();
-        if let Some(parent) = old_parent {
-            parent_hints.push(parent);
-        }
-        finish_local_core_op(&mut session, &op, parent_hints, Vec::new());
+        let (op, plan) = session.crdt.local_delete_with_plan(node)?;
+        finish_local_core_op(&mut session, &op, plan);
         Ok(op)
     })
 }
@@ -1682,17 +1629,8 @@ pub fn local_payload(
 ) -> Result<Operation> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let parent = session.crdt.parent(node)?;
-        let op = if let Some(payload) = payload {
-            session.crdt.local_set_payload(node, payload)?
-        } else {
-            session.crdt.local_clear_payload(node)?
-        };
-        let mut parent_hints = Vec::new();
-        if let Some(parent) = parent {
-            parent_hints.push(parent);
-        }
-        finish_local_core_op(&mut session, &op, parent_hints, Vec::new());
+        let (op, plan) = session.crdt.local_payload_with_plan(node, payload)?;
+        finish_local_core_op(&mut session, &op, plan);
         Ok(op)
     })
 }

@@ -23,5 +23,7 @@ pub use traits::{
     Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,
     NodeStore, NoopParentOpIndex, NoopStorage, ParentOpIndex, PayloadStore, Storage,
 };
-pub use tree::{ApplyDelta, NodeExport, NodeSnapshotExport, TreeCrdt};
+pub use tree::{
+    ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport, TreeCrdt,
+};
 pub use version_vector::VersionVector;
