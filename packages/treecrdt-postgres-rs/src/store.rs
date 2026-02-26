@@ -1476,169 +1476,128 @@ pub fn replica_max_counter(
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
-fn seed(replica: &[u8], counter: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(replica.len() + 8);
-    out.extend_from_slice(replica);
-    out.extend_from_slice(&counter.to_be_bytes());
-    out
-}
-
 fn invalid_op_error(msg: &str) -> Error {
     Error::InvalidOperation(msg.to_string())
 }
 
-fn next_local_counter_in_tx(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &[u8],
-) -> Result<u64> {
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT COALESCE(MAX(counter), 0) FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
-            &[&doc_id, &replica],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
-    Ok(row.get::<_, i64>(0).max(0) as u64 + 1)
+type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
+
+struct LocalOpSession {
+    ctx: PgCtx,
+    meta: TreeMeta,
+    crdt: LocalCrdt,
 }
 
-fn next_local_lamport_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport> {
-    Ok(max_lamport(client, doc_id)?.saturating_add(1))
-}
-
-fn order_key_for_local_after_in_tx(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-    after: NodeId,
-    exclude: NodeId,
-) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
-    let parent_bytes = node_to_bytes(parent);
-    let after_bytes = node_to_bytes(after);
-    let exclude_bytes = node_to_bytes(exclude);
-
-    let mut c = client.borrow_mut();
-    let left_rows = c
-        .query(
-            "SELECT order_key FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE AND node = $3 \
-             LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice(), &after_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let left_row = left_rows
-        .first()
-        .ok_or_else(|| invalid_op_error("after node is not a child of parent"))?;
-    let left: Option<Vec<u8>> = left_row.get(0);
-    let Some(left) = left else {
-        return Err(Error::Storage("after node missing order_key".into()));
-    };
-
-    let right_rows = c
-        .query(
-            "SELECT order_key FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-               AND node <> $3 \
-               AND (order_key > $4 OR (order_key = $4 AND node > $5)) \
-             ORDER BY order_key, node \
-             LIMIT 1",
-            &[
-                &doc_id,
-                &parent_bytes.as_slice(),
-                &exclude_bytes.as_slice(),
-                &left,
-                &after_bytes.as_slice(),
-            ],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let right = right_rows.first().and_then(|row| row.get::<_, Option<Vec<u8>>>(0));
-    Ok((left, right))
-}
-
-fn order_key_for_local_first_in_tx(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-    exclude: NodeId,
-) -> Result<Option<Vec<u8>>> {
-    let parent_bytes = node_to_bytes(parent);
-    let exclude_bytes = node_to_bytes(exclude);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT order_key FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE AND node <> $3 \
-             ORDER BY order_key, node \
-             LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice(), &exclude_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(rows.first().and_then(|row| row.get::<_, Option<Vec<u8>>>(0)))
-}
-
-fn order_key_for_local_last_in_tx(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-    exclude: NodeId,
-) -> Result<Option<Vec<u8>>> {
-    let parent_bytes = node_to_bytes(parent);
-    let exclude_bytes = node_to_bytes(exclude);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT order_key FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE AND node <> $3 \
-             ORDER BY order_key DESC, node DESC \
-             LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice(), &exclude_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(rows.first().and_then(|row| row.get::<_, Option<Vec<u8>>>(0)))
-}
-
-fn allocate_local_order_key_in_tx(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-    node: NodeId,
-    placement: &str,
-    after: Option<NodeId>,
-    seed: &[u8],
-) -> Result<Vec<u8>> {
-    if parent == NodeId::TRASH {
-        return Ok(Vec::new());
+fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    {
+        let mut c = client.borrow_mut();
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
-    // Mirror `TreeCrdt::allocate_child_key_after`: always exclude `node` when computing siblings.
-    let exclude = node;
+    let res = f();
 
-    let (left, right): (Option<Vec<u8>>, Option<Vec<u8>>) = match placement {
-        "first" => (
-            None,
-            order_key_for_local_first_in_tx(client, doc_id, parent, exclude)?,
-        ),
-        "last" => (
-            order_key_for_local_last_in_tx(client, doc_id, parent, exclude)?,
-            None,
-        ),
+    match res {
+        Ok(v) => {
+            let mut c = client.borrow_mut();
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
+            Ok(v)
+        }
+        Err(e) => {
+            let mut c = client.borrow_mut();
+            let _ = c.batch_execute("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn begin_local_core_op(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+) -> Result<LocalOpSession> {
+    ensure_materialized_in_tx(client, doc_id)?;
+    let meta = load_tree_meta_for_update(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
+
+    let storage = PgOpStorage::new(ctx.clone());
+    let nodes = PgNodeStore::new(ctx.clone());
+    let payloads = PgPayloadStore::new(ctx.clone());
+    let crdt = TreeCrdt::with_stores(
+        replica.clone(),
+        storage,
+        LamportClock::default(),
+        nodes,
+        payloads,
+    )?;
+
+    Ok(LocalOpSession { ctx, meta, crdt })
+}
+
+fn resolve_after_node(
+    crdt: &LocalCrdt,
+    parent: NodeId,
+    placement: &str,
+    after: Option<NodeId>,
+    exclude: Option<NodeId>,
+) -> Result<Option<NodeId>> {
+    let out = match placement {
+        "first" => None,
         "after" => {
-            let Some(after) = after else {
+            let Some(after_id) = after else {
                 return Err(invalid_op_error("missing after for placement=after"));
             };
-            if after == exclude {
+            if exclude.is_some() && exclude == Some(after_id) {
                 return Err(invalid_op_error("after cannot be excluded node"));
             }
-            let (l, r) = order_key_for_local_after_in_tx(client, doc_id, parent, after, exclude)?;
-            (Some(l), r)
+            Some(after_id)
+        }
+        "last" => {
+            let mut children = crdt.children(parent)?;
+            if let Some(excluded) = exclude {
+                children.retain(|c| *c != excluded);
+            }
+            children.last().copied()
         }
         _ => return Err(invalid_op_error("invalid placement")),
     };
+    Ok(out)
+}
 
-    treecrdt_core::order_key::allocate_between(left.as_deref(), right.as_deref(), seed)
+fn finish_local_core_op(
+    session: &mut LocalOpSession,
+    op: &Operation,
+    parent_hints: Vec<NodeId>,
+    extra_index_records: Vec<(NodeId, OperationId)>,
+) {
+    let mut post_materialization_ok = true;
+    let seq = session.meta.head_seq.saturating_add(1);
+
+    let mut op_index = PgParentOpIndex::new(session.ctx.clone());
+    if session
+        .crdt
+        .finalize_local_materialization(op, &mut op_index, seq, &parent_hints, &extra_index_records)
+        .is_err()
+    {
+        post_materialization_ok = false;
+    }
+
+    if post_materialization_ok
+        && update_tree_meta_head(
+            &session.ctx.client,
+            &session.ctx.doc_id,
+            op.meta.lamport,
+            op.meta.id.replica.as_bytes(),
+            op.meta.id.counter,
+            seq,
+        )
+        .is_err()
+    {
+        post_materialization_ok = false;
+    }
+
+    if !post_materialization_ok {
+        let _ = set_tree_meta_dirty(&session.ctx.client, &session.ctx.doc_id, true);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1652,38 +1611,17 @@ pub fn local_insert(
     after: Option<NodeId>,
     payload: Option<Vec<u8>>,
 ) -> Result<Operation> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = (|| -> Result<Operation> {
-        ensure_materialized_in_tx(client, doc_id)?;
-        let counter = next_local_counter_in_tx(client, doc_id, replica.as_bytes())?;
-        let lamport = next_local_lamport_in_tx(client, doc_id)?;
-        let seed = seed(replica.as_bytes(), counter);
-        let order_key =
-            allocate_local_order_key_in_tx(client, doc_id, parent, node, placement, after, &seed)?;
-
-        let op = Operation::insert_with_optional_payload(
-            replica, counter, lamport, parent, node, order_key, payload,
-        );
-        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
+    run_in_tx(client, || {
+        let mut session = begin_local_core_op(client, doc_id, replica)?;
+        let after_id = resolve_after_node(&session.crdt, parent, placement, after, None)?;
+        let op = if let Some(payload) = payload {
+            session.crdt.local_insert_after_with_payload(parent, node, after_id, payload)?
+        } else {
+            session.crdt.local_insert_after(parent, node, after_id)?
+        };
+        finish_local_core_op(&mut session, &op, vec![parent], Vec::new());
         Ok(op)
-    })();
-
-    match res {
-        Ok(op) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(op)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
+    })
 }
 
 pub fn local_move(
@@ -1695,37 +1633,25 @@ pub fn local_move(
     placement: &str,
     after: Option<NodeId>,
 ) -> Result<Operation> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
+    run_in_tx(client, || {
+        let mut session = begin_local_core_op(client, doc_id, replica)?;
+        let old_parent = session.crdt.parent(node)?;
+        let after_id = resolve_after_node(&session.crdt, new_parent, placement, after, Some(node))?;
+        let op = session.crdt.local_move_after(node, new_parent, after_id)?;
 
-    let res = (|| -> Result<Operation> {
-        ensure_materialized_in_tx(client, doc_id)?;
-        let counter = next_local_counter_in_tx(client, doc_id, replica.as_bytes())?;
-        let lamport = next_local_lamport_in_tx(client, doc_id)?;
-        let seed = seed(replica.as_bytes(), counter);
-        let order_key = allocate_local_order_key_in_tx(
-            client, doc_id, new_parent, node, placement, after, &seed,
-        )?;
-
-        let op = Operation::move_node(replica, counter, lamport, node, new_parent, order_key);
-        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
+        let mut parent_hints = vec![new_parent];
+        if let Some(parent) = old_parent {
+            parent_hints.push(parent);
+        }
+        let mut extra_index_records: Vec<(NodeId, OperationId)> = Vec::new();
+        if old_parent != Some(new_parent) && new_parent != NodeId::TRASH {
+            if let Some((_lamport, payload_id)) = session.crdt.payload_last_writer(node)? {
+                extra_index_records.push((new_parent, payload_id));
+            }
+        }
+        finish_local_core_op(&mut session, &op, parent_hints, extra_index_records);
         Ok(op)
-    })();
-
-    match res {
-        Ok(op) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(op)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
+    })
 }
 
 pub fn local_delete(
@@ -1734,37 +1660,17 @@ pub fn local_delete(
     replica: &ReplicaId,
     node: NodeId,
 ) -> Result<Operation> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = (|| -> Result<Operation> {
-        ensure_materialized_in_tx(client, doc_id)?;
-        let counter = next_local_counter_in_tx(client, doc_id, replica.as_bytes())?;
-        let lamport = next_local_lamport_in_tx(client, doc_id)?;
-
-        let ctx = PgCtx::new(client.clone(), doc_id)?;
-        let nodes = PgNodeStore::new(ctx);
-        let known_state = Some(nodes.subtree_version_vector(node)?);
-
-        let op = Operation::delete(replica, counter, lamport, node, known_state);
-        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
+    run_in_tx(client, || {
+        let mut session = begin_local_core_op(client, doc_id, replica)?;
+        let old_parent = session.crdt.parent(node)?;
+        let op = session.crdt.local_delete(node)?;
+        let mut parent_hints = Vec::new();
+        if let Some(parent) = old_parent {
+            parent_hints.push(parent);
+        }
+        finish_local_core_op(&mut session, &op, parent_hints, Vec::new());
         Ok(op)
-    })();
-
-    match res {
-        Ok(op) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(op)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
+    })
 }
 
 pub fn local_payload(
@@ -1774,31 +1680,19 @@ pub fn local_payload(
     node: NodeId,
     payload: Option<Vec<u8>>,
 ) -> Result<Operation> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = (|| -> Result<Operation> {
-        ensure_materialized_in_tx(client, doc_id)?;
-        let counter = next_local_counter_in_tx(client, doc_id, replica.as_bytes())?;
-        let lamport = next_local_lamport_in_tx(client, doc_id)?;
-
-        let op = Operation::payload(replica, counter, lamport, node, payload);
-        let _ = append_ops_in_tx(client, doc_id, std::slice::from_ref(&op))?;
+    run_in_tx(client, || {
+        let mut session = begin_local_core_op(client, doc_id, replica)?;
+        let parent = session.crdt.parent(node)?;
+        let op = if let Some(payload) = payload {
+            session.crdt.local_set_payload(node, payload)?
+        } else {
+            session.crdt.local_clear_payload(node)?
+        };
+        let mut parent_hints = Vec::new();
+        if let Some(parent) = parent {
+            parent_hints.push(parent);
+        }
+        finish_local_core_op(&mut session, &op, parent_hints, Vec::new());
         Ok(op)
-    })();
-
-    match res {
-        Ok(op) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(op)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
+    })
 }

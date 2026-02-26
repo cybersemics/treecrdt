@@ -8,7 +8,8 @@ use uuid::Uuid;
 use treecrdt_core::{NodeId, Operation, ReplicaId, VersionVector};
 use treecrdt_postgres::{
     append_ops, ensure_materialized, ensure_schema, get_ops_by_op_refs, list_op_refs_all,
-    list_op_refs_children, max_lamport, reset_doc_for_tests,
+    list_op_refs_children, local_delete, local_insert, local_move, local_payload, max_lamport,
+    replica_max_counter, reset_doc_for_tests, tree_children,
 };
 
 fn order_key_from_position(position: u16) -> Vec<u8> {
@@ -255,4 +256,74 @@ fn postgres_backend_defensive_delete_restores_parent_after_child_insert() {
         .unwrap();
     let tombstone: bool = rows[0].get(0);
     assert!(!tombstone);
+}
+
+#[test]
+fn postgres_backend_local_ops_drive_core_materialization_flow() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"loc");
+    let root = NodeId::ROOT;
+    let parent = node(1001);
+    let child = node(1002);
+    let sibling = node(1003);
+
+    let op1 = local_insert(
+        &client, &doc_id, &replica, root, parent, "first", None, None,
+    )
+    .unwrap();
+    let op2 = local_insert(
+        &client,
+        &doc_id,
+        &replica,
+        parent,
+        child,
+        "first",
+        None,
+        Some(vec![1]),
+    )
+    .unwrap();
+    let op3 = local_insert(
+        &client, &doc_id, &replica, root, sibling, "last", None, None,
+    )
+    .unwrap();
+    let op4 = local_move(&client, &doc_id, &replica, child, root, "last", None).unwrap();
+    let op5 = local_payload(&client, &doc_id, &replica, child, Some(vec![9])).unwrap();
+    let op6 = local_delete(&client, &doc_id, &replica, parent).unwrap();
+
+    assert_eq!(op1.meta.id.counter, 1);
+    assert_eq!(op2.meta.id.counter, 2);
+    assert_eq!(op3.meta.id.counter, 3);
+    assert_eq!(op4.meta.id.counter, 4);
+    assert_eq!(op5.meta.id.counter, 5);
+    assert_eq!(op6.meta.id.counter, 6);
+
+    ensure_materialized(&client, &doc_id).unwrap();
+
+    let children = tree_children(&client, &doc_id, root).unwrap();
+    assert_eq!(children, vec![sibling, child]);
+
+    let refs_root = list_op_refs_children(&client, &doc_id, root).unwrap();
+    let ops_root = get_ops_by_op_refs(&client, &doc_id, &refs_root).unwrap();
+    assert!(ops_root
+        .iter()
+        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
+    assert!(ops_root
+        .iter()
+        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Payload { .. })));
+
+    assert_eq!(max_lamport(&client, &doc_id).unwrap(), op6.meta.lamport);
+    assert_eq!(
+        replica_max_counter(&client, &doc_id, replica.as_bytes()).unwrap(),
+        op6.meta.id.counter
+    );
 }
