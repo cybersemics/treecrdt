@@ -198,27 +198,23 @@ fn finish_local_core_op(
     plan: LocalFinalizePlan,
 ) -> Result<JsonOp, c_int> {
     let mut post_materialization_ok = true;
-    let mut seq = 0u64;
+    let mut next_seq = 0u64;
+    let mut head_seq = 0u64;
     match load_tree_meta(session.db) {
-        Ok(meta) => seq = meta.head_seq.saturating_add(1),
+        Ok(meta) => head_seq = meta.head_seq,
         Err(_) => post_materialization_ok = false,
     }
     if post_materialization_ok {
         let finalize_rc = match SqliteParentOpIndex::prepare(session.db, session.doc_id.clone()) {
             Ok(mut op_index) => session
                 .crdt
-                .finalize_local_materialization(
-                    &op,
-                    &mut op_index,
-                    seq,
-                    &plan.parent_hints,
-                    &plan.extra_index_records,
-                )
+                .finalize_local_with_plan(&op, &mut op_index, head_seq, &plan)
                 .map_err(|_| SQLITE_ERROR as c_int),
             Err(_) => Err(SQLITE_ERROR as c_int),
         };
-        if finalize_rc.is_err() {
-            post_materialization_ok = false;
+        match finalize_rc {
+            Ok(seq) => next_seq = seq,
+            Err(_) => post_materialization_ok = false,
         }
     }
     if post_materialization_ok
@@ -227,7 +223,7 @@ fn finish_local_core_op(
             op.meta.lamport,
             op.meta.id.replica.as_bytes(),
             op.meta.id.counter,
-            seq,
+            next_seq,
         )
         .is_err()
     {
