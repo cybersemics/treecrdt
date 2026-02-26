@@ -8,7 +8,9 @@ use super::util::{
 };
 use super::*;
 use treecrdt_core::ParentOpIndex;
-use treecrdt_core::{LamportClock, Operation, OperationId, OperationKind, ReplicaId, TreeCrdt};
+use treecrdt_core::{
+    LamportClock, LocalFinalizePlan, LocalPlacement, Operation, OperationKind, ReplicaId, TreeCrdt,
+};
 
 #[derive(serde::Serialize)]
 struct JsonOp {
@@ -45,41 +47,6 @@ impl LocalOpSession {
         );
         rc
     }
-}
-
-fn invalid_op_error(msg: &str) -> treecrdt_core::Error {
-    treecrdt_core::Error::InvalidOperation(msg.to_string())
-}
-
-fn resolve_after_node(
-    crdt: &LocalCrdt,
-    parent: NodeId,
-    placement: &str,
-    after: Option<[u8; 16]>,
-    exclude: Option<NodeId>,
-) -> treecrdt_core::Result<Option<NodeId>> {
-    let out = match placement {
-        "first" => None,
-        "after" => {
-            let Some(after_bytes) = after else {
-                return Err(invalid_op_error("missing after for placement=after"));
-            };
-            let after_id = NodeId(u128::from_be_bytes(after_bytes));
-            if exclude.is_some() && exclude == Some(after_id) {
-                return Err(invalid_op_error("after cannot be excluded node"));
-            }
-            Some(after_id)
-        }
-        "last" => {
-            let mut children = crdt.children(parent)?;
-            if let Some(excluded) = exclude {
-                children.retain(|c| *c != excluded);
-            }
-            children.last().copied()
-        }
-        _ => return Err(invalid_op_error("invalid placement")),
-    };
-    Ok(out)
 }
 
 fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
@@ -228,8 +195,7 @@ fn begin_local_core_op(
 fn finish_local_core_op(
     mut session: LocalOpSession,
     op: Operation,
-    parent_hints: Vec<NodeId>,
-    extra_index_records: Vec<(NodeId, OperationId)>,
+    plan: LocalFinalizePlan,
 ) -> Result<JsonOp, c_int> {
     let mut post_materialization_ok = true;
     let mut seq = 0u64;
@@ -245,8 +211,8 @@ fn finish_local_core_op(
                     &op,
                     &mut op_index,
                     seq,
-                    &parent_hints,
-                    &extra_index_records,
+                    &plan.parent_hints,
+                    &plan.extra_index_records,
                 )
                 .map_err(|_| SQLITE_ERROR as c_int),
             Err(_) => Err(SQLITE_ERROR as c_int),
@@ -314,16 +280,14 @@ fn run_local_core_op<F>(
     build: F,
 ) -> Result<JsonOp, c_int>
 where
-    F: FnOnce(
-        &mut LocalCrdt,
-    ) -> treecrdt_core::Result<(Operation, Vec<NodeId>, Vec<(NodeId, OperationId)>)>,
+    F: FnOnce(&mut LocalCrdt) -> treecrdt_core::Result<(Operation, LocalFinalizePlan)>,
 {
     let mut session = begin_local_core_op(db, &doc_id, &replica, savepoint_name)?;
-    let (op, parent_hints, extra_index_records) = match build(&mut session.crdt) {
+    let (op, plan) = match build(&mut session.crdt) {
         Ok(v) => v,
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
     };
-    finish_local_core_op(session, op, parent_hints, extra_index_records)
+    finish_local_core_op(session, op, plan)
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_insert(
@@ -409,14 +373,16 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
 
     let parent_id = NodeId(u128::from_be_bytes(parent));
     let node_id = NodeId(u128::from_be_bytes(node));
+    let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
+    let placement = match LocalPlacement::from_parts(placement.as_str(), after_id) {
+        Ok(v) => v,
+        Err(err) => {
+            sqlite_result_error_code(ctx, sqlite_err_from_core(err));
+            return;
+        }
+    };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
-        let after_id = resolve_after_node(crdt, parent_id, placement.as_str(), after, None)?;
-        let op = if let Some(payload) = payload.clone() {
-            crdt.local_insert_after_with_payload(parent_id, node_id, after_id, payload)?
-        } else {
-            crdt.local_insert_after(parent_id, node_id, after_id)?
-        };
-        Ok((op, vec![parent_id], Vec::new()))
+        crdt.local_insert_with_plan(parent_id, node_id, placement, payload.clone())
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -510,27 +476,16 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let new_parent_id = NodeId(u128::from_be_bytes(new_parent));
+    let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
+    let placement = match LocalPlacement::from_parts(placement.as_str(), after_id) {
+        Ok(v) => v,
+        Err(err) => {
+            sqlite_result_error_code(ctx, sqlite_err_from_core(err));
+            return;
+        }
+    };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
-        let old_parent = crdt.parent(node_id)?;
-        let after_id = resolve_after_node(
-            crdt,
-            new_parent_id,
-            placement.as_str(),
-            after,
-            Some(node_id),
-        )?;
-        let op = crdt.local_move_after(node_id, new_parent_id, after_id)?;
-        let mut parent_hints = vec![new_parent_id];
-        if let Some(parent) = old_parent {
-            parent_hints.push(parent);
-        }
-        let mut extra_index_records: Vec<(NodeId, OperationId)> = Vec::new();
-        if old_parent != Some(new_parent_id) && new_parent_id != NodeId::TRASH {
-            if let Some((_lamport, payload_id)) = crdt.payload_last_writer(node_id)? {
-                extra_index_records.push((new_parent_id, payload_id));
-            }
-        }
-        Ok((op, parent_hints, extra_index_records))
+        crdt.local_move_with_plan(node_id, new_parent_id, placement)
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -600,13 +555,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
-        let old_parent = crdt.parent(node_id)?;
-        let op = crdt.local_delete(node_id)?;
-        let mut parent_hints = Vec::new();
-        if let Some(parent) = old_parent {
-            parent_hints.push(parent);
-        }
-        Ok((op, parent_hints, Vec::new()))
+        crdt.local_delete_with_plan(node_id)
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -678,17 +627,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
-        let parent = crdt.parent(node_id)?;
-        let op = if let Some(payload) = payload.clone() {
-            crdt.local_set_payload(node_id, payload)?
-        } else {
-            crdt.local_clear_payload(node_id)?
-        };
-        let mut parent_hints = Vec::new();
-        if let Some(parent) = parent {
-            parent_hints.push(parent);
-        }
-        Ok((op, parent_hints, Vec::new()))
+        crdt.local_payload_with_plan(node_id, payload.clone())
     }) {
         Ok(v) => v,
         Err(rc) => {

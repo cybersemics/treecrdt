@@ -1,5 +1,6 @@
 use treecrdt_core::{
-    LamportClock, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId, TreeCrdt,
+    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId,
+    TreeCrdt,
 };
 
 #[test]
@@ -148,4 +149,56 @@ fn materialization_seq_advances_only_for_new_ops() {
     let second = crdt.apply_remote_with_materialization_seq(op, &mut index, &mut seq).unwrap();
     assert!(second.is_none());
     assert_eq!(seq, 1);
+}
+
+#[test]
+fn local_move_with_plan_tracks_hint_and_payload_reindex() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    let root = NodeId::ROOT;
+    let parent_a = NodeId(10);
+    let parent_b = NodeId(11);
+    let node = NodeId(12);
+
+    crdt.local_insert_after(root, parent_a, None).unwrap();
+    crdt.local_insert_after(root, parent_b, None).unwrap();
+    crdt.local_insert_after_with_payload(parent_a, node, None, vec![1]).unwrap();
+
+    let expected_payload_writer = crdt.payload_last_writer(node).unwrap().unwrap().1;
+    let (_op, plan) = crdt.local_move_with_plan(node, parent_b, LocalPlacement::Last).unwrap();
+
+    assert_eq!(plan.parent_hints, vec![parent_b, parent_a]);
+    assert_eq!(
+        plan.extra_index_records,
+        vec![(parent_b, expected_payload_writer)]
+    );
+}
+
+#[test]
+fn local_placement_requires_after_for_after_variant() {
+    let err = LocalPlacement::from_parts("after", None).unwrap_err();
+    assert!(format!("{err:?}").contains("missing after"));
+}
+
+#[test]
+fn resolve_after_rejects_excluded_node() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let root = NodeId::ROOT;
+    let node = NodeId(42);
+    crdt.local_insert_after(root, node, None).unwrap();
+
+    let err = crdt
+        .resolve_after_for_placement(root, LocalPlacement::After(node), Some(node))
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("excluded"));
 }
