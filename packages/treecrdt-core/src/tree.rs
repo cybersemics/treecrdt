@@ -540,6 +540,24 @@ where
         Ok(())
     }
 
+    pub fn finalize_local_with_plan<I: ParentOpIndex>(
+        &mut self,
+        op: &Operation,
+        index: &mut I,
+        head_seq: u64,
+        plan: &LocalFinalizePlan,
+    ) -> Result<u64> {
+        let seq = head_seq.saturating_add(1);
+        self.finalize_local_materialization(
+            op,
+            index,
+            seq,
+            &plan.parent_hints,
+            &plan.extra_index_records,
+        )?;
+        Ok(seq)
+    }
+
     pub fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
     where
         I: IntoIterator<Item = NodeId>,

@@ -1,6 +1,6 @@
 use treecrdt_core::{
-    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId,
-    TreeCrdt,
+    LamportClock, LocalFinalizePlan, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex,
+    Operation, ReplicaId, TreeCrdt,
 };
 
 #[test]
@@ -201,4 +201,25 @@ fn resolve_after_rejects_excluded_node() {
         .resolve_after_for_placement(root, LocalPlacement::After(node), Some(node))
         .unwrap_err();
     assert!(format!("{err:?}").contains("excluded"));
+}
+
+#[test]
+fn finalize_local_with_plan_advances_head_seq() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let root = NodeId::ROOT;
+    let node = NodeId(7);
+    let op = crdt.local_insert_after(root, node, None).unwrap();
+    let plan = LocalFinalizePlan {
+        parent_hints: vec![root],
+        extra_index_records: Vec::new(),
+    };
+    let mut index = NoopParentOpIndex;
+
+    let next_seq = crdt.finalize_local_with_plan(&op, &mut index, 41, &plan).unwrap();
+    assert_eq!(next_seq, 42);
 }

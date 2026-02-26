@@ -1532,21 +1532,15 @@ fn begin_local_core_op(
 
 fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: LocalFinalizePlan) {
     let mut post_materialization_ok = true;
-    let seq = session.meta.head_seq.saturating_add(1);
+    let mut seq = 0u64;
 
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
-    if session
+    match session
         .crdt
-        .finalize_local_materialization(
-            op,
-            &mut op_index,
-            seq,
-            &plan.parent_hints,
-            &plan.extra_index_records,
-        )
-        .is_err()
+        .finalize_local_with_plan(op, &mut op_index, session.meta.head_seq, &plan)
     {
-        post_materialization_ok = false;
+        Ok(v) => seq = v,
+        Err(_) => post_materialization_ok = false,
     }
 
     if post_materialization_ok
