@@ -201,7 +201,7 @@ fn begin_local_core_op(
             return Err(SQLITE_ERROR as c_int);
         }
     };
-    let storage = SqliteOpStorage::new(db);
+    let storage = SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
     let replica_id = ReplicaId::new(replica.to_vec());
     let crdt = match TreeCrdt::with_stores(
         replica_id,
@@ -306,6 +306,26 @@ fn finish_local_core_op(
     Ok(out)
 }
 
+fn run_local_core_op<F>(
+    db: *mut sqlite3,
+    doc_id: Vec<u8>,
+    replica: Vec<u8>,
+    savepoint_name: &str,
+    build: F,
+) -> Result<JsonOp, c_int>
+where
+    F: FnOnce(
+        &mut LocalCrdt,
+    ) -> treecrdt_core::Result<(Operation, Vec<NodeId>, Vec<(NodeId, OperationId)>)>,
+{
+    let mut session = begin_local_core_op(db, &doc_id, &replica, savepoint_name)?;
+    let (op, parent_hints, extra_index_records) = match build(&mut session.crdt) {
+        Ok(v) => v,
+        Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+    };
+    finish_local_core_op(session, op, parent_hints, extra_index_records)
+}
+
 pub(super) unsafe extern "C" fn treecrdt_local_insert(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -387,44 +407,17 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
 
-    let mut session = match begin_local_core_op(db, &doc_id, &replica, "treecrdt_local_insert") {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
     let parent_id = NodeId(u128::from_be_bytes(parent));
     let node_id = NodeId(u128::from_be_bytes(node));
-    let after_id =
-        match resolve_after_node(&session.crdt, parent_id, placement.as_str(), after, None) {
-            Ok(v) => v,
-            Err(err) => {
-                sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-                return;
-            }
+    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
+        let after_id = resolve_after_node(crdt, parent_id, placement.as_str(), after, None)?;
+        let op = if let Some(payload) = payload.clone() {
+            crdt.local_insert_after_with_payload(parent_id, node_id, after_id, payload)?
+        } else {
+            crdt.local_insert_after(parent_id, node_id, after_id)?
         };
-    let op = if let Some(payload) = payload.clone() {
-        match session
-            .crdt
-            .local_insert_after_with_payload(parent_id, node_id, after_id, payload)
-        {
-            Ok(v) => v,
-            Err(err) => {
-                sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-                return;
-            }
-        }
-    } else {
-        match session.crdt.local_insert_after(parent_id, node_id, after_id) {
-            Ok(v) => v,
-            Err(err) => {
-                sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-                return;
-            }
-        }
-    };
-    let out = match finish_local_core_op(session, op, vec![parent_id], Vec::new()) {
+        Ok((op, vec![parent_id], Vec::new()))
+    }) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
@@ -515,60 +508,30 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         }
     };
 
-    let mut session = match begin_local_core_op(db, &doc_id, &replica, "treecrdt_local_move") {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
     let node_id = NodeId(u128::from_be_bytes(node));
     let new_parent_id = NodeId(u128::from_be_bytes(new_parent));
-    let old_parent = match session.crdt.parent(node_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-            return;
+    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
+        let old_parent = crdt.parent(node_id)?;
+        let after_id = resolve_after_node(
+            crdt,
+            new_parent_id,
+            placement.as_str(),
+            after,
+            Some(node_id),
+        )?;
+        let op = crdt.local_move_after(node_id, new_parent_id, after_id)?;
+        let mut parent_hints = vec![new_parent_id];
+        if let Some(parent) = old_parent {
+            parent_hints.push(parent);
         }
-    };
-    let after_id = match resolve_after_node(
-        &session.crdt,
-        new_parent_id,
-        placement.as_str(),
-        after,
-        Some(node_id),
-    ) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-            return;
-        }
-    };
-    let op = match session.crdt.local_move_after(node_id, new_parent_id, after_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-            return;
-        }
-    };
-    let mut parent_hints = vec![new_parent_id];
-    if let Some(parent) = old_parent {
-        parent_hints.push(parent);
-    }
-    let mut extra_index_records: Vec<(NodeId, OperationId)> = Vec::new();
-    if old_parent != Some(new_parent_id) && new_parent_id != NodeId::TRASH {
-        match session.crdt.payload_last_writer(node_id) {
-            Ok(Some((_lamport, payload_id))) => {
-                extra_index_records.push((new_parent_id, payload_id))
-            }
-            Ok(None) => {}
-            Err(err) => {
-                sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-                return;
+        let mut extra_index_records: Vec<(NodeId, OperationId)> = Vec::new();
+        if old_parent != Some(new_parent_id) && new_parent_id != NodeId::TRASH {
+            if let Some((_lamport, payload_id)) = crdt.payload_last_writer(node_id)? {
+                extra_index_records.push((new_parent_id, payload_id));
             }
         }
-    }
-    let out = match finish_local_core_op(session, op, parent_hints, extra_index_records) {
+        Ok((op, parent_hints, extra_index_records))
+    }) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
@@ -635,33 +598,16 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
         }
     };
 
-    let mut session = match begin_local_core_op(db, &doc_id, &replica, "treecrdt_local_delete") {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
     let node_id = NodeId(u128::from_be_bytes(node));
-    let old_parent = match session.crdt.parent(node_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-            return;
+    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
+        let old_parent = crdt.parent(node_id)?;
+        let op = crdt.local_delete(node_id)?;
+        let mut parent_hints = Vec::new();
+        if let Some(parent) = old_parent {
+            parent_hints.push(parent);
         }
-    };
-    let op = match session.crdt.local_delete(node_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-            return;
-        }
-    };
-    let mut parent_hints = Vec::new();
-    if let Some(parent) = old_parent {
-        parent_hints.push(parent);
-    }
-    let out = match finish_local_core_op(session, op, parent_hints, Vec::new()) {
+        Ok((op, parent_hints, Vec::new()))
+    }) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
@@ -730,43 +676,20 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         }
     };
 
-    let mut session = match begin_local_core_op(db, &doc_id, &replica, "treecrdt_local_payload") {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
     let node_id = NodeId(u128::from_be_bytes(node));
-    let parent = match session.crdt.parent(node_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-            return;
+    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
+        let parent = crdt.parent(node_id)?;
+        let op = if let Some(payload) = payload.clone() {
+            crdt.local_set_payload(node_id, payload)?
+        } else {
+            crdt.local_clear_payload(node_id)?
+        };
+        let mut parent_hints = Vec::new();
+        if let Some(parent) = parent {
+            parent_hints.push(parent);
         }
-    };
-    let op = if let Some(payload) = payload.clone() {
-        match session.crdt.local_set_payload(node_id, payload) {
-            Ok(v) => v,
-            Err(err) => {
-                sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-                return;
-            }
-        }
-    } else {
-        match session.crdt.local_clear_payload(node_id) {
-            Ok(v) => v,
-            Err(err) => {
-                sqlite_result_error_code(ctx, session.rollback(sqlite_err_from_core(err)));
-                return;
-            }
-        }
-    };
-    let mut parent_hints = Vec::new();
-    if let Some(parent) = parent {
-        parent_hints.push(parent);
-    }
-    let out = match finish_local_core_op(session, op, parent_hints, Vec::new()) {
+        Ok((op, parent_hints, Vec::new()))
+    }) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
