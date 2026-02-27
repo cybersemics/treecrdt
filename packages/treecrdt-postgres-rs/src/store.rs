@@ -1053,7 +1053,7 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
 
     let mut crdt = TreeCrdt::with_stores(
         ReplicaId::new(b"postgres"),
-        NoopStorage::default(),
+        NoopStorage,
         LamportClock::default(),
         nodes,
         payloads,

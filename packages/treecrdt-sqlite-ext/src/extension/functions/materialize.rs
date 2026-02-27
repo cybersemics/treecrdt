@@ -118,7 +118,7 @@ fn materialize_ops_in_order(
         SqliteParentOpIndex::prepare(db, doc_id.to_vec()).map_err(|_| SQLITE_ERROR as c_int)?;
     let mut crdt = TreeCrdt::with_stores(
         ReplicaId::new(b"sqlite-ext"),
-        NoopStorage::default(),
+        NoopStorage,
         LamportClock::default(),
         node_store,
         payload_store,
