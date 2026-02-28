@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod ids;
+pub mod materialization;
 pub mod ops;
 pub mod order_key;
 pub mod traits;
@@ -13,10 +14,16 @@ pub mod version_vector;
 
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
+pub use materialization::{
+    apply_incremental_ops, try_incremental_materialization, MaterializationCursor,
+    MaterializationHead,
+};
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{
     Clock, IndexProvider, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,
-    NodeStore, NoopParentOpIndex, ParentOpIndex, PayloadStore, Storage,
+    NodeStore, NoopParentOpIndex, NoopStorage, ParentOpIndex, PayloadStore, Storage,
 };
-pub use tree::{ApplyDelta, NodeExport, NodeSnapshotExport, TreeCrdt};
+pub use tree::{
+    ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport, TreeCrdt,
+};
 pub use version_vector::VersionVector;
