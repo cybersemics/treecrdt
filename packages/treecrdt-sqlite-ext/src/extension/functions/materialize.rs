@@ -2,6 +2,7 @@ use super::append::JsonAppendOp;
 use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::payload_store::SqlitePayloadStore;
+use super::util::sqlite_err_from_core;
 use super::*;
 use treecrdt_core::Storage;
 

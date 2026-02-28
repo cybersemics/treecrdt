@@ -7,7 +7,6 @@ use super::util::{
     sqlite_err_from_core, sqlite_result_json,
 };
 use super::*;
-use treecrdt_core::ParentOpIndex;
 use treecrdt_core::{
     LamportClock, LocalFinalizePlan, LocalPlacement, Operation, OperationKind, ReplicaId, TreeCrdt,
 };
