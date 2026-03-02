@@ -145,6 +145,7 @@ export function createTreecrdtClient(
   const treeChildrenImpl = async (parent: string) => decodeSqliteNodeIds(await adapter.treeChildren(nodeIdToBytes16(parent)));
   const treeDumpImpl = async () => decodeSqliteTreeRows(await adapter.treeDump());
   const treeNodeCountImpl = async () => Number(await adapter.treeNodeCount());
+  const treeGetPayloadImpl = async (node: string) => adapter.treePayload(nodeIdToBytes16(node));
   const headLamportImpl = async () => Number(await adapter.headLamport());
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
     Number(await adapter.replicaMaxCounter(encodeReplica(replica)));
@@ -181,6 +182,7 @@ export function createTreecrdtClient(
         decodeSqliteTreeChildRows(await adapter.treeChildrenPage!(nodeIdToBytes16(parent), cursor, limit)),
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
+      getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     local: {

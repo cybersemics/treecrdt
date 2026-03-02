@@ -24,6 +24,7 @@ export type TreecrdtEngineTree = {
   ) => Promise<SqliteTreeChildRow[]>;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
+  getPayload: (node: string) => Promise<Uint8Array | null>;
 };
 
 export type TreecrdtEngineMeta = {

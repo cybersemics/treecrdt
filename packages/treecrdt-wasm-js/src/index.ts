@@ -65,6 +65,11 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     },
     treeDump: async () => tree.treeDump() as unknown[],
     treeNodeCount: () => tree.treeNodeCount(),
+    treePayload: async (node) => {
+      // treePayload added in treecrdt-wasm; types update on wasm-pack build
+      const p = (tree as { treePayload?: (hex: string) => Uint8Array | null | undefined }).treePayload?.(bytesToHex(node));
+      return p ?? null;
+    },
     headLamport: () => Math.max(0, ...allOps().map((op) => op.lamport)),
     replicaMaxCounter: (replica) => {
       const target = bytesToHex(replica);

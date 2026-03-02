@@ -227,6 +227,12 @@ impl WasmTree {
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
     }
 
+    #[wasm_bindgen(js_name = treePayload)]
+    pub fn tree_payload(&self, node_hex: String) -> Result<Option<Vec<u8>>, JsValue> {
+        let node = hex_to_node(&node_hex).map_err(|e| JsValue::from_str(&e))?;
+        self.inner.payload(node).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+    }
+
     #[wasm_bindgen(js_name = treeDump)]
     pub fn tree_dump(&self) -> Result<JsValue, JsValue> {
         #[derive(Serialize)]
