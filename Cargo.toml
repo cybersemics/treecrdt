@@ -1,6 +1,8 @@
 [workspace]
 members = [
   "packages/treecrdt-core",
+  "packages/treecrdt-postgres-napi/native-rs",
+  "packages/treecrdt-postgres-rs",
   "packages/treecrdt-riblt-wasm",
   "packages/treecrdt-sqlite-ext",
   "packages/treecrdt-wasm",
