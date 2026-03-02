@@ -148,6 +148,31 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
+  packages/treecrdt-postgres-napi:
+    dependencies:
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../treecrdt-sync
+    devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
   packages/treecrdt-riblt-wasm-js:
     devDependencies:
       '@types/node':

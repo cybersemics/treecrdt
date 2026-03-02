@@ -45,7 +45,10 @@ export function parseBenchCliArgs(opts: {
   defaultSizes?: readonly number[];
   defaultWorkloads?: readonly WorkloadName[];
 } = {}): BenchCliArgs {
-  const argv = opts.argv ?? process.argv.slice(2);
+  // `tsx` forwards script args as `script.ts -- --flag value`, leaving a leading `--` in argv.
+  // Strip it so Commander still parses the benchmark flags.
+  const rawArgv = opts.argv ?? process.argv.slice(2);
+  const argv = rawArgv[0] === "--" ? rawArgv.slice(1) : rawArgv;
   const allowed = new Set<WorkloadName>(WORKLOAD_NAMES);
   const defaultSizes = Array.from(opts.defaultSizes ?? DEFAULT_BENCH_SIZES);
   const defaultWorkloads = Array.from(opts.defaultWorkloads ?? WORKLOAD_NAMES);

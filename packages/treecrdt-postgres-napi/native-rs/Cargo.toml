@@ -1,0 +1,21 @@
+[package]
+name = "treecrdt-postgres-napi"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2.16.17", default-features = false, features = ["napi8"] }
+napi-derive = "2.16.13"
+postgres = "0.19"
+serde_json = "1.0"
+treecrdt-core = { path = "../../treecrdt-core", features = ["serde"] }
+treecrdt-postgres = { path = "../../treecrdt-postgres-rs" }
+
+[build-dependencies]
+napi-build = "2.1.4"
+

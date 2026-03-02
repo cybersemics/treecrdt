@@ -36,7 +36,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::null_mut;
 use std::slice;
 
-pub(super) use treecrdt_core::{Lamport, NodeId, VersionVector};
+pub(super) use treecrdt_core::{Lamport, NodeId, NoopStorage, VersionVector};
 
 #[cfg(any(feature = "ext-sqlite", feature = "static-link"))]
 use serde_json;
@@ -62,26 +62,6 @@ fn deserialize_version_vector(bytes: &[u8]) -> Result<VersionVector, c_int> {
     match serde_json::from_slice(bytes) {
         Ok(vv) => Ok(vv),
         Err(_) => Err(SQLITE_ERROR as c_int),
-    }
-}
-
-#[derive(Default)]
-struct NoopStorage;
-
-impl treecrdt_core::Storage for NoopStorage {
-    fn apply(&mut self, _op: treecrdt_core::Operation) -> treecrdt_core::Result<bool> {
-        Ok(true)
-    }
-
-    fn load_since(
-        &self,
-        _lamport: Lamport,
-    ) -> treecrdt_core::Result<Vec<treecrdt_core::Operation>> {
-        Ok(Vec::new())
-    }
-
-    fn latest_lamport(&self) -> Lamport {
-        0
     }
 }
 

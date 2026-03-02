@@ -5,6 +5,7 @@ dist/
 package-lock.json
 *.log
 *.tsbuildinfo
+*.node
 .DS_Store
 .turbo/
 tmp/

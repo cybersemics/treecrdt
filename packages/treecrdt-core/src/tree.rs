@@ -54,6 +54,37 @@ pub struct ApplyDelta {
     pub affected_parents: Vec<NodeId>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalPlacement {
+    First,
+    Last,
+    After(NodeId),
+}
+
+impl LocalPlacement {
+    pub fn from_parts(placement: &str, after: Option<NodeId>) -> Result<Self> {
+        match placement {
+            "first" => Ok(Self::First),
+            "last" => Ok(Self::Last),
+            "after" => {
+                let Some(after_id) = after else {
+                    return Err(Error::InvalidOperation(
+                        "missing after for placement=after".into(),
+                    ));
+                };
+                Ok(Self::After(after_id))
+            }
+            _ => Err(Error::InvalidOperation("invalid placement".into())),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LocalFinalizePlan {
+    pub parent_hints: Vec<NodeId>,
+    pub extra_index_records: Vec<(NodeId, OperationId)>,
+}
+
 fn affected_parents(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
     let mut parents = Vec::new();
     if let Some(p) = snapshot_parent {
@@ -178,6 +209,54 @@ where
         self.commit_local(op)
     }
 
+    pub fn resolve_after_for_placement(
+        &self,
+        parent: NodeId,
+        placement: LocalPlacement,
+        exclude: Option<NodeId>,
+    ) -> Result<Option<NodeId>> {
+        match placement {
+            LocalPlacement::First => Ok(None),
+            LocalPlacement::After(after_id) => {
+                if exclude == Some(after_id) {
+                    return Err(Error::InvalidOperation(
+                        "after cannot be excluded node".into(),
+                    ));
+                }
+                Ok(Some(after_id))
+            }
+            LocalPlacement::Last => {
+                let mut children = self.children(parent)?;
+                if let Some(excluded) = exclude {
+                    children.retain(|child| *child != excluded);
+                }
+                Ok(children.last().copied())
+            }
+        }
+    }
+
+    pub fn local_insert_with_plan(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placement: LocalPlacement,
+        payload: Option<Vec<u8>>,
+    ) -> Result<(Operation, LocalFinalizePlan)> {
+        let after = self.resolve_after_for_placement(parent, placement, None)?;
+        let op = if let Some(payload) = payload {
+            self.local_insert_after_with_payload(parent, node, after, payload)?
+        } else {
+            self.local_insert_after(parent, node, after)?
+        };
+        Ok((
+            op,
+            LocalFinalizePlan {
+                parent_hints: vec![parent],
+                extra_index_records: Vec::new(),
+            },
+        ))
+    }
+
     pub fn local_insert_after_with_payload(
         &mut self,
         parent: NodeId,
@@ -211,6 +290,37 @@ where
         self.commit_local(op)
     }
 
+    pub fn local_move_with_plan(
+        &mut self,
+        node: NodeId,
+        new_parent: NodeId,
+        placement: LocalPlacement,
+    ) -> Result<(Operation, LocalFinalizePlan)> {
+        let old_parent = self.parent(node)?;
+        let after = self.resolve_after_for_placement(new_parent, placement, Some(node))?;
+        let op = self.local_move_after(node, new_parent, after)?;
+
+        let mut parent_hints = vec![new_parent];
+        if let Some(parent) = old_parent {
+            parent_hints.push(parent);
+        }
+
+        let mut extra_index_records: Vec<(NodeId, OperationId)> = Vec::new();
+        if old_parent != Some(new_parent) && new_parent != NodeId::TRASH {
+            if let Some((_lamport, payload_id)) = self.payload_last_writer(node)? {
+                extra_index_records.push((new_parent, payload_id));
+            }
+        }
+
+        Ok((
+            op,
+            LocalFinalizePlan {
+                parent_hints,
+                extra_index_records,
+            },
+        ))
+    }
+
     pub fn local_delete(&mut self, node: NodeId) -> Result<Operation> {
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
@@ -218,6 +328,25 @@ where
         let known_state = Some(self.nodes.subtree_version_vector(node)?);
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
         self.commit_local(op)
+    }
+
+    pub fn local_delete_with_plan(
+        &mut self,
+        node: NodeId,
+    ) -> Result<(Operation, LocalFinalizePlan)> {
+        let old_parent = self.parent(node)?;
+        let op = self.local_delete(node)?;
+        let mut parent_hints = Vec::new();
+        if let Some(parent) = old_parent {
+            parent_hints.push(parent);
+        }
+        Ok((
+            op,
+            LocalFinalizePlan {
+                parent_hints,
+                extra_index_records: Vec::new(),
+            },
+        ))
     }
 
     pub fn local_set_payload(
@@ -238,6 +367,30 @@ where
         let lamport = self.clock.tick();
         let op = Operation::clear_payload(&replica, counter, lamport, node);
         self.commit_local(op)
+    }
+
+    pub fn local_payload_with_plan(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+    ) -> Result<(Operation, LocalFinalizePlan)> {
+        let parent = self.parent(node)?;
+        let op = if let Some(payload) = payload {
+            self.local_set_payload(node, payload)?
+        } else {
+            self.local_clear_payload(node)?
+        };
+        let mut parent_hints = Vec::new();
+        if let Some(parent) = parent {
+            parent_hints.push(parent);
+        }
+        Ok((
+            op,
+            LocalFinalizePlan {
+                parent_hints,
+                extra_index_records: Vec::new(),
+            },
+        ))
     }
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
@@ -334,6 +487,75 @@ where
         self.refresh_tombstones_upward(starts)?;
 
         Ok(Some(delta))
+    }
+
+    /// Apply a remote op and advance materialization sequence only when it is accepted.
+    ///
+    /// Adapters can hold `seq` in metadata and pass it by mutable reference across a batch.
+    pub fn apply_remote_with_materialization_seq<I: ParentOpIndex>(
+        &mut self,
+        op: Operation,
+        index: &mut I,
+        seq: &mut u64,
+    ) -> Result<Option<ApplyDelta>> {
+        *seq = (*seq).saturating_add(1);
+        let applied = self.apply_remote_with_materialization(op, index, *seq)?;
+        if applied.is_none() {
+            *seq = (*seq).saturating_sub(1);
+        }
+        Ok(applied)
+    }
+
+    /// Finalize adapter-owned local ops by refreshing tombstones and recording parent-op index rows.
+    ///
+    /// This is intended for adapters that execute local operations directly against core and then
+    /// need to keep external materialized indexes/metadata in sync.
+    pub fn finalize_local_materialization<I: ParentOpIndex>(
+        &mut self,
+        op: &Operation,
+        index: &mut I,
+        seq: u64,
+        parent_hints: &[NodeId],
+        extra_index_records: &[(NodeId, OperationId)],
+    ) -> Result<()> {
+        let mut refresh_starts: Vec<NodeId> = parent_hints.to_vec();
+        refresh_starts.push(op.kind.node());
+        self.refresh_tombstones_upward(refresh_starts)?;
+
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        for parent in parent_hints {
+            if *parent == NodeId::TRASH || !seen.insert(*parent) {
+                continue;
+            }
+            index.record(*parent, &op.meta.id, seq)?;
+        }
+
+        for (parent, op_id) in extra_index_records {
+            if *parent == NodeId::TRASH {
+                continue;
+            }
+            index.record(*parent, op_id, seq)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn finalize_local_with_plan<I: ParentOpIndex>(
+        &mut self,
+        op: &Operation,
+        index: &mut I,
+        head_seq: u64,
+        plan: &LocalFinalizePlan,
+    ) -> Result<u64> {
+        let seq = head_seq.saturating_add(1);
+        self.finalize_local_materialization(
+            op,
+            index,
+            seq,
+            &plan.parent_hints,
+            &plan.extra_index_records,
+        )?;
+        Ok(seq)
     }
 
     pub fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
