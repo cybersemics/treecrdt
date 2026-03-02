@@ -28,9 +28,6 @@ export type StorageMode = "memory" | "opfs";
 export type PeerInfo = { id: string; lastSeen: number };
 
 export type PayloadRecord = {
-  lamport: number;
-  replica: string;
-  counter: number;
   payload: Uint8Array | null;
   encrypted?: boolean;
 };
