@@ -121,6 +121,7 @@ maybeDescribe("sqlite conformance scenarios (postgres-napi engine)", () => {
             createPersistentEngine: ({ docId, name }) => openWrapped({ docId, persistentName: name }),
           });
         } finally {
+          // Close in reverse creation order (LIFO) so later/opened peers are released before earlier ones.
           for (const e of engines.reverse()) {
             try {
               await e.close();
