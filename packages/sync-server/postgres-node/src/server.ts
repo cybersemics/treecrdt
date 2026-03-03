@@ -1,11 +1,20 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
+import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from "@treecrdt/auth";
 import type { Operation } from "@treecrdt/interface";
 import type { SyncBackend, SyncPeer } from "@treecrdt/sync";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import type { WebSocketSyncServerDocHandle, WebSocketSyncServerDocProvider } from "@treecrdt/sync-server-core";
+import type {
+  WebSocketSyncServerDocHandle,
+  WebSocketSyncServerDocProvider,
+  WebSocketSyncServerHooks,
+  WebSocketSyncServerUpgradeContext,
+  WebSocketSyncServerUpgradeHook,
+} from "@treecrdt/sync-server-core";
 import { startWebSocketSyncServer } from "@treecrdt/sync-server-core";
+import { Client as PgClient } from "pg";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -21,6 +30,7 @@ export type PostgresSyncBackendModule = {
 export type PostgresNodeDocStoreOptions = {
   backendFactory: PostgresSyncBackendFactory;
   idleCloseMs?: number;
+  broadcastDocUpdate?: (docId: string) => Awaitable<void>;
 };
 
 export type SyncServerOptions = {
@@ -30,6 +40,15 @@ export type SyncServerOptions = {
   backendModule?: string;
   idleCloseMs?: number;
   maxPayloadBytes?: number;
+  authToken?: string;
+  authCapabilityIssuerPublicKeys?: Uint8Array[];
+  docIdPattern?: string | RegExp;
+  allowDocCreate?: boolean;
+  enablePgNotify?: boolean;
+  pgNotifyChannel?: string;
+  rateLimitMaxUpgrades?: number;
+  rateLimitWindowMs?: number;
+  hooks?: WebSocketSyncServerHooks;
 };
 
 export type SyncServerHandle = {
@@ -51,8 +70,218 @@ type DocContext = {
 
 type PostgresNodeDocStore = {
   provider: WebSocketSyncServerDocProvider<Operation>;
+  notifyDocUpdate: (docId: string) => void;
   closeAll: () => Promise<void>;
 };
+
+type PostgresDocUpdateBusOptions = {
+  postgresUrl: string;
+  channel: string;
+  onDocUpdate: (docId: string) => void;
+};
+
+function ensurePostgresChannelName(value: string): string {
+  const trimmed = value.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+    throw new Error(`invalid Postgres NOTIFY channel: ${value}`);
+  }
+  return trimmed;
+}
+
+function parseDocIdRegex(input: string | RegExp | undefined): RegExp | undefined {
+  if (!input) return undefined;
+  if (input instanceof RegExp) return new RegExp(input.source, input.flags.replace(/[gy]/g, ""));
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return undefined;
+  return new RegExp(trimmed);
+}
+
+type DocUpdatePayload = {
+  docId: string;
+  source?: string;
+};
+
+class PostgresDocUpdateBus {
+  private readonly channel: string;
+  private readonly queryClient: PgClient;
+  private readonly listenClient: PgClient;
+  private readonly sourceId: string;
+  private closed = false;
+
+  private constructor(private readonly opts: PostgresDocUpdateBusOptions) {
+    this.channel = ensurePostgresChannelName(opts.channel);
+    this.queryClient = new PgClient({ connectionString: opts.postgresUrl });
+    this.listenClient = new PgClient({ connectionString: opts.postgresUrl });
+    this.sourceId = randomUUID();
+  }
+
+  static async create(opts: PostgresDocUpdateBusOptions): Promise<PostgresDocUpdateBus> {
+    const bus = new PostgresDocUpdateBus(opts);
+    await bus.start();
+    return bus;
+  }
+
+  private async start(): Promise<void> {
+    await Promise.all([this.queryClient.connect(), this.listenClient.connect()]);
+
+    this.listenClient.on("notification", (msg: { channel: string; payload?: string }) => {
+      if (msg.channel !== this.channel) return;
+      if (!msg.payload) return;
+      let payload: DocUpdatePayload;
+      try {
+        payload = JSON.parse(msg.payload) as DocUpdatePayload;
+      } catch {
+        payload = { docId: msg.payload };
+      }
+      if (!payload || typeof payload.docId !== "string" || payload.docId.length === 0) return;
+      if (payload.source && payload.source === this.sourceId) return;
+      this.opts.onDocUpdate(payload.docId);
+    });
+
+    await this.listenClient.query(`LISTEN ${this.channel}`);
+  }
+
+  async hasDoc(docId: string): Promise<boolean> {
+    const res = await this.queryClient.query("SELECT 1 FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1", [docId]);
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async publishDocUpdate(docId: string): Promise<void> {
+    if (this.closed || docId.length === 0) return;
+    const payload = JSON.stringify({ docId, source: this.sourceId } satisfies DocUpdatePayload);
+    await this.queryClient.query("SELECT pg_notify($1, $2)", [this.channel, payload]);
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      await this.listenClient.query(`UNLISTEN ${this.channel}`);
+    } catch {
+      // ignore
+    }
+    await Promise.allSettled([this.listenClient.end(), this.queryClient.end()]);
+  }
+}
+
+function isDeniedDecision(
+  decision: void | boolean | { allow: boolean; statusCode?: number; body?: string }
+): decision is false | { allow: false; statusCode?: number; body?: string } {
+  if (decision === false) return true;
+  if (typeof decision !== "object" || decision === null) return false;
+  return decision.allow === false;
+}
+
+function combineUpgradeHooks(
+  ...hooks: Array<WebSocketSyncServerUpgradeHook | undefined>
+): WebSocketSyncServerUpgradeHook | undefined {
+  const active = hooks.filter((hook): hook is WebSocketSyncServerUpgradeHook => Boolean(hook));
+  if (active.length === 0) return undefined;
+  return async (ctx) => {
+    for (const hook of active) {
+      const decision = await hook(ctx);
+      if (isDeniedDecision(decision)) return decision;
+    }
+    return { allow: true };
+  };
+}
+
+function extractAuthToken(ctx: WebSocketSyncServerUpgradeContext): string | null {
+  const queryToken = ctx.url.searchParams.get("token")?.trim();
+  if (queryToken) return queryToken;
+
+  const rawAuth = ctx.req.headers.authorization;
+  if (typeof rawAuth === "string") {
+    const match = rawAuth.match(/^Bearer\s+(.+)$/i);
+    return match?.[1]?.trim() || null;
+  }
+  return null;
+}
+
+function createStaticTokenAuthHook(expectedToken: string): WebSocketSyncServerUpgradeHook {
+  return (ctx) => {
+    const token = extractAuthToken(ctx);
+    if (token && token === expectedToken) return { allow: true };
+    return {
+      allow: false,
+      statusCode: 401,
+      body: "missing or invalid auth token",
+    };
+  };
+}
+
+function createCapabilityTokenAuthHook(issuerPublicKeys: Uint8Array[]): WebSocketSyncServerUpgradeHook {
+  return async (ctx) => {
+    const token = extractAuthToken(ctx);
+    if (!token) {
+      return {
+        allow: false,
+        statusCode: 401,
+        body: "missing capability token",
+      };
+    }
+    try {
+      const tokenBytes = base64urlDecode(token);
+      await describeTreecrdtCapabilityTokenV1({
+        tokenBytes,
+        issuerPublicKeys,
+        docId: ctx.docId,
+      });
+      return { allow: true };
+    } catch (err) {
+      return {
+        allow: false,
+        statusCode: 401,
+        body: `invalid capability token: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  };
+}
+
+function createDocIdPatternHook(pattern: RegExp): WebSocketSyncServerUpgradeHook {
+  return (ctx) => {
+    if (pattern.test(ctx.docId)) return { allow: true };
+    return {
+      allow: false,
+      statusCode: 400,
+      body: "invalid docId format",
+    };
+  };
+}
+
+function createKnownDocHook(hasDoc: (docId: string) => Promise<boolean>): WebSocketSyncServerUpgradeHook {
+  return async (ctx) => {
+    const known = await hasDoc(ctx.docId);
+    if (known) return { allow: true };
+    return {
+      allow: false,
+      statusCode: 403,
+      body: "docId creation disabled",
+    };
+  };
+}
+
+function createIpRateLimitHook(maxUpgrades: number, windowMs: number): WebSocketSyncServerUpgradeHook {
+  const buckets = new Map<string, { startedAt: number; count: number }>();
+  return (ctx) => {
+    const now = Date.now();
+    const key = ctx.remoteAddress ?? "unknown";
+    const bucket = buckets.get(key);
+    if (!bucket || now - bucket.startedAt >= windowMs) {
+      buckets.set(key, { startedAt: now, count: 1 });
+      return { allow: true };
+    }
+
+    bucket.count += 1;
+    if (bucket.count <= maxUpgrades) return { allow: true };
+
+    return {
+      allow: false,
+      statusCode: 429,
+      body: "too many upgrade requests",
+    };
+  };
+}
 
 function ensureNonEmptyString(name: string, value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -95,6 +324,13 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
   if (!Number.isFinite(idleCloseMs) || idleCloseMs < 0) throw new Error(`invalid idleCloseMs: ${opts.idleCloseMs}`);
 
   const docs = new Map<string, DocContext>();
+  const openInFlight = new Map<string, Promise<DocContext>>();
+
+  const notifyDocUpdate = (docId: string): void => {
+    const ctx = docs.get(docId);
+    if (!ctx) return;
+    for (const peer of ctx.peers) void peer.notifyLocalUpdate();
+  };
 
   const closeContext = async (ctx: DocContext): Promise<void> => {
     if (ctx.closeTimer) {
@@ -127,7 +363,12 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
       // Keep the queue usable even after a failed apply.
       ctx.applyQueue = run.catch(() => undefined);
       await run;
-      for (const peer of ctx.peers) void peer.notifyLocalUpdate();
+      try {
+        await opts.broadcastDocUpdate?.(ctx.docId);
+      } catch {
+        // ignore notify failures; local update path still proceeds
+      }
+      notifyDocUpdate(ctx.docId);
     };
     return {
       ...backend,
@@ -140,17 +381,38 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
     const existing = docs.get(docId);
     if (existing) return existing;
 
-    const rawBackend = await opts.backendFactory.open(docId);
-    const ctx: DocContext = {
-      docId,
-      backend: rawBackend,
-      peers: new Set(),
-      connections: 0,
-      applyQueue: Promise.resolve(),
-    };
-    ctx.backend = wrapBackendForContext(ctx, rawBackend);
-    docs.set(docId, ctx);
-    return ctx;
+    const pending = openInFlight.get(docId);
+    if (pending) return pending;
+
+    const opening = (async () => {
+      const rawBackend = await opts.backendFactory.open(docId);
+      const alreadyOpened = docs.get(docId);
+      if (alreadyOpened) {
+        try {
+          await (rawBackend as any)?.close?.();
+        } catch {
+          // ignore close failure on raced backend instance
+        }
+        return alreadyOpened;
+      }
+      const ctx: DocContext = {
+        docId,
+        backend: rawBackend,
+        peers: new Set(),
+        connections: 0,
+        applyQueue: Promise.resolve(),
+      };
+      ctx.backend = wrapBackendForContext(ctx, rawBackend);
+      docs.set(docId, ctx);
+      return ctx;
+    })();
+
+    openInFlight.set(docId, opening);
+    try {
+      return await opening;
+    } finally {
+      openInFlight.delete(docId);
+    }
   };
 
   return {
@@ -176,6 +438,7 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
         };
       },
     },
+    notifyDocUpdate,
     closeAll: async () => {
       await Promise.all(Array.from(docs.values()).map((ctx) => closeContext(ctx)));
     },
@@ -192,25 +455,88 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const postgresUrl = ensureNonEmptyString("postgresUrl", opts.postgresUrl);
   const idleCloseMs = Number(opts.idleCloseMs ?? 30_000);
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
+  const authToken =
+    typeof opts.authToken === "string" && opts.authToken.trim().length > 0 ? opts.authToken.trim() : undefined;
+  const authCapabilityIssuerPublicKeys = (opts.authCapabilityIssuerPublicKeys ?? []).filter(
+    (value): value is Uint8Array => value instanceof Uint8Array && value.length > 0
+  );
+  const docIdPattern = parseDocIdRegex(opts.docIdPattern);
+  const allowDocCreate = opts.allowDocCreate ?? true;
+  const enablePgNotify = opts.enablePgNotify ?? true;
+  const pgNotifyChannel = ensurePostgresChannelName(opts.pgNotifyChannel ?? "treecrdt_sync_doc_updates");
+  const rateLimitMaxUpgrades = Number(opts.rateLimitMaxUpgrades ?? 0);
+  const rateLimitWindowMs = Number(opts.rateLimitWindowMs ?? 60_000);
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
   if (!Number.isFinite(idleCloseMs) || idleCloseMs < 0) throw new Error(`invalid idleCloseMs: ${opts.idleCloseMs}`);
   if (!Number.isFinite(maxPayloadBytes) || maxPayloadBytes <= 0) {
     throw new Error(`invalid maxPayloadBytes: ${opts.maxPayloadBytes}`);
   }
+  if (!Number.isFinite(rateLimitMaxUpgrades) || rateLimitMaxUpgrades < 0) {
+    throw new Error(`invalid rateLimitMaxUpgrades: ${opts.rateLimitMaxUpgrades}`);
+  }
+  if (!Number.isFinite(rateLimitWindowMs) || rateLimitWindowMs <= 0) {
+    throw new Error(`invalid rateLimitWindowMs: ${opts.rateLimitWindowMs}`);
+  }
 
   const module = await loadPostgresBackendModule(backendModule);
   const backendFactory = module.createPostgresNapiSyncBackendFactory(postgresUrl);
   if (backendFactory.ensureSchema) await backendFactory.ensureSchema();
 
-  const docs = createPostgresNodeDocStore({ backendFactory, idleCloseMs });
-  const server = await startWebSocketSyncServer<Operation>({
-    host,
-    port,
-    maxPayloadBytes,
-    codec: treecrdtSyncV0ProtobufCodec,
-    docs: docs.provider,
+  let docUpdateBus: PostgresDocUpdateBus | undefined;
+  const docs = createPostgresNodeDocStore({
+    backendFactory,
+    idleCloseMs,
+    broadcastDocUpdate: async (docId) => {
+      await docUpdateBus?.publishDocUpdate(docId);
+    },
   });
+  if (enablePgNotify || !allowDocCreate) {
+    docUpdateBus = await PostgresDocUpdateBus.create({
+      postgresUrl,
+      channel: pgNotifyChannel,
+      onDocUpdate: (docId) => docs.notifyDocUpdate(docId),
+    });
+  }
+
+  const builtInAuthHook =
+    authCapabilityIssuerPublicKeys.length > 0
+      ? createCapabilityTokenAuthHook(authCapabilityIssuerPublicKeys)
+      : authToken
+      ? createStaticTokenAuthHook(authToken)
+      : undefined;
+
+  const builtInAuthorizeHook = combineUpgradeHooks(
+    docIdPattern ? createDocIdPatternHook(docIdPattern) : undefined,
+    !allowDocCreate ? createKnownDocHook((docId) => docUpdateBus!.hasDoc(docId)) : undefined
+  );
+
+  const hooks: WebSocketSyncServerHooks = {
+    onRateLimit: combineUpgradeHooks(
+      rateLimitMaxUpgrades > 0 ? createIpRateLimitHook(rateLimitMaxUpgrades, rateLimitWindowMs) : undefined,
+      opts.hooks?.onRateLimit
+    ),
+    onAuthenticate: combineUpgradeHooks(builtInAuthHook, opts.hooks?.onAuthenticate),
+    onAuthorize: combineUpgradeHooks(builtInAuthorizeHook, opts.hooks?.onAuthorize),
+    onError: opts.hooks?.onError,
+  };
+
+  const server = await (async () => {
+    try {
+      return await startWebSocketSyncServer<Operation>({
+        host,
+        port,
+        maxPayloadBytes,
+        codec: treecrdtSyncV0ProtobufCodec,
+        docs: docs.provider,
+        hooks,
+      });
+    } catch (err) {
+      await docs.closeAll();
+      await docUpdateBus?.close();
+      throw err;
+    }
+  })();
 
   return {
     host: server.host,
@@ -220,6 +546,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     close: async () => {
       await server.close();
       await docs.closeAll();
+      await docUpdateBus?.close();
     },
   };
 }

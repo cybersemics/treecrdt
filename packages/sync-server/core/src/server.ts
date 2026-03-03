@@ -7,6 +7,14 @@ import { SyncPeer } from "@treecrdt/sync";
 import type { DuplexTransport, WireCodec } from "@treecrdt/sync/transport";
 import { wrapDuplexTransportWithCodec } from "@treecrdt/sync/transport";
 
+type Awaitable<T> = T | Promise<T>;
+type UpgradeSocket = {
+  destroyed?: boolean;
+  remoteAddress?: string;
+  write(chunk: string | Uint8Array): unknown;
+  destroy(error?: Error): void;
+};
+
 function toUint8Array(data: WebSocket.RawData): Uint8Array {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
@@ -45,12 +53,46 @@ export interface WebSocketSyncServerDocProvider<Op> {
   open(docId: string): Promise<WebSocketSyncServerDocHandle<Op>>;
 }
 
+export type WebSocketSyncServerUpgradeContext = {
+  req: http.IncomingMessage;
+  url: URL;
+  docId: string;
+  remoteAddress: string | null;
+};
+
+export type WebSocketSyncServerUpgradeDecision =
+  | {
+      allow: true;
+    }
+  | {
+      allow: false;
+      statusCode?: number;
+      body?: string;
+    };
+
+export type WebSocketSyncServerUpgradeHook = (
+  ctx: WebSocketSyncServerUpgradeContext
+) => Awaitable<void | boolean | WebSocketSyncServerUpgradeDecision>;
+
+export type WebSocketSyncServerHooks = {
+  onRateLimit?: WebSocketSyncServerUpgradeHook;
+  onAuthenticate?: WebSocketSyncServerUpgradeHook;
+  onAuthorize?: WebSocketSyncServerUpgradeHook;
+  onError?: (
+    error: unknown,
+    ctx: WebSocketSyncServerUpgradeContext & {
+      stage: "rate_limit" | "authenticate" | "authorize";
+    }
+  ) => void;
+};
+
 export type WebSocketSyncServerOptions<Op> = {
   host?: string;
   port?: number;
   syncPath?: string;
   healthPath?: string;
   maxPayloadBytes?: number;
+  hooks?: WebSocketSyncServerHooks;
   codec: WireCodec<SyncMessage<Op>, Uint8Array>;
   docs: WebSocketSyncServerDocProvider<Op>;
 };
@@ -60,6 +102,71 @@ export type WebSocketSyncServerHandle = {
   port: number;
   close: () => Promise<void>;
 };
+
+function denyUpgrade(socket: UpgradeSocket, statusCode: number, body: string): void {
+  if (socket.destroyed) return;
+  const safeStatusCode =
+    Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599 ? statusCode : 403;
+  const statusText = http.STATUS_CODES[safeStatusCode] ?? "Forbidden";
+  const payload = Buffer.from(body, "utf8");
+  const response =
+    `HTTP/1.1 ${safeStatusCode} ${statusText}\r\n` +
+    "Connection: close\r\n" +
+    "Content-Type: text/plain; charset=utf-8\r\n" +
+    `Content-Length: ${payload.length}\r\n` +
+    "\r\n";
+  try {
+    socket.write(response);
+    socket.write(payload);
+  } finally {
+    socket.destroy();
+  }
+}
+
+function defaultDenyForStage(stage: "rate_limit" | "authenticate" | "authorize"): {
+  statusCode: number;
+  body: string;
+} {
+  if (stage === "rate_limit") return { statusCode: 429, body: "rate limited" };
+  if (stage === "authenticate") return { statusCode: 401, body: "unauthorized" };
+  return { statusCode: 403, body: "forbidden" };
+}
+
+function normalizeHookDecision(
+  stage: "rate_limit" | "authenticate" | "authorize",
+  decision: void | boolean | WebSocketSyncServerUpgradeDecision
+): { allow: true } | { allow: false; statusCode: number; body: string } {
+  if (typeof decision === "undefined" || decision === true) return { allow: true };
+  const fallback = defaultDenyForStage(stage);
+  if (decision === false) return { allow: false, statusCode: fallback.statusCode, body: fallback.body };
+  if (decision.allow) return { allow: true };
+  return {
+    allow: false,
+    statusCode: decision.statusCode ?? fallback.statusCode,
+    body: decision.body ?? fallback.body,
+  };
+}
+
+async function runUpgradeHook(
+  stage: "rate_limit" | "authenticate" | "authorize",
+  hook: WebSocketSyncServerUpgradeHook | undefined,
+  onError: WebSocketSyncServerHooks["onError"] | undefined,
+  ctx: WebSocketSyncServerUpgradeContext
+): Promise<{ allow: true } | { allow: false; statusCode: number; body: string }> {
+  if (!hook) return { allow: true };
+  try {
+    const result = await hook(ctx);
+    return normalizeHookDecision(stage, result);
+  } catch (error) {
+    try {
+      onError?.(error, { ...ctx, stage });
+    } catch {
+      // ignore hook error callback failures
+    }
+    const fallback = defaultDenyForStage(stage);
+    return { allow: false, statusCode: fallback.statusCode, body: fallback.body };
+  }
+}
 
 export async function startWebSocketSyncServer<Op>(
   opts: WebSocketSyncServerOptions<Op>
@@ -92,21 +199,64 @@ export async function startWebSocketSyncServer<Op>(
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxPayloadBytes });
 
   server.on("upgrade", (req, socket, head) => {
+    const upgradeSocket = socket as UpgradeSocket;
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (url.pathname !== syncPath) {
-      socket.destroy();
+      upgradeSocket.destroy();
       return;
     }
     const docId = url.searchParams.get("docId");
     if (!docId) {
-      socket.destroy();
+      upgradeSocket.destroy();
       return;
     }
 
-    (req as any).treecrdtDocId = docId;
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req);
-    });
+    const ctx: WebSocketSyncServerUpgradeContext = {
+      req,
+      url,
+      docId,
+      remoteAddress: upgradeSocket.remoteAddress ?? null,
+    };
+
+    void (async () => {
+      const rateLimitDecision = await runUpgradeHook(
+        "rate_limit",
+        opts.hooks?.onRateLimit,
+        opts.hooks?.onError,
+        ctx
+      );
+      if (!rateLimitDecision.allow) {
+        denyUpgrade(upgradeSocket, rateLimitDecision.statusCode, rateLimitDecision.body);
+        return;
+      }
+
+      const authDecision = await runUpgradeHook(
+        "authenticate",
+        opts.hooks?.onAuthenticate,
+        opts.hooks?.onError,
+        ctx
+      );
+      if (!authDecision.allow) {
+        denyUpgrade(upgradeSocket, authDecision.statusCode, authDecision.body);
+        return;
+      }
+
+      const authorizeDecision = await runUpgradeHook(
+        "authorize",
+        opts.hooks?.onAuthorize,
+        opts.hooks?.onError,
+        ctx
+      );
+      if (!authorizeDecision.allow) {
+        denyUpgrade(upgradeSocket, authorizeDecision.statusCode, authorizeDecision.body);
+        return;
+      }
+
+      (req as any).treecrdtDocId = docId;
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    })();
   });
 
   wss.on("connection", (ws, req) => {
@@ -117,38 +267,56 @@ export async function startWebSocketSyncServer<Op>(
         return;
       }
 
-      let doc: WebSocketSyncServerDocHandle<Op>;
-      try {
-        doc = await opts.docs.open(docId);
-      } catch {
-        ws.close(1011, "failed to open doc");
-        return;
-      }
-
-      const wire = createWebSocketTransport(ws);
-      const transport = wrapDuplexTransportWithCodec<Uint8Array, SyncMessage<Op>>(wire, opts.codec);
-      const peer = new SyncPeer<Op>(doc.backend, doc.peerOptions);
-      const detach = peer.attach(transport);
-
-      doc.onPeerAdded?.(peer);
-
       let cleaned = false;
+      let doc: WebSocketSyncServerDocHandle<Op> | undefined;
+      let peer: SyncPeer<Op> | undefined;
+      let detach: (() => void) | undefined;
+
       const cleanup = async () => {
         if (cleaned) return;
         cleaned = true;
         try {
-          detach();
+          detach?.();
         } catch {}
         try {
-          doc.onPeerRemoved?.(peer);
+          if (doc && peer) doc.onPeerRemoved?.(peer);
         } catch {}
         try {
-          await doc.release?.();
+          await doc?.release?.();
         } catch {}
       };
 
       ws.once("close", () => void cleanup());
       ws.once("error", () => void cleanup());
+
+      let openedDoc: WebSocketSyncServerDocHandle<Op>;
+      try {
+        openedDoc = await opts.docs.open(docId);
+      } catch {
+        if (!cleaned && ws.readyState === WebSocket.OPEN) {
+          ws.close(1011, "failed to open doc");
+        }
+        return;
+      }
+
+      if (cleaned) {
+        try {
+          await openedDoc.release?.();
+        } catch {}
+        return;
+      }
+
+      doc = openedDoc;
+      const wire = createWebSocketTransport(ws);
+      const transport = wrapDuplexTransportWithCodec<Uint8Array, SyncMessage<Op>>(wire, opts.codec);
+      peer = new SyncPeer<Op>(doc.backend, doc.peerOptions);
+      detach = peer.attach(transport, {
+        onError: () => {
+          if (ws.readyState === WebSocket.OPEN) ws.close(1011, "sync handler error");
+        },
+      });
+
+      doc.onPeerAdded?.(peer);
     })();
   });
 

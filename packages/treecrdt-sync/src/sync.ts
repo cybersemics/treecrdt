@@ -71,6 +71,10 @@ export type SyncPeerOptions<Op = unknown> = {
   auth?: SyncAuth<Op>;
 };
 
+export type SyncPeerAttachOptions<Op = unknown> = {
+  onError?: (ctx: { error: unknown; transport: DuplexTransport<SyncMessage<Op>> }) => void;
+};
+
 export type SyncSubscribeOptions = {
   intervalMs?: number;
   immediate?: boolean;
@@ -190,8 +194,20 @@ export class SyncPeer<Op> {
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
   }
 
-  attach(transport: DuplexTransport<SyncMessage<Op>>): () => void {
-    return transport.onMessage((msg) => void this.handleMessage(transport, msg));
+  attach(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    opts: SyncPeerAttachOptions<Op> = {}
+  ): () => void {
+    return transport.onMessage((msg) => {
+      void this.handleMessage(transport, msg).catch((error) => {
+        this.failAllPendingSessions(error);
+        try {
+          opts.onError?.({ error, transport });
+        } catch {
+          // ignore callback failures
+        }
+      });
+    });
   }
 
   notifyLocalUpdate(): Promise<void> {
@@ -1056,6 +1072,24 @@ export class SyncPeer<Op> {
     session.status.reject(e);
     session.receivedOps.reject(e);
     this.initiatorSessions.delete(err.filterId);
+  }
+
+  private failAllPendingSessions(error: unknown): void {
+    const e = error instanceof Error ? error : new Error(String(error));
+
+    for (const sub of this.initiatorSubscriptions.values()) {
+      sub.ack.reject(e);
+      sub.failed.reject(e);
+    }
+    this.initiatorSubscriptions.clear();
+
+    for (const session of this.initiatorSessions.values()) {
+      session.done = true;
+      session.ack.reject(e);
+      session.status.reject(e);
+      session.receivedOps.reject(e);
+    }
+    this.initiatorSessions.clear();
   }
 
   private async onRibltStatus(status: RibltStatus): Promise<void> {

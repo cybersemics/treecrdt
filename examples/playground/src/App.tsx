@@ -46,6 +46,15 @@ import type {
   TreeState,
 } from "./playground/types";
 
+const PLAYGROUND_SYNC_SERVER_URL_KEY = "treecrdt-playground-sync-server-url";
+
+function initialSyncServerUrl(): string {
+  if (typeof window === "undefined") return "";
+  const fromQuery = new URLSearchParams(window.location.search).get("sync")?.trim();
+  if (fromQuery && fromQuery.length > 0) return fromQuery;
+  return window.localStorage.getItem(PLAYGROUND_SYNC_SERVER_URL_KEY) ?? "";
+}
+
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const clientRef = useRef<TreecrdtClient | null>(null);
@@ -74,6 +83,7 @@ export default function App() {
   const [newNodeValue, setNewNodeValue] = useState("");
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
+  const [syncServerUrl, setSyncServerUrl] = useState<string>(() => initialSyncServerUrl());
   const [composerOpen, setComposerOpen] = useState(() => {
     if (typeof window === "undefined") return true;
     const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
@@ -96,6 +106,16 @@ export default function App() {
     const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
     window.localStorage.setItem(key, composerOpen ? "1" : "0");
   }, [composerOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const next = syncServerUrl.trim();
+    if (next.length === 0) {
+      window.localStorage.removeItem(PLAYGROUND_SYNC_SERVER_URL_KEY);
+      return;
+    }
+    window.localStorage.setItem(PLAYGROUND_SYNC_SERVER_URL_KEY, next);
+  }, [syncServerUrl]);
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
@@ -479,6 +499,12 @@ export default function App() {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
+    const remoteSync = syncServerUrl.trim();
+    if (remoteSync.length > 0) {
+      url.searchParams.set("sync", remoteSync);
+    } else {
+      url.searchParams.delete("sync");
+    }
     url.searchParams.set("fresh", "1");
     url.searchParams.delete("replica");
     url.searchParams.delete("auth");
@@ -508,6 +534,7 @@ export default function App() {
     docId,
     selfPeerId,
     autoSyncJoin,
+    syncServerUrl,
     online,
     getMaxLamport,
     authEnabled,
@@ -1144,6 +1171,8 @@ export default function App() {
             peersPanelProps={{
               docId,
               selfPeerId,
+              syncServerUrl,
+              setSyncServerUrl,
               authEnabled,
               authCanIssue,
               authCanDelegate,
