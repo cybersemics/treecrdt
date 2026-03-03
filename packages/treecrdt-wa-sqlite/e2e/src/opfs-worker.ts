@@ -110,7 +110,7 @@ async function runWaSqliteBenchInWorker(
 
   for (const workload of workloadDefs) {
     console.info(`[opfs-worker] workload ${workload.name} start`);
-    // Factory must return a NEW adapter each time: runBenchmark calls it per iteration and closes after each.
+    // Factory must return a NEW adapter each time: runBenchmark creates one adapter per workload and closes it after the run.
     const adapterFactory = () => createAdapter(storage, baseUrl);
     const res = await runWorkloads(adapterFactory, [workload]);
     const [result] = res;
