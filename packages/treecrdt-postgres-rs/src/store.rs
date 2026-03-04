@@ -1479,7 +1479,7 @@ pub fn tree_parent(
         Some(r) => r,
     };
     let parent: Option<Vec<u8>> = row.get(0);
-    Ok(parent.map(|b| bytes_to_node(&b)).transpose()?)
+    parent.map(|b| bytes_to_node(&b)).transpose()
 }
 
 pub fn replica_max_counter(
