@@ -230,10 +230,7 @@ impl WasmTree {
     #[wasm_bindgen(js_name = treeParent)]
     pub fn tree_parent(&self, node_hex: String) -> Result<JsValue, JsValue> {
         let node = hex_to_node(&node_hex).map_err(|e| JsValue::from_str(&e))?;
-        let parent = self
-            .inner
-            .parent(node)
-            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        let parent = self.inner.parent(node).map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         match parent {
             None => Ok(JsValue::NULL),
             Some(p) => {
