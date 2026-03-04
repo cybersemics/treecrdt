@@ -1388,7 +1388,7 @@ pub fn tree_children_page(
             "SELECT node, order_key \
              FROM treecrdt_nodes \
              WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-               AND ($3 IS NULL OR (order_key > $3 OR (order_key = $3 AND node > $4))) \
+               AND ($3::bytea IS NULL OR (order_key > $3::bytea OR (order_key = $3::bytea AND node > $4::bytea))) \
              ORDER BY order_key, node \
              LIMIT $5",
             &[
