@@ -13,7 +13,7 @@ import {
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from "@treecrdt/interface/sqlite";
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import { bytesToHex, nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type {
   TreecrdtEngine,
   TreecrdtEngineLocal,
@@ -294,6 +294,11 @@ async function createDirectClient(opts: {
           return (await adapter.treeDump()) as any;
         case "treeNodeCount":
           return (await adapter.treeNodeCount()) as any;
+        case "treeParent": {
+          const [node] = params as RpcParams<"treeParent">;
+          const result = await adapter.treeParent(nodeIdToBytes16(node));
+          return result ? Array.from(result) : null;
+        }
         case "headLamport":
           return (await adapter.headLamport()) as any;
         case "replicaMaxCounter": {
@@ -375,6 +380,11 @@ function makeTreecrdtClientFromCall(opts: {
   };
   const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", []));
   const treeNodeCountImpl = async () => Number(await call("treeNodeCount", []));
+  const treeParentImpl = async (node: string) => {
+    const result = await call("treeParent", [node]);
+    if (result === null) return null;
+    return nodeIdFromBytes16(Uint8Array.from(result));
+  };
   const headLamportImpl = async () => Number(await call("headLamport", []));
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
     Number(await call("replicaMaxCounter", [Array.from(encodeReplica(replica))]));
@@ -420,6 +430,7 @@ function makeTreecrdtClientFromCall(opts: {
       childrenPage: treeChildrenPageImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
+      parent: treeParentImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     local: {

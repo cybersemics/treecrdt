@@ -88,6 +88,10 @@ export async function createTreecrdtPostgresClient(
   };
 
   const treeNodeCountImpl = async () => bigintToSafeNumber("treeNodeCount", backend.treeNodeCount());
+  const treeParentImpl = async (node: string) => {
+    const result = backend.treeParent(nodeIdToBytes16(node));
+    return result === null || result === undefined ? null : nodeIdFromBytes16(result);
+  };
   const headLamportImpl = async () => bigintToSafeNumber("headLamport", backend.maxLamport());
   const replicaMaxCounterImpl = async (replica: ReplicaId) =>
     bigintToSafeNumber("replicaMaxCounter", backend.replicaMaxCounter(encodeReplica(replica)));
@@ -164,6 +168,7 @@ export async function createTreecrdtPostgresClient(
       childrenPage: treeChildrenPageImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
+      parent: treeParentImpl,
     },
     meta: {
       headLamport: headLamportImpl,

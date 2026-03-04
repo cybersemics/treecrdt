@@ -282,6 +282,7 @@ export function createTreecrdtSqliteAdapter(
       treecrdtTreeChildrenPage(runner, parent, cursor, limit),
     treeDump: () => treecrdtTreeDump(runner),
     treeNodeCount: () => treecrdtTreeNodeCount(runner),
+    treeParent: (node) => treecrdtTreeParent(runner, node),
     headLamport: () => treecrdtHeadLamport(runner),
     replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(runner, replica),
     appendOp: (op, serializeNodeId, serializeReplica) =>
@@ -418,6 +419,20 @@ async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
     "SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node <> ?1",
     [ROOT_NODE_BYTES]
   );
+}
+
+/**
+ * Fetch the parent of a node (16-byte id).
+ * Returns the parent node id as bytes, or null if the node is root or not found.
+ */
+async function treecrdtTreeParent(runner: SqliteRunner, node: Uint8Array): Promise<Uint8Array | null> {
+  await treecrdtEnsureMaterialized(runner);
+  const parentHex = await runner.getText(
+    "SELECT CASE WHEN parent IS NULL THEN NULL ELSE lower(hex(parent)) END FROM tree_nodes WHERE node = ?1",
+    [node]
+  );
+  if (!parentHex) return null;
+  return hexToBytes(parentHex);
 }
 
 /**

@@ -1460,6 +1460,28 @@ pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
+pub fn tree_parent(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    node: NodeId,
+) -> Result<Option<NodeId>> {
+    ensure_materialized(client, doc_id)?;
+    let node_bytes = node_to_bytes(node);
+    let mut c = client.borrow_mut();
+    let rows = c
+        .query(
+            "SELECT parent FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
+            &[&doc_id, &node_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    let row = match rows.first() {
+        None => return Ok(None),
+        Some(r) => r,
+    };
+    let parent: Option<Vec<u8>> = row.get(0);
+    Ok(parent.map(|b| bytes_to_node(&b)).transpose()?)
+}
+
 pub fn replica_max_counter(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,

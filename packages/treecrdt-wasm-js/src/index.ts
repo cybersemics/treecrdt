@@ -65,6 +65,12 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     },
     treeDump: async () => tree.treeDump() as unknown[],
     treeNodeCount: () => tree.treeNodeCount(),
+    treeParent: async (node) => {
+      const nodeHex = bytesToHex(node);
+      const result = tree.treeParent(nodeHex) as unknown;
+      if (result === null || result === undefined) return null;
+      return hexToBytes(String(result));
+    },
     headLamport: () => Math.max(0, ...allOps().map((op) => op.lamport)),
     replicaMaxCounter: (replica) => {
       const target = bytesToHex(replica);

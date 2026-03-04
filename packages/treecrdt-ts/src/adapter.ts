@@ -61,6 +61,12 @@ export interface TreecrdtAdapter {
    */
   treeNodeCount(): Promise<number> | number;
   /**
+   * Fetch the parent of a node (16-byte id).
+   *
+   * Returns the parent node id or null if the node is root or not found.
+   */
+  treeParent(node: Uint8Array): Promise<Uint8Array | null>;
+  /**
    * Fetch the maximum lamport seen in the op log.
    */
   headLamport(): Promise<number> | number;

@@ -33,6 +33,7 @@ const methods = {
   treeChildrenPage,
   treeDump,
   treeNodeCount,
+  treeParent,
   headLamport,
   replicaMaxCounter,
   localInsert,
@@ -158,6 +159,12 @@ async function treeDump() {
 async function treeNodeCount() {
   const api = ensureApi();
   return await api.treeNodeCount();
+}
+
+async function treeParent(node: string) {
+  const api = ensureApi();
+  const result = await api.treeParent(nodeIdToBytes16(node));
+  return result === null ? null : Array.from(result);
 }
 
 async function headLamport() {
