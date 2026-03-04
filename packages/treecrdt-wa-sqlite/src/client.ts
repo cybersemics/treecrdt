@@ -292,6 +292,11 @@ async function createDirectClient(opts: {
         }
         case "treeDump":
           return (await adapter.treeDump()) as any;
+        case "treePayload": {
+          const [node] = params as RpcParams<"treePayload">;
+          const payload = await adapter.treePayload(nodeIdToBytes16(node));
+          return (payload === null ? null : Array.from(payload)) as any;
+        }
         case "treeNodeCount":
           return (await adapter.treeNodeCount()) as any;
         case "headLamport":
@@ -375,6 +380,10 @@ function makeTreecrdtClientFromCall(opts: {
   };
   const treeDumpImpl = async () => decodeSqliteTreeRows(await call("treeDump", []));
   const treeNodeCountImpl = async () => Number(await call("treeNodeCount", []));
+  const treeGetPayloadImpl = async (node: string) => {
+    const result = await call("treePayload", [node]);
+    return result === null ? null : Uint8Array.from(result);
+  };
   const headLamportImpl = async () => Number(await call("headLamport", []));
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
     Number(await call("replicaMaxCounter", [Array.from(encodeReplica(replica))]));
@@ -420,6 +429,7 @@ function makeTreecrdtClientFromCall(opts: {
       childrenPage: treeChildrenPageImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
+      getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     local: {

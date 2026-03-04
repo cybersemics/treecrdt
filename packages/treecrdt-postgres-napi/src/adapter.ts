@@ -70,6 +70,10 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
           }));
         },
         treeNodeCount: async () => bigintToSafeNumber("treeNodeCount", backend.treeNodeCount()),
+        treePayload: async (node) => {
+          const result = backend.treePayload(node);
+          return result === null || result === undefined ? null : result;
+        },
         headLamport: async () => bigintToSafeNumber("headLamport", backend.maxLamport()),
         replicaMaxCounter: async (replica) =>
           bigintToSafeNumber("replicaMaxCounter", backend.replicaMaxCounter(replica)),
