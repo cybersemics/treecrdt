@@ -389,6 +389,7 @@ function makeTreecrdtClientFromCall(opts: {
     const result = await call("treeParent", [node]);
     if (result === null) return null;
     return nodeIdFromBytes16(Uint8Array.from(result));
+  };
   const treeGetPayloadImpl = async (node: string) => {
     const result = await call("treePayload", [node]);
     return result === null ? null : Uint8Array.from(result);
