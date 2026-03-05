@@ -34,6 +34,7 @@ export type NativeBackend = {
   treeDump(): { node: Uint8Array; parent: Uint8Array | null; orderKey: Uint8Array | null; tombstone: boolean }[];
   treeNodeCount(): bigint;
   treeParent(node: Uint8Array): Uint8Array | null;
+  treePayload(node: Uint8Array): Uint8Array | null;
   replicaMaxCounter(replica: Uint8Array): bigint;
   applyOps(ops: NativeOp[]): void;
   localInsert(

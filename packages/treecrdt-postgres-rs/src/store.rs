@@ -1445,6 +1445,27 @@ pub fn tree_dump(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Vec<TreeR
     Ok(out)
 }
 
+pub fn tree_payload(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    node: NodeId,
+) -> Result<Option<Vec<u8>>> {
+    ensure_materialized(client, doc_id)?;
+    let node_bytes = node_to_bytes(node);
+    let mut c = client.borrow_mut();
+    let rows = c
+        .query(
+            "SELECT payload FROM treecrdt_payload WHERE doc_id = $1 AND node = $2 LIMIT 1",
+            &[&doc_id, &node_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let payload: Option<Vec<u8>> = row.get(0);
+    Ok(payload)
+}
+
 pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64> {
     ensure_materialized(client, doc_id)?;
     let root_bytes = node_to_bytes(NodeId::ROOT);

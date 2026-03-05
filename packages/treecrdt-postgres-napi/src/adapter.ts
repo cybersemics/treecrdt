@@ -74,6 +74,7 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
           const result = backend.treeParent(node);
           return result === null || result === undefined ? null : result;
         },
+        treePayload: async (node) => backend.treePayload(node),
         headLamport: async () => bigintToSafeNumber("headLamport", backend.maxLamport()),
         replicaMaxCounter: async (replica) =>
           bigintToSafeNumber("replicaMaxCounter", backend.replicaMaxCounter(replica)),

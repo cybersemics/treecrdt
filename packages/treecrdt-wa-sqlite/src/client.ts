@@ -292,6 +292,11 @@ async function createDirectClient(opts: {
         }
         case "treeDump":
           return (await adapter.treeDump()) as any;
+        case "treePayload": {
+          const [node] = params as RpcParams<"treePayload">;
+          const payload = await adapter.treePayload(nodeIdToBytes16(node));
+          return (payload === null ? null : Array.from(payload)) as any;
+        }
         case "treeNodeCount":
           return (await adapter.treeNodeCount()) as any;
         case "treeParent": {
@@ -384,6 +389,9 @@ function makeTreecrdtClientFromCall(opts: {
     const result = await call("treeParent", [node]);
     if (result === null) return null;
     return nodeIdFromBytes16(Uint8Array.from(result));
+  const treeGetPayloadImpl = async (node: string) => {
+    const result = await call("treePayload", [node]);
+    return result === null ? null : Uint8Array.from(result);
   };
   const headLamportImpl = async () => Number(await call("headLamport", []));
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
@@ -431,6 +439,7 @@ function makeTreecrdtClientFromCall(opts: {
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       parent: treeParentImpl,
+      getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     local: {

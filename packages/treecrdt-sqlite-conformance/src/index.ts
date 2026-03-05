@@ -659,17 +659,17 @@ async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): 
 
   const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: "db" });
   assertArrayEqual(await e2.tree.children(root), [n1], "children after reopen (payload)");
+
+  const payload = await e2.tree.getPayload(n1);
+  assert(payload !== null, "tree.getPayload should return payload for node with payload");
+  assertEqual(new TextDecoder().decode(payload), "hello", "tree.getPayload returns correct value after reopen");
+
   const refs = await e2.opRefs.children(root);
   assertEqual(refs.length, 2, "opRefs.children length after reopen (payload)");
   const ops = await e2.ops.get(refs);
   const kinds = new Set(ops.map((op) => op.kind.type));
   assert(kinds.has("insert"), "expected insert op after reopen");
   assert(kinds.has("payload"), "expected payload op after reopen");
-
-  const payloadOp = ops.find((op) => op.kind.type === "payload");
-  assert(payloadOp, "expected payload op after reopen");
-  if (!payloadOp || payloadOp.kind.type !== "payload") throw new Error("expected payload op");
-  assertEqual(new TextDecoder().decode(payloadOp.kind.payload ?? new Uint8Array()), "hello", "payload contents after reopen");
 }
 
 function makeCapabilityTokenV1(opts: { issuerPrivateKey: Uint8Array; subjectPublicKey: Uint8Array; docId: string }): Uint8Array {

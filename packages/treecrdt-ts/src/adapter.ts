@@ -67,6 +67,12 @@ export interface TreecrdtAdapter {
    */
   treeParent(node: Uint8Array): Promise<Uint8Array | null>;
   /**
+   * Fetch the payload for a node (16-byte id).
+   *
+   * Returns the opaque byte payload or null if the node has no payload.
+   */
+  treePayload(node: Uint8Array): Promise<Uint8Array | null>;
+  /**
    * Fetch the maximum lamport seen in the op log.
    */
   headLamport(): Promise<number> | number;

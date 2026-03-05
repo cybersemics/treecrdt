@@ -283,6 +283,7 @@ export function createTreecrdtSqliteAdapter(
     treeDump: () => treecrdtTreeDump(runner),
     treeNodeCount: () => treecrdtTreeNodeCount(runner),
     treeParent: (node) => treecrdtTreeParent(runner, node),
+    treePayload: (node) => treecrdtTreePayload(runner, node),
     headLamport: () => treecrdtHeadLamport(runner),
     replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(runner, replica),
     appendOp: (op, serializeNodeId, serializeReplica) =>
@@ -433,6 +434,17 @@ async function treecrdtTreeParent(runner: SqliteRunner, node: Uint8Array): Promi
   );
   if (!parentHex) return null;
   return hexToBytes(parentHex);
+}
+
+/**
+ * Fetch the payload for a node (16-byte id).
+ * Returns the opaque byte payload or null if the node has no payload.
+ */
+async function treecrdtTreePayload(runner: SqliteRunner, node: Uint8Array): Promise<Uint8Array | null> {
+  await treecrdtEnsureMaterialized(runner);
+  const hex = await runner.getText("SELECT hex(payload) FROM tree_payload WHERE node = ?1 LIMIT 1", [node]);
+  if (hex === null || hex === undefined || hex === "") return null;
+  return hexToBytes(hex);
 }
 
 /**

@@ -404,6 +404,16 @@ impl PgBackend {
     }
 
     #[napi]
+    pub fn tree_payload(&self, node: Buffer) -> napi::Result<Option<Buffer>> {
+        let client = connect(&self.url)?;
+        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let node = bytes16_to_node(&node).map_err(map_core_err)?;
+        let payload =
+            treecrdt_postgres::tree_payload(&client, &self.doc_id, node).map_err(map_core_err)?;
+        Ok(payload.map(Buffer::from))
+    }
+
+    #[napi]
     pub fn replica_max_counter(&self, replica: Buffer) -> napi::Result<BigInt> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));

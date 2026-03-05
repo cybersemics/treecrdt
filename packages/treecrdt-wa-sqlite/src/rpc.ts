@@ -36,6 +36,7 @@ export type RpcSchema = {
   treeDump: { params: []; result: unknown[] };
   treeNodeCount: { params: []; result: number };
   treeParent: { params: [node: string]; result: number[] | null };
+  treePayload: { params: [node: string]; result: number[] | null };
   headLamport: { params: []; result: number };
   replicaMaxCounter: { params: [replica: number[]]; result: number };
   localInsert: {

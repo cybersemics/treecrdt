@@ -149,6 +149,7 @@ export function createTreecrdtClient(
     const result = await adapter.treeParent(nodeIdToBytes16(node));
     return result === null ? null : nodeIdFromBytes16(result);
   };
+  const treeGetPayloadImpl = async (node: string) => adapter.treePayload(nodeIdToBytes16(node));
   const headLamportImpl = async () => Number(await adapter.headLamport());
   const replicaMaxCounterImpl = async (replica: Operation["meta"]["id"]["replica"]) =>
     Number(await adapter.replicaMaxCounter(encodeReplica(replica)));
@@ -186,6 +187,7 @@ export function createTreecrdtClient(
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       parent: treeParentImpl,
+      getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     local: {
