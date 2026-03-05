@@ -103,3 +103,41 @@ test("notifyDocUpdate triggers peer updates for active docs", async () => {
   await handle.release?.();
   await store.closeAll();
 });
+
+test("closeAll waits for in-flight opens and closes resolved backends immediately", async () => {
+  const gate = deferred<void>();
+  const backendClosed = deferred<void>();
+  let closeCalls = 0;
+
+  const store = createPostgresNodeDocStore({
+    idleCloseMs: 60_000,
+    backendFactory: {
+      open: async (docId) => {
+        await gate.promise;
+        const backend = makeBackend(docId) as SyncBackend<Operation> & { close: () => Promise<void> };
+        backend.close = async () => {
+          closeCalls += 1;
+          backendClosed.resolve();
+        };
+        return backend;
+      },
+    },
+  });
+
+  const opening = store.provider.open("doc-close-during-open");
+  await Promise.resolve();
+
+  let closedAll = false;
+  const shutdown = store.closeAll().then(() => {
+    closedAll = true;
+  });
+  await Promise.resolve();
+  expect(closedAll).toBe(false);
+
+  gate.resolve();
+
+  await expect(opening).rejects.toThrow("doc store is closing");
+  await shutdown;
+  await backendClosed.promise;
+  expect(closeCalls).toBe(1);
+});

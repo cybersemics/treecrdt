@@ -65,6 +65,7 @@ type DocContext = {
   peers: Set<SyncPeer<Operation>>;
   connections: number;
   applyQueue: Promise<void>;
+  closed: boolean;
   closeTimer?: NodeJS.Timeout;
 };
 
@@ -263,8 +264,17 @@ function createKnownDocHook(hasDoc: (docId: string) => Promise<boolean>): WebSoc
 
 function createIpRateLimitHook(maxUpgrades: number, windowMs: number): WebSocketSyncServerUpgradeHook {
   const buckets = new Map<string, { startedAt: number; count: number }>();
+  let lastPrunedAt = 0;
   return (ctx) => {
     const now = Date.now();
+    if (buckets.size > 0 && now - lastPrunedAt >= windowMs) {
+      lastPrunedAt = now;
+      const cutoff = now - windowMs;
+      for (const [key, bucket] of buckets) {
+        if (bucket.startedAt <= cutoff) buckets.delete(key);
+      }
+    }
+
     const key = ctx.remoteAddress ?? "unknown";
     const bucket = buckets.get(key);
     if (!bucket || now - bucket.startedAt >= windowMs) {
@@ -325,6 +335,8 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
 
   const docs = new Map<string, DocContext>();
   const openInFlight = new Map<string, Promise<DocContext>>();
+  let closing = false;
+  let closeAllPromise: Promise<void> | undefined;
 
   const notifyDocUpdate = (docId: string): void => {
     const ctx = docs.get(docId);
@@ -332,20 +344,32 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
     for (const peer of ctx.peers) void peer.notifyLocalUpdate();
   };
 
-  const closeContext = async (ctx: DocContext): Promise<void> => {
-    if (ctx.closeTimer) {
-      clearTimeout(ctx.closeTimer);
-      ctx.closeTimer = undefined;
-    }
-    docs.delete(ctx.docId);
+  const closeBackend = async (backend: SyncBackend<Operation>): Promise<void> => {
     try {
-      await (ctx.backend as any)?.close?.();
+      await (backend as any)?.close?.();
     } catch {
       // ignore close failures
     }
   };
 
+  const closeContext = async (ctx: DocContext): Promise<void> => {
+    if (ctx.closed) return;
+    ctx.closed = true;
+    if (ctx.closeTimer) {
+      clearTimeout(ctx.closeTimer);
+      ctx.closeTimer = undefined;
+    }
+    docs.delete(ctx.docId);
+    ctx.peers.clear();
+    await closeBackend(ctx.backend);
+  };
+
   const scheduleClose = (ctx: DocContext): void => {
+    if (ctx.closed) return;
+    if (closing || idleCloseMs === 0) {
+      void closeContext(ctx);
+      return;
+    }
     if (ctx.closeTimer) return;
     ctx.closeTimer = setTimeout(() => {
       ctx.closeTimer = undefined;
@@ -378,6 +402,8 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
   };
 
   const openContext = async (docId: string): Promise<DocContext> => {
+    if (closing) throw new Error("doc store is closing");
+
     const existing = docs.get(docId);
     if (existing) return existing;
 
@@ -386,13 +412,14 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
 
     const opening = (async () => {
       const rawBackend = await opts.backendFactory.open(docId);
+      if (closing) {
+        await closeBackend(rawBackend);
+        throw new Error("doc store is closing");
+      }
+
       const alreadyOpened = docs.get(docId);
       if (alreadyOpened) {
-        try {
-          await (rawBackend as any)?.close?.();
-        } catch {
-          // ignore close failure on raced backend instance
-        }
+        await closeBackend(rawBackend);
         return alreadyOpened;
       }
       const ctx: DocContext = {
@@ -401,6 +428,7 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
         peers: new Set(),
         connections: 0,
         applyQueue: Promise.resolve(),
+        closed: false,
       };
       ctx.backend = wrapBackendForContext(ctx, rawBackend);
       docs.set(docId, ctx);
@@ -420,6 +448,7 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
       open: async (docId: string): Promise<WebSocketSyncServerDocHandle<Operation>> => {
         const cleanDocId = ensureNonEmptyString("docId", docId);
         const ctx = await openContext(cleanDocId);
+        if (closing || ctx.closed) throw new Error("doc store is closing");
 
         ctx.connections += 1;
         if (ctx.closeTimer) {
@@ -427,20 +456,35 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
           ctx.closeTimer = undefined;
         }
 
+        let released = false;
         return {
           backend: ctx.backend,
           onPeerAdded: (peer) => ctx.peers.add(peer),
           onPeerRemoved: (peer) => ctx.peers.delete(peer),
           release: async () => {
-            ctx.connections -= 1;
-            if (ctx.connections <= 0) scheduleClose(ctx);
+            if (released) return;
+            released = true;
+            if (ctx.closed) return;
+            ctx.connections = Math.max(0, ctx.connections - 1);
+            if (ctx.connections > 0) return;
+            if (closing) {
+              await closeContext(ctx);
+              return;
+            }
+            scheduleClose(ctx);
           },
         };
       },
     },
     notifyDocUpdate,
     closeAll: async () => {
-      await Promise.all(Array.from(docs.values()).map((ctx) => closeContext(ctx)));
+      if (closeAllPromise) return closeAllPromise;
+      closing = true;
+      closeAllPromise = (async () => {
+        await Promise.allSettled(Array.from(openInFlight.values()));
+        await Promise.allSettled(Array.from(docs.values()).map((ctx) => closeContext(ctx)));
+      })();
+      await closeAllPromise;
     },
   };
 }
