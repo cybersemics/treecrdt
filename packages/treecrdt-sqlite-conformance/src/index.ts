@@ -458,7 +458,7 @@ async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext
   assertEqual(await engine.tree.exists(root), true, "tree.exists(root)");
   assertEqual(await engine.tree.exists(n1), true, "tree.exists(n1)");
   assertEqual(await engine.tree.exists(n2), true, "tree.exists(n2)");
-  assertEqual(await engine.tree.exists("f".repeat(32)), false, "tree.exists(non-existent)");
+  assertEqual(await engine.tree.exists("deadbeefdeadbeefdeadbeefdeadbeef"), false, "tree.exists(non-existent)");
 
   const refsRoot = await engine.opRefs.children(root);
   assertEqual(refsRoot.length, 3, "opRefs.children(root) length");
