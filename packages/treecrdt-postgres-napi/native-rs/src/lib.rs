@@ -394,6 +394,16 @@ impl PgBackend {
     }
 
     #[napi]
+    pub fn tree_parent(&self, node: Buffer) -> napi::Result<Option<Buffer>> {
+        let client = connect(&self.url)?;
+        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let node = bytes16_to_node(&node).map_err(map_core_err)?;
+        let parent =
+            treecrdt_postgres::tree_parent(&client, &self.doc_id, node).map_err(map_core_err)?;
+        Ok(parent.map(|p| Buffer::from(node_to_bytes16(p).to_vec())))
+    }
+
+    #[napi]
     pub fn tree_payload(&self, node: Buffer) -> napi::Result<Option<Buffer>> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));

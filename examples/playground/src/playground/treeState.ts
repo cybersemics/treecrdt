@@ -3,7 +3,12 @@ import type { Operation } from "@treecrdt/interface";
 import { ROOT_ID } from "./constants";
 import type { NodeMeta, TreeState } from "./types";
 
-export function applyChildrenLoaded(state: TreeState, parentId: string, children: string[]): TreeState {
+export function applyChildrenLoaded(
+  state: TreeState,
+  parentId: string,
+  children: string[],
+  parentOverride?: string | null
+): TreeState {
   const nextChildrenByParent: Record<string, string[]> = { ...state.childrenByParent, [parentId]: children };
   const nextIndex: Record<string, NodeMeta> = { ...state.index };
 
@@ -20,9 +25,11 @@ export function applyChildrenLoaded(state: TreeState, parentId: string, children
   if (!Object.prototype.hasOwnProperty.call(nextChildrenByParent, ROOT_ID)) nextChildrenByParent[ROOT_ID] = [];
 
   const parentMeta = ensureNode(parentId);
+  const resolvedParentId =
+    parentId === ROOT_ID ? null : (parentOverride !== undefined ? parentOverride : parentMeta.parentId);
   nextIndex[parentId] = {
     ...parentMeta,
-    parentId: parentId === ROOT_ID ? null : parentMeta.parentId,
+    parentId: resolvedParentId,
     deleted: false,
     childCount: children.length,
   };

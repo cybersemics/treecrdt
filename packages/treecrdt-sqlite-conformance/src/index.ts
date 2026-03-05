@@ -451,6 +451,10 @@ async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext
   assertEqual(byId.get(n1)?.parent ?? null, root, "tree.dump n1 parent");
   assertEqual(byId.get(n2)?.parent ?? null, n1, "tree.dump n2 parent");
 
+  assertEqual(await engine.tree.parent(root), null, "tree.parent(root)");
+  assertEqual(await engine.tree.parent(n1), root, "tree.parent(n1)");
+  assertEqual(await engine.tree.parent(n2), n1, "tree.parent(n2)");
+
   const refsRoot = await engine.opRefs.children(root);
   assertEqual(refsRoot.length, 3, "opRefs.children(root) length");
   const opsRoot = await engine.ops.get(refsRoot);

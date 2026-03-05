@@ -354,6 +354,7 @@ export default function App() {
       if (!active) return;
 
       const loadedChildren = treeStateRef.current.childrenByParent;
+      const index = treeStateRef.current.index;
       const unique = new Set<string>();
       for (const id of parentIds) {
         if (Object.prototype.hasOwnProperty.call(loadedChildren, id)) unique.add(id);
@@ -362,10 +363,23 @@ export default function App() {
       if (ids.length === 0) return;
 
       try {
-        const results = await Promise.all(ids.map(async (id) => [id, await active.tree.children(id)] as const));
+        const idsNeedingParent = ids.filter((id) => id !== ROOT_ID && !index[id]?.parentId);
+        const [childrenResults, parentResults] = await Promise.all([
+          Promise.all(ids.map((id) => active.tree.children(id).then((children) => [id, children] as const))),
+          idsNeedingParent.length > 0
+            ? Promise.all(
+                idsNeedingParent.map((id) => active.tree.parent(id).then((p) => [id, p] as const))
+              )
+            : Promise.resolve([]),
+        ]);
+        const parentOverrides = Object.fromEntries(
+          parentResults.filter(([, p]) => p !== null) as [string, string][]
+        );
         setTreeState((prev) => {
           let next = prev;
-          for (const [id, children] of results) next = applyChildrenLoaded(next, id, children);
+          for (const [id, children] of childrenResults) {
+            next = applyChildrenLoaded(next, id, children, parentOverrides[id]);
+          }
           return next;
         });
       } catch (err) {
