@@ -6,14 +6,14 @@ const cases = [
 ] as const;
 
 for (const c of cases) {
-  test(`sqlite engine conformance (shared suite): ${c.storage}`, async ({ page }) => {
+  test(`engine conformance (shared suite): ${c.storage}`, async ({ page }) => {
     test.setTimeout(c.timeoutMs);
 
     await page.goto("/");
-    await page.waitForFunction(() => typeof window.runTreecrdtSqliteConformanceE2E === "function");
+    await page.waitForFunction(() => typeof window.runTreecrdtEngineConformanceE2E === "function");
     const result = await page.evaluate(async (storage) => {
-      const runner = window.runTreecrdtSqliteConformanceE2E;
-      if (!runner) throw new Error("runTreecrdtSqliteConformanceE2E not available");
+      const runner = window.runTreecrdtEngineConformanceE2E;
+      if (!runner) throw new Error("runTreecrdtEngineConformanceE2E not available");
       return await runner(storage);
     }, c.storage);
 

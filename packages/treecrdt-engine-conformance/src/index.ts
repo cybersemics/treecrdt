@@ -30,19 +30,19 @@ export function conformanceHashKey(input: string): string {
   return (h >>> 0).toString(36);
 }
 
-export type SqliteConformanceContext = {
+export type TreecrdtEngineConformanceContext = {
   docId: string;
   engine: TreecrdtEngine;
   createEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   createPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
 };
 
-export type SqliteConformanceScenario = {
+export type TreecrdtEngineConformanceScenario = {
   name: string;
-  run: (ctx: SqliteConformanceContext) => Promise<void>;
+  run: (ctx: TreecrdtEngineConformanceContext) => Promise<void>;
 };
 
-export type SqliteConformanceRunner = {
+export type TreecrdtEngineConformanceRunner = {
   docIdPrefix: string;
   openEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   openPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
@@ -75,9 +75,9 @@ async function closeTrackedConformanceEngines(engines: TreecrdtEngine[]): Promis
   }
 }
 
-export async function runSqliteEngineConformanceScenario(
-  scenario: SqliteConformanceScenario,
-  runner: SqliteConformanceRunner
+export async function runTreecrdtEngineConformanceScenario(
+  scenario: TreecrdtEngineConformanceScenario,
+  runner: TreecrdtEngineConformanceRunner
 ): Promise<void> {
   const docId = conformanceDocId(runner.docIdPrefix, scenario.name);
   const engines: TreecrdtEngine[] = [];
@@ -104,7 +104,7 @@ export async function runSqliteEngineConformanceScenario(
   }
 }
 
-export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] {
+export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceScenario[] {
   return [
     {
       name: "local ops: insert/move/delete/payload + tree reads",
@@ -113,6 +113,10 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
     {
       name: "local ops: insert with payload sets insert.kind.payload",
       run: scenarioLocalInsertWithPayload,
+    },
+    {
+      name: "append/appendMany: idempotent + headLamport monotonic",
+      run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
     {
       name: "tree: childrenPage uses keyset cursor",
@@ -127,8 +131,20 @@ export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] 
       run: scenarioMaterializedSmokeWithOpRefs,
     },
     {
+      name: "oprefs_all + ops.get: preserve order and reject missing refs",
+      run: scenarioOpsGetPreservesOrderAndRejectsMissingRefs,
+    },
+    {
+      name: "oprefs_all: canonical ordering on lamport ties",
+      run: scenarioOpRefsAllCanonicalOrderingOnLamportTies,
+    },
+    {
       name: "oprefs_children: includes move + latest payload",
       run: scenarioOpRefsChildrenIncludesPayloadAfterMove,
+    },
+    {
+      name: "oprefs_children: canonical ordering on lamport ties",
+      run: scenarioOpRefsChildrenCanonicalOrderingOnLamportTies,
     },
     {
       name: "append/appendMany: rejects delete without known_state",
@@ -313,7 +329,7 @@ function makePayloadOp(opts: { replica: ReplicaId; counter: number; lamport: num
   };
 }
 
-async function scenarioLocalOpsBasic(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioLocalOpsBasic(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
@@ -378,7 +394,7 @@ async function scenarioLocalOpsBasic(ctx: SqliteConformanceContext): Promise<voi
   assertEqual(maxCounter, op5.meta.id.counter, "meta.replicaMaxCounter");
 }
 
-async function scenarioLocalInsertWithPayload(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioLocalInsertWithPayload(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
@@ -398,7 +414,38 @@ async function scenarioLocalInsertWithPayload(ctx: SqliteConformanceContext): Pr
   assertBytesEqual(first.kind.payload ?? null, payload, "ops.all insert payload");
 }
 
-async function scenarioChildrenPagination(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioAppendIdempotentAndHeadLamportMonotonic(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel("r1");
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(1);
+
+  const insert = makeInsertOp({
+    replica,
+    counter: 1,
+    lamport: 1,
+    parent: root,
+    node,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const payload = makePayloadOp({
+    replica,
+    counter: 2,
+    lamport: 7,
+    node,
+    payload: new Uint8Array([1, 2, 3]),
+  });
+
+  await engine.ops.append(insert);
+  await engine.ops.append(insert);
+  await engine.ops.appendMany([insert, payload]);
+
+  const refs = await engine.opRefs.all();
+  assertEqual(refs.length, 2, "opRefs.all length after duplicate append");
+  assertEqual(await engine.meta.headLamport(), 7, "meta.headLamport after duplicate append");
+}
+
+async function scenarioChildrenPagination(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   assert(engine.tree.childrenPage, "engine.tree.childrenPage not implemented");
 
@@ -448,7 +495,7 @@ async function scenarioChildrenPagination(ctx: SqliteConformanceContext): Promis
   assertEqual(p4.length, 0, "childrenPage p4 length");
 }
 
-async function scenarioOutOfOrderOpsRebuild(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
@@ -484,7 +531,7 @@ async function scenarioOutOfOrderOpsRebuild(ctx: SqliteConformanceContext): Prom
   assertEqual(await engine.meta.headLamport(), 2, "meta.headLamport after out-of-order inserts");
 }
 
-async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioMaterializedSmokeWithOpRefs(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
@@ -532,7 +579,93 @@ async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext
   assertArrayEqual(opsN1.map((op) => op.kind.type), ["move"], "opsByOpRefs(n1) kinds");
 }
 
-async function scenarioOpRefsChildrenIncludesPayloadAfterMove(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioOpsGetPreservesOrderAndRejectsMissingRefs(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel("r1");
+  const root = nodeIdFromInt(0);
+
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: nodeIdFromInt(11),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      parent: root,
+      node: nodeIdFromInt(12),
+      orderKey: orderKeyFromPosition(1),
+    }),
+  ]);
+
+  const refs = await engine.opRefs.all();
+  assertEqual(refs.length, 2, "opRefs.all length for ops.get order check");
+
+  const reversed = [refs[1]!, refs[0]!];
+  const ops = await engine.ops.get(reversed);
+  assertEqual(ops[0]?.meta.id.counter ?? -1, 2, "ops.get preserves first requested opRef");
+  assertEqual(ops[1]?.meta.id.counter ?? -1, 1, "ops.get preserves second requested opRef");
+
+  const missing = refs[0]!.slice();
+  missing[0] ^= 0xff;
+
+  let threw = false;
+  try {
+    await engine.ops.get([missing]);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "ops.get should throw for unknown opRef");
+}
+
+async function scenarioOpRefsAllCanonicalOrderingOnLamportTies(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const root = nodeIdFromInt(0);
+  const replicaA = replicaFromLabel("a");
+  const replicaZ = replicaFromLabel("z");
+
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: replicaZ,
+      counter: 1,
+      lamport: 5,
+      parent: root,
+      node: nodeIdFromInt(201),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica: replicaA,
+      counter: 2,
+      lamport: 5,
+      parent: root,
+      node: nodeIdFromInt(202),
+      orderKey: orderKeyFromPosition(1),
+    }),
+    makeInsertOp({
+      replica: replicaA,
+      counter: 1,
+      lamport: 5,
+      parent: root,
+      node: nodeIdFromInt(203),
+      orderKey: orderKeyFromPosition(2),
+    }),
+  ]);
+
+  const ordered = await engine.ops.get(await engine.opRefs.all());
+  const keys = ordered.map((op) => `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`);
+  assertArrayEqual(
+    keys,
+    [`${bytesToHex(replicaA)}:1`, `${bytesToHex(replicaA)}:2`, `${bytesToHex(replicaZ)}:1`],
+    "opRefs.all canonical ordering on lamport ties"
+  );
+}
+
+async function scenarioOpRefsChildrenIncludesPayloadAfterMove(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
@@ -559,7 +692,80 @@ async function scenarioOpRefsChildrenIncludesPayloadAfterMove(ctx: SqliteConform
   assertEqual(new TextDecoder().decode(payloadOp.kind.payload ?? new Uint8Array()), "hi", "payload contents");
 }
 
-async function scenarioRejectsDeleteWithoutKnownState(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioOpRefsChildrenCanonicalOrderingOnLamportTies(
+  ctx: TreecrdtEngineConformanceContext
+): Promise<void> {
+  const engine = ctx.engine;
+  const root = nodeIdFromInt(0);
+  const p1 = nodeIdFromInt(301);
+  const p2 = nodeIdFromInt(302);
+  const child = nodeIdFromInt(303);
+  const replicaSeed = replicaFromLabel("seed");
+  const replicaA = replicaFromLabel("a");
+  const replicaZ = replicaFromLabel("z");
+
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: replicaSeed,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: p1,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica: replicaSeed,
+      counter: 2,
+      lamport: 2,
+      parent: root,
+      node: p2,
+      orderKey: orderKeyFromPosition(1),
+    }),
+    makeInsertOp({
+      replica: replicaSeed,
+      counter: 3,
+      lamport: 3,
+      parent: p1,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makePayloadOp({
+      replica: replicaSeed,
+      counter: 4,
+      lamport: 4,
+      node: child,
+      payload: new Uint8Array([11]),
+    }),
+    makeMoveOp({
+      replica: replicaZ,
+      counter: 1,
+      lamport: 5,
+      node: child,
+      newParent: p2,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeMoveOp({
+      replica: replicaA,
+      counter: 1,
+      lamport: 5,
+      node: child,
+      newParent: p1,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const ops = await engine.ops.get(await engine.opRefs.children(p1));
+  const moveReplicas = ops
+    .filter((op) => op.kind.type === "move")
+    .map((op) => bytesToHex(op.meta.id.replica));
+  assertArrayEqual(
+    moveReplicas,
+    [bytesToHex(replicaA), bytesToHex(replicaZ)],
+    "opRefs.children canonical ordering on lamport ties"
+  );
+}
+
+async function scenarioRejectsDeleteWithoutKnownState(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("rA");
   const root = nodeIdFromInt(0);
@@ -584,7 +790,7 @@ async function scenarioRejectsDeleteWithoutKnownState(ctx: SqliteConformanceCont
   assert(threw, "appendMany(delete without knownState) should throw");
 }
 
-async function scenarioDefensiveDeleteMoveRestores(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioDefensiveDeleteMoveRestores(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
@@ -598,7 +804,7 @@ async function scenarioDefensiveDeleteMoveRestores(ctx: SqliteConformanceContext
   assertArrayEqual(await engine.tree.children(root), [n1], "children after move restores");
 }
 
-async function scenarioDefensiveDeleteReactiveInsert(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioDefensiveDeleteReactiveInsert(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const replica = replicaFromLabel("r1");
   const root = nodeIdFromInt(0);
@@ -628,7 +834,7 @@ async function scenarioDefensiveDeleteReactiveInsert(ctx: SqliteConformanceConte
   assertArrayEqual(await engine.tree.children(parent), [child], "child visible under restored parent");
 }
 
-async function scenarioDefensiveDeleteOutOfOrderChildInsert(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioDefensiveDeleteOutOfOrderChildInsert(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const engine = ctx.engine;
   const rA = replicaFromLabel("rA");
   const rB = replicaFromLabel("rB");
@@ -661,7 +867,7 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(ctx: SqliteConforman
   assertEqual(await engine.tree.nodeCount(), 2, "nodeCount after restore");
 }
 
-async function scenarioSyncKnownStatePropagation(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioSyncKnownStatePropagation(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId: ctx.docId, name: "peer-b" });
 
@@ -689,7 +895,7 @@ async function scenarioSyncKnownStatePropagation(ctx: SqliteConformanceContext):
   assertArrayEqual(await b.tree.children(parent), [child], "child still present after sync delete");
 }
 
-async function scenarioPersistenceMaterializedTreeReopen(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioPersistenceMaterializedTreeReopen(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   if (!ctx.createPersistentEngine) return;
 
   const replica = replicaFromLabel("r1");
@@ -707,7 +913,7 @@ async function scenarioPersistenceMaterializedTreeReopen(ctx: SqliteConformanceC
   assertEqual(await e2.tree.nodeCount(), 1, "nodeCount after reopen");
 }
 
-async function scenarioPersistencePayloadReopen(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioPersistencePayloadReopen(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   if (!ctx.createPersistentEngine) return;
 
   const replica = replicaFromLabel("r1");
@@ -823,7 +1029,7 @@ function latestPayloadForNode(ops: Operation[], node: string): Uint8Array | null
   return bestPayload;
 }
 
-async function scenarioSyncAuthSignedOps(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const docId = ctx.docId;
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: "peer-b" });
@@ -888,7 +1094,7 @@ async function scenarioSyncAuthSignedOps(ctx: SqliteConformanceContext): Promise
   }
 }
 
-async function scenarioSyncAuthScopedTokenRejectsAllFilter(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioSyncAuthScopedTokenRejectsAllFilter(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const docId = ctx.docId;
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: "peer-b" });
@@ -958,7 +1164,7 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(ctx: SqliteConformanc
   }
 }
 
-async function scenarioAuthSqliteSubtreeEvaluator(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioAuthSqliteSubtreeEvaluator(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const runner = engineRunnerOrNull(ctx.engine);
   if (!runner) return;
 
@@ -1013,7 +1219,7 @@ async function scenarioAuthSqliteSubtreeEvaluator(ctx: SqliteConformanceContext)
   );
 }
 
-async function scenarioSyncAuthPendingContextSidecar(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioSyncAuthPendingContextSidecar(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const docId = ctx.docId;
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: "peer-b" });
@@ -1129,7 +1335,7 @@ async function scenarioSyncAuthPendingContextSidecar(ctx: SqliteConformanceConte
   }
 }
 
-async function scenarioSyncAuthRestartRelayReServesSignedOps(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioSyncAuthRestartRelayReServesSignedOps(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   if (!ctx.createPersistentEngine) return;
 
   const docId = ctx.docId;
@@ -1245,7 +1451,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(ctx: SqliteConforma
   assertArrayEqual(await c.tree.children(subtreeRoot), [child], "receiver sees child under subtree after relay restart");
 }
 
-async function scenarioSyncAuthExcludedRootNotSynced(ctx: SqliteConformanceContext): Promise<void> {
+async function scenarioSyncAuthExcludedRootNotSynced(ctx: TreecrdtEngineConformanceContext): Promise<void> {
   const docId = ctx.docId;
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: "peer-b" });
