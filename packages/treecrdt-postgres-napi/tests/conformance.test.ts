@@ -8,9 +8,9 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 import { deriveOpRefV0 } from "@treecrdt/sync";
 import {
   conformanceSlugify,
-  runSqliteEngineConformanceScenario,
-  sqliteEngineConformanceScenarios,
-} from "@treecrdt/sqlite-conformance";
+  runTreecrdtEngineConformanceScenario,
+  treecrdtEngineConformanceScenarios,
+} from "@treecrdt/engine-conformance";
 
 import { createTreecrdtPostgresClient } from "../dist/index.js";
 
@@ -65,8 +65,8 @@ function internalDocId(publicDocId: string, key: string): string {
   return `${publicDocId}::${key}::${randomUUID()}`;
 }
 
-maybeDescribe("sqlite conformance scenarios (postgres-napi engine)", () => {
-  for (const scenario of sqliteEngineConformanceScenarios()) {
+maybeDescribe("engine conformance scenarios (postgres-napi engine)", () => {
+  for (const scenario of treecrdtEngineConformanceScenarios()) {
     test(
       `postgres engine conformance: ${scenario.name}`,
       async () => {
@@ -94,7 +94,7 @@ maybeDescribe("sqlite conformance scenarios (postgres-napi engine)", () => {
           return wrapDocId(raw, opts.docId);
         };
 
-        await runSqliteEngineConformanceScenario(scenario, {
+        await runTreecrdtEngineConformanceScenario(scenario, {
           docIdPrefix: "treecrdt-postgres-conformance",
           openEngine: ({ docId }) => openWrapped({ docId }),
           openPersistentEngine: ({ docId, name }) => openWrapped({ docId, persistentName: name }),
