@@ -240,6 +240,21 @@ impl WasmTree {
         }
     }
 
+    #[wasm_bindgen(js_name = treeExists)]
+    pub fn tree_exists(&self, node_hex: String) -> Result<bool, JsValue> {
+        let node = hex_to_node(&node_hex).map_err(|e| JsValue::from_str(&e))?;
+        let known =
+            self.inner.is_known(node).map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        if !known {
+            return Ok(false);
+        }
+        let tombstoned = self
+            .inner
+            .is_tombstoned(node)
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        Ok(!tombstoned)
+    }
+
     #[wasm_bindgen(js_name = treePayload)]
     pub fn tree_payload(&self, node_hex: String) -> Result<Option<Vec<u8>>, JsValue> {
         let node = hex_to_node(&node_hex).map_err(|e| JsValue::from_str(&e))?;

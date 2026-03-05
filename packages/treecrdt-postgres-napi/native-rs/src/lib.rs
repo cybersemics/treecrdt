@@ -404,6 +404,14 @@ impl PgBackend {
     }
 
     #[napi]
+    pub fn tree_exists(&self, node: Buffer) -> napi::Result<bool> {
+        let client = connect(&self.url)?;
+        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let node = bytes16_to_node(&node).map_err(map_core_err)?;
+        treecrdt_postgres::tree_exists(&client, &self.doc_id, node).map_err(map_core_err)
+    }
+
+    #[napi]
     pub fn tree_payload(&self, node: Buffer) -> napi::Result<Option<Buffer>> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));

@@ -304,6 +304,10 @@ async function createDirectClient(opts: {
           const result = await adapter.treeParent(nodeIdToBytes16(node));
           return result ? Array.from(result) : null;
         }
+        case "treeExists": {
+          const [node] = params as RpcParams<"treeExists">;
+          return (await adapter.treeExists(nodeIdToBytes16(node))) as any;
+        }
         case "headLamport":
           return (await adapter.headLamport()) as any;
         case "replicaMaxCounter": {
@@ -390,6 +394,7 @@ function makeTreecrdtClientFromCall(opts: {
     if (result === null) return null;
     return nodeIdFromBytes16(Uint8Array.from(result));
   };
+  const treeExistsImpl = async (node: string) => Boolean(await call("treeExists", [node]));
   const treeGetPayloadImpl = async (node: string) => {
     const result = await call("treePayload", [node]);
     return result === null ? null : Uint8Array.from(result);
@@ -440,6 +445,7 @@ function makeTreecrdtClientFromCall(opts: {
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       parent: treeParentImpl,
+      exists: treeExistsImpl,
       getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },

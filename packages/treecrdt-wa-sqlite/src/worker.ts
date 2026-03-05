@@ -34,6 +34,7 @@ const methods = {
   treeDump,
   treeNodeCount,
   treeParent,
+  treeExists,
   treePayload,
   headLamport,
   replicaMaxCounter,
@@ -172,6 +173,11 @@ async function treeParent(node: string) {
   const api = ensureApi();
   const result = await api.treeParent(nodeIdToBytes16(node));
   return result === null ? null : Array.from(result);
+}
+
+async function treeExists(node: string) {
+  const api = ensureApi();
+  return await api.treeExists(nodeIdToBytes16(node));
 }
 
 async function headLamport() {
