@@ -59,27 +59,20 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     },
     treeChildren: async (parent) => {
       const parentHex = bytesToHex(parent);
-      const out = tree.treeChildren(parentHex) as unknown;
+      const out = tree.treeChildren(parentHex);
       if (!Array.isArray(out)) return [];
-      return (out as string[]).map((hex) => Array.from(hexToBytes(hex)));
+      return out.map((hex) => Array.from(hexToBytes(hex)));
     },
-    treeDump: async () => tree.treeDump() as unknown[],
+    treeDump: async () => tree.treeDump(),
     treeNodeCount: () => tree.treeNodeCount(),
     treeParent: async (node) => {
       const nodeHex = bytesToHex(node);
-      const result = tree.treeParent(nodeHex) as unknown;
+      const result = tree.treeParent(nodeHex);
       if (result === null || result === undefined) return null;
-      return hexToBytes(String(result));
+      return hexToBytes(result);
     },
-    treeExists: async (node) => {
-      const nodeHex = bytesToHex(node);
-      return (tree as { treeExists: (hex: string) => boolean }).treeExists(nodeHex);
-    },
-    treePayload: async (node) => {
-      // treePayload added in treecrdt-wasm; types update on wasm-pack build
-      const p = (tree as { treePayload?: (hex: string) => Uint8Array | null | undefined }).treePayload?.(bytesToHex(node));
-      return p ?? null;
-    },
+    treeExists: async (node) => tree.treeExists(bytesToHex(node)),
+    treePayload: async (node) => tree.treePayload(bytesToHex(node)) ?? null,
     headLamport: () => Math.max(0, ...allOps().map((op) => op.lamport)),
     replicaMaxCounter: (replica) => {
       const target = bytesToHex(replica);
