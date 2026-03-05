@@ -42,6 +42,68 @@ export type SqliteConformanceScenario = {
   run: (ctx: SqliteConformanceContext) => Promise<void>;
 };
 
+export type SqliteConformanceRunner = {
+  docIdPrefix: string;
+  openEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
+  openPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
+  cleanup?: () => Promise<void> | void;
+};
+
+export function conformanceDocId(prefix: string, scenarioName: string): string {
+  return `${prefix}-${conformanceSlugify(scenarioName) || "scenario"}`;
+}
+
+function trackConformanceEngine(engine: TreecrdtEngine, engines: TreecrdtEngine[]): TreecrdtEngine {
+  const originalClose = engine.close.bind(engine);
+  let closed = false;
+  engine.close = async () => {
+    if (closed) return;
+    closed = true;
+    await originalClose();
+  };
+  engines.push(engine);
+  return engine;
+}
+
+async function closeTrackedConformanceEngines(engines: TreecrdtEngine[]): Promise<void> {
+  for (const engine of engines.reverse()) {
+    try {
+      await engine.close();
+    } catch {
+      // ignore close failures during cleanup
+    }
+  }
+}
+
+export async function runSqliteEngineConformanceScenario(
+  scenario: SqliteConformanceScenario,
+  runner: SqliteConformanceRunner
+): Promise<void> {
+  const docId = conformanceDocId(runner.docIdPrefix, scenario.name);
+  const engines: TreecrdtEngine[] = [];
+  const openEngine = async (opts: { docId: string; name?: string }): Promise<TreecrdtEngine> =>
+    trackConformanceEngine(await runner.openEngine(opts), engines);
+  const persistentOpener = runner.openPersistentEngine;
+  const openPersistentEngine =
+    persistentOpener == null
+      ? undefined
+      : async (opts: { docId: string; name: string }): Promise<TreecrdtEngine> =>
+          trackConformanceEngine(await persistentOpener(opts), engines);
+
+  const engine = await openEngine({ docId, name: "main" });
+  try {
+    await scenario.run({
+      docId,
+      engine,
+      createEngine: openEngine,
+      createPersistentEngine: openPersistentEngine,
+    });
+  } finally {
+    await closeTrackedConformanceEngines(engines);
+    await runner.cleanup?.();
+  }
+}
+
 export function sqliteEngineConformanceScenarios(): SqliteConformanceScenario[] {
   return [
     {

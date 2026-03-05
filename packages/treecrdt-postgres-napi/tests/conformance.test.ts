@@ -6,12 +6,13 @@ import type { Operation } from "@treecrdt/interface";
 import type { TreecrdtEngine } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { deriveOpRefV0 } from "@treecrdt/sync";
-
-import { createTreecrdtPostgresClient } from "../dist/index.js";
 import {
   conformanceSlugify,
+  runSqliteEngineConformanceScenario,
   sqliteEngineConformanceScenarios,
-} from "../../treecrdt-sqlite-conformance/dist/index.js";
+} from "@treecrdt/sqlite-conformance";
+
+import { createTreecrdtPostgresClient } from "../dist/index.js";
 
 const POSTGRES_URL = process.env.TREECRDT_POSTGRES_URL;
 const maybeDescribe = POSTGRES_URL ? describe : describe.skip;
@@ -60,24 +61,8 @@ function wrapDocId(inner: TreecrdtEngine, publicDocId: string): TreecrdtEngine {
   };
 }
 
-function docIdFromScenario(name: string): string {
-  return `treecrdt-postgres-conformance-${conformanceSlugify(name) || "scenario"}`;
-}
-
 function internalDocId(publicDocId: string, key: string): string {
   return `${publicDocId}::${key}::${randomUUID()}`;
-}
-
-function trackEngine(engine: TreecrdtEngine, engines: TreecrdtEngine[]): TreecrdtEngine {
-  const originalClose = engine.close.bind(engine);
-  let closed = false;
-  engine.close = async () => {
-    if (closed) return;
-    closed = true;
-    await originalClose();
-  };
-  engines.push(engine);
-  return engine;
 }
 
 maybeDescribe("sqlite conformance scenarios (postgres-napi engine)", () => {
@@ -85,8 +70,6 @@ maybeDescribe("sqlite conformance scenarios (postgres-napi engine)", () => {
     test(
       `postgres engine conformance: ${scenario.name}`,
       async () => {
-        const publicDocId = docIdFromScenario(scenario.name);
-        const engines: TreecrdtEngine[] = [];
         const persistentInternal = new Map<string, string>();
         let ephemeralIndex = 0;
 
@@ -108,28 +91,14 @@ maybeDescribe("sqlite conformance scenarios (postgres-napi engine)", () => {
           if (persistentKey && !existingPersistentDoc) persistentInternal.set(persistentKey, actualDocId);
 
           const raw = await createTreecrdtPostgresClient(POSTGRES_URL!, { docId: actualDocId });
-          return trackEngine(wrapDocId(raw, opts.docId), engines);
+          return wrapDocId(raw, opts.docId);
         };
 
-        const engine = await openWrapped({ docId: publicDocId });
-
-        try {
-          await scenario.run({
-            docId: publicDocId,
-            engine,
-            createEngine: ({ docId }) => openWrapped({ docId }),
-            createPersistentEngine: ({ docId, name }) => openWrapped({ docId, persistentName: name }),
-          });
-        } finally {
-          // Close in reverse creation order (LIFO) so later/opened peers are released before earlier ones.
-          for (const e of engines.reverse()) {
-            try {
-              await e.close();
-            } catch {
-              // ignore cleanup close errors
-            }
-          }
-        }
+        await runSqliteEngineConformanceScenario(scenario, {
+          docIdPrefix: "treecrdt-postgres-conformance",
+          openEngine: ({ docId }) => openWrapped({ docId }),
+          openPersistentEngine: ({ docId, name }) => openWrapped({ docId, persistentName: name }),
+        });
       },
       90_000
     );

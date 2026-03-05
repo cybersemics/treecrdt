@@ -2,7 +2,11 @@ import { test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { conformanceSlugify, sqliteEngineConformanceScenarios } from "@treecrdt/sqlite-conformance";
+import {
+  conformanceSlugify,
+  runSqliteEngineConformanceScenario,
+  sqliteEngineConformanceScenarios,
+} from "@treecrdt/sqlite-conformance";
 import { createTreecrdtClient, defaultExtensionPath, loadTreecrdtExtension } from "../dist/index.js";
 
 async function createNodeEngine(opts: { docId: string; path?: string }) {
@@ -17,26 +21,8 @@ async function createNodeEngine(opts: { docId: string; path?: string }) {
   return await createTreecrdtClient(db, { docId: opts.docId });
 }
 
-function docIdFromScenario(name: string): string {
-  return `treecrdt-node-conformance-${conformanceSlugify(name) || "scenario"}`;
-}
-
-function track(engine: Awaited<ReturnType<typeof createNodeEngine>>, engines: any[]) {
-  const originalClose = engine.close.bind(engine);
-  let closed = false;
-  engine.close = async () => {
-    if (closed) return;
-    closed = true;
-    await originalClose();
-  };
-  engines.push(engine);
-  return engine;
-}
-
 for (const scenario of sqliteEngineConformanceScenarios()) {
   test(`sqlite engine conformance (node): ${scenario.name}`, async () => {
-    const docId = docIdFromScenario(scenario.name);
-    const engines: any[] = [];
     let persistentDir: string | null = null;
     const persistentPaths = new Map<string, string>();
     const ensurePersistentDir = () => {
@@ -45,30 +31,20 @@ for (const scenario of sqliteEngineConformanceScenarios()) {
       return persistentDir;
     };
 
-    const engine = track(await createNodeEngine({ docId }), engines);
-    try {
-      await scenario.run({
-        docId,
-        engine,
-        createEngine: ({ docId }) => createNodeEngine({ docId }).then((e) => track(e, engines)),
-        createPersistentEngine: ({ docId, name }) => {
-          const dir = ensurePersistentDir();
-          const key = conformanceSlugify(name || "db");
-          const existing = persistentPaths.get(key);
-          const path = existing ?? join(dir, `${key}.sqlite`);
-          persistentPaths.set(key, path);
-          return createNodeEngine({ docId, path }).then((e) => track(e, engines));
-        },
-      });
-    } finally {
-      for (const e of engines.reverse()) {
-        try {
-          await e.close();
-        } catch {
-          // ignore close failures during cleanup
-        }
-      }
-      if (persistentDir) rmSync(persistentDir, { recursive: true, force: true });
-    }
+    await runSqliteEngineConformanceScenario(scenario, {
+      docIdPrefix: "treecrdt-node-conformance",
+      openEngine: ({ docId }) => createNodeEngine({ docId }),
+      openPersistentEngine: ({ docId, name }) => {
+        const dir = ensurePersistentDir();
+        const key = conformanceSlugify(name || "db");
+        const existing = persistentPaths.get(key);
+        const path = existing ?? join(dir, `${key}.sqlite`);
+        persistentPaths.set(key, path);
+        return createNodeEngine({ docId, path });
+      },
+      cleanup: () => {
+        if (persistentDir) rmSync(persistentDir, { recursive: true, force: true });
+      },
+    });
   });
 }
