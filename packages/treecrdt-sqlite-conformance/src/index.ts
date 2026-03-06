@@ -517,6 +517,11 @@ async function scenarioMaterializedSmokeWithOpRefs(ctx: SqliteConformanceContext
   assertEqual(await engine.tree.parent(n1), root, "tree.parent(n1)");
   assertEqual(await engine.tree.parent(n2), n1, "tree.parent(n2)");
 
+  assertEqual(await engine.tree.exists(root), true, "tree.exists(root)");
+  assertEqual(await engine.tree.exists(n1), true, "tree.exists(n1)");
+  assertEqual(await engine.tree.exists(n2), true, "tree.exists(n2)");
+  assertEqual(await engine.tree.exists("deadbeefdeadbeefdeadbeefdeadbeef"), false, "tree.exists(non-existent)");
+
   const refsRoot = await engine.opRefs.children(root);
   assertEqual(refsRoot.length, 3, "opRefs.children(root) length");
   const opsRoot = await engine.ops.get(refsRoot);
@@ -591,8 +596,10 @@ async function scenarioDefensiveDeleteMoveRestores(ctx: SqliteConformanceContext
   const n1 = nodeIdFromInt(1);
 
   await engine.local.insert(replica, root, n1, { type: "last" }, null);
+  assertEqual(await engine.tree.exists(n1), true, "tree.exists(n1) before delete");
   await engine.local.delete(replica, n1);
   assertArrayEqual(await engine.tree.children(root), [], "children after delete");
+  assertEqual(await engine.tree.exists(n1), false, "tree.exists(n1) after delete");
 
   await engine.local.move(replica, n1, root, { type: "last" });
   assertArrayEqual(await engine.tree.children(root), [n1], "children after move restores");

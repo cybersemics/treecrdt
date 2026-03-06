@@ -92,6 +92,7 @@ export async function createTreecrdtPostgresClient(
     const result = backend.treeParent(nodeIdToBytes16(node));
     return result === null || result === undefined ? null : nodeIdFromBytes16(result);
   };
+  const treeExistsImpl = async (node: string) => backend.treeExists(nodeIdToBytes16(node));
   const treeGetPayloadImpl = async (node: string) => {
     const result = backend.treePayload(nodeIdToBytes16(node));
     return result === null || result === undefined ? null : result;
@@ -173,6 +174,7 @@ export async function createTreecrdtPostgresClient(
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       parent: treeParentImpl,
+      exists: treeExistsImpl,
       getPayload: treeGetPayloadImpl,
     },
     meta: {

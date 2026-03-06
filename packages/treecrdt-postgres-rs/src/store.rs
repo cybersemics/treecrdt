@@ -1503,6 +1503,19 @@ pub fn tree_parent(
     parent.map(|b| bytes_to_node(&b)).transpose()
 }
 
+pub fn tree_exists(client: &Rc<RefCell<Client>>, doc_id: &str, node: NodeId) -> Result<bool> {
+    ensure_materialized(client, doc_id)?;
+    let node_bytes = node_to_bytes(node);
+    let mut c = client.borrow_mut();
+    let rows = c
+        .query(
+            "SELECT 1 FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2 AND tombstone = FALSE LIMIT 1",
+            &[&doc_id, &node_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(!rows.is_empty())
+}
+
 pub fn replica_max_counter(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,

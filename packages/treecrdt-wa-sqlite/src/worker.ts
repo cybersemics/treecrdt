@@ -1,7 +1,6 @@
 /// <reference lib="webworker" />
-import {
-  type Database,
-} from "./index.js";
+import { dbGetText } from "./sql.js";
+import type { Database } from "./index.js";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
@@ -34,6 +33,7 @@ const methods = {
   treeDump,
   treeNodeCount,
   treeParent,
+  treeExists,
   treePayload,
   headLamport,
   replicaMaxCounter,
@@ -174,6 +174,11 @@ async function treeParent(node: string) {
   return result === null ? null : Array.from(result);
 }
 
+async function treeExists(node: string) {
+  const api = ensureApi();
+  return await api.treeExists(nodeIdToBytes16(node));
+}
+
 async function headLamport() {
   const api = ensureApi();
   return await api.headLamport();
@@ -254,18 +259,3 @@ function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
   return writer;
 }
 
-async function dbGetText(db: Database, sql: string, params: RpcSqlParams = []): Promise<string | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare(sql);
-  try {
-    let idx = 1;
-    for (const p of params) {
-      await db.bind(stmt, idx++, p);
-    }
-    const row = await db.step(stmt);
-    if (row === 0) return null;
-    return await db.column_text(stmt, 0);
-  } finally {
-    await db.finalize(stmt);
-  }
-}

@@ -22,6 +22,7 @@ import type {
   TreecrdtEngineOps,
   TreecrdtEngineTree,
 } from "@treecrdt/interface/engine";
+import { dbGetText } from "./sql.js";
 import type { Database } from "./index.js";
 import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
@@ -238,19 +239,7 @@ async function createDirectClient(opts: {
         }
         case "sqlGetText": {
           const [sql, rawParams] = params as RpcParams<"sqlGetText">;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const stmt: any = await db.prepare(sql);
-          try {
-            let idx = 1;
-            for (const p of rawParams ?? []) {
-              await db.bind(stmt, idx++, p);
-            }
-            const row = await db.step(stmt);
-            if (row === 0) return null as any;
-            return (await db.column_text(stmt, 0)) as any;
-          } finally {
-            await db.finalize(stmt);
-          }
+          return dbGetText(db, sql, (rawParams ?? []) as unknown[]) as any;
         }
         case "append": {
           const [op] = params as RpcParams<"append">;
@@ -303,6 +292,10 @@ async function createDirectClient(opts: {
           const [node] = params as RpcParams<"treeParent">;
           const result = await adapter.treeParent(nodeIdToBytes16(node));
           return result ? Array.from(result) : null;
+        }
+        case "treeExists": {
+          const [node] = params as RpcParams<"treeExists">;
+          return (await adapter.treeExists(nodeIdToBytes16(node))) as any;
         }
         case "headLamport":
           return (await adapter.headLamport()) as any;
@@ -390,6 +383,7 @@ function makeTreecrdtClientFromCall(opts: {
     if (result === null) return null;
     return nodeIdFromBytes16(Uint8Array.from(result));
   };
+  const treeExistsImpl = async (node: string) => Boolean(await call("treeExists", [node]));
   const treeGetPayloadImpl = async (node: string) => {
     const result = await call("treePayload", [node]);
     return result === null ? null : Uint8Array.from(result);
@@ -440,6 +434,7 @@ function makeTreecrdtClientFromCall(opts: {
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       parent: treeParentImpl,
+      exists: treeExistsImpl,
       getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
@@ -455,20 +450,4 @@ function makeTreecrdtClientFromCall(opts: {
 
 function encodeReplica(replica: Operation["meta"]["id"]["replica"]): Uint8Array {
   return replicaIdToBytes(replica);
-}
-
-async function dbGetText(db: Database, sql: string, params: unknown[] = []): Promise<string | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare(sql);
-  try {
-    let idx = 1;
-    for (const p of params) {
-      await db.bind(stmt, idx++, p);
-    }
-    const row = await db.step(stmt);
-    if (row === 0) return null;
-    return await db.column_text(stmt, 0);
-  } finally {
-    await db.finalize(stmt);
-  }
 }

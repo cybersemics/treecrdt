@@ -283,6 +283,7 @@ export function createTreecrdtSqliteAdapter(
     treeDump: () => treecrdtTreeDump(runner),
     treeNodeCount: () => treecrdtTreeNodeCount(runner),
     treeParent: (node) => treecrdtTreeParent(runner, node),
+    treeExists: (node) => treecrdtTreeExists(runner, node),
     treePayload: (node) => treecrdtTreePayload(runner, node),
     headLamport: () => treecrdtHeadLamport(runner),
     replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(runner, replica),
@@ -434,6 +435,18 @@ async function treecrdtTreeParent(runner: SqliteRunner, node: Uint8Array): Promi
   );
   if (!parentHex) return null;
   return hexToBytes(parentHex);
+}
+
+/**
+ * Check if a non-tombstoned node exists (16-byte id).
+ */
+async function treecrdtTreeExists(runner: SqliteRunner, node: Uint8Array): Promise<boolean> {
+  await treecrdtEnsureMaterialized(runner);
+  const result = await runner.getText(
+    "SELECT 1 FROM tree_nodes WHERE node = ?1 AND tombstone = 0 LIMIT 1",
+    [node]
+  );
+  return result !== null;
 }
 
 /**
