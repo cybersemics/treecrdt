@@ -7,24 +7,25 @@ export type OpfsSupport = {
 };
 
 /**
- * Feature check for OPFS + sync access handles + cross-origin isolation.
+ * Feature check for OPFS + cross-origin isolation.
+ * We require getDirectory + crossOriginIsolated. createSyncAccessHandle is only
+ * available in Web Workers, so we cannot reliably detect it from the main thread;
+ * the OPFS VFS runs in a worker and will fail at init if unsupported (we fall
+ * back to memory).
  */
 export function detectOpfsSupport(): OpfsSupport {
   const hasWindow = typeof window !== "undefined";
   if (!hasWindow) return { available: false, reason: "No window" };
-  const hasSyncHandle = "FileSystemHandle" in window && "FileSystemSyncAccessHandle" in window;
   const hasOpfs = typeof navigator?.storage?.getDirectory === "function";
   const isolated = (window as typeof window & { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
-  const ok = hasSyncHandle && hasOpfs && isolated;
+  const ok = hasOpfs && isolated;
   return ok
     ? { available: true }
     : {
         available: false,
         reason: !hasOpfs
           ? "navigator.storage.getDirectory unavailable"
-          : !hasSyncHandle
-            ? "Sync access handles unsupported"
-            : "cross-origin isolation required",
+          : "cross-origin isolation required",
       };
 }
 
