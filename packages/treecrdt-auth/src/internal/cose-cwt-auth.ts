@@ -218,6 +218,30 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     localTokensRecordedForDoc = docId;
   };
 
+  const parsePeerCapabilityGrants = async (tokenCaps: readonly Capability[], docId: string): Promise<CapabilityGrant[]> => {
+    const grants: CapabilityGrant[] = [];
+    for (const cap of tokenCaps) {
+      const tokenBytes = base64urlDecode(cap.value);
+      try {
+        grants.push(
+          await parseAndVerifyCapabilityToken({
+            tokenBytes,
+            issuerPublicKeys: opts.issuerPublicKeys,
+            docId,
+            scopeEvaluator: opts.scopeEvaluator,
+            nowSec: now(),
+            revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
+            isCapabilityTokenRevoked: parseStageRevocationChecker,
+          })
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes("unknown issuer")) throw err;
+      }
+    }
+    return grants;
+  };
+
   const ensureLocalRevocationsRecorded = async (docId: string) => {
     if (localRevocationsRecordedForDoc === docId) return;
     for (const recordBytes of localRevocationRecords) {
@@ -258,7 +282,15 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     for (const cap of caps) {
       if (cap.name === "auth.capability") {
         const tokenBytes = base64urlDecode(cap.value);
-        await recordToken(tokenBytes, docId);
+        try {
+          await recordToken(tokenBytes, docId);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!message.includes("unknown issuer")) throw err;
+          // Peers and relay servers may advertise capability tokens that are
+          // irrelevant for this replica's trust roots. Ignore them here and
+          // fail later only if an op actually requires a missing proof.
+        }
         continue;
       }
 
@@ -339,21 +371,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
       if (tokenCaps.length === 0) throw new Error('missing "auth.capability" token');
 
-      const grants: CapabilityGrant[] = [];
-      for (const cap of tokenCaps) {
-        const tokenBytes = base64urlDecode(cap.value);
-        grants.push(
-          await parseAndVerifyCapabilityToken({
-            tokenBytes,
-            issuerPublicKeys: opts.issuerPublicKeys,
-            docId: ctx.docId,
-            scopeEvaluator: opts.scopeEvaluator,
-            nowSec: now(),
-            revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
-            isCapabilityTokenRevoked: parseStageRevocationChecker,
-          })
-        );
-      }
+      const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
+      if (grants.length === 0) throw new Error('no trusted "auth.capability" token');
 
       const requiredActions = ["read_structure"];
       const node =
@@ -414,21 +433,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
       if (tokenCaps.length === 0) return ops.map(() => true);
 
-      const grants: CapabilityGrant[] = [];
-      for (const cap of tokenCaps) {
-        const tokenBytes = base64urlDecode(cap.value);
-        grants.push(
-          await parseAndVerifyCapabilityToken({
-            tokenBytes,
-            issuerPublicKeys: opts.issuerPublicKeys,
-            docId: ctx.docId,
-            scopeEvaluator: opts.scopeEvaluator,
-            nowSec: now(),
-            revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
-            isCapabilityTokenRevoked: parseStageRevocationChecker,
-          })
-        );
-      }
+      const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
+      if (grants.length === 0) return ops.map(() => false);
 
       // Fast path: if the peer has any doc-wide read_structure capability, we don't need to filter.
       const requiredStructure = ["read_structure"];

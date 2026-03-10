@@ -11,6 +11,7 @@ import { sha512 } from "@noble/hashes/sha512";
 
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import { base64urlEncode } from "../dist/base64url.js";
 import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
 import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
 import {
@@ -303,6 +304,78 @@ test("auth: signOps selects proof_ref per op when multiple tokens exist", async 
 
   const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(/capability does not allow op/i);
+});
+
+test("auth ignores foreign peer capability tokens during hello and still verifies known authors", async () => {
+  const docId = "doc-auth-ignore-foreign-hello-cap";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const foreignIssuerSk = ed25519Utils.randomSecretKey();
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+  const foreignSubjectSk = ed25519Utils.randomSecretKey();
+  const foreignSubjectPk = await getPublicKey(foreignSubjectSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const foreignToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: foreignIssuerSk,
+    subjectPublicKey: foreignSubjectPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
+  await expect(
+    authVerifier.onHelloAck?.(
+      {
+        capabilities: [...writerHelloCaps, { name: "auth.capability", value: base64urlEncode(foreignToken) }],
+        maxLamport: 0n,
+      },
+      { docId }
+    )
+  ).resolves.toBeUndefined();
+
+  const op = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth = await authWriter.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
+  await expect(
+    authWriter.filterOutgoingOps?.([op], {
+      docId,
+      purpose: "subscribe",
+      filterId: "all",
+      capabilities: [...writerHelloCaps, { name: "auth.capability", value: base64urlEncode(foreignToken) }],
+    })
+  ).resolves.toEqual([true]);
+  await expect(authVerifier.verifyOps?.([op], auth, { docId, purpose: "reconcile", filterId: "all" })).resolves
+    .toBeUndefined();
 });
 
 test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async () => {

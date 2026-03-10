@@ -1,8 +1,11 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { base64urlDecode } from "@treecrdt/auth";
 
 import { startSyncServer } from "./server.js";
+
+const LOCAL_POSTGRES_URL_EXAMPLE = "postgres://postgres:postgres@127.0.0.1:5432/postgres";
 
 function parseBooleanEnv(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -50,6 +53,14 @@ function buildPostgresUrlFromParts(): string | undefined {
   return `postgres://${encodedUser}:${encodedPassword}@${host}:${port}/${db}`;
 }
 
+function clientHostForBindHost(host: string): string {
+  const trimmed = host.trim();
+  if (trimmed === "0.0.0.0" || trimmed === "::" || trimmed === "[::]") {
+    return "localhost";
+  }
+  return trimmed;
+}
+
 async function main() {
   const host = process.env.HOST ?? "0.0.0.0";
   const port = Number(process.env.PORT ?? "8787");
@@ -67,11 +78,16 @@ async function main() {
 
   const backendModule =
     process.env.TREECRDT_POSTGRES_BACKEND_MODULE ??
-    path.resolve(process.cwd(), "packages/treecrdt-postgres-napi/dist/index.js");
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../treecrdt-postgres-napi/dist/index.js");
 
   if (!postgresUrl || postgresUrl.length === 0) {
     throw new Error(
-      "TREECRDT_POSTGRES_URL is required (or set TREECRDT_POSTGRES_HOST/PORT/DB/USER/PASSWORD to build one)"
+      [
+        "missing Postgres connection for sync-server:postgres",
+        "set TREECRDT_POSTGRES_URL or TREECRDT_POSTGRES_HOST/PORT/DB/USER/PASSWORD",
+        `local example: TREECRDT_POSTGRES_URL=${LOCAL_POSTGRES_URL_EXAMPLE} pnpm sync-server:postgres`,
+        "or use: pnpm sync-server:postgres:local",
+      ].join("\n")
     );
   }
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid PORT: ${process.env.PORT}`);
@@ -102,9 +118,12 @@ async function main() {
     rateLimitMaxUpgrades,
     rateLimitWindowMs,
   });
-  console.log(`TreeCRDT sync server listening on http://${handle.host}:${handle.port}`);
-  console.log(`- health: http://${handle.host}:${handle.port}/health`);
-  console.log(`- ws: ws://${handle.host}:${handle.port}/sync?docId=YOUR_DOC_ID`);
+  const clientHost = clientHostForBindHost(handle.host);
+  console.log(`TreeCRDT sync server listening on ${handle.host}:${handle.port}`);
+  console.log(`- bind: http://${handle.host}:${handle.port}`);
+  console.log(`- health: http://${clientHost}:${handle.port}/health`);
+  console.log(`- ws: ws://${clientHost}:${handle.port}`);
+  console.log(`- sync endpoint: ws://${clientHost}:${handle.port}/sync?docId=YOUR_DOC_ID`);
   console.log(`- backend module: ${handle.backendModule}`);
   if (authCapabilityIssuerPublicKeys.length > 0) {
     console.log(`- auth: capability CWT enabled (${authCapabilityIssuerPublicKeys.length} issuer keys)`);

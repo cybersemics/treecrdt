@@ -129,6 +129,56 @@ test("health endpoint returns ok", async () => {
   }
 });
 
+test("health endpoint uses readiness callback result", async () => {
+  const server = await startWebSocketSyncServer({
+    host: "127.0.0.1",
+    port: 0,
+    codec: jsonCodec(),
+    docs: {
+      async open() {
+        throw new Error("docs.open should not be called by /health");
+      },
+    },
+    healthCheck: async () => ({
+      ok: false,
+      statusCode: 503,
+      body: "postgres unavailable",
+    }),
+  });
+
+  try {
+    const health = await httpGet(`http://${server.host}:${server.port}/health`);
+    expect(health.status).toBe(503);
+    expect(health.body).toBe("postgres unavailable");
+  } finally {
+    await server.close();
+  }
+});
+
+test("health endpoint treats readiness callback errors as not ready", async () => {
+  const server = await startWebSocketSyncServer({
+    host: "127.0.0.1",
+    port: 0,
+    codec: jsonCodec(),
+    docs: {
+      async open() {
+        throw new Error("docs.open should not be called by /health");
+      },
+    },
+    healthCheck: async () => {
+      throw new Error("db ping failed");
+    },
+  });
+
+  try {
+    const health = await httpGet(`http://${server.host}:${server.port}/health`);
+    expect(health.status).toBe(503);
+    expect(health.body).toBe("not ready");
+  } finally {
+    await server.close();
+  }
+});
+
 test(
   "opens docId and calls release on close",
   async () => {

@@ -27,6 +27,7 @@ import {
   makeNodeId,
   makeSessionKey,
   persistDocId,
+  persistSyncSettings,
   persistOpfsKey,
   persistStorage,
 } from "./playground/persist";
@@ -43,16 +44,41 @@ import type {
   PayloadRecord,
   Status,
   StorageMode,
+  SyncTransportMode,
   TreeState,
 } from "./playground/types";
 
 const PLAYGROUND_SYNC_SERVER_URL_KEY = "treecrdt-playground-sync-server-url";
+const PLAYGROUND_SYNC_TRANSPORT_MODE_KEY = "treecrdt-playground-sync-transport-mode";
+
+function isSyncTransportMode(value: string | null): value is SyncTransportMode {
+  return value === "local" || value === "remote" || value === "hybrid";
+}
 
 function initialSyncServerUrl(): string {
   if (typeof window === "undefined") return "";
   const fromQuery = new URLSearchParams(window.location.search).get("sync")?.trim();
   if (fromQuery && fromQuery.length > 0) return fromQuery;
   return window.localStorage.getItem(PLAYGROUND_SYNC_SERVER_URL_KEY) ?? "";
+}
+
+function initialSyncTransportMode(): SyncTransportMode {
+  if (typeof window === "undefined") return "local";
+
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = params.get("transport")?.trim() ?? null;
+  if (isSyncTransportMode(fromQuery)) return fromQuery;
+
+  const fromStorage = window.localStorage.getItem(PLAYGROUND_SYNC_TRANSPORT_MODE_KEY);
+  if (isSyncTransportMode(fromStorage)) return fromStorage;
+
+  const fromQuerySync = params.get("sync")?.trim();
+  if (fromQuerySync && fromQuerySync.length > 0) return "hybrid";
+
+  const storedSyncUrl = window.localStorage.getItem(PLAYGROUND_SYNC_SERVER_URL_KEY)?.trim();
+  if (storedSyncUrl) return "hybrid";
+
+  return "local";
 }
 
 export default function App() {
@@ -84,6 +110,7 @@ export default function App() {
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [syncServerUrl, setSyncServerUrl] = useState<string>(() => initialSyncServerUrl());
+  const [syncTransportMode, setSyncTransportMode] = useState<SyncTransportMode>(() => initialSyncTransportMode());
   const [composerOpen, setComposerOpen] = useState(() => {
     if (typeof window === "undefined") return true;
     const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
@@ -116,6 +143,15 @@ export default function App() {
     }
     window.localStorage.setItem(PLAYGROUND_SYNC_SERVER_URL_KEY, next);
   }, [syncServerUrl]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(PLAYGROUND_SYNC_TRANSPORT_MODE_KEY, syncTransportMode);
+  }, [syncTransportMode]);
+
+  useEffect(() => {
+    persistSyncSettings(syncServerUrl, syncTransportMode);
+  }, [syncServerUrl, syncTransportMode]);
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
@@ -209,7 +245,14 @@ export default function App() {
     verifyLocalOps,
     copyToClipboard,
     onAuthGrantMessage,
-  } = usePlaygroundAuth({ docId, joinMode, client, refreshDocPayloadKey });
+  } = usePlaygroundAuth({
+    docId,
+    joinMode,
+    client,
+    syncServerUrl,
+    syncTransportMode,
+    refreshDocPayloadKey,
+  });
 
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
@@ -499,6 +542,7 @@ export default function App() {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
+    url.searchParams.set("transport", syncTransportMode);
     const remoteSync = syncServerUrl.trim();
     if (remoteSync.length > 0) {
       url.searchParams.set("sync", remoteSync);
@@ -516,6 +560,7 @@ export default function App() {
 
   const {
     peers,
+    remoteSyncStatus,
     syncBusy,
     syncError,
     setSyncError,
@@ -535,6 +580,7 @@ export default function App() {
     selfPeerId,
     autoSyncJoin,
     syncServerUrl,
+    transportMode: syncTransportMode,
     online,
     getMaxLamport,
     authEnabled,
@@ -1045,7 +1091,6 @@ export default function App() {
       ? `${selfPeerId.slice(0, 8)}…${selfPeerId.slice(-6)}`
       : selfPeerId
     : null;
-  const peerTotal = peers.length + 1;
   const authScopeSummary = (() => {
     if (!authTokenScope) return "-";
     const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
@@ -1157,7 +1202,6 @@ export default function App() {
             setLiveAllEnabled={setLiveAllEnabled}
             showPeersPanel={showPeersPanel}
             setShowPeersPanel={setShowPeersPanel}
-            peerTotal={peerTotal}
             showAuthPanel={showAuthPanel}
             setShowAuthPanel={setShowAuthPanel}
             authEnabled={authEnabled}
@@ -1169,15 +1213,13 @@ export default function App() {
             setShowOpsPanel={setShowOpsPanel}
             syncError={syncError}
             peersPanelProps={{
-              docId,
-              selfPeerId,
+              online,
+              setOnline,
+              syncTransportMode,
+              setSyncTransportMode,
               syncServerUrl,
               setSyncServerUrl,
-              authEnabled,
-              authCanIssue,
-              authCanDelegate,
-              openNewIsolatedPeerTab,
-              openNewPeerTab,
+              remoteSyncStatus,
               peers,
             }}
             sharingAuthPanelProps={{

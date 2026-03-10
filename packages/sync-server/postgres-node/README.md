@@ -7,10 +7,10 @@ Minimal TreeCRDT v0 sync server backed by a Postgres backend module.
 From the repo root:
 
 ```sh
+# Install workspace dependencies and create workspace links.
 pnpm install
-pnpm -C packages/treecrdt-sync run build
-pnpm --filter @treecrdt/sync-server-core build
-pnpm -C packages/sync-server/postgres-node run build
+# Build all workspace packages, including the Postgres sync-server path.
+pnpm build
 ```
 
 ## Run
@@ -18,8 +18,29 @@ pnpm -C packages/sync-server/postgres-node run build
 From the repo root:
 
 ```sh
+# Start a disposable local Postgres instance in Docker on localhost:5432.
+pnpm sync-server:postgres:db:start
+# Start the TreeCRDT sync server on ws://localhost:8787 using that Postgres DB.
+pnpm sync-server:postgres:local
+```
+
+The local database helper starts a disposable Postgres at:
+
+```sh
+postgres://postgres:postgres@127.0.0.1:5432/postgres
+```
+
+Stop it later with:
+
+```sh
+pnpm sync-server:postgres:db:stop
+```
+
+If you want a custom connection string instead:
+
+```sh
 TREECRDT_POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres \
-pnpm --filter @treecrdt/sync-server-postgres-node dev
+pnpm sync-server:postgres
 ```
 
 Environment variables:

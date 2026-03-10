@@ -358,7 +358,7 @@ test("switching remote sync server URL reconnects to the new endpoint", async ({
   try {
     await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
 
-    await page.locator('button[title="Peers"]').click();
+    await page.getByRole("button", { name: /Connections/ }).click();
     const remoteInput = page.getByPlaceholder("ws://localhost:8787/sync or https://sync.example.com");
     await expect(remoteInput).toBeVisible({ timeout: 30_000 });
 
@@ -373,6 +373,98 @@ test("switching remote sync server URL reconnects to the new endpoint", async ({
     await expect(page.getByText(`remote(${serverB.host})`)).toHaveCount(0, { timeout: 30_000 });
   } finally {
     await Promise.all([serverA.close(), serverB.close()]);
+  }
+});
+
+test("remote sync settings persist into a shareable URL", async ({ browser, page }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-sync-share");
+  const server = await startMockSyncServer();
+  const sharedContext = await browser.newContext();
+
+  try {
+    await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+
+    await page.getByRole("button", { name: /Connections/ }).click();
+    const remoteInput = page.getByPlaceholder("ws://localhost:8787/sync or https://sync.example.com");
+    await expect(remoteInput).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: "Remote server", exact: true }).click();
+    await remoteInput.fill(server.wsUrl);
+
+    await expect
+      .poll(async () => {
+        const url = new URL(page.url());
+        return {
+          sync: url.searchParams.get("sync"),
+          transport: url.searchParams.get("transport"),
+        };
+      })
+      .toEqual({ sync: server.wsUrl, transport: "remote" });
+
+    const sharedPage = await sharedContext.newPage();
+    await waitForReady(sharedPage, page.url());
+    await sharedPage.getByRole("button", { name: /Connections/ }).click();
+    await expect(sharedPage.getByPlaceholder("ws://localhost:8787/sync or https://sync.example.com")).toHaveValue(
+      server.wsUrl,
+      { timeout: 30_000 }
+    );
+    await expect(sharedPage.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await sharedContext.close();
+    await server.close();
+  }
+});
+
+test("invite link preserves auth material and remote sync settings", async ({ browser }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-new-device-remote");
+  const server = await startMockSyncServer();
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    await pageA.getByRole("button", { name: /Connections/ }).click();
+    const remoteInput = pageA.getByPlaceholder("ws://localhost:8787/sync or https://sync.example.com");
+    await expect(remoteInput).toBeVisible({ timeout: 30_000 });
+    await pageA.getByRole("button", { name: "Remote server", exact: true }).click();
+    await remoteInput.fill(server.wsUrl);
+
+    await expect
+      .poll(async () => {
+        const url = new URL(pageA.url());
+        return {
+          sync: url.searchParams.get("sync"),
+          transport: url.searchParams.get("transport"),
+        };
+      })
+      .toEqual({ sync: server.wsUrl, transport: "remote" });
+
+    const inviteLink = await shareSubtreeInvite(pageA, ROOT_ID);
+    const inviteUrl = new URL(inviteLink);
+    expect(inviteUrl.searchParams.get("doc")).toBe(doc);
+    expect(inviteUrl.searchParams.get("join")).toBe("1");
+    expect(inviteUrl.searchParams.get("auth")).toBe("1");
+    expect(inviteUrl.searchParams.get("sync")).toBe(server.wsUrl);
+    expect(inviteUrl.searchParams.get("transport")).toBe("remote");
+    expect(inviteUrl.hash).toMatch(/^#invite=/);
+
+    await joinViaInviteLink(pageB, inviteLink);
+    await pageB.getByRole("button", { name: /Connections/ }).click();
+    await expect(pageB.getByPlaceholder("ws://localhost:8787/sync or https://sync.example.com")).toHaveValue(server.wsUrl, {
+      timeout: 30_000,
+    });
+    await expect(pageB.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await context.close();
+    await server.close();
   }
 });
 

@@ -3,6 +3,7 @@ import { RibltDecoder16, RibltEncoder16 } from "@treecrdt/riblt-wasm";
 import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from "./auth.js";
 import { ErrorCode, RibltFailureReason } from "./types.js";
 import type {
+  Capability,
   Filter,
   Hello,
   HelloAck,
@@ -165,6 +166,10 @@ type InitiatorSubscription = {
   failed: Pending<unknown>;
 };
 
+function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
+  return capabilities.some((cap) => cap.name === "auth.capability");
+}
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
@@ -262,10 +267,10 @@ export class SyncPeer<Op> {
     for (let start = 0; start < newOpRefs.length; start += this.maxOpsPerBatch) {
       const chunk = newOpRefs.slice(start, start + this.maxOpsPerBatch);
       let ops = await this.backend.getOpsByOpRefs(chunk);
+      const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
 
       // Apply peer-scoped visibility restrictions (best-effort).
       if (this.auth?.filterOutgoingOps && ops.length > 0) {
-        const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
         const allowed = await this.auth.filterOutgoingOps(ops, {
           docId: this.backend.docId,
           purpose: "subscribe",
@@ -298,7 +303,8 @@ export class SyncPeer<Op> {
         chunk.push(...allowedRefs);
       }
 
-      const auth = this.auth?.signOps
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const auth = shouldAttachAuth && this.auth?.signOps
         ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "subscribe", filterId: sub.subscriptionId })
         : undefined;
       if (auth && auth.length !== ops.length) throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
@@ -480,7 +486,8 @@ export class SyncPeer<Op> {
         continue;
       }
 
-      const auth = this.auth?.signOps
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const auth = shouldAttachAuth && this.auth?.signOps
         ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "reconcile", filterId })
         : undefined;
       if (auth && auth.length !== ops.length) {

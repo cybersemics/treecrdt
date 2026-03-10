@@ -43,7 +43,7 @@ function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
 
 export type WebSocketSyncServerDocHandle<Op> = {
   backend: SyncBackend<Op>;
-  peerOptions?: SyncPeerOptions;
+  peerOptions?: SyncPeerOptions<Op>;
   onPeerAdded?: (peer: SyncPeer<Op>) => void;
   onPeerRemoved?: (peer: SyncPeer<Op>) => void;
   release?: () => void | Promise<void>;
@@ -91,11 +91,25 @@ export type WebSocketSyncServerOptions<Op> = {
   port?: number;
   syncPath?: string;
   healthPath?: string;
+  healthCheck?: () => Awaitable<WebSocketSyncServerHealthResult>;
   maxPayloadBytes?: number;
   hooks?: WebSocketSyncServerHooks;
   codec: WireCodec<SyncMessage<Op>, Uint8Array>;
   docs: WebSocketSyncServerDocProvider<Op>;
 };
+
+export type WebSocketSyncServerHealthResult =
+  | {
+      ok: true;
+      body?: string;
+      contentType?: string;
+    }
+  | {
+      ok: false;
+      statusCode?: number;
+      body?: string;
+      contentType?: string;
+    };
 
 export type WebSocketSyncServerHandle = {
   host: string;
@@ -187,8 +201,30 @@ export async function startWebSocketSyncServer<Op>(
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (url.pathname === healthPath) {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
+      void (async () => {
+        try {
+          const result = (await opts.healthCheck?.()) ?? { ok: true as const };
+          if (result.ok) {
+            res.writeHead(200, { "content-type": result.contentType ?? "text/plain" });
+            res.end(result.body ?? "ok");
+            return;
+          }
+
+          const requestedStatusCode = result.statusCode;
+          const statusCode =
+            typeof requestedStatusCode === "number" &&
+            Number.isInteger(requestedStatusCode) &&
+            requestedStatusCode >= 400 &&
+            requestedStatusCode <= 599
+              ? requestedStatusCode
+              : 503;
+          res.writeHead(statusCode, { "content-type": result.contentType ?? "text/plain" });
+          res.end(result.body ?? "not ready");
+        } catch {
+          res.writeHead(503, { "content-type": "text/plain" });
+          res.end("not ready");
+        }
+      })();
       return;
     }
 

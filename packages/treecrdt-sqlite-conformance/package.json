@@ -16,7 +16,7 @@
     "src"
   ],
   "scripts": {
-    "build": "pnpm -C ../treecrdt-auth run build && tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@treecrdt/auth": "workspace:*",
