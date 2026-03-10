@@ -2,11 +2,12 @@ import { expect, test, vi } from "vitest";
 
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
+import { createReplayOnlySyncAuth } from "@treecrdt/sync";
 import type { SyncBackend } from "@treecrdt/sync";
 import type { Capability, OpAuth, OpRef } from "@treecrdt/sync";
 import { deriveOpRefV0 } from "@treecrdt/sync";
 
-import { createPostgresNodeDocStore, createReplayOnlySyncAuth } from "../dist/server.js";
+import { createPostgresNodeDocStore } from "../dist/server.js";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -137,14 +138,16 @@ test("replay-only auth stores verified auth and replays it by op ref", async () 
   };
   const auth = createReplayOnlySyncAuth({
     docId: "doc-replay-auth",
-    opAuthStore: store,
-    capabilityStore: {
-      storeCapabilities: async (caps) => {
-        for (const cap of caps) {
-          capabilities.set(`${cap.name}:${cap.value}`, cap);
-        }
+    authMaterialStore: {
+      opAuth: store,
+      capabilities: {
+        storeCapabilities: async (caps) => {
+          for (const cap of caps) {
+            capabilities.set(`${cap.name}:${cap.value}`, cap);
+          }
+        },
+        listCapabilities: async () => Array.from(capabilities.values()),
       },
-      listCapabilities: async () => Array.from(capabilities.values()),
     },
   });
 
@@ -202,9 +205,11 @@ test("replay-only auth stores verified auth and replays it by op ref", async () 
 test("replay-only auth fails fast when auth sidecar is missing", async () => {
   const auth = createReplayOnlySyncAuth({
     docId: "doc-missing-auth",
-    opAuthStore: {
-      storeOpAuth: async () => {},
-      getOpAuthByOpRefs: async () => [null],
+    authMaterialStore: {
+      opAuth: {
+        storeOpAuth: async () => {},
+        getOpAuthByOpRefs: async () => [null],
+      },
     },
   });
 

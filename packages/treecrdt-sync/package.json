@@ -18,6 +18,10 @@
       "import": "./dist/in-memory.js",
       "types": "./dist/in-memory.d.ts"
     },
+    "./proof-material": {
+      "import": "./dist/proof-material.js",
+      "types": "./dist/proof-material.d.ts"
+    },
     "./protobuf": {
       "import": "./dist/protobuf.js",
       "types": "./dist/protobuf.d.ts"
