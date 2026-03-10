@@ -11,8 +11,11 @@ Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared Typ
 - `packages/treecrdt-sqlite-node`: TreeCRDT bundled for Node.js use
 - `packages/treecrdt-wa-sqlite`: TreeCRDT bunlded for browser use
 - `packages/treecrdt-benchmark`: Benchmark utilities
-- `packages/sync-server/core`: shared WebSocket sync server runtime
-- `packages/sync-server/postgres-node`: Node sync server wired to Postgres backend
+- `packages/sync/core`: sync protocol/runtime core
+- `packages/sync/sqlite`: SQLite-backed sync adapters and proof-material stores
+- `packages/sync/postgres`: Postgres-backed sync proof-material stores
+- `packages/sync/server-core`: shared WebSocket sync server runtime
+- `packages/sync/server-postgres-node`: Node sync server wired to Postgres backend
 
 ## Quick start
 ```
@@ -60,7 +63,7 @@ pnpm sync-server:postgres:db:stop
 
 For full sync-server configuration and environment variables, see:
 
-- `packages/sync-server/postgres-node/README.md`
+- `packages/sync/server-postgres-node/README.md`
 - `examples/playground/README.md`
 
 ## Contribute

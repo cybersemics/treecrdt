@@ -1,6 +1,6 @@
 packages:
   - packages/*
-  - packages/sync-server/*
+  - packages/sync/*
   - packages/treecrdt-wasm-js
   - packages/treecrdt-wa-sqlite/e2e
   - examples/*

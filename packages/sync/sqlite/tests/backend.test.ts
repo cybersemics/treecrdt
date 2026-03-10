@@ -2,10 +2,9 @@ import { expect, test } from "vitest";
 
 import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
+import { deriveOpRefV0, type OpRef } from "@treecrdt/sync";
 
 import { createTreecrdtSyncBackendFromClient } from "../dist/backend.js";
-import { deriveOpRefV0 } from "../dist/opref.js";
-import type { OpRef } from "../dist/types.js";
 
 function replicaFromLabel(label: string): Uint8Array {
   const encoded = new TextEncoder().encode(label);

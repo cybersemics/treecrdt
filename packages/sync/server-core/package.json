@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm -C ../../treecrdt-sync run build && pnpm run build && vitest run"
+    "test": "pnpm -C ../core run build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@treecrdt/sync": "workspace:*",

@@ -15,7 +15,7 @@ import {
 import {
   createTreecrdtSyncSqliteOpAuthStore,
   createTreecrdtSyncSqlitePendingOpsStore,
-} from "@treecrdt/sync";
+} from "@treecrdt/sync-sqlite";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {

@@ -10,11 +10,10 @@ import {
 } from "@treecrdt/auth";
 import {
   SyncPeer,
-  createTreecrdtSyncBackendFromClient,
-  createTreecrdtSyncSqliteOpAuthStore,
   type Filter,
   type SyncSubscription,
 } from "@treecrdt/sync";
+import { createTreecrdtSyncBackendFromClient, createTreecrdtSyncSqliteOpAuthStore } from "@treecrdt/sync-sqlite";
 import type { BroadcastPresenceAckMessageV1, BroadcastPresenceMessageV1 } from "@treecrdt/sync/browser";
 import { createBroadcastPresenceMesh } from "@treecrdt/sync/browser";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";

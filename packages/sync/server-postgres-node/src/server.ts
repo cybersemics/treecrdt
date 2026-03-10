@@ -6,6 +6,16 @@ import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from "@treecrdt/au
 import type { Operation } from "@treecrdt/interface";
 import { createReplayOnlySyncAuth } from "@treecrdt/sync";
 import type { SyncBackend, SyncPeer, SyncPeerOptions } from "@treecrdt/sync";
+import {
+  createPostgresSyncCapabilityMaterialStore,
+  createPostgresSyncCapabilityStore,
+  createPostgresSyncOpAuthStore,
+} from "@treecrdt/sync-postgres";
+import type {
+  PostgresSyncCapabilityMaterialStore,
+  PostgresSyncCapabilityStore,
+  PostgresSyncOpAuthStore,
+} from "@treecrdt/sync-postgres";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type {
   WebSocketSyncServerDocHandle,
@@ -16,17 +26,6 @@ import type {
 } from "@treecrdt/sync-server-core";
 import { startWebSocketSyncServer } from "@treecrdt/sync-server-core";
 import { Client as PgClient } from "pg";
-
-import {
-  createPostgresSyncCapabilityMaterialStore,
-  createPostgresSyncCapabilityStore,
-  createPostgresSyncOpAuthStore,
-} from "./auth-material-store.js";
-import type {
-  PostgresSyncCapabilityMaterialStore,
-  PostgresSyncCapabilityStore,
-  PostgresSyncOpAuthStore,
-} from "./auth-material-store.js";
 
 type Awaitable<T> = T | Promise<T>;
 

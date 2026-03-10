@@ -1,10 +1,10 @@
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, hexToBytes } from "@treecrdt/interface/ids";
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
+import { deriveOpRefV0 } from "@treecrdt/sync";
+import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
-import { deriveOpRefV0 } from "./opref.js";
-import { createTreecrdtSyncSqlitePendingOpsStore } from "./proof-material/sqlite.js";
-import type { Filter, OpRef, SyncBackend } from "./types.js";
+import { createTreecrdtSyncSqlitePendingOpsStore } from "./proof-material.js";
 
 export type TreecrdtSyncBackendClient = {
   runner?: SqliteRunner;

@@ -14,7 +14,7 @@ import {
 } from "@treecrdt/auth";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { createTreecrdtSyncSqliteOpAuthStore, createTreecrdtSyncSqlitePendingOpsStore } from "@treecrdt/sync";
+import { createTreecrdtSyncSqliteOpAuthStore, createTreecrdtSyncSqlitePendingOpsStore } from "@treecrdt/sync-sqlite";
 
 export function conformanceSlugify(input: string): string {
   return input

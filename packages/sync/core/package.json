@@ -37,7 +37,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm -C ../treecrdt-riblt-wasm-js run build && pnpm -C ../treecrdt-benchmark run build && pnpm run build && vitest run"
+    "test": "pnpm -C ../../treecrdt-riblt-wasm-js run build && pnpm -C ../../treecrdt-benchmark run build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.10.2",

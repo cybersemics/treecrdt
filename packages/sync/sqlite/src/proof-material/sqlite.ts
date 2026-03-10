@@ -1,15 +1,17 @@
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, hexToBytes, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
-
-import { deriveOpRefV0 } from "../opref.js";
-import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from "../protobuf.js";
-import type { Capability, OpAuth, OpRef, PendingOp } from "../types.js";
-import type {
-  SyncCapabilityMaterialStore,
-  SyncOpAuthStore,
-  SyncPendingOpsStore,
-} from "./types.js";
+import {
+  deriveOpRefV0,
+  type Capability,
+  type OpAuth,
+  type OpRef,
+  type PendingOp,
+  type SyncCapabilityMaterialStore,
+  type SyncOpAuthStore,
+  type SyncPendingOpsStore,
+} from "@treecrdt/sync";
+import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from "@treecrdt/sync/protobuf";
 
 function hexToBytesStrict(hex: string, expectedLen: number, field: string): Uint8Array {
   const clean = hex.trim();

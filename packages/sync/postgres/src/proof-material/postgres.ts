@@ -49,6 +49,14 @@ function toBytes(value: Uint8Array | Buffer): Uint8Array {
   return Uint8Array.from(value);
 }
 
+function dedupeLatestByKey<T>(values: T[], keyOf: (value: T) => string): T[] {
+  const deduped = new Map<string, T>();
+  for (const value of values) {
+    deduped.set(keyOf(value), value);
+  }
+  return Array.from(deduped.values());
+}
+
 function insertOpAuthSql(entryCount: number): string {
   if (!Number.isInteger(entryCount) || entryCount <= 0) {
     throw new Error(`invalid op auth entry count: ${entryCount}`);
@@ -97,13 +105,14 @@ export function createPostgresSyncOpAuthStore(opts: {
     forDoc: (docId: string): SyncOpAuthStore => ({
       storeOpAuth: async (entries) => {
         if (entries.length === 0) return;
+        const deduped = dedupeLatestByKey(entries, (entry) => bytesToHex(entry.opRef));
 
         const params: Array<string | number | Uint8Array | null> = [];
-        for (const entry of entries) {
+        for (const entry of deduped) {
           params.push(docId, entry.opRef, entry.auth.sig, entry.auth.proofRef ?? null, nowMs());
         }
 
-        await pool.query(insertOpAuthSql(entries.length), params);
+        await pool.query(insertOpAuthSql(deduped.length), params);
       },
 
       getOpAuthByOpRefs: async (opRefs) => {
@@ -165,11 +174,12 @@ export function createPostgresSyncCapabilityMaterialStore(opts: {
     forDoc: (docId): SyncCapabilityMaterialStore => ({
       storeCapabilities: async (caps) => {
         if (caps.length === 0) return;
+        const deduped = dedupeLatestByKey(caps, (cap) => `${cap.name}\u0000${cap.value}`);
         const params: Array<string | number> = [];
-        for (const cap of caps) {
+        for (const cap of deduped) {
           params.push(docId, cap.name, cap.value, nowMs());
         }
-        await pool.query(insertCapabilitiesSql(caps.length), params);
+        await pool.query(insertCapabilitiesSql(deduped.length), params);
       },
       listCapabilities: async () => {
         const res = await pool.query<{ name: string; value: string }>(
