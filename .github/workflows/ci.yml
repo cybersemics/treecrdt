@@ -80,6 +80,8 @@ jobs:
 
     - name: Build TypeScript deps for playground typecheck
       run: |
+        pnpm -C packages/treecrdt-ts run build
+        pnpm -C packages/treecrdt-riblt-wasm-js run build
         pnpm -C packages/treecrdt-sync run build
         pnpm -C packages/treecrdt-auth run build
         pnpm -C packages/treecrdt-crypto run build
@@ -188,6 +190,9 @@ jobs:
 
     - name: Install dependencies
       run: pnpm install
+
+    - name: Build TypeScript deps for postgres backend tests
+      run: pnpm --filter @treecrdt/postgres-napi^... run build
 
     - name: Run postgres backend tests
       env:
