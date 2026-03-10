@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "dev": "pnpm --filter @treecrdt/sync-server-core build && tsx src/cli.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm -C ../server-core run build && pnpm -C ../postgres run build && tsc -p tsconfig.json",
     "test": "pnpm -C ../core run build && pnpm -C ../postgres run build && pnpm --filter @treecrdt/sync-server-core build && pnpm run build && vitest run"
   },
   "dependencies": {
