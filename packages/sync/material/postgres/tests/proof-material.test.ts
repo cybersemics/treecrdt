@@ -1,5 +1,5 @@
 import { describe } from "vitest";
-import { defineProofMaterialStoreContract } from "../../core/tests/helpers/proof-material-contract.ts";
+import { defineProofMaterialStoreContract } from "../../protocol/tests/helpers/proof-material-contract.ts";
 
 import {
   createPostgresSyncCapabilityMaterialStore,

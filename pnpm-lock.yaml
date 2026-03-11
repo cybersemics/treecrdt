@@ -31,10 +31,10 @@ importers:
         version: link:../../packages/treecrdt-ts
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../../packages/sync/core
+        version: link:../../packages/sync/protocol
       '@treecrdt/sync-sqlite':
         specifier: workspace:*
-        version: link:../../packages/sync/sqlite
+        version: link:../../packages/sync/material/sqlite
       '@treecrdt/wa-sqlite':
         specifier: workspace:*
         version: link:../../packages/treecrdt-wa-sqlite
@@ -82,7 +82,57 @@ importers:
         specifier: ^7.2.7
         version: 7.2.7(@types/node@20.19.25)(jiti@1.21.7)(tsx@4.21.0)
 
-  packages/sync/core:
+  packages/sync/material/postgres:
+    dependencies:
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../../../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../../protocol
+      pg:
+        specifier: ^8.16.3
+        version: 8.19.0
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      '@types/pg':
+        specifier: ^8.15.6
+        version: 8.18.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
+  packages/sync/material/sqlite:
+    dependencies:
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../../../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.12
+        version: 7.6.13
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      better-sqlite3:
+        specifier: ^9.0.0
+        version: 9.6.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
+  packages/sync/protocol:
     dependencies:
       '@bufbuild/protobuf':
         specifier: ^2.10.2
@@ -110,36 +160,11 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
-  packages/sync/postgres:
-    dependencies:
-      '@treecrdt/interface':
-        specifier: workspace:*
-        version: link:../../treecrdt-ts
-      '@treecrdt/sync':
-        specifier: workspace:*
-        version: link:../core
-      pg:
-        specifier: ^8.16.3
-        version: 8.19.0
-    devDependencies:
-      '@types/node':
-        specifier: ^20.19.25
-        version: 20.19.25
-      '@types/pg':
-        specifier: ^8.15.6
-        version: 8.18.0
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^1.6.0
-        version: 1.6.1(@types/node@20.19.25)
-
-  packages/sync/server-core:
+  packages/sync/server/core:
     dependencies:
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../protocol
       ws:
         specifier: ^8.18.3
         version: 8.19.0
@@ -157,23 +182,23 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
-  packages/sync/server-postgres-node:
+  packages/sync/server/postgres-node:
     dependencies:
       '@treecrdt/auth':
         specifier: workspace:*
-        version: link:../../treecrdt-auth
+        version: link:../../../treecrdt-auth
       '@treecrdt/interface':
         specifier: workspace:*
-        version: link:../../treecrdt-ts
+        version: link:../../../treecrdt-ts
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../protocol
       '@treecrdt/sync-postgres':
         specifier: workspace:*
-        version: link:../postgres
+        version: link:../../material/postgres
       '@treecrdt/sync-server-core':
         specifier: workspace:*
-        version: link:../server-core
+        version: link:../core
       pg:
         specifier: ^8.16.3
         version: 8.19.0
@@ -194,31 +219,6 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
-  packages/sync/sqlite:
-    dependencies:
-      '@treecrdt/interface':
-        specifier: workspace:*
-        version: link:../../treecrdt-ts
-      '@treecrdt/sync':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@types/better-sqlite3':
-        specifier: ^7.6.12
-        version: 7.6.13
-      '@types/node':
-        specifier: ^20.19.25
-        version: 20.19.25
-      better-sqlite3:
-        specifier: ^9.0.0
-        version: 9.6.0
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^1.6.0
-        version: 1.6.1(@types/node@20.19.25)
-
   packages/treecrdt-auth:
     dependencies:
       '@noble/ed25519':
@@ -232,7 +232,7 @@ importers:
         version: link:../treecrdt-ts
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../sync/core
+        version: link:../sync/protocol
       cborg:
         specifier: ^4.3.2
         version: 4.3.2
@@ -295,7 +295,7 @@ importers:
         version: link:../treecrdt-ts
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../sync/core
+        version: link:../sync/protocol
     devDependencies:
       '@treecrdt/benchmark':
         specifier: workspace:*
@@ -338,10 +338,10 @@ importers:
         version: link:../treecrdt-ts
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../sync/core
+        version: link:../sync/protocol
       '@treecrdt/sync-sqlite':
         specifier: workspace:*
-        version: link:../sync/sqlite
+        version: link:../sync/material/sqlite
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -370,7 +370,7 @@ importers:
         version: link:../treecrdt-sqlite-conformance
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../sync/core
+        version: link:../sync/protocol
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -433,7 +433,7 @@ importers:
         version: link:../../treecrdt-sqlite-conformance
       '@treecrdt/sync':
         specifier: workspace:*
-        version: link:../../sync/core
+        version: link:../../sync/protocol
       '@treecrdt/wa-sqlite':
         specifier: workspace:*
         version: link:..

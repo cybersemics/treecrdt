@@ -14,8 +14,8 @@
     "copy:ext": "node ./scripts/copy-ext.mjs",
     "build:ts": "tsc -p tsconfig.json",
     "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
-    "test": "pnpm -C ../sync/core run build && pnpm -C ../sync/sqlite run build && pnpm run build && vitest run",
-    "benchmark": "pnpm -C ../sync/core run build && pnpm -C ../sync/sqlite run build && pnpm run build && tsx ./scripts/bench.ts && tsx ./scripts/bench-sync.ts"
+    "test": "pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm run build && vitest run",
+    "benchmark": "pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm run build && tsx ./scripts/bench.ts && tsx ./scripts/bench-sync.ts"
   },
   "peerDependencies": {
     "better-sqlite3": "^9.0.0"

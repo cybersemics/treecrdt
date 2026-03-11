@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { defineProofMaterialStoreContract } from "../../core/tests/helpers/proof-material-contract.ts";
+import { defineProofMaterialStoreContract } from "../../protocol/tests/helpers/proof-material-contract.ts";
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 
 import {
