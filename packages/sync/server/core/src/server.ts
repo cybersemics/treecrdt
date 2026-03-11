@@ -233,6 +233,35 @@ export async function startWebSocketSyncServer<Op>(
   });
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxPayloadBytes });
+  const peersByDocId = new Map<string, Set<SyncPeer<Op>>>();
+
+  const addDocPeer = (docId: string, peer: SyncPeer<Op>) => {
+    const existing = peersByDocId.get(docId);
+    if (existing) {
+      existing.add(peer);
+      return;
+    }
+    peersByDocId.set(docId, new Set([peer]));
+  };
+
+  const removeDocPeer = (docId: string, peer: SyncPeer<Op>) => {
+    const existing = peersByDocId.get(docId);
+    if (!existing) return;
+    existing.delete(peer);
+    if (existing.size === 0) peersByDocId.delete(docId);
+  };
+
+  const notifyOtherDocPeers = async (docId: string, source: SyncPeer<Op> | undefined) => {
+    const peers = peersByDocId.get(docId);
+    if (!peers || peers.size === 0) return;
+    const pending: Promise<void>[] = [];
+    for (const peer of peers) {
+      if (peer === source) continue;
+      pending.push(peer.notifyLocalUpdate());
+    }
+    if (pending.length === 0) return;
+    await Promise.allSettled(pending);
+  };
 
   server.on("upgrade", (req, socket, head) => {
     const upgradeSocket = socket as UpgradeSocket;
@@ -315,6 +344,9 @@ export async function startWebSocketSyncServer<Op>(
           detach?.();
         } catch {}
         try {
+          if (peer) removeDocPeer(docId, peer);
+        } catch {}
+        try {
           if (doc && peer) doc.onPeerRemoved?.(peer);
         } catch {}
         try {
@@ -345,7 +377,23 @@ export async function startWebSocketSyncServer<Op>(
       doc = openedDoc;
       const wire = createWebSocketTransport(ws);
       const transport = wrapDuplexTransportWithCodec<Uint8Array, SyncMessage<Op>>(wire, opts.codec);
-      peer = new SyncPeer<Op>(doc.backend, doc.peerOptions);
+      const docBackend = doc.backend;
+      const backend: SyncBackend<Op> = {
+        docId: docBackend.docId,
+        maxLamport: () => docBackend.maxLamport(),
+        listOpRefs: (filter) => docBackend.listOpRefs(filter),
+        getOpsByOpRefs: (opRefs) => docBackend.getOpsByOpRefs(opRefs),
+        applyOps: async (ops) => {
+          await docBackend.applyOps(ops);
+          if (ops.length === 0) return;
+          await notifyOtherDocPeers(docId, peer);
+        },
+        ...(docBackend.storePendingOps ? { storePendingOps: (ops) => docBackend.storePendingOps!(ops) } : {}),
+        ...(docBackend.listPendingOps ? { listPendingOps: () => docBackend.listPendingOps!() } : {}),
+        ...(docBackend.deletePendingOps ? { deletePendingOps: (ops) => docBackend.deletePendingOps!(ops) } : {}),
+      };
+      peer = new SyncPeer<Op>(backend, doc.peerOptions);
+      addDocPeer(docId, peer);
       detach = peer.attach(transport, {
         onError: () => {
           if (ws.readyState === WebSocket.OPEN) ws.close(1011, "sync handler error");

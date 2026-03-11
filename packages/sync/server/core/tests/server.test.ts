@@ -3,8 +3,9 @@ import http from "node:http";
 import { test, expect } from "vitest";
 import WebSocket from "ws";
 
-import type { SyncMessage } from "@treecrdt/sync";
+import { SyncPeer, type SyncBackend, type SyncMessage } from "@treecrdt/sync";
 import type { WireCodec } from "@treecrdt/sync/transport";
+import { wrapDuplexTransportWithCodec } from "@treecrdt/sync/transport";
 
 import { startWebSocketSyncServer } from "../dist/index.js";
 
@@ -50,10 +51,30 @@ async function httpGet(url: string): Promise<{ status: number; body: string }> {
   });
 }
 
+function encodeJson(value: unknown): unknown {
+  if (value instanceof Uint8Array) return { __u8: Array.from(value) };
+  if (typeof value === "bigint") return { __bigint: value.toString() };
+  if (Array.isArray(value)) return value.map((entry) => encodeJson(entry));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, encodeJson(entry)]));
+}
+
+function decodeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => decodeJson(entry));
+  if (!value || typeof value !== "object") return value;
+  if (Object.prototype.hasOwnProperty.call(value, "__u8")) {
+    return Uint8Array.from((value as { __u8: number[] }).__u8);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "__bigint")) {
+    return BigInt((value as { __bigint: string }).__bigint);
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, decodeJson(entry)]));
+}
+
 function jsonCodec<Op>(): WireCodec<SyncMessage<Op>, Uint8Array> {
   return {
-    encode: (message) => Buffer.from(JSON.stringify(message), "utf8"),
-    decode: (wire) => JSON.parse(Buffer.from(wire).toString("utf8")) as SyncMessage<Op>,
+    encode: (message) => Buffer.from(JSON.stringify(encodeJson(message)), "utf8"),
+    decode: (wire) => decodeJson(JSON.parse(Buffer.from(wire).toString("utf8"))) as SyncMessage<Op>,
   };
 }
 
@@ -100,6 +121,80 @@ async function connectWebSocketRejected(url: string): Promise<{ status: number; 
       queueMicrotask(() => finishReject(err));
     });
   });
+}
+
+async function waitUntil(predicate: () => boolean, opts: { timeoutMs?: number; intervalMs?: number; message: string }): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+  const intervalMs = opts.intervalMs ?? 20;
+  const start = Date.now();
+  while (true) {
+    if (predicate()) return;
+    if (Date.now() - start >= timeoutMs) throw new Error(opts.message);
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+function createClientWebSocketTransport(ws: WebSocket) {
+  return {
+    send: (bytes: Uint8Array) =>
+      new Promise<void>((resolve, reject) => {
+        ws.send(bytes, { binary: true }, (err) => (err ? reject(err) : resolve()));
+      }),
+    onMessage: (handler: (bytes: Uint8Array) => void) => {
+      const onMessage = (data: WebSocket.RawData) => {
+        if (data instanceof Uint8Array) handler(data);
+        else if (data instanceof ArrayBuffer) handler(new Uint8Array(data));
+        else if (Array.isArray(data)) handler(Buffer.concat(data));
+        else handler(Buffer.from(data));
+      };
+      ws.on("message", onMessage);
+      return () => ws.off("message", onMessage);
+    },
+  };
+}
+
+type TestOp = {
+  id: string;
+  lamport: number;
+};
+
+class MemoryBackend implements SyncBackend<TestOp> {
+  readonly docId: string;
+  private readonly opsById = new Map<string, TestOp>();
+
+  constructor(docId: string) {
+    this.docId = docId;
+  }
+
+  async maxLamport(): Promise<bigint> {
+    let max = 0;
+    for (const op of this.opsById.values()) max = Math.max(max, op.lamport);
+    return BigInt(max);
+  }
+
+  async listOpRefs(): Promise<Uint8Array[]> {
+    return Array.from(this.opsById.keys(), (id) => opRefForId(id));
+  }
+
+  async getOpsByOpRefs(opRefs: Uint8Array[]): Promise<TestOp[]> {
+    return opRefs
+      .map((opRef) => this.opsById.get(Buffer.from(opRef).toString("hex")))
+      .filter((op): op is TestOp => Boolean(op));
+  }
+
+  async applyOps(ops: TestOp[]): Promise<void> {
+    for (const op of ops) {
+      this.opsById.set(op.id, op);
+    }
+  }
+
+  hasOp(id: string): boolean {
+    return this.opsById.has(id);
+  }
+}
+
+function opRefForId(id: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(id, "hex"));
 }
 
 test("health endpoint returns ok", async () => {
@@ -434,6 +529,59 @@ test(
       expect(denied.body).toBe("too many upgrades");
       expect(opens).toBe(1);
     } finally {
+      await server.close();
+    }
+  },
+  { timeout: 20_000 }
+);
+
+test(
+  "pushes subscribed updates across websocket connections on the same doc",
+  async () => {
+    const docId = "push-between-clients";
+    const serverBackend = new MemoryBackend(docId);
+    const server = await startWebSocketSyncServer<TestOp>({
+      host: "127.0.0.1",
+      port: 0,
+      codec: jsonCodec(),
+      docs: {
+        async open(openDocId) {
+          return { backend: serverBackend };
+        },
+      },
+    });
+
+    const wsUrl = `ws://${server.host}:${server.port}/sync?docId=${encodeURIComponent(docId)}`;
+    const clientA = new MemoryBackend(docId);
+    const clientB = new MemoryBackend(docId);
+    const peerA = new SyncPeer<TestOp>(clientA);
+    const peerB = new SyncPeer<TestOp>(clientB);
+    const wsA = await connectWebSocket(wsUrl);
+    const wsB = await connectWebSocket(wsUrl);
+    const transportA = wrapDuplexTransportWithCodec(createClientWebSocketTransport(wsA), jsonCodec<TestOp>());
+    const transportB = wrapDuplexTransportWithCodec(createClientWebSocketTransport(wsB), jsonCodec<TestOp>());
+    const detachA = peerA.attach(transportA);
+    const detachB = peerB.attach(transportB);
+    const subB = peerB.subscribe(transportB, { all: {} }, { maxCodewords: 1_024, codewordsPerMessage: 64 });
+
+    try {
+      await withTimeout(subB.ready, 5_000, "client B live subscription ready");
+
+      const op: TestOp = { id: "00000000000000000000000000000001", lamport: 1 };
+      await clientA.applyOps([op]);
+      await peerA.syncOnce(transportA, { all: {} }, { maxCodewords: 1_024, codewordsPerMessage: 64 });
+
+      await waitUntil(() => clientB.hasOp(op.id), {
+        timeoutMs: 5_000,
+        message: "expected client B to receive pushed op via websocket subscription",
+      });
+    } finally {
+      subB.stop();
+      await withTimeout(subB.done, 5_000, "client B subscription stop");
+      detachA();
+      detachB();
+      wsA.close();
+      wsB.close();
       await server.close();
     }
   },

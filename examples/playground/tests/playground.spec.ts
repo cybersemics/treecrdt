@@ -666,6 +666,60 @@ test("remote sync server handles 1000-node composer fanout between same-device p
   }
 });
 
+test("remote live sync all pushes new ops without a manual sync click", async ({ browser }) => {
+  test.setTimeout(180_000);
+
+  const doc = uniqueDocId("pw-playground-remote-live-all");
+  const server = await startInMemorySyncServer();
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const remotePath = `/?doc=${encodeURIComponent(doc)}&auth=0&transport=remote&sync=${encodeURIComponent(server.wsUrl)}`;
+
+  try {
+    await Promise.all([waitForReady(pageA, remotePath), waitForReady(pageB, remotePath)]);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    const liveA = pageA.getByRole("button", { name: "Live sync all" });
+    const liveB = pageB.getByRole("button", { name: "Live sync all" });
+    await liveA.click();
+    await liveB.click();
+    await expect(liveA).toHaveAttribute("aria-pressed", "true");
+    await expect(liveB).toHaveAttribute("aria-pressed", "true");
+    await expect(liveA).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
+    await expect(liveB).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
+
+    const nodeLabel = `remote-live-all-${Date.now()}`;
+    await pageA.getByPlaceholder("Stored as payload bytes").fill(nodeLabel);
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, nodeLabel)).toBeVisible({ timeout: 30_000 });
+    await Promise.race([
+      server.waitForDocOps(doc, 1),
+      (async () => {
+        await pageA.getByTestId("sync-error").waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await pageA.getByTestId("sync-error").textContent()}`);
+      })(),
+    ]);
+    await Promise.race([
+      server.waitForServedOps(doc, 1),
+      (async () => {
+        await pageB.getByTestId("sync-error").waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (B): ${await pageB.getByTestId("sync-error").textContent()}`);
+      })(),
+    ]);
+    await expect(treeRowByLabel(pageB, nodeLabel)).toBeVisible({ timeout: 60_000 });
+
+    await expect(pageA.getByTestId("sync-error")).toBeHidden();
+    await expect(pageB.getByTestId("sync-error")).toBeHidden();
+  } finally {
+    await Promise.all([context.close(), server.close()]);
+  }
+});
+
 test("defensive delete restores parent when unseen child arrives", async ({ browser }) => {
   test.setTimeout(240_000);
 

@@ -90,6 +90,7 @@ export type PlaygroundSyncApi = {
   peers: PeerInfo[];
   remoteSyncStatus: RemoteSyncStatus;
   syncBusy: boolean;
+  liveBusy: boolean;
   syncError: string | null;
   setSyncError: React.Dispatch<React.SetStateAction<string | null>>;
   liveChildrenParents: Set<string>;
@@ -171,6 +172,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   } = opts;
 
   const [syncBusy, setSyncBusy] = useState(false);
+  const [liveBusy, setLiveBusy] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [remoteSyncStatus, setRemoteSyncStatus] = useState<RemoteSyncStatus>({
@@ -199,6 +201,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
   const liveAllStartingRef = useRef<Set<string>>(new Set());
   const liveChildrenStartingRef = useRef<Set<string>>(new Set());
+  const liveBusyCountRef = useRef(0);
+  const remoteLivePushScheduledRef = useRef(false);
+  const remoteLivePushRunningRef = useRef(false);
   const autoSyncDoneRef = useRef(false);
   const autoSyncInFlightRef = useRef(false);
   const autoSyncAttemptRef = useRef(0);
@@ -238,6 +243,16 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllSubsRef.current.clear();
   };
 
+  const beginLiveWork = () => {
+    liveBusyCountRef.current += 1;
+    setLiveBusy(true);
+  };
+
+  const endLiveWork = () => {
+    liveBusyCountRef.current = Math.max(0, liveBusyCountRef.current - 1);
+    setLiveBusy(liveBusyCountRef.current > 0);
+  };
+
   const startLiveAll = (peerId: string) => {
     const conn = syncConnRef.current.get(peerId);
     const peer = syncPeerRef.current;
@@ -246,37 +261,39 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     if (liveAllSubsRef.current.has(peerId)) return;
     if (liveAllStartingRef.current.has(peerId)) return;
     liveAllStartingRef.current.add(peerId);
+    beginLiveWork();
 
     void (async () => {
-      try {
-        await peer.syncOnce(
-          conn.transport,
-          { all: {} },
-          syncOnceOptionsForPeer(peerId, 1024)
-        );
-      } catch (err) {
-        console.error("Live sync(all) initial catch-up failed", err);
-        setSyncError(formatSyncError(err));
-        return;
-      }
-
+      let started = false;
       const sub = peer.subscribe(
         conn.transport,
         { all: {} },
         {
-          immediate: false,
+          immediate: true,
           intervalMs: 0,
           ...syncOnceOptionsForPeer(peerId, 1024),
         }
       );
       liveAllSubsRef.current.set(peerId, sub);
       void sub.done.catch((err) => {
+        if (!started) return;
         console.error("Live sync(all) failed", err);
         stopLiveAllForPeer(peerId);
         setSyncError(formatSyncError(err));
       });
+
+      try {
+        await sub.ready;
+        started = true;
+      } catch (err) {
+        console.error("Live sync(all) initial catch-up failed", err);
+        stopLiveAllForPeer(peerId);
+        setSyncError(formatSyncError(err));
+        return;
+      }
     })().finally(() => {
       liveAllStartingRef.current.delete(peerId);
+      endLiveWork();
     });
   };
 
@@ -311,40 +328,41 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const startKey = `${peerId}\u0000${parentId}`;
     if (liveChildrenStartingRef.current.has(startKey)) return;
     liveChildrenStartingRef.current.add(startKey);
+    beginLiveWork();
 
     const byParent = existing ?? new Map<string, SyncSubscription>();
     void (async () => {
-      try {
-        await peer.syncOnce(
-          conn.transport,
-          { children: { parent: hexToBytes16(parentId) } },
-          syncOnceOptionsForPeer(peerId, 1024)
-        );
-      } catch (err) {
-        console.error("Live sync(children) initial catch-up failed", err);
-        setSyncError(formatSyncError(err));
-        return;
-      }
-
+      let started = false;
       const sub = peer.subscribe(
         conn.transport,
         { children: { parent: hexToBytes16(parentId) } },
         {
-          immediate: false,
+          immediate: true,
           intervalMs: 0,
           ...syncOnceOptionsForPeer(peerId, 1024),
         }
       );
       byParent.set(parentId, sub);
       liveChildSubsRef.current.set(peerId, byParent);
-
       void sub.done.catch((err) => {
+        if (!started) return;
         console.error("Live sync failed", err);
         stopLiveChildren(peerId, parentId);
         setSyncError(formatSyncError(err));
       });
+
+      try {
+        await sub.ready;
+        started = true;
+      } catch (err) {
+        console.error("Live sync(children) initial catch-up failed", err);
+        stopLiveChildren(peerId, parentId);
+        setSyncError(formatSyncError(err));
+        return;
+      }
     })().finally(() => {
       liveChildrenStartingRef.current.delete(startKey);
+      endLiveWork();
     });
   };
 
@@ -359,6 +377,65 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const notifyLocalUpdate = () => {
     void syncPeerRef.current?.notifyLocalUpdate();
+    if (remoteLivePushRunningRef.current) {
+      remoteLivePushScheduledRef.current = true;
+      return;
+    }
+    remoteLivePushScheduledRef.current = true;
+    remoteLivePushRunningRef.current = true;
+    beginLiveWork();
+    void (async () => {
+      try {
+        while (remoteLivePushScheduledRef.current) {
+          remoteLivePushScheduledRef.current = false;
+          if (!onlineRef.current) continue;
+
+          const peer = syncPeerRef.current;
+          if (!peer) continue;
+
+          const connections = syncConnRef.current;
+          const remotePeerIds = Array.from(connections.keys()).filter(isRemotePeerId);
+          if (remotePeerIds.length === 0) continue;
+
+          const liveChildren = Array.from(liveChildrenParentsRef.current).filter((id) => /^[0-9a-f]{32}$/i.test(id));
+          if (!liveAllEnabledRef.current && liveChildren.length === 0) continue;
+
+          for (const peerId of remotePeerIds) {
+            const conn = connections.get(peerId);
+            if (!conn) continue;
+            try {
+              if (liveAllEnabledRef.current) {
+                await withTimeout(
+                  peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 1024)),
+                  syncTimeoutMsForPeer(peerId, { autoSync: true }),
+                  `live sync with ${peerId.slice(0, 8)}… timed out`
+                );
+                continue;
+              }
+
+              for (const parentId of liveChildren) {
+                await withTimeout(
+                  peer.syncOnce(
+                    conn.transport,
+                    { children: { parent: hexToBytes16(parentId) } },
+                    syncOnceOptionsForPeer(peerId, 1024)
+                  ),
+                  syncTimeoutMsForPeer(peerId, { autoSync: true }),
+                  `live sync(children ${parentId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`
+                );
+              }
+            } catch (err) {
+              console.error("Remote live sync push failed", err);
+              setSyncError(formatSyncError(err));
+              if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
+            }
+          }
+        }
+      } finally {
+        remoteLivePushRunningRef.current = false;
+        endLiveWork();
+      }
+    })();
   };
 
   const dropPeerConnection = (peerId: string) => {
@@ -1036,6 +1113,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       channel?.close();
       liveAllStartingRef.current.clear();
       liveChildrenStartingRef.current.clear();
+      remoteLivePushScheduledRef.current = false;
+      remoteLivePushRunningRef.current = false;
+      liveBusyCountRef.current = 0;
+      setLiveBusy(false);
       connections.clear();
       meshPeersRef.current = [];
       remotePeerRef.current = null;
@@ -1071,6 +1152,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     peers,
     remoteSyncStatus,
     syncBusy,
+    liveBusy,
     syncError,
     setSyncError,
     liveChildrenParents,

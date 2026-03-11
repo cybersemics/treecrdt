@@ -91,6 +91,7 @@ export type SyncSubscribeOptions = SyncOnceOptions & {
 
 export type SyncSubscription = {
   stop: () => void;
+  ready: Promise<void>;
   done: Promise<void>;
 };
 
@@ -546,11 +547,26 @@ export class SyncPeer<Op> {
     const subscriptionId = randomId("sub");
     const session: InitiatorSubscription = { ack: deferred<SubscribeAck>(), failed: deferred<unknown>() };
     this.initiatorSubscriptions.set(subscriptionId, session);
+    const ready = deferred<void>();
+    let readySettled = false;
+    const resolveReady = () => {
+      if (readySettled) return;
+      readySettled = true;
+      ready.resolve();
+    };
+    const rejectReady = (err: unknown) => {
+      if (readySettled) return;
+      readySettled = true;
+      ready.reject(err);
+    };
 
     const done = (async () => {
       let sentSubscribe = false;
       try {
-        if (signal.aborted) return;
+        if (signal.aborted) {
+          resolveReady();
+          return;
+        }
 
         // If the responder requires capability-gated filters/subscriptions, send an initial
         // Hello (no filters) so it can record our capabilities before Subscribe arrives.
@@ -578,13 +594,23 @@ export class SyncPeer<Op> {
           session.failed.promise.then((err) => ({ case: "failed" as const, err })),
           waitForAbort(signal).then(() => ({ case: "aborted" as const })),
         ]);
-        if (ackOrAbort.case === "aborted") return;
-        if (ackOrAbort.case === "failed") throw ackOrAbort.err;
+        if (ackOrAbort.case === "aborted") {
+          resolveReady();
+          return;
+        }
+        if (ackOrAbort.case === "failed") {
+          rejectReady(ackOrAbort.err);
+          throw ackOrAbort.err;
+        }
 
-        if (signal.aborted) return;
+        if (signal.aborted) {
+          resolveReady();
+          return;
+        }
         if (immediate) {
           await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch, codewordBatchIntervalMs });
         }
+        resolveReady();
 
         if (intervalMs > 0) {
           while (!signal.aborted) {
@@ -601,7 +627,11 @@ export class SyncPeer<Op> {
             }),
           ]);
         }
+      } catch (err) {
+        rejectReady(err);
+        throw err;
       } finally {
+        resolveReady();
         this.initiatorSubscriptions.delete(subscriptionId);
         if (sentSubscribe) {
           try {
@@ -617,7 +647,7 @@ export class SyncPeer<Op> {
       }
     })();
 
-    return { stop: () => controller.abort(), done };
+    return { stop: () => controller.abort(), ready: ready.promise, done };
   }
 
   private async handleMessage(
