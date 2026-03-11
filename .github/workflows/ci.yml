@@ -81,8 +81,8 @@ jobs:
       run: |
         pnpm -C packages/treecrdt-ts run build
         pnpm -C packages/treecrdt-riblt-wasm-js run build
-        pnpm -C packages/sync/core run build
-        pnpm -C packages/sync/sqlite run build
+        pnpm -C packages/sync/protocol run build
+        pnpm -C packages/sync/material/sqlite run build
         pnpm -C packages/treecrdt-auth run build
         pnpm -C packages/treecrdt-crypto run build
         pnpm -C packages/treecrdt-wa-sqlite run build:ts
@@ -200,5 +200,5 @@ jobs:
         TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/treecrdt
       run: |
         pnpm -C packages/treecrdt-postgres-napi test
-        pnpm -C packages/sync/postgres test
-        pnpm -C packages/sync/server-postgres-node test
+        pnpm -C packages/sync/material/postgres test
+        pnpm -C packages/sync/server/postgres-node test
