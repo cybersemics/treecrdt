@@ -24,6 +24,14 @@ export type CollapseState = {
 
 export type Status = "booting" | "ready" | "error";
 export type StorageMode = "memory" | "opfs";
+export type SyncTransportMode = "local" | "remote" | "hybrid";
+export type RemoteSyncStatus =
+  | { state: "disabled"; detail: string }
+  | { state: "missing_url"; detail: string }
+  | { state: "invalid"; detail: string }
+  | { state: "connecting"; detail: string }
+  | { state: "connected"; detail: string }
+  | { state: "error"; detail: string };
 
 export type PeerInfo = { id: string; lastSeen: number };
 

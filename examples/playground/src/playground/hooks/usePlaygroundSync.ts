@@ -18,7 +18,7 @@ import {
 import type { BroadcastPresenceAckMessageV1, BroadcastPresenceMessageV1 } from "@treecrdt/sync/browser";
 import { createBroadcastPresenceMesh } from "@treecrdt/sync/browser";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import type { DuplexTransport } from "@treecrdt/sync/transport";
+import { wrapDuplexTransportWithCodec, type DuplexTransport } from "@treecrdt/sync/transport";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {
@@ -31,7 +31,7 @@ import {
   PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
   ROOT_ID,
 } from "../constants";
-import type { PeerInfo, TreeState } from "../types";
+import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from "../types";
 import type { StoredAuthMaterial } from "../../auth";
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -48,6 +48,76 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
       }
     );
   });
+}
+
+function normalizeSyncServerUrl(raw: string, docId: string): URL {
+  let input = raw.trim();
+  if (input.length === 0) throw new Error("Sync server URL is empty");
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(input)) input = `ws://${input}`;
+
+  const url = new URL(input);
+  if (url.protocol === "http:") url.protocol = "ws:";
+  if (url.protocol === "https:") url.protocol = "wss:";
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    throw new Error("Sync server URL must use ws://, wss://, http://, or https://");
+  }
+  if (url.pathname === "/" || url.pathname.length === 0) {
+    url.pathname = "/sync";
+  }
+  url.searchParams.set("docId", docId);
+  return url;
+}
+
+async function webSocketDataToBytes(data: unknown): Promise<Uint8Array | null> {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data) && data.buffer instanceof ArrayBuffer) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (typeof Blob !== "undefined" && data instanceof Blob) {
+    return new Uint8Array(await data.arrayBuffer());
+  }
+  return null;
+}
+
+function createWebSocketWireTransport(ws: WebSocket): DuplexTransport<Uint8Array> & { close: () => void } {
+  return {
+    send: (bytes) =>
+      new Promise<void>((resolve, reject) => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          reject(new Error("websocket is not open"));
+          return;
+        }
+        try {
+          ws.send(bytes);
+          resolve();
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      }),
+    onMessage: (handler) => {
+      let active = true;
+      const onMessage = (event: MessageEvent) => {
+        void (async () => {
+          const bytes = await webSocketDataToBytes(event.data);
+          if (!active || !bytes) return;
+          handler(bytes);
+        })();
+      };
+      ws.addEventListener("message", onMessage);
+      return () => {
+        active = false;
+        ws.removeEventListener("message", onMessage);
+      };
+    },
+    close: () => {
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    },
+  };
 }
 
 function errorMessage(err: unknown): string {
@@ -67,6 +137,7 @@ function formatSyncError(err: unknown): string {
 
 export type PlaygroundSyncApi = {
   peers: PeerInfo[];
+  remoteSyncStatus: RemoteSyncStatus;
   syncBusy: boolean;
   syncError: string | null;
   setSyncError: React.Dispatch<React.SetStateAction<string | null>>;
@@ -89,6 +160,8 @@ export type UsePlaygroundSyncOptions = {
   docId: string;
   selfPeerId: string | null;
   autoSyncJoin?: boolean;
+  syncServerUrl?: string;
+  transportMode?: SyncTransportMode;
   online: boolean;
   getMaxLamport: () => bigint;
   authEnabled: boolean;
@@ -122,6 +195,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     docId,
     selfPeerId,
     autoSyncJoin = false,
+    syncServerUrl = "",
+    transportMode = "local",
     online,
     getMaxLamport,
     authEnabled,
@@ -147,6 +222,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
+  const [remoteSyncStatus, setRemoteSyncStatus] = useState<RemoteSyncStatus>({
+    state: "disabled",
+    detail: "Remote server transport is disabled in local tabs mode.",
+  });
   const [liveChildrenParents, setLiveChildrenParents] = useState<Set<string>>(() => new Set());
   const [liveAllEnabled, setLiveAllEnabled] = useState(false);
   const [autoSyncJoinTick, bumpAutoSyncJoinTick] = useState(0);
@@ -173,6 +252,17 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const autoSyncInFlightRef = useRef(false);
   const autoSyncAttemptRef = useRef(0);
   const autoSyncPeerIdRef = useRef<string | null>(null);
+  const meshPeersRef = useRef<PeerInfo[]>([]);
+  const remotePeerRef = useRef<PeerInfo | null>(null);
+
+  const publishPeers = () => {
+    const merged: PeerInfo[] = [...meshPeersRef.current];
+    if (remotePeerRef.current) merged.push(remotePeerRef.current);
+    merged.sort((a, b) => a.id.localeCompare(b.id));
+    setPeers(merged);
+  };
+
+  const isRemotePeerId = (peerId: string) => peerId.startsWith("remote:");
 
   const stopLiveAllForPeer = (peerId: string) => {
     const existing = liveAllSubsRef.current.get(peerId);
@@ -323,7 +413,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const dropPeerConnection = (peerId: string) => {
     const mesh = presenceMeshRef.current;
-    if (mesh) {
+    if (mesh && !isRemotePeerId(peerId)) {
       mesh.disconnectPeer(peerId);
       return;
     }
@@ -344,7 +434,13 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     connections.delete(peerId);
     stopLiveAllForPeer(peerId);
     stopLiveChildrenForPeer(peerId);
-    setPeers((prev) => prev.filter((p) => p.id !== peerId));
+
+    if (isRemotePeerId(peerId)) {
+      remotePeerRef.current = null;
+    } else {
+      meshPeersRef.current = meshPeersRef.current.filter((p) => p.id !== peerId);
+    }
+    publishPeers();
   };
 
   const handleSync = async (filter: Filter) => {
@@ -648,8 +744,48 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   useEffect(() => {
     if (!client || status !== "ready") return;
     if (!docId) return;
-    if (typeof BroadcastChannel === "undefined") {
-      setSyncError("BroadcastChannel is not available in this environment.");
+    const hasBroadcastChannel = typeof BroadcastChannel !== "undefined";
+    const wantsLocalMesh = transportMode !== "remote";
+    const wantsRemoteSocket = transportMode !== "local";
+    const configuredRemoteSyncUrl = syncServerUrl.trim();
+    const hasLocalMesh = wantsLocalMesh && hasBroadcastChannel;
+    const remoteSyncUrl = wantsRemoteSocket ? configuredRemoteSyncUrl : "";
+
+    if (!wantsRemoteSocket) {
+      setRemoteSyncStatus({
+        state: "disabled",
+        detail: "Remote server transport is disabled in local tabs mode.",
+      });
+    } else if (configuredRemoteSyncUrl.length === 0) {
+      setRemoteSyncStatus({
+        state: "missing_url",
+        detail: "Enter a websocket URL to use remote transport.",
+      });
+    } else {
+      try {
+        const remoteUrl = normalizeSyncServerUrl(configuredRemoteSyncUrl, docId);
+        setRemoteSyncStatus({
+          state: "connecting",
+          detail: `Preparing connection to ${remoteUrl.host}...`,
+        });
+      } catch (err) {
+        setRemoteSyncStatus({
+          state: "invalid",
+          detail: formatSyncError(err),
+        });
+      }
+    }
+
+    if (!hasLocalMesh && remoteSyncUrl.length === 0) {
+      if (wantsRemoteSocket && configuredRemoteSyncUrl.length === 0) {
+        setSyncError("Remote transport requires a sync server URL.");
+        return;
+      }
+      if (wantsLocalMesh && !hasBroadcastChannel) {
+        setSyncError("BroadcastChannel is not available in this environment.");
+        return;
+      }
+      setSyncError("No sync transport is configured.");
       return;
     }
 
@@ -699,13 +835,26 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     }
 
     setSyncError((prev) =>
-      prev && (prev.includes("initializing keys/tokens") || prev.startsWith("Initializing local peer key")) ? null : prev
+      prev &&
+      (
+        prev.includes("initializing keys/tokens") ||
+        prev.startsWith("Initializing local peer key") ||
+        prev === "Remote transport requires a sync server URL." ||
+        prev === "BroadcastChannel is not available in this environment." ||
+        prev === "No sync transport is configured."
+      )
+        ? null
+        : prev
     );
 
     const debugSync = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debugSync");
 
-    const channel = new BroadcastChannel(`treecrdt-sync-v0:${docId}`);
+    const channel = hasLocalMesh ? new BroadcastChannel(`treecrdt-sync-v0:${docId}`) : null;
     broadcastChannelRef.current = channel;
+    meshPeersRef.current = [];
+    remotePeerRef.current = null;
+    publishPeers();
+
     const baseBackend = createTreecrdtSyncBackendFromClient(client, docId, {
       enablePendingSidecar: authEnabled,
       maxLamport: getMaxLamport,
@@ -788,77 +937,173 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     syncConnRef.current = connections;
 
     const maybeStartLiveForPeer = (peerId: string) => {
-      const mesh = presenceMeshRef.current;
-      if (!mesh || !mesh.isPeerReady(peerId)) return;
+      if (!isRemotePeerId(peerId)) {
+        const mesh = presenceMeshRef.current;
+        if (!mesh || !mesh.isPeerReady(peerId)) return;
+      }
       if (liveAllEnabledRef.current) startLiveAll(peerId);
       for (const parentId of liveChildrenParentsRef.current) startLiveChildren(peerId, parentId);
     };
 
-    const mesh = createBroadcastPresenceMesh({
-      channel,
-      selfId: selfPeerId,
-      codec: treecrdtSyncV0ProtobufCodec,
-      isOnline: () => onlineRef.current,
-      peerTimeoutMs: PLAYGROUND_PEER_TIMEOUT_MS,
-      onPeersChanged: (next) => {
-        setPeers(next.map((p) => ({ id: p.id, lastSeen: p.lastSeen })));
-      },
-      onPeerReady: (peerId) => {
-        maybeStartLiveForPeer(peerId);
-        if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
-          autoSyncPeerIdRef.current = peerId;
-          // Ensure the auto-sync effect runs even if peer readiness toggles without changing `peers.length`.
-          bumpAutoSyncJoinTick((t) => t + 1);
-        }
-      },
-      onPeerTransport: (peerId, transport) => {
-        const detach = sharedPeer.attach(transport);
-        connections.set(peerId, { transport, detach });
-        maybeStartLiveForPeer(peerId);
-        if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
-          autoSyncPeerIdRef.current = peerId;
-          bumpAutoSyncJoinTick((t) => t + 1);
-        }
-        return detach;
-      },
-      onPeerDisconnected: (peerId) => {
-        connections.delete(peerId);
-        stopLiveAllForPeer(peerId);
-        stopLiveChildrenForPeer(peerId);
-      },
-      onBroadcastMessage: (data) => {
-        if (!data || typeof data !== "object") return;
-        const msg = data as Partial<AuthGrantMessageV1>;
-        if (msg.t !== "auth_grant_v1") return;
+    const mesh = channel
+      ? createBroadcastPresenceMesh({
+          channel,
+          selfId: selfPeerId,
+          codec: treecrdtSyncV0ProtobufCodec,
+          isOnline: () => onlineRef.current,
+          peerTimeoutMs: PLAYGROUND_PEER_TIMEOUT_MS,
+          onPeersChanged: (next) => {
+            meshPeersRef.current = next.map((p) => ({ id: p.id, lastSeen: p.lastSeen }));
+            publishPeers();
+          },
+          onPeerReady: (peerId) => {
+            maybeStartLiveForPeer(peerId);
+            if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
+              autoSyncPeerIdRef.current = peerId;
+              // Ensure the auto-sync effect runs even if peer readiness toggles without changing `peers.length`.
+              bumpAutoSyncJoinTick((t) => t + 1);
+            }
+          },
+          onPeerTransport: (peerId, transport) => {
+            const detach = sharedPeer.attach(transport);
+            connections.set(peerId, { transport, detach });
+            maybeStartLiveForPeer(peerId);
+            if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
+              autoSyncPeerIdRef.current = peerId;
+              bumpAutoSyncJoinTick((t) => t + 1);
+            }
+            return detach;
+          },
+          onPeerDisconnected: (peerId) => {
+            connections.delete(peerId);
+            stopLiveAllForPeer(peerId);
+            stopLiveChildrenForPeer(peerId);
+            meshPeersRef.current = meshPeersRef.current.filter((p) => p.id !== peerId);
+            publishPeers();
+          },
+          onBroadcastMessage: (data) => {
+            if (!data || typeof data !== "object") return;
+            const msg = data as Partial<AuthGrantMessageV1>;
+            if (msg.t !== "auth_grant_v1") return;
 
-        const grant = msg as Partial<AuthGrantMessageV1>;
-        if (typeof grant.doc_id !== "string") return;
-        if (grant.doc_id !== docId) return;
-        if (typeof grant.to_replica_pk_hex !== "string") return;
-        if (typeof grant.issuer_pk_b64 !== "string") return;
-        if (typeof grant.token_b64 !== "string") return;
+            const grant = msg as Partial<AuthGrantMessageV1>;
+            if (typeof grant.doc_id !== "string") return;
+            if (grant.doc_id !== docId) return;
+            if (typeof grant.to_replica_pk_hex !== "string") return;
+            if (typeof grant.issuer_pk_b64 !== "string") return;
+            if (typeof grant.token_b64 !== "string") return;
 
-        const localReplicaHex = selfPeerId;
-        if (!localReplicaHex) return;
-        if (grant.to_replica_pk_hex.toLowerCase() !== localReplicaHex.toLowerCase()) return;
+            const localReplicaHex = selfPeerId;
+            if (!localReplicaHex) return;
+            if (grant.to_replica_pk_hex.toLowerCase() !== localReplicaHex.toLowerCase()) return;
 
-        onAuthGrantMessage?.(grant as AuthGrantMessageV1);
-      },
-    });
+            onAuthGrantMessage?.(grant as AuthGrantMessageV1);
+          },
+        })
+      : null;
+
     presenceMeshRef.current = mesh;
 
+    let remoteSocket: WebSocket | null = null;
+    let remotePeerId: string | null = null;
+    let disposed = false;
+    let remoteOpened = false;
+
+    if (remoteSyncUrl.length > 0) {
+      try {
+        const remoteUrl = normalizeSyncServerUrl(remoteSyncUrl, docId);
+        setRemoteSyncStatus({
+          state: "connecting",
+          detail: `Connecting to ${remoteUrl.host}...`,
+        });
+        remotePeerId = `remote:${remoteUrl.host}`;
+        remoteSocket = new WebSocket(remoteUrl.toString());
+        remoteSocket.binaryType = "arraybuffer";
+
+        remoteSocket.addEventListener("open", () => {
+          if (!remoteSocket || remoteSocket.readyState !== WebSocket.OPEN || !remotePeerId) return;
+          remoteOpened = true;
+          setSyncError((prev) => (prev === `Remote sync socket error (${remoteUrl.host})` ? null : prev));
+          setRemoteSyncStatus({
+            state: "connected",
+            detail: `Connected to ${remoteUrl.host}`,
+          });
+          const wire = createWebSocketWireTransport(remoteSocket);
+          const transport = wrapDuplexTransportWithCodec<Uint8Array, any>(
+            wire,
+            treecrdtSyncV0ProtobufCodec as any
+          );
+          const detach = sharedPeer.attach(transport);
+          connections.set(remotePeerId, { transport, detach });
+          remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
+          publishPeers();
+          maybeStartLiveForPeer(remotePeerId);
+
+          if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
+            autoSyncPeerIdRef.current = remotePeerId;
+            bumpAutoSyncJoinTick((t) => t + 1);
+          }
+        });
+
+        remoteSocket.addEventListener("message", () => {
+          if (!remotePeerId) return;
+          remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
+          publishPeers();
+        });
+
+        remoteSocket.addEventListener("close", () => {
+          if (!disposed) {
+            setRemoteSyncStatus({
+              state: "error",
+              detail: remoteOpened
+                ? `Disconnected from ${remoteUrl.host}`
+                : `Could not connect to ${remoteUrl.host}`,
+            });
+          }
+          if (!remotePeerId) return;
+          dropPeerConnection(remotePeerId);
+        });
+
+        remoteSocket.addEventListener("error", () => {
+          setRemoteSyncStatus({
+            state: "error",
+            detail: remoteOpened
+              ? `Connection error talking to ${remoteUrl.host}`
+              : `Could not reach ${remoteUrl.host}`,
+          });
+          setSyncError((prev) => prev ?? `Remote sync socket error (${remoteUrl.host})`);
+        });
+      } catch (err) {
+        setRemoteSyncStatus({
+          state: "invalid",
+          detail: formatSyncError(err),
+        });
+        setSyncError(formatSyncError(err));
+      }
+    }
+
     return () => {
+      disposed = true;
       stopAllLiveAll();
       stopAllLiveChildren();
       if (presenceMeshRef.current === mesh) presenceMeshRef.current = null;
-      mesh.stop();
+      mesh?.stop();
+      if (remoteSocket) {
+        try {
+          remoteSocket.close();
+        } catch {
+          // ignore
+        }
+      }
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
       if (syncPeerRef.current === sharedPeer) syncPeerRef.current = null;
-      channel.close();
+      channel?.close();
       liveAllStartingRef.current.clear();
       liveChildrenStartingRef.current.clear();
       connections.clear();
-      setPeers([]);
+      meshPeersRef.current = [];
+      remotePeerRef.current = null;
+      publishPeers();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -881,11 +1126,14 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     onPeerIdentityChain,
     onRemoteOpsApplied,
     selfPeerId,
+    syncServerUrl,
+    transportMode,
     status,
   ]);
 
   return {
     peers,
+    remoteSyncStatus,
     syncBusy,
     syncError,
     setSyncError,

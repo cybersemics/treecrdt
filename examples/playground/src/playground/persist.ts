@@ -1,6 +1,6 @@
 import { bytesToHex } from "@treecrdt/interface/ids";
 
-import type { StorageMode } from "./types";
+import type { StorageMode, SyncTransportMode } from "./types";
 import { prefixPlaygroundStorageKey } from "./storage";
 
 export function initialStorage(): StorageMode {
@@ -40,6 +40,23 @@ export function persistStorage(mode: StorageMode) {
     url.searchParams.delete("storage");
   }
   window.history.replaceState({}, "", url);
+}
+
+export function persistSyncSettings(syncServerUrl: string, transportMode: SyncTransportMode) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  applySyncSettingsToUrl(url, syncServerUrl, transportMode);
+  window.history.replaceState({}, "", url);
+}
+
+export function applySyncSettingsToUrl(url: URL, syncServerUrl: string, transportMode: SyncTransportMode) {
+  const trimmedSyncUrl = syncServerUrl.trim();
+  if (trimmedSyncUrl) {
+    url.searchParams.set("sync", trimmedSyncUrl);
+  } else {
+    url.searchParams.delete("sync");
+  }
+  url.searchParams.set("transport", transportMode);
 }
 
 export function makeNodeId(): string {

@@ -259,6 +259,12 @@ class MemoryBackend implements SyncBackend<Operation> {
   }
 }
 
+class FailingApplyBackend extends MemoryBackend {
+  override async applyOps(_ops: Operation[]): Promise<void> {
+    throw new Error("apply failed");
+  }
+}
+
 test("syncOnce does not starve macrotask transports", async () => {
   const docId = "doc-sync-macrotask";
   const root = "0".repeat(32);
@@ -286,6 +292,33 @@ test("syncOnce does not starve macrotask transports", async () => {
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
 
   await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 via macrotask duplex" });
+});
+
+test("syncOnce rejects when local message handler throws during apply", async () => {
+  const docId = "doc-sync-apply-error";
+  const root = "0".repeat(32);
+
+  const a = new FailingApplyBackend(docId);
+  const b = new MemoryBackend(docId);
+  await b.applyOps([
+    makeOp(replicas.b, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
+  try {
+    const timed = Promise.race([
+      pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("syncOnce timed out")), 2_000)),
+    ]);
+    await expect(timed).rejects.toThrow(/apply failed/i);
+  } finally {
+    detach();
+  }
 });
 
 test("sync all converges union of opRefs", async () => {

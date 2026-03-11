@@ -1,6 +1,84 @@
 import { expect, test } from "@playwright/test";
+import { createHash } from "node:crypto";
+import http from "node:http";
 
 const ROOT_ID = "00000000000000000000000000000000";
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+type MockSyncServer = {
+  host: string;
+  wsUrl: string;
+  close: () => Promise<void>;
+};
+
+async function startMockSyncServer(): Promise<MockSyncServer> {
+  const sockets = new Set<import("node:stream").Duplex>();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/health") {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+      return;
+    }
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("not found");
+  });
+
+  server.on("upgrade", (req, socket) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname !== "/sync") {
+      socket.destroy();
+      return;
+    }
+    if (!url.searchParams.get("docId")) {
+      socket.destroy();
+      return;
+    }
+    const key = req.headers["sec-websocket-key"];
+    if (typeof key !== "string" || key.length === 0) {
+      socket.destroy();
+      return;
+    }
+
+    const accept = createHash("sha1")
+      .update(`${key}${WS_GUID}`)
+      .digest("base64");
+
+    socket.write(
+      [
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Accept: ${accept}`,
+        "",
+        "",
+      ].join("\r\n")
+    );
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("expected tcp server address");
+  }
+  const host = `127.0.0.1:${address.port}`;
+
+  return {
+    host,
+    wsUrl: `ws://${host}/sync`,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
 
 function uniqueDocId(prefix: string): string {
   // Use crypto for uniqueness to avoid collisions when tests run in quick succession.
@@ -268,6 +346,126 @@ test("insert and delete node", async ({ page }) => {
 
   await parentRow.getByRole("button", { name: "Delete" }).click();
   await expect(parentRow).toHaveCount(0, { timeout: 30_000 });
+});
+
+test("switching remote sync server URL reconnects to the new endpoint", async ({ page }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-sync-switch");
+  const serverA = await startMockSyncServer();
+  const serverB = await startMockSyncServer();
+
+  try {
+    await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+
+    await page.getByRole("button", { name: /Connections/ }).click();
+    const remoteInput = page.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+    await expect(remoteInput).toBeVisible({ timeout: 30_000 });
+
+    await remoteInput.fill(serverA.wsUrl);
+    await expect(page.getByText(`remote(${serverA.host})`)).toBeVisible({ timeout: 30_000 });
+
+    await remoteInput.fill(serverB.wsUrl);
+    await expect(page.getByText(`remote(${serverB.host})`)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(`remote(${serverA.host})`)).toHaveCount(0, { timeout: 30_000 });
+
+    await page.getByRole("button", { name: "Clear", exact: true }).click();
+    await expect(page.getByText(`remote(${serverB.host})`)).toHaveCount(0, { timeout: 30_000 });
+  } finally {
+    await Promise.all([serverA.close(), serverB.close()]);
+  }
+});
+
+test("remote sync settings persist into a shareable URL", async ({ browser, page }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-sync-share");
+  const server = await startMockSyncServer();
+  const sharedContext = await browser.newContext();
+
+  try {
+    await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+
+    await page.getByRole("button", { name: /Connections/ }).click();
+    const remoteInput = page.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+    await expect(remoteInput).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: "Remote server", exact: true }).click();
+    await remoteInput.fill(server.wsUrl);
+
+    await expect
+      .poll(async () => {
+        const url = new URL(page.url());
+        return {
+          sync: url.searchParams.get("sync"),
+          transport: url.searchParams.get("transport"),
+        };
+      })
+      .toEqual({ sync: server.wsUrl, transport: "remote" });
+
+    const sharedPage = await sharedContext.newPage();
+    await waitForReady(sharedPage, page.url());
+    await sharedPage.getByRole("button", { name: /Connections/ }).click();
+    await expect(sharedPage.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync")).toHaveValue(
+      server.wsUrl,
+      { timeout: 30_000 }
+    );
+    await expect(sharedPage.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await sharedContext.close();
+    await server.close();
+  }
+});
+
+test("invite link preserves auth material and remote sync settings", async ({ browser }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-new-device-remote");
+  const server = await startMockSyncServer();
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    await pageA.getByRole("button", { name: /Connections/ }).click();
+    const remoteInput = pageA.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+    await expect(remoteInput).toBeVisible({ timeout: 30_000 });
+    await pageA.getByRole("button", { name: "Remote server", exact: true }).click();
+    await remoteInput.fill(server.wsUrl);
+
+    await expect
+      .poll(async () => {
+        const url = new URL(pageA.url());
+        return {
+          sync: url.searchParams.get("sync"),
+          transport: url.searchParams.get("transport"),
+        };
+      })
+      .toEqual({ sync: server.wsUrl, transport: "remote" });
+
+    const inviteLink = await shareSubtreeInvite(pageA, ROOT_ID);
+    const inviteUrl = new URL(inviteLink);
+    expect(inviteUrl.searchParams.get("doc")).toBe(doc);
+    expect(inviteUrl.searchParams.get("join")).toBe("1");
+    expect(inviteUrl.searchParams.get("auth")).toBe("1");
+    expect(inviteUrl.searchParams.get("sync")).toBe(server.wsUrl);
+    expect(inviteUrl.searchParams.get("transport")).toBe("remote");
+    expect(inviteUrl.hash).toMatch(/^#invite=/);
+
+    await joinViaInviteLink(pageB, inviteLink);
+    await pageB.getByRole("button", { name: /Connections/ }).click();
+    await expect(pageB.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync")).toHaveValue(server.wsUrl, {
+      timeout: 30_000,
+    });
+    await expect(pageB.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await context.close();
+    await server.close();
+  }
 });
 
 test("defensive delete restores parent when unseen child arrives", async ({ browser }) => {

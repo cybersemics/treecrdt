@@ -11,6 +11,8 @@ Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared Typ
 - `packages/treecrdt-sqlite-node`: TreeCRDT bundled for Node.js use
 - `packages/treecrdt-wa-sqlite`: TreeCRDT bunlded for browser use
 - `packages/treecrdt-benchmark`: Benchmark utilities
+- `packages/sync-server/core`: shared WebSocket sync server runtime
+- `packages/sync-server/postgres-node`: Node sync server wired to Postgres backend
 
 ## Quick start
 ```
@@ -21,6 +23,45 @@ pnpm test
 
 ## Playground
 - Live demo (GitHub Pages): https://cybersemics.github.io/treecrdt/
+
+### Local playground with a real sync server
+If you want the most useful local setup, start the sync server first and then point the playground at it:
+
+```sh
+# Build all workspace packages, including the Postgres sync-server path.
+pnpm build
+# Start a disposable local Postgres instance in Docker on localhost:5432.
+pnpm sync-server:postgres:db:start
+# Start the TreeCRDT sync server on ws://localhost:8787 using that Postgres DB.
+pnpm sync-server:postgres:local
+# Start the playground UI so you can connect it to the local sync server.
+pnpm playground
+```
+
+Open the `Connections` panel in the playground and set the remote sync server URL to:
+
+```
+ws://localhost:8787
+```
+
+The playground will normalize this to `/sync?docId=...`.
+
+`pnpm sync-server:postgres:db:start` starts a disposable local Postgres on the common URL:
+
+```
+postgres://postgres:postgres@127.0.0.1:5432/postgres
+```
+
+Stop that local database later with:
+
+```
+pnpm sync-server:postgres:db:stop
+```
+
+For full sync-server configuration and environment variables, see:
+
+- `packages/sync-server/postgres-node/README.md`
+- `examples/playground/README.md`
 
 ## Contribute
 Contributions are welcome!

@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/sqlite-conformance",
+  "name": "@treecrdt/sync-server-core",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -16,14 +16,17 @@
     "src"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm -C ../../treecrdt-sync run build && pnpm run build && vitest run"
   },
   "dependencies": {
-    "@treecrdt/auth": "workspace:*",
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync": "workspace:*"
+    "@treecrdt/sync": "workspace:*",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "@types/node": "^20.19.25",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
   }
 }

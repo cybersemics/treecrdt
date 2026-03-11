@@ -39,7 +39,6 @@ export function TreePanel({
   setLiveAllEnabled,
   showPeersPanel,
   setShowPeersPanel,
-  peerTotal,
   showAuthPanel,
   setShowAuthPanel,
   authEnabled,
@@ -97,7 +96,6 @@ export function TreePanel({
   setLiveAllEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   showPeersPanel: boolean;
   setShowPeersPanel: React.Dispatch<React.SetStateAction<boolean>>;
-  peerTotal: number;
   showAuthPanel: boolean;
   setShowAuthPanel: React.Dispatch<React.SetStateAction<boolean>>;
   authEnabled: boolean;
@@ -232,10 +230,20 @@ export function TreePanel({
             }`}
             onClick={() => setShowPeersPanel((v) => !v)}
             type="button"
-            title="Peers"
+            title={showPeersPanel ? "Hide connections panel" : "Show connections panel"}
+            aria-expanded={showPeersPanel}
+            aria-controls="playground-connections-panel"
           >
             <MdGroup className="text-[18px]" />
-            <span className="font-mono">{peerTotal}</span>
+            <span>Connections</span>
+            <span className="rounded-full bg-slate-950/70 px-2 py-0.5 font-mono text-[11px] text-slate-300">
+              {peerCount}
+            </span>
+            {showPeersPanel ? (
+              <MdExpandLess className="text-[18px]" aria-hidden />
+            ) : (
+              <MdExpandMore className="text-[18px]" aria-hidden />
+            )}
           </button>
           <button
             className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${

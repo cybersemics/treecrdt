@@ -3,6 +3,7 @@ import { RibltDecoder16, RibltEncoder16 } from "@treecrdt/riblt-wasm";
 import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from "./auth.js";
 import { ErrorCode, RibltFailureReason } from "./types.js";
 import type {
+  Capability,
   Filter,
   Hello,
   HelloAck,
@@ -69,6 +70,10 @@ export type SyncPeerOptions<Op = unknown> = {
   maxHelloFilters?: number;
   requireAuthForFilters?: boolean;
   auth?: SyncAuth<Op>;
+};
+
+export type SyncPeerAttachOptions<Op = unknown> = {
+  onError?: (ctx: { error: unknown; transport: DuplexTransport<SyncMessage<Op>> }) => void;
 };
 
 export type SyncSubscribeOptions = {
@@ -161,6 +166,10 @@ type InitiatorSubscription = {
   failed: Pending<unknown>;
 };
 
+function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
+  return capabilities.some((cap) => cap.name === "auth.capability");
+}
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
@@ -190,8 +199,20 @@ export class SyncPeer<Op> {
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
   }
 
-  attach(transport: DuplexTransport<SyncMessage<Op>>): () => void {
-    return transport.onMessage((msg) => void this.handleMessage(transport, msg));
+  attach(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    opts: SyncPeerAttachOptions<Op> = {}
+  ): () => void {
+    return transport.onMessage((msg) => {
+      void this.handleMessage(transport, msg).catch((error) => {
+        this.failAllPendingSessions(error);
+        try {
+          opts.onError?.({ error, transport });
+        } catch {
+          // ignore callback failures
+        }
+      });
+    });
   }
 
   notifyLocalUpdate(): Promise<void> {
@@ -246,10 +267,10 @@ export class SyncPeer<Op> {
     for (let start = 0; start < newOpRefs.length; start += this.maxOpsPerBatch) {
       const chunk = newOpRefs.slice(start, start + this.maxOpsPerBatch);
       let ops = await this.backend.getOpsByOpRefs(chunk);
+      const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
 
       // Apply peer-scoped visibility restrictions (best-effort).
       if (this.auth?.filterOutgoingOps && ops.length > 0) {
-        const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
         const allowed = await this.auth.filterOutgoingOps(ops, {
           docId: this.backend.docId,
           purpose: "subscribe",
@@ -282,7 +303,8 @@ export class SyncPeer<Op> {
         chunk.push(...allowedRefs);
       }
 
-      const auth = this.auth?.signOps
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const auth = shouldAttachAuth && this.auth?.signOps
         ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "subscribe", filterId: sub.subscriptionId })
         : undefined;
       if (auth && auth.length !== ops.length) throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
@@ -464,7 +486,8 @@ export class SyncPeer<Op> {
         continue;
       }
 
-      const auth = this.auth?.signOps
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const auth = shouldAttachAuth && this.auth?.signOps
         ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "reconcile", filterId })
         : undefined;
       if (auth && auth.length !== ops.length) {
@@ -1056,6 +1079,24 @@ export class SyncPeer<Op> {
     session.status.reject(e);
     session.receivedOps.reject(e);
     this.initiatorSessions.delete(err.filterId);
+  }
+
+  private failAllPendingSessions(error: unknown): void {
+    const e = error instanceof Error ? error : new Error(String(error));
+
+    for (const sub of this.initiatorSubscriptions.values()) {
+      sub.ack.reject(e);
+      sub.failed.reject(e);
+    }
+    this.initiatorSubscriptions.clear();
+
+    for (const session of this.initiatorSessions.values()) {
+      session.done = true;
+      session.ack.reject(e);
+      session.status.reject(e);
+      session.receivedOps.reject(e);
+    }
+    this.initiatorSessions.clear();
   }
 
   private async onRibltStatus(status: RibltStatus): Promise<void> {

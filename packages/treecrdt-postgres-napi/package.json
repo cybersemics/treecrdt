@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "build:native": "cargo build -p treecrdt-postgres-napi --release && node ./scripts/copy-native.mjs",
-    "build": "pnpm -C ../treecrdt-ts run build && pnpm -C ../treecrdt-sync run build && pnpm run build:native && tsc -p tsconfig.json",
+    "build": "pnpm run build:native && tsc -p tsconfig.json",
     "test": "pnpm -C ../treecrdt-benchmark run build && pnpm -C ../treecrdt-sqlite-conformance run build && pnpm run build && vitest run",
     "benchmark": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench.ts"
   },
