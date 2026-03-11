@@ -59,15 +59,17 @@ const replicaHex = {
   s: bytesToHex(replicas.s),
 };
 
-function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
+function createTimedDuplex<M>(opts: { aToBDelayMs?: number; bToADelayMs?: number } = {}): [DuplexTransport<M>, DuplexTransport<M>] {
   const aHandlers = new Set<(msg: M) => void>();
   const bHandlers = new Set<(msg: M) => void>();
+  const aToBDelayMs = opts.aToBDelayMs ?? 0;
+  const bToADelayMs = opts.bToADelayMs ?? 0;
 
   const a: DuplexTransport<M> = {
     async send(msg) {
       setTimeout(() => {
         for (const h of bHandlers) h(msg);
-      }, 0);
+      }, aToBDelayMs);
     },
     onMessage(handler) {
       aHandlers.add(handler);
@@ -79,7 +81,7 @@ function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
     async send(msg) {
       setTimeout(() => {
         for (const h of aHandlers) h(msg);
-      }, 0);
+      }, bToADelayMs);
     },
     onMessage(handler) {
       bHandlers.add(handler);
@@ -88,6 +90,10 @@ function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
   };
 
   return [a, b];
+}
+
+function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
+  return createTimedDuplex();
 }
 
 function createPeers(a: SyncBackend<Operation>, b: SyncBackend<Operation>) {
@@ -292,6 +298,35 @@ test("syncOnce does not starve macrotask transports", async () => {
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
 
   await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 via macrotask duplex" });
+});
+
+test("syncOnce paces outbound codewords until delayed ribltStatus arrives", async () => {
+  const docId = "doc-sync-delayed-status";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const [wa, wb] = createTimedDuplex<Uint8Array>({ bToADelayMs: 40 });
+  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
+  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_024, codewordsPerMessage: 256 });
+
+  await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 after delayed ribltStatus" });
 });
 
 test("syncOnce rejects when local message handler throws during apply", async () => {

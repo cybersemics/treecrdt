@@ -33,6 +33,13 @@ import {
 import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from "../types";
 import type { StoredAuthMaterial } from "../../auth";
 
+const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
+const REMOTE_SYNC_CODEWORD_BATCH_INTERVAL_MS = 100;
+const WEBSOCKET_BACKPRESSURE_HIGH_WATER_MARK = 256 * 1024;
+const WEBSOCKET_BACKPRESSURE_LOW_WATER_MARK = 64 * 1024;
+const WEBSOCKET_BACKPRESSURE_POLL_MS = 8;
+const WEBSOCKET_BACKPRESSURE_TIMEOUT_MS = 5_000;
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), ms);
@@ -79,21 +86,57 @@ async function webSocketDataToBytes(data: unknown): Promise<Uint8Array | null> {
   return null;
 }
 
+function waitForWebSocketDrain(ws: WebSocket, maxBufferedAmount: number): Promise<void> {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error("websocket is not open"));
+  }
+  if (ws.bufferedAmount <= maxBufferedAmount) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const deadline = Date.now() + WEBSOCKET_BACKPRESSURE_TIMEOUT_MS;
+
+    const poll = () => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("websocket closed while waiting for buffered data to drain"));
+        return;
+      }
+      if (ws.bufferedAmount <= maxBufferedAmount || Date.now() >= deadline) {
+        resolve();
+        return;
+      }
+      setTimeout(poll, WEBSOCKET_BACKPRESSURE_POLL_MS);
+    };
+
+    setTimeout(poll, WEBSOCKET_BACKPRESSURE_POLL_MS);
+  });
+}
+
 function createWebSocketWireTransport(ws: WebSocket): DuplexTransport<Uint8Array> & { close: () => void } {
+  let sendQueue: Promise<void> = Promise.resolve();
+
   return {
-    send: (bytes) =>
-      new Promise<void>((resolve, reject) => {
+    send: (bytes) => {
+      const run = async () => {
         if (ws.readyState !== WebSocket.OPEN) {
-          reject(new Error("websocket is not open"));
-          return;
+          throw new Error("websocket is not open");
+        }
+        if (ws.bufferedAmount > WEBSOCKET_BACKPRESSURE_HIGH_WATER_MARK) {
+          await waitForWebSocketDrain(ws, WEBSOCKET_BACKPRESSURE_LOW_WATER_MARK);
         }
         try {
           ws.send(bytes);
-          resolve();
         } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
+          throw err instanceof Error ? err : new Error(String(err));
         }
-      }),
+        await waitForWebSocketDrain(ws, WEBSOCKET_BACKPRESSURE_LOW_WATER_MARK);
+      };
+
+      const next = sendQueue.then(run, run);
+      sendQueue = next.catch(() => {});
+      return next;
+    },
     onMessage: (handler) => {
       let active = true;
       const onMessage = (event: MessageEvent) => {
@@ -262,6 +305,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const isRemotePeerId = (peerId: string) => peerId.startsWith("remote:");
+  const syncOnceOptionsForPeer = (peerId: string, localCodewordsPerMessage: number) => ({
+    maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
+    maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+    codewordsPerMessage: isRemotePeerId(peerId) ? REMOTE_SYNC_CODEWORDS_PER_MESSAGE : localCodewordsPerMessage,
+    ...(isRemotePeerId(peerId) ? { codewordBatchIntervalMs: REMOTE_SYNC_CODEWORD_BATCH_INTERVAL_MS } : {}),
+  });
 
   const stopLiveAllForPeer = (peerId: string) => {
     const existing = liveAllSubsRef.current.get(peerId);
@@ -289,11 +338,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         await peer.syncOnce(
           conn.transport,
           { all: {} },
-          {
-            maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-            maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-            codewordsPerMessage: 1024,
-          }
+          syncOnceOptionsForPeer(peerId, 1024)
         );
       } catch (err) {
         console.error("Live sync(all) initial catch-up failed", err);
@@ -307,9 +352,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         {
           immediate: false,
           intervalMs: 0,
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
+          ...syncOnceOptionsForPeer(peerId, 1024),
         }
       );
       liveAllSubsRef.current.set(peerId, sub);
@@ -361,11 +404,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         await peer.syncOnce(
           conn.transport,
           { children: { parent: hexToBytes16(parentId) } },
-          {
-            maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-            maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-            codewordsPerMessage: 1024,
-          }
+          syncOnceOptionsForPeer(peerId, 1024)
         );
       } catch (err) {
         console.error("Live sync(children) initial catch-up failed", err);
@@ -379,9 +418,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         {
           immediate: false,
           intervalMs: 0,
-          maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-          maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          codewordsPerMessage: 1024,
+          ...syncOnceOptionsForPeer(peerId, 1024),
         }
       );
       byParent.set(parentId, sub);
@@ -476,11 +513,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (!conn) continue;
         try {
           await withTimeout(
-            peer.syncOnce(conn.transport, filter, {
-              maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-              maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-              codewordsPerMessage: 2048,
-            }),
+            peer.syncOnce(conn.transport, filter, syncOnceOptionsForPeer(peerId, 2048)),
             perPeerTimeoutMs,
             `sync with ${peerId.slice(0, 8)}… timed out`
           );
@@ -550,11 +583,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
               peer.syncOnce(
                 conn.transport,
                 { children: { parent: hexToBytes16(parentId) } },
-                {
-                  maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-                  maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-                  codewordsPerMessage: 2048,
-                }
+                syncOnceOptionsForPeer(peerId, 2048)
               ),
               perPeerTimeoutMs,
               `sync(children ${parentId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`
@@ -640,11 +669,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       try {
         if (authCanSyncAll) {
           await withTimeout(
-            peer.syncOnce(conn.transport, { all: {} }, {
-              maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-              maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-              codewordsPerMessage: 2048,
-            }),
+            peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 2048)),
             30_000,
             `auto sync with ${peerId.slice(0, 8)}… timed out`
           );
@@ -653,11 +678,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             peer.syncOnce(
               conn.transport,
               { children: { parent: hexToBytes16(viewRootId) } },
-              {
-                maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
-                maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-                codewordsPerMessage: 2048,
-              }
+              syncOnceOptionsForPeer(peerId, 2048)
             ),
             30_000,
             `auto sync(children ${viewRootId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`
@@ -1020,6 +1041,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         remoteSocket.binaryType = "arraybuffer";
 
         remoteSocket.addEventListener("open", () => {
+          if (disposed || syncConnRef.current !== connections) return;
           if (!remoteSocket || remoteSocket.readyState !== WebSocket.OPEN || !remotePeerId) return;
           remoteOpened = true;
           setSyncError((prev) => (prev === `Remote sync socket error (${remoteUrl.host})` ? null : prev));
@@ -1033,7 +1055,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             treecrdtSyncV0ProtobufCodec as any
           );
           const detach = sharedPeer.attach(transport);
-          connections.set(remotePeerId, { transport, detach });
+          syncConnRef.current.set(remotePeerId, { transport, detach });
           remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
           publishPeers();
           maybeStartLiveForPeer(remotePeerId);
@@ -1045,12 +1067,14 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         });
 
         remoteSocket.addEventListener("message", () => {
+          if (disposed || syncConnRef.current !== connections) return;
           if (!remotePeerId) return;
           remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
           publishPeers();
         });
 
         remoteSocket.addEventListener("close", () => {
+          if (syncConnRef.current !== connections) return;
           if (!disposed) {
             setRemoteSyncStatus({
               state: "error",
@@ -1064,6 +1088,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         });
 
         remoteSocket.addEventListener("error", () => {
+          if (syncConnRef.current !== connections) return;
           setRemoteSyncStatus({
             state: "error",
             detail: remoteOpened

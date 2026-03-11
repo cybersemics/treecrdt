@@ -76,12 +76,16 @@ export type SyncPeerAttachOptions<Op = unknown> = {
   onError?: (ctx: { error: unknown; transport: DuplexTransport<SyncMessage<Op>> }) => void;
 };
 
-export type SyncSubscribeOptions = {
-  intervalMs?: number;
+export type SyncOnceOptions = {
   immediate?: boolean;
   codewordsPerMessage?: number;
   maxCodewords?: number;
   maxOpsPerBatch?: number;
+  codewordBatchIntervalMs?: number;
+};
+
+export type SyncSubscribeOptions = SyncOnceOptions & {
+  intervalMs?: number;
   signal?: AbortSignal;
 };
 
@@ -119,6 +123,12 @@ function sleepUntil(ms: number, signal?: AbortSignal): Promise<boolean> {
       signal.addEventListener("abort", onAbort);
     }
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms < 0) throw new Error(`invalid codewordBatchIntervalMs: ${ms}`);
+  if (ms === 0) return Promise.resolve();
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 const yieldToMacrotask: () => Promise<void> = (() => {
@@ -323,7 +333,7 @@ export class SyncPeer<Op> {
   async syncOnce(
     transport: DuplexTransport<SyncMessage<Op>>,
     filter: Filter,
-    opts: { codewordsPerMessage?: number; maxCodewords?: number; maxOpsPerBatch?: number } = {}
+    opts: SyncOnceOptions = {}
   ): Promise<void> {
     const filterId = randomId("f");
     const round = 0;
@@ -374,6 +384,8 @@ export class SyncPeer<Op> {
 
       const codewordsPerMessage = opts.codewordsPerMessage ?? 512;
       const maxCodewords = BigInt(opts.maxCodewords ?? 50_000);
+      const codewordBatchIntervalMs = opts.codewordBatchIntervalMs ?? 5;
+      const initialStatusWaitMs = Math.max(codewordBatchIntervalMs, 50);
 
       let nextIndex = 0n;
       while (!session.done && nextIndex < maxCodewords) {
@@ -393,6 +405,12 @@ export class SyncPeer<Op> {
           },
         });
         await yieldToMacrotask();
+        const waitMs = startIndex === 0n ? initialStatusWaitMs : codewordBatchIntervalMs;
+        if (!session.done && waitMs > 0) {
+          // Give inbound ribltStatus a chance to preempt further outbound bursts on
+          // higher-latency transports before we spend CPU encoding the next batch.
+          await Promise.race([session.status.promise.then(() => undefined, () => undefined), sleep(waitMs)]);
+        }
       }
 
       if (!session.done) throw new Error("riblt: max codewords exceeded");
@@ -523,6 +541,7 @@ export class SyncPeer<Op> {
     const codewordsPerMessage = opts.codewordsPerMessage;
     const maxCodewords = opts.maxCodewords;
     const maxOpsPerBatch = opts.maxOpsPerBatch;
+    const codewordBatchIntervalMs = opts.codewordBatchIntervalMs;
 
     const subscriptionId = randomId("sub");
     const session: InitiatorSubscription = { ack: deferred<SubscribeAck>(), failed: deferred<unknown>() };
@@ -564,7 +583,7 @@ export class SyncPeer<Op> {
 
         if (signal.aborted) return;
         if (immediate) {
-          await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch });
+          await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch, codewordBatchIntervalMs });
         }
 
         if (intervalMs > 0) {
@@ -572,7 +591,7 @@ export class SyncPeer<Op> {
             const slept = await sleepUntil(intervalMs, signal);
             if (!slept) break;
             if (signal.aborted) break;
-            await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch });
+            await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch, codewordBatchIntervalMs });
           }
         } else {
           await Promise.race([
