@@ -15,7 +15,7 @@ import {
 } from "@treecrdt/sync";
 import { createTreecrdtSyncBackendFromClient, createTreecrdtSyncSqliteOpAuthStore } from "@treecrdt/sync-sqlite";
 import type { BroadcastPresenceAckMessageV1, BroadcastPresenceMessageV1 } from "@treecrdt/sync/browser";
-import { createBroadcastPresenceMesh } from "@treecrdt/sync/browser";
+import { createBroadcastPresenceMesh, createBrowserWebSocketTransport } from "@treecrdt/sync/browser";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import { wrapDuplexTransportWithCodec, type DuplexTransport } from "@treecrdt/sync/transport";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
@@ -35,10 +35,6 @@ import type { StoredAuthMaterial } from "../../auth";
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
 const REMOTE_SYNC_CODEWORD_BATCH_INTERVAL_MS = 100;
-const WEBSOCKET_BACKPRESSURE_HIGH_WATER_MARK = 256 * 1024;
-const WEBSOCKET_BACKPRESSURE_LOW_WATER_MARK = 64 * 1024;
-const WEBSOCKET_BACKPRESSURE_POLL_MS = 8;
-const WEBSOCKET_BACKPRESSURE_TIMEOUT_MS = 5_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -72,94 +68,6 @@ function normalizeSyncServerUrl(raw: string, docId: string): URL {
   }
   url.searchParams.set("docId", docId);
   return url;
-}
-
-async function webSocketDataToBytes(data: unknown): Promise<Uint8Array | null> {
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data) && data.buffer instanceof ArrayBuffer) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
-  if (typeof Blob !== "undefined" && data instanceof Blob) {
-    return new Uint8Array(await data.arrayBuffer());
-  }
-  return null;
-}
-
-function waitForWebSocketDrain(ws: WebSocket, maxBufferedAmount: number): Promise<void> {
-  if (ws.readyState !== WebSocket.OPEN) {
-    return Promise.reject(new Error("websocket is not open"));
-  }
-  if (ws.bufferedAmount <= maxBufferedAmount) {
-    return Promise.resolve();
-  }
-
-  return new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + WEBSOCKET_BACKPRESSURE_TIMEOUT_MS;
-
-    const poll = () => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        reject(new Error("websocket closed while waiting for buffered data to drain"));
-        return;
-      }
-      if (ws.bufferedAmount <= maxBufferedAmount || Date.now() >= deadline) {
-        resolve();
-        return;
-      }
-      setTimeout(poll, WEBSOCKET_BACKPRESSURE_POLL_MS);
-    };
-
-    setTimeout(poll, WEBSOCKET_BACKPRESSURE_POLL_MS);
-  });
-}
-
-function createWebSocketWireTransport(ws: WebSocket): DuplexTransport<Uint8Array> & { close: () => void } {
-  let sendQueue: Promise<void> = Promise.resolve();
-
-  return {
-    send: (bytes) => {
-      const run = async () => {
-        if (ws.readyState !== WebSocket.OPEN) {
-          throw new Error("websocket is not open");
-        }
-        if (ws.bufferedAmount > WEBSOCKET_BACKPRESSURE_HIGH_WATER_MARK) {
-          await waitForWebSocketDrain(ws, WEBSOCKET_BACKPRESSURE_LOW_WATER_MARK);
-        }
-        try {
-          ws.send(bytes);
-        } catch (err) {
-          throw err instanceof Error ? err : new Error(String(err));
-        }
-        await waitForWebSocketDrain(ws, WEBSOCKET_BACKPRESSURE_LOW_WATER_MARK);
-      };
-
-      const next = sendQueue.then(run, run);
-      sendQueue = next.catch(() => {});
-      return next;
-    },
-    onMessage: (handler) => {
-      let active = true;
-      const onMessage = (event: MessageEvent) => {
-        void (async () => {
-          const bytes = await webSocketDataToBytes(event.data);
-          if (!active || !bytes) return;
-          handler(bytes);
-        })();
-      };
-      ws.addEventListener("message", onMessage);
-      return () => {
-        active = false;
-        ws.removeEventListener("message", onMessage);
-      };
-    },
-    close: () => {
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-    },
-  };
 }
 
 function errorMessage(err: unknown): string {
@@ -1049,7 +957,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             state: "connected",
             detail: `Connected to ${remoteUrl.host}`,
           });
-          const wire = createWebSocketWireTransport(remoteSocket);
+          const wire = createBrowserWebSocketTransport(remoteSocket);
           const transport = wrapDuplexTransportWithCodec<Uint8Array, any>(
             wire,
             treecrdtSyncV0ProtobufCodec as any
