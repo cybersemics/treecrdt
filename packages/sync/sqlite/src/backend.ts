@@ -4,7 +4,7 @@ import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 import { deriveOpRefV0 } from "@treecrdt/sync";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
-import { createTreecrdtSyncSqlitePendingOpsStore } from "./proof-material.js";
+import { createTreecrdtSyncSqlitePendingOpsStore } from "./proof-material/index.js";
 
 export type TreecrdtSyncBackendClient = {
   runner?: SqliteRunner;

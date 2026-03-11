@@ -5,8 +5,8 @@ export type {
 } from "./presence.js";
 export { createBroadcastPresenceMesh } from "./presence.js";
 
-export type { BrowserWebSocketLike, BrowserWebSocketTransportOptions } from "./browser-websocket.js";
-export { createBrowserWebSocketTransport } from "./browser-websocket.js";
+export type { BrowserWebSocketLike, BrowserWebSocketTransportOptions } from "./transport/browser-websocket.js";
+export { createBrowserWebSocketTransport } from "./transport/browser-websocket.js";
 
-export type { BroadcastChannelLike } from "./transport.js";
-export { createBroadcastDuplex } from "./transport.js";
+export type { BroadcastChannelLike } from "./transport/index.js";
+export { createBroadcastDuplex } from "./transport/index.js";

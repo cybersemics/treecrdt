@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
 import { createBroadcastPresenceMesh } from "../dist/presence.js";
-import type { BroadcastChannelLike, WireCodec } from "../dist/transport.js";
+import type { BroadcastChannelLike, WireCodec } from "../dist/transport/index.js";
 
 type MessageListener = (event: { data: unknown }) => void;
 
@@ -160,4 +160,3 @@ test("presence mesh retries ack delivery so peers become ready after missed ack"
     channelB.close();
   }
 });
-

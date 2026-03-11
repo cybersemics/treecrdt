@@ -1,1 +1,1 @@
-export * from "./proof-material.js";
+export * from "./proof-material/index.js";

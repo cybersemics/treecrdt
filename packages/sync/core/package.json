@@ -19,16 +19,16 @@
       "types": "./dist/in-memory.d.ts"
     },
     "./proof-material": {
-      "import": "./dist/proof-material.js",
-      "types": "./dist/proof-material.d.ts"
+      "import": "./dist/proof-material/index.js",
+      "types": "./dist/proof-material/index.d.ts"
     },
     "./protobuf": {
       "import": "./dist/protobuf.js",
       "types": "./dist/protobuf.d.ts"
     },
     "./transport": {
-      "import": "./dist/transport.js",
-      "types": "./dist/transport.d.ts"
+      "import": "./dist/transport/index.js",
+      "types": "./dist/transport/index.d.ts"
     }
   },
   "files": [

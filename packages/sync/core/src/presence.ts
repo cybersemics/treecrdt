@@ -1,5 +1,5 @@
-import type { BroadcastChannelLike, DuplexTransport, WireCodec } from "./transport.js";
-import { createBroadcastDuplex } from "./transport.js";
+import type { BroadcastChannelLike, DuplexTransport, WireCodec } from "./transport/index.js";
+import { createBroadcastDuplex } from "./transport/index.js";
 
 export type BroadcastPresenceMessageV1 = {
   t: "presence";

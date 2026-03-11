@@ -7,7 +7,7 @@ import {
   replicaIdToBytes,
 } from "@treecrdt/interface/ids";
 
-import type { WireCodec } from "./transport.js";
+import type { WireCodec } from "./transport/index.js";
 import type {
   Bytes,
   Filter,

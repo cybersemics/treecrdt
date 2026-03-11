@@ -1,4 +1,4 @@
-import type { DuplexTransport } from "./transport.js";
+import type { DuplexTransport } from "./index.js";
 
 export type BrowserWebSocketMessageListener = (event: { data: unknown }) => void;
 

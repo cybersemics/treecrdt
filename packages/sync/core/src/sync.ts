@@ -18,7 +18,7 @@ import type {
   SyncMessage,
   Unsubscribe,
 } from "./types.js";
-import type { DuplexTransport } from "./transport.js";
+import type { DuplexTransport } from "./transport/index.js";
 
 function randomId(prefix: string): string {
   const uuid =

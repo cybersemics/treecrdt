@@ -11,8 +11,8 @@
       "types": "./dist/index.d.ts"
     },
     "./proof-material": {
-      "import": "./dist/proof-material.js",
-      "types": "./dist/proof-material.d.ts"
+      "import": "./dist/proof-material/index.js",
+      "types": "./dist/proof-material/index.d.ts"
     }
   },
   "files": [
