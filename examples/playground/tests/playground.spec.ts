@@ -1,17 +1,26 @@
 import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import http from "node:http";
+import type { Operation } from "@treecrdt/interface";
+import { deriveOpRefV0 } from "@treecrdt/sync";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import { startWebSocketSyncServer } from "../../../packages/sync/server-core/dist/index.js";
 
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-type MockSyncServer = {
+type TestSyncServer = {
   host: string;
   wsUrl: string;
   close: () => Promise<void>;
 };
 
-async function startMockSyncServer(): Promise<MockSyncServer> {
+type InMemorySyncServer = TestSyncServer & {
+  waitForDocOps: (docId: string, minCount: number, timeoutMs?: number) => Promise<void>;
+  waitForServedOps: (docId: string, minCount: number, timeoutMs?: number) => Promise<void>;
+};
+
+async function startMockSyncServer(): Promise<TestSyncServer> {
   const sockets = new Set<import("node:stream").Duplex>();
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -77,6 +86,104 @@ async function startMockSyncServer(): Promise<MockSyncServer> {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
+  };
+}
+
+type InMemoryDocState = {
+  opsByRef: Map<string, { opRef: Uint8Array; op: Operation }>;
+  maxLamport: number;
+  servedOps: number;
+  openCount: number;
+};
+
+function opRefHex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("hex");
+}
+
+function opRefFor(docId: string, op: Operation): Uint8Array {
+  return deriveOpRefV0(docId, { replica: op.meta.id.replica, counter: op.meta.id.counter });
+}
+
+async function startInMemorySyncServer(): Promise<InMemorySyncServer> {
+  const docs = new Map<string, InMemoryDocState>();
+  const server = await startWebSocketSyncServer<Operation>({
+    host: "127.0.0.1",
+    port: 0,
+    codec: treecrdtSyncV0ProtobufCodec,
+    docs: {
+      async open(docId) {
+        let state = docs.get(docId);
+        if (!state) {
+          state = {
+            opsByRef: new Map(),
+            maxLamport: 0,
+            servedOps: 0,
+            openCount: 0,
+          };
+          docs.set(docId, state);
+        }
+        state.openCount += 1;
+
+        return {
+          backend: {
+            docId,
+            maxLamport: async () => BigInt(state.maxLamport),
+            listOpRefs: async () => Array.from(state.opsByRef.values(), (entry) => entry.opRef),
+            getOpsByOpRefs: async (opRefs) => {
+              const found = opRefs
+                .map((opRef) => state!.opsByRef.get(opRefHex(opRef))?.op)
+                .filter((op): op is Operation => Boolean(op));
+              state!.servedOps += found.length;
+              return found;
+            },
+            applyOps: async (ops) => {
+              for (const op of ops) {
+                const opRef = opRefFor(docId, op);
+                const key = opRefHex(opRef);
+                if (!state!.opsByRef.has(key)) {
+                  state!.opsByRef.set(key, { opRef, op });
+                }
+                state!.maxLamport = Math.max(state!.maxLamport, op.meta.lamport);
+              }
+            },
+          },
+          release: () => {
+            state!.openCount = Math.max(0, state!.openCount - 1);
+            if (state!.openCount === 0 && state!.opsByRef.size === 0) {
+              docs.delete(docId);
+            }
+          },
+        };
+      },
+    },
+  });
+
+  return {
+    host: `${server.host}:${server.port}`,
+    wsUrl: `ws://${server.host}:${server.port}/sync`,
+    waitForDocOps: async (docId, minCount, timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const count = docs.get(docId)?.opsByRef.size ?? 0;
+        if (count >= minCount) return;
+        if (Date.now() >= deadline) {
+          throw new Error(`timed out waiting for ${minCount} ops in ${docId}; saw ${count}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+    waitForServedOps: async (docId, minCount, timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const count = docs.get(docId)?.servedOps ?? 0;
+        if (count >= minCount) return;
+        if (Date.now() >= deadline) {
+          throw new Error(`timed out waiting for ${minCount} served ops in ${docId}; saw ${count}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+    close: server.close,
   };
 }
 
@@ -465,6 +572,63 @@ test("invite link preserves auth material and remote sync settings", async ({ br
   } finally {
     await context.close();
     await server.close();
+  }
+});
+
+test("remote sync server transfers ops between isolated pages", async ({ browser }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-remote-sync");
+  const server = await startInMemorySyncServer();
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
+  const remotePath = `/?doc=${encodeURIComponent(doc)}&auth=0&transport=remote&sync=${encodeURIComponent(server.wsUrl)}`;
+
+  try {
+    await Promise.all([waitForReady(pageA, remotePath), waitForReady(pageB, remotePath)]);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    await pageA.getByRole("button", { name: /Connections/ }).click();
+    await expect(pageA.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+
+    await pageB.getByRole("button", { name: /Connections/ }).click();
+    await expect(pageB.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+
+    const nodeLabel = "remote-server-child";
+    await pageA.getByPlaceholder("Stored as payload bytes").fill(nodeLabel);
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, nodeLabel)).toBeVisible({ timeout: 30_000 });
+
+    const syncErrorA = pageA.getByTestId("sync-error");
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+    await Promise.race([
+      server.waitForDocOps(doc, 1),
+      (async () => {
+        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+      })(),
+    ]);
+
+    const syncErrorB = pageB.getByTestId("sync-error");
+    await pageB.getByRole("button", { name: "Sync", exact: true }).click();
+    await Promise.race([
+      server.waitForServedOps(doc, 1),
+      (async () => {
+        await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
+      })(),
+    ]);
+
+    await pageB.getByTitle("Toggle operations panel").click();
+    await expect(pageB.getByText(/Head lamport:\s*[1-9]/)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await Promise.all([contextA.close(), contextB.close(), server.close()]);
   }
 });
 
