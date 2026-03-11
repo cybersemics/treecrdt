@@ -50,6 +50,7 @@ import type {
 
 const PLAYGROUND_SYNC_SERVER_URL_KEY = "treecrdt-playground-sync-server-url";
 const PLAYGROUND_SYNC_TRANSPORT_MODE_KEY = "treecrdt-playground-sync-transport-mode";
+const DEFAULT_REMOTE_SYNC_SERVER_URL = import.meta.env.VITE_TREECRDT_DEFAULT_SYNC_SERVER_URL?.trim() ?? "";
 
 function isSyncTransportMode(value: string | null): value is SyncTransportMode {
   return value === "local" || value === "remote" || value === "hybrid";
@@ -1219,6 +1220,7 @@ export default function App() {
               setSyncTransportMode,
               syncServerUrl,
               setSyncServerUrl,
+              defaultSyncServerUrl: DEFAULT_REMOTE_SYNC_SERVER_URL,
               remoteSyncStatus,
               peers,
             }}

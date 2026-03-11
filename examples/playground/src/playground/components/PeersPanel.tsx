@@ -50,6 +50,7 @@ export function PeersPanel({
   setSyncTransportMode,
   syncServerUrl,
   setSyncServerUrl,
+  defaultSyncServerUrl = "",
   remoteSyncStatus,
   peers,
 }: {
@@ -59,11 +60,18 @@ export function PeersPanel({
   setSyncTransportMode: React.Dispatch<React.SetStateAction<SyncTransportMode>>;
   syncServerUrl: string;
   setSyncServerUrl: React.Dispatch<React.SetStateAction<string>>;
+  defaultSyncServerUrl?: string;
   remoteSyncStatus: RemoteSyncStatus;
   peers: PeerInfo[];
 }) {
   const requiresRemoteUrl = syncTransportMode !== "local";
   const hasRemoteUrl = syncServerUrl.trim().length > 0;
+  const applyTransportMode = (next: SyncTransportMode) => {
+    if (next !== "local" && syncServerUrl.trim().length === 0 && defaultSyncServerUrl.length > 0) {
+      setSyncServerUrl(defaultSyncServerUrl);
+    }
+    setSyncTransportMode(next);
+  };
 
   return (
     <div
@@ -98,21 +106,21 @@ export function PeersPanel({
           <button
             type="button"
             className={`rounded-md border px-3 py-1.5 text-[11px] font-semibold transition ${transportModeButtonClass(syncTransportMode === "local")}`}
-            onClick={() => setSyncTransportMode("local")}
+            onClick={() => applyTransportMode("local")}
           >
             Local tabs
           </button>
           <button
             type="button"
             className={`rounded-md border px-3 py-1.5 text-[11px] font-semibold transition ${transportModeButtonClass(syncTransportMode === "remote")}`}
-            onClick={() => setSyncTransportMode("remote")}
+            onClick={() => applyTransportMode("remote")}
           >
             Remote server
           </button>
           <button
             type="button"
             className={`rounded-md border px-3 py-1.5 text-[11px] font-semibold transition ${transportModeButtonClass(syncTransportMode === "hybrid")}`}
-            onClick={() => setSyncTransportMode("hybrid")}
+            onClick={() => applyTransportMode("hybrid")}
           >
             Hybrid
           </button>
