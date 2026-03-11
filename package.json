@@ -23,7 +23,7 @@
     "benchmark:aggregate": "node scripts/aggregate-bench.mjs",
     "test": "pnpm run test:browser && pnpm run test:native-node",
     "playground": "pnpm --filter @treecrdt/playground dev",
-    "sync-server:postgres:setup": "pnpm -C packages/treecrdt-postgres-napi run build && pnpm -C packages/sync/postgres run build && pnpm -C packages/sync/server-postgres-node run build",
+    "sync-server:postgres:setup": "pnpm --filter @treecrdt/postgres-napi... --filter @treecrdt/sync-server-postgres-node... run build",
     "sync-server:postgres": "pnpm --filter @treecrdt/sync-server-postgres-node dev",
     "sync-server:postgres:local": "node scripts/run-sync-server-postgres-local.mjs",
     "sync-server:postgres:db:start": "node scripts/run-sync-server-postgres-db-start.mjs",

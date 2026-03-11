@@ -193,10 +193,7 @@ jobs:
 
     - name: Build TypeScript deps for postgres backend tests
       run: |
-        pnpm --filter @treecrdt/postgres-napi^... run build
-        pnpm -C packages/sync/postgres run build
-        pnpm -C packages/sync/server-core run build
-        pnpm -C packages/sync/server-postgres-node run build
+        pnpm --filter @treecrdt/postgres-napi... --filter @treecrdt/sync-server-postgres-node... run build
 
     - name: Run postgres backend tests
       env:
