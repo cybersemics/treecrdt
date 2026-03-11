@@ -22,7 +22,7 @@ import {
   issueTreecrdtRevocationRecordV1,
   verifyTreecrdtRevocationRecordV1,
 } from "../dist/treecrdt-auth.js";
-import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
+import type { Capability, Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
 ed25519Hashes.sha512 = sha512;
 
@@ -375,6 +375,97 @@ test("auth ignores foreign peer capability tokens during hello and still verifie
     })
   ).resolves.toEqual([true]);
   await expect(authVerifier.verifyOps?.([op], auth, { docId, purpose: "reconcile", filterId: "all" })).resolves
+    .toBeUndefined();
+});
+
+test("auth re-advertises trusted author capability tokens from the capability store after restart", async () => {
+  const docId = "doc-auth-capability-replay";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const relaySk = ed25519Utils.randomSecretKey();
+  const relayPk = await getPublicKey(relaySk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const joinerSk = ed25519Utils.randomSecretKey();
+  const joinerPk = await getPublicKey(joinerSk);
+
+  const relayToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: relayPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authRelay = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: relaySk,
+    localPublicKey: relayPk,
+    localCapabilityTokens: [relayToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
+  await authRelay.onHello?.({ capabilities: writerHelloCaps, filters: [], maxLamport: 0n }, { docId });
+
+  const reloadedRelay = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: relaySk,
+    localPublicKey: relayPk,
+    localCapabilityTokens: [relayToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+  const authJoiner = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: joinerSk,
+    localPublicKey: joinerPk,
+    requireProofRef: true,
+  });
+
+  const relayHelloCaps = (await reloadedRelay.helloCapabilities?.({ docId })) ?? [];
+  expect(relayHelloCaps).toEqual(
+    expect.arrayContaining([
+      { name: "auth.capability", value: base64urlEncode(relayToken) },
+      { name: "auth.capability", value: base64urlEncode(writerToken) },
+    ])
+  );
+
+  await authJoiner.onHello?.({ capabilities: relayHelloCaps, filters: [], maxLamport: 0n }, { docId });
+
+  const op = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(7),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const signed = await authWriter.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
+  await expect(authJoiner.verifyOps?.([op], signed, { docId, purpose: "reconcile", filterId: "all" })).resolves
     .toBeUndefined();
 });
 

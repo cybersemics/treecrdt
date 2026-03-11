@@ -3,21 +3,30 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 import type { StorageMode, SyncTransportMode } from "./types";
 import { prefixPlaygroundStorageKey } from "./storage";
 
+const LEGACY_SHARED_DOC_ID = "treecrdt-playground";
+
 export function initialStorage(): StorageMode {
   if (typeof window === "undefined") return "memory";
   const param = new URLSearchParams(window.location.search).get("storage");
   return param === "opfs" ? "opfs" : "memory";
 }
 
+function makeDefaultDocId(): string {
+  return `${LEGACY_SHARED_DOC_ID}-${makeSessionKey()}`;
+}
+
 export function initialDocId(): string {
-  if (typeof window === "undefined") return "treecrdt-playground";
-  const param = new URLSearchParams(window.location.search).get("doc");
+  if (typeof window === "undefined") return makeDefaultDocId();
+  const url = new URL(window.location.href);
+  const param = url.searchParams.get("doc");
   if (param && param.trim()) return param.trim();
   const key = prefixPlaygroundStorageKey("treecrdt-playground-doc");
   const existing = window.localStorage.getItem(key);
-  if (existing) return existing;
-  const next = "treecrdt-playground";
+  if (existing && existing !== LEGACY_SHARED_DOC_ID) return existing;
+  const next = makeDefaultDocId();
   window.localStorage.setItem(key, next);
+  url.searchParams.set("doc", next);
+  window.history.replaceState({}, "", url);
   return next;
 }
 

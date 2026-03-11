@@ -10,6 +10,7 @@ import {
   type OpAuth,
   type OpRef,
   type SyncAuth,
+  type SyncCapabilityMaterialStore,
 } from "@treecrdt/sync";
 
 import { base64urlDecode, base64urlEncode } from "../base64url.js";
@@ -52,6 +53,7 @@ export type TreecrdtCoseCwtAuthOptions = {
   localPrivateKey: Uint8Array;
   localPublicKey: Uint8Array;
   localCapabilityTokens?: Uint8Array[];
+  capabilityStore?: SyncCapabilityMaterialStore & { init?: () => Promise<void> };
   localIdentityChain?: TreecrdtIdentityChainV1;
   onPeerIdentityChain?: (chain: VerifiedTreecrdtIdentityChainV1) => void;
   scopeEvaluator?: TreecrdtScopeEvaluator;
@@ -106,6 +108,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     : undefined;
 
   const grantsByKeyIdHex = new Map<string, Map<string, CapabilityGrant>>();
+  const knownAuthCapabilitiesByValue = new Map<string, Capability>();
   const opAuthByOpRefHex = new Map<string, OpAuth>();
   const revocationByTokenHex = new Map<
     string,
@@ -116,6 +119,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   >();
   let localTokensRecordedForDoc: string | null = null;
   let localRevocationsRecordedForDoc: string | null = null;
+  let capabilityStoreInitPromise: Promise<void> | null = null;
+  let capabilityStoreLoadedForDoc: string | null = null;
   let opAuthStoreInitPromise: Promise<void> | null = null;
 
   const compareBytes = (a: Uint8Array, b: Uint8Array): number => {
@@ -165,6 +170,16 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     return opts2.op.meta.id.counter >= revocation.effectiveFromCounter;
   };
 
+  const makeAuthCapability = (tokenBytes: Uint8Array): Capability => ({
+    name: "auth.capability",
+    value: base64urlEncode(tokenBytes),
+  });
+
+  const rememberAuthCapability = (cap: Capability) => {
+    if (cap.name !== "auth.capability") return;
+    knownAuthCapabilitiesByValue.set(cap.value, cap);
+  };
+
   const parseStageRevocationChecker = async (ctx: TreecrdtCapabilityRevocationCheckContext) => {
     if (isRevokedByStandardPolicy({ tokenIdHex: ctx.tokenIdHex })) return true;
     if (!opts.isCapabilityTokenRevoked) return false;
@@ -191,7 +206,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     });
   };
 
-  const recordToken = async (tokenBytes: Uint8Array, docId: string) => {
+  const recordToken = async (tokenBytes: Uint8Array, docId: string, cap: Capability = makeAuthCapability(tokenBytes)) => {
     const grant = await parseAndVerifyCapabilityToken({
       tokenBytes,
       issuerPublicKeys: opts.issuerPublicKeys,
@@ -209,12 +224,48 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       grantsByKeyIdHex.set(keyHex, byToken);
     }
     byToken.set(tokenHex, grant);
+    rememberAuthCapability(cap);
+  };
+
+  const ensureCapabilityStoreReady = async () => {
+    if (!opts.capabilityStore?.init) return;
+    if (capabilityStoreInitPromise) return capabilityStoreInitPromise;
+    capabilityStoreInitPromise = opts.capabilityStore.init();
+    return capabilityStoreInitPromise;
+  };
+
+  const persistTrustedCapability = async (cap: Capability) => {
+    if (!opts.capabilityStore || cap.name !== "auth.capability") return;
+    await ensureCapabilityStoreReady();
+    await opts.capabilityStore.storeCapabilities([cap]);
+  };
+
+  const ensureCapabilityStoreRecorded = async (docId: string) => {
+    if (!opts.capabilityStore || capabilityStoreLoadedForDoc === docId) return;
+    await ensureCapabilityStoreReady();
+    const stored = await opts.capabilityStore.listCapabilities();
+    for (const cap of stored) {
+      if (cap.name !== "auth.capability") continue;
+      const tokenBytes = base64urlDecode(cap.value);
+      try {
+        await recordToken(tokenBytes, docId, cap);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes("unknown issuer")) throw err;
+      }
+    }
+    capabilityStoreLoadedForDoc = docId;
   };
 
   const ensureLocalTokensRecorded = async (docId: string) => {
     if (localTokensRecordedForDoc === docId) return;
+    await ensureCapabilityStoreRecorded(docId);
     await ensureLocalRevocationsRecorded(docId);
-    for (const t of localTokens) await recordToken(t, docId);
+    for (const t of localTokens) {
+      const cap = makeAuthCapability(t);
+      await recordToken(t, docId, cap);
+      await persistTrustedCapability(cap);
+    }
     localTokensRecordedForDoc = docId;
   };
 
@@ -264,6 +315,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   };
 
   const recordCapabilities = async (caps: Capability[], docId: string) => {
+    await ensureCapabilityStoreRecorded(docId);
     await ensureLocalRevocationsRecorded(docId);
 
     for (const cap of caps) {
@@ -283,7 +335,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       if (cap.name === "auth.capability") {
         const tokenBytes = base64urlDecode(cap.value);
         try {
-          await recordToken(tokenBytes, docId);
+          await recordToken(tokenBytes, docId, cap);
+          await persistTrustedCapability(cap);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (!message.includes("unknown issuer")) throw err;
@@ -306,8 +359,10 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   };
 
   const helloCaps = async (docId: string): Promise<Capability[]> => {
+    await ensureCapabilityStoreRecorded(docId);
     await ensureLocalRevocationsRecorded(docId);
-    const caps = localTokens.map((t) => ({ name: "auth.capability", value: base64urlEncode(t) }));
+    await ensureLocalTokensRecorded(docId);
+    const caps = Array.from(knownAuthCapabilitiesByValue.values());
     for (const entry of revocationByTokenHex.values()) {
       caps.push(createTreecrdtRevocationCapabilityV1(entry.recordBytes));
     }
@@ -565,6 +620,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     },
     verifyOps: async (ops, auth, ctx) => {
       if (ops.length === 0) return;
+      await ensureCapabilityStoreRecorded(ctx.docId);
       if (!auth) {
         if (allowUnsigned) return;
         throw new Error("missing op auth");

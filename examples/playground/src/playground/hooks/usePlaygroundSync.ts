@@ -13,7 +13,11 @@ import {
   type Filter,
   type SyncSubscription,
 } from "@treecrdt/sync";
-import { createTreecrdtSyncBackendFromClient, createTreecrdtSyncSqliteOpAuthStore } from "@treecrdt/sync-sqlite";
+import {
+  createTreecrdtSyncBackendFromClient,
+  createTreecrdtSyncSqliteCapabilityMaterialStore,
+  createTreecrdtSyncSqliteOpAuthStore,
+} from "@treecrdt/sync-sqlite";
 import type { BroadcastPresenceAckMessageV1, BroadcastPresenceMessageV1 } from "@treecrdt/sync/browser";
 import { createBroadcastPresenceMesh, createBrowserWebSocketTransport } from "@treecrdt/sync/browser";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
@@ -82,6 +86,9 @@ function isCapabilityRevokedError(err: unknown): boolean {
 function formatSyncError(err: unknown): string {
   if (isCapabilityRevokedError(err)) {
     return "Access revoked for this capability. Import/update access, then sync again.";
+  }
+  if (/unknown author:/i.test(errorMessage(err))) {
+    return "This document contains ops from an author whose capability token is not available here yet. Sync from a peer that has the full author history, or try a fresh doc.";
   }
   return errorMessage(err);
 }
@@ -819,6 +826,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
               return { tokenIdHex, counter: parsedCounter };
             })(),
             opAuthStore: createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId }),
+            capabilityStore: createTreecrdtSyncSqliteCapabilityMaterialStore({ runner: client.runner, docId }),
             scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
             getLocalIdentityChain,
             onPeerIdentityChain,
@@ -898,6 +906,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
                 localPrivateKey: peerAuthConfig.localSk,
                 localPublicKey: peerAuthConfig.localPk,
                 localCapabilityTokens: peerAuthConfig.localTokens,
+                capabilityStore: peerAuthConfig.capabilityStore,
                 revokedCapabilityTokenIds: peerAuthConfig.hardRevokedTokenIds,
                 isCapabilityTokenRevoked: (ctx) => {
                   if (ctx.stage !== "runtime") return false;

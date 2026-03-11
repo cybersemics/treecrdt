@@ -430,6 +430,49 @@ async function clickSyncAllowRevokedCapabilityTokenError(page: import("@playwrig
   }
 }
 
+test("playground mints a fresh default doc and migrates the legacy shared default", async ({ browser }) => {
+  const freshProfile = `pw-doc-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const freshContext = await browser.newContext();
+  const freshPage = await freshContext.newPage();
+
+  try {
+    await waitForReady(freshPage, `/?profile=${encodeURIComponent(freshProfile)}`);
+
+    const freshDoc = new URL(freshPage.url()).searchParams.get("doc");
+    expect(freshDoc).toMatch(/^treecrdt-playground-[0-9a-f]{16}$/);
+    expect(freshDoc).not.toBe("treecrdt-playground");
+
+    const storedFreshDoc = await freshPage.evaluate((profile) => {
+      return window.localStorage.getItem(`treecrdt-playground-profile:${profile}:treecrdt-playground-doc`);
+    }, freshProfile);
+    expect(storedFreshDoc).toBe(freshDoc);
+  } finally {
+    await freshContext.close();
+  }
+
+  const legacyProfile = `pw-doc-legacy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const legacyContext = await browser.newContext();
+  await legacyContext.addInitScript((profile) => {
+    window.localStorage.setItem(`treecrdt-playground-profile:${profile}:treecrdt-playground-doc`, "treecrdt-playground");
+  }, legacyProfile);
+  const legacyPage = await legacyContext.newPage();
+
+  try {
+    await waitForReady(legacyPage, `/?profile=${encodeURIComponent(legacyProfile)}`);
+
+    const migratedDoc = new URL(legacyPage.url()).searchParams.get("doc");
+    expect(migratedDoc).toMatch(/^treecrdt-playground-[0-9a-f]{16}$/);
+    expect(migratedDoc).not.toBe("treecrdt-playground");
+
+    const storedMigratedDoc = await legacyPage.evaluate((profile) => {
+      return window.localStorage.getItem(`treecrdt-playground-profile:${profile}:treecrdt-playground-doc`);
+    }, legacyProfile);
+    expect(storedMigratedDoc).toBe(migratedDoc);
+  } finally {
+    await legacyContext.close();
+  }
+});
+
 test("insert and delete node", async ({ page }) => {
   test.setTimeout(90_000);
 
@@ -1560,6 +1603,70 @@ test("isolated peer tab uses separate storage namespace and requires invite", as
     if (!pushed) throw new Error("failed to sync public node");
 
     await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("new device can sync historical authors learned by the inviter", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-historical-authors");
+  const profileB = `pw-hist-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const profileC = `pw-hist-c-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const pageC = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileB)}&join=1`),
+      waitForReady(pageC, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileC)}&join=1`),
+    ]);
+
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    const inviteToB = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageB, inviteToB);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+
+    const historicalLabel = `from-b-before-reload-${Date.now()}`;
+    await pageB.getByPlaceholder("Stored as payload bytes").fill(historicalLabel);
+    await treeRowByNodeId(pageB, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageB, historicalLabel)).toBeVisible({ timeout: 30_000 });
+
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+    await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+    await expect(treeRowByLabel(pageA, historicalLabel)).toBeVisible({ timeout: 30_000 });
+
+    await pageB.close();
+
+    const inviteToC = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageC, inviteToC);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageC.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+      await clickSyncWithRetryOnTransientAuthError(pageC, "C");
+      if (await treeRowByLabel(pageC, historicalLabel).count()) break;
+      await pageC.waitForTimeout(300);
+    }
+
+    await expect(treeRowByLabel(pageC, historicalLabel)).toBeVisible({ timeout: 30_000 });
   } finally {
     await context.close();
   }
