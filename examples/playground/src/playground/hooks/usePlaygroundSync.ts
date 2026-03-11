@@ -26,6 +26,7 @@ import {
 } from "../../sync-v0";
 import {
   PLAYGROUND_PEER_TIMEOUT_MS,
+  PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS,
   PLAYGROUND_SYNC_MAX_CODEWORDS,
   PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
   ROOT_ID,
@@ -219,6 +220,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     codewordsPerMessage: isRemotePeerId(peerId) ? REMOTE_SYNC_CODEWORDS_PER_MESSAGE : localCodewordsPerMessage,
     ...(isRemotePeerId(peerId) ? { codewordBatchIntervalMs: REMOTE_SYNC_CODEWORD_BATCH_INTERVAL_MS } : {}),
   });
+  const syncTimeoutMsForPeer = (peerId: string, opts: { autoSync?: boolean; multipleTargets?: boolean } = {}) => {
+    if (isRemotePeerId(peerId)) return PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS;
+    if (opts.autoSync) return PLAYGROUND_PEER_TIMEOUT_MS;
+    return opts.multipleTargets ? 8_000 : 15_000;
+  };
 
   const stopLiveAllForPeer = (peerId: string) => {
     const existing = liveAllSubsRef.current.get(peerId);
@@ -412,13 +418,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         .sort((a, b) => b.lastSeen - a.lastSeen)
         .map((p) => p.id);
       const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
-      const perPeerTimeoutMs = targets.length > 1 ? 8_000 : 15_000;
-
       let successes = 0;
       let lastErr: unknown = null;
       for (const peerId of targets) {
         const conn = connections.get(peerId);
         if (!conn) continue;
+        const perPeerTimeoutMs = syncTimeoutMsForPeer(peerId, { multipleTargets: targets.length > 1 });
         try {
           await withTimeout(
             peer.syncOnce(conn.transport, filter, syncOnceOptionsForPeer(peerId, 2048)),
@@ -478,13 +483,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         .sort((a, b) => b.lastSeen - a.lastSeen)
         .map((p) => p.id);
       const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
-      const perPeerTimeoutMs = targets.length > 1 ? 8_000 : 15_000;
-
       let successes = 0;
       let lastErr: unknown = null;
       for (const peerId of targets) {
         const conn = connections.get(peerId);
         if (!conn) continue;
+        const perPeerTimeoutMs = syncTimeoutMsForPeer(peerId, { multipleTargets: targets.length > 1 });
         try {
           for (const parentId of parentIds) {
             await withTimeout(
@@ -578,7 +582,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (authCanSyncAll) {
           await withTimeout(
             peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 2048)),
-            30_000,
+            syncTimeoutMsForPeer(peerId, { autoSync: true }),
             `auto sync with ${peerId.slice(0, 8)}… timed out`
           );
         } else {
@@ -588,7 +592,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
               { children: { parent: hexToBytes16(viewRootId) } },
               syncOnceOptionsForPeer(peerId, 2048)
             ),
-            30_000,
+            syncTimeoutMsForPeer(peerId, { autoSync: true }),
             `auto sync(children ${viewRootId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`
           );
         }

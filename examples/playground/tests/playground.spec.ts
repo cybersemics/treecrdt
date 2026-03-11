@@ -632,6 +632,40 @@ test("remote sync server transfers ops between isolated pages", async ({ browser
   }
 });
 
+test("remote sync server handles 1000-node composer fanout between same-device pages", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-remote-fanout");
+  const server = await startInMemorySyncServer();
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const remotePath = `/?doc=${encodeURIComponent(doc)}&auth=0&transport=remote&sync=${encodeURIComponent(server.wsUrl)}`;
+
+  try {
+    await Promise.all([waitForReady(pageA, remotePath), waitForReady(pageB, remotePath)]);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("fanout");
+    await pageA.locator('label:has-text("Node count") input[type="number"]').fill("1000");
+    await pageA.locator('label:has-text("Fanout") select').selectOption("10");
+
+    await pageA.getByRole("button", { name: "Add nodes", exact: true }).click();
+    await expect(pageA.getByText(/1000 nodes/)).toBeVisible({ timeout: 120_000 });
+
+    await clickSync(pageA, "A");
+    await clickSync(pageB, "B");
+
+    await expect(pageB.getByText(/1000 nodes/)).toBeVisible({ timeout: 120_000 });
+    await pageB.getByTitle("Toggle operations panel").click();
+    await expect(pageB.getByText(/Head lamport:\s*1000/)).toBeVisible({ timeout: 120_000 });
+    await pageB.getByRole("button", { name: "Expand", exact: true }).click();
+    await expect(pageB.getByRole("button", { name: "fanout 1", exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(pageB.getByRole("button", { name: "fanout 10", exact: true })).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await Promise.all([context.close(), server.close()]);
+  }
+});
+
 test("defensive delete restores parent when unseen child arrives", async ({ browser }) => {
   test.setTimeout(240_000);
 
