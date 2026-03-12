@@ -263,6 +263,10 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         if (!isLocalToken(tokenBytes)) rememberReplayAuthCapability(tokenBytes);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        // Locally cached capability material can legitimately go stale after a
+        // hard revoke or access replacement. Ignore those entries here so a
+        // peer does not poison its own hello path on restart.
+        if (message.includes("capability token revoked")) continue;
         if (!message.includes("unknown issuer")) throw err;
       }
     }
@@ -354,6 +358,10 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          // Replay-only capability material is best-effort cache state. If a
+          // peer still advertises a revoked replay token after an access
+          // replacement, ignore it rather than failing the whole handshake.
+          if (isReplayAuthCapability(cap) && message.includes("capability token revoked")) continue;
           if (!message.includes("unknown issuer")) throw err;
           // Peers and relay servers may advertise capability tokens that are
           // irrelevant for this replica's trust roots. Ignore them here and
@@ -599,11 +607,16 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         let proofRef: Uint8Array | undefined;
         if (localTokenIds.length > 0) {
           const byToken = grantsByKeyIdHex.get(localKeyIdHex);
-          if (!byToken || byToken.size === 0) throw new Error("auth enabled but no local capability tokens are recorded");
+          const currentLocalGrants = byToken
+            ? Array.from(byToken.entries())
+                .filter(([tokenIdHex]) => localTokenIdHexes.has(tokenIdHex))
+                .map(([, grant]) => grant)
+            : [];
+          if (currentLocalGrants.length === 0) throw new Error("auth enabled but no local capability tokens are recorded");
           const selected = await selectGrantForOp({
             docId: ctx.docId,
             op,
-            candidates: Array.from(byToken.values()),
+            candidates: currentLocalGrants,
             purpose: "sign_op",
           });
           proofRef = selected.tokenId;

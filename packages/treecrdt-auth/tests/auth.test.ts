@@ -598,6 +598,111 @@ test("auth: replayed author capability tokens do not widen peer filter scope", a
   ).resolves.toEqual([true, false]);
 });
 
+test("auth: cached stale local tokens cannot authorize new local writes after an access downgrade", async () => {
+  const docId = "doc-auth-stale-local-token-downgrade";
+  const root = "0".repeat(32);
+  const secretRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const localSk = ed25519Utils.randomSecretKey();
+  const localPk = await getPublicKey(localSk);
+
+  const oldWriterToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: localPk,
+    docId,
+    rootNodeId: secretRoot,
+    actions: ["write_structure", "write_payload"],
+  });
+  const newReadOnlyToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: localPk,
+    docId,
+    rootNodeId: secretRoot,
+    actions: ["read_structure", "read_payload"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+  await capabilityStore.storeCapabilities([{ name: "auth.capability", value: base64urlEncode(oldWriterToken) }]);
+
+  const auth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: localSk,
+    localPublicKey: localPk,
+    localCapabilityTokens: [newReadOnlyToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+
+  const op = makeOp(localPk, 1, 1, {
+    type: "insert",
+    parent: secretRoot,
+    node: child,
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  await expect(auth.signOps?.([op], { docId, purpose: "reconcile", filterId: root })).rejects.toThrow(/capability does not allow op/i);
+});
+
+test("auth: helloCapabilities ignores locally cached revoked replay tokens", async () => {
+  const docId = "doc-auth-ignore-revoked-cached-replay";
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const localSk = ed25519Utils.randomSecretKey();
+  const localPk = await getPublicKey(localSk);
+  const peerSk = ed25519Utils.randomSecretKey();
+  const peerPk = await getPublicKey(peerSk);
+
+  const localToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: localPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const revokedPeerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: peerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+  await capabilityStore.storeCapabilities([
+    { name: "auth.capability", value: base64urlEncode(revokedPeerToken) },
+  ]);
+
+  const auth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: localSk,
+    localPublicKey: localPk,
+    localCapabilityTokens: [localToken],
+    capabilityStore,
+    revokedCapabilityTokenIds: [deriveTokenIdV1(revokedPeerToken)],
+    requireProofRef: true,
+  });
+
+  await expect(auth.helloCapabilities?.({ docId })).resolves.toEqual([
+    { name: "auth.capability", value: base64urlEncode(localToken) },
+  ]);
+});
+
 test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async () => {
   const docId = "doc-auth-token-describe";
 
@@ -1562,6 +1667,56 @@ test("auth: onHello rejects revoked peer capability tokens", async () => {
   await expect(
     authReceiver.onHello!({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId })
   ).rejects.toThrow(/capability token revoked/i);
+});
+
+test("auth: onHello ignores revoked replay capability tokens", async () => {
+  const docId = "doc-auth-revoked-replay-hello";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const senderSk = ed25519Utils.randomSecretKey();
+  const senderPk = await getPublicKey(senderSk);
+  const receiverSk = ed25519Utils.randomSecretKey();
+  const receiverPk = await getPublicKey(receiverSk);
+
+  const activeToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: senderPk,
+    docId,
+    rootNodeId: root,
+    actions: ["read_structure"],
+  });
+  const revokedReplayToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: senderPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const authReceiver = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: receiverSk,
+    localPublicKey: receiverPk,
+    revokedCapabilityTokenIds: [deriveTokenIdV1(revokedReplayToken)],
+    requireProofRef: true,
+  });
+
+  await expect(
+    authReceiver.onHello!(
+      {
+        capabilities: [
+          { name: "auth.capability", value: base64urlEncode(activeToken) },
+          { name: "auth.capability.replay", value: base64urlEncode(revokedReplayToken) },
+        ],
+        filters: [],
+        maxLamport: 0n,
+      },
+      { docId }
+    )
+  ).resolves.toEqual([{ name: "auth.capability.replay", value: base64urlEncode(activeToken) }]);
 });
 
 test("auth: late hard revocation rejects future ops and re-verification of past ops", async () => {
