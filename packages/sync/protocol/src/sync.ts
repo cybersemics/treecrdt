@@ -178,7 +178,7 @@ type InitiatorSubscription = {
 };
 
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
-  return capabilities.some((cap) => cap.name === "auth.capability");
+  return capabilities.some((cap) => cap.name === "auth.capability" || cap.name === "auth.capability.replay");
 }
 
 export class SyncPeer<Op> {
@@ -751,7 +751,7 @@ export class SyncPeer<Op> {
     // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
     // can't race and get rejected before `onHello` completes.
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (hasAuthCapability) this.transportPeerCapabilities.set(transport, hello.capabilities);
+    if (peerAdvertisedOpAuth(hello.capabilities)) this.transportPeerCapabilities.set(transport, hello.capabilities);
 
     let ackCapabilities: HelloAck["capabilities"] = [];
     try {
@@ -873,7 +873,7 @@ export class SyncPeer<Op> {
 
     const hasAuthCapability = ack.capabilities.some((c) => c.name === "auth.capability");
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (hasAuthCapability) this.transportPeerCapabilities.set(transport, ack.capabilities);
+    if (peerAdvertisedOpAuth(ack.capabilities)) this.transportPeerCapabilities.set(transport, ack.capabilities);
 
     for (const id of ack.acceptedFilters) {
       const session = this.initiatorSessions.get(id);

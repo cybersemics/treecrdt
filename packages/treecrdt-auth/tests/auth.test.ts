@@ -452,7 +452,7 @@ test("auth re-advertises trusted author capability tokens from the capability st
   expect(relayHelloCaps).toEqual(
     expect.arrayContaining([
       { name: "auth.capability", value: base64urlEncode(relayToken) },
-      { name: "auth.capability", value: base64urlEncode(writerToken) },
+      { name: "auth.capability.replay", value: base64urlEncode(writerToken) },
     ])
   );
 
@@ -467,6 +467,135 @@ test("auth re-advertises trusted author capability tokens from the capability st
   const signed = await authWriter.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
   await expect(authJoiner.verifyOps?.([op], signed, { docId, purpose: "reconcile", filterId: "all" })).resolves
     .toBeUndefined();
+});
+
+test("auth: replayed author capability tokens do not widen peer filter scope", async () => {
+  const docId = "doc-auth-replay-capability-scope";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const senderSk = ed25519Utils.randomSecretKey();
+  const senderPk = await getPublicKey(senderSk);
+  const scopedPeerSk = ed25519Utils.randomSecretKey();
+  const scopedPeerPk = await getPublicKey(scopedPeerSk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+
+  const publicNode = nodeIdFromInt(1);
+  const privateRoot = nodeIdFromInt(2);
+  const parentByNodeHex = new Map<string, string | null>([
+    [root, null],
+    [publicNode, root],
+    [privateRoot, root],
+  ]);
+
+  const scopeEvaluator = ({
+    node,
+    scope,
+  }: {
+    node: Uint8Array;
+    scope: { root: Uint8Array; maxDepth?: number; exclude?: Uint8Array[] };
+  }) => {
+    const rootHex = bytesToHex(scope.root);
+    const excludeHex = new Set((scope.exclude ?? []).map((b) => bytesToHex(b)));
+
+    let curHex = bytesToHex(node);
+    for (let hops = 0; hops < 10_000; hops += 1) {
+      if (excludeHex.has(curHex)) return "deny" as const;
+      if (curHex === rootHex) return "allow" as const;
+      if (curHex === root || curHex === "f".repeat(32)) return "deny" as const;
+
+      const parentHex = parentByNodeHex.get(curHex);
+      if (parentHex === undefined) return "unknown" as const;
+      if (parentHex === null) return "deny" as const;
+      curHex = parentHex;
+    }
+
+    return "unknown" as const;
+  };
+
+  const scopedToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: scopedPeerPk,
+    docId,
+    actions: ["write_structure"],
+    rootNodeId: root,
+    excludeNodeIds: [privateRoot],
+  });
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authScopedPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: scopedPeerSk,
+    localPublicKey: scopedPeerPk,
+    localCapabilityTokens: [scopedToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+  const authSender = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: senderSk,
+    localPublicKey: senderPk,
+    requireProofRef: true,
+    scopeEvaluator,
+  });
+
+  const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
+  await authScopedPeer.onHello?.({ capabilities: writerHelloCaps, filters: [], maxLamport: 0n }, { docId });
+
+  const reloadedScopedPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: scopedPeerSk,
+    localPublicKey: scopedPeerPk,
+    localCapabilityTokens: [scopedToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+
+  const scopedPeerCaps = (await reloadedScopedPeer.helloCapabilities?.({ docId })) ?? [];
+  expect(scopedPeerCaps).toEqual(
+    expect.arrayContaining([
+      { name: "auth.capability", value: base64urlEncode(scopedToken) },
+      { name: "auth.capability.replay", value: base64urlEncode(writerToken) },
+    ])
+  );
+
+  const ops: Operation[] = [
+    makeOp(senderPk, 1, 1, { type: "insert", parent: root, node: publicNode, orderKey: orderKeyFromPosition(0) }),
+    makeOp(senderPk, 2, 2, { type: "insert", parent: root, node: privateRoot, orderKey: orderKeyFromPosition(1) }),
+  ];
+
+  await expect(
+    authSender.filterOutgoingOps?.(ops, {
+      docId,
+      purpose: "reconcile",
+      filter: { all: {} },
+      capabilities: scopedPeerCaps,
+    })
+  ).resolves.toEqual([true, false]);
 });
 
 test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async () => {

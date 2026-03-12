@@ -11,6 +11,9 @@ export function createReplayOnlySyncAuth(opts: {
   authMaterialStore: Pick<SyncAuthMaterialStore<Operation>, "opAuth" | "capabilities">;
 }): SyncAuth<Operation> {
   const AUTH_CAPABILITY_NAME = "auth.capability";
+  const AUTH_REPLAY_CAPABILITY_NAME = "auth.capability.replay";
+  const isAuthCapabilityMaterial = (cap: Capability): boolean =>
+    cap.name === AUTH_CAPABILITY_NAME || cap.name === AUTH_REPLAY_CAPABILITY_NAME;
   const opRefForOp = (op: Operation): OpRef =>
     deriveOpRefV0(opts.docId, {
       replica: replicaIdToBytes(op.meta.id.replica),
@@ -19,12 +22,12 @@ export function createReplayOnlySyncAuth(opts: {
 
   const listAuthCapabilities = async (): Promise<Capability[]> => {
     const caps = (await opts.authMaterialStore.capabilities?.listCapabilities()) ?? [];
-    return caps.filter((cap) => cap.name === AUTH_CAPABILITY_NAME);
+    return caps.filter(isAuthCapabilityMaterial);
   };
 
   const storeAuthCapabilities = async (caps: readonly Capability[]): Promise<void> => {
     if (!opts.authMaterialStore.capabilities) return;
-    const filtered = caps.filter((cap) => cap.name === AUTH_CAPABILITY_NAME);
+    const filtered = caps.filter(isAuthCapabilityMaterial);
     if (filtered.length === 0) return;
     await opts.authMaterialStore.capabilities.storeCapabilities(filtered);
   };
