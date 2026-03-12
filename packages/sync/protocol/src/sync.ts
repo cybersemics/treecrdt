@@ -59,7 +59,9 @@ type InitiatorSession<Op> = {
   filterId: string;
   round: number;
   ack: Pending<HelloAck>;
-  status: Pending<RibltStatus>;
+  terminalStatus: Pending<RibltStatus>;
+  codewordCredits: number;
+  codewordCreditSignal: Pending<void>;
   receivedOps: Pending<void>;
   done: boolean;
 };
@@ -81,7 +83,6 @@ export type SyncOnceOptions = {
   codewordsPerMessage?: number;
   maxCodewords?: number;
   maxOpsPerBatch?: number;
-  codewordBatchIntervalMs?: number;
 };
 
 export type SyncSubscribeOptions = SyncOnceOptions & {
@@ -124,12 +125,6 @@ function sleepUntil(ms: number, signal?: AbortSignal): Promise<boolean> {
       signal.addEventListener("abort", onAbort);
     }
   });
-}
-
-function sleep(ms: number): Promise<void> {
-  if (!Number.isFinite(ms) || ms < 0) throw new Error(`invalid codewordBatchIntervalMs: ${ms}`);
-  if (ms === 0) return Promise.resolve();
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 const yieldToMacrotask: () => Promise<void> = (() => {
@@ -347,7 +342,9 @@ export class SyncPeer<Op> {
       filterId,
       round,
       ack: deferred<HelloAck>(),
-      status: deferred<RibltStatus>(),
+      terminalStatus: deferred<RibltStatus>(),
+      codewordCredits: 1,
+      codewordCreditSignal: deferred<void>(),
       receivedOps: deferred<void>(),
       done: false,
     };
@@ -385,11 +382,19 @@ export class SyncPeer<Op> {
 
       const codewordsPerMessage = opts.codewordsPerMessage ?? 512;
       const maxCodewords = BigInt(opts.maxCodewords ?? 50_000);
-      const codewordBatchIntervalMs = opts.codewordBatchIntervalMs ?? 5;
-      const initialStatusWaitMs = Math.max(codewordBatchIntervalMs, 50);
 
       let nextIndex = 0n;
       while (!session.done && nextIndex < maxCodewords) {
+        if (session.codewordCredits <= 0) {
+          const wakeForCredits = session.codewordCreditSignal.promise;
+          await Promise.race([
+            session.terminalStatus.promise.then(() => undefined, () => undefined),
+            wakeForCredits,
+          ]);
+          continue;
+        }
+
+        session.codewordCredits -= 1;
         const startIndex = nextIndex;
         const codewords: RibltCodewords["codewords"] = [];
         for (let i = 0; i < codewordsPerMessage && nextIndex < maxCodewords; i += 1) {
@@ -406,17 +411,11 @@ export class SyncPeer<Op> {
           },
         });
         await yieldToMacrotask();
-        const waitMs = startIndex === 0n ? initialStatusWaitMs : codewordBatchIntervalMs;
-        if (!session.done && waitMs > 0) {
-          // Give inbound ribltStatus a chance to preempt further outbound bursts on
-          // higher-latency transports before we spend CPU encoding the next batch.
-          await Promise.race([session.status.promise.then(() => undefined, () => undefined), sleep(waitMs)]);
-        }
       }
 
       if (!session.done) throw new Error("riblt: max codewords exceeded");
 
-      const status = await session.status.promise;
+      const status = await session.terminalStatus.promise;
       if (status.payload.case === "failed") {
         const { reason, message } = status.payload.value;
         const name = RibltFailureReason[reason] ?? String(reason);
@@ -542,7 +541,6 @@ export class SyncPeer<Op> {
     const codewordsPerMessage = opts.codewordsPerMessage;
     const maxCodewords = opts.maxCodewords;
     const maxOpsPerBatch = opts.maxOpsPerBatch;
-    const codewordBatchIntervalMs = opts.codewordBatchIntervalMs;
 
     const subscriptionId = randomId("sub");
     const session: InitiatorSubscription = { ack: deferred<SubscribeAck>(), failed: deferred<unknown>() };
@@ -608,7 +606,7 @@ export class SyncPeer<Op> {
           return;
         }
         if (immediate) {
-          await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch, codewordBatchIntervalMs });
+          await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch });
         }
         resolveReady();
 
@@ -617,7 +615,7 @@ export class SyncPeer<Op> {
             const slept = await sleepUntil(intervalMs, signal);
             if (!slept) break;
             if (signal.aborted) break;
-            await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch, codewordBatchIntervalMs });
+            await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch });
           }
         } else {
           await Promise.race([
@@ -960,6 +958,23 @@ export class SyncPeer<Op> {
         });
         this.responderSessions.delete(msg.filterId);
       }
+      else {
+        await transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: {
+            case: "ribltStatus",
+            value: {
+              filterId: msg.filterId,
+              round: msg.round,
+              payload: {
+                case: "more",
+                value: { codewordsReceived: session.decoder.codewordsReceived(), credits: 1 },
+              },
+            },
+          },
+        });
+      }
       return;
     }
 
@@ -1112,7 +1127,8 @@ export class SyncPeer<Op> {
       for (const session of this.initiatorSessions.values()) {
         session.done = true;
         session.ack.reject(e);
-        session.status.reject(e);
+        session.terminalStatus.reject(e);
+        session.codewordCreditSignal.reject(e);
         session.receivedOps.reject(e);
       }
       this.initiatorSessions.clear();
@@ -1125,7 +1141,8 @@ export class SyncPeer<Op> {
     const e = new Error(`${code}: ${err.message}`);
     session.done = true;
     session.ack.reject(e);
-    session.status.reject(e);
+    session.terminalStatus.reject(e);
+    session.codewordCreditSignal.reject(e);
     session.receivedOps.reject(e);
     this.initiatorSessions.delete(err.filterId);
   }
@@ -1142,7 +1159,8 @@ export class SyncPeer<Op> {
     for (const session of this.initiatorSessions.values()) {
       session.done = true;
       session.ack.reject(e);
-      session.status.reject(e);
+      session.terminalStatus.reject(e);
+      session.codewordCreditSignal.reject(e);
       session.receivedOps.reject(e);
     }
     this.initiatorSessions.clear();
@@ -1151,8 +1169,21 @@ export class SyncPeer<Op> {
   private async onRibltStatus(status: RibltStatus): Promise<void> {
     const session = this.initiatorSessions.get(status.filterId);
     if (!session) return;
+    if (status.round !== session.round) return;
+    if (session.done) return;
+    if (status.payload.case === "more") {
+      const credits = Math.max(1, Math.trunc(status.payload.value.credits));
+      session.codewordCredits += credits;
+      const signal = session.codewordCreditSignal;
+      session.codewordCreditSignal = deferred<void>();
+      signal.resolve();
+      return;
+    }
     session.done = true;
-    session.status.resolve(status);
+    session.terminalStatus.resolve(status);
+    const signal = session.codewordCreditSignal;
+    session.codewordCreditSignal = deferred<void>();
+    signal.resolve();
   }
 
   private async onOpsBatch(batch: OpsBatch<Op>): Promise<void> {

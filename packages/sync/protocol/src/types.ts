@@ -45,6 +45,11 @@ export type RibltCodewords = {
   codewords: RibltCodeword[];
 };
 
+export type RibltMore = {
+  codewordsReceived: bigint;
+  credits: number;
+};
+
 export type RibltDecoded = {
   senderMissing: OpRef[];
   receiverMissing: OpRef[];
@@ -60,6 +65,7 @@ export type RibltStatus = {
   filterId: string;
   round: number;
   payload:
+    | { case: "more"; value: RibltMore }
     | { case: "decoded"; value: RibltDecoded }
     | { case: "failed"; value: RibltFailed };
 };

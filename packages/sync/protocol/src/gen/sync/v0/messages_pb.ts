@@ -16,7 +16,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file sync/v0/messages.proto.
  */
 export const file_sync_v0_messages: GenFile = /*@__PURE__*/
-  fileDesc("ChZzeW5jL3YwL21lc3NhZ2VzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIikKCkNhcGFiaWxpdHkSDAoEbmFtZRgBIAEoCRINCgV2YWx1ZRgCIAEoCSJCCgpGaWx0ZXJTcGVjEgoKAmlkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIn8KBUhlbGxvEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRItCgdmaWx0ZXJzGAIgAygLMhwudHJlZWNyZHQuc3luYy52MC5GaWx0ZXJTcGVjEhMKC21heF9sYW1wb3J0GAMgASgEIloKDlJlamVjdGVkRmlsdGVyEgoKAmlkGAEgASgJEisKBnJlYXNvbhgCIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAyABKAkiqQEKCEhlbGxvQWNrEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRIYChBhY2NlcHRlZF9maWx0ZXJzGAIgAygJEjoKEHJlamVjdGVkX2ZpbHRlcnMYAyADKAsyIC50cmVlY3JkdC5zeW5jLnYwLlJlamVjdGVkRmlsdGVyEhMKC21heF9sYW1wb3J0GAQgASgEIkIKDVJpYmx0Q29kZXdvcmQSDQoFY291bnQYASABKBESDwoHa2V5X3N1bRgCIAEoDBIRCgl2YWx1ZV9zdW0YAyABKAwiewoOUmlibHRDb2Rld29yZHMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEhMKC3N0YXJ0X2luZGV4GAMgASgEEjIKCWNvZGV3b3JkcxgEIAMoCzIfLnRyZWVjcmR0LnN5bmMudjAuUmlibHRDb2Rld29yZCKOAQoMUmlibHREZWNvZGVkEi8KDnNlbmRlcl9taXNzaW5nGAEgAygLMhcudHJlZWNyZHQuc3luYy52MC5PcFJlZhIxChByZWNlaXZlcl9taXNzaW5nGAIgAygLMhcudHJlZWNyZHQuc3luYy52MC5PcFJlZhIaChJjb2Rld29yZHNfcmVjZWl2ZWQYAyABKAQiVAoLUmlibHRGYWlsZWQSNAoGcmVhc29uGAEgASgOMiQudHJlZWNyZHQuc3luYy52MC5SaWJsdEZhaWx1cmVSZWFzb24SDwoHbWVzc2FnZRgCIAEoCSKeAQoLUmlibHRTdGF0dXMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEjEKB2RlY29kZWQYAyABKAsyHi50cmVlY3JkdC5zeW5jLnYwLlJpYmx0RGVjb2RlZEgAEi8KBmZhaWxlZBgEIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuUmlibHRGYWlsZWRIAEIJCgdwYXlsb2FkIn0KCE9wc0JhdGNoEhEKCWZpbHRlcl9pZBgBIAEoCRIoCgNvcHMYAiADKAsyGy50cmVlY3JkdC5zeW5jLnYwLk9wZXJhdGlvbhImCgRhdXRoGAQgAygLMhgudHJlZWNyZHQuc3luYy52MC5PcEF1dGgSDAoEZG9uZRgDIAEoCCIuCgZPcEF1dGgSCwoDc2lnGAIgASgMEhEKCXByb29mX3JlZhgDIAEoDEoECAEQAiJOCglTdWJzY3JpYmUSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIkAKDFN1YnNjcmliZUFjaxIXCg9zdWJzY3JpcHRpb25faWQYASABKAkSFwoPY3VycmVudF9sYW1wb3J0GAIgASgEIiYKC1Vuc3Vic2NyaWJlEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCSJzCglTeW5jRXJyb3ISKQoEY29kZRgBIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAiABKAkSEQoJZmlsdGVyX2lkGAMgASgJEhcKD3N1YnNjcmlwdGlvbl9pZBgEIAEoCSp7ChJSaWJsdEZhaWx1cmVSZWFzb24SJAogUklCTFRfRkFJTFVSRV9SRUFTT05fVU5TUEVDSUZJRUQQABIaChZNQVhfQ09ERVdPUkRTX0VYQ0VFREVEEAESEQoNREVDT0RFX0ZBSUxFRBACEhAKDE9VVF9PRl9PUkRFUhADKrcBCglFcnJvckNvZGUSGgoWRVJST1JfQ09ERV9VTlNQRUNJRklFRBAAEhcKE1VOU1VQUE9SVEVEX1ZFUlNJT04QARIYChRGSUxURVJfTk9UX1NVUFBPUlRFRBACEhQKEFRPT19NQU5ZX0ZJTFRFUlMQAxIgChxSRUNPTkNJTElBVElPTl9ERUNPREVfRkFJTEVEEAQSEAoMUkFURV9MSU1JVEVEEAUSEQoNRE9DX05PVF9GT1VORBAGYgZwcm90bzM", [file_sync_v0_filters, file_sync_v0_ops, file_sync_v0_types]);
+  fileDesc("ChZzeW5jL3YwL21lc3NhZ2VzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIikKCkNhcGFiaWxpdHkSDAoEbmFtZRgBIAEoCRINCgV2YWx1ZRgCIAEoCSJCCgpGaWx0ZXJTcGVjEgoKAmlkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIn8KBUhlbGxvEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRItCgdmaWx0ZXJzGAIgAygLMhwudHJlZWNyZHQuc3luYy52MC5GaWx0ZXJTcGVjEhMKC21heF9sYW1wb3J0GAMgASgEIloKDlJlamVjdGVkRmlsdGVyEgoKAmlkGAEgASgJEisKBnJlYXNvbhgCIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAyABKAkiqQEKCEhlbGxvQWNrEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRIYChBhY2NlcHRlZF9maWx0ZXJzGAIgAygJEjoKEHJlamVjdGVkX2ZpbHRlcnMYAyADKAsyIC50cmVlY3JkdC5zeW5jLnYwLlJlamVjdGVkRmlsdGVyEhMKC21heF9sYW1wb3J0GAQgASgEIkIKDVJpYmx0Q29kZXdvcmQSDQoFY291bnQYASABKBESDwoHa2V5X3N1bRgCIAEoDBIRCgl2YWx1ZV9zdW0YAyABKAwiewoOUmlibHRDb2Rld29yZHMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEhMKC3N0YXJ0X2luZGV4GAMgASgEEjIKCWNvZGV3b3JkcxgEIAMoCzIfLnRyZWVjcmR0LnN5bmMudjAuUmlibHRDb2Rld29yZCI4CglSaWJsdE1vcmUSGgoSY29kZXdvcmRzX3JlY2VpdmVkGAEgASgEEg8KB2NyZWRpdHMYAiABKA0ijgEKDFJpYmx0RGVjb2RlZBIvCg5zZW5kZXJfbWlzc2luZxgBIAMoCzIXLnRyZWVjcmR0LnN5bmMudjAuT3BSZWYSMQoQcmVjZWl2ZXJfbWlzc2luZxgCIAMoCzIXLnRyZWVjcmR0LnN5bmMudjAuT3BSZWYSGgoSY29kZXdvcmRzX3JlY2VpdmVkGAMgASgEIlQKC1JpYmx0RmFpbGVkEjQKBnJlYXNvbhgBIAEoDjIkLnRyZWVjcmR0LnN5bmMudjAuUmlibHRGYWlsdXJlUmVhc29uEg8KB21lc3NhZ2UYAiABKAkiywEKC1JpYmx0U3RhdHVzEhEKCWZpbHRlcl9pZBgBIAEoCRINCgVyb3VuZBgCIAEoDRIxCgdkZWNvZGVkGAMgASgLMh4udHJlZWNyZHQuc3luYy52MC5SaWJsdERlY29kZWRIABIvCgZmYWlsZWQYBCABKAsyHS50cmVlY3JkdC5zeW5jLnYwLlJpYmx0RmFpbGVkSAASKwoEbW9yZRgFIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUmlibHRNb3JlSABCCQoHcGF5bG9hZCJ9CghPcHNCYXRjaBIRCglmaWx0ZXJfaWQYASABKAkSKAoDb3BzGAIgAygLMhsudHJlZWNyZHQuc3luYy52MC5PcGVyYXRpb24SJgoEYXV0aBgEIAMoCzIYLnRyZWVjcmR0LnN5bmMudjAuT3BBdXRoEgwKBGRvbmUYAyABKAgiLgoGT3BBdXRoEgsKA3NpZxgCIAEoDBIRCglwcm9vZl9yZWYYAyABKAxKBAgBEAIiTgoJU3Vic2NyaWJlEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCRIoCgZmaWx0ZXIYAiABKAsyGC50cmVlY3JkdC5zeW5jLnYwLkZpbHRlciJACgxTdWJzY3JpYmVBY2sSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEhcKD2N1cnJlbnRfbGFtcG9ydBgCIAEoBCImCgtVbnN1YnNjcmliZRIXCg9zdWJzY3JpcHRpb25faWQYASABKAkicwoJU3luY0Vycm9yEikKBGNvZGUYASABKA4yGy50cmVlY3JkdC5zeW5jLnYwLkVycm9yQ29kZRIPCgdtZXNzYWdlGAIgASgJEhEKCWZpbHRlcl9pZBgDIAEoCRIXCg9zdWJzY3JpcHRpb25faWQYBCABKAkqewoSUmlibHRGYWlsdXJlUmVhc29uEiQKIFJJQkxUX0ZBSUxVUkVfUkVBU09OX1VOU1BFQ0lGSUVEEAASGgoWTUFYX0NPREVXT1JEU19FWENFRURFRBABEhEKDURFQ09ERV9GQUlMRUQQAhIQCgxPVVRfT0ZfT1JERVIQAyrJAQoJRXJyb3JDb2RlEhoKFkVSUk9SX0NPREVfVU5TUEVDSUZJRUQQABIXChNVTlNVUFBPUlRFRF9WRVJTSU9OEAESGAoURklMVEVSX05PVF9TVVBQT1JURUQQAhIUChBUT09fTUFOWV9GSUxURVJTEAMSIAocUkVDT05DSUxJQVRJT05fREVDT0RFX0ZBSUxFRBAEEhAKDFJBVEVfTElNSVRFRBAFEhEKDURPQ19OT1RfRk9VTkQQBhIQCgxVTkFVVEhPUklaRUQQB2IGcHJvdG8z", [file_sync_v0_filters, file_sync_v0_ops, file_sync_v0_types]);
 
 /**
  * @generated from message treecrdt.sync.v0.Capability
@@ -225,6 +225,32 @@ export const RibltCodewordsSchema: GenMessage<RibltCodewords> = /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 6);
 
 /**
+ * @generated from message treecrdt.sync.v0.RibltMore
+ */
+export type RibltMore = Message<"treecrdt.sync.v0.RibltMore"> & {
+  /**
+   * Number of codewords the receiver has consumed so far (for observability / pacing).
+   *
+   * @generated from field: uint64 codewords_received = 1;
+   */
+  codewordsReceived: bigint;
+
+  /**
+   * Number of additional RibltCodewords messages the initiator MAY send immediately.
+   *
+   * @generated from field: uint32 credits = 2;
+   */
+  credits: number;
+};
+
+/**
+ * Describes the message treecrdt.sync.v0.RibltMore.
+ * Use `create(RibltMoreSchema)` to create a new message.
+ */
+export const RibltMoreSchema: GenMessage<RibltMore> = /*@__PURE__*/
+  messageDesc(file_sync_v0_messages, 7);
+
+/**
  * @generated from message treecrdt.sync.v0.RibltDecoded
  */
 export type RibltDecoded = Message<"treecrdt.sync.v0.RibltDecoded"> & {
@@ -249,7 +275,7 @@ export type RibltDecoded = Message<"treecrdt.sync.v0.RibltDecoded"> & {
  * Use `create(RibltDecodedSchema)` to create a new message.
  */
 export const RibltDecodedSchema: GenMessage<RibltDecoded> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 7);
+  messageDesc(file_sync_v0_messages, 8);
 
 /**
  * @generated from message treecrdt.sync.v0.RibltFailed
@@ -271,7 +297,7 @@ export type RibltFailed = Message<"treecrdt.sync.v0.RibltFailed"> & {
  * Use `create(RibltFailedSchema)` to create a new message.
  */
 export const RibltFailedSchema: GenMessage<RibltFailed> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 8);
+  messageDesc(file_sync_v0_messages, 9);
 
 /**
  * @generated from message treecrdt.sync.v0.RibltStatus
@@ -302,6 +328,12 @@ export type RibltStatus = Message<"treecrdt.sync.v0.RibltStatus"> & {
      */
     value: RibltFailed;
     case: "failed";
+  } | {
+    /**
+     * @generated from field: treecrdt.sync.v0.RibltMore more = 5;
+     */
+    value: RibltMore;
+    case: "more";
   } | { case: undefined; value?: undefined };
 };
 
@@ -310,7 +342,7 @@ export type RibltStatus = Message<"treecrdt.sync.v0.RibltStatus"> & {
  * Use `create(RibltStatusSchema)` to create a new message.
  */
 export const RibltStatusSchema: GenMessage<RibltStatus> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 9);
+  messageDesc(file_sync_v0_messages, 10);
 
 /**
  * @generated from message treecrdt.sync.v0.OpsBatch
@@ -347,7 +379,7 @@ export type OpsBatch = Message<"treecrdt.sync.v0.OpsBatch"> & {
  * Use `create(OpsBatchSchema)` to create a new message.
  */
 export const OpsBatchSchema: GenMessage<OpsBatch> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 10);
+  messageDesc(file_sync_v0_messages, 11);
 
 /**
  * Auth metadata attached to a single operation.
@@ -378,7 +410,7 @@ export type OpAuth = Message<"treecrdt.sync.v0.OpAuth"> & {
  * Use `create(OpAuthSchema)` to create a new message.
  */
 export const OpAuthSchema: GenMessage<OpAuth> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 11);
+  messageDesc(file_sync_v0_messages, 12);
 
 /**
  * Push-based subscription for live updates.
@@ -406,7 +438,7 @@ export type Subscribe = Message<"treecrdt.sync.v0.Subscribe"> & {
  * Use `create(SubscribeSchema)` to create a new message.
  */
 export const SubscribeSchema: GenMessage<Subscribe> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 12);
+  messageDesc(file_sync_v0_messages, 13);
 
 /**
  * Acknowledges a Subscribe request.
@@ -430,7 +462,7 @@ export type SubscribeAck = Message<"treecrdt.sync.v0.SubscribeAck"> & {
  * Use `create(SubscribeAckSchema)` to create a new message.
  */
 export const SubscribeAckSchema: GenMessage<SubscribeAck> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 13);
+  messageDesc(file_sync_v0_messages, 14);
 
 /**
  * Stops a previously-established subscription.
@@ -449,7 +481,7 @@ export type Unsubscribe = Message<"treecrdt.sync.v0.Unsubscribe"> & {
  * Use `create(UnsubscribeSchema)` to create a new message.
  */
 export const UnsubscribeSchema: GenMessage<Unsubscribe> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 14);
+  messageDesc(file_sync_v0_messages, 15);
 
 /**
  * @generated from message treecrdt.sync.v0.SyncError
@@ -481,7 +513,7 @@ export type SyncError = Message<"treecrdt.sync.v0.SyncError"> & {
  * Use `create(SyncErrorSchema)` to create a new message.
  */
 export const SyncErrorSchema: GenMessage<SyncError> = /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 15);
+  messageDesc(file_sync_v0_messages, 16);
 
 /**
  * @generated from enum treecrdt.sync.v0.RibltFailureReason
@@ -564,3 +596,4 @@ export enum ErrorCode {
  */
 export const ErrorCodeSchema: GenEnum<ErrorCode> = /*@__PURE__*/
   enumDesc(file_sync_v0_messages, 1);
+

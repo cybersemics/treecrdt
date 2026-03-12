@@ -92,6 +92,44 @@ function createTimedDuplex<M>(opts: { aToBDelayMs?: number; bToADelayMs?: number
   return [a, b];
 }
 
+function createLoggedTimedDuplex<M>(
+  opts: { aToBDelayMs?: number; bToADelayMs?: number } = {}
+): [DuplexTransport<M>, DuplexTransport<M>, Array<{ dir: "aToB" | "bToA"; msg: M }>] {
+  const aHandlers = new Set<(msg: M) => void>();
+  const bHandlers = new Set<(msg: M) => void>();
+  const log: Array<{ dir: "aToB" | "bToA"; msg: M }> = [];
+  const aToBDelayMs = opts.aToBDelayMs ?? 0;
+  const bToADelayMs = opts.bToADelayMs ?? 0;
+
+  const a: DuplexTransport<M> = {
+    async send(msg) {
+      log.push({ dir: "aToB", msg });
+      setTimeout(() => {
+        for (const h of bHandlers) h(msg);
+      }, aToBDelayMs);
+    },
+    onMessage(handler) {
+      aHandlers.add(handler);
+      return () => aHandlers.delete(handler);
+    },
+  };
+
+  const b: DuplexTransport<M> = {
+    async send(msg) {
+      log.push({ dir: "bToA", msg });
+      setTimeout(() => {
+        for (const h of aHandlers) h(msg);
+      }, bToADelayMs);
+    },
+    onMessage(handler) {
+      bHandlers.add(handler);
+      return () => bHandlers.delete(handler);
+    },
+  };
+
+  return [a, b, log];
+}
+
 function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
   return createTimedDuplex();
 }
@@ -327,6 +365,68 @@ test("syncOnce paces outbound codewords until delayed ribltStatus arrives", asyn
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_024, codewordsPerMessage: 256 });
 
   await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 after delayed ribltStatus" });
+});
+
+test("syncOnce protobuf roundtrips ribltStatus.more", () => {
+  const msg = {
+    v: 0,
+    docId: "doc-sync-more-codec",
+    payload: {
+      case: "ribltStatus" as const,
+      value: {
+        filterId: "f_more",
+        round: 7,
+        payload: {
+          case: "more" as const,
+          value: { codewordsReceived: 9n, credits: 2 },
+        },
+      },
+    },
+  };
+
+  expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(msg))).toEqual(msg);
+});
+
+test("syncOnce waits for ribltStatus.more before sending another codeword batch", async () => {
+  const docId = "doc-sync-more-flow-control";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  const ops: Operation[] = [];
+  for (let i = 1; i <= 12; i += 1) {
+    ops.push(
+      makeOp(replicas.a, i, i, {
+        type: "insert",
+        parent: root,
+        node: nodeIdFromInt(i),
+        orderKey: orderKeyFromPosition(i - 1),
+      })
+    );
+  }
+  await a.applyOps(ops);
+
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>({ bToADelayMs: 25 });
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(ta, { all: {} }, { maxCodewords: 4_096, codewordsPerMessage: 1 });
+
+  await waitUntil(() => b.hasOp(replicaHex.a, 12), { message: "expected b to receive all ops after ribltStatus.more flow control" });
+
+  const wire = log.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
+  let sawMore = false;
+  for (let i = 1; i < wire.length; i += 1) {
+    if (wire[i - 1] === "bToA:ribltStatus") {
+      const status = log[i - 1]!.msg.payload.case === "ribltStatus" ? log[i - 1]!.msg.payload.value : null;
+      if (status?.payload.case === "more") sawMore = true;
+    }
+    expect(!(wire[i - 1] === "aToB:ribltCodewords" && wire[i] === "aToB:ribltCodewords")).toBe(true);
+  }
+  expect(sawMore).toBe(true);
 });
 
 test("syncOnce rejects when local message handler throws during apply", async () => {

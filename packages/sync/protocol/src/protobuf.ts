@@ -38,6 +38,7 @@ import {
   RibltDecodedSchema,
   RibltFailedSchema,
   RibltFailureReason,
+  RibltMoreSchema,
   RibltStatusSchema,
   SubscribeAckSchema,
   SubscribeSchema,
@@ -416,6 +417,19 @@ function fromProtoRibltCodewords(msg: any): RibltCodewords {
 }
 
 function toProtoRibltStatus(status: RibltStatus) {
+  if (status.payload.case === "more") {
+    return create(RibltStatusSchema, {
+      filterId: status.filterId,
+      round: status.round,
+      payload: {
+        case: "more",
+        value: create(RibltMoreSchema, {
+          codewordsReceived: status.payload.value.codewordsReceived,
+          credits: status.payload.value.credits,
+        }),
+      },
+    });
+  }
   if (status.payload.case === "decoded") {
     return create(RibltStatusSchema, {
       filterId: status.filterId,
@@ -445,6 +459,20 @@ function toProtoRibltStatus(status: RibltStatus) {
 }
 
 function fromProtoRibltStatus(status: any): RibltStatus {
+  if (status.payload.case === "more") {
+    const more = status.payload.value;
+    return {
+      filterId: status.filterId,
+      round: status.round,
+      payload: {
+        case: "more",
+        value: {
+          codewordsReceived: more.codewordsReceived,
+          credits: more.credits,
+        },
+      },
+    };
+  }
   if (status.payload.case === "decoded") {
     const decoded = status.payload.value;
     return {

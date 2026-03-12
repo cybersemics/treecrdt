@@ -39,7 +39,6 @@ import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from ".
 import type { StoredAuthMaterial } from "../../auth";
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
-const REMOTE_SYNC_CODEWORD_BATCH_INTERVAL_MS = 100;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -230,7 +229,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
     maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
     codewordsPerMessage: isRemotePeerId(peerId) ? REMOTE_SYNC_CODEWORDS_PER_MESSAGE : localCodewordsPerMessage,
-    ...(isRemotePeerId(peerId) ? { codewordBatchIntervalMs: REMOTE_SYNC_CODEWORD_BATCH_INTERVAL_MS } : {}),
   });
   const syncTimeoutMsForPeer = (peerId: string, opts: { autoSync?: boolean; multipleTargets?: boolean } = {}) => {
     if (isRemotePeerId(peerId)) return PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS;
