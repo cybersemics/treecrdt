@@ -430,7 +430,7 @@ async function clickSyncAllowRevokedCapabilityTokenError(page: import("@playwrig
   }
 }
 
-test("playground mints a fresh default doc and migrates the legacy shared default", async ({ browser }) => {
+test("playground mints a fresh default doc", async ({ browser }) => {
   const freshProfile = `pw-doc-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const freshContext = await browser.newContext();
   const freshPage = await freshContext.newPage();
@@ -450,27 +450,6 @@ test("playground mints a fresh default doc and migrates the legacy shared defaul
     await freshContext.close();
   }
 
-  const legacyProfile = `pw-doc-legacy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const legacyContext = await browser.newContext();
-  await legacyContext.addInitScript((profile) => {
-    window.localStorage.setItem(`treecrdt-playground-profile:${profile}:treecrdt-playground-doc`, "treecrdt-playground");
-  }, legacyProfile);
-  const legacyPage = await legacyContext.newPage();
-
-  try {
-    await waitForReady(legacyPage, `/?profile=${encodeURIComponent(legacyProfile)}`);
-
-    const migratedDoc = new URL(legacyPage.url()).searchParams.get("doc");
-    expect(migratedDoc).toMatch(/^treecrdt-playground-[0-9a-f]{16}$/);
-    expect(migratedDoc).not.toBe("treecrdt-playground");
-
-    const storedMigratedDoc = await legacyPage.evaluate((profile) => {
-      return window.localStorage.getItem(`treecrdt-playground-profile:${profile}:treecrdt-playground-doc`);
-    }, legacyProfile);
-    expect(storedMigratedDoc).toBe(migratedDoc);
-  } finally {
-    await legacyContext.close();
-  }
 });
 
 test("insert and delete node", async ({ page }) => {

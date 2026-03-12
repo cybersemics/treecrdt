@@ -3,7 +3,7 @@ import { bytesToHex } from "@treecrdt/interface/ids";
 import type { StorageMode, SyncTransportMode } from "./types";
 import { prefixPlaygroundStorageKey } from "./storage";
 
-const LEGACY_SHARED_DOC_ID = "treecrdt-playground";
+const DEFAULT_DOC_ID_PREFIX = "treecrdt-playground";
 
 export function initialStorage(): StorageMode {
   if (typeof window === "undefined") return "memory";
@@ -12,7 +12,7 @@ export function initialStorage(): StorageMode {
 }
 
 function makeDefaultDocId(): string {
-  return `${LEGACY_SHARED_DOC_ID}-${makeSessionKey()}`;
+  return `${DEFAULT_DOC_ID_PREFIX}-${makeSessionKey()}`;
 }
 
 export function initialDocId(): string {
@@ -21,8 +21,8 @@ export function initialDocId(): string {
   const param = url.searchParams.get("doc");
   if (param && param.trim()) return param.trim();
   const key = prefixPlaygroundStorageKey("treecrdt-playground-doc");
-  const existing = window.localStorage.getItem(key);
-  if (existing && existing !== LEGACY_SHARED_DOC_ID) return existing;
+  const existing = window.localStorage.getItem(key)?.trim();
+  if (existing) return existing;
   const next = makeDefaultDocId();
   window.localStorage.setItem(key, next);
   url.searchParams.set("doc", next);
