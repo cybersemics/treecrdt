@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 
+import type { Operation } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import type {
   Capability,
@@ -7,7 +8,10 @@ import type {
   OpRef,
   SyncCapabilityMaterialStore,
   SyncOpAuthStore,
+  SyncPendingOpsStore,
 } from "@treecrdt/sync";
+import { deriveOpRefV0 } from "@treecrdt/sync";
+import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from "@treecrdt/sync/protobuf";
 
 export type PostgresSyncOpAuthStore = {
   init: () => Promise<void>;
@@ -18,6 +22,12 @@ export type PostgresSyncOpAuthStore = {
 export type PostgresSyncCapabilityMaterialStore = {
   init: () => Promise<void>;
   forDoc: (docId: string) => SyncCapabilityMaterialStore;
+  close: () => Promise<void>;
+};
+
+export type PostgresSyncPendingOpsStore = {
+  init: () => Promise<void>;
+  forDoc: (docId: string) => SyncPendingOpsStore<Operation>;
   close: () => Promise<void>;
 };
 
@@ -42,6 +52,20 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_capability (
   value TEXT NOT NULL,
   created_at_ms BIGINT NOT NULL,
   PRIMARY KEY (doc_id, name, value)
+);
+`;
+
+const PENDING_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
+  doc_id TEXT NOT NULL,
+  op_ref BYTEA NOT NULL,
+  op BYTEA NOT NULL,
+  sig BYTEA NOT NULL,
+  proof_ref BYTEA,
+  reason TEXT NOT NULL,
+  message TEXT,
+  created_at_ms BIGINT NOT NULL,
+  PRIMARY KEY (doc_id, op_ref)
 );
 `;
 
@@ -160,6 +184,33 @@ DO UPDATE SET created_at_ms = EXCLUDED.created_at_ms
 `;
 }
 
+function insertPendingOpsSql(entryCount: number): string {
+  if (!Number.isInteger(entryCount) || entryCount <= 0) {
+    throw new Error(`invalid pending op count: ${entryCount}`);
+  }
+
+  const rows: string[] = [];
+  for (let i = 0; i < entryCount; i += 1) {
+    const base = i * 8;
+    rows.push(
+      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5}::bytea, $${base + 6}, $${base + 7}, $${base + 8})`
+    );
+  }
+
+  return `
+INSERT INTO treecrdt_sync_pending_ops (doc_id, op_ref, op, sig, proof_ref, reason, message, created_at_ms)
+VALUES ${rows.join(",\n")}
+ON CONFLICT (doc_id, op_ref)
+DO UPDATE SET
+  op = EXCLUDED.op,
+  sig = EXCLUDED.sig,
+  proof_ref = EXCLUDED.proof_ref,
+  reason = EXCLUDED.reason,
+  message = EXCLUDED.message,
+  created_at_ms = EXCLUDED.created_at_ms
+`;
+}
+
 export function createPostgresSyncCapabilityMaterialStore(opts: {
   postgresUrl: string;
   nowMs?: () => number;
@@ -201,3 +252,114 @@ ORDER BY created_at_ms ASC, name ASC, value ASC
 }
 
 export const createPostgresSyncCapabilityStore = createPostgresSyncCapabilityMaterialStore;
+
+export function createPostgresSyncPendingOpsStore(opts: {
+  postgresUrl: string;
+  nowMs?: () => number;
+}): PostgresSyncPendingOpsStore {
+  const nowMs = opts.nowMs ?? (() => Date.now());
+  const pool = new Pool({ connectionString: opts.postgresUrl });
+
+  const opRefForOp = (docId: string, op: Operation): OpRef =>
+    deriveOpRefV0(docId, {
+      replica: op.meta.id.replica,
+      counter: BigInt(op.meta.id.counter),
+    });
+
+  return {
+    init: async () => {
+      await pool.query(PENDING_SCHEMA_SQL);
+    },
+    forDoc: (docId: string): SyncPendingOpsStore<Operation> => ({
+      init: async () => {
+        await pool.query(PENDING_SCHEMA_SQL);
+      },
+      storePendingOps: async (entries) => {
+        if (entries.length === 0) return;
+        const deduped = dedupeLatestByKey(entries, (entry) => bytesToHex(opRefForOp(docId, entry.op)));
+
+        const params: Array<string | number | Uint8Array | null> = [];
+        for (const entry of deduped) {
+          params.push(
+            docId,
+            opRefForOp(docId, entry.op),
+            encodeTreecrdtSyncV0Operation(entry.op),
+            entry.auth.sig,
+            entry.auth.proofRef ?? null,
+            entry.reason,
+            entry.message ?? null,
+            nowMs()
+          );
+        }
+
+        await pool.query(insertPendingOpsSql(deduped.length), params);
+      },
+      listPendingOps: async () => {
+        const res = await pool.query<{
+          op: Buffer;
+          sig: Buffer;
+          proof_ref: Buffer | null;
+          reason: string;
+          message: string | null;
+        }>(
+          `
+SELECT op, sig, proof_ref, reason, message
+FROM treecrdt_sync_pending_ops
+WHERE doc_id = $1
+ORDER BY created_at_ms ASC, op_ref ASC
+`,
+          [docId]
+        );
+
+        return res.rows.map((row) => ({
+          op: decodeTreecrdtSyncV0Operation(toBytes(row.op)),
+          auth: {
+            sig: toBytes(row.sig),
+            ...(row.proof_ref ? { proofRef: toBytes(row.proof_ref) } : {}),
+          },
+          reason: row.reason === "missing_context" ? "missing_context" : (() => {
+            throw new Error(`unexpected pending reason: ${row.reason}`);
+          })(),
+          ...(row.message ? { message: row.message } : {}),
+        }));
+      },
+      listPendingOpRefs: async () => {
+        const res = await pool.query<{ op_ref: Buffer }>(
+          `
+SELECT op_ref
+FROM treecrdt_sync_pending_ops
+WHERE doc_id = $1
+ORDER BY created_at_ms ASC, op_ref ASC
+`,
+          [docId]
+        );
+        return res.rows.map((row) => toBytes(row.op_ref));
+      },
+      deletePendingOps: async (ops) => {
+        if (ops.length === 0) return;
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          for (const op of ops) {
+            await client.query(
+              `
+DELETE FROM treecrdt_sync_pending_ops
+WHERE doc_id = $1 AND op_ref = $2::bytea
+`,
+              [docId, opRefForOp(docId, op)]
+            );
+          }
+          await client.query("COMMIT");
+        } catch (err) {
+          await client.query("ROLLBACK");
+          throw err;
+        } finally {
+          client.release();
+        }
+      },
+    }),
+    close: async () => {
+      await pool.end();
+    },
+  };
+}

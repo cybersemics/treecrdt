@@ -1,10 +1,13 @@
 import Database from "better-sqlite3";
 import { defineProofMaterialStoreContract } from "../../protocol/tests/helpers/proof-material-contract.ts";
+import { definePendingProofMaterialStoreContract } from "../../protocol/tests/helpers/pending-proof-material-contract.ts";
+import { defineReplayOnlyAuthStoreContract } from "../../protocol/tests/helpers/replay-only-auth-contract.ts";
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 
 import {
   createTreecrdtSyncSqliteCapabilityMaterialStore,
   createTreecrdtSyncSqliteOpAuthStore,
+  createTreecrdtSyncSqlitePendingOpsStore,
 } from "../dist/index.js";
 
 function createRunner(db: Database.Database): SqliteRunner {
@@ -31,6 +34,39 @@ function createRunner(db: Database.Database): SqliteRunner {
 }
 
 defineProofMaterialStoreContract("sqlite proof material stores", async () => {
+  const db = new Database(":memory:");
+  const runner = createRunner(db);
+
+  return {
+    createDocStores: async (docId) => {
+      const opAuth = createTreecrdtSyncSqliteOpAuthStore({ runner, docId });
+      const capabilities = createTreecrdtSyncSqliteCapabilityMaterialStore({ runner, docId });
+      await opAuth.init();
+      await capabilities.init();
+      return { opAuth, capabilities };
+    },
+    close: async () => {
+      db.close();
+    },
+  };
+});
+
+definePendingProofMaterialStoreContract("sqlite pending proof material stores", async () => {
+  const db = new Database(":memory:");
+  const runner = createRunner(db);
+
+  return {
+    createPendingStore: async (docId) => {
+      const pending = createTreecrdtSyncSqlitePendingOpsStore({ runner, docId });
+      return pending;
+    },
+    close: async () => {
+      db.close();
+    },
+  };
+});
+
+defineReplayOnlyAuthStoreContract("sqlite replay-only auth material stores", async () => {
   const db = new Database(":memory:");
   const runner = createRunner(db);
 
