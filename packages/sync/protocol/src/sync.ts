@@ -1,5 +1,6 @@
 import { RibltDecoder16, RibltEncoder16 } from "@treecrdt/riblt-wasm";
 
+import { AUTH_CAPABILITY_NAME, isAnyAuthCapability, isAuthCapability } from "./auth-capabilities.js";
 import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from "./auth.js";
 import { ErrorCode, RibltFailureReason } from "./types.js";
 import type {
@@ -173,7 +174,7 @@ type InitiatorSubscription = {
 };
 
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
-  return capabilities.some((cap) => cap.name === "auth.capability" || cap.name === "auth.capability.replay");
+  return capabilities.some(isAnyAuthCapability);
 }
 
 export class SyncPeer<Op> {
@@ -744,7 +745,7 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     hello: Hello
   ): Promise<void> {
-    const hasAuthCapability = hello.capabilities.some((c) => c.name === "auth.capability");
+    const hasAuthCapability = hello.capabilities.some(isAuthCapability);
 
     // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
     // can't race and get rejected before `onHello` completes.
@@ -789,7 +790,7 @@ export class SyncPeer<Op> {
         rejectedFilters.push({
           id,
           reason: ErrorCode.UNAUTHORIZED,
-          message: 'missing "auth.capability" token; send a valid capability token in Hello.capabilities',
+            message: `missing "${AUTH_CAPABILITY_NAME}" token; send a valid capability token in Hello.capabilities`,
         });
         continue;
       }
@@ -869,7 +870,7 @@ export class SyncPeer<Op> {
   private async onHelloAck(transport: DuplexTransport<SyncMessage<Op>>, ack: HelloAck): Promise<void> {
     await this.auth?.onHelloAck?.(ack, { docId: this.backend.docId });
 
-    const hasAuthCapability = ack.capabilities.some((c) => c.name === "auth.capability");
+    const hasAuthCapability = ack.capabilities.some(isAuthCapability);
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
     if (peerAdvertisedOpAuth(ack.capabilities)) this.transportPeerCapabilities.set(transport, ack.capabilities);
 
@@ -1026,7 +1027,7 @@ export class SyncPeer<Op> {
           case: "error",
           value: {
             code: ErrorCode.UNAUTHORIZED,
-            message: 'missing "auth.capability" token; send Hello before Subscribe',
+            message: `missing "${AUTH_CAPABILITY_NAME}" token; send Hello before Subscribe`,
             subscriptionId: msg.subscriptionId,
           },
         },

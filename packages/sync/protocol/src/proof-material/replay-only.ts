@@ -1,6 +1,7 @@
 import type { Operation } from "@treecrdt/interface";
 import { replicaIdToBytes } from "@treecrdt/interface/ids";
 
+import { isAnyAuthCapability } from "../auth-capabilities.js";
 import type { SyncAuth } from "../auth.js";
 import { deriveOpRefV0 } from "../opref.js";
 import type { Capability, OpAuth, OpRef } from "../types.js";
@@ -10,10 +11,6 @@ export function createReplayOnlySyncAuth(opts: {
   docId: string;
   authMaterialStore: Pick<SyncAuthMaterialStore<Operation>, "opAuth" | "capabilities">;
 }): SyncAuth<Operation> {
-  const AUTH_CAPABILITY_NAME = "auth.capability";
-  const AUTH_REPLAY_CAPABILITY_NAME = "auth.capability.replay";
-  const isAuthCapabilityMaterial = (cap: Capability): boolean =>
-    cap.name === AUTH_CAPABILITY_NAME || cap.name === AUTH_REPLAY_CAPABILITY_NAME;
   const opRefForOp = (op: Operation): OpRef =>
     deriveOpRefV0(opts.docId, {
       replica: replicaIdToBytes(op.meta.id.replica),
@@ -22,12 +19,12 @@ export function createReplayOnlySyncAuth(opts: {
 
   const listAuthCapabilities = async (): Promise<Capability[]> => {
     const caps = (await opts.authMaterialStore.capabilities?.listCapabilities()) ?? [];
-    return caps.filter(isAuthCapabilityMaterial);
+    return caps.filter(isAnyAuthCapability);
   };
 
   const storeAuthCapabilities = async (caps: readonly Capability[]): Promise<void> => {
     if (!opts.authMaterialStore.capabilities) return;
-    const filtered = caps.filter(isAuthCapabilityMaterial);
+    const filtered = caps.filter(isAnyAuthCapability);
     if (filtered.length === 0) return;
     await opts.authMaterialStore.capabilities.storeCapabilities(filtered);
   };

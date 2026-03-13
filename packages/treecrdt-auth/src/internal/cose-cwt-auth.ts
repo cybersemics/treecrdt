@@ -2,7 +2,12 @@ import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
 
 import {
+  AUTH_CAPABILITY_NAME,
+  AUTH_REPLAY_CAPABILITY_NAME,
   deriveOpRefV0,
+  isAnyAuthCapability,
+  isAuthCapability,
+  isReplayAuthCapability,
   type Capability,
   type Filter,
   type Hello,
@@ -96,8 +101,6 @@ export type TreecrdtCoseCwtRevocationCheckContext =
   | TreecrdtCoseCwtRuntimeRevocationCheckContext;
 
 export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): SyncAuth<Operation> {
-  const AUTH_CAPABILITY_NAME = "auth.capability";
-  const AUTH_REPLAY_CAPABILITY_NAME = "auth.capability.replay";
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
   const allowUnsigned = opts.allowUnsigned ?? false;
   const requireProofRef = opts.requireProofRef ?? false;
@@ -172,12 +175,6 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     }
     return opts2.op.meta.id.counter >= revocation.effectiveFromCounter;
   };
-
-  const isPeerAuthCapability = (cap: Capability): boolean => cap.name === AUTH_CAPABILITY_NAME;
-
-  const isReplayAuthCapability = (cap: Capability): boolean => cap.name === AUTH_REPLAY_CAPABILITY_NAME;
-
-  const isAnyAuthCapability = (cap: Capability): boolean => isPeerAuthCapability(cap) || isReplayAuthCapability(cap);
 
   const makeAuthCapability = (tokenBytes: Uint8Array, name: string = AUTH_CAPABILITY_NAME): Capability => ({
     name,
@@ -447,11 +444,11 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       await recordCapabilities(ack.capabilities, ctx.docId);
     },
     authorizeFilter: async (filter: Filter, ctx) => {
-      const tokenCaps = ctx.capabilities.filter(isPeerAuthCapability);
-      if (tokenCaps.length === 0) throw new Error('missing "auth.capability" token');
+      const tokenCaps = ctx.capabilities.filter(isAuthCapability);
+      if (tokenCaps.length === 0) throw new Error(`missing "${AUTH_CAPABILITY_NAME}" token`);
 
       const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
-      if (grants.length === 0) throw new Error('no trusted "auth.capability" token');
+      if (grants.length === 0) throw new Error(`no trusted "${AUTH_CAPABILITY_NAME}" token`);
 
       const requiredActions = ["read_structure"];
       const node =
@@ -509,7 +506,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       throw new Error("capability does not allow filter");
     },
     filterOutgoingOps: async (ops, ctx) => {
-      const tokenCaps = ctx.capabilities.filter(isPeerAuthCapability);
+      const tokenCaps = ctx.capabilities.filter(isAuthCapability);
       if (tokenCaps.length === 0) return ops.map(() => true);
 
       const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
