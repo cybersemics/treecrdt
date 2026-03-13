@@ -4,9 +4,9 @@ import { definePendingProofMaterialStoreContract } from "../../protocol/tests/he
 import { defineReplayOnlyAuthStoreContract } from "../../protocol/tests/helpers/replay-only-auth-contract.ts";
 
 import {
-  createPostgresSyncCapabilityMaterialStore,
-  createPostgresSyncOpAuthStore,
-  createPostgresSyncPendingOpsStore,
+  createCapabilityMaterialStore,
+  createOpAuthStore,
+  createPendingOpsStore,
 } from "../dist/index.js";
 
 const POSTGRES_URL = process.env.TREECRDT_POSTGRES_URL;
@@ -14,8 +14,8 @@ const maybeDescribe = POSTGRES_URL ? describe : describe.skip;
 
 maybeDescribe("postgres proof material stores", () => {
   defineProofMaterialStoreContract("postgres proof material stores", async () => {
-    const opAuthStore = createPostgresSyncOpAuthStore({ postgresUrl: POSTGRES_URL! });
-    const capabilityStore = createPostgresSyncCapabilityMaterialStore({ postgresUrl: POSTGRES_URL! });
+    const opAuthStore = createOpAuthStore({ postgresUrl: POSTGRES_URL! });
+    const capabilityStore = createCapabilityMaterialStore({ postgresUrl: POSTGRES_URL! });
     await opAuthStore.init();
     await capabilityStore.init();
 
@@ -31,7 +31,7 @@ maybeDescribe("postgres proof material stores", () => {
   });
 
   definePendingProofMaterialStoreContract("postgres pending proof material stores", async () => {
-    const pendingStore = createPostgresSyncPendingOpsStore({ postgresUrl: POSTGRES_URL! });
+    const pendingStore = createPendingOpsStore({ postgresUrl: POSTGRES_URL! });
     await pendingStore.init();
 
     return {
@@ -43,8 +43,8 @@ maybeDescribe("postgres proof material stores", () => {
   });
 
   defineReplayOnlyAuthStoreContract("postgres replay-only auth material stores", async () => {
-    const opAuthStore = createPostgresSyncOpAuthStore({ postgresUrl: POSTGRES_URL! });
-    const capabilityStore = createPostgresSyncCapabilityMaterialStore({ postgresUrl: POSTGRES_URL! });
+    const opAuthStore = createOpAuthStore({ postgresUrl: POSTGRES_URL! });
+    const capabilityStore = createCapabilityMaterialStore({ postgresUrl: POSTGRES_URL! });
     await opAuthStore.init();
     await capabilityStore.init();
 

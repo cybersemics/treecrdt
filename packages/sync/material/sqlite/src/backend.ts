@@ -4,7 +4,7 @@ import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 import { deriveOpRefV0 } from "@treecrdt/sync";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
-import { createTreecrdtSyncSqlitePendingOpsStore } from "./proof-material/index.js";
+import { createPendingOpsStore } from "./proof-material/index.js";
 
 export type TreecrdtSyncBackendClient = {
   runner?: SqliteRunner;
@@ -102,7 +102,7 @@ export function createTreecrdtSyncBackendFromClient(
   const pending = opts.enablePendingSidecar
     ? (() => {
         if (!client.runner) throw new Error("enablePendingSidecar requires client.runner");
-        return createTreecrdtSyncSqlitePendingOpsStore({ runner: client.runner, docId });
+        return createPendingOpsStore({ runner: client.runner, docId });
       })()
     : null;
   let pendingReady = false;

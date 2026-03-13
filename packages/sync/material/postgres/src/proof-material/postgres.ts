@@ -13,26 +13,23 @@ import type {
 import { deriveOpRefV0 } from "@treecrdt/sync";
 import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from "@treecrdt/sync/protobuf";
 
-export type PostgresSyncOpAuthStore = {
+export type PostgresOpAuthStore = {
   init: () => Promise<void>;
   forDoc: (docId: string) => SyncOpAuthStore;
   close: () => Promise<void>;
 };
 
-export type PostgresSyncCapabilityMaterialStore = {
+export type PostgresCapabilityMaterialStore = {
   init: () => Promise<void>;
   forDoc: (docId: string) => SyncCapabilityMaterialStore;
   close: () => Promise<void>;
 };
 
-export type PostgresSyncPendingOpsStore = {
+export type PostgresPendingOpsStore = {
   init: () => Promise<void>;
   forDoc: (docId: string) => SyncPendingOpsStore<Operation>;
   close: () => Promise<void>;
 };
-
-// Backwards-compatible alias while the package API is in transition.
-export type PostgresSyncCapabilityStore = PostgresSyncCapabilityMaterialStore;
 
 const OP_AUTH_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
@@ -115,10 +112,10 @@ WHERE doc_id = $1 AND op_ref IN (${placeholders})
 `;
 }
 
-export function createPostgresSyncOpAuthStore(opts: {
+export function createOpAuthStore(opts: {
   postgresUrl: string;
   nowMs?: () => number;
-}): PostgresSyncOpAuthStore {
+}): PostgresOpAuthStore {
   const nowMs = opts.nowMs ?? (() => Date.now());
   const pool = new Pool({ connectionString: opts.postgresUrl });
 
@@ -211,10 +208,10 @@ DO UPDATE SET
 `;
 }
 
-export function createPostgresSyncCapabilityMaterialStore(opts: {
+export function createCapabilityMaterialStore(opts: {
   postgresUrl: string;
   nowMs?: () => number;
-}): PostgresSyncCapabilityMaterialStore {
+}): PostgresCapabilityMaterialStore {
   const nowMs = opts.nowMs ?? (() => Date.now());
   const pool = new Pool({ connectionString: opts.postgresUrl });
 
@@ -251,12 +248,10 @@ ORDER BY created_at_ms ASC, name ASC, value ASC
   };
 }
 
-export const createPostgresSyncCapabilityStore = createPostgresSyncCapabilityMaterialStore;
-
-export function createPostgresSyncPendingOpsStore(opts: {
+export function createPendingOpsStore(opts: {
   postgresUrl: string;
   nowMs?: () => number;
-}): PostgresSyncPendingOpsStore {
+}): PostgresPendingOpsStore {
   const nowMs = opts.nowMs ?? (() => Date.now());
   const pool = new Pool({ connectionString: opts.postgresUrl });
 

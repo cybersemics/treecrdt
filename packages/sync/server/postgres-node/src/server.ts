@@ -7,14 +7,12 @@ import type { Operation } from "@treecrdt/interface";
 import { createReplayOnlySyncAuth } from "@treecrdt/sync";
 import type { SyncBackend, SyncPeer, SyncPeerOptions } from "@treecrdt/sync";
 import {
-  createPostgresSyncCapabilityMaterialStore,
-  createPostgresSyncCapabilityStore,
-  createPostgresSyncOpAuthStore,
+  createCapabilityMaterialStore,
+  createOpAuthStore,
 } from "@treecrdt/sync-postgres";
 import type {
-  PostgresSyncCapabilityMaterialStore,
-  PostgresSyncCapabilityStore,
-  PostgresSyncOpAuthStore,
+  PostgresCapabilityMaterialStore,
+  PostgresOpAuthStore,
 } from "@treecrdt/sync-postgres";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type {
@@ -100,14 +98,12 @@ type PostgresDocUpdateBusOptions = {
 };
 
 export {
-  createPostgresSyncCapabilityMaterialStore,
-  createPostgresSyncCapabilityStore,
-  createPostgresSyncOpAuthStore,
+  createCapabilityMaterialStore,
+  createOpAuthStore,
 };
 export type {
-  PostgresSyncCapabilityMaterialStore,
-  PostgresSyncCapabilityStore,
-  PostgresSyncOpAuthStore,
+  PostgresCapabilityMaterialStore,
+  PostgresOpAuthStore,
 };
 
 function ensurePostgresChannelName(value: string): string {
@@ -608,8 +604,8 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const module = await loadPostgresBackendModule(backendModule);
   const backendFactory = module.createPostgresNapiSyncBackendFactory(postgresUrl);
   if (backendFactory.ensureSchema) await backendFactory.ensureSchema();
-  const opAuthStore = createPostgresSyncOpAuthStore({ postgresUrl });
-  const capabilityMaterialStore = createPostgresSyncCapabilityMaterialStore({ postgresUrl });
+  const opAuthStore = createOpAuthStore({ postgresUrl });
+  const capabilityMaterialStore = createCapabilityMaterialStore({ postgresUrl });
   await opAuthStore.init();
   await capabilityMaterialStore.init();
 

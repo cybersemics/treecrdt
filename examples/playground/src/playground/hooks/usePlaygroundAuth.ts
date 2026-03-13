@@ -13,8 +13,8 @@ import {
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
 import {
-  createTreecrdtSyncSqliteOpAuthStore,
-  createTreecrdtSyncSqlitePendingOpsStore,
+  createOpAuthStore,
+  createPendingOpsStore,
 } from "@treecrdt/sync-sqlite";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
@@ -571,7 +571,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const localPk = base64urlDecode(authMaterial.localPkB64);
       const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
       const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
-      const opAuthStore = createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId });
+      const opAuthStore = createOpAuthStore({ runner: client.runner, docId });
 
       localAuthRef.current = createTreecrdtCoseCwtAuth({
         issuerPublicKeys: [issuerPk],
@@ -1255,7 +1255,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const store = createTreecrdtSyncSqlitePendingOpsStore({ runner: client.runner, docId });
+      const store = createPendingOpsStore({ runner: client.runner, docId });
       await store.init();
       const listed = await store.listPendingOps();
       setPendingOps(

@@ -25,11 +25,11 @@ function hexToBytesStrict(hex: string, expectedLen: number, field: string): Uint
   return bytes;
 }
 
-export type TreecrdtSyncSqlitePendingOpsStore = SyncPendingOpsStore<Operation>;
-export type TreecrdtSyncSqliteOpAuthStore = SyncOpAuthStore & {
+export type SqlitePendingOpsStore = SyncPendingOpsStore<Operation>;
+export type SqliteOpAuthStore = SyncOpAuthStore & {
   init: () => Promise<void>;
 };
-export type TreecrdtSyncSqliteCapabilityMaterialStore = SyncCapabilityMaterialStore & {
+export type SqliteCapabilityMaterialStore = SyncCapabilityMaterialStore & {
   init: () => Promise<void>;
 };
 
@@ -68,11 +68,11 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_capability (
 );
 `;
 
-export function createTreecrdtSyncSqlitePendingOpsStore(opts: {
+export function createPendingOpsStore(opts: {
   runner: SqliteRunner;
   docId: string;
   nowMs?: () => number;
-}): TreecrdtSyncSqlitePendingOpsStore {
+}): SqlitePendingOpsStore {
   const nowMs = opts.nowMs ?? (() => Date.now());
 
   const insertSql = `
@@ -203,11 +203,11 @@ RETURNING 1
   };
 }
 
-export function createTreecrdtSyncSqliteOpAuthStore(opts: {
+export function createOpAuthStore(opts: {
   runner: SqliteRunner;
   docId: string;
   nowMs?: () => number;
-}): TreecrdtSyncSqliteOpAuthStore {
+}): SqliteOpAuthStore {
   const nowMs = opts.nowMs ?? (() => Date.now());
 
   const insertSql = `
@@ -277,11 +277,11 @@ FROM (
   };
 }
 
-export function createTreecrdtSyncSqliteCapabilityMaterialStore(opts: {
+export function createCapabilityMaterialStore(opts: {
   runner: SqliteRunner;
   docId: string;
   nowMs?: () => number;
-}): TreecrdtSyncSqliteCapabilityMaterialStore {
+}): SqliteCapabilityMaterialStore {
   const nowMs = opts.nowMs ?? (() => Date.now());
 
   const insertSql = `

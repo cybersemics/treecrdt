@@ -14,7 +14,7 @@ import {
 } from "@treecrdt/auth";
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { createTreecrdtSyncSqliteOpAuthStore, createTreecrdtSyncSqlitePendingOpsStore } from "@treecrdt/sync-sqlite";
+import { createOpAuthStore, createPendingOpsStore } from "@treecrdt/sync-sqlite";
 
 export function conformanceSlugify(input: string): string {
   return input
@@ -1028,7 +1028,7 @@ async function scenarioSyncAuthPendingContextSidecar(ctx: SqliteConformanceConte
   const runnerB = engineRunnerOrNull(b);
   if (!runnerB) return;
 
-  const pendingB = createTreecrdtSyncSqlitePendingOpsStore({ runner: runnerB, docId });
+  const pendingB = createPendingOpsStore({ runner: runnerB, docId });
   await pendingB.init();
 
   const issuerSk = randomEd25519SecretKey();
@@ -1145,7 +1145,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(ctx: SqliteConforma
   const relay1 = await ctx.createPersistentEngine({ docId, name: "relay" });
   const runnerRelay1 = engineRunnerOrNull(relay1);
   if (!runnerRelay1) return;
-  const opAuthRelay1 = createTreecrdtSyncSqliteOpAuthStore({ runner: runnerRelay1, docId });
+  const opAuthRelay1 = createOpAuthStore({ runner: runnerRelay1, docId });
   await opAuthRelay1.init();
 
   const issuerSk = randomEd25519SecretKey();
@@ -1209,7 +1209,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(ctx: SqliteConforma
   const relay2 = await ctx.createPersistentEngine({ docId, name: "relay" });
   const runnerRelay2 = engineRunnerOrNull(relay2);
   if (!runnerRelay2) return;
-  const opAuthRelay2 = createTreecrdtSyncSqliteOpAuthStore({ runner: runnerRelay2, docId });
+  const opAuthRelay2 = createOpAuthStore({ runner: runnerRelay2, docId });
   await opAuthRelay2.init();
 
   const authRelay2 = createTreecrdtCoseCwtAuth({

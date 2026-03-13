@@ -5,9 +5,9 @@ import { defineReplayOnlyAuthStoreContract } from "../../protocol/tests/helpers/
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
 
 import {
-  createTreecrdtSyncSqliteCapabilityMaterialStore,
-  createTreecrdtSyncSqliteOpAuthStore,
-  createTreecrdtSyncSqlitePendingOpsStore,
+  createCapabilityMaterialStore,
+  createOpAuthStore,
+  createPendingOpsStore,
 } from "../dist/index.js";
 
 function createRunner(db: Database.Database): SqliteRunner {
@@ -39,8 +39,8 @@ defineProofMaterialStoreContract("sqlite proof material stores", async () => {
 
   return {
     createDocStores: async (docId) => {
-      const opAuth = createTreecrdtSyncSqliteOpAuthStore({ runner, docId });
-      const capabilities = createTreecrdtSyncSqliteCapabilityMaterialStore({ runner, docId });
+      const opAuth = createOpAuthStore({ runner, docId });
+      const capabilities = createCapabilityMaterialStore({ runner, docId });
       await opAuth.init();
       await capabilities.init();
       return { opAuth, capabilities };
@@ -57,7 +57,7 @@ definePendingProofMaterialStoreContract("sqlite pending proof material stores", 
 
   return {
     createPendingStore: async (docId) => {
-      const pending = createTreecrdtSyncSqlitePendingOpsStore({ runner, docId });
+      const pending = createPendingOpsStore({ runner, docId });
       return pending;
     },
     close: async () => {
@@ -72,8 +72,8 @@ defineReplayOnlyAuthStoreContract("sqlite replay-only auth material stores", asy
 
   return {
     createDocStores: async (docId) => {
-      const opAuth = createTreecrdtSyncSqliteOpAuthStore({ runner, docId });
-      const capabilities = createTreecrdtSyncSqliteCapabilityMaterialStore({ runner, docId });
+      const opAuth = createOpAuthStore({ runner, docId });
+      const capabilities = createCapabilityMaterialStore({ runner, docId });
       await opAuth.init();
       await capabilities.init();
       return { opAuth, capabilities };

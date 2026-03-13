@@ -15,8 +15,8 @@ import {
 } from "@treecrdt/sync";
 import {
   createTreecrdtSyncBackendFromClient,
-  createTreecrdtSyncSqliteCapabilityMaterialStore,
-  createTreecrdtSyncSqliteOpAuthStore,
+  createCapabilityMaterialStore,
+  createOpAuthStore,
 } from "@treecrdt/sync-sqlite";
 import type { BroadcastPresenceAckMessageV1, BroadcastPresenceMessageV1 } from "@treecrdt/sync/browser";
 import { createBroadcastPresenceMesh, createBrowserWebSocketTransport } from "@treecrdt/sync/browser";
@@ -823,8 +823,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
               if (!Number.isInteger(parsedCounter) || parsedCounter < 0) return null;
               return { tokenIdHex, counter: parsedCounter };
             })(),
-            opAuthStore: createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId }),
-            capabilityStore: createTreecrdtSyncSqliteCapabilityMaterialStore({ runner: client.runner, docId }),
+            opAuthStore: createOpAuthStore({ runner: client.runner, docId }),
+            capabilityStore: createCapabilityMaterialStore({ runner: client.runner, docId }),
             scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
             getLocalIdentityChain,
             onPeerIdentityChain,
