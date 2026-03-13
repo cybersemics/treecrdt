@@ -99,6 +99,19 @@ function normalizeOpAuth(value: OpAuth): OpAuth {
   };
 }
 
+async function waitFor(
+  check: () => boolean | Promise<boolean>,
+  message: string,
+  timeoutMs = 2_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (await check()) return;
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${message}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 export function defineReplayOnlyAuthStoreContract(
   label: string,
   createHarness: () => Promise<ReplayAuthHarness> | ReplayAuthHarness
@@ -155,7 +168,10 @@ export function defineReplayOnlyAuthStoreContract(
         firstHop.detach();
       }
 
-      expect(relayBackend.hasOp(bytesToHex(op.meta.id.replica), op.meta.id.counter)).toBe(true);
+      await waitFor(
+        () => relayBackend.hasOp(bytesToHex(op.meta.id.replica), op.meta.id.counter),
+        "relay backend to apply first-hop op"
+      );
 
       const secondHop = createInMemoryConnectedPeers({
         backendA: relayBackend,
@@ -170,7 +186,10 @@ export function defineReplayOnlyAuthStoreContract(
         secondHop.detach();
       }
 
-      expect(joinerBackend.hasOp(bytesToHex(op.meta.id.replica), op.meta.id.counter)).toBe(true);
+      await waitFor(
+        () => joinerBackend.hasOp(bytesToHex(op.meta.id.replica), op.meta.id.counter),
+        "joiner backend to apply replayed op"
+      );
       expect(await relayJoinerAuth.helloCapabilities?.({ docId })).toEqual([authorCapability]);
       const replayed = await relayJoinerAuth.signOps?.([op], {
         docId,
