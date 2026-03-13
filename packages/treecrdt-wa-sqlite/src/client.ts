@@ -1,4 +1,4 @@
-import { detectOpfsSupport } from "./opfs.js";
+import { clearOpfsStorage, detectOpfsSupport } from "./opfs.js";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
 import {
   createTreecrdtSqliteWriter,
@@ -52,7 +52,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   tree: TreecrdtTreeApi;
   meta: TreecrdtMetaApi;
   local: TreecrdtLocalApi;
-  close: () => Promise<void>;
+  close: (opts?: { clearStorage?: boolean }) => Promise<void>;
 };
 
 export type ClientOptions = {
@@ -167,9 +167,9 @@ async function createWorkerClient(opts: {
     throw new Error(`OPFS requested but could not be initialized${reason}`);
   }
 
-  const closeImpl = async () => {
+  const closeImpl = async (opts?: { clearStorage?: boolean }) => {
     try {
-      if (!terminalError) await call("close", [] as RpcParams<"close">);
+      if (!terminalError) await call("close", [opts?.clearStorage] as RpcParams<"close">);
     } finally {
       worker.removeEventListener("error", onError);
       worker.removeEventListener("message", onMessage);
@@ -321,9 +321,14 @@ async function createDirectClient(opts: {
           const [replica, node, payload] = params as RpcParams<"localPayload">;
           return (await localWriterFor(Uint8Array.from(replica)).payload(node, payload)) as any;
         }
-        case "close":
+        case "close": {
+          const [clearStorage] = params as RpcParams<"close">;
           if (db.close) await db.close();
+          if (clearStorage === true && finalStorage === "opfs") {
+            await clearOpfsStorage(filename);
+          }
           return undefined as any;
+        }
         default:
           throw new Error(`unsupported direct method: ${method}`);
       }
@@ -337,8 +342,11 @@ async function createDirectClient(opts: {
     storage: finalStorage,
     docId: opts.docId,
     call,
-    close: async () => {
+    close: async (opts?: { clearStorage?: boolean }) => {
       if (db.close) await db.close();
+      if (opts?.clearStorage === true && finalStorage === "opfs") {
+        await clearOpfsStorage(filename);
+      }
     },
   });
 }
@@ -350,7 +358,7 @@ function makeTreecrdtClientFromCall(opts: {
   storage: StorageMode;
   docId: string;
   call: RpcCall;
-  close: () => Promise<void>;
+  close: (opts?: { clearStorage?: boolean }) => Promise<void>;
 }): TreecrdtClient {
   const call = opts.call;
 

@@ -12,8 +12,11 @@ import {
 } from "@treecrdt/interface/sqlite";
 import type { RpcMethod, RpcRequest, RpcSqlParams } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
+import { clearOpfsStorage } from "./opfs.js";
 
 let db: Database | null = null;
+let storedFilename: string | undefined;
+let storedStorage: "memory" | "opfs" = "memory";
 let api: TreecrdtAdapter | null = null;
 let runner: SqliteRunner | null = null;
 const localWriters = new Map<string, TreecrdtSqliteWriter>();
@@ -85,6 +88,8 @@ async function init(
   db = opened.db;
   api = opened.api;
   runner = makeRunner(opened.db);
+  storedFilename = opened.filename;
+  storedStorage = opened.storage;
   localWriters.clear();
   return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }
@@ -215,11 +220,16 @@ async function localPayload(replica: number[], node: string, payload: Uint8Array
   return await writer.payload(node, payload);
 }
 
-async function close() {
+async function close(clearStorage?: boolean) {
   if (db?.close) await db.close();
+  if (clearStorage === true && storedStorage === "opfs" && storedFilename) {
+    await clearOpfsStorage(storedFilename);
+  }
   db = null;
   api = null;
   runner = null;
+  storedFilename = undefined;
+  storedStorage = "memory";
   localWriters.clear();
   return null;
 }
