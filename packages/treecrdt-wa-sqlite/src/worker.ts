@@ -45,6 +45,7 @@ const methods = {
   localDelete,
   localPayload,
   close,
+  drop,
 } as const;
 
 self.onmessage = async (ev: MessageEvent<RpcRequest>) => {
@@ -220,17 +221,28 @@ async function localPayload(replica: number[], node: string, payload: Uint8Array
   return await writer.payload(node, payload);
 }
 
-async function close(clearStorage?: boolean) {
+async function closeDbAndReset() {
   if (db?.close) await db.close();
-  if (clearStorage === true && storedStorage === "opfs" && storedFilename) {
-    await clearOpfsStorage(storedFilename);
-  }
   db = null;
   api = null;
   runner = null;
   storedFilename = undefined;
   storedStorage = "memory";
   localWriters.clear();
+}
+
+async function close() {
+  await closeDbAndReset();
+  return null;
+}
+
+async function drop() {
+  const filename = storedFilename;
+  const storage = storedStorage;
+  await closeDbAndReset();
+  if (storage === "opfs" && filename) {
+    await clearOpfsStorage(filename);
+  }
   return null;
 }
 

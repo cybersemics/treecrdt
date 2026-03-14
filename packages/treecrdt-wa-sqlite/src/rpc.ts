@@ -50,7 +50,8 @@ export type RpcSchema = {
   };
   localDelete: { params: [replica: number[], node: string]; result: Operation };
   localPayload: { params: [replica: number[], node: string, payload: Uint8Array | null]; result: Operation };
-  close: { params: [clearStorage?: boolean]; result: void };
+  close: { params: []; result: void };
+  drop: { params: []; result: void };
 };
 
 export type RpcMethod = keyof RpcSchema;
