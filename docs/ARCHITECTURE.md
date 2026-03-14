@@ -31,7 +31,11 @@ flowchart TD
   %% TypeScript packages (pnpm workspace)
   subgraph TS["TypeScript packages (pnpm workspace)"]
     iface["@treecrdt/interface"]
-    sync["@treecrdt/sync"]
+    sync_core["@treecrdt/sync"]
+    sync_sqlite["@treecrdt/sync-sqlite"]
+    sync_postgres["@treecrdt/sync-postgres"]
+    sync_server_core["@treecrdt/sync-server-core"]
+    sync_server_pg["@treecrdt/sync-server-postgres-node"]
     auth["@treecrdt/auth"]
     crypto["@treecrdt/crypto"]
     wa_vendor["@treecrdt/wa-sqlite-vendor"]
@@ -44,14 +48,23 @@ flowchart TD
   end
 
   %% Runtime dependencies
-  sync --> iface
-  sync --> riblt_pkg
+  sync_core --> iface
+  sync_core --> riblt_pkg
+  sync_sqlite --> sync_core
+  sync_sqlite --> iface
+  sync_postgres --> sync_core
+  sync_postgres --> iface
+  sync_server_core --> sync_core
+  sync_server_pg --> sync_core
+  sync_server_pg --> sync_postgres
+  sync_server_pg --> sync_server_core
   auth --> iface
-  auth --> sync
+  auth --> sync_core
   wa --> iface
   wasm_pkg --> iface
   conformance --> auth
-  conformance --> sync
+  conformance --> sync_core
+  conformance --> sync_sqlite
   conformance --> iface
 
   %% Build-time connections (how artifacts are produced)
@@ -63,7 +76,7 @@ flowchart TD
 
   %% Dev/test relationships (kept out of runtime deps)
   auth -. dev .-> bench
-  sync -. dev .-> bench
+  sync_core -. dev .-> bench
   wasm_pkg -. dev .-> bench
   wa -. dev .-> bench
   sqlite_node -. conformance tests .-> conformance

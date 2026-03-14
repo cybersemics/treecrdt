@@ -4,7 +4,6 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    branches: [ main ]
 
 env:
   EM_VERSION: 4.0.21
@@ -82,7 +81,8 @@ jobs:
       run: |
         pnpm -C packages/treecrdt-ts run build
         pnpm -C packages/treecrdt-riblt-wasm-js run build
-        pnpm -C packages/treecrdt-sync run build
+        pnpm -C packages/sync/protocol run build
+        pnpm -C packages/sync/material/sqlite run build
         pnpm -C packages/treecrdt-auth run build
         pnpm -C packages/treecrdt-crypto run build
         pnpm -C packages/treecrdt-wa-sqlite run build:ts
@@ -192,9 +192,13 @@ jobs:
       run: pnpm install
 
     - name: Build TypeScript deps for postgres backend tests
-      run: pnpm --filter @treecrdt/postgres-napi^... run build
+      run: |
+        pnpm --filter @treecrdt/postgres-napi... --filter @treecrdt/sync-server-postgres-node... run build
 
     - name: Run postgres backend tests
       env:
         TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/treecrdt
-      run: pnpm -C packages/treecrdt-postgres-napi test
+      run: |
+        pnpm -C packages/treecrdt-postgres-napi test
+        pnpm -C packages/sync/material/postgres test
+        pnpm -C packages/sync/server/postgres-node test

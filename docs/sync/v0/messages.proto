@@ -59,6 +59,13 @@ message RibltCodewords {
   repeated RibltCodeword codewords = 4;
 }
 
+message RibltMore {
+  // Number of codewords the receiver has consumed so far (for observability / pacing).
+  uint64 codewords_received = 1;
+  // Number of additional RibltCodewords messages the initiator MAY send immediately.
+  uint32 credits = 2;
+}
+
 message RibltDecoded {
   repeated OpRef sender_missing = 1;
   repeated OpRef receiver_missing = 2;
@@ -77,6 +84,7 @@ message RibltStatus {
   oneof payload {
     RibltDecoded decoded = 3;
     RibltFailed failed = 4;
+    RibltMore more = 5;
   }
 }
 
