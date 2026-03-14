@@ -1,4 +1,4 @@
-import { detectOpfsSupport } from "./opfs.js";
+import { clearOpfsStorage, detectOpfsSupport } from "./opfs.js";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
 import {
   createTreecrdtSqliteWriter,
@@ -53,6 +53,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   meta: TreecrdtMetaApi;
   local: TreecrdtLocalApi;
   close: () => Promise<void>;
+  drop: () => Promise<void>;
 };
 
 export type ClientOptions = {
@@ -153,27 +154,37 @@ async function createWorkerClient(opts: {
     opts.docId,
   ])) as { storage?: StorageMode; opfsError?: string } | undefined;
   const effectiveStorage: StorageMode = initResult?.storage === "opfs" ? "opfs" : "memory";
+  const cleanup = () => {
+    worker.removeEventListener("error", onError);
+    worker.removeEventListener("message", onMessage);
+    worker.terminate();
+  };
+
   if (opts.requireOpfs && effectiveStorage !== "opfs") {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : "";
     try {
-      if (!terminalError) await call("close", [] as RpcParams<"close">);
+      if (!terminalError) await call("close", []);
     } catch {
       // ignore close errors on init failure
     } finally {
-      worker.removeEventListener("error", onError);
-      worker.removeEventListener("message", onMessage);
-      worker.terminate();
+      cleanup();
     }
     throw new Error(`OPFS requested but could not be initialized${reason}`);
   }
 
   const closeImpl = async () => {
     try {
-      if (!terminalError) await call("close", [] as RpcParams<"close">);
+      if (!terminalError) await call("close", []);
     } finally {
-      worker.removeEventListener("error", onError);
-      worker.removeEventListener("message", onMessage);
-      worker.terminate();
+      cleanup();
+    }
+  };
+
+  const dropImpl = async () => {
+    try {
+      if (!terminalError) await call("drop", []);
+    } finally {
+      cleanup();
     }
   };
 
@@ -183,6 +194,7 @@ async function createWorkerClient(opts: {
     docId: opts.docId,
     call,
     close: closeImpl,
+    drop: dropImpl,
   });
 }
 
@@ -321,9 +333,17 @@ async function createDirectClient(opts: {
           const [replica, node, payload] = params as RpcParams<"localPayload">;
           return (await localWriterFor(Uint8Array.from(replica)).payload(node, payload)) as any;
         }
-        case "close":
+        case "close": {
           if (db.close) await db.close();
           return undefined as any;
+        }
+        case "drop": {
+          if (db.close) await db.close();
+          if (finalStorage === "opfs") {
+            await clearOpfsStorage(filename);
+          }
+          return undefined as any;
+        }
         default:
           throw new Error(`unsupported direct method: ${method}`);
       }
@@ -340,6 +360,12 @@ async function createDirectClient(opts: {
     close: async () => {
       if (db.close) await db.close();
     },
+    drop: async () => {
+      if (db.close) await db.close();
+      if (finalStorage === "opfs") {
+        await clearOpfsStorage(filename);
+      }
+    },
   });
 }
 
@@ -351,6 +377,7 @@ function makeTreecrdtClientFromCall(opts: {
   docId: string;
   call: RpcCall;
   close: () => Promise<void>;
+  drop: () => Promise<void>;
 }): TreecrdtClient {
   const call = opts.call;
 
@@ -445,6 +472,7 @@ function makeTreecrdtClientFromCall(opts: {
       payload: localPayloadImpl,
     },
     close: opts.close,
+    drop: opts.drop,
   };
 }
 
