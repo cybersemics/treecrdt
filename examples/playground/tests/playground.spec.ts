@@ -505,6 +505,29 @@ test("switching remote sync server URL reconnects to the new endpoint", async ({
   }
 });
 
+test("switching to remote transport does not auto-fill a default sync URL", async ({ page }) => {
+  const doc = uniqueDocId("pw-playground-sync-no-default");
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+
+  await page.getByRole("button", { name: /Connections/ }).click();
+  const remoteInput = page.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+  await expect(remoteInput).toHaveValue("");
+
+  await page.getByRole("button", { name: "Remote server", exact: true }).click();
+  await expect(remoteInput).toHaveValue("");
+  await expect(page.getByText("Missing URL")).toBeVisible({ timeout: 30_000 });
+
+  await expect
+    .poll(async () => {
+      const url = new URL(page.url());
+      return {
+        sync: url.searchParams.get("sync"),
+        transport: url.searchParams.get("transport"),
+      };
+    })
+    .toEqual({ sync: null, transport: "remote" });
+});
+
 test("remote sync settings persist into a shareable URL", async ({ browser, page }) => {
   test.setTimeout(120_000);
 

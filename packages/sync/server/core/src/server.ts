@@ -91,7 +91,9 @@ export type WebSocketSyncServerOptions<Op> = {
   port?: number;
   syncPath?: string;
   healthPath?: string;
+  statusPath?: string;
   healthCheck?: () => Awaitable<WebSocketSyncServerHealthResult>;
+  statusInfo?: () => Awaitable<Record<string, unknown>>;
   maxPayloadBytes?: number;
   hooks?: WebSocketSyncServerHooks;
   codec: WireCodec<SyncMessage<Op>, Uint8Array>;
@@ -189,11 +191,13 @@ export async function startWebSocketSyncServer<Op>(
   const port = Number(opts.port ?? 8787);
   const syncPath = opts.syncPath ?? "/sync";
   const healthPath = opts.healthPath ?? "/health";
+  const statusPath = opts.statusPath ?? "/status";
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
 
   if (!Number.isFinite(port) || port < 0) throw new Error(`invalid port: ${opts.port}`);
   if (!syncPath.startsWith("/")) throw new Error(`syncPath must start with "/": ${syncPath}`);
   if (!healthPath.startsWith("/")) throw new Error(`healthPath must start with "/": ${healthPath}`);
+  if (!statusPath.startsWith("/")) throw new Error(`statusPath must start with "/": ${statusPath}`);
   if (!Number.isFinite(maxPayloadBytes) || maxPayloadBytes <= 0) {
     throw new Error(`invalid maxPayloadBytes: ${opts.maxPayloadBytes}`);
   }
@@ -223,6 +227,20 @@ export async function startWebSocketSyncServer<Op>(
         } catch {
           res.writeHead(503, { "content-type": "text/plain" });
           res.end("not ready");
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === statusPath) {
+      void (async () => {
+        try {
+          const status = (await opts.statusInfo?.()) ?? { ok: true };
+          res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify(status));
+        } catch {
+          res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: false, error: "status unavailable" }));
         }
       })();
       return;

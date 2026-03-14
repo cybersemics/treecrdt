@@ -216,9 +216,72 @@ test("health endpoint returns ok", async () => {
     expect(health.status).toBe(200);
     expect(health.body).toBe("ok");
 
+    const status = await httpGet(`${base}/status`);
+    expect(status.status).toBe(200);
+    expect(JSON.parse(status.body)).toEqual({ ok: true });
+
     const notFound = await httpGet(`${base}/not-found`);
     expect(notFound.status).toBe(404);
     expect(notFound.body).toBe("not found");
+  } finally {
+    await server.close();
+  }
+});
+
+test("status endpoint returns provided status payload", async () => {
+  const server = await startWebSocketSyncServer({
+    host: "127.0.0.1",
+    port: 0,
+    codec: jsonCodec(),
+    docs: {
+      async open() {
+        throw new Error("docs.open should not be called by /status");
+      },
+    },
+    statusInfo: async () => ({
+      ok: true,
+      service: "@treecrdt/sync-server-postgres-node",
+      version: "0.0.1",
+      gitSha: "abc123",
+    }),
+  });
+
+  try {
+    const status = await httpGet(`http://${server.host}:${server.port}/status`);
+    expect(status.status).toBe(200);
+    expect(JSON.parse(status.body)).toEqual({
+      ok: true,
+      service: "@treecrdt/sync-server-postgres-node",
+      version: "0.0.1",
+      gitSha: "abc123",
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("status endpoint surfaces callback failures", async () => {
+  const server = await startWebSocketSyncServer({
+    host: "127.0.0.1",
+    port: 0,
+    codec: jsonCodec(),
+    docs: {
+      async open() {
+        throw new Error("docs.open should not be called by /status");
+      },
+    },
+    statusInfo: async () => {
+      throw new Error("status probe failed");
+    },
+  });
+
+  try {
+    const status = await httpGet(`http://${server.host}:${server.port}/status`);
+    expect(status.status).toBe(500);
+    expect(JSON.parse(status.body)).toEqual({
+      ok: false,
+      error: "status unavailable",
+    });
   } finally {
     await server.close();
   }

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -61,6 +62,16 @@ function clientHostForBindHost(host: string): string {
   return trimmed;
 }
 
+function readPackageVersion(): string | undefined {
+  try {
+    const packageJsonUrl = new URL("../package.json", import.meta.url);
+    const parsed = JSON.parse(fs.readFileSync(packageJsonUrl, "utf8")) as { version?: unknown };
+    return typeof parsed.version === "string" && parsed.version.trim().length > 0 ? parsed.version.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function main() {
   const host = process.env.HOST ?? "0.0.0.0";
   const port = Number(process.env.PORT ?? "8787");
@@ -75,6 +86,10 @@ async function main() {
   const pgNotifyChannel = process.env.TREECRDT_PG_NOTIFY_CHANNEL?.trim() || "treecrdt_sync_doc_updates";
   const rateLimitMaxUpgrades = Number(process.env.TREECRDT_RATE_LIMIT_MAX_UPGRADES ?? "0");
   const rateLimitWindowMs = Number(process.env.TREECRDT_RATE_LIMIT_WINDOW_MS ?? "60000");
+  const packageVersion = readPackageVersion();
+  const gitSha = process.env.TREECRDT_SYNC_GIT_SHA?.trim() || undefined;
+  const gitDirty = parseBooleanEnv("TREECRDT_SYNC_GIT_DIRTY", false);
+  const startedAt = new Date().toISOString();
 
   const backendModule =
     process.env.TREECRDT_POSTGRES_BACKEND_MODULE ??
@@ -117,14 +132,21 @@ async function main() {
     pgNotifyChannel,
     rateLimitMaxUpgrades,
     rateLimitWindowMs,
+    packageVersion,
+    gitSha,
+    gitDirty,
+    startedAt,
   });
   const clientHost = clientHostForBindHost(handle.host);
   console.log(`TreeCRDT sync server listening on ${handle.host}:${handle.port}`);
   console.log(`- bind: http://${handle.host}:${handle.port}`);
   console.log(`- health: http://${clientHost}:${handle.port}/health`);
+  console.log(`- status: http://${clientHost}:${handle.port}/status`);
   console.log(`- ws: ws://${clientHost}:${handle.port}`);
   console.log(`- sync endpoint: ws://${clientHost}:${handle.port}/sync?docId=YOUR_DOC_ID`);
   console.log(`- backend module: ${handle.backendModule}`);
+  if (packageVersion) console.log(`- version: ${packageVersion}`);
+  if (gitSha) console.log(`- git sha: ${gitSha}${gitDirty ? " (dirty)" : ""}`);
   if (authCapabilityIssuerPublicKeys.length > 0) {
     console.log(`- auth: capability CWT enabled (${authCapabilityIssuerPublicKeys.length} issuer keys)`);
   } else if (authToken) {

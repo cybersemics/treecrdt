@@ -65,6 +65,12 @@ Health check:
 
 - `GET http://localhost:8787/health`
 
+Status endpoint:
+
+- `GET http://localhost:8787/status`
+  Returns JSON debug metadata for the running server, including readiness, package version, git SHA when available,
+  protocol version, startup time, and key runtime settings.
+
 WebSocket endpoint:
 
 - `ws://localhost:8787/sync?docId=YOUR_DOC_ID`

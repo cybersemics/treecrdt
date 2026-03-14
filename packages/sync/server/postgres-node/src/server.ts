@@ -58,6 +58,11 @@ export type SyncServerOptions = {
   pgNotifyChannel?: string;
   rateLimitMaxUpgrades?: number;
   rateLimitWindowMs?: number;
+  packageName?: string;
+  packageVersion?: string;
+  gitSha?: string;
+  gitDirty?: boolean;
+  startedAt?: string;
   hooks?: WebSocketSyncServerHooks;
 };
 
@@ -112,6 +117,20 @@ function ensurePostgresChannelName(value: string): string {
     throw new Error(`invalid Postgres NOTIFY channel: ${value}`);
   }
   return trimmed;
+}
+
+function describeAuthMode(
+  authToken: string | undefined,
+  issuerPublicKeys: Uint8Array[]
+): "none" | "static_token" | "capability_cwt" {
+  if (issuerPublicKeys.length > 0) return "capability_cwt";
+  if (authToken) return "static_token";
+  return "none";
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  return String(error);
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -588,6 +607,12 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const pgNotifyChannel = ensurePostgresChannelName(opts.pgNotifyChannel ?? "treecrdt_sync_doc_updates");
   const rateLimitMaxUpgrades = Number(opts.rateLimitMaxUpgrades ?? 0);
   const rateLimitWindowMs = Number(opts.rateLimitWindowMs ?? 60_000);
+  const packageName = opts.packageName?.trim() || "@treecrdt/sync-server-postgres-node";
+  const packageVersion = opts.packageVersion?.trim() || undefined;
+  const gitSha = opts.gitSha?.trim() || undefined;
+  const gitDirty = Boolean(opts.gitDirty);
+  const startedAt = opts.startedAt?.trim() || new Date().toISOString();
+  const startedAtMs = Date.parse(startedAt);
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
   if (!Number.isFinite(idleCloseMs) || idleCloseMs < 0) throw new Error(`invalid idleCloseMs: ${opts.idleCloseMs}`);
@@ -695,6 +720,38 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
               body: "postgres unavailable",
             };
           }
+        },
+        statusInfo: async () => {
+          let ready = true;
+          let readyDetail = "ok";
+          try {
+            await readinessProbe!.check();
+          } catch (error) {
+            ready = false;
+            readyDetail = errorMessage(error);
+          }
+
+          return {
+            ok: ready,
+            ready,
+            readyDetail,
+            service: packageName,
+            version: packageVersion ?? null,
+            gitSha: gitSha ?? null,
+            gitDirty,
+            buildRef: gitSha ? `${gitSha}${gitDirty ? "-dirty" : ""}` : null,
+            protocolVersion: 0,
+            startedAt,
+            uptimeMs: Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : null,
+            backendModule,
+            authMode: describeAuthMode(authToken, authCapabilityIssuerPublicKeys),
+            pgNotifyEnabled: Boolean(docUpdateBus),
+            pgNotifyChannel: docUpdateBus ? pgNotifyChannel : null,
+            docIdPattern: docIdPattern?.source ?? null,
+            allowDocCreate,
+            idleCloseMs,
+            maxPayloadBytes,
+          };
         },
       });
     } catch (err) {
