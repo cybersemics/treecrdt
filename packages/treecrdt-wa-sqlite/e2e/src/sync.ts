@@ -21,6 +21,7 @@ import {
 } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import type { Filter } from "@treecrdt/sync";
+import { orderKeyFromPosition, replicaFromLabel } from "./op-helpers.js";
 
 export type SyncBenchResult = {
   implementation: string;
@@ -39,14 +40,6 @@ function hexToBytes(hex: string): Uint8Array {
   return nodeIdToBytes16(hex);
 }
 
-function replicaFromLabel(label: string): Uint8Array {
-  const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error("replica label must not be empty");
-  const out = new Uint8Array(32);
-  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
-  return out;
-}
-
 const replicas = {
   a: replicaFromLabel("a"),
   b: replicaFromLabel("b"),
@@ -56,15 +49,6 @@ const replicas = {
 function hasOp(ops: Operation[], replica: Uint8Array, counter: number): boolean {
   const targetHex = bytesToHex(replica);
   return ops.some((op) => bytesToHex(op.meta.id.replica) === targetHex && op.meta.id.counter === counter);
-}
-
-function orderKeyFromPosition(position: number): Uint8Array {
-  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
-  const n = position + 1;
-  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
-  const bytes = new Uint8Array(2);
-  new DataView(bytes.buffer).setUint16(0, n, false);
-  return bytes;
 }
 
 function makeBackend(
