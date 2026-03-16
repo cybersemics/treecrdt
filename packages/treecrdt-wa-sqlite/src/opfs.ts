@@ -29,6 +29,89 @@ export function detectOpfsSupport(): OpfsSupport {
       };
 }
 
+const DB_RELATED_FILE_SUFFIXES = ["", "-journal", "-wal"];
+
+/**
+ * Remove database and related files (journal, wal) from OPFS storage.
+ * Call only after the database handle is closed.
+ *
+ * @param filename - Path used when opening (e.g. /treecrdt.db or /treecrdt-playground.db)
+ */
+export async function clearOpfsStorage(filename: string): Promise<void> {
+  if (typeof navigator?.storage?.getDirectory !== "function") return;
+
+  const path = filename.startsWith("/") ? filename.slice(1) : filename;
+  const parts = path.split("/").filter(Boolean);
+  const base = parts.pop() ?? "treecrdt.db";
+  const dirPath = parts;
+
+  let dirHandle: FileSystemDirectoryHandle;
+  try {
+    const root = await navigator.storage.getDirectory();
+    if (dirPath.length === 0) {
+      dirHandle = root;
+    } else {
+      let current = root;
+      for (const segment of dirPath) {
+        current = await current.getDirectoryHandle(segment);
+      }
+      dirHandle = current;
+    }
+  } catch {
+    return;
+  }
+
+  for (const suffix of DB_RELATED_FILE_SUFFIXES) {
+    const name = base + suffix;
+    try {
+      await dirHandle.removeEntry(name);
+    } catch (e) {
+      if ((e as Error)?.name !== "NotFoundError") throw e;
+    }
+  }
+}
+
+/**
+ * Check whether any DB-related files exist in OPFS for the given filename.
+ *
+ * @param filename - Path used when opening (e.g. /treecrdt.db or /drop-test-xxx.db)
+ */
+export async function opfsStorageExists(filename: string): Promise<boolean> {
+  if (typeof navigator?.storage?.getDirectory !== "function") return false;
+
+  const path = filename.startsWith("/") ? filename.slice(1) : filename;
+  const parts = path.split("/").filter(Boolean);
+  const base = parts.pop() ?? "treecrdt.db";
+  const dirPath = parts;
+
+  let dirHandle: FileSystemDirectoryHandle;
+  try {
+    const root = await navigator.storage.getDirectory();
+    if (dirPath.length === 0) {
+      dirHandle = root;
+    } else {
+      let current = root;
+      for (const segment of dirPath) {
+        current = await current.getDirectoryHandle(segment);
+      }
+      dirHandle = current;
+    }
+  } catch {
+    return false;
+  }
+
+  for (const suffix of DB_RELATED_FILE_SUFFIXES) {
+    const name = base + suffix;
+    try {
+      await dirHandle.getFileHandle(name);
+      return true;
+    } catch (e) {
+      if ((e as Error)?.name !== "NotFoundError") throw e;
+    }
+  }
+  return false;
+}
+
 export type OpfsVfsOptions = {
   name?: string;
 };

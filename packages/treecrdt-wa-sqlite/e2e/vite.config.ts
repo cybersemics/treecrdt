@@ -35,6 +35,10 @@ export default defineConfig({
   },
   server: {
     port: 4166,
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    },
     fs: {
       allow: [
         __dirname,
@@ -44,6 +48,12 @@ export default defineConfig({
         path.resolve(__dirname, "../dist"),
         path.resolve(__dirname, "../../treecrdt-riblt-wasm-js"),
       ],
+    },
+  },
+  preview: {
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
     },
   },
   resolve: {
