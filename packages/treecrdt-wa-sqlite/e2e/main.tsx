@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./src/App.js";
 import "./src/bench";
 import "./src/conformance";
+import "./src/closed-client";
 import "./src/drop-opfs";
 import "./src/sync";
 
