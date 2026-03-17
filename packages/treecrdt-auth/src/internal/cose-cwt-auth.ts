@@ -2,7 +2,12 @@ import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes, ROOT_NODE_ID_HEX } from "@treecrdt/interface/ids";
 
 import {
+  AUTH_CAPABILITY_NAME,
+  AUTH_REPLAY_CAPABILITY_NAME,
   deriveOpRefV0,
+  isAnyAuthCapability,
+  isAuthCapability,
+  isReplayAuthCapability,
   type Capability,
   type Filter,
   type Hello,
@@ -10,6 +15,7 @@ import {
   type OpAuth,
   type OpRef,
   type SyncAuth,
+  type SyncCapabilityMaterialStore,
 } from "@treecrdt/sync";
 
 import { base64urlDecode, base64urlEncode } from "../base64url.js";
@@ -52,6 +58,7 @@ export type TreecrdtCoseCwtAuthOptions = {
   localPrivateKey: Uint8Array;
   localPublicKey: Uint8Array;
   localCapabilityTokens?: Uint8Array[];
+  capabilityStore?: SyncCapabilityMaterialStore & { init?: () => Promise<void> };
   localIdentityChain?: TreecrdtIdentityChainV1;
   onPeerIdentityChain?: (chain: VerifiedTreecrdtIdentityChainV1) => void;
   scopeEvaluator?: TreecrdtScopeEvaluator;
@@ -100,12 +107,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
+  const localTokenIdHexes = new Set(localTokenIds.map((id) => bytesToHex(id)));
   const localRevocationRecords = opts.localRevocationRecords ?? [];
   const revokedTokenIdHexes = opts.revokedCapabilityTokenIds
     ? new Set(opts.revokedCapabilityTokenIds.map((id) => bytesToHex(id)))
     : undefined;
 
   const grantsByKeyIdHex = new Map<string, Map<string, CapabilityGrant>>();
+  const replayAuthCapabilitiesByValue = new Map<string, Capability>();
   const opAuthByOpRefHex = new Map<string, OpAuth>();
   const revocationByTokenHex = new Map<
     string,
@@ -116,6 +125,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   >();
   let localTokensRecordedForDoc: string | null = null;
   let localRevocationsRecordedForDoc: string | null = null;
+  let capabilityStoreInitPromise: Promise<void> | null = null;
+  let capabilityStoreLoadedForDoc: string | null = null;
   let opAuthStoreInitPromise: Promise<void> | null = null;
 
   const compareBytes = (a: Uint8Array, b: Uint8Array): number => {
@@ -165,6 +176,19 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     return opts2.op.meta.id.counter >= revocation.effectiveFromCounter;
   };
 
+  const makeAuthCapability = (tokenBytes: Uint8Array, name: string = AUTH_CAPABILITY_NAME): Capability => ({
+    name,
+    value: base64urlEncode(tokenBytes),
+  });
+
+  const isLocalToken = (tokenBytes: Uint8Array): boolean => localTokenIdHexes.has(bytesToHex(deriveTokenIdV1(tokenBytes)));
+
+  const rememberReplayAuthCapability = (tokenBytes: Uint8Array) => {
+    if (isLocalToken(tokenBytes)) return;
+    const cap = makeAuthCapability(tokenBytes, AUTH_REPLAY_CAPABILITY_NAME);
+    replayAuthCapabilitiesByValue.set(cap.value, cap);
+  };
+
   const parseStageRevocationChecker = async (ctx: TreecrdtCapabilityRevocationCheckContext) => {
     if (isRevokedByStandardPolicy({ tokenIdHex: ctx.tokenIdHex })) return true;
     if (!opts.isCapabilityTokenRevoked) return false;
@@ -211,10 +235,50 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     byToken.set(tokenHex, grant);
   };
 
+  const ensureCapabilityStoreReady = async () => {
+    if (!opts.capabilityStore?.init) return;
+    if (capabilityStoreInitPromise) return capabilityStoreInitPromise;
+    capabilityStoreInitPromise = opts.capabilityStore.init();
+    return capabilityStoreInitPromise;
+  };
+
+  const persistTrustedCapability = async (cap: Capability) => {
+    if (!opts.capabilityStore || !isAnyAuthCapability(cap)) return;
+    await ensureCapabilityStoreReady();
+    await opts.capabilityStore.storeCapabilities([cap]);
+  };
+
+  const ensureCapabilityStoreRecorded = async (docId: string) => {
+    if (!opts.capabilityStore || capabilityStoreLoadedForDoc === docId) return;
+    await ensureCapabilityStoreReady();
+    const stored = await opts.capabilityStore.listCapabilities();
+    for (const cap of stored) {
+      if (!isAnyAuthCapability(cap)) continue;
+      const tokenBytes = base64urlDecode(cap.value);
+      try {
+        await recordToken(tokenBytes, docId);
+        if (!isLocalToken(tokenBytes)) rememberReplayAuthCapability(tokenBytes);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Locally cached capability material can legitimately go stale after a
+        // hard revoke or access replacement. Ignore those entries here so a
+        // peer does not poison its own hello path on restart.
+        if (message.includes("capability token revoked")) continue;
+        if (!message.includes("unknown issuer")) throw err;
+      }
+    }
+    capabilityStoreLoadedForDoc = docId;
+  };
+
   const ensureLocalTokensRecorded = async (docId: string) => {
     if (localTokensRecordedForDoc === docId) return;
+    await ensureCapabilityStoreRecorded(docId);
     await ensureLocalRevocationsRecorded(docId);
-    for (const t of localTokens) await recordToken(t, docId);
+    for (const t of localTokens) {
+      const cap = makeAuthCapability(t);
+      await recordToken(t, docId);
+      await persistTrustedCapability(cap);
+    }
     localTokensRecordedForDoc = docId;
   };
 
@@ -264,6 +328,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   };
 
   const recordCapabilities = async (caps: Capability[], docId: string) => {
+    await ensureCapabilityStoreRecorded(docId);
     await ensureLocalRevocationsRecorded(docId);
 
     for (const cap of caps) {
@@ -280,12 +345,20 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     }
 
     for (const cap of caps) {
-      if (cap.name === "auth.capability") {
+      if (isAnyAuthCapability(cap)) {
         const tokenBytes = base64urlDecode(cap.value);
         try {
           await recordToken(tokenBytes, docId);
+          if (!isLocalToken(tokenBytes)) rememberReplayAuthCapability(tokenBytes);
+          await persistTrustedCapability(
+            isLocalToken(tokenBytes) ? makeAuthCapability(tokenBytes, AUTH_CAPABILITY_NAME) : makeAuthCapability(tokenBytes, AUTH_REPLAY_CAPABILITY_NAME)
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          // Replay-only capability material is best-effort cache state. If a
+          // peer still advertises a revoked replay token after an access
+          // replacement, ignore it rather than failing the whole handshake.
+          if (isReplayAuthCapability(cap) && message.includes("capability token revoked")) continue;
           if (!message.includes("unknown issuer")) throw err;
           // Peers and relay servers may advertise capability tokens that are
           // irrelevant for this replica's trust roots. Ignore them here and
@@ -306,8 +379,11 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   };
 
   const helloCaps = async (docId: string): Promise<Capability[]> => {
+    await ensureCapabilityStoreRecorded(docId);
     await ensureLocalRevocationsRecorded(docId);
-    const caps = localTokens.map((t) => ({ name: "auth.capability", value: base64urlEncode(t) }));
+    await ensureLocalTokensRecorded(docId);
+    const caps = localTokens.map((t) => makeAuthCapability(t, AUTH_CAPABILITY_NAME));
+    caps.push(...replayAuthCapabilitiesByValue.values());
     for (const entry of revocationByTokenHex.values()) {
       caps.push(createTreecrdtRevocationCapabilityV1(entry.recordBytes));
     }
@@ -368,11 +444,11 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       await recordCapabilities(ack.capabilities, ctx.docId);
     },
     authorizeFilter: async (filter: Filter, ctx) => {
-      const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
-      if (tokenCaps.length === 0) throw new Error('missing "auth.capability" token');
+      const tokenCaps = ctx.capabilities.filter(isAuthCapability);
+      if (tokenCaps.length === 0) throw new Error(`missing "${AUTH_CAPABILITY_NAME}" token`);
 
       const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
-      if (grants.length === 0) throw new Error('no trusted "auth.capability" token');
+      if (grants.length === 0) throw new Error(`no trusted "${AUTH_CAPABILITY_NAME}" token`);
 
       const requiredActions = ["read_structure"];
       const node =
@@ -430,7 +506,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       throw new Error("capability does not allow filter");
     },
     filterOutgoingOps: async (ops, ctx) => {
-      const tokenCaps = ctx.capabilities.filter((c) => c.name === "auth.capability");
+      const tokenCaps = ctx.capabilities.filter(isAuthCapability);
       if (tokenCaps.length === 0) return ops.map(() => true);
 
       const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
@@ -528,11 +604,16 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         let proofRef: Uint8Array | undefined;
         if (localTokenIds.length > 0) {
           const byToken = grantsByKeyIdHex.get(localKeyIdHex);
-          if (!byToken || byToken.size === 0) throw new Error("auth enabled but no local capability tokens are recorded");
+          const currentLocalGrants = byToken
+            ? Array.from(byToken.entries())
+                .filter(([tokenIdHex]) => localTokenIdHexes.has(tokenIdHex))
+                .map(([, grant]) => grant)
+            : [];
+          if (currentLocalGrants.length === 0) throw new Error("auth enabled but no local capability tokens are recorded");
           const selected = await selectGrantForOp({
             docId: ctx.docId,
             op,
-            candidates: Array.from(byToken.values()),
+            candidates: currentLocalGrants,
             purpose: "sign_op",
           });
           proofRef = selected.tokenId;
@@ -565,6 +646,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     },
     verifyOps: async (ops, auth, ctx) => {
       if (ops.length === 0) return;
+      await ensureCapabilityStoreRecorded(ctx.docId);
       if (!auth) {
         if (allowUnsigned) return;
         throw new Error("missing op auth");

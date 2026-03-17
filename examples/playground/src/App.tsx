@@ -562,6 +562,7 @@ export default function App() {
     peers,
     remoteSyncStatus,
     syncBusy,
+    liveBusy,
     syncError,
     setSyncError,
     liveChildrenParents,
@@ -1195,6 +1196,7 @@ export default function App() {
             ready={status === "ready"}
             busy={busy}
             syncBusy={syncBusy}
+            liveBusy={liveBusy}
             peerCount={peers.length}
             authCanSyncAll={authCanSyncAll}
             onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
