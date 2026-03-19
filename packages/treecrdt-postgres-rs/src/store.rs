@@ -1466,6 +1466,52 @@ pub fn tree_payload(
     Ok(payload)
 }
 
+pub fn latest_payload_writer_op_ref(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    node: NodeId,
+) -> Result<Option<[u8; OPREF_V0_WIDTH]>> {
+    ensure_materialized(client, doc_id)?;
+    let node_bytes = node_to_bytes(node);
+    let mut c = client.borrow_mut();
+
+    let rows = c
+        .query(
+            "SELECT last_replica, last_counter \
+             FROM treecrdt_payload \
+             WHERE doc_id = $1 AND node = $2 \
+             LIMIT 1",
+            &[&doc_id, &node_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+
+    if let Some(row) = rows.first() {
+        let replica: Vec<u8> = row.get(0);
+        let counter = row.get::<_, i64>(1).max(0) as u64;
+        if counter > 0 {
+            return Ok(Some(derive_op_ref_v0(doc_id, &replica, counter)));
+        }
+    }
+
+    let rows = c
+        .query(
+            "SELECT op_ref \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 AND node = $2 \
+               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+            &[&doc_id, &node_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let op_ref: Vec<u8> = row.get(0);
+    Ok(Some(op_ref_from_bytes(&op_ref)?))
+}
+
 pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64> {
     ensure_materialized(client, doc_id)?;
     let root_bytes = node_to_bytes(NodeId::ROOT);
