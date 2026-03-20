@@ -91,6 +91,25 @@ pnpm benchmark:sync:local -- \
   --first-view
 ```
 
+### Backend Call Profiling
+
+Add `--profile-backend` when you want per-backend timings for:
+
+- `listOpRefs`
+- `getOpsByOpRefs`
+- `applyOps`
+
+This is especially useful on the local Postgres sync-server target because it shows whether the bottleneck is on the client SQLite side or the server Postgres side.
+
+```sh
+TREECRDT_POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres \
+pnpm benchmark:sync:local -- \
+  --workloads=sync-balanced-children-cold-start,sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --fanout=10 \
+  --profile-backend
+```
+
 ### Local First View Read Path
 
 This measures the app-shaped local read immediately after sync: fetch the visible children page plus payloads for the parent and those children.
@@ -181,6 +200,7 @@ Common sync flags:
 - `--targets=direct,local-postgres-sync-server`
 - `--fanout=10`
 - `--first-view`
+- `--profile-backend`
 - `--sync-server-url=ws://host/sync`
 - `--postgres-url=postgres://...`
 

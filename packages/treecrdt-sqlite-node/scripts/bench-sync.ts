@@ -38,6 +38,11 @@ import {
   createSqliteNodeApi,
   loadTreecrdtExtension,
 } from "../dist/index.js";
+import {
+  resetBackendProfiler,
+  takeBackendProfilerSnapshot,
+  wrapBackendWithProfiler,
+} from "./backend-profiler.mjs";
 
 type StorageKind = "memory" | "file";
 type ConfigEntry = [number, number];
@@ -67,6 +72,7 @@ type SyncBenchSample = {
   totalMs: number;
   syncMs: number;
   firstViewReadMs: number;
+  backendProfile?: unknown;
 };
 
 type SyncBenchConnection = {
@@ -259,6 +265,10 @@ function parseFirstView(argv: string[]): boolean {
   return parseBooleanFlag(argv, "--first-view", "SYNC_BENCH_FIRST_VIEW");
 }
 
+function parseProfileBackend(argv: string[]): boolean {
+  return parseBooleanFlag(argv, "--profile-backend", "SYNC_BENCH_PROFILE_BACKEND");
+}
+
 function normalizeSyncServerUrl(raw: string, docId: string): URL {
   let input = raw.trim();
   if (input.length === 0) throw new Error("Sync server URL is empty");
@@ -378,11 +388,11 @@ async function makeBackend(opts: {
   db: Database.Database;
   docId: string;
   initialMaxLamport: number;
+  profileLabel?: string;
 }): Promise<FlushableSyncBackend<Operation>> {
   const client = await createTreecrdtClient(opts.db, { docId: opts.docId });
   const backend = createTreecrdtSyncBackendFromClient(client, opts.docId);
-
-  return makeQueuedSyncBackend<Operation>({
+  const queued = makeQueuedSyncBackend<Operation>({
     docId: opts.docId,
     initialMaxLamport: opts.initialMaxLamport,
     maxLamportFromOps: maxLamport,
@@ -390,6 +400,11 @@ async function makeBackend(opts: {
     getOpsByOpRefs: backend.getOpsByOpRefs,
     applyOps: backend.applyOps,
   });
+  if (!opts.profileLabel) return queued;
+  return wrapBackendWithProfiler(queued, {
+    docId: opts.docId,
+    label: opts.profileLabel,
+  }) as FlushableSyncBackend<Operation>;
 }
 
 async function openDb(opts: {
@@ -466,16 +481,25 @@ async function connectToSyncServer(
 
 async function createLocalPostgresSyncServerTarget(
   repoRoot: string,
-  postgresUrl: string
+  postgresUrl: string,
+  profileBackend: boolean
 ): Promise<SyncBenchTargetRuntime> {
   const port = await findFreePort();
-  const backendModule = path.join(
-    repoRoot,
-    "packages",
-    "treecrdt-postgres-napi",
-    "dist",
-    "index.js"
-  );
+  const backendModule = profileBackend
+    ? path.join(
+        repoRoot,
+        "packages",
+        "treecrdt-sqlite-node",
+        "scripts",
+        "instrumented-postgres-backend-module.mjs"
+      )
+    : path.join(
+        repoRoot,
+        "packages",
+        "treecrdt-postgres-napi",
+        "dist",
+        "index.js"
+      );
 
   const server = await startSyncServer({
     host: "127.0.0.1",
@@ -532,7 +556,8 @@ function createRemoteSyncServerTarget(
 async function prepareTargetRuntimes(
   repoRoot: string,
   argv: string[],
-  targets: SyncBenchTargetId[]
+  targets: SyncBenchTargetId[],
+  profileBackend: boolean
 ): Promise<Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>> {
   const runtimes = new Map<
     Exclude<SyncBenchTargetId, "direct">,
@@ -549,7 +574,7 @@ async function prepareTargetRuntimes(
     }
     runtimes.set(
       "local-postgres-sync-server",
-      await createLocalPostgresSyncServerTarget(repoRoot, postgresUrl)
+      await createLocalPostgresSyncServerTarget(repoRoot, postgresUrl, profileBackend)
     );
   }
 
@@ -683,7 +708,8 @@ async function runBenchOnceDirect(
   repoRoot: string,
   { storage, workload, size }: BenchCase,
   bench: ReturnType<typeof buildSyncBenchCase>,
-  includeFirstView: boolean
+  includeFirstView: boolean,
+  profileBackend: boolean
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
   const docId = `sqlite-node-sync-bench-${runId}`;
@@ -714,11 +740,13 @@ async function runBenchOnceDirect(
       db: clientA.db,
       docId,
       initialMaxLamport: maxLamport(bench.opsA),
+      profileLabel: profileBackend ? "direct-client-a" : undefined,
     });
     const backendB = await makeBackend({
       db: clientB.db,
       docId,
       initialMaxLamport: maxLamport(bench.opsB),
+      profileLabel: profileBackend ? "direct-client-b" : undefined,
     });
 
     const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
@@ -729,6 +757,7 @@ async function runBenchOnceDirect(
     });
 
     try {
+      if (profileBackend) resetBackendProfiler(docId);
       const start = performance.now();
       await pa.syncOnce(ta, bench.filter as Filter, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
@@ -760,6 +789,7 @@ async function runBenchOnceDirect(
         totalMs: syncedAt - start + firstViewReadMs,
         syncMs: syncedAt - start,
         firstViewReadMs,
+        backendProfile: profileBackend ? takeBackendProfilerSnapshot(docId) : undefined,
       };
     } finally {
       detach();
@@ -774,7 +804,8 @@ async function runBenchOnceViaServer(
   runtime: SyncBenchTargetRuntime,
   { storage, workload, size }: BenchCase,
   bench: ReturnType<typeof buildSyncBenchCase>,
-  includeFirstView: boolean
+  includeFirstView: boolean,
+  profileBackend: boolean
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
   const docId = `sqlite-node-sync-bench-${runtime.id}-${runId}`;
@@ -796,6 +827,7 @@ async function runBenchOnceViaServer(
       db: client.db,
       docId,
       initialMaxLamport: maxLamport(bench.opsA),
+      profileLabel: profileBackend ? "client-sqlite" : undefined,
     });
 
     const peer = new SyncPeer<Operation>(clientBackend, {
@@ -805,6 +837,7 @@ async function runBenchOnceViaServer(
     const detach = peer.attach(connection.transport);
 
     try {
+      if (profileBackend) resetBackendProfiler(docId);
       const start = performance.now();
       await peer.syncOnce(connection.transport, bench.filter as Filter, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
@@ -832,6 +865,7 @@ async function runBenchOnceViaServer(
         totalMs: syncedAt - start + firstViewReadMs,
         syncMs: syncedAt - start,
         firstViewReadMs,
+        backendProfile: profileBackend ? takeBackendProfilerSnapshot(docId) : undefined,
       };
     } finally {
       detach();
@@ -846,7 +880,8 @@ async function runBenchCase(
   repoRoot: string,
   benchCase: BenchCase,
   runtimes: Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>,
-  includeFirstView: boolean
+  includeFirstView: boolean,
+  profileBackend: boolean
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({
     workload: benchCase.workload,
@@ -869,14 +904,17 @@ async function runBenchCase(
   for (let i = 0; i < iterations; i += 1) {
     samples.push(
       runtime
-        ? await runBenchOnceViaServer(repoRoot, runtime, benchCase, bench, includeFirstView)
-        : await runBenchOnceDirect(repoRoot, benchCase, bench, includeFirstView)
+        ? await runBenchOnceViaServer(repoRoot, runtime, benchCase, bench, includeFirstView, profileBackend)
+        : await runBenchOnceDirect(repoRoot, benchCase, bench, includeFirstView, profileBackend)
     );
   }
 
   const totalSamplesMs = samples.map((sample) => sample.totalMs);
   const syncSamplesMs = samples.map((sample) => sample.syncMs);
   const firstViewReadSamplesMs = samples.map((sample) => sample.firstViewReadMs);
+  const backendProfiles = samples
+    .map((sample) => sample.backendProfile)
+    .filter((sample): sample is NonNullable<typeof sample> => sample != null);
   const durationMs =
     iterations > 1 ? quantile(totalSamplesMs, 0.5) : totalSamplesMs[0] ?? 0;
   const opsPerSec = durationMs > 0 ? (bench.totalOps / durationMs) * 1000 : Infinity;
@@ -900,6 +938,8 @@ async function runBenchCase(
             ? "remote"
             : "none",
       measurement: includeFirstView ? "time-to-first-view" : "sync-only",
+      backendProfile: profileBackend ? backendProfiles.at(-1) : undefined,
+      backendProfileSamples: profileBackend && backendProfiles.length > 1 ? backendProfiles : undefined,
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       iterations: iterations > 1 ? iterations : undefined,
@@ -927,7 +967,8 @@ async function main() {
   const workloads = parseWorkloads(argv);
   const fanout = parseFanout(argv);
   const includeFirstView = parseFirstView(argv);
-  const runtimes = await prepareTargetRuntimes(repoRoot, argv, targets);
+  const profileBackend = parseProfileBackend(argv);
+  const runtimes = await prepareTargetRuntimes(repoRoot, argv, targets, profileBackend);
 
   try {
     const cases: BenchCase[] = [];
@@ -944,7 +985,7 @@ async function main() {
     }
 
     for (const benchCase of cases) {
-      const result = await runBenchCase(repoRoot, benchCase, runtimes, includeFirstView);
+      const result = await runBenchCase(repoRoot, benchCase, runtimes, includeFirstView, profileBackend);
       const outFile = path.join(
         repoRoot,
         "benchmarks",
