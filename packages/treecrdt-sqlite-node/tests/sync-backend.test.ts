@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { defineSyncBackendContract } from "../../sync/protocol/tests/helpers/sync-backend-contract.ts";
-import { createTreecrdtSyncBackendFromClient } from "@treecrdt/sync-sqlite/backend";
+import { createTreecrdtSyncBackendFromClient } from "../../sync/material/sqlite/dist/backend.js";
 
 import {
   createTreecrdtClient,
