@@ -15,7 +15,10 @@
     "build:ts": "tsc -p tsconfig.json",
     "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
     "test": "pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm run build && vitest run",
-    "benchmark": "pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm run build && tsx ./scripts/bench.ts && tsx ./scripts/bench-sync.ts"
+    "benchmark:ops": "pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm run build && tsx ./scripts/bench.ts",
+    "benchmark:note-paths": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench-note-paths.ts",
+    "benchmark:sync": "pnpm -C ../treecrdt-benchmark run build && pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm -C ../treecrdt-postgres-napi run build && pnpm -C ../sync/server/postgres-node run build && pnpm run build && tsx ./scripts/bench-sync.ts",
+    "benchmark": "pnpm run benchmark:ops && pnpm run benchmark:note-paths && pnpm run benchmark:sync"
   },
   "peerDependencies": {
     "better-sqlite3": "^9.0.0"
@@ -30,12 +33,17 @@
     "@types/node": "^20.19.25",
     "@treecrdt/auth": "workspace:*",
     "@treecrdt/benchmark": "workspace:*",
+    "@treecrdt/postgres-napi": "workspace:*",
     "@treecrdt/sqlite-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
+    "@treecrdt/sync-sqlite": "workspace:*",
+    "@treecrdt/sync-server-postgres-node": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "cborg": "^4.3.2",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
-    "vitest": "^1.6.0"
+    "vitest": "^1.6.0",
+    "ws": "^8.18.3"
   }
 }
