@@ -365,18 +365,30 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
+      '@treecrdt/postgres-napi':
+        specifier: workspace:*
+        version: link:../treecrdt-postgres-napi
       '@treecrdt/sqlite-conformance':
         specifier: workspace:*
         version: link:../treecrdt-sqlite-conformance
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../sync/protocol
+      '@treecrdt/sync-server-postgres-node':
+        specifier: workspace:*
+        version: link:../sync/server/postgres-node
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../sync/material/sqlite
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       better-sqlite3:
         specifier: ^9.0.0
         version: 9.6.0
@@ -392,6 +404,9 @@ importers:
       vitest:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
+      ws:
+        specifier: ^8.18.3
+        version: 8.19.0
 
   packages/treecrdt-ts:
     devDependencies:
