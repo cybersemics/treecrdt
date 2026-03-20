@@ -8,6 +8,7 @@ on:
 env:
   EM_VERSION: 4.0.21
   EM_CACHE_FOLDER: "emsdk-cache"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
   contents: read

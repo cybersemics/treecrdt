@@ -31,6 +31,7 @@ jobs:
       EM_VERSION: 4.0.21
       EM_CACHE_FOLDER: emsdk-cache
       PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
     steps:
       - name: Resolve PR details
