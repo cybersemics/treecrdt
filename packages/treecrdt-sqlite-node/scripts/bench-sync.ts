@@ -63,6 +63,12 @@ type SyncBenchResult = {
   extra?: Record<string, unknown>;
 };
 
+type SyncBenchSample = {
+  totalMs: number;
+  syncMs: number;
+  firstViewReadMs: number;
+};
+
 type SyncBenchConnection = {
   transport: DuplexTransport<any>;
   close: () => Promise<void>;
@@ -147,6 +153,13 @@ function parsePositiveIntFlag(argv: string[], flag: string, envName: string, fal
     throw new Error(`invalid ${flag} value "${raw}", expected a positive integer`);
   }
   return value;
+}
+
+function parseBooleanFlag(argv: string[], flag: string, envName: string): boolean {
+  const envRaw = process.env[envName];
+  if (argv.includes(flag)) return true;
+  if (envRaw == null || envRaw === "") return false;
+  return ["1", "true", "yes", "on"].includes(envRaw.trim().toLowerCase());
 }
 
 function parseCsv(raw: string | undefined): string[] {
@@ -240,6 +253,10 @@ function parseWorkloads(argv: string[]): SyncBenchWorkload[] {
 
 function parseFanout(argv: string[]): number {
   return parsePositiveIntFlag(argv, "--fanout", "SYNC_BENCH_FANOUT", DEFAULT_SYNC_BENCH_FANOUT);
+}
+
+function parseFirstView(argv: string[]): boolean {
+  return parseBooleanFlag(argv, "--first-view", "SYNC_BENCH_FIRST_VIEW");
 }
 
 function normalizeSyncServerUrl(raw: string, docId: string): URL {
@@ -399,6 +416,33 @@ async function appendInitialOps(
     hexToBytes,
     (replica) => (typeof replica === "string" ? Buffer.from(replica) : replica)
   );
+}
+
+async function measureFirstViewAfterSync(
+  db: Database.Database,
+  docId: string,
+  firstView: NonNullable<ReturnType<typeof buildSyncBenchCase>["firstView"]>
+): Promise<number> {
+  const client = await createTreecrdtClient(db, { docId });
+  const expectedChildren = Math.min(firstView.expectedChildren, firstView.pageSize);
+  const startedAt = performance.now();
+  const rows = await client.tree.childrenPage(firstView.parent, null, firstView.pageSize);
+  if (!Array.isArray(rows) || rows.length !== expectedChildren) {
+    throw new Error(`expected ${expectedChildren} child rows after sync, got ${Array.isArray(rows) ? rows.length : "non-array"}`);
+  }
+
+  if (firstView.includePayloads) {
+    const parentPayload = await client.tree.getPayload(firstView.parent);
+    if (!(parentPayload instanceof Uint8Array) || parentPayload.length !== firstView.payloadBytes) {
+      throw new Error("expected scope-root payload to be present after sync");
+    }
+    const payloads = await Promise.all(rows.map((row: { node: string }) => client.tree.getPayload(row.node)));
+    if (payloads.some((payload) => !(payload instanceof Uint8Array) || payload.length !== firstView.payloadBytes)) {
+      throw new Error("expected all first-view child payloads to be present after sync");
+    }
+  }
+
+  return performance.now() - startedAt;
 }
 
 async function connectToSyncServer(
@@ -638,8 +682,9 @@ async function openClientDbForRun(
 async function runBenchOnceDirect(
   repoRoot: string,
   { storage, workload, size }: BenchCase,
-  bench: ReturnType<typeof buildSyncBenchCase>
-): Promise<number> {
+  bench: ReturnType<typeof buildSyncBenchCase>,
+  includeFirstView: boolean
+): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
   const docId = `sqlite-node-sync-bench-${runId}`;
   const clientA = await openClientDbForRun(
@@ -690,7 +735,15 @@ async function runBenchOnceDirect(
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       });
       await Promise.all([backendA.flush(), backendB.flush()]);
-      const end = performance.now();
+      const syncedAt = performance.now();
+
+      let firstViewReadMs = 0;
+      if (includeFirstView) {
+        if (!bench.firstView) {
+          throw new Error(`sync bench workload ${bench.name} does not define a first-view read path`);
+        }
+        firstViewReadMs = await measureFirstViewAfterSync(clientA.db, docId, bench.firstView);
+      }
 
       const countA = countOps(clientA.db);
       const countB = countOps(clientB.db);
@@ -703,7 +756,11 @@ async function runBenchOnceDirect(
         );
       }
 
-      return end - start;
+      return {
+        totalMs: syncedAt - start + firstViewReadMs,
+        syncMs: syncedAt - start,
+        firstViewReadMs,
+      };
     } finally {
       detach();
     }
@@ -716,8 +773,9 @@ async function runBenchOnceViaServer(
   repoRoot: string,
   runtime: SyncBenchTargetRuntime,
   { storage, workload, size }: BenchCase,
-  bench: ReturnType<typeof buildSyncBenchCase>
-): Promise<number> {
+  bench: ReturnType<typeof buildSyncBenchCase>,
+  includeFirstView: boolean
+): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
   const docId = `sqlite-node-sync-bench-${runtime.id}-${runId}`;
   const client = await openClientDbForRun(
@@ -753,7 +811,15 @@ async function runBenchOnceViaServer(
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       });
       await clientBackend.flush();
-      const end = performance.now();
+      const syncedAt = performance.now();
+
+      let firstViewReadMs = 0;
+      if (includeFirstView) {
+        if (!bench.firstView) {
+          throw new Error(`sync bench workload ${bench.name} does not define a first-view read path`);
+        }
+        firstViewReadMs = await measureFirstViewAfterSync(client.db, docId, bench.firstView);
+      }
 
       const countA = countOps(client.db);
       if (countA !== bench.expectedFinalOpsA) {
@@ -762,7 +828,11 @@ async function runBenchOnceViaServer(
         );
       }
 
-      return end - start;
+      return {
+        totalMs: syncedAt - start + firstViewReadMs,
+        syncMs: syncedAt - start,
+        firstViewReadMs,
+      };
     } finally {
       detach();
       await connection.close();
@@ -775,7 +845,8 @@ async function runBenchOnceViaServer(
 async function runBenchCase(
   repoRoot: string,
   benchCase: BenchCase,
-  runtimes: Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>
+  runtimes: Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>,
+  includeFirstView: boolean
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({
     workload: benchCase.workload,
@@ -790,21 +861,28 @@ async function runBenchCase(
     throw new Error(`missing runtime for sync bench target ${benchCase.target}`);
   }
 
-  const samplesMs: number[] = [];
+  if (includeFirstView && !bench.firstView) {
+    throw new Error(`sync bench workload ${bench.name} does not support --first-view`);
+  }
+
+  const samples: SyncBenchSample[] = [];
   for (let i = 0; i < iterations; i += 1) {
-    samplesMs.push(
+    samples.push(
       runtime
-        ? await runBenchOnceViaServer(repoRoot, runtime, benchCase, bench)
-        : await runBenchOnceDirect(repoRoot, benchCase, bench)
+        ? await runBenchOnceViaServer(repoRoot, runtime, benchCase, bench, includeFirstView)
+        : await runBenchOnceDirect(repoRoot, benchCase, bench, includeFirstView)
     );
   }
 
+  const totalSamplesMs = samples.map((sample) => sample.totalMs);
+  const syncSamplesMs = samples.map((sample) => sample.syncMs);
+  const firstViewReadSamplesMs = samples.map((sample) => sample.firstViewReadMs);
   const durationMs =
-    iterations > 1 ? quantile(samplesMs, 0.5) : samplesMs[0] ?? 0;
+    iterations > 1 ? quantile(totalSamplesMs, 0.5) : totalSamplesMs[0] ?? 0;
   const opsPerSec = durationMs > 0 ? (bench.totalOps / durationMs) * 1000 : Infinity;
 
   return {
-    name: bench.name,
+    name: includeFirstView ? `${bench.name}-first-view` : bench.name,
     totalOps: bench.totalOps,
     durationMs,
     opsPerSec,
@@ -821,14 +899,19 @@ async function runBenchCase(
           : benchCase.target === "remote-sync-server"
             ? "remote"
             : "none",
+      measurement: includeFirstView ? "time-to-first-view" : "sync-only",
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       iterations: iterations > 1 ? iterations : undefined,
       avgDurationMs: iterations > 1 ? durationMs : undefined,
-      samplesMs,
-      p95Ms: quantile(samplesMs, 0.95),
-      minMs: Math.min(...samplesMs),
-      maxMs: Math.max(...samplesMs),
+      samplesMs: totalSamplesMs,
+      syncSamplesMs,
+      firstViewReadSamplesMs: includeFirstView ? firstViewReadSamplesMs : undefined,
+      syncMedianMs: quantile(syncSamplesMs, 0.5),
+      firstViewReadMedianMs: includeFirstView ? quantile(firstViewReadSamplesMs, 0.5) : undefined,
+      p95Ms: quantile(totalSamplesMs, 0.95),
+      minMs: Math.min(...totalSamplesMs),
+      maxMs: Math.max(...totalSamplesMs),
     },
   };
 }
@@ -843,6 +926,7 @@ async function main() {
   const storages = parseStorages(argv);
   const workloads = parseWorkloads(argv);
   const fanout = parseFanout(argv);
+  const includeFirstView = parseFirstView(argv);
   const runtimes = await prepareTargetRuntimes(repoRoot, argv, targets);
 
   try {
@@ -860,7 +944,7 @@ async function main() {
     }
 
     for (const benchCase of cases) {
-      const result = await runBenchCase(repoRoot, benchCase, runtimes);
+      const result = await runBenchCase(repoRoot, benchCase, runtimes, includeFirstView);
       const outFile = path.join(
         repoRoot,
         "benchmarks",

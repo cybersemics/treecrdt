@@ -73,6 +73,13 @@ export type SyncBenchCase = {
   extra: Record<string, unknown>;
   expectedFinalOpsA: number;
   expectedFinalOpsB: number;
+  firstView?: {
+    parent: string;
+    pageSize: number;
+    expectedChildren: number;
+    includePayloads: boolean;
+    payloadBytes?: number;
+  };
 };
 
 export function nodeIdFromInt(i: number): string {
@@ -225,6 +232,13 @@ function buildBalancedChildrenColdStartCase(opts: {
     },
     expectedFinalOpsA: opsA.length + transferredOps,
     expectedFinalOpsB: opsB.length,
+    firstView: {
+      parent: targetParent,
+      pageSize: Math.min(DEFAULT_SYNC_BENCH_PAGE_SIZE, targetChildren.length),
+      expectedChildren: targetChildren.length,
+      includePayloads: opts.withPayloads,
+      payloadBytes: opts.withPayloads ? opts.payloadBytes : undefined,
+    },
   };
 }
 

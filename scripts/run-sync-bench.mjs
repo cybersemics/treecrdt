@@ -127,6 +127,7 @@ async function main() {
   pnpm benchmark:sync
   pnpm benchmark:sync:direct -- --workloads=sync-balanced-children-payloads-cold-start --counts=10000,50000 --fanout=10
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000
+  pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view
   TREECRDT_SYNC_SERVER_URL=wss://host/sync pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start
 
 Notes:
@@ -134,6 +135,7 @@ Notes:
   - remote sync benches never hardcode a server URL; pass TREECRDT_SYNC_SERVER_URL or --sync-server-url=...
   - use wss:// for public HTTPS/TLS deployments and ws:// for local/plain HTTP servers
   - use --fanout=20 to model broader trees; default fanout is 10
+  - add --first-view to include the immediate local read after sync in the measured duration
   - extra args are forwarded to packages/treecrdt-sqlite-node/scripts/bench-sync.ts`);
     return;
   }
