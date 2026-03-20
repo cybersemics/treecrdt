@@ -33,6 +33,7 @@ pnpm benchmark:postgres
 
 - First view on a new device, structure only: `benchmark:sync:*` with `sync-balanced-children-cold-start`
 - First view on a new device, with payloads: `benchmark:sync:*` with `sync-balanced-children-payloads-cold-start`
+- Single end-to-end time-to-first-visible-page number: `benchmark:sync:*` with the same balanced workloads plus `--first-view`
 - Local render cost after the data is already present: `benchmark:sqlite-node:note-paths -- --benches=read-children-payloads`
 - Local mutation cost inside a large existing tree: `benchmark:sqlite-node:note-paths -- --benches=insert-into-large-tree`
 - Protocol/storage baselines and worst-case stress: `sync-one-missing`, `sync-all`, `sync-children*`, `sync-root-children-fanout10`
@@ -73,6 +74,22 @@ pnpm benchmark:sync:remote -- \
 ```
 
 Use `--fanout=20` when you want to model a broader notebook tree.
+
+### Time To First Visible Page
+
+Add `--first-view` when you want one number that includes:
+
+- scoped sync into the local store
+- the immediate local `childrenPage(...)` read
+- payload fetches for the parent and visible children when the workload carries payloads
+
+```sh
+pnpm benchmark:sync:local -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --counts=10000 \
+  --fanout=10 \
+  --first-view
+```
 
 ### Local First View Read Path
 
@@ -117,6 +134,13 @@ postgres://postgres:postgres@127.0.0.1:5432/postgres
 
 Override with `TREECRDT_POSTGRES_URL` or `--postgres-url=...`.
 
+The Docker helper is only a convenience. The local sync benchmark just needs a reachable Postgres URL, so a native local Postgres instance works too:
+
+```sh
+TREECRDT_POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres \
+pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000
+```
+
 ### Remote Sync Server URL
 
 The remote URL is intentionally not hardcoded in this repo. Different deployments can have different latency, auth, retention, and scaling settings, so pass it at runtime through `TREECRDT_SYNC_SERVER_URL` or `--sync-server-url=...`.
@@ -156,6 +180,7 @@ Common sync flags:
 - `--storages=memory,file`
 - `--targets=direct,local-postgres-sync-server`
 - `--fanout=10`
+- `--first-view`
 - `--sync-server-url=ws://host/sync`
 - `--postgres-url=postgres://...`
 
@@ -169,13 +194,7 @@ Common note-path flags:
 
 ## What Is Still Missing?
 
-The suite is much closer to real note-taking behavior now, but there is still one gap worth closing later:
+The remaining gaps are mostly infrastructure-related now:
 
-- a single end-to-end benchmark that measures cold-start sync and the first local render in one number
-
-Right now that path is covered in two pieces:
-
-- sync time via `sync-balanced-children*-cold-start`
-- local read time via `read-children-payloads`
-
-That is already enough to identify where time is going, but an integrated "time to first visible page" benchmark would still be useful as a final product metric.
+- a healthy, repeatable local Postgres bootstrap path that does not depend on a stuck Docker daemon
+- a working public websocket deployment path for the remote sync target
