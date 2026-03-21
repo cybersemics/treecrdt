@@ -133,6 +133,7 @@ async function main() {
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000 --profile-transport
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --profile-hello
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --direct-send-threshold=64
+  pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=50000 --first-view --server-fixture-cache=rebuild
   TREECRDT_SYNC_SERVER_URL=wss://host/sync pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start
 
 Notes:
@@ -144,6 +145,7 @@ Notes:
   - add --iterations=N and --warmup=N to control sample count explicitly; custom --count/--counts runs now default to multiple samples instead of silently dropping to 1
   - local sync benches use a spawned child-process server by default for more realistic local vs remote comparisons
   - local sync benches now use a benchmark-only direct Postgres seed step before timing, so large local runs avoid spending minutes protocol-seeding data that is not part of the measured sync
+  - local read-only sync benches reuse the same seeded Postgres fixture across warmup, samples, and later matching runs by default; use --server-fixture-cache=rebuild to refresh it or --server-fixture-cache=off to disable that cache
   - add --profile-backend to capture listOpRefs/getOpsByOpRefs/applyOps timing per backend; on local benches this switches back to the in-process server for debug visibility
   - add --profile-transport to capture sync message counts, bytes, and a small event timeline
   - add --profile-hello to capture responder-side hello stage timings; local child-process runs parse server trace output, direct and in-process runs collect it in-process
