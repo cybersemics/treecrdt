@@ -21,6 +21,7 @@ pnpm benchmark:sqlite-node:note-paths
 pnpm benchmark:sync
 pnpm benchmark:sync:direct
 pnpm benchmark:sync:local
+pnpm benchmark:sync:prime
 pnpm benchmark:sync:remote
 pnpm benchmark:web
 pnpm benchmark:wasm
@@ -74,6 +75,25 @@ pnpm benchmark:sync:remote -- \
 ```
 
 Use `--fanout=20` when you want to model a broader notebook tree.
+
+### Prime Local Fixtures
+
+Use this when you want to prebuild the local Postgres server fixtures before running the actual local sync benchmarks.
+
+```sh
+pnpm benchmark:sync:prime
+```
+
+By default this primes the read-only first-view workloads for `10k`, `50k`, and `100k` nodes and forces a rebuild. After that, matching local benchmark runs reuse those fixtures as cache hits instead of reimporting the same large server docs.
+
+You can still override the forwarded args:
+
+```sh
+pnpm benchmark:sync:prime -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --counts=50000,100000 \
+  --server-fixture-cache=rebuild
+```
 
 By default, the local sync target runs the Postgres sync server in a spawned child process so local and remote measurements are closer to each other. When you add `--profile-backend`, the local target intentionally switches to the in-process server so per-backend timings are visible inside the benchmark process.
 

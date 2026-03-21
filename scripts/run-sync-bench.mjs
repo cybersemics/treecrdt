@@ -60,6 +60,14 @@ function parseRequestedTargets(args) {
   return ["direct"];
 }
 
+function hasExplicitTarget(args) {
+  if (extractFlagValue(args, "--targets") ?? extractFlagValue(args, "--target")) {
+    return true;
+  }
+  const positional = args.find((arg) => !arg.startsWith("--"));
+  return positional ? normalizeTarget(positional) != null : false;
+}
+
 function stripPositionalTargetArg(args) {
   let removed = false;
   return args.filter((arg) => {
@@ -71,8 +79,22 @@ function stripPositionalTargetArg(args) {
   });
 }
 
+function stripPrimeArg(args) {
+  let removed = false;
+  return args.filter((arg) => {
+    if (removed) return true;
+    if (arg !== "prime") return true;
+    removed = true;
+    return false;
+  });
+}
+
 function hasFlag(args, flag) {
   return args.some((arg) => arg.startsWith(`${flag}=`));
+}
+
+function hasAnyFlag(args, flags) {
+  return flags.some((flag) => hasFlag(args, flag));
 }
 
 async function runPnpm(args, env) {
@@ -122,9 +144,12 @@ function effectiveEnv(targets, args) {
 
 async function main() {
   const rawArgs = process.argv.slice(2);
+  const primeMode =
+    rawArgs.includes("prime") || rawArgs.includes("--prime-server-fixtures");
   if (rawArgs.includes("--help")) {
     console.log(`Usage:
   pnpm benchmark:sync
+  pnpm benchmark:sync:prime
   pnpm benchmark:sync:direct -- --workloads=sync-balanced-children-payloads-cold-start --counts=10000,50000 --fanout=10
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view
@@ -134,6 +159,7 @@ async function main() {
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --profile-hello
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --direct-send-threshold=64
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=50000 --first-view --server-fixture-cache=rebuild
+  pnpm benchmark:sync:prime -- --counts=10000,50000,100000
   TREECRDT_SYNC_SERVER_URL=wss://host/sync pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start
 
 Notes:
@@ -146,6 +172,7 @@ Notes:
   - local sync benches use a spawned child-process server by default for more realistic local vs remote comparisons
   - local sync benches now use a benchmark-only direct Postgres seed step before timing, so large local runs avoid spending minutes protocol-seeding data that is not part of the measured sync
   - local read-only sync benches reuse the same seeded Postgres fixture across warmup, samples, and later matching runs by default; use --server-fixture-cache=rebuild to refresh it or --server-fixture-cache=off to disable that cache
+  - pnpm benchmark:sync:prime warms local Postgres fixtures for the read-only first-view workloads and defaults to rebuilding them for 10k/50k/100k unless you override the forwarded args
   - add --profile-backend to capture listOpRefs/getOpsByOpRefs/applyOps timing per backend; on local benches this switches back to the in-process server for debug visibility
   - add --profile-transport to capture sync message counts, bytes, and a small event timeline
   - add --profile-hello to capture responder-side hello stage timings; local child-process runs parse server trace output, direct and in-process runs collect it in-process
@@ -154,8 +181,27 @@ Notes:
     return;
   }
 
-  const targets = parseRequestedTargets(rawArgs);
-  const forwardedArgs = stripPositionalTargetArg(rawArgs);
+  const baseArgs = stripPrimeArg(rawArgs);
+  const explicitTarget = hasExplicitTarget(baseArgs);
+  const targets =
+    primeMode && !explicitTarget
+      ? ["local-postgres-sync-server"]
+      : parseRequestedTargets(baseArgs);
+  const forwardedArgs = stripPositionalTargetArg(baseArgs);
+  if (primeMode && !forwardedArgs.includes("--prime-server-fixtures")) {
+    forwardedArgs.push("--prime-server-fixtures");
+  }
+  if (primeMode && !hasAnyFlag(forwardedArgs, ["--workloads", "--workload"])) {
+    forwardedArgs.push(
+      "--workloads=sync-balanced-children-cold-start,sync-balanced-children-payloads-cold-start"
+    );
+  }
+  if (primeMode && !hasAnyFlag(forwardedArgs, ["--counts", "--count"])) {
+    forwardedArgs.push("--counts=10000,50000,100000");
+  }
+  if (primeMode && !hasFlag(forwardedArgs, "--server-fixture-cache")) {
+    forwardedArgs.push("--server-fixture-cache=rebuild");
+  }
   const env = effectiveEnv(targets, forwardedArgs);
 
   const buildCommands = [
