@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { setMaxListeners } from "node:events";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -802,6 +803,32 @@ async function closeWebSocket(ws: WebSocket): Promise<void> {
   });
 }
 
+type BuiltinWebSocket = InstanceType<typeof globalThis.WebSocket>;
+
+async function closeBuiltinWebSocket(ws: BuiltinWebSocket): Promise<void> {
+  if (ws.readyState === globalThis.WebSocket.CLOSED) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      ws.removeEventListener("close", onClose);
+      ws.removeEventListener("error", onError);
+      resolve();
+    };
+    const onClose = () => finish();
+    const onError = () => finish();
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
+    try {
+      ws.close();
+    } catch {
+      finish();
+    }
+    setTimeout(finish, 1_000);
+  });
+}
+
 async function openWebSocket(url: URL): Promise<WebSocket> {
   return await new Promise<WebSocket>((resolve, reject) => {
     const ws = new WebSocket(url);
@@ -835,6 +862,47 @@ async function openWebSocket(url: URL): Promise<WebSocket> {
   });
 }
 
+async function openBuiltinWebSocket(url: URL): Promise<BuiltinWebSocket> {
+  return await new Promise<BuiltinWebSocket>((resolve, reject) => {
+    const WebSocketCtor = globalThis.WebSocket;
+    if (typeof WebSocketCtor !== "function") {
+      reject(new Error("global WebSocket is not available in this Node runtime"));
+      return;
+    }
+
+    const ws = new WebSocketCtor(url.toString());
+    setMaxListeners(0, ws);
+    ws.binaryType = "arraybuffer";
+    let settled = false;
+
+    const finish = (
+      fn: (value: BuiltinWebSocket | Error) => void,
+      value: BuiltinWebSocket | Error
+    ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ws.removeEventListener("open", onOpen);
+      ws.removeEventListener("error", onError);
+      fn(value);
+    };
+
+    const onOpen = () => finish(resolve, ws);
+    const onError = () => {
+      void closeBuiltinWebSocket(ws);
+      finish(reject, new Error(`failed connecting to ${url.toString()}`));
+    };
+
+    const timer = setTimeout(() => {
+      void closeBuiltinWebSocket(ws);
+      finish(reject, new Error(`timed out connecting to ${url.toString()}`));
+    }, 5_000);
+
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("error", onError);
+  });
+}
+
 function createNodeWebSocketTransport(
   ws: WebSocket
 ): DuplexTransport<Uint8Array> {
@@ -863,6 +931,38 @@ function createNodeWebSocketTransport(
       };
       ws.on("message", onMessage);
       return () => ws.off("message", onMessage);
+    },
+  };
+}
+
+function createBuiltinWebSocketTransport(
+  ws: BuiltinWebSocket
+): DuplexTransport<Uint8Array> {
+  return {
+    send: async (bytes) => {
+      try {
+        ws.send(bytes);
+      } catch (error) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+    },
+    onMessage: (handler) => {
+      const onMessage = (event: { data: unknown }) => {
+        const { data } = event;
+        if (data instanceof Uint8Array) {
+          handler(data);
+        } else if (data instanceof ArrayBuffer) {
+          handler(new Uint8Array(data));
+        } else if (ArrayBuffer.isView(data)) {
+          handler(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        } else if (typeof data === "string") {
+          handler(Buffer.from(data));
+        } else {
+          throw new Error(`unsupported builtin WebSocket message type: ${typeof data}`);
+        }
+      };
+      ws.addEventListener("message", onMessage as EventListener);
+      return () => ws.removeEventListener("message", onMessage as EventListener);
     },
   };
 }
@@ -945,11 +1045,19 @@ async function measureFirstViewAfterSync(
 
 async function connectToSyncServer(
   baseUrl: string,
-  docId: string
+  docId: string,
+  opts?: { client?: "ws-package" | "builtin" }
 ): Promise<SyncBenchConnection> {
   const url = normalizeSyncServerUrl(baseUrl, docId);
-  const ws = await openWebSocket(url);
-  const wire = createNodeWebSocketTransport(ws);
+  const client = opts?.client ?? "ws-package";
+  const ws =
+    client === "builtin"
+      ? await openBuiltinWebSocket(url)
+      : await openWebSocket(url);
+  const wire =
+    client === "builtin"
+      ? createBuiltinWebSocketTransport(ws)
+      : createNodeWebSocketTransport(ws);
   const transport = wrapDuplexTransportWithCodec<Uint8Array, any>(
     wire,
     treecrdtSyncV0ProtobufCodec as any
@@ -957,7 +1065,11 @@ async function connectToSyncServer(
   return {
     transport,
     close: async () => {
-      await closeWebSocket(ws);
+      if (client === "builtin") {
+        await closeBuiltinWebSocket(ws);
+      } else {
+        await closeWebSocket(ws);
+      }
     },
   };
 }
@@ -1196,7 +1308,8 @@ function createRemoteSyncServerTarget(
   return {
     id: "remote-sync-server",
     serverProcess: "remote",
-    connect: async (docId) => await connectToSyncServer(baseUrl, docId),
+    connect: async (docId) =>
+      await connectToSyncServer(baseUrl, docId, { client: "builtin" }),
     close: async () => {},
   };
 }
