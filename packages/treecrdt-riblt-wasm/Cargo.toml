@@ -5,6 +5,12 @@ edition = "2021"
 license = "MIT"
 description = "WASM bridge for Rateless IBLT (riblt) used by TreeCRDT sync."
 
+[package.metadata.wasm-pack.profile.release]
+# Avoid wasm-opt on release builds. The optimized bundle has been observed to
+# crash at startup in the deployed Node/Linux ARM environment while
+# initializing the wasm-bindgen externref table.
+wasm-opt = false
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -13,4 +19,3 @@ riblt = { git = "https://github.com/Intersubjective/riblt-rust", rev = "23cd9ce6
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
-
