@@ -128,7 +128,11 @@ async function main() {
   pnpm benchmark:sync:direct -- --workloads=sync-balanced-children-payloads-cold-start --counts=10000,50000 --fanout=10
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view
+  pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --iterations=5 --warmup=1
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000 --profile-backend
+  pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000 --profile-transport
+  pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --profile-hello
+  pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --direct-send-threshold=64
   TREECRDT_SYNC_SERVER_URL=wss://host/sync pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start
 
 Notes:
@@ -137,7 +141,13 @@ Notes:
   - use wss:// for public HTTPS/TLS deployments and ws:// for local/plain HTTP servers
   - use --fanout=20 to model broader trees; default fanout is 10
   - add --first-view to include the immediate local read after sync in the measured duration
-  - add --profile-backend to capture listOpRefs/getOpsByOpRefs/applyOps timing per backend
+  - add --iterations=N and --warmup=N to control sample count explicitly; custom --count/--counts runs now default to multiple samples instead of silently dropping to 1
+  - local sync benches use a spawned child-process server by default for more realistic local vs remote comparisons
+  - local sync benches now use a benchmark-only direct Postgres seed step before timing, so large local runs avoid spending minutes protocol-seeding data that is not part of the measured sync
+  - add --profile-backend to capture listOpRefs/getOpsByOpRefs/applyOps timing per backend; on local benches this switches back to the in-process server for debug visibility
+  - add --profile-transport to capture sync message counts, bytes, and a small event timeline
+  - add --profile-hello to capture responder-side hello stage timings; local child-process runs parse server trace output, direct and in-process runs collect it in-process
+  - add --direct-send-threshold=N to experiment with a clean-slate shortcut that skips the RIBLT round when the requested local filter is empty and the responder has at most N scoped ops
   - extra args are forwarded to packages/treecrdt-sqlite-node/scripts/bench-sync.ts`);
     return;
   }

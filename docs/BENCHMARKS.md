@@ -75,6 +75,10 @@ pnpm benchmark:sync:remote -- \
 
 Use `--fanout=20` when you want to model a broader notebook tree.
 
+By default, the local sync target runs the Postgres sync server in a spawned child process so local and remote measurements are closer to each other. When you add `--profile-backend`, the local target intentionally switches to the in-process server so per-backend timings are visible inside the benchmark process.
+
+Local server benchmarks now seed the Postgres backend directly before the timer starts. That keeps the measured path honest, because the actual sync to the client still goes through the real websocket server, while avoiding huge protocol-seed setup costs that are not part of the benchmark question.
+
 ### Time To First Visible Page
 
 Add `--first-view` when you want one number that includes:
@@ -89,6 +93,26 @@ pnpm benchmark:sync:local -- \
   --counts=10000 \
   --fanout=10 \
   --first-view
+```
+
+For custom `--count` or `--counts` runs, the sync bench now defaults to multiple measured samples instead of silently falling back to one. Use `--iterations=N` and `--warmup=N` when you want explicit control over stability versus runtime.
+
+### Small-Scope Direct Send
+
+Add `--direct-send-threshold=N` when you want to experiment with a clean-slate shortcut for small scoped syncs.
+
+When enabled, if the requesting peer has an empty local result for the requested filter and the responder has at most `N` matching ops, the protocol skips the RIBLT round and sends the scoped ops directly in `opsBatch`.
+
+This is most relevant for first-view note loading where the client knows the scope root but has not synced its immediate children yet.
+
+```sh
+TREECRDT_POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres \
+pnpm benchmark:sync:local -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --fanout=10 \
+  --first-view \
+  --direct-send-threshold=64
 ```
 
 ### Backend Call Profiling
@@ -109,6 +133,43 @@ pnpm benchmark:sync:local -- \
   --fanout=10 \
   --profile-backend
 ```
+
+### Transport Profiling
+
+Add `--profile-transport` when you want sync message counts, encoded byte counts, and a short event timeline showing where time is spent across the handshake, RIBLT exchange, and ops batches.
+
+```sh
+TREECRDT_POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres \
+pnpm benchmark:sync:local -- \
+  --workloads=sync-balanced-children-cold-start,sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --fanout=10 \
+  --profile-transport
+```
+
+### Hello Stage Profiling
+
+Add `--profile-hello` when you want the responder-side `hello -> helloAck` path broken into internal stages such as:
+
+- `maxLamport`
+- `listOpRefs`
+- `filterOutgoingOps` when auth filtering is active
+- decoder setup
+- `helloAck` send
+
+This is the right profiler when the coarse transport timeline says `hello -> helloAck` is expensive and you need to know whether that cost is database work, auth filtering, or protocol setup.
+
+```sh
+TREECRDT_POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres \
+pnpm benchmark:sync:local -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --fanout=10 \
+  --first-view \
+  --profile-hello
+```
+
+For `local-postgres-sync-server`, child-process runs capture hello traces by parsing the server process output. For `direct` and in-process debug runs, the benchmark collects the same trace in-process without writing debug noise into the result stream. Remote runs currently only have the coarse transport profile, not internal server hello stages.
 
 ### Local First View Read Path
 
@@ -200,7 +261,11 @@ Common sync flags:
 - `--targets=direct,local-postgres-sync-server`
 - `--fanout=10`
 - `--first-view`
+- `--iterations=5`
+- `--warmup=1`
 - `--profile-backend`
+- `--profile-transport`
+- `--profile-hello`
 - `--sync-server-url=ws://host/sync`
 - `--postgres-url=postgres://...`
 
