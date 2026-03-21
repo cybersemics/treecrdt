@@ -80,6 +80,10 @@ type SyncBenchSample = {
   helloProfile?: HelloTraceProfile;
 };
 
+type PreparedServerFixture = {
+  docId: string;
+};
+
 type SyncBenchConnection = {
   transport: DuplexTransport<any>;
   close: () => Promise<void>;
@@ -1350,6 +1354,52 @@ async function seedServerState(
   }
 }
 
+function canReuseServerFixture(
+  runtime: SyncBenchTargetRuntime,
+  bench: ReturnType<typeof buildSyncBenchCase>
+): boolean {
+  if (runtime.id !== "local-postgres-sync-server") return false;
+  // Reuse is safe when every client-side starting op is already present on the
+  // server fixture, so samples only read from the shared doc and never mutate it.
+  const serverOpIds = new Set(
+    bench.opsB.map((op) => `${Buffer.from(op.meta.id.replica).toString("base64")}:${op.meta.id.counter}`)
+  );
+  return bench.opsA.every((op) =>
+    serverOpIds.has(`${Buffer.from(op.meta.id.replica).toString("base64")}:${op.meta.id.counter}`)
+  );
+}
+
+async function prepareServerFixture(
+  runtime: SyncBenchTargetRuntime,
+  bench: ReturnType<typeof buildSyncBenchCase>,
+  directSendThreshold: number
+): Promise<PreparedServerFixture> {
+  const docId = `sqlite-node-sync-bench-${runtime.id}-fixture-${crypto.randomUUID()}`;
+  const expectedFilterCount = await seedServerState(
+    runtime,
+    docId,
+    bench.opsB,
+    bench.filter as Filter
+  );
+  if (runtime.waitForOpCount) {
+    await runtime.waitForOpCount(
+      docId,
+      bench.filter as Filter,
+      expectedFilterCount,
+      { timeoutMs: SERVER_READY_TIMEOUT_MS }
+    );
+  } else {
+    await waitForServerOpCount(
+      runtime,
+      docId,
+      bench.opsB.length,
+      directSendThreshold,
+      SERVER_SEED_READY_TIMEOUT_MS
+    );
+  }
+  return { docId };
+}
+
 async function waitForServerOpCount(
   runtime: SyncBenchTargetRuntime,
   docId: string,
@@ -1542,10 +1592,13 @@ async function runBenchOnceViaServer(
   profileBackend: boolean,
   profileTransport: boolean,
   profileHello: boolean,
-  directSendThreshold: number
+  directSendThreshold: number,
+  preparedFixture?: PreparedServerFixture
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
-  const docId = `sqlite-node-sync-bench-${runtime.id}-${runId}`;
+  const docId =
+    preparedFixture?.docId ??
+    `sqlite-node-sync-bench-${runtime.id}-${runId}`;
   const helloTraceStore = getRuntimeHelloTraceStore(runtime, profileHello);
   const client = await openClientDbForRun(
     repoRoot,
@@ -1558,21 +1611,29 @@ async function runBenchOnceViaServer(
 
   try {
     await appendInitialOps(client.db, bench.opsA);
-    const expectedFilterCount = await seedServerState(
-      runtime,
-      docId,
-      bench.opsB,
-      bench.filter as Filter
-    );
-    if (runtime.waitForOpCount) {
-      await runtime.waitForOpCount(
+    if (!preparedFixture) {
+      const expectedFilterCount = await seedServerState(
+        runtime,
         docId,
-        bench.filter as Filter,
-        expectedFilterCount,
-        { timeoutMs: SERVER_READY_TIMEOUT_MS }
+        bench.opsB,
+        bench.filter as Filter
       );
-    } else {
-      await waitForServerOpCount(runtime, docId, bench.opsB.length, directSendThreshold, SERVER_SEED_READY_TIMEOUT_MS);
+      if (runtime.waitForOpCount) {
+        await runtime.waitForOpCount(
+          docId,
+          bench.filter as Filter,
+          expectedFilterCount,
+          { timeoutMs: SERVER_READY_TIMEOUT_MS }
+        );
+      } else {
+        await waitForServerOpCount(
+          runtime,
+          docId,
+          bench.opsB.length,
+          directSendThreshold,
+          SERVER_SEED_READY_TIMEOUT_MS
+        );
+      }
     }
     helloTraceStore?.clear(docId);
 
@@ -1663,6 +1724,10 @@ async function runBenchCase(
   if (includeFirstView && !bench.firstView) {
     throw new Error(`sync bench workload ${bench.name} does not support --first-view`);
   }
+  const preparedFixture =
+    runtime && canReuseServerFixture(runtime, bench)
+      ? await prepareServerFixture(runtime, bench, directSendThreshold)
+      : undefined;
 
   for (let i = 0; i < warmupIterations; i += 1) {
     if (runtime) {
@@ -1675,7 +1740,8 @@ async function runBenchCase(
         profileBackend,
         profileTransport,
         profileHello,
-        directSendThreshold
+        directSendThreshold,
+        preparedFixture
       );
     } else {
       await runBenchOnceDirect(
@@ -1704,7 +1770,8 @@ async function runBenchCase(
             profileBackend,
             profileTransport,
             profileHello,
-            directSendThreshold
+            directSendThreshold,
+            preparedFixture
           )
         : await runBenchOnceDirect(
             repoRoot,
@@ -1768,6 +1835,7 @@ async function runBenchCase(
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
+      serverFixtureReuse: preparedFixture ? "per-case" : undefined,
       iterations: iterations > 1 ? iterations : undefined,
       warmupIterations: warmupIterations > 0 ? warmupIterations : undefined,
       avgDurationMs: iterations > 1 ? durationMs : undefined,

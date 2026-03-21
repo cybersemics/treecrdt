@@ -79,6 +79,8 @@ By default, the local sync target runs the Postgres sync server in a spawned chi
 
 Local server benchmarks now seed the Postgres backend directly before the timer starts. That keeps the measured path honest, because the actual sync to the client still goes through the real websocket server, while avoiding huge protocol-seed setup costs that are not part of the benchmark question.
 
+For read-only local server workloads, the harness now prepares that server fixture once per benchmark case and reuses it across warmup and measured samples. That removes repeated `50k/100k` Postgres imports from the per-sample path while keeping each client run a fresh-device sync.
+
 ### Time To First Visible Page
 
 Add `--first-view` when you want one number that includes:
