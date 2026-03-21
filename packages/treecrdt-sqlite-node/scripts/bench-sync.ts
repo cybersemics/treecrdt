@@ -73,6 +73,11 @@ type SyncBenchResult = {
   extra?: Record<string, unknown>;
 };
 
+type PrimedServerFixtureResult = {
+  name: string;
+  extra?: Record<string, unknown>;
+};
+
 type SyncBenchSample = {
   totalMs: number;
   syncMs: number;
@@ -456,6 +461,14 @@ function parseServerFixtureCacheMode(argv: string[]): ServerFixtureCacheMode {
   }
   throw new Error(
     `invalid --server-fixture-cache value "${raw}", expected one of: off, reuse, rebuild`
+  );
+}
+
+function parsePrimeServerFixtures(argv: string[]): boolean {
+  return parseBooleanFlag(
+    argv,
+    "--prime-server-fixtures",
+    "SYNC_BENCH_PRIME_SERVER_FIXTURES"
   );
 }
 
@@ -2001,6 +2014,65 @@ async function runBenchCase(
   };
 }
 
+async function primeServerFixtureCase(
+  benchCase: Omit<BenchCase, "storage" | "iterations" | "warmupIterations">,
+  runtimes: Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>,
+  directSendThreshold: number,
+  serverFixtureCacheMode: ServerFixtureCacheMode
+): Promise<PrimedServerFixtureResult> {
+  const bench = buildSyncBenchCase({
+    workload: benchCase.workload,
+    size: benchCase.size,
+    fanout: benchCase.fanout,
+  });
+  const runtime =
+    benchCase.target === "direct" ? null : runtimes.get(benchCase.target);
+  if (benchCase.target !== "direct" && !runtime) {
+    throw new Error(`missing runtime for sync bench target ${benchCase.target}`);
+  }
+  if (!runtime) {
+    throw new Error("server fixture priming requires a sync-server target");
+  }
+  if (!canReuseServerFixture(runtime, bench)) {
+    throw new Error(
+      `sync bench workload ${bench.name} does not support reusable local server fixtures`
+    );
+  }
+
+  const preparedFixture = await prepareServerFixture(
+    runtime,
+    bench,
+    directSendThreshold,
+    serverFixtureCacheMode
+  );
+  return {
+    name: `${bench.name}-server-fixture`,
+    extra: {
+      ...bench.extra,
+      count: benchCase.size,
+      fanout: benchCase.fanout,
+      mode: benchCase.target,
+      target: benchCase.target,
+      server:
+        benchCase.target === "local-postgres-sync-server"
+          ? "postgres-local"
+          : benchCase.target === "remote-sync-server"
+            ? "remote"
+            : "none",
+      serverProcess: runtime.serverProcess,
+      measurement: "server-fixture-prime",
+      directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
+      serverFixtureReuse: "per-case",
+      serverFixtureCacheMode,
+      serverFixtureCacheStatus: preparedFixture.cacheStatus,
+      serverFixtureCacheKey: preparedFixture.cacheKey,
+      docId: preparedFixture.docId,
+      fixtureOpCount: bench.opsB.length,
+      fixtureMaxLamport: maxLamport(bench.opsB),
+    },
+  };
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
@@ -2025,6 +2097,7 @@ async function main() {
   const profileHello = parseProfileHello(argv);
   const directSendThreshold = parseDirectSendThreshold(argv);
   const serverFixtureCacheMode = parseServerFixtureCacheMode(argv);
+  const primeServerFixtures = parsePrimeServerFixtures(argv);
   const runtimes = await prepareTargetRuntimes(
     repoRoot,
     argv,
@@ -2035,6 +2108,42 @@ async function main() {
   );
 
   try {
+    if (primeServerFixtures) {
+      if (targets.some((target) => target !== "local-postgres-sync-server")) {
+        throw new Error(
+          "--prime-server-fixtures only supports the local-postgres-sync-server target"
+        );
+      }
+      const primeCases = workloads.flatMap((workload) => {
+        const entries =
+          workload === "sync-root-children-fanout10" ? rootConfig : config;
+        return entries.map(([size]) => ({
+          target: "local-postgres-sync-server" as const,
+          workload,
+          size,
+          fanout,
+        }));
+      });
+
+      for (const primeCase of primeCases) {
+        const result = await primeServerFixtureCase(
+          primeCase,
+          runtimes,
+          directSendThreshold,
+          serverFixtureCacheMode
+        );
+        console.log(
+          JSON.stringify({
+            implementation: "sqlite-node",
+            workload: result.name,
+            target: primeCase.target,
+            extra: result.extra,
+          })
+        );
+      }
+      return;
+    }
+
     const cases: BenchCase[] = [];
     for (const target of targets) {
       for (const storage of storages) {
