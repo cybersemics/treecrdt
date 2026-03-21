@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import WebSocket from "ws";
 
@@ -21,13 +23,13 @@ import type { Operation } from "@treecrdt/interface";
 import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
 import { SyncPeer, type Filter } from "@treecrdt/sync";
 import {
-  createInMemoryConnectedPeers,
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
 } from "@treecrdt/sync/in-memory";
 import { createTreecrdtSyncBackendFromClient } from "@treecrdt/sync-sqlite/backend";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
 import {
+  createInMemoryDuplex,
   wrapDuplexTransportWithCodec,
   type DuplexTransport,
 } from "@treecrdt/sync/transport";
@@ -57,6 +59,7 @@ type BenchCase = {
   workload: SyncBenchWorkload;
   size: number;
   iterations: number;
+  warmupIterations: number;
   fanout: number;
 };
 
@@ -73,6 +76,8 @@ type SyncBenchSample = {
   syncMs: number;
   firstViewReadMs: number;
   backendProfile?: unknown;
+  transportProfile?: TransportProfile;
+  helloProfile?: HelloTraceProfile;
 };
 
 type SyncBenchConnection = {
@@ -82,8 +87,79 @@ type SyncBenchConnection = {
 
 type SyncBenchTargetRuntime = {
   id: Exclude<SyncBenchTargetId, "direct">;
+  serverProcess: "child-process" | "in-process" | "remote";
   connect: (docId: string) => Promise<SyncBenchConnection>;
+  seedOps?: (docId: string, ops: Operation[]) => Promise<void>;
+  waitForOpCount?: (
+    docId: string,
+    filter: Filter,
+    expectedCount: number,
+    opts?: { timeoutMs?: number }
+  ) => Promise<void>;
+  clearHelloTrace?: (docId: string) => void;
+  takeHelloTrace?: (docId: string) => HelloTraceProfile | undefined;
   close: () => Promise<void>;
+};
+
+type TransportDirectionProfile = {
+  messages: number;
+  bytes: number;
+  codewords: number;
+  ops: number;
+  byCase: Record<string, number>;
+};
+
+type TransportProfile = {
+  sent: TransportDirectionProfile;
+  received: TransportDirectionProfile;
+  events: TransportProfileEvent[];
+};
+
+type TransportProfileEvent = {
+  direction: "sent" | "received";
+  case: string;
+  atMs: number;
+  bytes: number;
+  codewords: number;
+  ops: number;
+};
+
+type HelloTraceRecord = {
+  type: "sync-hello-trace";
+  docId: string;
+  stage: string;
+  ms: number;
+} & Record<string, unknown>;
+
+type HelloTraceProfileEvent = {
+  stage: string;
+  atMs: number;
+  deltaMs: number;
+  meta?: Record<string, unknown>;
+};
+
+type HelloTraceProfile = {
+  totalMs: number;
+  events: HelloTraceProfileEvent[];
+};
+
+type HelloTraceStageSummary = Record<
+  string,
+  {
+    count: number;
+    medianAtMs: number;
+    p95AtMs: number;
+    medianDeltaMs: number;
+    p95DeltaMs: number;
+    minDeltaMs: number;
+    maxDeltaMs: number;
+  }
+>;
+
+type HelloTraceStore = {
+  clear: (docId: string) => void;
+  take: (docId: string) => HelloTraceProfile | undefined;
+  dispose?: () => void;
 };
 
 const SYNC_BENCH_CONFIG: ReadonlyArray<ConfigEntry> = [
@@ -105,7 +181,24 @@ const ALL_WORKLOADS: readonly SyncBenchWorkload[] = [
   ...ALL_SYNC_BENCH_WORKLOADS,
   ...DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS,
 ];
-const SERVER_READY_TIMEOUT_MS = 10_000;
+const SYNC_SERVER_START_TIMEOUT_MS = Math.max(1_000, envInt("SYNC_BENCH_SERVER_START_TIMEOUT_MS") ?? 10_000);
+const SERVER_READY_TIMEOUT_MS = Math.max(1_000, envInt("SYNC_BENCH_SERVER_READY_TIMEOUT_MS") ?? 10_000);
+const SERVER_SEED_READY_TIMEOUT_MS = Math.max(
+  SERVER_READY_TIMEOUT_MS,
+  envInt("SYNC_BENCH_SEED_READY_TIMEOUT_MS") ?? 60_000
+);
+const SYNC_BENCH_SERVER_MAX_CODEWORDS = Math.max(
+  SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+  envInt("SYNC_BENCH_SERVER_MAX_CODEWORDS") ?? 1_000_000
+);
+const SYNC_BENCH_SEED_MAX_CODEWORDS = Math.max(
+  SYNC_BENCH_SERVER_MAX_CODEWORDS,
+  envInt("SYNC_BENCH_SEED_MAX_CODEWORDS") ?? SYNC_BENCH_SERVER_MAX_CODEWORDS
+);
+const SYNC_BENCH_DIRECT_SEND_THRESHOLD = Math.max(
+  0,
+  envInt("SYNC_BENCH_DIRECT_SEND_THRESHOLD") ?? 0
+);
 const SERVER_READY_POLL_MS = 100;
 
 function envInt(name: string): number | undefined {
@@ -115,14 +208,34 @@ function envInt(name: string): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-function parseConfigFromArgv(argv: string[]): Array<ConfigEntry> | null {
+function recommendedIterationsForCustomSize(size: number): number {
+  if (size <= 100) return 10;
+  if (size <= 1_000) return 7;
+  if (size <= 10_000) return 5;
+  return 3;
+}
+
+function parseIterationsOverride(argv: string[]): number | undefined {
+  return parseOptionalPositiveIntFlag(argv, "--iterations", ["SYNC_BENCH_ITERATIONS", "BENCH_ITERATIONS"]);
+}
+
+function parseWarmupIterationsOverride(argv: string[]): number | undefined {
+  return parseOptionalNonNegativeIntFlag(argv, "--warmup", ["SYNC_BENCH_WARMUP", "BENCH_WARMUP"]);
+}
+
+function resolveWarmupIterations(iterations: number, explicitWarmupIterations?: number): number {
+  if (explicitWarmupIterations != null) return explicitWarmupIterations;
+  return iterations > 1 ? 1 : 0;
+}
+
+function parseConfigFromArgv(argv: string[], iterationsOverride?: number): Array<ConfigEntry> | null {
   let customConfig: Array<ConfigEntry> | null = null;
-  const defaultIterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 1);
   for (const arg of argv) {
     if (arg.startsWith("--count=")) {
       const val = arg.slice("--count=".length).trim();
       const count = val ? Number(val) : 500;
-      customConfig = [[Number.isFinite(count) && count > 0 ? count : 500, defaultIterations]];
+      const normalizedCount = Number.isFinite(count) && count > 0 ? count : 500;
+      customConfig = [[normalizedCount, iterationsOverride ?? recommendedIterationsForCustomSize(normalizedCount)]];
       break;
     }
     if (arg.startsWith("--counts=")) {
@@ -137,7 +250,10 @@ function parseConfigFromArgv(argv: string[]): Array<ConfigEntry> | null {
           return Number.isFinite(n) && n > 0 ? n : null;
         })
         .filter((n): n is number => n != null)
-        .map((c) => [c, defaultIterations] as ConfigEntry);
+        .map(
+          (c) =>
+            [c, iterationsOverride ?? recommendedIterationsForCustomSize(c)] as ConfigEntry
+        );
       if (parsed.length > 0) customConfig = parsed;
       break;
     }
@@ -157,6 +273,38 @@ function parsePositiveIntFlag(argv: string[], flag: string, envName: string, fal
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`invalid ${flag} value "${raw}", expected a positive integer`);
+  }
+  return value;
+}
+
+function parseOptionalPositiveIntFlag(
+  argv: string[],
+  flag: string,
+  envNames: readonly string[]
+): number | undefined {
+  const raw =
+    parseFlagValue(argv, flag) ??
+    envNames.map((name) => process.env[name]).find((value) => value != null && value !== "");
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`invalid ${flag} value "${raw}", expected a positive integer`);
+  }
+  return value;
+}
+
+function parseOptionalNonNegativeIntFlag(
+  argv: string[],
+  flag: string,
+  envNames: readonly string[]
+): number | undefined {
+  const raw =
+    parseFlagValue(argv, flag) ??
+    envNames.map((name) => process.env[name]).find((value) => value != null && value !== "");
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`invalid ${flag} value "${raw}", expected a non-negative integer`);
   }
   return value;
 }
@@ -267,6 +415,300 @@ function parseFirstView(argv: string[]): boolean {
 
 function parseProfileBackend(argv: string[]): boolean {
   return parseBooleanFlag(argv, "--profile-backend", "SYNC_BENCH_PROFILE_BACKEND");
+}
+
+function parseProfileTransport(argv: string[]): boolean {
+  return parseBooleanFlag(argv, "--profile-transport", "SYNC_BENCH_PROFILE_TRANSPORT");
+}
+
+function parseProfileHello(argv: string[]): boolean {
+  return parseBooleanFlag(argv, "--profile-hello", "SYNC_BENCH_PROFILE_HELLO");
+}
+
+function parseDirectSendThreshold(argv: string[]): number {
+  return parseOptionalNonNegativeIntFlag(argv, "--direct-send-threshold", [
+    "SYNC_BENCH_DIRECT_SEND_THRESHOLD",
+  ]) ?? SYNC_BENCH_DIRECT_SEND_THRESHOLD;
+}
+
+function createEmptyTransportDirectionProfile(): TransportDirectionProfile {
+  return {
+    messages: 0,
+    bytes: 0,
+    codewords: 0,
+    ops: 0,
+    byCase: {},
+  };
+}
+
+function createEmptyTransportProfile(): TransportProfile {
+  return {
+    sent: createEmptyTransportDirectionProfile(),
+    received: createEmptyTransportDirectionProfile(),
+    events: [],
+  };
+}
+
+function snapshotTransportProfile(profile: TransportProfile): TransportProfile {
+  return {
+    sent: {
+      ...profile.sent,
+      byCase: { ...profile.sent.byCase },
+    },
+    received: {
+      ...profile.received,
+      byCase: { ...profile.received.byCase },
+    },
+    events: profile.events.map((event) => ({ ...event })),
+  };
+}
+
+function recordTransportMessage(
+  profile: TransportProfile,
+  directionName: "sent" | "received",
+  direction: TransportDirectionProfile,
+  message: any
+): void {
+  direction.messages += 1;
+  let bytes = 0;
+  try {
+    bytes = treecrdtSyncV0ProtobufCodec.encode(message).byteLength;
+    direction.bytes += bytes;
+  } catch {
+    // best-effort; message counts are still useful if encoding fails
+  }
+
+  const payloadCase =
+    typeof message?.payload?.case === "string" ? message.payload.case : "unknown";
+  direction.byCase[payloadCase] = (direction.byCase[payloadCase] ?? 0) + 1;
+
+  if (payloadCase === "ribltCodewords") {
+    const codewords = message?.payload?.value?.codewords;
+    if (Array.isArray(codewords)) {
+      direction.codewords += codewords.length;
+    }
+  }
+
+  if (payloadCase === "opsBatch") {
+    const ops = message?.payload?.value?.ops;
+    if (Array.isArray(ops)) {
+      direction.ops += ops.length;
+    }
+  }
+
+  if (profile.events.length < 128) {
+    profile.events.push({
+      direction: directionName,
+      case: payloadCase,
+      atMs: performance.now() - transportProfileStartTimes.get(profile)!,
+      bytes,
+      codewords:
+        payloadCase === "ribltCodewords" && Array.isArray(message?.payload?.value?.codewords)
+          ? message.payload.value.codewords.length
+          : 0,
+      ops:
+        payloadCase === "opsBatch" && Array.isArray(message?.payload?.value?.ops)
+          ? message.payload.value.ops.length
+          : 0,
+    });
+  }
+}
+
+const transportProfileStartTimes = new WeakMap<TransportProfile, number>();
+
+function createProfiledSyncTransport(
+  transport: DuplexTransport<any>
+): {
+  transport: DuplexTransport<any>;
+  snapshot: () => TransportProfile;
+} {
+  const profile = createEmptyTransportProfile();
+  transportProfileStartTimes.set(profile, performance.now());
+  return {
+    transport: {
+      send: async (message) => {
+        recordTransportMessage(profile, "sent", profile.sent, message);
+        await transport.send(message);
+      },
+      onMessage: (handler) =>
+        transport.onMessage((message) => {
+          recordTransportMessage(profile, "received", profile.received, message);
+          handler(message);
+        }),
+    },
+    snapshot: () => snapshotTransportProfile(profile),
+  };
+}
+
+const HELLO_TRACE_SINK_KEY = "__TREECRDT_SYNC_HELLO_TRACE_SINK__";
+
+function normalizeHelloTraceRecord(value: unknown): HelloTraceRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "sync-hello-trace") return null;
+  if (typeof record.docId !== "string" || typeof record.stage !== "string" || typeof record.ms !== "number") {
+    return null;
+  }
+  return record as HelloTraceRecord;
+}
+
+function buildHelloTraceProfile(records: HelloTraceRecord[]): HelloTraceProfile | undefined {
+  if (records.length === 0) return undefined;
+  const sorted = records.slice().sort((a, b) => a.ms - b.ms);
+  let previousMs = 0;
+  return {
+    totalMs: sorted[sorted.length - 1]!.ms,
+    events: sorted.map((record, index) => {
+      const { type: _type, docId: _docId, stage, ms, ...meta } = record;
+      const deltaMs = index === 0 ? ms : ms - previousMs;
+      previousMs = ms;
+      return {
+        stage,
+        atMs: ms,
+        deltaMs,
+        meta: Object.keys(meta).length > 0 ? meta : undefined,
+      };
+    }),
+  };
+}
+
+function summarizeHelloTraceProfiles(
+  profiles: HelloTraceProfile[]
+): HelloTraceStageSummary | undefined {
+  if (profiles.length === 0) return undefined;
+  const buckets = new Map<string, { atMs: number[]; deltaMs: number[] }>();
+  for (const profile of profiles) {
+    for (const event of profile.events) {
+      const bucket = buckets.get(event.stage) ?? { atMs: [], deltaMs: [] };
+      bucket.atMs.push(event.atMs);
+      bucket.deltaMs.push(event.deltaMs);
+      buckets.set(event.stage, bucket);
+    }
+  }
+
+  return Object.fromEntries(
+    Array.from(buckets.entries(), ([stage, values]) => [
+      stage,
+      {
+        count: values.atMs.length,
+        medianAtMs: quantile(values.atMs, 0.5),
+        p95AtMs: quantile(values.atMs, 0.95),
+        medianDeltaMs: quantile(values.deltaMs, 0.5),
+        p95DeltaMs: quantile(values.deltaMs, 0.95),
+        minDeltaMs: Math.min(...values.deltaMs),
+        maxDeltaMs: Math.max(...values.deltaMs),
+      },
+    ])
+  );
+}
+
+function createChunkLineParser(onLine: (line: string) => void): {
+  push: (chunk: Buffer | string) => void;
+  flush: () => void;
+} {
+  let buffer = "";
+  const handleLines = () => {
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) return;
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) onLine(line);
+    }
+  };
+
+  return {
+    push: (chunk) => {
+      buffer += chunk.toString();
+      handleLines();
+    },
+    flush: () => {
+      const line = buffer.trim();
+      buffer = "";
+      if (line) onLine(line);
+    },
+  };
+}
+
+function createChildProcessHelloTraceStore(): HelloTraceStore & {
+  pushStdout: (chunk: Buffer | string) => void;
+  pushStderr: (chunk: Buffer | string) => void;
+} {
+  const traces = new Map<string, HelloTraceRecord[]>();
+  const remember = (record: HelloTraceRecord) => {
+    const current = traces.get(record.docId);
+    if (current) {
+      current.push(record);
+      return;
+    }
+    traces.set(record.docId, [record]);
+  };
+  const onLine = (line: string) => {
+    if (!line.includes("\"sync-hello-trace\"")) return;
+    try {
+      const parsed = normalizeHelloTraceRecord(JSON.parse(line));
+      if (parsed) remember(parsed);
+    } catch {
+      // ignore non-JSON or partial debug output
+    }
+  };
+  const stdoutParser = createChunkLineParser(onLine);
+  const stderrParser = createChunkLineParser(onLine);
+
+  return {
+    pushStdout: stdoutParser.push,
+    pushStderr: stderrParser.push,
+    clear: (docId) => {
+      traces.delete(docId);
+    },
+    take: (docId) => {
+      const records = traces.get(docId) ?? [];
+      traces.delete(docId);
+      return buildHelloTraceProfile(records);
+    },
+    dispose: () => {
+      stdoutParser.flush();
+      stderrParser.flush();
+      traces.clear();
+    },
+  };
+}
+
+function createProcessHelloTraceStore(): HelloTraceStore {
+  const traces = new Map<string, HelloTraceRecord[]>();
+  const root = globalThis as Record<string, unknown>;
+  const previousSink = root[HELLO_TRACE_SINK_KEY];
+  const nextSink = (record: HelloTraceRecord) => {
+    if (typeof previousSink === "function") {
+      (previousSink as (record: HelloTraceRecord) => void)(record);
+    }
+    const current = traces.get(record.docId);
+    if (current) {
+      current.push(record);
+      return;
+    }
+    traces.set(record.docId, [record]);
+  };
+  root[HELLO_TRACE_SINK_KEY] = nextSink;
+
+  return {
+    clear: (docId) => {
+      traces.delete(docId);
+    },
+    take: (docId) => {
+      const records = traces.get(docId) ?? [];
+      traces.delete(docId);
+      return buildHelloTraceProfile(records);
+    },
+    dispose: () => {
+      if (previousSink === undefined) {
+        delete root[HELLO_TRACE_SINK_KEY];
+      } else {
+        root[HELLO_TRACE_SINK_KEY] = previousSink;
+      }
+      traces.clear();
+    },
+  };
 }
 
 function normalizeSyncServerUrl(raw: string, docId: string): URL {
@@ -482,7 +924,9 @@ async function connectToSyncServer(
 async function createLocalPostgresSyncServerTarget(
   repoRoot: string,
   postgresUrl: string,
-  profileBackend: boolean
+  profileBackend: boolean,
+  profileHello: boolean,
+  directSendThreshold: number
 ): Promise<SyncBenchTargetRuntime> {
   const port = await findFreePort();
   const backendModule = profileBackend
@@ -501,23 +945,171 @@ async function createLocalPostgresSyncServerTarget(
         "index.js"
       );
 
-  const server = await startSyncServer({
-    host: "127.0.0.1",
-    port,
-    postgresUrl,
+  const waitForOpCount = await createDirectPostgresOpCountWaiter(
     backendModule,
-    allowDocCreate: true,
-    enablePgNotify: false,
+    postgresUrl
+  );
+  const backendFactory = await loadPostgresSyncBackendFactory(
+    backendModule,
+    postgresUrl
+  );
+  const seedOps = async (docId: string, ops: Operation[]) => {
+    if (ops.length === 0) return;
+    const backend = await backendFactory.open(docId);
+    await backend.applyOps(ops);
+  };
+
+  if (profileBackend) {
+    const server = await startSyncServer({
+      host: "127.0.0.1",
+      port,
+      postgresUrl,
+      backendModule,
+      maxCodewords: SYNC_BENCH_SERVER_MAX_CODEWORDS,
+      ...(directSendThreshold > 0 ? { directSendThreshold } : {}),
+      allowDocCreate: true,
+      enablePgNotify: false,
+    });
+
+    return {
+      id: "local-postgres-sync-server",
+      serverProcess: "in-process",
+      connect: async (docId) =>
+        await connectToSyncServer(`ws://127.0.0.1:${server.port}`, docId),
+      seedOps,
+      waitForOpCount,
+      close: async () => {
+        await server.close();
+      },
+    };
+  }
+
+  const cliPath = path.join(
+    repoRoot,
+    "packages",
+    "sync",
+    "server",
+    "postgres-node",
+    "dist",
+    "cli.js"
+  );
+  let recentOutput = "";
+  const helloTraceStore = profileHello ? createChildProcessHelloTraceStore() : undefined;
+  const child = spawn(process.execPath, [cliPath], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      PORT: String(port),
+      TREECRDT_POSTGRES_URL: postgresUrl,
+      TREECRDT_POSTGRES_BACKEND_MODULE: backendModule,
+      TREECRDT_SYNC_MAX_CODEWORDS: String(SYNC_BENCH_SERVER_MAX_CODEWORDS),
+      TREECRDT_SYNC_DIRECT_SEND_THRESHOLD: String(directSendThreshold),
+      TREECRDT_ALLOW_DOC_CREATE: "true",
+      TREECRDT_PG_NOTIFY_ENABLED: "false",
+      ...(profileHello ? { TREECRDT_SYNC_TRACE_HELLO: "1" } : {}),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  const rememberOutput = (chunk: Buffer | string) => {
+    recentOutput += chunk.toString();
+    if (recentOutput.length > 8_000) {
+      recentOutput = recentOutput.slice(-8_000);
+    }
+  };
+  child.stdout?.on("data", (chunk) => {
+    rememberOutput(chunk);
+    helloTraceStore?.pushStdout(chunk);
+  });
+  child.stderr?.on("data", (chunk) => {
+    rememberOutput(chunk);
+    helloTraceStore?.pushStderr(chunk);
+  });
+
+  await waitForSyncServerReady(
+    `http://127.0.0.1:${port}/health`,
+    child,
+    () => recentOutput
+  );
 
   return {
     id: "local-postgres-sync-server",
+    serverProcess: "child-process",
     connect: async (docId) =>
-      await connectToSyncServer(`ws://127.0.0.1:${server.port}`, docId),
+      await connectToSyncServer(`ws://127.0.0.1:${port}`, docId),
+    seedOps,
+    waitForOpCount,
+    clearHelloTrace: helloTraceStore ? (docId) => helloTraceStore.clear(docId) : undefined,
+    takeHelloTrace: helloTraceStore ? (docId) => helloTraceStore.take(docId) : undefined,
     close: async () => {
-      await server.close();
+      helloTraceStore?.dispose?.();
+      if (child.exitCode == null && child.signalCode == null) {
+        child.kill("SIGTERM");
+        await waitForProcessExit(child, 5_000);
+      }
     },
   };
+}
+
+async function createDirectPostgresOpCountWaiter(
+  backendModule: string,
+  postgresUrl: string
+): Promise<
+  (
+    docId: string,
+    filter: Filter,
+    expectedCount: number,
+    opts?: { timeoutMs?: number }
+  ) => Promise<void>
+> {
+  const factory = await loadPostgresSyncBackendFactory(backendModule, postgresUrl);
+  return async (docId: string, filter: Filter, expectedCount: number, opts?: { timeoutMs?: number }) => {
+    const timeoutMs = Math.max(1_000, opts?.timeoutMs ?? SERVER_READY_TIMEOUT_MS);
+    const deadline = Date.now() + timeoutMs;
+    let lastCount = -1;
+    let lastError: unknown;
+    while (Date.now() < deadline) {
+      try {
+        const backend = await factory.open(docId);
+        const refs = await backend.listOpRefs(filter);
+        lastCount = refs.length;
+        if (refs.length === expectedCount) {
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      await sleep(SERVER_READY_POLL_MS);
+    }
+    throw new Error(
+      `timed out waiting for server doc ${docId} to reach ${expectedCount} ops within ${timeoutMs}ms` +
+        (lastCount >= 0 ? ` (last count=${lastCount})` : "") +
+        (lastError ? `: ${String(lastError)}` : "")
+    );
+  };
+}
+
+async function loadPostgresSyncBackendFactory(
+  backendModule: string,
+  postgresUrl: string
+): Promise<{
+  open: (docId: string) => Promise<{
+    applyOps: (ops: Operation[]) => Promise<void>;
+    listOpRefs: (filter: Filter) => Promise<Uint8Array[]>;
+  }>;
+}> {
+  const mod = (await import(pathToFileURL(backendModule).href)) as {
+    createPostgresNapiSyncBackendFactory?: (url: string) => {
+      open: (docId: string) => Promise<{
+        applyOps: (ops: Operation[]) => Promise<void>;
+        listOpRefs: (filter: Filter) => Promise<Uint8Array[]>;
+      }>;
+    };
+  };
+  if (typeof mod.createPostgresNapiSyncBackendFactory !== "function") {
+    throw new Error(`backend module "${backendModule}" does not export createPostgresNapiSyncBackendFactory(url)`);
+  }
+  return mod.createPostgresNapiSyncBackendFactory(postgresUrl);
 }
 
 async function findFreePort(): Promise<number> {
@@ -548,16 +1140,69 @@ function createRemoteSyncServerTarget(
 ): SyncBenchTargetRuntime {
   return {
     id: "remote-sync-server",
+    serverProcess: "remote",
     connect: async (docId) => await connectToSyncServer(baseUrl, docId),
     close: async () => {},
   };
+}
+
+async function waitForProcessExit(
+  child: ReturnType<typeof spawn>,
+  timeoutMs: number
+): Promise<void> {
+  if (child.exitCode != null || child.signalCode != null) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      if (child.exitCode == null && child.signalCode == null) {
+        child.kill("SIGKILL");
+      }
+      finish();
+    }, timeoutMs);
+    child.once("exit", finish);
+  });
+}
+
+async function waitForSyncServerReady(
+  healthUrl: string,
+  child: ReturnType<typeof spawn>,
+  getRecentOutput: () => string
+): Promise<void> {
+  const deadline = Date.now() + SYNC_SERVER_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (child.exitCode != null || child.signalCode != null) {
+      const recentOutput = getRecentOutput();
+      throw new Error(
+        `local sync server exited before becoming ready (${healthUrl})${recentOutput ? `\n${recentOutput}` : ""}`
+      );
+    }
+    try {
+      const response = await fetch(healthUrl);
+      if (response.ok) return;
+    } catch {
+      // keep polling until timeout
+    }
+    await sleep(SERVER_READY_POLL_MS);
+  }
+  const recentOutput = getRecentOutput();
+  throw new Error(
+    `timed out waiting for local sync server readiness (${healthUrl})${recentOutput ? `\n${recentOutput}` : ""}`
+  );
 }
 
 async function prepareTargetRuntimes(
   repoRoot: string,
   argv: string[],
   targets: SyncBenchTargetId[],
-  profileBackend: boolean
+  profileBackend: boolean,
+  profileHello: boolean,
+  directSendThreshold: number
 ): Promise<Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>> {
   const runtimes = new Map<
     Exclude<SyncBenchTargetId, "direct">,
@@ -574,7 +1219,13 @@ async function prepareTargetRuntimes(
     }
     runtimes.set(
       "local-postgres-sync-server",
-      await createLocalPostgresSyncServerTarget(repoRoot, postgresUrl, profileBackend)
+      await createLocalPostgresSyncServerTarget(
+        repoRoot,
+        postgresUrl,
+        profileBackend,
+        profileHello,
+        directSendThreshold
+      )
     );
   }
 
@@ -599,22 +1250,45 @@ async function closeTargetRuntimes(
   await Promise.allSettled(Array.from(runtimes.values(), (runtime) => runtime.close()));
 }
 
+function getRuntimeHelloTraceStore(
+  runtime: SyncBenchTargetRuntime,
+  profileHello: boolean
+): HelloTraceStore | undefined {
+  if (!profileHello) return undefined;
+  if (runtime.clearHelloTrace && runtime.takeHelloTrace) {
+    return {
+      clear: runtime.clearHelloTrace,
+      take: runtime.takeHelloTrace,
+    };
+  }
+  if (runtime.serverProcess === "in-process") {
+    return createProcessHelloTraceStore();
+  }
+  return undefined;
+}
+
 async function syncBackendThroughServer(
   runtime: SyncBenchTargetRuntime,
   docId: string,
   backend: FlushableSyncBackend<Operation>,
-  filter: Filter
+  filter: Filter,
+  opts: {
+    maxCodewords?: number;
+    codewordsPerMessage?: number;
+    directSendThreshold?: number;
+  } = {}
 ): Promise<void> {
   const peer = new SyncPeer<Operation>(backend, {
-    maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+    maxCodewords: opts.maxCodewords ?? SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+    directSendThreshold: opts.directSendThreshold ?? 0,
   });
   const connection = await runtime.connect(docId);
   const detach = peer.attach(connection.transport);
 
   try {
     await peer.syncOnce(connection.transport, filter, {
-      maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
-      codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      maxCodewords: opts.maxCodewords ?? SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+      codewordsPerMessage: opts.codewordsPerMessage ?? SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
     });
     await backend.flush();
   } finally {
@@ -626,9 +1300,10 @@ async function syncBackendThroughServer(
 async function seedServerState(
   runtime: SyncBenchTargetRuntime,
   docId: string,
-  ops: Operation[]
-): Promise<void> {
-  if (ops.length === 0) return;
+  ops: Operation[],
+  filter: Filter
+): Promise<number> {
+  if (ops.length === 0) return 0;
 
   const seedDb = await openDb({ storage: "memory", docId });
   try {
@@ -638,7 +1313,38 @@ async function seedServerState(
       docId,
       initialMaxLamport: maxLamport(ops),
     });
-    await syncBackendThroughServer(runtime, docId, seedBackend, { all: {} });
+    const expectedFilterCount = (await seedBackend.listOpRefs(filter)).length;
+    if (runtime.seedOps) {
+      await runtime.seedOps(docId, ops);
+      if (runtime.waitForOpCount) {
+        await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
+          timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
+        });
+      }
+      return expectedFilterCount;
+    }
+    const peer = new SyncPeer<Operation>(seedBackend, {
+      maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
+      directSendThreshold: 0,
+    });
+    const connection = await runtime.connect(docId);
+    const detach = peer.attach(connection.transport);
+    try {
+      await peer.syncOnce(connection.transport, { all: {} }, {
+        maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
+        codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      });
+      await seedBackend.flush();
+      if (runtime.waitForOpCount) {
+        await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
+          timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
+        });
+      }
+    } finally {
+      detach();
+      await connection.close();
+    }
+    return expectedFilterCount;
   } finally {
     seedDb.close();
   }
@@ -647,9 +1353,12 @@ async function seedServerState(
 async function waitForServerOpCount(
   runtime: SyncBenchTargetRuntime,
   docId: string,
-  expectedCount: number
+  expectedCount: number,
+  directSendThreshold: number,
+  timeoutMs = SERVER_READY_TIMEOUT_MS
 ): Promise<void> {
-  const deadline = Date.now() + SERVER_READY_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  let lastCount = -1;
   while (true) {
     const verifierDb = await openDb({ storage: "memory", docId });
     try {
@@ -658,8 +1367,12 @@ async function waitForServerOpCount(
         docId,
         initialMaxLamport: 0,
       });
-      await syncBackendThroughServer(runtime, docId, verifierBackend, { all: {} });
-      if (countOps(verifierDb) === expectedCount) {
+      await syncBackendThroughServer(runtime, docId, verifierBackend, { all: {} }, {
+        maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
+        directSendThreshold,
+      });
+      lastCount = countOps(verifierDb);
+      if (lastCount === expectedCount) {
         return;
       }
     } finally {
@@ -668,7 +1381,8 @@ async function waitForServerOpCount(
 
     if (Date.now() >= deadline) {
       throw new Error(
-        `timed out waiting for server doc ${docId} to reach ${expectedCount} ops`
+        `timed out waiting for server doc ${docId} to reach ${expectedCount} ops within ${timeoutMs}ms` +
+          (lastCount >= 0 ? ` (last count=${lastCount})` : "")
       );
     }
     await sleep(SERVER_READY_POLL_MS);
@@ -709,10 +1423,14 @@ async function runBenchOnceDirect(
   { storage, workload, size }: BenchCase,
   bench: ReturnType<typeof buildSyncBenchCase>,
   includeFirstView: boolean,
-  profileBackend: boolean
+  profileBackend: boolean,
+  profileTransport: boolean,
+  profileHello: boolean,
+  directSendThreshold: number
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
   const docId = `sqlite-node-sync-bench-${runId}`;
+  const helloTraceStore = profileHello ? createProcessHelloTraceStore() : undefined;
   const clientA = await openClientDbForRun(
     repoRoot,
     storage,
@@ -749,17 +1467,29 @@ async function runBenchOnceDirect(
       profileLabel: profileBackend ? "direct-client-b" : undefined,
     });
 
-    const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
-      backendA,
-      backendB,
-      codec: treecrdtSyncV0ProtobufCodec,
-      peerOptions: { maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS },
+    const [wireA, wireB] = createInMemoryDuplex<Uint8Array>();
+    const baseTransportA = wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
+    const transportAProfile = profileTransport
+      ? createProfiledSyncTransport(baseTransportA)
+      : undefined;
+    const transportA = transportAProfile?.transport ?? baseTransportA;
+    const transportB = wrapDuplexTransportWithCodec(wireB, treecrdtSyncV0ProtobufCodec);
+    const pa = new SyncPeer(backendA, {
+      maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+      directSendThreshold,
     });
+    const pb = new SyncPeer(backendB, {
+      maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+      directSendThreshold,
+    });
+    const detachA = pa.attach(transportA);
+    const detachB = pb.attach(transportB);
 
     try {
       if (profileBackend) resetBackendProfiler(docId);
+      helloTraceStore?.clear(docId);
       const start = performance.now();
-      await pa.syncOnce(ta, bench.filter as Filter, {
+      await pa.syncOnce(transportA, bench.filter as Filter, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       });
@@ -790,11 +1520,15 @@ async function runBenchOnceDirect(
         syncMs: syncedAt - start,
         firstViewReadMs,
         backendProfile: profileBackend ? takeBackendProfilerSnapshot(docId) : undefined,
+        transportProfile: profileTransport ? transportAProfile?.snapshot() : undefined,
+        helloProfile: helloTraceStore?.take(docId),
       };
     } finally {
-      detach();
+      detachA();
+      detachB();
     }
   } finally {
+    helloTraceStore?.dispose?.();
     await Promise.all([clientA.cleanup(), clientB.cleanup()]);
   }
 }
@@ -805,10 +1539,14 @@ async function runBenchOnceViaServer(
   { storage, workload, size }: BenchCase,
   bench: ReturnType<typeof buildSyncBenchCase>,
   includeFirstView: boolean,
-  profileBackend: boolean
+  profileBackend: boolean,
+  profileTransport: boolean,
+  profileHello: boolean,
+  directSendThreshold: number
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
   const docId = `sqlite-node-sync-bench-${runtime.id}-${runId}`;
+  const helloTraceStore = getRuntimeHelloTraceStore(runtime, profileHello);
   const client = await openClientDbForRun(
     repoRoot,
     storage,
@@ -820,8 +1558,23 @@ async function runBenchOnceViaServer(
 
   try {
     await appendInitialOps(client.db, bench.opsA);
-    await seedServerState(runtime, docId, bench.opsB);
-    await waitForServerOpCount(runtime, docId, bench.opsB.length);
+    const expectedFilterCount = await seedServerState(
+      runtime,
+      docId,
+      bench.opsB,
+      bench.filter as Filter
+    );
+    if (runtime.waitForOpCount) {
+      await runtime.waitForOpCount(
+        docId,
+        bench.filter as Filter,
+        expectedFilterCount,
+        { timeoutMs: SERVER_READY_TIMEOUT_MS }
+      );
+    } else {
+      await waitForServerOpCount(runtime, docId, bench.opsB.length, directSendThreshold, SERVER_SEED_READY_TIMEOUT_MS);
+    }
+    helloTraceStore?.clear(docId);
 
     const clientBackend = await makeBackend({
       db: client.db,
@@ -832,14 +1585,19 @@ async function runBenchOnceViaServer(
 
     const peer = new SyncPeer<Operation>(clientBackend, {
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+      directSendThreshold,
     });
     const connection = await runtime.connect(docId);
-    const detach = peer.attach(connection.transport);
+    const transportProfile = profileTransport
+      ? createProfiledSyncTransport(connection.transport)
+      : undefined;
+    const transport = transportProfile?.transport ?? connection.transport;
+    const detach = peer.attach(transport);
 
     try {
       if (profileBackend) resetBackendProfiler(docId);
       const start = performance.now();
-      await peer.syncOnce(connection.transport, bench.filter as Filter, {
+      await peer.syncOnce(transport, bench.filter as Filter, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       });
@@ -866,12 +1624,15 @@ async function runBenchOnceViaServer(
         syncMs: syncedAt - start,
         firstViewReadMs,
         backendProfile: profileBackend ? takeBackendProfilerSnapshot(docId) : undefined,
+        transportProfile: profileTransport ? transportProfile?.snapshot() : undefined,
+        helloProfile: helloTraceStore?.take(docId),
       };
     } finally {
       detach();
       await connection.close();
     }
   } finally {
+    helloTraceStore?.dispose?.();
     await client.cleanup();
   }
 }
@@ -881,14 +1642,17 @@ async function runBenchCase(
   benchCase: BenchCase,
   runtimes: Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>,
   includeFirstView: boolean,
-  profileBackend: boolean
+  profileBackend: boolean,
+  profileTransport: boolean,
+  profileHello: boolean,
+  directSendThreshold: number
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({
     workload: benchCase.workload,
     size: benchCase.size,
     fanout: benchCase.fanout,
   });
-  const { iterations } = benchCase;
+  const { iterations, warmupIterations } = benchCase;
 
   const runtime =
     benchCase.target === "direct" ? null : runtimes.get(benchCase.target);
@@ -900,12 +1664,58 @@ async function runBenchCase(
     throw new Error(`sync bench workload ${bench.name} does not support --first-view`);
   }
 
+  for (let i = 0; i < warmupIterations; i += 1) {
+    if (runtime) {
+      await runBenchOnceViaServer(
+        repoRoot,
+        runtime,
+        benchCase,
+        bench,
+        includeFirstView,
+        profileBackend,
+        profileTransport,
+        profileHello,
+        directSendThreshold
+      );
+    } else {
+      await runBenchOnceDirect(
+        repoRoot,
+        benchCase,
+        bench,
+        includeFirstView,
+        profileBackend,
+        profileTransport,
+        profileHello,
+        directSendThreshold
+      );
+    }
+  }
+
   const samples: SyncBenchSample[] = [];
   for (let i = 0; i < iterations; i += 1) {
     samples.push(
       runtime
-        ? await runBenchOnceViaServer(repoRoot, runtime, benchCase, bench, includeFirstView, profileBackend)
-        : await runBenchOnceDirect(repoRoot, benchCase, bench, includeFirstView, profileBackend)
+        ? await runBenchOnceViaServer(
+            repoRoot,
+            runtime,
+            benchCase,
+            bench,
+            includeFirstView,
+            profileBackend,
+            profileTransport,
+            profileHello,
+            directSendThreshold
+          )
+        : await runBenchOnceDirect(
+            repoRoot,
+            benchCase,
+            bench,
+            includeFirstView,
+            profileBackend,
+            profileTransport,
+            profileHello,
+            directSendThreshold
+          )
     );
   }
 
@@ -914,6 +1724,12 @@ async function runBenchCase(
   const firstViewReadSamplesMs = samples.map((sample) => sample.firstViewReadMs);
   const backendProfiles = samples
     .map((sample) => sample.backendProfile)
+    .filter((sample): sample is NonNullable<typeof sample> => sample != null);
+  const transportProfiles = samples
+    .map((sample) => sample.transportProfile)
+    .filter((sample): sample is NonNullable<typeof sample> => sample != null);
+  const helloProfiles = samples
+    .map((sample) => sample.helloProfile)
     .filter((sample): sample is NonNullable<typeof sample> => sample != null);
   const durationMs =
     iterations > 1 ? quantile(totalSamplesMs, 0.5) : totalSamplesMs[0] ?? 0;
@@ -937,12 +1753,23 @@ async function runBenchCase(
           : benchCase.target === "remote-sync-server"
             ? "remote"
             : "none",
+      serverProcess:
+        runtime?.serverProcess ?? (benchCase.target === "direct" ? "none" : "unknown"),
       measurement: includeFirstView ? "time-to-first-view" : "sync-only",
       backendProfile: profileBackend ? backendProfiles.at(-1) : undefined,
       backendProfileSamples: profileBackend && backendProfiles.length > 1 ? backendProfiles : undefined,
+      transportProfile: profileTransport ? transportProfiles.at(-1) : undefined,
+      transportProfileSamples:
+        profileTransport && transportProfiles.length > 1 ? transportProfiles : undefined,
+      helloProfile: profileHello ? helloProfiles.at(-1) : undefined,
+      helloProfileSamples: profileHello && helloProfiles.length > 1 ? helloProfiles : undefined,
+      helloStageSummary: profileHello ? summarizeHelloTraceProfiles(helloProfiles) : undefined,
+      helloTotalMsSamples: profileHello ? helloProfiles.map((profile) => profile.totalMs) : undefined,
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
+      directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
       iterations: iterations > 1 ? iterations : undefined,
+      warmupIterations: warmupIterations > 0 ? warmupIterations : undefined,
       avgDurationMs: iterations > 1 ? durationMs : undefined,
       samplesMs: totalSamplesMs,
       syncSamplesMs,
@@ -960,15 +1787,33 @@ async function main() {
   const argv = process.argv.slice(2);
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
-  const config = parseConfigFromArgv(argv) ?? [...SYNC_BENCH_CONFIG];
-  const rootConfig = [...SYNC_BENCH_ROOT_CONFIG];
+  const iterationsOverride = parseIterationsOverride(argv);
+  const warmupIterationsOverride = parseWarmupIterationsOverride(argv);
+  const config =
+    parseConfigFromArgv(argv, iterationsOverride) ??
+    SYNC_BENCH_CONFIG.map(
+      ([size, iterations]) => [size, iterationsOverride ?? iterations] as ConfigEntry
+    );
+  const rootConfig = SYNC_BENCH_ROOT_CONFIG.map(
+    ([size, iterations]) => [size, iterationsOverride ?? iterations] as ConfigEntry
+  );
   const targets = parseTargets(argv);
   const storages = parseStorages(argv);
   const workloads = parseWorkloads(argv);
   const fanout = parseFanout(argv);
   const includeFirstView = parseFirstView(argv);
   const profileBackend = parseProfileBackend(argv);
-  const runtimes = await prepareTargetRuntimes(repoRoot, argv, targets, profileBackend);
+  const profileTransport = parseProfileTransport(argv);
+  const profileHello = parseProfileHello(argv);
+  const directSendThreshold = parseDirectSendThreshold(argv);
+  const runtimes = await prepareTargetRuntimes(
+    repoRoot,
+    argv,
+    targets,
+    profileBackend,
+    profileHello,
+    directSendThreshold
+  );
 
   try {
     const cases: BenchCase[] = [];
@@ -978,14 +1823,31 @@ async function main() {
           const entries =
             workload === "sync-root-children-fanout10" ? rootConfig : config;
           for (const [size, iterations] of entries) {
-            cases.push({ target, storage, workload, size, iterations, fanout });
+            cases.push({
+              target,
+              storage,
+              workload,
+              size,
+              iterations,
+              warmupIterations: resolveWarmupIterations(iterations, warmupIterationsOverride),
+              fanout,
+            });
           }
         }
       }
     }
 
     for (const benchCase of cases) {
-      const result = await runBenchCase(repoRoot, benchCase, runtimes, includeFirstView, profileBackend);
+      const result = await runBenchCase(
+        repoRoot,
+        benchCase,
+        runtimes,
+        includeFirstView,
+        profileBackend,
+        profileTransport,
+        profileHello,
+        directSendThreshold
+      );
       const outFile = path.join(
         repoRoot,
         "benchmarks",

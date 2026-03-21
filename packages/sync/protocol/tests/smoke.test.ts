@@ -429,6 +429,51 @@ test("syncOnce waits for ribltStatus.more before sending another codeword batch"
   expect(sawMore).toBe(true);
 });
 
+test("syncOnce can direct-send a small clean-slate scope without riblt codewords", async () => {
+  const docId = "doc-sync-direct-send-small-scope";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  await b.applyOps([
+    makeOp(replicas.b, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.b, 2, 2, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(1),
+    }),
+  ]);
+
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const pa = new SyncPeer(a, { directSendThreshold: 8 });
+  const pb = new SyncPeer(b, { directSendThreshold: 8 });
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(ta, { children: { parent: nodeIdToBytes16(root) } }, {
+    maxCodewords: 4_096,
+    codewordsPerMessage: 16,
+  });
+
+  await waitUntil(() => a.hasOp(replicaHex.b, 2), {
+    message: "expected clean-slate initiator to receive direct-sent scope",
+  });
+
+  const wire = log.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
+  expect(wire).toContain("aToB:hello");
+  expect(wire).toContain("bToA:helloAck");
+  expect(wire).toContain("bToA:opsBatch");
+  expect(wire).not.toContain("aToB:ribltCodewords");
+  expect(wire).not.toContain("bToA:ribltStatus");
+});
+
 test("syncOnce rejects when local message handler throws during apply", async () => {
   const docId = "doc-sync-apply-error";
   const root = "0".repeat(32);
