@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -21,7 +22,7 @@ import {
 import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
 import type { Operation } from "@treecrdt/interface";
 import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
-import { SyncPeer, type Filter } from "@treecrdt/sync";
+import { SyncPeer, type Filter, type SyncBackend } from "@treecrdt/sync";
 import {
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
@@ -52,6 +53,7 @@ type SyncBenchTargetId =
   | "direct"
   | "local-postgres-sync-server"
   | "remote-sync-server";
+type ServerFixtureCacheMode = "off" | "reuse" | "rebuild";
 
 type BenchCase = {
   storage: StorageKind;
@@ -82,6 +84,8 @@ type SyncBenchSample = {
 
 type PreparedServerFixture = {
   docId: string;
+  cacheKey?: string;
+  cacheStatus: "disabled" | "hit" | "miss" | "rebuild";
 };
 
 type SyncBenchConnection = {
@@ -94,6 +98,10 @@ type SyncBenchTargetRuntime = {
   serverProcess: "child-process" | "in-process" | "remote";
   connect: (docId: string) => Promise<SyncBenchConnection>;
   seedOps?: (docId: string, ops: Operation[]) => Promise<void>;
+  inspectDoc?: (
+    docId: string
+  ) => Promise<{ allCount: number; maxLamport: number }>;
+  resetDoc?: (docId: string) => Promise<void>;
   waitForOpCount?: (
     docId: string,
     filter: Filter,
@@ -203,6 +211,8 @@ const SYNC_BENCH_DIRECT_SEND_THRESHOLD = Math.max(
   0,
   envInt("SYNC_BENCH_DIRECT_SEND_THRESHOLD") ?? 0
 );
+const DEFAULT_SERVER_FIXTURE_CACHE_MODE: ServerFixtureCacheMode = "reuse";
+const SYNC_BENCH_SERVER_FIXTURE_CACHE_VERSION = "2026-03-21-v1";
 const SERVER_READY_POLL_MS = 100;
 
 function envInt(name: string): number | undefined {
@@ -433,6 +443,20 @@ function parseDirectSendThreshold(argv: string[]): number {
   return parseOptionalNonNegativeIntFlag(argv, "--direct-send-threshold", [
     "SYNC_BENCH_DIRECT_SEND_THRESHOLD",
   ]) ?? SYNC_BENCH_DIRECT_SEND_THRESHOLD;
+}
+
+function parseServerFixtureCacheMode(argv: string[]): ServerFixtureCacheMode {
+  const raw =
+    parseFlagValue(argv, "--server-fixture-cache") ??
+    process.env.SYNC_BENCH_SERVER_FIXTURE_CACHE;
+  if (!raw) return DEFAULT_SERVER_FIXTURE_CACHE_MODE;
+  const value = raw.trim().toLowerCase();
+  if (value === "off" || value === "reuse" || value === "rebuild") {
+    return value;
+  }
+  throw new Error(
+    `invalid --server-fixture-cache value "${raw}", expected one of: off, reuse, rebuild`
+  );
 }
 
 function createEmptyTransportDirectionProfile(): TransportDirectionProfile {
@@ -957,6 +981,20 @@ async function createLocalPostgresSyncServerTarget(
     backendModule,
     postgresUrl
   );
+  const inspectDoc = async (docId: string) => {
+    const backend = await backendFactory.open(docId);
+    const [allRefs, currentMaxLamport] = await Promise.all([
+      backend.listOpRefs({ all: {} }),
+      backend.maxLamport(),
+    ]);
+    return {
+      allCount: allRefs.length,
+      maxLamport: Number(currentMaxLamport),
+    };
+  };
+  const resetDoc = async (docId: string) => {
+    await backendFactory.resetDocForTests(docId);
+  };
   const seedOps = async (docId: string, ops: Operation[]) => {
     if (ops.length === 0) return;
     const backend = await backendFactory.open(docId);
@@ -981,6 +1019,8 @@ async function createLocalPostgresSyncServerTarget(
       connect: async (docId) =>
         await connectToSyncServer(`ws://127.0.0.1:${server.port}`, docId),
       seedOps,
+      inspectDoc,
+      resetDoc,
       waitForOpCount,
       close: async () => {
         await server.close();
@@ -1042,6 +1082,8 @@ async function createLocalPostgresSyncServerTarget(
     connect: async (docId) =>
       await connectToSyncServer(`ws://127.0.0.1:${port}`, docId),
     seedOps,
+    inspectDoc,
+    resetDoc,
     waitForOpCount,
     clearHelloTrace: helloTraceStore ? (docId) => helloTraceStore.clear(docId) : undefined,
     takeHelloTrace: helloTraceStore ? (docId) => helloTraceStore.take(docId) : undefined,
@@ -1097,17 +1139,13 @@ async function loadPostgresSyncBackendFactory(
   backendModule: string,
   postgresUrl: string
 ): Promise<{
-  open: (docId: string) => Promise<{
-    applyOps: (ops: Operation[]) => Promise<void>;
-    listOpRefs: (filter: Filter) => Promise<Uint8Array[]>;
-  }>;
+  resetDocForTests: (docId: string) => Promise<void>;
+  open: (docId: string) => Promise<SyncBackend<Operation>>;
 }> {
   const mod = (await import(pathToFileURL(backendModule).href)) as {
     createPostgresNapiSyncBackendFactory?: (url: string) => {
-      open: (docId: string) => Promise<{
-        applyOps: (ops: Operation[]) => Promise<void>;
-        listOpRefs: (filter: Filter) => Promise<Uint8Array[]>;
-      }>;
+      resetDocForTests: (docId: string) => Promise<void>;
+      open: (docId: string) => Promise<SyncBackend<Operation>>;
     };
   };
   if (typeof mod.createPostgresNapiSyncBackendFactory !== "function") {
@@ -1369,12 +1407,110 @@ function canReuseServerFixture(
   );
 }
 
+function updateFixtureHashWithBytes(
+  hash: ReturnType<typeof createHash>,
+  value: Uint8Array | null | undefined
+): void {
+  if (value == null) {
+    hash.update("-1:");
+    return;
+  }
+  hash.update(`${value.byteLength}:`);
+  hash.update(Buffer.from(value));
+  hash.update(";");
+}
+
+function updateFixtureHashWithString(
+  hash: ReturnType<typeof createHash>,
+  value: string
+): void {
+  hash.update(`${value.length}:`);
+  hash.update(value);
+  hash.update(";");
+}
+
+function updateFixtureHashWithNumber(
+  hash: ReturnType<typeof createHash>,
+  value: number
+): void {
+  hash.update(`${value};`);
+}
+
+function createServerFixtureCacheKey(
+  bench: ReturnType<typeof buildSyncBenchCase>
+): string {
+  const hash = createHash("sha256");
+  updateFixtureHashWithString(hash, SYNC_BENCH_SERVER_FIXTURE_CACHE_VERSION);
+  updateFixtureHashWithString(hash, bench.name);
+  if ("all" in bench.filter) {
+    updateFixtureHashWithString(hash, "filter:all");
+  } else {
+    updateFixtureHashWithString(hash, "filter:children");
+    updateFixtureHashWithBytes(hash, bench.filter.children.parent);
+  }
+  for (const op of bench.opsB) {
+    updateFixtureHashWithBytes(hash, op.meta.id.replica);
+    updateFixtureHashWithNumber(hash, op.meta.id.counter);
+    updateFixtureHashWithNumber(hash, op.meta.lamport);
+    updateFixtureHashWithBytes(hash, op.meta.knownState);
+    updateFixtureHashWithString(hash, op.kind.type);
+    switch (op.kind.type) {
+      case "insert":
+        updateFixtureHashWithString(hash, op.kind.parent);
+        updateFixtureHashWithString(hash, op.kind.node);
+        updateFixtureHashWithBytes(hash, op.kind.orderKey);
+        updateFixtureHashWithBytes(hash, op.kind.payload);
+        break;
+      case "move":
+        updateFixtureHashWithString(hash, op.kind.node);
+        updateFixtureHashWithString(hash, op.kind.newParent);
+        updateFixtureHashWithBytes(hash, op.kind.orderKey);
+        break;
+      case "delete":
+      case "tombstone":
+        updateFixtureHashWithString(hash, op.kind.node);
+        break;
+      case "payload":
+        updateFixtureHashWithString(hash, op.kind.node);
+        updateFixtureHashWithBytes(hash, op.kind.payload);
+        break;
+    }
+  }
+  return hash.digest("hex").slice(0, 24);
+}
+
 async function prepareServerFixture(
   runtime: SyncBenchTargetRuntime,
   bench: ReturnType<typeof buildSyncBenchCase>,
-  directSendThreshold: number
+  directSendThreshold: number,
+  cacheMode: ServerFixtureCacheMode
 ): Promise<PreparedServerFixture> {
-  const docId = `sqlite-node-sync-bench-${runtime.id}-fixture-${crypto.randomUUID()}`;
+  const cacheKey =
+    cacheMode === "off" ? undefined : createServerFixtureCacheKey(bench);
+  const docId =
+    cacheMode === "off"
+      ? `sqlite-node-sync-bench-${runtime.id}-fixture-${crypto.randomUUID()}`
+      : `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}`;
+  if (cacheMode === "reuse" && runtime.inspectDoc) {
+    try {
+      const current = await runtime.inspectDoc(docId);
+      if (
+        current.allCount === bench.opsB.length &&
+        current.maxLamport === maxLamport(bench.opsB)
+      ) {
+        return {
+          docId,
+          cacheKey,
+          cacheStatus: "hit",
+        };
+      }
+    } catch {
+      // fall through to rebuild the fixture
+    }
+  }
+  if (cacheMode !== "off") {
+    await runtime.resetDoc?.(docId);
+  }
   const expectedFilterCount = await seedServerState(
     runtime,
     docId,
@@ -1397,7 +1533,11 @@ async function prepareServerFixture(
       SERVER_SEED_READY_TIMEOUT_MS
     );
   }
-  return { docId };
+  return {
+    docId,
+    cacheKey,
+    cacheStatus: cacheMode === "rebuild" ? "rebuild" : cacheMode === "reuse" ? "miss" : "disabled",
+  };
 }
 
 async function waitForServerOpCount(
@@ -1706,7 +1846,8 @@ async function runBenchCase(
   profileBackend: boolean,
   profileTransport: boolean,
   profileHello: boolean,
-  directSendThreshold: number
+  directSendThreshold: number,
+  serverFixtureCacheMode: ServerFixtureCacheMode
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({
     workload: benchCase.workload,
@@ -1726,7 +1867,7 @@ async function runBenchCase(
   }
   const preparedFixture =
     runtime && canReuseServerFixture(runtime, bench)
-      ? await prepareServerFixture(runtime, bench, directSendThreshold)
+      ? await prepareServerFixture(runtime, bench, directSendThreshold, serverFixtureCacheMode)
       : undefined;
 
   for (let i = 0; i < warmupIterations; i += 1) {
@@ -1836,6 +1977,15 @@ async function runBenchCase(
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
       serverFixtureReuse: preparedFixture ? "per-case" : undefined,
+      serverFixtureCacheMode:
+        preparedFixture && serverFixtureCacheMode !== DEFAULT_SERVER_FIXTURE_CACHE_MODE
+          ? serverFixtureCacheMode
+          : undefined,
+      serverFixtureCacheStatus:
+        preparedFixture && preparedFixture.cacheStatus !== "disabled"
+          ? preparedFixture.cacheStatus
+          : undefined,
+      serverFixtureCacheKey: preparedFixture?.cacheKey,
       iterations: iterations > 1 ? iterations : undefined,
       warmupIterations: warmupIterations > 0 ? warmupIterations : undefined,
       avgDurationMs: iterations > 1 ? durationMs : undefined,
@@ -1874,6 +2024,7 @@ async function main() {
   const profileTransport = parseProfileTransport(argv);
   const profileHello = parseProfileHello(argv);
   const directSendThreshold = parseDirectSendThreshold(argv);
+  const serverFixtureCacheMode = parseServerFixtureCacheMode(argv);
   const runtimes = await prepareTargetRuntimes(
     repoRoot,
     argv,
@@ -1914,7 +2065,8 @@ async function main() {
         profileBackend,
         profileTransport,
         profileHello,
-        directSendThreshold
+        directSendThreshold,
+        serverFixtureCacheMode
       );
       const outFile = path.join(
         repoRoot,
