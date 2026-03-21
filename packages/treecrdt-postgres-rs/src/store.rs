@@ -755,6 +755,11 @@ impl Storage for PgOpStorage {
     }
 
     fn latest_lamport(&self) -> Lamport {
+        if let Ok(meta) = load_tree_meta(&self.ctx.client, &self.ctx.doc_id) {
+            if !meta.dirty {
+                return meta.head_lamport;
+            }
+        }
         let mut c = self.ctx.client.borrow_mut();
         let rows = c
             .query(
@@ -1213,7 +1218,11 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
 }
 
 pub fn max_lamport(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport> {
-    ensure_doc_meta(client, doc_id)?;
+    let meta = load_tree_meta(client, doc_id)?;
+    if !meta.dirty {
+        return Ok(meta.head_lamport);
+    }
+
     let mut c = client.borrow_mut();
     let rows = c
         .query(
@@ -1264,6 +1273,70 @@ pub fn list_op_refs_children(
         let bytes: Vec<u8> = row.get(0);
         out.push(op_ref_from_bytes(&bytes)?);
     }
+    Ok(out)
+}
+
+pub fn list_op_refs_children_with_parent_payload(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    parent: NodeId,
+) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
+    ensure_materialized(client, doc_id)?;
+    let parent_bytes = node_to_bytes(parent);
+    let mut c = client.borrow_mut();
+
+    let child_rows = c
+        .query(
+            "SELECT op_ref FROM treecrdt_oprefs_children WHERE doc_id = $1 AND parent = $2 ORDER BY seq",
+            &[&doc_id, &parent_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    let mut out = Vec::with_capacity(child_rows.len() + 1);
+    for row in child_rows {
+        let bytes: Vec<u8> = row.get(0);
+        out.push(op_ref_from_bytes(&bytes)?);
+    }
+
+    let payload_rows = c
+        .query(
+            "SELECT last_replica, last_counter \
+             FROM treecrdt_payload \
+             WHERE doc_id = $1 AND node = $2 \
+             LIMIT 1",
+            &[&doc_id, &parent_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    if let Some(row) = payload_rows.first() {
+        let replica: Vec<u8> = row.get(0);
+        let counter = row.get::<_, i64>(1).max(0) as u64;
+        if counter > 0 {
+            let op_ref = derive_op_ref_v0(doc_id, &replica, counter);
+            if !out.contains(&op_ref) {
+                out.push(op_ref);
+            }
+            return Ok(out);
+        }
+    }
+
+    let fallback_rows = c
+        .query(
+            "SELECT op_ref \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 AND node = $2 \
+               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+            &[&doc_id, &parent_bytes.as_slice()],
+        )
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    if let Some(row) = fallback_rows.first() {
+        let op_ref: Vec<u8> = row.get(0);
+        let op_ref = op_ref_from_bytes(&op_ref)?;
+        if !out.contains(&op_ref) {
+            out.push(op_ref);
+        }
+    }
+
     Ok(out)
 }
 

@@ -309,6 +309,20 @@ impl PgBackend {
     }
 
     #[napi]
+    pub fn list_op_refs_children_with_parent_payload(
+        &self,
+        parent: Buffer,
+    ) -> napi::Result<Vec<Buffer>> {
+        let client = connect(&self.url)?;
+        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
+        let refs =
+            treecrdt_postgres::list_op_refs_children_with_parent_payload(&client, &self.doc_id, parent)
+                .map_err(map_core_err)?;
+        Ok(refs.into_iter().map(|r| Buffer::from(r.to_vec())).collect())
+    }
+
+    #[napi]
     pub fn latest_payload_writer_op_ref(&self, node: Buffer) -> napi::Result<Option<Buffer>> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
