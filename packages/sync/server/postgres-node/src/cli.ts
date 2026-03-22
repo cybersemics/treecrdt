@@ -76,6 +76,8 @@ async function main() {
   const host = process.env.HOST ?? "0.0.0.0";
   const port = Number(process.env.PORT ?? "8787");
   const postgresUrl = process.env.TREECRDT_POSTGRES_URL?.trim() || buildPostgresUrlFromParts();
+  const maxCodewords = Number(process.env.TREECRDT_SYNC_MAX_CODEWORDS ?? "0");
+  const directSendThreshold = Number(process.env.TREECRDT_SYNC_DIRECT_SEND_THRESHOLD ?? "0");
   const idleCloseMs = Number(process.env.TREECRDT_IDLE_CLOSE_MS ?? "30000");
   const maxPayloadBytes = Number(process.env.TREECRDT_MAX_PAYLOAD_BYTES ?? String(10 * 1024 * 1024));
   const authToken = process.env.TREECRDT_SYNC_AUTH_TOKEN?.trim() || undefined;
@@ -93,7 +95,7 @@ async function main() {
 
   const backendModule =
     process.env.TREECRDT_POSTGRES_BACKEND_MODULE ??
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../treecrdt-postgres-napi/dist/index.js");
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../treecrdt-postgres-napi/dist/index.js");
 
   if (!postgresUrl || postgresUrl.length === 0) {
     throw new Error(
@@ -106,6 +108,10 @@ async function main() {
     );
   }
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid PORT: ${process.env.PORT}`);
+  if (!Number.isFinite(maxCodewords) || maxCodewords < 0) throw new Error("invalid TREECRDT_SYNC_MAX_CODEWORDS");
+  if (!Number.isFinite(directSendThreshold) || directSendThreshold < 0) {
+    throw new Error("invalid TREECRDT_SYNC_DIRECT_SEND_THRESHOLD");
+  }
   if (!Number.isFinite(idleCloseMs) || idleCloseMs < 0) throw new Error("invalid TREECRDT_IDLE_CLOSE_MS");
   if (!Number.isFinite(maxPayloadBytes) || maxPayloadBytes <= 0) {
     throw new Error("invalid TREECRDT_MAX_PAYLOAD_BYTES");
@@ -121,6 +127,8 @@ async function main() {
     host,
     port,
     postgresUrl,
+    maxCodewords: maxCodewords > 0 ? maxCodewords : undefined,
+    directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
     idleCloseMs,
     maxPayloadBytes,
     backendModule,

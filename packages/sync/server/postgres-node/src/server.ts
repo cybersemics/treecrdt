@@ -48,6 +48,8 @@ export type SyncServerOptions = {
   port?: number;
   postgresUrl: string;
   backendModule?: string;
+  maxCodewords?: number;
+  directSendThreshold?: number;
   idleCloseMs?: number;
   maxPayloadBytes?: number;
   authToken?: string;
@@ -594,6 +596,10 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     opts.backendModule ?? "@treecrdt/postgres-napi"
   );
   const postgresUrl = ensureNonEmptyString("postgresUrl", opts.postgresUrl);
+  const maxCodewords =
+    opts.maxCodewords == null ? undefined : Number(opts.maxCodewords);
+  const directSendThreshold =
+    opts.directSendThreshold == null ? undefined : Number(opts.directSendThreshold);
   const idleCloseMs = Number(opts.idleCloseMs ?? 30_000);
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
   const authToken =
@@ -615,6 +621,12 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const startedAtMs = Date.parse(startedAt);
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
+  if (maxCodewords != null && (!Number.isFinite(maxCodewords) || maxCodewords <= 0)) {
+    throw new Error(`invalid maxCodewords: ${opts.maxCodewords}`);
+  }
+  if (directSendThreshold != null && (!Number.isFinite(directSendThreshold) || directSendThreshold < 0)) {
+    throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
+  }
   if (!Number.isFinite(idleCloseMs) || idleCloseMs < 0) throw new Error(`invalid idleCloseMs: ${opts.idleCloseMs}`);
   if (!Number.isFinite(maxPayloadBytes) || maxPayloadBytes <= 0) {
     throw new Error(`invalid maxPayloadBytes: ${opts.maxPayloadBytes}`);
@@ -650,6 +662,8 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
         },
       }),
       requireAuthForFilters: false,
+      ...(maxCodewords != null ? { maxCodewords } : {}),
+      ...(directSendThreshold != null ? { directSendThreshold } : {}),
     }),
   });
   if (enablePgNotify || !allowDocCreate) {

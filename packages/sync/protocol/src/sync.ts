@@ -48,6 +48,10 @@ function deferred<T>(): Pending<T> {
   return { promise, resolve, reject };
 }
 
+const DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY = "treecrdt.sync.direct_send_small_scope.v1";
+const DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY = "treecrdt.sync.direct_send_small_scope.request.v1";
+const DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY = "treecrdt.sync.direct_send_small_scope.filter.v1";
+
 type ResponderSession<Op> = {
   filter: Filter;
   round: number;
@@ -71,6 +75,7 @@ export type SyncPeerOptions<Op = unknown> = {
   maxCodewords?: number;
   maxOpsPerBatch?: number;
   maxHelloFilters?: number;
+  directSendThreshold?: number;
   requireAuthForFilters?: boolean;
   auth?: SyncAuth<Op>;
 };
@@ -150,6 +155,56 @@ const yieldToMacrotask: () => Promise<void> = (() => {
   return async () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 })();
 
+const TRACE_HELLO_ENABLED =
+  typeof process !== "undefined" &&
+  typeof process?.env?.TREECRDT_SYNC_TRACE_HELLO === "string" &&
+  process.env.TREECRDT_SYNC_TRACE_HELLO !== "0" &&
+  process.env.TREECRDT_SYNC_TRACE_HELLO.toLowerCase() !== "false";
+
+type HelloTraceRecord = {
+  type: "sync-hello-trace";
+  docId: string;
+  stage: string;
+  ms: number;
+} & Record<string, unknown>;
+
+type HelloTraceSink = (record: HelloTraceRecord) => void;
+
+const HELLO_TRACE_SINK_KEY = "__TREECRDT_SYNC_HELLO_TRACE_SINK__";
+
+function getHelloTraceSink(): HelloTraceSink | undefined {
+  const sink = (globalThis as Record<string, unknown>)[HELLO_TRACE_SINK_KEY];
+  return typeof sink === "function" ? (sink as HelloTraceSink) : undefined;
+}
+
+function traceHello(
+  docId: string,
+  startedAt: number,
+  stage: string,
+  extra: Record<string, unknown> = {}
+): void {
+  const sink = getHelloTraceSink();
+  if (!TRACE_HELLO_ENABLED && !sink) return;
+  const record: HelloTraceRecord = {
+    type: "sync-hello-trace",
+    docId,
+    stage,
+    ms: performance.now() - startedAt,
+    ...extra,
+  };
+  try {
+    sink?.(record);
+  } catch {
+    // debug tracing must never affect sync behavior
+  }
+  if (!TRACE_HELLO_ENABLED) return;
+  try {
+    console.log(JSON.stringify(record));
+  } catch {
+    // debug tracing must never affect sync behavior
+  }
+}
+
 function bytesToHex(bytes: Uint8Array): string {
   let out = "";
   for (const b of bytes) out += b.toString(16).padStart(2, "0");
@@ -177,10 +232,41 @@ function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
   return capabilities.some(isAnyAuthCapability);
 }
 
+function peerSupportsDirectSendSmallScope(capabilities: readonly Capability[]): boolean {
+  return capabilities.some(
+    (capability) =>
+      capability.name === DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY &&
+      capability.value === "1"
+  );
+}
+
+function peerSelectedDirectSendFilter(
+  capabilities: readonly Capability[],
+  filterId: string
+): boolean {
+  return capabilities.some(
+    (capability) =>
+      capability.name === DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY &&
+      capability.value === filterId
+  );
+}
+
+function peerRequestedDirectSendFilter(
+  capabilities: readonly Capability[],
+  filterId: string
+): boolean {
+  return capabilities.some(
+    (capability) =>
+      capability.name === DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY &&
+      capability.value === filterId
+  );
+}
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
   private readonly maxHelloFilters: number;
+  private readonly directSendThreshold: number;
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
@@ -203,6 +289,10 @@ export class SyncPeer<Op> {
     this.maxOpsPerBatch = opts.maxOpsPerBatch ?? 5_000;
     this.auth = opts.auth;
     this.maxHelloFilters = opts.maxHelloFilters ?? 8;
+    this.directSendThreshold = opts.directSendThreshold ?? 0;
+    if (!Number.isInteger(this.directSendThreshold) || this.directSendThreshold < 0) {
+      throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
+    }
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
   }
 
@@ -335,7 +425,23 @@ export class SyncPeer<Op> {
     const filterId = randomId("f");
     const round = 0;
     const maxLamport = await this.backend.maxLamport();
+    const localOpRefsBeforeHello = await this.backend.listOpRefs(filter);
     const capabilities = (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [];
+    if (!peerSupportsDirectSendSmallScope(capabilities)) {
+      capabilities.push({
+        name: DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY,
+        value: "1",
+      });
+    }
+    if (
+      localOpRefsBeforeHello.length === 0 &&
+      !peerRequestedDirectSendFilter(capabilities, filterId)
+    ) {
+      capabilities.push({
+        name: DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY,
+        value: filterId,
+      });
+    }
     const hello: Hello = { capabilities, filters: [{ id: filterId, filter }], maxLamport };
 
     const session: InitiatorSession<Op> = {
@@ -357,7 +463,15 @@ export class SyncPeer<Op> {
         docId: this.backend.docId,
         payload: { case: "hello", value: hello },
       });
-      await session.ack.promise;
+      const ack = await session.ack.promise;
+
+      if (
+        localOpRefsBeforeHello.length === 0 &&
+        peerSelectedDirectSendFilter(ack.capabilities, filterId)
+      ) {
+        await session.receivedOps.promise;
+        return;
+      }
 
       let opRefs = await this.backend.listOpRefs(filter);
 
@@ -448,7 +562,7 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     filterId: string,
     opRefs: OpRef[],
-    opts: { maxOpsPerBatch?: number } = {}
+    opts: { maxOpsPerBatch?: number; filter?: Filter } = {}
   ): Promise<void> {
     const maxOpsPerBatch = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
     if (!Number.isFinite(maxOpsPerBatch) || maxOpsPerBatch <= 0) {
@@ -456,6 +570,7 @@ export class SyncPeer<Op> {
     }
 
     const filter =
+      opts.filter ??
       this.responderSessions.get(filterId)?.filter ??
       this.initiatorSessions.get(filterId)?.filter ??
       undefined;
@@ -745,7 +860,15 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     hello: Hello
   ): Promise<void> {
+    const traceStartedAt = performance.now();
+    traceHello(this.backend.docId, traceStartedAt, "start", {
+      filters: hello.filters.length,
+      capabilities: hello.capabilities.length,
+    });
     const hasAuthCapability = hello.capabilities.some(isAuthCapability);
+    const supportsDirectSendSmallScope = peerSupportsDirectSendSmallScope(
+      hello.capabilities
+    );
 
     // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
     // can't race and get rejected before `onHello` completes.
@@ -755,6 +878,9 @@ export class SyncPeer<Op> {
     let ackCapabilities: HelloAck["capabilities"] = [];
     try {
       ackCapabilities = (await this.auth?.onHello?.(hello, { docId: this.backend.docId })) ?? [];
+      traceHello(this.backend.docId, traceStartedAt, "after-auth-onHello", {
+        ackCapabilities: ackCapabilities.length,
+      });
     } catch (err: any) {
       await transport.send({
         v: 0,
@@ -768,8 +894,16 @@ export class SyncPeer<Op> {
     }
 
     const maxLamport = await this.backend.maxLamport();
+    traceHello(this.backend.docId, traceStartedAt, "after-maxLamport", {
+      maxLamport: Number(maxLamport),
+    });
     const acceptedFilters: string[] = [];
     const rejectedFilters: HelloAck["rejectedFilters"] = [];
+    const directSendFilters: Array<{
+      id: string;
+      filter: Filter;
+      opRefs: OpRef[];
+    }> = [];
 
     for (let i = 0; i < hello.filters.length; i += 1) {
       const spec = hello.filters[i]!;
@@ -809,6 +943,10 @@ export class SyncPeer<Op> {
       let localOpRefs: OpRef[];
       try {
         localOpRefs = await this.backend.listOpRefs(filter);
+        traceHello(this.backend.docId, traceStartedAt, "after-listOpRefs", {
+          filterId: id,
+          opRefs: localOpRefs.length,
+        });
       } catch (err: any) {
         rejectedFilters.push({
           id,
@@ -831,6 +969,11 @@ export class SyncPeer<Op> {
             throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
           }
           localOpRefs = localOpRefs.filter((_r, idx) => allowed[idx] === true);
+          traceHello(this.backend.docId, traceStartedAt, "after-filterOutgoingOps", {
+            filterId: id,
+            fetchedOps: ops.length,
+            allowedOpRefs: localOpRefs.length,
+          });
         } catch (err: any) {
           rejectedFilters.push({
             id,
@@ -842,8 +985,35 @@ export class SyncPeer<Op> {
       }
 
       acceptedFilters.push(id);
+
+      if (
+        supportsDirectSendSmallScope &&
+        this.directSendThreshold > 0 &&
+        peerRequestedDirectSendFilter(hello.capabilities, id) &&
+        localOpRefs.length <= this.directSendThreshold
+      ) {
+        ackCapabilities.push({
+          name: DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY,
+          value: id,
+        });
+        directSendFilters.push({
+          id,
+          filter,
+          opRefs: localOpRefs,
+        });
+        traceHello(this.backend.docId, traceStartedAt, "after-direct-send-selection", {
+          filterId: id,
+          opRefs: localOpRefs.length,
+        });
+        continue;
+      }
+
       const decoder = new RibltDecoder16();
       for (const r of localOpRefs) decoder.addLocalSymbol(r);
+      traceHello(this.backend.docId, traceStartedAt, "after-decoder-setup", {
+        filterId: id,
+        opRefs: localOpRefs.length,
+      });
       this.responderSessions.set(id, {
         filter,
         round: 0,
@@ -865,6 +1035,16 @@ export class SyncPeer<Op> {
         },
       },
     });
+    traceHello(this.backend.docId, traceStartedAt, "after-helloAck-send", {
+      acceptedFilters: acceptedFilters.length,
+      rejectedFilters: rejectedFilters.length,
+    });
+
+    for (const directSend of directSendFilters) {
+      await this.sendOpsBatches(transport, directSend.id, directSend.opRefs, {
+        filter: directSend.filter,
+      });
+    }
   }
 
   private async onHelloAck(transport: DuplexTransport<SyncMessage<Op>>, ack: HelloAck): Promise<void> {
