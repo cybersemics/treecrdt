@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use postgres::{Client, Row, Statement};
@@ -12,8 +12,6 @@ use treecrdt_core::{
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
-
-const DEFER_INCREMENTAL_MATERIALIZATION_MIN_OPS: usize = 2_000;
 
 fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
@@ -1049,9 +1047,9 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
     Ok(inserted > 0)
 }
 
-fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Result<u64> {
+fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Result<Vec<Vec<u8>>> {
     if ops.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
     let mut op_refs: Vec<Vec<u8>> = Vec::with_capacity(ops.len());
@@ -1105,7 +1103,7 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
            $12::bytea[] \
          ) AS src(op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
          ON CONFLICT (doc_id, op_ref) DO NOTHING \
-         RETURNING 1",
+         RETURNING op_ref",
     )?;
 
     let rows = c
@@ -1128,7 +1126,11 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
         )
         .map_err(storage_debug)?;
 
-    Ok(rows.len().min(u64::MAX as usize) as u64)
+    let mut inserted = Vec::with_capacity(rows.len());
+    for row in rows {
+        inserted.push(row.get::<_, Vec<u8>>(0));
+    }
+    Ok(inserted)
 }
 
 fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) -> Result<()> {
@@ -1188,28 +1190,40 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
     let meta = load_tree_meta_for_update(client, doc_id)?;
     let ctx = PgCtx::new(client.clone(), doc_id)?;
-    let defer_incremental = meta.dirty || ops.len() >= DEFER_INCREMENTAL_MATERIALIZATION_MIN_OPS;
 
-    if defer_incremental {
+    if meta.dirty {
         let inserted = {
             let mut c = client.borrow_mut();
             bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
         };
-        if inserted > 0 {
+        if !inserted.is_empty() {
             set_tree_meta_dirty(client, doc_id, true)?;
         }
-        return Ok(inserted);
+        return Ok(inserted.len().min(u64::MAX as usize) as u64);
     }
 
-    let mut inserted_ops: Vec<Operation> = Vec::new();
-    {
+    let inserted_op_refs = {
         let mut c = client.borrow_mut();
-        for op in ops {
-            if insert_op_in_tx(&ctx, &mut c, op)? {
-                inserted_ops.push(op.clone());
-            }
-        }
+        bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
+    };
+
+    if inserted_op_refs.is_empty() {
+        return Ok(0);
     }
+
+    let inserted_ops: Vec<Operation> = if inserted_op_refs.len() == ops.len() {
+        ops.to_vec()
+    } else {
+        let inserted_op_refs: HashSet<Vec<u8>> = inserted_op_refs.into_iter().collect();
+        ops.iter()
+            .filter(|op| {
+                let replica = op.meta.id.replica.as_bytes();
+                let counter = op.meta.id.counter;
+                inserted_op_refs.contains(&derive_op_ref_v0(&ctx.doc_id, replica, counter).to_vec())
+            })
+            .cloned()
+            .collect()
+    };
 
     if inserted_ops.is_empty() {
         return Ok(0);
