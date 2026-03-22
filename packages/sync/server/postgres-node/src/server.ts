@@ -23,7 +23,7 @@ import type {
   WebSocketSyncServerUpgradeHook,
 } from "@treecrdt/sync-server-core";
 import { startWebSocketSyncServer } from "@treecrdt/sync-server-core";
-import { Client as PgClient } from "pg";
+import { Client as PgClient, Pool as PgPool } from "pg";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -164,16 +164,16 @@ type DocUpdatePayload = {
   source?: string;
 };
 
-class PostgresDocUpdateBus {
+export class PostgresDocUpdateBus {
   private readonly channel: string;
-  private readonly queryClient: PgClient;
+  private readonly queryPool: PgPool;
   private readonly listenClient: PgClient;
   private readonly sourceId: string;
   private closed = false;
 
   private constructor(private readonly opts: PostgresDocUpdateBusOptions) {
     this.channel = ensurePostgresChannelName(opts.channel);
-    this.queryClient = new PgClient({ connectionString: opts.postgresUrl });
+    this.queryPool = new PgPool({ connectionString: opts.postgresUrl });
     this.listenClient = new PgClient({ connectionString: opts.postgresUrl });
     this.sourceId = randomUUID();
   }
@@ -185,7 +185,7 @@ class PostgresDocUpdateBus {
   }
 
   private async start(): Promise<void> {
-    await Promise.all([this.queryClient.connect(), this.listenClient.connect()]);
+    await this.listenClient.connect();
 
     this.listenClient.on("notification", (msg: { channel: string; payload?: string }) => {
       if (msg.channel !== this.channel) return;
@@ -205,18 +205,18 @@ class PostgresDocUpdateBus {
   }
 
   async hasDoc(docId: string): Promise<boolean> {
-    const res = await this.queryClient.query("SELECT 1 FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1", [docId]);
+    const res = await this.queryPool.query("SELECT 1 FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1", [docId]);
     return (res.rowCount ?? 0) > 0;
   }
 
   async publishDocUpdate(docId: string): Promise<void> {
     if (this.closed || docId.length === 0) return;
     const payload = JSON.stringify({ docId, source: this.sourceId } satisfies DocUpdatePayload);
-    await this.queryClient.query("SELECT pg_notify($1, $2)", [this.channel, payload]);
+    await this.queryPool.query("SELECT pg_notify($1, $2)", [this.channel, payload]);
   }
 
   async ping(): Promise<void> {
-    await this.queryClient.query("SELECT 1");
+    await this.queryPool.query("SELECT 1");
   }
 
   async close(): Promise<void> {
@@ -227,7 +227,7 @@ class PostgresDocUpdateBus {
     } catch {
       // ignore
     }
-    await Promise.allSettled([this.listenClient.end(), this.queryClient.end()]);
+    await Promise.allSettled([this.listenClient.end(), this.queryPool.end()]);
   }
 }
 
