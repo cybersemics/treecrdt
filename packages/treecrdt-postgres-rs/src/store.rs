@@ -13,6 +13,8 @@ use treecrdt_core::{
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
 
+const DEFER_INCREMENTAL_MATERIALIZATION_MIN_OPS: usize = 2_000;
+
 fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
 }
@@ -1120,8 +1122,13 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     }
 
     let inserted = inserted_ops.len();
+    if meta.dirty || inserted >= DEFER_INCREMENTAL_MATERIALIZATION_MIN_OPS {
+        set_tree_meta_dirty(client, doc_id, true)?;
+        return Ok(inserted.min(u64::MAX as usize) as u64);
+    }
+
     let _ = try_incremental_materialization(
-        meta.dirty,
+        false,
         || materialize_ops_in_order(ctx, &meta, inserted_ops),
         || {
             let _ = set_tree_meta_dirty(client, doc_id, true);
