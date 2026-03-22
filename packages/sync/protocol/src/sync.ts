@@ -57,6 +57,7 @@ type ResponderSession<Op> = {
   round: number;
   decoder: RibltDecoder16;
   expectedIndex: bigint;
+  awaitingIncomingDone: boolean;
 };
 
 type InitiatorSession<Op> = {
@@ -68,6 +69,7 @@ type InitiatorSession<Op> = {
   codewordCredits: number;
   codewordCreditSignal: Pending<void>;
   receivedOps: Pending<void>;
+  awaitingUploadAck: boolean;
   done: boolean;
 };
 
@@ -275,6 +277,7 @@ export class SyncPeer<Op> {
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription>();
+  private readonly opsBatchQueues = new Map<string, Promise<void>>();
   private pushScheduled = false;
   private pushRunning = false;
   private pushInFlight: Promise<void> = Promise.resolve();
@@ -286,7 +289,9 @@ export class SyncPeer<Op> {
     opts: SyncPeerOptions<Op> = {}
   ) {
     this.maxCodewords = opts.maxCodewords ?? 50_000;
-    this.maxOpsPerBatch = opts.maxOpsPerBatch ?? 5_000;
+    // Keep wire batches modest by default; large 5k-op frames were a real
+    // source of remote ingest instability on production-like sync servers.
+    this.maxOpsPerBatch = opts.maxOpsPerBatch ?? 500;
     this.auth = opts.auth;
     this.maxHelloFilters = opts.maxHelloFilters ?? 8;
     this.directSendThreshold = opts.directSendThreshold ?? 0;
@@ -453,6 +458,7 @@ export class SyncPeer<Op> {
       codewordCredits: 1,
       codewordCreditSignal: deferred<void>(),
       receivedOps: deferred<void>(),
+      awaitingUploadAck: false,
       done: false,
     };
     this.initiatorSessions.set(filterId, session);
@@ -794,7 +800,7 @@ export class SyncPeer<Op> {
           await this.onRibltStatus(msg.payload.value);
           return;
         case "opsBatch":
-          await this.onOpsBatch(msg.payload.value);
+          await this.enqueueOpsBatch(transport, msg.payload.value);
           return;
         case "subscribe":
           await this.onSubscribe(transport, msg.payload.value);
@@ -1019,6 +1025,7 @@ export class SyncPeer<Op> {
         round: 0,
         decoder,
         expectedIndex: 0n,
+        awaitingIncomingDone: false,
       });
     }
 
@@ -1162,6 +1169,7 @@ export class SyncPeer<Op> {
     const receiverMissing = session.decoder.remoteMissing() as unknown as OpRef[];
     const senderMissing = session.decoder.localMissing() as unknown as OpRef[];
     const codewordsReceived = session.decoder.codewordsReceived();
+    session.awaitingIncomingDone = receiverMissing.length > 0;
 
     await transport.send({
       v: 0,
@@ -1181,15 +1189,17 @@ export class SyncPeer<Op> {
 
     if (senderMissing.length > 0) {
       await this.sendOpsBatches(transport, msg.filterId, senderMissing);
-    } else {
+      if (!session.awaitingIncomingDone) {
+        this.responderSessions.delete(msg.filterId);
+      }
+    } else if (!session.awaitingIncomingDone) {
       await transport.send({
         v: 0,
         docId: this.backend.docId,
         payload: { case: "opsBatch", value: { filterId: msg.filterId, ops: [], done: true } },
       });
+      this.responderSessions.delete(msg.filterId);
     }
-
-    this.responderSessions.delete(msg.filterId);
   }
 
   private async onSubscribe(
@@ -1361,13 +1371,39 @@ export class SyncPeer<Op> {
       return;
     }
     session.done = true;
+    if (status.payload.case === "decoded") {
+      session.awaitingUploadAck = status.payload.value.receiverMissing.length > 0;
+    }
     session.terminalStatus.resolve(status);
     const signal = session.codewordCreditSignal;
     session.codewordCreditSignal = deferred<void>();
     signal.resolve();
   }
 
-  private async onOpsBatch(batch: OpsBatch<Op>): Promise<void> {
+  private async enqueueOpsBatch(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    batch: OpsBatch<Op>
+  ): Promise<void> {
+    const previous = this.opsBatchQueues.get(batch.filterId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {
+        // A prior batch failure should not permanently poison the queue.
+      })
+      .then(() => this.onOpsBatch(transport, batch));
+    this.opsBatchQueues.set(batch.filterId, current);
+    try {
+      await current;
+    } finally {
+      if (this.opsBatchQueues.get(batch.filterId) === current) {
+        this.opsBatchQueues.delete(batch.filterId);
+      }
+    }
+  }
+
+  private async onOpsBatch(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    batch: OpsBatch<Op>
+  ): Promise<void> {
     const purpose: SyncOpPurpose = this.initiatorSubscriptions.has(batch.filterId) ? "subscribe" : "reconcile";
     const auth = batch.auth;
     if (auth && auth.length !== batch.ops.length) {
@@ -1423,11 +1459,25 @@ export class SyncPeer<Op> {
     if (allowedOps.length > 0) void this.notifyLocalUpdate();
     await this.reprocessPendingOps();
 
-    const session = this.initiatorSessions.get(batch.filterId);
-    if (session && batch.done) session.receivedOps.resolve();
-
     const responderSession = this.responderSessions.get(batch.filterId);
-    if (responderSession && batch.done) this.responderSessions.delete(batch.filterId);
+    if (responderSession && batch.done) {
+      if (responderSession.awaitingIncomingDone) {
+        responderSession.awaitingIncomingDone = false;
+        await transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: { case: "opsBatch", value: { filterId: batch.filterId, ops: [], done: true } },
+        });
+      }
+      this.responderSessions.delete(batch.filterId);
+    }
+
+    const session = this.initiatorSessions.get(batch.filterId);
+    if (session && batch.done) {
+      if (!session.awaitingUploadAck || batch.ops.length === 0) {
+        session.receivedOps.resolve();
+      }
+    }
   }
 
   private async reprocessPendingOps(): Promise<void> {

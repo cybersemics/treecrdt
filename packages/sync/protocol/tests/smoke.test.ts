@@ -309,6 +309,17 @@ class FailingApplyBackend extends MemoryBackend {
   }
 }
 
+class DelayedApplyBackend extends MemoryBackend {
+  constructor(docId: string, private readonly delayMs: number) {
+    super(docId);
+  }
+
+  override async applyOps(ops: Operation[]): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, this.delayMs));
+    await super.applyOps(ops);
+  }
+}
+
 test("syncOnce does not starve macrotask transports", async () => {
   const docId = "doc-sync-macrotask";
   const root = "0".repeat(32);
@@ -365,6 +376,49 @@ test("syncOnce paces outbound codewords until delayed ribltStatus arrives", asyn
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_024, codewordsPerMessage: 256 });
 
   await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 after delayed ribltStatus" });
+});
+
+test("syncOnce waits for responder to apply uploaded ops before resolving", async () => {
+  const docId = "doc-sync-upload-ack";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new DelayedApplyBackend(docId, 20);
+
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(1),
+    }),
+    makeOp(replicas.a, 3, 3, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(2),
+    }),
+  ]);
+
+  const [wa, wb] = createMacrotaskDuplex<Uint8Array>();
+  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
+  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256, maxOpsPerBatch: 1 });
+
+  expect(b.hasOp(replicaHex.a, 1)).toBe(true);
+  expect(b.hasOp(replicaHex.a, 2)).toBe(true);
+  expect(b.hasOp(replicaHex.a, 3)).toBe(true);
 });
 
 test("syncOnce protobuf roundtrips ribltStatus.more", () => {
