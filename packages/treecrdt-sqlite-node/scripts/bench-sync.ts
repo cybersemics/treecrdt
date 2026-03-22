@@ -217,6 +217,7 @@ const SYNC_BENCH_DIRECT_SEND_THRESHOLD = Math.max(
   0,
   envInt("SYNC_BENCH_DIRECT_SEND_THRESHOLD") ?? 0
 );
+const SYNC_BENCH_MAX_OPS_PER_BATCH = envInt("SYNC_BENCH_MAX_OPS_PER_BATCH");
 const DEFAULT_SERVER_FIXTURE_CACHE_MODE: ServerFixtureCacheMode = "reuse";
 const SYNC_BENCH_SERVER_FIXTURE_CACHE_VERSION = "2026-03-21-v1";
 const SERVER_READY_POLL_MS = 100;
@@ -449,6 +450,12 @@ function parseDirectSendThreshold(argv: string[]): number {
   return parseOptionalNonNegativeIntFlag(argv, "--direct-send-threshold", [
     "SYNC_BENCH_DIRECT_SEND_THRESHOLD",
   ]) ?? SYNC_BENCH_DIRECT_SEND_THRESHOLD;
+}
+
+function parseMaxOpsPerBatch(argv: string[]): number | undefined {
+  return parseOptionalPositiveIntFlag(argv, "--max-ops-per-batch", [
+    "SYNC_BENCH_MAX_OPS_PER_BATCH",
+  ]) ?? SYNC_BENCH_MAX_OPS_PER_BATCH;
 }
 
 function parseServerFixtureCacheMode(argv: string[]): ServerFixtureCacheMode {
@@ -1451,11 +1458,13 @@ async function syncBackendThroughServer(
     maxCodewords?: number;
     codewordsPerMessage?: number;
     directSendThreshold?: number;
+    maxOpsPerBatch?: number;
   } = {}
 ): Promise<void> {
   const peer = new SyncPeer<Operation>(backend, {
     maxCodewords: opts.maxCodewords ?? SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
     directSendThreshold: opts.directSendThreshold ?? 0,
+    ...(opts.maxOpsPerBatch != null ? { maxOpsPerBatch: opts.maxOpsPerBatch } : {}),
   });
   const connection = await runtime.connect(docId);
   const detach = peer.attach(connection.transport);
@@ -1464,6 +1473,7 @@ async function syncBackendThroughServer(
     await peer.syncOnce(connection.transport, filter, {
       maxCodewords: opts.maxCodewords ?? SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       codewordsPerMessage: opts.codewordsPerMessage ?? SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+      ...(opts.maxOpsPerBatch != null ? { maxOpsPerBatch: opts.maxOpsPerBatch } : {}),
     });
     await backend.flush();
   } finally {
@@ -1476,7 +1486,8 @@ async function seedServerState(
   runtime: SyncBenchTargetRuntime,
   docId: string,
   ops: Operation[],
-  filter: Filter
+  filter: Filter,
+  maxOpsPerBatch?: number
 ): Promise<number> {
   if (ops.length === 0) return 0;
 
@@ -1501,6 +1512,7 @@ async function seedServerState(
     const peer = new SyncPeer<Operation>(seedBackend, {
       maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
       directSendThreshold: 0,
+      ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
     });
     const connection = await runtime.connect(docId);
     const detach = peer.attach(connection.transport);
@@ -1508,6 +1520,7 @@ async function seedServerState(
       await peer.syncOnce(connection.transport, { all: {} }, {
         maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+        ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
       });
       await seedBackend.flush();
       if (runtime.waitForOpCount) {
@@ -1616,7 +1629,8 @@ async function prepareServerFixture(
   runtime: SyncBenchTargetRuntime,
   bench: ReturnType<typeof buildSyncBenchCase>,
   directSendThreshold: number,
-  cacheMode: ServerFixtureCacheMode
+  cacheMode: ServerFixtureCacheMode,
+  maxOpsPerBatch?: number
 ): Promise<PreparedServerFixture> {
   const cacheKey =
     cacheMode === "off" ? undefined : createServerFixtureCacheKey(bench);
@@ -1648,7 +1662,8 @@ async function prepareServerFixture(
     runtime,
     docId,
     bench.opsB,
-    bench.filter as Filter
+    bench.filter as Filter,
+    maxOpsPerBatch
   );
   if (runtime.waitForOpCount) {
     await runtime.waitForOpCount(
@@ -1658,13 +1673,14 @@ async function prepareServerFixture(
       { timeoutMs: SERVER_READY_TIMEOUT_MS }
     );
   } else {
-    await waitForServerOpCount(
-      runtime,
-      docId,
-      bench.opsB.length,
-      directSendThreshold,
-      SERVER_SEED_READY_TIMEOUT_MS
-    );
+      await waitForServerOpCount(
+        runtime,
+        docId,
+        bench.opsB.length,
+        directSendThreshold,
+        maxOpsPerBatch,
+        SERVER_SEED_READY_TIMEOUT_MS
+      );
   }
   return {
     docId,
@@ -1678,6 +1694,7 @@ async function waitForServerOpCount(
   docId: string,
   expectedCount: number,
   directSendThreshold: number,
+  maxOpsPerBatch?: number,
   timeoutMs = SERVER_READY_TIMEOUT_MS
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -1693,6 +1710,7 @@ async function waitForServerOpCount(
       await syncBackendThroughServer(runtime, docId, verifierBackend, { all: {} }, {
         maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
         directSendThreshold,
+        ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
       });
       lastCount = countOps(verifierDb);
       if (lastCount === expectedCount) {
@@ -1749,7 +1767,8 @@ async function runBenchOnceDirect(
   profileBackend: boolean,
   profileTransport: boolean,
   profileHello: boolean,
-  directSendThreshold: number
+  directSendThreshold: number,
+  maxOpsPerBatch?: number
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
   const docId = `sqlite-node-sync-bench-${runId}`;
@@ -1800,10 +1819,12 @@ async function runBenchOnceDirect(
     const pa = new SyncPeer(backendA, {
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       directSendThreshold,
+      ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
     });
     const pb = new SyncPeer(backendB, {
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       directSendThreshold,
+      ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
     });
     const detachA = pa.attach(transportA);
     const detachB = pb.attach(transportB);
@@ -1815,6 +1836,7 @@ async function runBenchOnceDirect(
       await pa.syncOnce(transportA, bench.filter as Filter, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+        ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
       });
       await Promise.all([backendA.flush(), backendB.flush()]);
       const syncedAt = performance.now();
@@ -1866,6 +1888,7 @@ async function runBenchOnceViaServer(
   profileTransport: boolean,
   profileHello: boolean,
   directSendThreshold: number,
+  maxOpsPerBatch: number | undefined,
   preparedFixture?: PreparedServerFixture
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
@@ -1889,7 +1912,8 @@ async function runBenchOnceViaServer(
         runtime,
         docId,
         bench.opsB,
-        bench.filter as Filter
+        bench.filter as Filter,
+        maxOpsPerBatch
       );
       if (runtime.waitForOpCount) {
         await runtime.waitForOpCount(
@@ -1904,6 +1928,7 @@ async function runBenchOnceViaServer(
           docId,
           bench.opsB.length,
           directSendThreshold,
+          maxOpsPerBatch,
           SERVER_SEED_READY_TIMEOUT_MS
         );
       }
@@ -1920,6 +1945,7 @@ async function runBenchOnceViaServer(
     const peer = new SyncPeer<Operation>(clientBackend, {
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       directSendThreshold,
+      ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
     });
     const connection = await runtime.connect(docId);
     const transportProfile = profileTransport
@@ -1934,6 +1960,7 @@ async function runBenchOnceViaServer(
       await peer.syncOnce(transport, bench.filter as Filter, {
         maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
         codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+        ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
       });
       await clientBackend.flush();
       const syncedAt = performance.now();
@@ -1980,7 +2007,8 @@ async function runBenchCase(
   profileTransport: boolean,
   profileHello: boolean,
   directSendThreshold: number,
-  serverFixtureCacheMode: ServerFixtureCacheMode
+  serverFixtureCacheMode: ServerFixtureCacheMode,
+  maxOpsPerBatch?: number
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({
     workload: benchCase.workload,
@@ -2000,7 +2028,7 @@ async function runBenchCase(
   }
   const preparedFixture =
     runtime && canReuseServerFixture(runtime, bench)
-      ? await prepareServerFixture(runtime, bench, directSendThreshold, serverFixtureCacheMode)
+      ? await prepareServerFixture(runtime, bench, directSendThreshold, serverFixtureCacheMode, maxOpsPerBatch)
       : undefined;
 
   for (let i = 0; i < warmupIterations; i += 1) {
@@ -2015,6 +2043,7 @@ async function runBenchCase(
         profileTransport,
         profileHello,
         directSendThreshold,
+        maxOpsPerBatch,
         preparedFixture
       );
     } else {
@@ -2026,7 +2055,8 @@ async function runBenchCase(
         profileBackend,
         profileTransport,
         profileHello,
-        directSendThreshold
+        directSendThreshold,
+        maxOpsPerBatch
       );
     }
   }
@@ -2045,6 +2075,7 @@ async function runBenchCase(
             profileTransport,
             profileHello,
             directSendThreshold,
+            maxOpsPerBatch,
             preparedFixture
           )
         : await runBenchOnceDirect(
@@ -2055,7 +2086,8 @@ async function runBenchCase(
             profileBackend,
             profileTransport,
             profileHello,
-            directSendThreshold
+            directSendThreshold,
+            maxOpsPerBatch
           )
     );
   }
@@ -2109,6 +2141,7 @@ async function runBenchCase(
       codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
+      maxOpsPerBatch,
       serverFixtureReuse: preparedFixture ? "per-case" : undefined,
       serverFixtureCacheMode:
         preparedFixture && serverFixtureCacheMode !== DEFAULT_SERVER_FIXTURE_CACHE_MODE
@@ -2138,7 +2171,8 @@ async function primeServerFixtureCase(
   benchCase: Omit<BenchCase, "storage" | "iterations" | "warmupIterations">,
   runtimes: Map<Exclude<SyncBenchTargetId, "direct">, SyncBenchTargetRuntime>,
   directSendThreshold: number,
-  serverFixtureCacheMode: ServerFixtureCacheMode
+  serverFixtureCacheMode: ServerFixtureCacheMode,
+  maxOpsPerBatch?: number
 ): Promise<PrimedServerFixtureResult> {
   const bench = buildSyncBenchCase({
     workload: benchCase.workload,
@@ -2163,7 +2197,8 @@ async function primeServerFixtureCase(
     runtime,
     bench,
     directSendThreshold,
-    serverFixtureCacheMode
+    serverFixtureCacheMode,
+    maxOpsPerBatch
   );
   return {
     name: `${bench.name}-server-fixture`,
@@ -2182,6 +2217,7 @@ async function primeServerFixtureCase(
       serverProcess: runtime.serverProcess,
       measurement: "server-fixture-prime",
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
+      maxOpsPerBatch,
       serverFixtureReuse: "per-case",
       serverFixtureCacheMode,
       serverFixtureCacheStatus: preparedFixture.cacheStatus,
@@ -2216,6 +2252,7 @@ async function main() {
   const profileTransport = parseProfileTransport(argv);
   const profileHello = parseProfileHello(argv);
   const directSendThreshold = parseDirectSendThreshold(argv);
+  const maxOpsPerBatch = parseMaxOpsPerBatch(argv);
   const serverFixtureCacheMode = parseServerFixtureCacheMode(argv);
   const primeServerFixtures = parsePrimeServerFixtures(argv);
   const runtimes = await prepareTargetRuntimes(
@@ -2250,7 +2287,8 @@ async function main() {
           primeCase,
           runtimes,
           directSendThreshold,
-          serverFixtureCacheMode
+          serverFixtureCacheMode,
+          maxOpsPerBatch
         );
         console.log(
           JSON.stringify({
@@ -2295,7 +2333,8 @@ async function main() {
         profileTransport,
         profileHello,
         directSendThreshold,
-        serverFixtureCacheMode
+        serverFixtureCacheMode,
+        maxOpsPerBatch
       );
       const outFile = path.join(
         repoRoot,

@@ -158,6 +158,7 @@ async function main() {
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000 --profile-transport
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --profile-hello
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --direct-send-threshold=64
+  pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --direct-send-threshold=64 --max-ops-per-batch=500
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=50000 --first-view --server-fixture-cache=rebuild
   pnpm benchmark:sync:prime -- --counts=10000,50000,100000
   TREECRDT_SYNC_SERVER_URL=wss://host/sync pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start
@@ -177,6 +178,7 @@ Notes:
   - add --profile-transport to capture sync message counts, bytes, and a small event timeline
   - add --profile-hello to capture responder-side hello stage timings; local child-process runs parse server trace output, direct and in-process runs collect it in-process
   - add --direct-send-threshold=N to experiment with a clean-slate shortcut that skips the RIBLT round when the requested local filter is empty and the responder has at most N scoped ops
+  - add --max-ops-per-batch=N to force smaller opsBatch messages when stress-testing upload paths or remote seed behavior
   - extra args are forwarded to packages/treecrdt-sqlite-node/scripts/bench-sync.ts`);
     return;
   }
