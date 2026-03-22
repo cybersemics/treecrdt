@@ -150,6 +150,8 @@ async function main() {
     console.log(`Usage:
   pnpm benchmark:sync
   pnpm benchmark:sync:prime
+  pnpm benchmark:sync:upload
+  pnpm benchmark:sync:upload:remote -- --workloads=sync-balanced-children-payloads-cold-start --count=10000
   pnpm benchmark:sync:direct -- --workloads=sync-balanced-children-payloads-cold-start --counts=10000,50000 --fanout=10
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view
@@ -176,6 +178,7 @@ Notes:
   - local sync benches now use a benchmark-only direct Postgres seed step before timing, so large local runs avoid spending minutes protocol-seeding data that is not part of the measured sync
   - local read-only sync benches reuse the same seeded Postgres fixture across warmup, samples, and later matching runs by default; use --server-fixture-cache=rebuild to refresh it or --server-fixture-cache=off to disable that cache
   - remote read-only sync benches can also reuse deterministic fixture docIds; use prime mode to seed them once, then rerun with --server-fixture-cache=reuse to benchmark steady-state first-view without reseeding
+  - prime/upload mode now records a real durationMs/opsPerSec result and writes a benchmark JSON file under benchmarks/sqlite-node-sync/server-fixture-*.json
   - pnpm benchmark:sync:prime warms local Postgres fixtures for the read-only first-view workloads and defaults to rebuilding them for 10k/50k/100k unless you override the forwarded args; add an explicit remote target to prime remote fixtures instead
   - add --profile-backend to capture listOpRefs/getOpsByOpRefs/applyOps timing per backend; on local benches this switches back to the in-process server for debug visibility
   - add --profile-transport to capture sync message counts, bytes, and a small event timeline

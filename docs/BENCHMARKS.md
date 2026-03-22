@@ -144,6 +144,25 @@ For custom `--count` or `--counts` runs, the sync bench now defaults to multiple
 
 Add `--post-seed-wait-ms=N` when you want to probe whether immediate post-upload backlog is skewing the measured first-view path. This is mainly a debugging aid for remote runs.
 
+### Upload Benchmarks
+
+Use prime/upload mode when you want an explicit benchmark for seeding a sync-server doc.
+
+This measures the full server-fixture creation path and writes a result file under `benchmarks/sqlite-node-sync/server-fixture-*.json` with `durationMs`, `opsPerSec`, and the seeded `fixtureOpCount`.
+
+```sh
+TREECRDT_SYNC_SERVER_URL=ws://host/sync \
+pnpm benchmark:sync:upload:remote -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --server-fixture-cache=rebuild
+```
+
+Use this to answer a different question than first-view:
+
+- `benchmark:sync:remote ... --first-view` answers "how fast can a new device open an existing subtree?"
+- `benchmark:sync:upload:remote ...` answers "how long does it take to upload and materialize a large tree on the sync server?"
+
 ### Small-Scope Direct Send
 
 Add `--direct-send-threshold=N` when you want to experiment with a clean-slate shortcut for small scoped syncs.
