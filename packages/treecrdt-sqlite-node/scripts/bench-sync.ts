@@ -1662,10 +1662,13 @@ async function prepareServerFixture(
 ): Promise<PreparedServerFixture> {
   const cacheKey =
     cacheMode === "off" ? undefined : createServerFixtureCacheKey(bench);
+  const hasResettableFixture = runtime.resetDoc != null;
   const docId =
     cacheMode === "off"
       ? `sqlite-node-sync-bench-${runtime.id}-fixture-${crypto.randomUUID()}`
-      : `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}`;
+      : cacheMode === "rebuild" && !hasResettableFixture
+        ? `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}-${crypto.randomUUID()}`
+        : `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}`;
   if (cacheMode === "reuse" && runtime.inspectDoc) {
     try {
       const current = await runtime.inspectDoc(docId);
