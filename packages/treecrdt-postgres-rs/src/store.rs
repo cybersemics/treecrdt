@@ -312,16 +312,19 @@ struct CachedPayloadRow {
     last_counter: u64,
 }
 
+#[derive(Clone)]
 struct PgNodeStore {
     ctx: PgCtx,
-    cache: RefCell<HashMap<NodeId, Option<CachedNodeRow>>>,
+    cache: Rc<RefCell<HashMap<NodeId, Option<CachedNodeRow>>>>,
+    pending_last_change: Rc<RefCell<HashSet<NodeId>>>,
 }
 
 impl PgNodeStore {
     fn new(ctx: PgCtx) -> Self {
         Self {
             ctx,
-            cache: RefCell::new(HashMap::new()),
+            cache: Rc::new(RefCell::new(HashMap::new())),
+            pending_last_change: Rc::new(RefCell::new(HashSet::new())),
         }
     }
 
@@ -374,11 +377,59 @@ impl PgNodeStore {
         self.cache.borrow_mut().insert(node, loaded.clone());
         Ok(loaded)
     }
+
+    fn flush_last_change(&self) -> Result<()> {
+        let dirty_nodes = {
+            let mut pending = self.pending_last_change.borrow_mut();
+            std::mem::take(&mut *pending)
+        };
+        if dirty_nodes.is_empty() {
+            return Ok(());
+        }
+
+        let started_at = Instant::now();
+        let mut nodes: Vec<Vec<u8>> = Vec::with_capacity(dirty_nodes.len());
+        let mut values: Vec<Vec<u8>> = Vec::with_capacity(dirty_nodes.len());
+        {
+            let cache = self.cache.borrow();
+            for node in dirty_nodes {
+                let Some(Some(row)) = cache.get(&node) else {
+                    continue;
+                };
+                let Some(last_change) = &row.last_change else {
+                    continue;
+                };
+                nodes.push(node_to_bytes(node).to_vec());
+                values.push(last_change.clone());
+            }
+        }
+        if nodes.is_empty() {
+            return Ok(());
+        }
+
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "UPDATE treecrdt_nodes AS dst \
+             SET last_change = src.last_change \
+             FROM unnest($2::bytea[], $3::bytea[]) AS src(node, last_change) \
+             WHERE dst.doc_id = $1 AND dst.node = src.node",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &nodes, &values])
+            .map_err(storage_debug)?;
+
+        if let Some(profile) = &self.ctx.append_profile {
+            profile.borrow_mut().node_last_change_ms += started_at.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        Ok(())
+    }
 }
 
 impl treecrdt_core::NodeStore for PgNodeStore {
     fn reset(&mut self) -> Result<()> {
         self.cache.borrow_mut().clear();
+        self.pending_last_change.borrow_mut().clear();
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(&mut c, "DELETE FROM treecrdt_nodes WHERE doc_id = $1")?;
         c.execute(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?;
@@ -640,20 +691,10 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         vv.merge(delta);
         let bytes = vv_to_bytes(&vv)?;
 
-        let node_bytes = node_to_bytes(node);
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "UPDATE treecrdt_nodes \
-             SET last_change = $3 \
-             WHERE doc_id = $1 AND node = $2",
-        )?;
-        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
-            .map_err(storage_debug)?;
-
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.last_change = Some(bytes);
         }
+        self.pending_last_change.borrow_mut().insert(node);
         if let Some(profile) = &self.ctx.append_profile {
             let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
             let mut profile = profile.borrow_mut();
@@ -854,16 +895,57 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
 
 struct PgParentOpIndex {
     ctx: PgCtx,
+    pending: Vec<PendingParentOpRefRow>,
 }
 
 impl PgParentOpIndex {
     fn new(ctx: PgCtx) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            pending: Vec::new(),
+        }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+
+        let started_at = Instant::now();
+        let mut parents: Vec<Vec<u8>> = Vec::with_capacity(self.pending.len());
+        let mut op_refs: Vec<Vec<u8>> = Vec::with_capacity(self.pending.len());
+        let mut seqs: Vec<i64> = Vec::with_capacity(self.pending.len());
+        for row in self.pending.drain(..) {
+            parents.push(row.parent);
+            op_refs.push(row.op_ref);
+            seqs.push(row.seq);
+        }
+
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) \
+             SELECT $1, src.parent, src.op_ref, src.seq \
+             FROM unnest($2::bytea[], $3::bytea[], $4::bigint[]) AS src(parent, op_ref, seq) \
+             ON CONFLICT (doc_id, parent, op_ref) DO NOTHING",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &parents, &op_refs, &seqs])
+            .map_err(storage_debug)?;
+
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.index_record_count += parents.len() as u64;
+            profile.index_record_ms += elapsed_ms;
+        }
+
+        Ok(())
     }
 }
 
 impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
     fn reset(&mut self) -> Result<()> {
+        self.pending.clear();
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
             &mut c,
@@ -877,35 +959,24 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
         if parent == NodeId::TRASH {
             return Ok(());
         }
-        let started_at = Instant::now();
-        let parent_bytes = node_to_bytes(parent);
-        let op_ref = derive_op_ref_v0(&self.ctx.doc_id, op_id.replica.as_bytes(), op_id.counter);
-        let op_ref_bytes = op_ref.as_slice();
-
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) VALUES ($1,$2,$3,$4) \
-             ON CONFLICT (doc_id, parent, op_ref) DO NOTHING",
-        )?;
-        c.execute(
-            &stmt,
-            &[
-                &self.ctx.doc_id,
-                &parent_bytes.as_slice(),
-                &op_ref_bytes,
-                &(seq as i64),
-            ],
-        )
-        .map_err(storage_debug)?;
-        if let Some(profile) = &self.ctx.append_profile {
-            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-            let mut profile = profile.borrow_mut();
-            profile.index_record_count += 1;
-            profile.index_record_ms += elapsed_ms;
+        self.pending.push(PendingParentOpRefRow {
+            parent: node_to_bytes(parent).to_vec(),
+            op_ref: derive_op_ref_v0(&self.ctx.doc_id, op_id.replica.as_bytes(), op_id.counter).to_vec(),
+            seq: seq as i64,
+        });
+        if self.pending.len() >= PARENT_OP_INDEX_FLUSH_SIZE {
+            self.flush()?;
         }
         Ok(())
     }
+}
+
+const PARENT_OP_INDEX_FLUSH_SIZE: usize = 4096;
+
+struct PendingParentOpRefRow {
+    parent: Vec<u8>,
+    op_ref: Vec<u8>,
+    seq: i64,
 }
 
 struct PgOpStorage {
@@ -1316,6 +1387,7 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
     }
 
     let nodes = PgNodeStore::new(ctx.clone());
+    let node_flush = nodes.clone();
     let payloads = PgPayloadStore::new(ctx.clone());
     let mut index = PgParentOpIndex::new(ctx.clone());
 
@@ -1330,6 +1402,8 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
     let materialize_started_at = Instant::now();
     let next = apply_incremental_ops(&mut crdt, &mut index, meta, ops)?
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
+    node_flush.flush_last_change()?;
+    index.flush()?;
     if let Some(profile) = &ctx.append_profile {
         profile.borrow_mut().materialize_ms += materialize_started_at.elapsed().as_secs_f64() * 1000.0;
     }
@@ -1522,6 +1596,7 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
     let ctx = PgCtx::new(client.clone(), doc_id)?;
     let storage = PgOpStorage::new(ctx.clone());
     let mut nodes = PgNodeStore::new(ctx.clone());
+    let node_flush = nodes.clone();
     let mut payloads = PgPayloadStore::new(ctx.clone());
     let mut index = PgParentOpIndex::new(ctx.clone());
 
@@ -1537,6 +1612,8 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
         payloads,
     )?;
     crdt.replay_from_storage_with_materialization(&mut index)?;
+    node_flush.flush_last_change()?;
+    index.flush()?;
 
     let seq = crdt.log_len().min(u64::MAX as usize) as u64;
     if let Some(last) = crdt.head_op() {
@@ -1945,6 +2022,7 @@ type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore
 struct LocalOpSession {
     ctx: PgCtx,
     meta: TreeMeta,
+    nodes: PgNodeStore,
     crdt: LocalCrdt,
 }
 
@@ -1986,11 +2064,16 @@ fn begin_local_core_op(
         replica.clone(),
         storage,
         LamportClock::default(),
-        nodes,
+        nodes.clone(),
         payloads,
     )?;
 
-    Ok(LocalOpSession { ctx, meta, crdt })
+    Ok(LocalOpSession {
+        ctx,
+        meta,
+        nodes,
+        crdt,
+    })
 }
 
 fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: LocalFinalizePlan) {
@@ -2002,7 +2085,12 @@ fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: Loca
         .crdt
         .finalize_local_with_plan(op, &mut op_index, session.meta.head_seq, &plan)
     {
-        Ok(v) => seq = v,
+        Ok(v) => {
+            seq = v;
+            if session.nodes.flush_last_change().is_err() || op_index.flush().is_err() {
+                post_materialization_ok = false;
+            }
+        }
         Err(_) => post_materialization_ok = false,
     }
 
