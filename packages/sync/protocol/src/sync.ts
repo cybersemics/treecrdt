@@ -53,6 +53,7 @@ const DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY = "treecrdt.sync.direct_send_sm
 const DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY = "treecrdt.sync.direct_send_small_scope.filter.v1";
 const DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY = "treecrdt.sync.direct_send_empty_receiver.v1";
 const DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY = "treecrdt.sync.direct_send_empty_receiver.filter.v1";
+const DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH = 5_000;
 
 type ResponderSession<Op> = {
   filter: Filter;
@@ -528,9 +529,11 @@ export class SyncPeer<Op> {
 
       if (peerSelectedDirectSendEmptyReceiverFilter(ack.capabilities, filterId)) {
         session.awaitingUploadAck = true;
+        const uploadMaxOpsPerBatch =
+          opts.maxOpsPerBatch ?? DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH;
         if (opRefs.length > 0) {
           await this.sendOpsBatches(transport, filterId, opRefs, {
-            maxOpsPerBatch: opts.maxOpsPerBatch,
+            maxOpsPerBatch: uploadMaxOpsPerBatch,
             filter,
           });
         } else {
