@@ -139,6 +139,18 @@ pnpm benchmark:sync:local -- \
   --direct-send-threshold=64
 ```
 
+Add `--max-ops-per-batch=N` when you want to force smaller `opsBatch` messages. This is useful for stress-testing large upload paths and for debugging remote seed behavior where very large inbound batches may monopolize a server task.
+
+```sh
+TREECRDT_SYNC_SERVER_URL=ws://host/sync \
+pnpm benchmark:sync:remote -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --first-view \
+  --direct-send-threshold=64 \
+  --max-ops-per-batch=500
+```
+
 ### Backend Call Profiling
 
 Add `--profile-backend` when you want per-backend timings for:
