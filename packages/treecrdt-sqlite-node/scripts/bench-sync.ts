@@ -82,6 +82,12 @@ type PrimedServerFixtureResult = {
   extra?: Record<string, unknown>;
 };
 
+type SeedServerStateResult = {
+  expectedFilterCount: number;
+  uploadMs: number;
+  allReadyMs: number;
+};
+
 type SyncBenchSample = {
   totalMs: number;
   syncMs: number;
@@ -95,6 +101,10 @@ type PreparedServerFixture = {
   docId: string;
   cacheKey?: string;
   cacheStatus: "disabled" | "hit" | "miss" | "rebuild" | "assumed";
+  seedUploadMs?: number;
+  seedAllReadyMs?: number;
+  filterReadyMs?: number;
+  totalPrepareMs?: number;
 };
 
 type SyncBenchConnection = {
@@ -1503,8 +1513,14 @@ async function seedServerState(
   ops: Operation[],
   filter: Filter,
   maxOpsPerBatch?: number
-): Promise<number> {
-  if (ops.length === 0) return 0;
+): Promise<SeedServerStateResult> {
+  if (ops.length === 0) {
+    return {
+      expectedFilterCount: 0,
+      uploadMs: 0,
+      allReadyMs: 0,
+    };
+  }
 
   const seedDb = await openDb({ storage: "memory", docId });
   try {
@@ -1516,13 +1532,20 @@ async function seedServerState(
     });
     const expectedFilterCount = (await seedBackend.listOpRefs(filter)).length;
     if (runtime.seedOps) {
+      const uploadStartedAt = performance.now();
       await runtime.seedOps(docId, ops);
+      const uploadMs = performance.now() - uploadStartedAt;
+      const allReadyStartedAt = performance.now();
       if (runtime.waitForOpCount) {
         await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
           timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
         });
       }
-      return expectedFilterCount;
+      return {
+        expectedFilterCount,
+        uploadMs,
+        allReadyMs: performance.now() - allReadyStartedAt,
+      };
     }
     const peer = new SyncPeer<Operation>(seedBackend, {
       maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
@@ -1535,18 +1558,25 @@ async function seedServerState(
       const connection = await runtime.connect(docId);
       const detach = peer.attach(connection.transport);
       try {
+        const uploadStartedAt = performance.now();
         await peer.syncOnce(connection.transport, { all: {} }, {
           maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
           codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
           ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
         });
         await seedBackend.flush();
+        const uploadMs = performance.now() - uploadStartedAt;
+        const allReadyStartedAt = performance.now();
         if (runtime.waitForOpCount) {
           await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
             timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
           });
         }
-        break;
+        return {
+          expectedFilterCount,
+          uploadMs,
+          allReadyMs: performance.now() - allReadyStartedAt,
+        };
       } catch (error) {
         lastError = error;
         if (Date.now() >= deadline) {
@@ -1561,7 +1591,7 @@ async function seedServerState(
         await connection.close();
       }
     }
-    return expectedFilterCount;
+    throw new Error(`failed to seed server doc ${docId}: unexpected retry loop exit`);
   } finally {
     seedDb.close();
   }
@@ -1660,6 +1690,7 @@ async function prepareServerFixture(
   cacheMode: ServerFixtureCacheMode,
   maxOpsPerBatch?: number
 ): Promise<PreparedServerFixture> {
+  const prepareStartedAt = performance.now();
   const cacheKey =
     cacheMode === "off" ? undefined : createServerFixtureCacheKey(bench);
   const hasResettableFixture = runtime.resetDoc != null;
@@ -1696,18 +1727,19 @@ async function prepareServerFixture(
   if (cacheMode !== "off") {
     await runtime.resetDoc?.(docId);
   }
-  const expectedFilterCount = await seedServerState(
+  const seedState = await seedServerState(
     runtime,
     docId,
     bench.opsB,
     bench.filter as Filter,
     maxOpsPerBatch
   );
+  const filterReadyStartedAt = performance.now();
   if (runtime.waitForOpCount) {
     await runtime.waitForOpCount(
       docId,
       bench.filter as Filter,
-      expectedFilterCount,
+      seedState.expectedFilterCount,
       { timeoutMs: SERVER_READY_TIMEOUT_MS }
     );
   } else {
@@ -1715,16 +1747,21 @@ async function prepareServerFixture(
         runtime,
         docId,
         bench.filter as Filter,
-        expectedFilterCount,
+        seedState.expectedFilterCount,
         directSendThreshold,
         maxOpsPerBatch,
         SERVER_SEED_READY_TIMEOUT_MS
       );
   }
+  const filterReadyMs = performance.now() - filterReadyStartedAt;
   return {
     docId,
     cacheKey,
     cacheStatus: cacheMode === "rebuild" ? "rebuild" : cacheMode === "reuse" ? "miss" : "disabled",
+    seedUploadMs: seedState.uploadMs,
+    seedAllReadyMs: seedState.allReadyMs,
+    filterReadyMs,
+    totalPrepareMs: performance.now() - prepareStartedAt,
   };
 }
 
@@ -2284,6 +2321,10 @@ async function primeServerFixtureCase(
       serverFixtureCacheStatus: preparedFixture.cacheStatus,
       serverFixtureCacheKey: preparedFixture.cacheKey,
       docId: preparedFixture.docId,
+      seedUploadMs: preparedFixture.seedUploadMs,
+      seedAllReadyMs: preparedFixture.seedAllReadyMs,
+      filterReadyMs: preparedFixture.filterReadyMs,
+      totalPrepareMs: preparedFixture.totalPrepareMs,
       fixtureOpCount: totalOps,
       fixtureMaxLamport: maxLamport(bench.opsB),
     },
