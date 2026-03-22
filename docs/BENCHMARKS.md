@@ -76,9 +76,9 @@ pnpm benchmark:sync:remote -- \
 
 Use `--fanout=20` when you want to model a broader notebook tree.
 
-### Prime Local Fixtures
+### Prime Sync Server Fixtures
 
-Use this when you want to prebuild the local Postgres server fixtures before running the actual local sync benchmarks.
+Use this when you want to prebuild sync-server fixtures before running the actual sync benchmarks.
 
 ```sh
 pnpm benchmark:sync:prime
@@ -95,13 +95,34 @@ pnpm benchmark:sync:prime -- \
   --server-fixture-cache=rebuild
 ```
 
+You can also prime the remote target explicitly:
+
+```sh
+TREECRDT_SYNC_SERVER_URL=ws://host-or-elb/sync \
+pnpm benchmark:sync:remote prime -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --server-fixture-cache=rebuild
+```
+
+Then benchmark against that already-seeded remote doc without reseeding:
+
+```sh
+TREECRDT_SYNC_SERVER_URL=ws://host-or-elb/sync \
+pnpm benchmark:sync:remote -- \
+  --workloads=sync-balanced-children-payloads-cold-start \
+  --count=10000 \
+  --first-view \
+  --server-fixture-cache=reuse
+```
+
 By default, the local sync target runs the Postgres sync server in a spawned child process so local and remote measurements are closer to each other. When you add `--profile-backend`, the local target intentionally switches to the in-process server so per-backend timings are visible inside the benchmark process.
 
 Local server benchmarks now seed the Postgres backend directly before the timer starts. That keeps the measured path honest, because the actual sync to the client still goes through the real websocket server, while avoiding huge protocol-seed setup costs that are not part of the benchmark question.
 
 For read-only local server workloads, the harness now prepares that server fixture once per benchmark case and reuses it across warmup and measured samples. It also reuses the same seeded Postgres fixture across separate benchmark runs by default when the workload definition matches, so repeated `50k/100k` runs do not keep reimporting the same large server doc.
 
-Use `--server-fixture-cache=rebuild` when you want to force a fresh local Postgres fixture, or `--server-fixture-cache=off` when you want every run to seed an isolated throwaway fixture.
+Use `--server-fixture-cache=rebuild` when you want to force a fresh fixture, or `--server-fixture-cache=off` when you want every run to seed an isolated throwaway fixture. For remote fixtures, `--server-fixture-cache=reuse` assumes the deterministic fixture doc already exists and skips reseeding.
 
 ### Time To First Visible Page
 
@@ -120,6 +141,8 @@ pnpm benchmark:sync:local -- \
 ```
 
 For custom `--count` or `--counts` runs, the sync bench now defaults to multiple measured samples instead of silently falling back to one. Use `--iterations=N` and `--warmup=N` when you want explicit control over stability versus runtime.
+
+Add `--post-seed-wait-ms=N` when you want to probe whether immediate post-upload backlog is skewing the measured first-view path. This is mainly a debugging aid for remote runs.
 
 ### Small-Scope Direct Send
 
