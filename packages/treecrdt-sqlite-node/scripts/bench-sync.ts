@@ -76,6 +76,9 @@ type SyncBenchResult = {
 
 type PrimedServerFixtureResult = {
   name: string;
+  totalOps: number;
+  durationMs: number;
+  opsPerSec: number;
   extra?: Record<string, unknown>;
 };
 
@@ -2241,6 +2244,7 @@ async function primeServerFixtureCase(
     );
   }
 
+  const startedAt = performance.now();
   const preparedFixture = await prepareServerFixture(
     runtime,
     bench,
@@ -2248,8 +2252,14 @@ async function primeServerFixtureCase(
     serverFixtureCacheMode,
     maxOpsPerBatch
   );
+  const durationMs = performance.now() - startedAt;
+  const totalOps = bench.opsB.length;
+  const opsPerSec = durationMs > 0 ? (totalOps / durationMs) * 1000 : Infinity;
   return {
     name: `${bench.name}-server-fixture`,
+    totalOps,
+    durationMs,
+    opsPerSec,
     extra: {
       ...bench.extra,
       count: benchCase.size,
@@ -2271,7 +2281,7 @@ async function primeServerFixtureCase(
       serverFixtureCacheStatus: preparedFixture.cacheStatus,
       serverFixtureCacheKey: preparedFixture.cacheKey,
       docId: preparedFixture.docId,
-      fixtureOpCount: bench.opsB.length,
+      fixtureOpCount: totalOps,
       fixtureMaxLamport: maxLamport(bench.opsB),
     },
   };
@@ -2341,14 +2351,23 @@ async function main() {
           serverFixtureCacheMode,
           maxOpsPerBatch
         );
-        console.log(
-          JSON.stringify({
-            implementation: "sqlite-node",
-            workload: result.name,
-            target: primeCase.target,
-            extra: result.extra,
-          })
+        const outFile = path.join(
+          repoRoot,
+          "benchmarks",
+          "sqlite-node-sync",
+          `server-fixture-${primeCase.target}-${result.name}.json`
         );
+        const payload = await writeResult(result, {
+          implementation: "sqlite-node",
+          storage: "server-fixture",
+          workload: result.name,
+          outFile,
+          extra: {
+            target: primeCase.target,
+            ...result.extra,
+          },
+        });
+        console.log(JSON.stringify(payload));
       }
       return;
     }
