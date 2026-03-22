@@ -821,7 +821,9 @@ async function closeBuiltinWebSocket(ws: BuiltinWebSocket): Promise<void> {
     ws.addEventListener("close", onClose);
     ws.addEventListener("error", onError);
     try {
-      ws.close();
+      if (ws.readyState !== globalThis.WebSocket.CLOSING) {
+        ws.close();
+      }
     } catch {
       finish();
     }
@@ -889,12 +891,17 @@ async function openBuiltinWebSocket(url: URL): Promise<BuiltinWebSocket> {
 
     const onOpen = () => finish(resolve, ws);
     const onError = () => {
-      void closeBuiltinWebSocket(ws);
       finish(reject, new Error(`failed connecting to ${url.toString()}`));
     };
 
     const timer = setTimeout(() => {
-      void closeBuiltinWebSocket(ws);
+      try {
+        if (ws.readyState !== globalThis.WebSocket.CLOSING) {
+          ws.close();
+        }
+      } catch {
+        // Ignore close failures during connection timeout cleanup.
+      }
       finish(reject, new Error(`timed out connecting to ${url.toString()}`));
     }, 5_000);
 
