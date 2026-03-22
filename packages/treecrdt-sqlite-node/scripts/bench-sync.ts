@@ -218,6 +218,10 @@ const SYNC_BENCH_DIRECT_SEND_THRESHOLD = Math.max(
   envInt("SYNC_BENCH_DIRECT_SEND_THRESHOLD") ?? 0
 );
 const SYNC_BENCH_MAX_OPS_PER_BATCH = envInt("SYNC_BENCH_MAX_OPS_PER_BATCH");
+const SYNC_BENCH_POST_SEED_WAIT_MS = Math.max(
+  0,
+  envInt("SYNC_BENCH_POST_SEED_WAIT_MS") ?? 0
+);
 const DEFAULT_SERVER_FIXTURE_CACHE_MODE: ServerFixtureCacheMode = "reuse";
 const SYNC_BENCH_SERVER_FIXTURE_CACHE_VERSION = "2026-03-21-v1";
 const SERVER_READY_POLL_MS = 100;
@@ -456,6 +460,14 @@ function parseMaxOpsPerBatch(argv: string[]): number | undefined {
   return parseOptionalPositiveIntFlag(argv, "--max-ops-per-batch", [
     "SYNC_BENCH_MAX_OPS_PER_BATCH",
   ]) ?? SYNC_BENCH_MAX_OPS_PER_BATCH;
+}
+
+function parsePostSeedWaitMs(argv: string[]): number {
+  return (
+    parseOptionalNonNegativeIntFlag(argv, "--post-seed-wait-ms", [
+      "SYNC_BENCH_POST_SEED_WAIT_MS",
+    ]) ?? SYNC_BENCH_POST_SEED_WAIT_MS
+  );
 }
 
 function parseServerFixtureCacheMode(argv: string[]): ServerFixtureCacheMode {
@@ -1889,6 +1901,7 @@ async function runBenchOnceViaServer(
   profileHello: boolean,
   directSendThreshold: number,
   maxOpsPerBatch: number | undefined,
+  postSeedWaitMs: number,
   preparedFixture?: PreparedServerFixture
 ): Promise<SyncBenchSample> {
   const runId = crypto.randomUUID();
@@ -1931,6 +1944,9 @@ async function runBenchOnceViaServer(
           maxOpsPerBatch,
           SERVER_SEED_READY_TIMEOUT_MS
         );
+      }
+      if (postSeedWaitMs > 0) {
+        await sleep(postSeedWaitMs);
       }
     }
     helloTraceStore?.clear(docId);
@@ -2008,6 +2024,7 @@ async function runBenchCase(
   profileHello: boolean,
   directSendThreshold: number,
   serverFixtureCacheMode: ServerFixtureCacheMode,
+  postSeedWaitMs: number,
   maxOpsPerBatch?: number
 ): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({
@@ -2044,6 +2061,7 @@ async function runBenchCase(
         profileHello,
         directSendThreshold,
         maxOpsPerBatch,
+        postSeedWaitMs,
         preparedFixture
       );
     } else {
@@ -2076,6 +2094,7 @@ async function runBenchCase(
             profileHello,
             directSendThreshold,
             maxOpsPerBatch,
+            postSeedWaitMs,
             preparedFixture
           )
         : await runBenchOnceDirect(
@@ -2142,6 +2161,7 @@ async function runBenchCase(
       maxCodewords: SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
       maxOpsPerBatch,
+      postSeedWaitMs: postSeedWaitMs > 0 ? postSeedWaitMs : undefined,
       serverFixtureReuse: preparedFixture ? "per-case" : undefined,
       serverFixtureCacheMode:
         preparedFixture && serverFixtureCacheMode !== DEFAULT_SERVER_FIXTURE_CACHE_MODE
@@ -2253,6 +2273,7 @@ async function main() {
   const profileHello = parseProfileHello(argv);
   const directSendThreshold = parseDirectSendThreshold(argv);
   const maxOpsPerBatch = parseMaxOpsPerBatch(argv);
+  const postSeedWaitMs = parsePostSeedWaitMs(argv);
   const serverFixtureCacheMode = parseServerFixtureCacheMode(argv);
   const primeServerFixtures = parsePrimeServerFixtures(argv);
   const runtimes = await prepareTargetRuntimes(
@@ -2334,6 +2355,7 @@ async function main() {
         profileHello,
         directSendThreshold,
         serverFixtureCacheMode,
+        postSeedWaitMs,
         maxOpsPerBatch
       );
       const outFile = path.join(
