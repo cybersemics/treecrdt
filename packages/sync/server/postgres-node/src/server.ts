@@ -564,18 +564,7 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
   };
 }
 
-async function createReadinessProbe(
-  postgresUrl: string,
-  docUpdateBus: PostgresDocUpdateBus | undefined
-): Promise<SyncServerReadinessProbe> {
-  if (docUpdateBus) {
-    return {
-      check: async () => {
-        await withTimeout(docUpdateBus.ping(), 3_000, "postgres readiness ping");
-      },
-    };
-  }
-
+async function createReadinessProbe(postgresUrl: string): Promise<SyncServerReadinessProbe> {
   const client = new PgClient({ connectionString: postgresUrl });
   await client.connect();
   return {
@@ -683,7 +672,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
 
   let readinessProbe: SyncServerReadinessProbe | undefined;
   try {
-    readinessProbe = await createReadinessProbe(postgresUrl, docUpdateBus);
+    readinessProbe = await createReadinessProbe(postgresUrl);
   } catch (err) {
     await docs.closeAll();
     await docUpdateBus?.close();
