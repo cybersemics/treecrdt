@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use postgres::{Client, Row, Statement};
 
@@ -45,6 +47,100 @@ fn vv_to_bytes(vv: &VersionVector) -> Result<Vec<u8>> {
 
 fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
     serde_json::from_slice(bytes).map_err(|e| Error::Storage(e.to_string()))
+}
+
+fn append_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("TREECRDT_PG_PROFILE_UPLOAD").ok().as_deref(),
+            Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+        )
+    })
+}
+
+#[derive(Clone, Debug, Default)]
+struct PgAppendProfile {
+    batch_ops: usize,
+    doc_dirty_before: bool,
+    head_seq_before: u64,
+    bulk_insert_ms: f64,
+    bulk_inserted_ops: usize,
+    dedupe_filter_ms: f64,
+    materialize_ms: f64,
+    update_head_ms: f64,
+    fallback_mark_dirty: bool,
+    node_load_count: u64,
+    node_load_ms: f64,
+    node_ensure_count: u64,
+    node_ensure_ms: f64,
+    node_detach_count: u64,
+    node_detach_ms: f64,
+    node_attach_count: u64,
+    node_attach_ms: f64,
+    node_tombstone_count: u64,
+    node_tombstone_ms: f64,
+    node_last_change_count: u64,
+    node_last_change_ms: f64,
+    node_deleted_at_count: u64,
+    node_deleted_at_ms: f64,
+    payload_load_count: u64,
+    payload_load_ms: f64,
+    payload_set_count: u64,
+    payload_set_ms: f64,
+    index_record_count: u64,
+    index_record_ms: f64,
+}
+
+impl PgAppendProfile {
+    fn new(batch_ops: usize, doc_dirty_before: bool, head_seq_before: u64) -> Self {
+        Self {
+            batch_ops,
+            doc_dirty_before,
+            head_seq_before,
+            ..Self::default()
+        }
+    }
+
+    fn log(&self, doc_id: &str, inserted: usize) {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "kind": "treecrdt_postgres_append_profile",
+                "docId": doc_id,
+                "batchOps": self.batch_ops,
+                "insertedOps": inserted,
+                "docDirtyBefore": self.doc_dirty_before,
+                "headSeqBefore": self.head_seq_before,
+                "bulkInsertMs": self.bulk_insert_ms,
+                "bulkInsertedOps": self.bulk_inserted_ops,
+                "dedupeFilterMs": self.dedupe_filter_ms,
+                "materializeMs": self.materialize_ms,
+                "updateHeadMs": self.update_head_ms,
+                "fallbackMarkDirty": self.fallback_mark_dirty,
+                "nodeLoadCount": self.node_load_count,
+                "nodeLoadMs": self.node_load_ms,
+                "nodeEnsureCount": self.node_ensure_count,
+                "nodeEnsureMs": self.node_ensure_ms,
+                "nodeDetachCount": self.node_detach_count,
+                "nodeDetachMs": self.node_detach_ms,
+                "nodeAttachCount": self.node_attach_count,
+                "nodeAttachMs": self.node_attach_ms,
+                "nodeTombstoneCount": self.node_tombstone_count,
+                "nodeTombstoneMs": self.node_tombstone_ms,
+                "nodeLastChangeCount": self.node_last_change_count,
+                "nodeLastChangeMs": self.node_last_change_ms,
+                "nodeDeletedAtCount": self.node_deleted_at_count,
+                "nodeDeletedAtMs": self.node_deleted_at_ms,
+                "payloadLoadCount": self.payload_load_count,
+                "payloadLoadMs": self.payload_load_ms,
+                "payloadSetCount": self.payload_set_count,
+                "payloadSetMs": self.payload_set_ms,
+                "indexRecordCount": self.index_record_count,
+                "indexRecordMs": self.index_record_ms,
+            })
+        );
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -167,15 +263,25 @@ struct PgCtx {
     doc_id: String,
     client: Rc<RefCell<Client>>,
     stmts: Rc<RefCell<HashMap<&'static str, Statement>>>,
+    append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
 }
 
 impl PgCtx {
     fn new(client: Rc<RefCell<Client>>, doc_id: &str) -> Result<Self> {
+        Self::new_with_profile(client, doc_id, None)
+    }
+
+    fn new_with_profile(
+        client: Rc<RefCell<Client>>,
+        doc_id: &str,
+        append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
+    ) -> Result<Self> {
         ensure_doc_meta(&client, doc_id)?;
         Ok(Self {
             doc_id: doc_id.to_string(),
             client,
             stmts: Rc::new(RefCell::new(HashMap::new())),
+            append_profile,
         })
     }
 
@@ -220,6 +326,7 @@ impl PgNodeStore {
     }
 
     fn load_node_row(&self, node: NodeId) -> Result<Option<CachedNodeRow>> {
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -244,6 +351,12 @@ impl PgNodeStore {
         let tombstone: bool = row.get(2);
         let last_change: Option<Vec<u8>> = row.get(3);
         let deleted_at: Option<Vec<u8>> = row.get(4);
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_load_count += 1;
+            profile.node_load_ms += elapsed_ms;
+        }
         Ok(Some(CachedNodeRow {
             parent,
             order_key,
@@ -297,6 +410,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             return Ok(());
         }
 
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -319,6 +433,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
                     deleted_at: None,
                 }),
             );
+        }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_ensure_count += 1;
+            profile.node_ensure_ms += elapsed_ms;
         }
         Ok(())
     }
@@ -369,6 +489,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             return Ok(());
         }
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -384,6 +505,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             row.parent = None;
             row.order_key = None;
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_detach_count += 1;
+            profile.node_detach_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -394,6 +521,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         self.ensure_node(node)?;
         self.ensure_node(parent)?;
 
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let parent_bytes = node_to_bytes(parent);
         let mut c = self.ctx.client.borrow_mut();
@@ -419,6 +547,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
                 row.parent = Some(parent);
                 row.order_key = None;
             }
+            if let Some(profile) = &self.ctx.append_profile {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                let mut profile = profile.borrow_mut();
+                profile.node_attach_count += 1;
+                profile.node_attach_ms += elapsed_ms;
+            }
             return Ok(());
         }
 
@@ -443,6 +577,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             row.parent = Some(parent);
             row.order_key = Some(order_key);
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_attach_count += 1;
+            profile.node_attach_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -455,6 +595,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
     fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()> {
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -472,6 +613,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.tombstone = tombstone;
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_tombstone_count += 1;
+            profile.node_tombstone_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -488,6 +635,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
     fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()> {
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let mut vv = self.last_change(node)?;
         vv.merge(delta);
         let bytes = vv_to_bytes(&vv)?;
@@ -506,6 +654,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.last_change = Some(bytes);
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_last_change_count += 1;
+            profile.node_last_change_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -522,6 +676,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
     fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()> {
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let mut vv = self.deleted_at(node)?.unwrap_or_else(VersionVector::new);
         vv.merge(delta);
         let bytes = vv_to_bytes(&vv)?;
@@ -539,6 +694,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.deleted_at = Some(bytes);
+        }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_deleted_at_count += 1;
+            profile.node_deleted_at_ms += elapsed_ms;
         }
         Ok(())
     }
@@ -570,6 +731,7 @@ impl PgPayloadStore {
     }
 
     fn load_payload_row(&self, node: NodeId) -> Result<Option<CachedPayloadRow>> {
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -588,6 +750,12 @@ impl PgPayloadStore {
         let last_lamport = row.get::<_, i64>(1).max(0) as Lamport;
         let last_replica: Vec<u8> = row.get(2);
         let last_counter = row.get::<_, i64>(3).max(0) as u64;
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.payload_load_count += 1;
+            profile.payload_load_ms += elapsed_ms;
+        }
         Ok(Some(CachedPayloadRow {
             payload,
             last_lamport,
@@ -641,6 +809,7 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
         payload: Option<Vec<u8>>,
         writer: (Lamport, OperationId),
     ) -> Result<()> {
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let (lamport, id) = writer;
         let OperationId { replica, counter } = id;
@@ -673,6 +842,12 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
                 last_counter: counter,
             }),
         );
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.payload_set_count += 1;
+            profile.payload_set_ms += elapsed_ms;
+        }
         Ok(())
     }
 }
@@ -702,6 +877,7 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
         if parent == NodeId::TRASH {
             return Ok(());
         }
+        let started_at = Instant::now();
         let parent_bytes = node_to_bytes(parent);
         let op_ref = derive_op_ref_v0(&self.ctx.doc_id, op_id.replica.as_bytes(), op_id.counter);
         let op_ref_bytes = op_ref.as_slice();
@@ -722,6 +898,12 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
             ],
         )
         .map_err(storage_debug)?;
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.index_record_count += 1;
+            profile.index_record_ms += elapsed_ms;
+        }
         Ok(())
     }
 }
@@ -1145,8 +1327,13 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
         payloads,
     )?;
 
+    let materialize_started_at = Instant::now();
     let next = apply_incremental_ops(&mut crdt, &mut index, meta, ops)?
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
+    if let Some(profile) = &ctx.append_profile {
+        profile.borrow_mut().materialize_ms += materialize_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
+    let update_head_started_at = Instant::now();
     update_tree_meta_head(
         &ctx.client,
         &ctx.doc_id,
@@ -1155,6 +1342,9 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
         next.counter,
         next.seq,
     )?;
+    if let Some(profile) = &ctx.append_profile {
+        profile.borrow_mut().update_head_ms += update_head_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
     Ok(())
 }
 
@@ -1184,28 +1374,58 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     // Serialize per-doc writers across all server instances (incremental materialization updates
     // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
     let meta = load_tree_meta_for_update(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let append_profile = append_profile_enabled().then(|| {
+        Rc::new(RefCell::new(PgAppendProfile::new(
+            ops.len(),
+            meta.dirty,
+            meta.head_seq(),
+        )))
+    });
+    let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
 
     if meta.dirty {
+        let bulk_insert_started_at = Instant::now();
         let inserted = {
             let mut c = client.borrow_mut();
             bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
         };
+        if let Some(profile) = &append_profile {
+            let mut profile = profile.borrow_mut();
+            profile.bulk_insert_ms += bulk_insert_started_at.elapsed().as_secs_f64() * 1000.0;
+            profile.bulk_inserted_ops += inserted.len();
+        }
         if !inserted.is_empty() {
             set_tree_meta_dirty(client, doc_id, true)?;
+            if let Some(profile) = &append_profile {
+                profile.borrow_mut().fallback_mark_dirty = true;
+            }
         }
-        return Ok(inserted.len().min(u64::MAX as usize) as u64);
+        let inserted_count = inserted.len().min(u64::MAX as usize) as u64;
+        if let Some(profile) = &append_profile {
+            profile.borrow().log(doc_id, inserted_count as usize);
+        }
+        return Ok(inserted_count);
     }
 
+    let bulk_insert_started_at = Instant::now();
     let inserted_op_refs = {
         let mut c = client.borrow_mut();
         bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
     };
+    if let Some(profile) = &append_profile {
+        let mut profile = profile.borrow_mut();
+        profile.bulk_insert_ms += bulk_insert_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.bulk_inserted_ops += inserted_op_refs.len();
+    }
 
     if inserted_op_refs.is_empty() {
+        if let Some(profile) = &append_profile {
+            profile.borrow().log(doc_id, 0);
+        }
         return Ok(0);
     }
 
+    let dedupe_filter_started_at = Instant::now();
     let inserted_ops: Vec<Operation> = if inserted_op_refs.len() == ops.len() {
         ops.to_vec()
     } else {
@@ -1219,8 +1439,14 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
             .cloned()
             .collect()
     };
+    if let Some(profile) = &append_profile {
+        profile.borrow_mut().dedupe_filter_ms += dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
 
     if inserted_ops.is_empty() {
+        if let Some(profile) = &append_profile {
+            profile.borrow().log(doc_id, 0);
+        }
         return Ok(0);
     }
 
@@ -1230,8 +1456,15 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
         || materialize_ops_in_order(ctx, &meta, inserted_ops),
         || {
             let _ = set_tree_meta_dirty(client, doc_id, true);
+            if let Some(profile) = &append_profile {
+                profile.borrow_mut().fallback_mark_dirty = true;
+            }
         },
     );
+
+    if let Some(profile) = &append_profile {
+        profile.borrow().log(doc_id, inserted);
+    }
 
     Ok(inserted.min(u64::MAX as usize) as u64)
 }
