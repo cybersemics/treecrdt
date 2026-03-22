@@ -1044,6 +1044,88 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
     Ok(inserted > 0)
 }
 
+fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Result<u64> {
+    if ops.is_empty() {
+        return Ok(0);
+    }
+
+    let mut op_refs: Vec<Vec<u8>> = Vec::with_capacity(ops.len());
+    let mut lamports: Vec<i64> = Vec::with_capacity(ops.len());
+    let mut replicas: Vec<Vec<u8>> = Vec::with_capacity(ops.len());
+    let mut counters: Vec<i64> = Vec::with_capacity(ops.len());
+    let mut kinds: Vec<String> = Vec::with_capacity(ops.len());
+    let mut parents: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut nodes: Vec<Vec<u8>> = Vec::with_capacity(ops.len());
+    let mut new_parents: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut order_keys: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut payloads: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut known_states: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+
+    for op in ops {
+        let replica = op.meta.id.replica.as_bytes();
+        let counter = op.meta.id.counter;
+        let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);
+        let row = op_kind_to_db(op)?;
+
+        op_refs.push(op_ref.to_vec());
+        lamports.push(op.meta.lamport as i64);
+        replicas.push(replica.to_vec());
+        counters.push(counter as i64);
+        kinds.push(row.kind.to_string());
+        parents.push(row.parent);
+        nodes.push(row.node);
+        new_parents.push(row.new_parent);
+        order_keys.push(row.order_key);
+        payloads.push(row.payload);
+        known_states.push(row.known_state);
+    }
+
+    let stmt = ctx.stmt(
+        c,
+        "INSERT INTO treecrdt_ops (doc_id, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
+         SELECT \
+           $1, \
+           src.op_ref, src.lamport, src.replica, src.counter, src.kind, src.parent, src.node, src.new_parent, src.order_key, src.payload, src.known_state \
+         FROM unnest( \
+           $2::bytea[], \
+           $3::bigint[], \
+           $4::bytea[], \
+           $5::bigint[], \
+           $6::text[], \
+           $7::bytea[], \
+           $8::bytea[], \
+           $9::bytea[], \
+           $10::bytea[], \
+           $11::bytea[], \
+           $12::bytea[] \
+         ) AS src(op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
+         ON CONFLICT (doc_id, op_ref) DO NOTHING \
+         RETURNING 1",
+    )?;
+
+    let rows = c
+        .query(
+            &stmt,
+            &[
+                &ctx.doc_id,
+                &op_refs,
+                &lamports,
+                &replicas,
+                &counters,
+                &kinds,
+                &parents,
+                &nodes,
+                &new_parents,
+                &order_keys,
+                &payloads,
+                &known_states,
+            ],
+        )
+        .map_err(storage_debug)?;
+
+    Ok(rows.len().min(u64::MAX as usize) as u64)
+}
+
 fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) -> Result<()> {
     if ops.is_empty() {
         return Ok(());
@@ -1101,6 +1183,18 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
     let meta = load_tree_meta_for_update(client, doc_id)?;
     let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let defer_incremental = meta.dirty || ops.len() >= DEFER_INCREMENTAL_MATERIALIZATION_MIN_OPS;
+
+    if defer_incremental {
+        let inserted = {
+            let mut c = client.borrow_mut();
+            bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
+        };
+        if inserted > 0 {
+            set_tree_meta_dirty(client, doc_id, true)?;
+        }
+        return Ok(inserted);
+    }
 
     let mut inserted_ops: Vec<Operation> = Vec::new();
     {
@@ -1117,11 +1211,6 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     }
 
     let inserted = inserted_ops.len();
-    if meta.dirty || inserted >= DEFER_INCREMENTAL_MATERIALIZATION_MIN_OPS {
-        set_tree_meta_dirty(client, doc_id, true)?;
-        return Ok(inserted.min(u64::MAX as usize) as u64);
-    }
-
     let _ = try_incremental_materialization(
         false,
         || materialize_ops_in_order(ctx, &meta, inserted_ops),
