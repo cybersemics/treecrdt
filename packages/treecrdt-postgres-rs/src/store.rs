@@ -378,6 +378,134 @@ impl PgNodeStore {
         Ok(loaded)
     }
 
+    fn preload_for_ops(&self, ops: &[Operation]) -> Result<()> {
+        let mut referenced: HashSet<NodeId> = HashSet::new();
+        for op in ops {
+            let node = op.kind.node();
+            if node != NodeId::TRASH {
+                referenced.insert(node);
+            }
+            match &op.kind {
+                OperationKind::Insert { parent, .. } => {
+                    if *parent != NodeId::TRASH {
+                        referenced.insert(*parent);
+                    }
+                }
+                OperationKind::Move { new_parent, .. } => {
+                    if *new_parent != NodeId::TRASH {
+                        referenced.insert(*new_parent);
+                    }
+                }
+                OperationKind::Delete { .. }
+                | OperationKind::Tombstone { .. }
+                | OperationKind::Payload { .. } => {}
+            }
+        }
+
+        if referenced.is_empty() {
+            return Ok(());
+        }
+
+        let mut requested_nodes: Vec<NodeId> = referenced.iter().copied().collect();
+        requested_nodes.sort();
+        let requested_bytes: Vec<Vec<u8>> =
+            requested_nodes.iter().map(|node| node_to_bytes(*node).to_vec()).collect();
+
+        let load_started_at = Instant::now();
+        let mut loaded_nodes: HashSet<NodeId> = HashSet::with_capacity(requested_nodes.len());
+        {
+            let mut c = self.ctx.client.borrow_mut();
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "SELECT node, parent, order_key, tombstone, last_change, deleted_at \
+                 FROM treecrdt_nodes \
+                 WHERE doc_id = $1 \
+                   AND node IN (SELECT DISTINCT i.node FROM unnest($2::bytea[]) AS i(node))",
+            )?;
+            let rows = c
+                .query(&stmt, &[&self.ctx.doc_id, &requested_bytes])
+                .map_err(storage_debug)?;
+            let mut cache = self.cache.borrow_mut();
+            for row in rows {
+                let node_bytes: Vec<u8> = row.get(0);
+                let node = bytes_to_node(&node_bytes)?;
+                let parent_bytes: Option<Vec<u8>> = row.get(1);
+                let parent = match parent_bytes {
+                    None => None,
+                    Some(b) => Some(bytes_to_node(&b)?),
+                };
+                let order_key: Option<Vec<u8>> = row.get(2);
+                let tombstone: bool = row.get(3);
+                let last_change: Option<Vec<u8>> = row.get(4);
+                let deleted_at: Option<Vec<u8>> = row.get(5);
+                loaded_nodes.insert(node);
+                cache.insert(
+                    node,
+                    Some(CachedNodeRow {
+                        parent,
+                        order_key,
+                        tombstone,
+                        last_change,
+                        deleted_at,
+                    }),
+                );
+            }
+        }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = load_started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_load_count += loaded_nodes.len() as u64;
+            profile.node_load_ms += elapsed_ms;
+        }
+
+        let missing: Vec<NodeId> = requested_nodes
+            .into_iter()
+            .filter(|node| !loaded_nodes.contains(node))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let ensure_started_at = Instant::now();
+        let missing_bytes: Vec<Vec<u8>> =
+            missing.iter().map(|node| node_to_bytes(*node).to_vec()).collect();
+        {
+            let mut c = self.ctx.client.borrow_mut();
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "INSERT INTO treecrdt_nodes(doc_id, node) \
+                 SELECT $1, src.node \
+                 FROM unnest($2::bytea[]) AS src(node) \
+                 ON CONFLICT (doc_id, node) DO NOTHING",
+            )?;
+            c.execute(&stmt, &[&self.ctx.doc_id, &missing_bytes])
+                .map_err(storage_debug)?;
+        }
+        {
+            let mut cache = self.cache.borrow_mut();
+            for node in missing {
+                cache.insert(
+                    node,
+                    Some(CachedNodeRow {
+                        parent: None,
+                        order_key: None,
+                        tombstone: false,
+                        last_change: None,
+                        deleted_at: None,
+                    }),
+                );
+            }
+        }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = ensure_started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_ensure_count += missing_bytes.len() as u64;
+            profile.node_ensure_ms += elapsed_ms;
+        }
+
+        Ok(())
+    }
+
     fn flush_last_change(&self) -> Result<()> {
         let dirty_nodes = {
             let mut pending = self.pending_last_change.borrow_mut();
@@ -1392,6 +1520,12 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
     }
 
     let nodes = PgNodeStore::new(ctx.clone());
+    if ops
+        .iter()
+        .any(|op| matches!(op.kind, OperationKind::Payload { .. }))
+    {
+        nodes.preload_for_ops(&ops)?;
+    }
     let node_flush = nodes.clone();
     let payloads = PgPayloadStore::new(ctx.clone());
     let mut index = PgParentOpIndex::new(ctx.clone());
