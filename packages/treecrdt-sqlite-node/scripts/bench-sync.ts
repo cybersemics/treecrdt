@@ -91,7 +91,7 @@ type SyncBenchSample = {
 type PreparedServerFixture = {
   docId: string;
   cacheKey?: string;
-  cacheStatus: "disabled" | "hit" | "miss" | "rebuild";
+  cacheStatus: "disabled" | "hit" | "miss" | "rebuild" | "assumed";
 };
 
 type SyncBenchConnection = {
@@ -1526,23 +1526,37 @@ async function seedServerState(
       directSendThreshold: 0,
       ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
     });
-    const connection = await runtime.connect(docId);
-    const detach = peer.attach(connection.transport);
-    try {
-      await peer.syncOnce(connection.transport, { all: {} }, {
-        maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
-        codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
-        ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
-      });
-      await seedBackend.flush();
-      if (runtime.waitForOpCount) {
-        await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
-          timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
+    const deadline = Date.now() + SERVER_SEED_READY_TIMEOUT_MS;
+    let lastError: unknown;
+    while (true) {
+      const connection = await runtime.connect(docId);
+      const detach = peer.attach(connection.transport);
+      try {
+        await peer.syncOnce(connection.transport, { all: {} }, {
+          maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
+          codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+          ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
         });
+        await seedBackend.flush();
+        if (runtime.waitForOpCount) {
+          await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
+            timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
+          });
+        }
+        break;
+      } catch (error) {
+        lastError = error;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `timed out seeding server doc ${docId} within ${SERVER_SEED_READY_TIMEOUT_MS}ms` +
+              (lastError ? `: ${String(lastError)}` : "")
+          );
+        }
+        await sleep(SERVER_READY_POLL_MS);
+      } finally {
+        detach();
+        await connection.close();
       }
-    } finally {
-      detach();
-      await connection.close();
     }
     return expectedFilterCount;
   } finally {
@@ -1554,7 +1568,6 @@ function canReuseServerFixture(
   runtime: SyncBenchTargetRuntime,
   bench: ReturnType<typeof buildSyncBenchCase>
 ): boolean {
-  if (runtime.id !== "local-postgres-sync-server") return false;
   // Reuse is safe when every client-side starting op is already present on the
   // server fixture, so samples only read from the shared doc and never mutate it.
   const serverOpIds = new Set(
@@ -1667,6 +1680,13 @@ async function prepareServerFixture(
       // fall through to rebuild the fixture
     }
   }
+  if (cacheMode === "reuse" && !runtime.inspectDoc) {
+    return {
+      docId,
+      cacheKey,
+      cacheStatus: "assumed",
+    };
+  }
   if (cacheMode !== "off") {
     await runtime.resetDoc?.(docId);
   }
@@ -1713,6 +1733,7 @@ async function waitForServerOpCount(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastCount = -1;
+  let lastError: unknown;
   while (true) {
     const verifierDb = await openDb({ storage: "memory", docId });
     try {
@@ -1730,6 +1751,9 @@ async function waitForServerOpCount(
       if (lastCount === expectedCount) {
         return;
       }
+      lastError = undefined;
+    } catch (error) {
+      lastError = error;
     } finally {
       verifierDb.close();
     }
@@ -1737,7 +1761,8 @@ async function waitForServerOpCount(
     if (Date.now() >= deadline) {
       throw new Error(
         `timed out waiting for server doc ${docId} to reach ${expectedCount} ops within ${timeoutMs}ms` +
-          (lastCount >= 0 ? ` (last count=${lastCount})` : "")
+          (lastCount >= 0 ? ` (last count=${lastCount})` : "") +
+          (lastError ? `: ${String(lastError)}` : "")
       );
     }
     await sleep(SERVER_READY_POLL_MS);
@@ -2212,7 +2237,7 @@ async function primeServerFixtureCase(
   }
   if (!canReuseServerFixture(runtime, bench)) {
     throw new Error(
-      `sync bench workload ${bench.name} does not support reusable local server fixtures`
+      `sync bench workload ${bench.name} does not support reusable sync-server fixtures`
     );
   }
 
@@ -2290,21 +2315,23 @@ async function main() {
 
   try {
     if (primeServerFixtures) {
-      if (targets.some((target) => target !== "local-postgres-sync-server")) {
+      if (targets.some((target) => target === "direct")) {
         throw new Error(
-          "--prime-server-fixtures only supports the local-postgres-sync-server target"
+          "--prime-server-fixtures only supports sync-server targets"
         );
       }
-      const primeCases = workloads.flatMap((workload) => {
-        const entries =
-          workload === "sync-root-children-fanout10" ? rootConfig : config;
-        return entries.map(([size]) => ({
-          target: "local-postgres-sync-server" as const,
-          workload,
-          size,
-          fanout,
-        }));
-      });
+      const primeCases = targets.flatMap((target) =>
+        workloads.flatMap((workload) => {
+          const entries =
+            workload === "sync-root-children-fanout10" ? rootConfig : config;
+          return entries.map(([size]) => ({
+            target,
+            workload,
+            size,
+            fanout,
+          }));
+        })
+      );
 
       for (const primeCase of primeCases) {
         const result = await primeServerFixtureCase(
