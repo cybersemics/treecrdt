@@ -1688,7 +1688,8 @@ async function prepareServerFixture(
       await waitForServerOpCount(
         runtime,
         docId,
-        bench.opsB.length,
+        bench.filter as Filter,
+        expectedFilterCount,
         directSendThreshold,
         maxOpsPerBatch,
         SERVER_SEED_READY_TIMEOUT_MS
@@ -1704,6 +1705,7 @@ async function prepareServerFixture(
 async function waitForServerOpCount(
   runtime: SyncBenchTargetRuntime,
   docId: string,
+  filter: Filter,
   expectedCount: number,
   directSendThreshold: number,
   maxOpsPerBatch?: number,
@@ -1719,7 +1721,7 @@ async function waitForServerOpCount(
         docId,
         initialMaxLamport: 0,
       });
-      await syncBackendThroughServer(runtime, docId, verifierBackend, { all: {} }, {
+      await syncBackendThroughServer(runtime, docId, verifierBackend, filter, {
         maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
         directSendThreshold,
         ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
@@ -1939,7 +1941,8 @@ async function runBenchOnceViaServer(
         await waitForServerOpCount(
           runtime,
           docId,
-          bench.opsB.length,
+          bench.filter as Filter,
+          expectedFilterCount,
           directSendThreshold,
           maxOpsPerBatch,
           SERVER_SEED_READY_TIMEOUT_MS
