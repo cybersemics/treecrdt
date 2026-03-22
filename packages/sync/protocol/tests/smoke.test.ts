@@ -528,6 +528,53 @@ test("syncOnce can direct-send a small clean-slate scope without riblt codewords
   expect(wire).not.toContain("bToA:ribltStatus");
 });
 
+test("syncOnce can direct-send a clean-slate upload to an empty receiver without riblt codewords", async () => {
+  const docId = "doc-sync-direct-send-empty-receiver";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(1),
+    }),
+  ]);
+
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(ta, { all: {} }, {
+    maxCodewords: 4_096,
+    codewordsPerMessage: 16,
+    maxOpsPerBatch: 1,
+  });
+
+  await waitUntil(() => b.hasOp(replicaHex.a, 2), {
+    message: "expected empty receiver to receive direct-sent upload",
+  });
+
+  const wire = log.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
+  expect(wire).toContain("aToB:hello");
+  expect(wire).toContain("bToA:helloAck");
+  expect(wire).toContain("aToB:opsBatch");
+  expect(wire).toContain("bToA:opsBatch");
+  expect(wire).not.toContain("aToB:ribltCodewords");
+  expect(wire).not.toContain("bToA:ribltStatus");
+});
+
 test("syncOnce rejects when local message handler throws during apply", async () => {
   const docId = "doc-sync-apply-error";
   const root = "0".repeat(32);

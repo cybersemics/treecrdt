@@ -51,6 +51,8 @@ function deferred<T>(): Pending<T> {
 const DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY = "treecrdt.sync.direct_send_small_scope.v1";
 const DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY = "treecrdt.sync.direct_send_small_scope.request.v1";
 const DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY = "treecrdt.sync.direct_send_small_scope.filter.v1";
+const DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY = "treecrdt.sync.direct_send_empty_receiver.v1";
+const DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY = "treecrdt.sync.direct_send_empty_receiver.filter.v1";
 
 type ResponderSession<Op> = {
   filter: Filter;
@@ -264,6 +266,25 @@ function peerRequestedDirectSendFilter(
   );
 }
 
+function peerSupportsDirectSendEmptyReceiver(capabilities: readonly Capability[]): boolean {
+  return capabilities.some(
+    (capability) =>
+      capability.name === DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY &&
+      capability.value === "1"
+  );
+}
+
+function peerSelectedDirectSendEmptyReceiverFilter(
+  capabilities: readonly Capability[],
+  filterId: string
+): boolean {
+  return capabilities.some(
+    (capability) =>
+      capability.name === DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY &&
+      capability.value === filterId
+  );
+}
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
@@ -277,6 +298,7 @@ export class SyncPeer<Op> {
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription>();
+  private readonly responderAwaitingUploadAcks = new Set<string>();
   private readonly opsBatchQueues = new Map<string, Promise<void>>();
   private pushScheduled = false;
   private pushRunning = false;
@@ -438,6 +460,12 @@ export class SyncPeer<Op> {
         value: "1",
       });
     }
+    if (!peerSupportsDirectSendEmptyReceiver(capabilities)) {
+      capabilities.push({
+        name: DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY,
+        value: "1",
+      });
+    }
     if (
       localOpRefsBeforeHello.length === 0 &&
       !peerRequestedDirectSendFilter(capabilities, filterId)
@@ -496,6 +524,24 @@ export class SyncPeer<Op> {
           throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
         }
         opRefs = opRefs.filter((_r, idx) => allowed[idx] === true);
+      }
+
+      if (peerSelectedDirectSendEmptyReceiverFilter(ack.capabilities, filterId)) {
+        session.awaitingUploadAck = true;
+        if (opRefs.length > 0) {
+          await this.sendOpsBatches(transport, filterId, opRefs, {
+            maxOpsPerBatch: opts.maxOpsPerBatch,
+            filter,
+          });
+        } else {
+          await transport.send({
+            v: 0,
+            docId: this.backend.docId,
+            payload: { case: "opsBatch", value: { filterId, ops: [], done: true } },
+          });
+        }
+        await session.receivedOps.promise;
+        return;
       }
 
       const enc = new RibltEncoder16();
@@ -1014,6 +1060,15 @@ export class SyncPeer<Op> {
         continue;
       }
 
+      if (peerSupportsDirectSendEmptyReceiver(hello.capabilities) && localOpRefs.length === 0) {
+        ackCapabilities.push({
+          name: DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
+          value: id,
+        });
+        this.responderAwaitingUploadAcks.add(id);
+        continue;
+      }
+
       const decoder = new RibltDecoder16();
       for (const r of localOpRefs) decoder.addLocalSymbol(r);
       traceHello(this.backend.docId, traceStartedAt, "after-decoder-setup", {
@@ -1460,6 +1515,14 @@ export class SyncPeer<Op> {
     await this.reprocessPendingOps();
 
     const responderSession = this.responderSessions.get(batch.filterId);
+    if (!responderSession && this.responderAwaitingUploadAcks.has(batch.filterId) && batch.done) {
+      this.responderAwaitingUploadAcks.delete(batch.filterId);
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: { case: "opsBatch", value: { filterId: batch.filterId, ops: [], done: true } },
+      });
+    }
     if (responderSession && batch.done) {
       if (responderSession.awaitingIncomingDone) {
         responderSession.awaitingIncomingDone = false;
