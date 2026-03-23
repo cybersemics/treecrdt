@@ -1639,7 +1639,8 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
             .filter(|op| {
                 let replica = op.meta.id.replica.as_bytes();
                 let counter = op.meta.id.counter;
-                inserted_op_refs.contains(&derive_op_ref_v0(&ctx.doc_id, replica, counter).to_vec())
+                inserted_op_refs
+                    .contains(derive_op_ref_v0(&ctx.doc_id, replica, counter).as_slice())
             })
             .cloned()
             .collect()
