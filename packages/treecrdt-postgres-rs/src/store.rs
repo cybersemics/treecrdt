@@ -1593,6 +1593,9 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     });
     let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
 
+    // treecrdt_ops is the source of truth. If the doc is already dirty, derived tables are stale,
+    // so large uploads only append to the op log and leave the doc dirty for a later rebuild-on-read.
+    // When the doc is clean we can incrementally materialize the inserted ops to keep reads warm.
     if meta.dirty {
         let bulk_insert_started_at = Instant::now();
         let inserted = {

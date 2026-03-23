@@ -450,6 +450,11 @@ export class SyncPeer<Op> {
     filter: Filter,
     opts: SyncOnceOptions = {}
   ): Promise<void> {
+    // syncOnce negotiates one of three wire modes for this filter:
+    // 1. the normal RIBLT reconcile path,
+    // 2. direct-send for small scoped reads, or
+    // 3. direct-send upload when the initiator is an empty receiver.
+    // The capability exchange below advertises support and lets the peer pick the cheaper mode.
     const filterId = randomId("f");
     const round = 0;
     const maxLamport = await this.backend.maxLamport();
@@ -1442,6 +1447,8 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     batch: OpsBatch<Op>
   ): Promise<void> {
+    // Apply batches sequentially per filter so a later done marker cannot overtake earlier ops.
+    // Upload completion only becomes observable after the full queue for that filter has finished.
     const previous = this.opsBatchQueues.get(batch.filterId) ?? Promise.resolve();
     const current = previous
       .catch(() => {
@@ -1518,6 +1525,8 @@ export class SyncPeer<Op> {
     await this.reprocessPendingOps();
 
     const responderSession = this.responderSessions.get(batch.filterId);
+    // The empty done ack is only a completion signal. Send it after applyOps/reprocessPending
+    // finishes so "done" means every prior batch for this filter has been durably handled.
     if (!responderSession && this.responderAwaitingUploadAcks.has(batch.filterId) && batch.done) {
       this.responderAwaitingUploadAcks.delete(batch.filterId);
       await transport.send({
