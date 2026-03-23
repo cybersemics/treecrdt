@@ -185,6 +185,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
   const rememberReplayAuthCapability = (tokenBytes: Uint8Array) => {
     if (isLocalToken(tokenBytes)) return;
+    // Re-advertise non-local tokens in replay mode so later peers can verify proof_ref
+    // values without mistaking the token for this peer's own live auth grant.
     const cap = makeAuthCapability(tokenBytes, AUTH_REPLAY_CAPABILITY_NAME);
     replayAuthCapabilitiesByValue.set(cap.value, cap);
   };
@@ -346,6 +348,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
 
     for (const cap of caps) {
       if (isAnyAuthCapability(cap)) {
+        // Persist both live and replayed auth material so durable peers can verify
+        // historical ops after restart, even when the original writer is offline.
         const tokenBytes = base64urlDecode(cap.value);
         try {
           await recordToken(tokenBytes, docId);
@@ -382,6 +386,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     await ensureCapabilityStoreRecorded(docId);
     await ensureLocalRevocationsRecorded(docId);
     await ensureLocalTokensRecorded(docId);
+    // Advertise local tokens as live auth, and cached third-party tokens as replay-only
+    // proof material for downstream verification.
     const caps = localTokens.map((t) => makeAuthCapability(t, AUTH_CAPABILITY_NAME));
     caps.push(...replayAuthCapabilitiesByValue.values());
     for (const entry of revocationByTokenHex.values()) {
@@ -444,6 +450,8 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       await recordCapabilities(ack.capabilities, ctx.docId);
     },
     authorizeFilter: async (filter: Filter, ctx) => {
+      // Only a peer's live auth capability can authorize reads. Replay capabilities
+      // help verify old ops, but they do not grant the advertising peer new access.
       const tokenCaps = ctx.capabilities.filter(isAuthCapability);
       if (tokenCaps.length === 0) throw new Error(`missing "${AUTH_CAPABILITY_NAME}" token`);
 
