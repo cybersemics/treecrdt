@@ -316,9 +316,12 @@ impl PgBackend {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-        let refs =
-            treecrdt_postgres::list_op_refs_children_with_parent_payload(&client, &self.doc_id, parent)
-                .map_err(map_core_err)?;
+        let refs = treecrdt_postgres::list_op_refs_children_with_parent_payload(
+            &client,
+            &self.doc_id,
+            parent,
+        )
+        .map_err(map_core_err)?;
         Ok(refs.into_iter().map(|r| Buffer::from(r.to_vec())).collect())
     }
 
