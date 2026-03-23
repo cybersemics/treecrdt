@@ -97,7 +97,10 @@ fn postgres_backend_large_append_rebuilds_materialized_views_on_demand() {
 
     let inserted = append_ops(&client, &doc_id, &ops).unwrap();
     assert_eq!(inserted, op_count);
-    assert_eq!(list_op_refs_all(&client, &doc_id).unwrap().len(), op_count as usize);
+    assert_eq!(
+        list_op_refs_all(&client, &doc_id).unwrap().len(),
+        op_count as usize
+    );
     assert_eq!(max_lamport(&client, &doc_id).unwrap(), op_count);
 
     let children = tree_children(&client, &doc_id, NodeId::ROOT).unwrap();

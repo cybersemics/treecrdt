@@ -422,9 +422,8 @@ impl PgNodeStore {
                  WHERE doc_id = $1 \
                    AND node IN (SELECT DISTINCT i.node FROM unnest($2::bytea[]) AS i(node))",
             )?;
-            let rows = c
-                .query(&stmt, &[&self.ctx.doc_id, &requested_bytes])
-                .map_err(storage_debug)?;
+            let rows =
+                c.query(&stmt, &[&self.ctx.doc_id, &requested_bytes]).map_err(storage_debug)?;
             let mut cache = self.cache.borrow_mut();
             for row in rows {
                 let node_bytes: Vec<u8> = row.get(0);
@@ -478,8 +477,7 @@ impl PgNodeStore {
                  FROM unnest($2::bytea[]) AS src(node) \
                  ON CONFLICT (doc_id, node) DO NOTHING",
             )?;
-            c.execute(&stmt, &[&self.ctx.doc_id, &missing_bytes])
-                .map_err(storage_debug)?;
+            c.execute(&stmt, &[&self.ctx.doc_id, &missing_bytes]).map_err(storage_debug)?;
         }
         {
             let mut cache = self.cache.borrow_mut();
@@ -543,8 +541,7 @@ impl PgNodeStore {
              FROM unnest($2::bytea[], $3::bytea[]) AS src(node, last_change) \
              WHERE dst.doc_id = $1 AND dst.node = src.node",
         )?;
-        c.execute(&stmt, &[&self.ctx.doc_id, &nodes, &values])
-            .map_err(storage_debug)?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &nodes, &values]).map_err(storage_debug)?;
 
         if let Some(profile) = &self.ctx.append_profile {
             profile.borrow_mut().node_last_change_ms += started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1089,7 +1086,8 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
         }
         self.pending.push(PendingParentOpRefRow {
             parent: node_to_bytes(parent).to_vec(),
-            op_ref: derive_op_ref_v0(&self.ctx.doc_id, op_id.replica.as_bytes(), op_id.counter).to_vec(),
+            op_ref: derive_op_ref_v0(&self.ctx.doc_id, op_id.replica.as_bytes(), op_id.counter)
+                .to_vec(),
             seq: seq as i64,
         });
         if self.pending.len() >= PARENT_OP_INDEX_FLUSH_SIZE {
@@ -1515,10 +1513,7 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
     }
 
     let nodes = PgNodeStore::new(ctx.clone());
-    if ops
-        .iter()
-        .any(|op| matches!(op.kind, OperationKind::Payload { .. }))
-    {
+    if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
         nodes.preload_for_ops(&ops)?;
     }
     let node_flush = nodes.clone();
@@ -1539,7 +1534,8 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
     node_flush.flush_last_change()?;
     index.flush()?;
     if let Some(profile) = &ctx.append_profile {
-        profile.borrow_mut().materialize_ms += materialize_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.borrow_mut().materialize_ms +=
+            materialize_started_at.elapsed().as_secs_f64() * 1000.0;
     }
     let update_head_started_at = Instant::now();
     update_tree_meta_head(
@@ -1551,7 +1547,8 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
         next.seq,
     )?;
     if let Some(profile) = &ctx.append_profile {
-        profile.borrow_mut().update_head_ms += update_head_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.borrow_mut().update_head_ms +=
+            update_head_started_at.elapsed().as_secs_f64() * 1000.0;
     }
     Ok(())
 }
@@ -1648,7 +1645,8 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
             .collect()
     };
     if let Some(profile) = &append_profile {
-        profile.borrow_mut().dedupe_filter_ms += dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.borrow_mut().dedupe_filter_ms +=
+            dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
     }
 
     if inserted_ops.is_empty() {
