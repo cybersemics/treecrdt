@@ -94,7 +94,7 @@ type DocContext = {
 
 type PostgresNodeDocStore = {
   provider: WebSocketSyncServerDocProvider<Operation>;
-  notifyDocUpdate: (docId: string) => void;
+  notifyDocUpdate: (docId: string, ops?: readonly Operation[]) => void;
   closeAll: () => Promise<void>;
 };
 
@@ -404,10 +404,10 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
   let closing = false;
   let closeAllPromise: Promise<void> | undefined;
 
-  const notifyDocUpdate = (docId: string): void => {
+  const notifyDocUpdate = (docId: string, ops?: readonly Operation[]): void => {
     const ctx = docs.get(docId);
     if (!ctx) return;
-    for (const peer of ctx.peers) void peer.notifyLocalUpdate();
+    for (const peer of ctx.peers) void peer.notifyLocalUpdate(ops);
   };
 
   const closeBackend = async (backend: SyncBackend<Operation>): Promise<void> => {
@@ -458,7 +458,9 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
       } catch {
         // ignore notify failures; local update path still proceeds
       }
-      notifyDocUpdate(ctx.docId);
+      // Local peers in this Node process can take the exact applied ops fast path.
+      // Cross-process listeners still fall back to doc-level pg_notify invalidation.
+      notifyDocUpdate(ctx.docId, ops);
     };
     return {
       ...backend,
