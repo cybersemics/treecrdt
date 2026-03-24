@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from "@treecrdt/auth";
 import type { Operation } from "@treecrdt/interface";
-import { createReplayOnlySyncAuth } from "@treecrdt/sync";
+import { createReplayOnlySyncAuth, deriveOpRefV0 } from "@treecrdt/sync";
 import type { SyncBackend, SyncPeer, SyncPeerOptions } from "@treecrdt/sync";
 import {
   createCapabilityMaterialStore,
@@ -650,6 +650,11 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
           capabilities: capabilityMaterialStore.forDoc(docId),
         },
       }),
+      deriveOpRef: (op: Operation) =>
+        deriveOpRefV0(docId, {
+          replica: op.meta.id.replica,
+          counter: op.meta.id.counter,
+        }),
       requireAuthForFilters: false,
       ...(maxCodewords != null ? { maxCodewords } : {}),
       ...(directSendThreshold != null ? { directSendThreshold } : {}),

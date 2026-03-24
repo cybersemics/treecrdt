@@ -270,13 +270,17 @@ export async function startWebSocketSyncServer<Op>(
     if (existing.size === 0) peersByDocId.delete(docId);
   };
 
-  const notifyOtherDocPeers = async (docId: string, source: SyncPeer<Op> | undefined) => {
+  const notifyOtherDocPeers = async (
+    docId: string,
+    source: SyncPeer<Op> | undefined,
+    ops?: readonly Op[]
+  ) => {
     const peers = peersByDocId.get(docId);
     if (!peers || peers.size === 0) return;
     const pending: Promise<void>[] = [];
     for (const peer of peers) {
       if (peer === source) continue;
-      pending.push(peer.notifyLocalUpdate());
+      pending.push(peer.notifyLocalUpdate(ops));
     }
     if (pending.length === 0) return;
     await Promise.allSettled(pending);
@@ -405,7 +409,7 @@ export async function startWebSocketSyncServer<Op>(
         applyOps: async (ops) => {
           await docBackend.applyOps(ops);
           if (ops.length === 0) return;
-          await notifyOtherDocPeers(docId, peer);
+          await notifyOtherDocPeers(docId, peer, ops);
         },
         ...(docBackend.storePendingOps
           ? { storePendingOps: (ops) => docBackend.storePendingOps!(ops) }
