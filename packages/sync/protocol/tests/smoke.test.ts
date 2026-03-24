@@ -823,3 +823,87 @@ test("subscribe keeps peers converging (push deltas)", async () => {
     detach();
   }
 });
+
+test("subscribe refreshes replay capabilities before pushing newly authorized ops", async () => {
+  const docId = "doc-subscribe-capability-refresh";
+  const root = "0".repeat(32);
+  const proofRef = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  const replayCapValue = bytesToHex(proofRef);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const knownReplayCaps = new Set<string>();
+  let serverHelloCaps: Array<{ name: string; value: string }> = [];
+
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => serverHelloCaps,
+      onHello: async () => serverHelloCaps,
+      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array([1]), proofRef })),
+    },
+    maxOpsPerBatch: 1,
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      helloCapabilities: async () => [{ name: "auth.capability", value: "client-token" }],
+      onHello: async (hello) => {
+        for (const cap of hello.capabilities) {
+          if (cap.name === "auth.capability.replay") knownReplayCaps.add(cap.value);
+        }
+        return [];
+      },
+      verifyOps: async (_ops, auth) => {
+        if (!auth) throw new Error("expected auth on subscribed push");
+        for (const entry of auth) {
+          if (!entry?.proofRef) throw new Error("expected proofRef on subscribed push");
+          if (!knownReplayCaps.has(bytesToHex(entry.proofRef))) {
+            throw new Error("missing replay capability for pushed proofRef");
+          }
+        }
+      },
+    },
+    maxOpsPerBatch: 1,
+  });
+
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    const sub = peerB.subscribe(transportB, { all: {} }, { immediate: false, intervalMs: 0 });
+    try {
+      await waitUntil(() => (peerA as any).responderSubscriptions?.size === 1, {
+        message: "expected responder subscription to be registered",
+      });
+
+      serverHelloCaps = [{ name: "auth.capability.replay", value: replayCapValue }];
+      await a.applyOps([
+        makeOp(replicas.a, 1, 1, {
+          type: "insert",
+          parent: root,
+          node: nodeIdFromInt(11),
+          orderKey: orderKeyFromPosition(0),
+        }),
+      ]);
+      await peerA.notifyLocalUpdate();
+
+      await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+        message: "expected subscriber to accept live op after capability refresh",
+      });
+      expect(knownReplayCaps).toEqual(new Set([replayCapValue]));
+
+      const serverCases = wire
+        .filter((entry) => entry.dir === "aToB")
+        .map((entry) => entry.msg.payload.case);
+      expect(serverCases).toContain("hello");
+      expect(serverCases).toContain("opsBatch");
+      expect(serverCases.indexOf("hello")).toBeLessThan(serverCases.lastIndexOf("opsBatch"));
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
+  } finally {
+    detachA();
+    detachB();
+  }
+});

@@ -286,6 +286,13 @@ function peerSelectedDirectSendEmptyReceiverFilter(
   );
 }
 
+function capabilitySetFingerprint(capabilities: readonly Capability[]): string {
+  return capabilities
+    .map((capability) => `${capability.name}\u0000${capability.value}`)
+    .sort()
+    .join("\u0001");
+}
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
@@ -295,6 +302,7 @@ export class SyncPeer<Op> {
   private readonly auth?: SyncAuth<Op>;
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
   private readonly transportPeerCapabilities = new WeakMap<DuplexTransport<SyncMessage<Op>>, Hello["capabilities"]>();
+  private readonly transportLastSentHelloCaps = new WeakMap<DuplexTransport<SyncMessage<Op>>, string>();
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
@@ -372,6 +380,27 @@ export class SyncPeer<Op> {
     }
   }
 
+  private async refreshHelloCapabilities(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    opts: { force?: boolean } = {}
+  ): Promise<void> {
+    if (!this.auth?.helloCapabilities) return;
+
+    const [maxLamport, capabilities] = await Promise.all([
+      this.backend.maxLamport(),
+      this.auth.helloCapabilities({ docId: this.backend.docId }),
+    ]);
+    const fingerprint = capabilitySetFingerprint(capabilities);
+    if (!opts.force && this.transportLastSentHelloCaps.get(transport) === fingerprint) return;
+
+    await transport.send({
+      v: 0,
+      docId: this.backend.docId,
+      payload: { case: "hello", value: { capabilities, filters: [], maxLamport } },
+    });
+    this.transportLastSentHelloCaps.set(transport, fingerprint);
+  }
+
   private async pushSubscription(sub: ResponderSubscription<Op>): Promise<void> {
     let opRefs: OpRef[];
     try {
@@ -388,6 +417,10 @@ export class SyncPeer<Op> {
       newOpRefs.push(r);
     }
     if (newOpRefs.length === 0) return;
+
+    // Live subscriptions can outlive the capability snapshot from the initial handshake.
+    // Refresh it before the push so proof_ref verification can succeed on newly seen authors.
+    await this.refreshHelloCapabilities(sub.transport);
 
     for (let start = 0; start < newOpRefs.length; start += this.maxOpsPerBatch) {
       const chunk = newOpRefs.slice(start, start + this.maxOpsPerBatch);
@@ -745,15 +778,7 @@ export class SyncPeer<Op> {
         // If the responder requires capability-gated filters/subscriptions, send an initial
         // Hello (no filters) so it can record our capabilities before Subscribe arrives.
         if (this.auth?.helloCapabilities) {
-          const [maxLamport, capabilities] = await Promise.all([
-            this.backend.maxLamport(),
-            this.auth.helloCapabilities({ docId: this.backend.docId }),
-          ]);
-          await transport.send({
-            v: 0,
-            docId: this.backend.docId,
-            payload: { case: "hello", value: { capabilities, filters: [], maxLamport } },
-          });
+          await this.refreshHelloCapabilities(transport, { force: true });
         }
 
         await transport.send({
