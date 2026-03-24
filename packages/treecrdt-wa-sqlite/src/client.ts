@@ -353,6 +353,7 @@ function makeTreecrdtClientFromCall(opts: {
   close: () => Promise<void>;
 }): TreecrdtClient {
   const call = opts.call;
+  let closePromise: Promise<void> | null = null;
 
   const runner: SqliteRunner = {
     exec: (sql) => call("sqlExec", [sql]).then(() => undefined),
@@ -414,6 +415,19 @@ function makeTreecrdtClientFromCall(opts: {
     return (await call("localPayload", [rid, node, payload])) as unknown as Operation;
   };
 
+  const closeImpl = async () => {
+    if (closePromise) return await closePromise;
+    closePromise = (async () => {
+      try {
+        await opts.close();
+      } catch {
+        // Client teardown is best-effort. Fast refresh and overlapping resets can race a prior
+        // close, and the underlying sqlite handle may already be gone by the time this runs.
+      }
+    })();
+    await closePromise;
+  };
+
   return {
     mode: opts.mode,
     storage: opts.storage,
@@ -444,7 +458,7 @@ function makeTreecrdtClientFromCall(opts: {
       delete: localDeleteImpl,
       payload: localPayloadImpl,
     },
-    close: opts.close,
+    close: closeImpl,
   };
 }
 

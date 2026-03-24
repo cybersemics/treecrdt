@@ -39,6 +39,8 @@ import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from ".
 import type { StoredAuthMaterial } from "../../auth";
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
+const PLAYGROUND_SCOPED_UPLOAD_MAX_OPS = 64;
+const PLAYGROUND_SCOPED_UPLOAD_MAX_PARENTS = 16;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -104,7 +106,7 @@ export type PlaygroundSyncApi = {
   liveAllEnabled: boolean;
   setLiveAllEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   toggleLiveChildren: (parentId: string) => void;
-  notifyLocalUpdate: () => void;
+  notifyLocalUpdate: (ops?: Operation[]) => void;
   handleSync: (filter: Filter) => Promise<void>;
   handleScopedSync: () => Promise<void>;
   postBroadcastMessage: (
@@ -210,6 +212,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const liveBusyCountRef = useRef(0);
   const remoteLivePushScheduledRef = useRef(false);
   const remoteLivePushRunningRef = useRef(false);
+  const remoteLivePushNeedsFullSyncRef = useRef(false);
+  const remoteLivePushParentIdsRef = useRef<Set<string>>(new Set());
   const autoSyncDoneRef = useRef(false);
   const autoSyncInFlightRef = useRef(false);
   const autoSyncAttemptRef = useRef(0);
@@ -234,6 +238,58 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     if (isRemotePeerId(peerId)) return PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS;
     if (opts.autoSync) return PLAYGROUND_PEER_TIMEOUT_MS;
     return opts.multipleTargets ? 8_000 : 15_000;
+  };
+
+  const queueRemoteUploadHints = (ops?: Operation[]) => {
+    if (!ops || ops.length === 0) {
+      if (liveAllEnabledRef.current) remoteLivePushNeedsFullSyncRef.current = true;
+      return;
+    }
+
+    // Small edits are cheaper to upload as scoped children(parent) syncs. Large local batches
+    // create too many parent-scoped uploads and can leave the remote server in a partially
+    // uploaded state for seconds, so switch those back to a single full catch-up.
+    if (ops.length > PLAYGROUND_SCOPED_UPLOAD_MAX_OPS) {
+      remoteLivePushNeedsFullSyncRef.current = true;
+      remoteLivePushParentIdsRef.current.clear();
+      return;
+    }
+
+    let foundScopedParent = false;
+    const state = treeStateRef.current;
+    const hintedParents = remoteLivePushParentIdsRef.current;
+    for (const op of ops) {
+      const kind = op.kind;
+      if (kind.type === "insert") {
+        hintedParents.add(kind.parent);
+        foundScopedParent = true;
+      } else if (kind.type === "move") {
+        hintedParents.add(kind.newParent);
+        foundScopedParent = true;
+        const prevParent = state.index[kind.node]?.parentId;
+        if (prevParent) {
+          hintedParents.add(prevParent);
+        }
+      } else {
+        const parentId = state.index[kind.node]?.parentId;
+        if (parentId) {
+          hintedParents.add(parentId);
+          foundScopedParent = true;
+        } else if (liveAllEnabledRef.current) {
+          remoteLivePushNeedsFullSyncRef.current = true;
+        }
+      }
+
+      if (hintedParents.size > PLAYGROUND_SCOPED_UPLOAD_MAX_PARENTS) {
+        remoteLivePushNeedsFullSyncRef.current = true;
+        hintedParents.clear();
+        return;
+      }
+    }
+
+    if (!foundScopedParent && liveAllEnabledRef.current) {
+      remoteLivePushNeedsFullSyncRef.current = true;
+    }
   };
 
   const stopLiveAllForPeer = (peerId: string) => {
@@ -380,8 +436,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     });
   };
 
-  const notifyLocalUpdate = () => {
+  const notifyLocalUpdate = (ops?: Operation[]) => {
     void syncPeerRef.current?.notifyLocalUpdate();
+    queueRemoteUploadHints(ops);
     if (remoteLivePushRunningRef.current) {
       remoteLivePushScheduledRef.current = true;
       return;
@@ -403,13 +460,19 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           if (remotePeerIds.length === 0) continue;
 
           const liveChildren = Array.from(liveChildrenParentsRef.current).filter((id) => /^[0-9a-f]{32}$/i.test(id));
-          if (!liveAllEnabledRef.current && liveChildren.length === 0) continue;
+          const hintedParents = Array.from(remoteLivePushParentIdsRef.current).filter((id) => /^[0-9a-f]{32}$/i.test(id));
+          const needsFullSync = remoteLivePushNeedsFullSyncRef.current;
+          remoteLivePushParentIdsRef.current.clear();
+          remoteLivePushNeedsFullSyncRef.current = false;
+
+          const uploadParents = hintedParents.length > 0 ? hintedParents : liveChildren;
+          if (!needsFullSync && !liveAllEnabledRef.current && uploadParents.length === 0) continue;
 
           for (const peerId of remotePeerIds) {
             const conn = connections.get(peerId);
             if (!conn) continue;
             try {
-              if (liveAllEnabledRef.current) {
+              if (needsFullSync || (liveAllEnabledRef.current && uploadParents.length === 0)) {
                 await withTimeout(
                   peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 1024)),
                   syncTimeoutMsForPeer(peerId, { autoSync: true }),
@@ -418,7 +481,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
                 continue;
               }
 
-              for (const parentId of liveChildren) {
+              for (const parentId of uploadParents) {
                 await withTimeout(
                   peer.syncOnce(
                     conn.transport,

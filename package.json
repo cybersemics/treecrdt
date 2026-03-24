@@ -36,6 +36,7 @@
     "benchmark:sync:upload:local": "node scripts/run-sync-bench.mjs local prime",
     "benchmark:sync:upload:remote": "node scripts/run-sync-bench.mjs remote prime",
     "benchmark:sync:remote": "node scripts/run-sync-bench.mjs remote",
+    "benchmark:playground:live-write": "node scripts/bench-playground-live-write.mjs",
     "benchmark:wasm": "pnpm -C packages/treecrdt-wasm-js run benchmark",
     "benchmark:web": "pnpm -C packages/treecrdt-wa-sqlite/e2e run bench",
     "test": "pnpm run test:browser && pnpm run test:native-node",
