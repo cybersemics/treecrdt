@@ -35,7 +35,7 @@ function RemoteStatusIcon({ status }: { status: RemoteSyncStatus }) {
     return <MdCheckCircle className="text-[14px]" />;
   }
   if (status.state === "connecting") {
-    return <MdSync className="animate-spin text-[14px]" />;
+    return <MdSync className="text-[14px]" />;
   }
   if (status.state === "disabled") {
     return <MdCloudOff className="text-[14px]" />;
