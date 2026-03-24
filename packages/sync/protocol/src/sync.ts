@@ -83,6 +83,7 @@ export type SyncPeerOptions<Op = unknown> = {
   directSendThreshold?: number;
   requireAuthForFilters?: boolean;
   auth?: SyncAuth<Op>;
+  deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
 };
 
 export type SyncPeerAttachOptions<Op = unknown> = {
@@ -238,6 +239,12 @@ type InitiatorSubscription = {
   failed: Pending<unknown>;
 };
 
+type PendingPushOp<Op> = {
+  opRef: OpRef;
+  opRefHex: string;
+  op: Op;
+};
+
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
   return capabilities.some(isAnyAuthCapability);
 }
@@ -305,6 +312,7 @@ export class SyncPeer<Op> {
   private readonly directSendThreshold: number;
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
+  private readonly deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
   private readonly transportPeerCapabilities = new WeakMap<DuplexTransport<SyncMessage<Op>>, Hello["capabilities"]>();
   private readonly transportLastSentHelloCaps = new WeakMap<DuplexTransport<SyncMessage<Op>>, string>();
@@ -322,6 +330,8 @@ export class SyncPeer<Op> {
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription>();
   private readonly responderAwaitingUploadAcks = new Set<string>();
   private readonly opsBatchQueues = new Map<string, Promise<void>>();
+  private readonly pendingPushOpsByRefHex = new Map<string, PendingPushOp<Op>>();
+  private pushNeedsFullScan = false;
   private pushScheduled = false;
   private pushRunning = false;
   private pushInFlight: Promise<void> = Promise.resolve();
@@ -343,6 +353,7 @@ export class SyncPeer<Op> {
       throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
     }
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
+    this.deriveOpRef = opts.deriveOpRef;
   }
 
   attach(
@@ -361,8 +372,17 @@ export class SyncPeer<Op> {
     });
   }
 
-  notifyLocalUpdate(): Promise<void> {
+  notifyLocalUpdate(ops?: readonly Op[]): Promise<void> {
     if (this.responderSubscriptions.size === 0) return Promise.resolve();
+    if (ops && ops.length > 0 && this.deriveOpRef) {
+      for (const op of ops) {
+        const opRef = this.deriveOpRef(op, { docId: this.backend.docId });
+        const opRefHex = bytesToHex(opRef);
+        this.pendingPushOpsByRefHex.set(opRefHex, { opRef, opRefHex, op });
+      }
+    } else {
+      this.pushNeedsFullScan = true;
+    }
     this.pushScheduled = true;
     if (!this.pushRunning) {
       this.pushRunning = true;
@@ -379,9 +399,16 @@ export class SyncPeer<Op> {
     try {
       while (this.pushScheduled) {
         this.pushScheduled = false;
+        const deltaOps =
+          this.pushNeedsFullScan || this.pendingPushOpsByRefHex.size === 0
+            ? []
+            : Array.from(this.pendingPushOpsByRefHex.values());
+        const forceFullScan = this.pushNeedsFullScan;
+        this.pushNeedsFullScan = false;
+        this.pendingPushOpsByRefHex.clear();
         for (const sub of this.responderSubscriptions.values()) {
           try {
-            await this.pushSubscription(sub);
+            await this.pushSubscription(sub, { deltaOps, forceFullScan });
           } catch {
             this.responderSubscriptions.delete(sub.subscriptionId);
           }
@@ -433,7 +460,15 @@ export class SyncPeer<Op> {
     }
   }
 
-  private async pushSubscription(sub: ResponderSubscription<Op>): Promise<void> {
+  private async pushSubscription(
+    sub: ResponderSubscription<Op>,
+    opts: { deltaOps?: readonly PendingPushOp<Op>[]; forceFullScan?: boolean } = {}
+  ): Promise<void> {
+    if (!opts.forceFullScan && "all" in sub.filter && opts.deltaOps && opts.deltaOps.length > 0) {
+      await this.pushSubscriptionDeltaAll(sub, opts.deltaOps);
+      return;
+    }
+
     let opRefs: OpRef[];
     try {
       opRefs = await this.backend.listOpRefs(sub.filter);
@@ -506,6 +541,81 @@ export class SyncPeer<Op> {
       });
 
       for (const r of chunk) sub.sentOpRefs.add(bytesToHex(r));
+      await yieldToMacrotask();
+    }
+  }
+
+  private async pushSubscriptionDeltaAll(
+    sub: ResponderSubscription<Op>,
+    deltaOps: readonly PendingPushOp<Op>[]
+  ): Promise<void> {
+    const unsent = deltaOps.filter((entry) => !sub.sentOpRefs.has(entry.opRefHex));
+    if (unsent.length === 0) return;
+
+    // Live subscriptions can outlive the capability snapshot from the initial handshake.
+    // Refresh it before the push so proof_ref verification can succeed on newly seen authors.
+    await this.refreshHelloCapabilities(sub.transport);
+
+    const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
+    const filter = sub.filter;
+    const maxOpsPerBatch = this.maxOpsPerBatch;
+
+    for (let start = 0; start < unsent.length; start += maxOpsPerBatch) {
+      const chunk = unsent.slice(start, start + maxOpsPerBatch);
+      let refs = chunk.map((entry) => entry.opRef);
+      let ops = chunk.map((entry) => entry.op);
+
+      if (this.auth?.filterOutgoingOps && ops.length > 0) {
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: "subscribe",
+          filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+        }
+
+        const allowedRefs: OpRef[] = [];
+        const allowedOps: Op[] = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          if (allowed[i] === true) {
+            allowedRefs.push(refs[i]!);
+            allowedOps.push(ops[i]!);
+          }
+        }
+
+        for (const ref of refs) sub.sentOpRefs.add(bytesToHex(ref));
+
+        if (allowedOps.length === 0) {
+          await yieldToMacrotask();
+          continue;
+        }
+
+        refs = allowedRefs;
+        ops = allowedOps;
+      }
+
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const auth = shouldAttachAuth && this.auth?.signOps
+        ? await this.auth.signOps(ops, {
+            docId: this.backend.docId,
+            purpose: "subscribe",
+            filterId: sub.subscriptionId,
+          })
+        : undefined;
+      if (auth && auth.length !== ops.length) {
+        throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
+      }
+
+      const done = start + maxOpsPerBatch >= unsent.length;
+      await sub.transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: { case: "opsBatch", value: { filterId: sub.subscriptionId, ops, ...(auth ? { auth } : {}), done } },
+      });
+
+      for (const ref of refs) sub.sentOpRefs.add(bytesToHex(ref));
       await yieldToMacrotask();
     }
   }
@@ -1635,7 +1745,7 @@ export class SyncPeer<Op> {
     }
 
     await this.backend.applyOps(allowedOps);
-    if (allowedOps.length > 0) void this.notifyLocalUpdate();
+    if (allowedOps.length > 0) void this.notifyLocalUpdate(allowedOps);
     await this.reprocessPendingOps();
 
     const responderSession = this.responderSessions.get(batch.filterId);
@@ -1685,7 +1795,7 @@ export class SyncPeer<Op> {
         if (pending.length === 0) return;
 
         let progress = false;
-        let appliedAny = false;
+        const appliedOps: Op[] = [];
 
         for (const p of pending) {
           const ctx = { docId: this.backend.docId, purpose: "reprocess_pending" as const, filterId: "__pending__" };
@@ -1713,10 +1823,10 @@ export class SyncPeer<Op> {
           await this.backend.applyOps([p.op]);
           await this.backend.deletePendingOps!([p.op]);
           progress = true;
-          appliedAny = true;
+          appliedOps.push(p.op);
         }
 
-        if (appliedAny) void this.notifyLocalUpdate();
+        if (appliedOps.length > 0) void this.notifyLocalUpdate(appliedOps);
         if (!progress) return;
       }
       throw new Error("pending-op reprocessing exceeded max rounds");

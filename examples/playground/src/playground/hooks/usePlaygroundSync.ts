@@ -10,6 +10,7 @@ import {
 } from "@treecrdt/auth";
 import {
   SyncPeer,
+  deriveOpRefV0,
   type Filter,
   type SyncSubscription,
 } from "@treecrdt/sync";
@@ -396,7 +397,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const notifyLocalUpdate = (ops?: Operation[]) => {
-    void syncPeerRef.current?.notifyLocalUpdate();
+    void syncPeerRef.current?.notifyLocalUpdate(ops);
     queueRemoteUploadHints(ops);
     if (remoteLivePushRunningRef.current) {
       remoteLivePushScheduledRef.current = true;
@@ -927,6 +928,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const sharedPeer = new SyncPeer<Operation>(backend, {
       maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
       maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+      deriveOpRef: (op, ctx) =>
+        deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
       ...(peerAuthConfig
         ? {
             auth: (() => {

@@ -320,6 +320,15 @@ class DelayedApplyBackend extends MemoryBackend {
   }
 }
 
+class CountingListBackend extends MemoryBackend {
+  listOpRefsCalls = 0;
+
+  override async listOpRefs(filter: Filter): Promise<OpRef[]> {
+    this.listOpRefsCalls += 1;
+    return super.listOpRefs(filter);
+  }
+}
+
 test("syncOnce does not starve macrotask transports", async () => {
   const docId = "doc-sync-macrotask";
   const root = "0".repeat(32);
@@ -922,6 +931,58 @@ test("subscribe keeps peers converging (push deltas)", async () => {
       ]);
       await pb.notifyLocalUpdate();
       await waitUntil(() => a.hasOp(replicaHex.b, 1), { message: "expected a to receive b:1 via subscription" });
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
+  } finally {
+    detach();
+  }
+});
+
+test("subscribe pushes exact all-filter deltas without rescanning full state", async () => {
+  const docId = "doc-subscribe-direct-delta-all";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new CountingListBackend(docId);
+
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const { peerA: pa, peerB: pb, transportA: ta, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerBOptions: {
+      deriveOpRef: (op) => opRefFor(docId, bytesToHex(op.meta.id.replica), op.meta.id.counter),
+    },
+  });
+  try {
+    const sub = pa.subscribe(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    try {
+      await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected initial subscribe catch-up" });
+      const scanCountAfterCatchUp = b.listOpRefsCalls;
+
+      const op = makeOp(replicas.b, 1, 2, {
+        type: "insert",
+        parent: root,
+        node: nodeIdFromInt(2),
+        orderKey: orderKeyFromPosition(0),
+      });
+      await b.applyOps([op]);
+      await pb.notifyLocalUpdate([op]);
+
+      await waitUntil(() => a.hasOp(replicaHex.b, 1), {
+        message: "expected direct all-filter delta push to arrive",
+      });
+      expect(b.listOpRefsCalls).toBe(scanCountAfterCatchUp);
     } finally {
       sub.stop();
       await sub.done;
