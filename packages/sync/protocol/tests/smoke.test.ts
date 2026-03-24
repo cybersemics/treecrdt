@@ -576,6 +576,14 @@ test("syncOnce waits for ribltStatus.more before sending another codeword batch"
     );
   }
   await a.applyOps(ops);
+  await b.applyOps([
+    makeOp(replicas.b, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: nodeIdFromInt(100),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
 
   const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>({ bToADelayMs: 25 });
   const pa = new SyncPeer(a);
@@ -983,6 +991,182 @@ test("subscribe pushes exact all-filter deltas without rescanning full state", a
         message: "expected direct all-filter delta push to arrive",
       });
       expect(b.listOpRefsCalls).toBe(scanCountAfterCatchUp);
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
+  } finally {
+    detach();
+  }
+});
+
+test("subscribe pushes exact children-filter deltas for visible subtree updates without rescanning full state", async () => {
+  const docId = "doc-subscribe-direct-delta-children-visible";
+  const root = "0".repeat(32);
+  const rootBytes = nodeIdToBytes16(root);
+  const child = nodeIdFromInt(1);
+
+  const a = new MemoryBackend(docId);
+  const b = new CountingListBackend(docId);
+
+  await b.applyOps([
+    makeOp(replicas.b, 1, 1, {
+      type: "insert",
+      parent: root,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const { peerA: pa, peerB: pb, transportA: ta, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerBOptions: {
+      deriveOpRef: (op) => opRefFor(docId, bytesToHex(op.meta.id.replica), op.meta.id.counter),
+    },
+  });
+  try {
+    const sub = pa.subscribe(ta, { children: { parent: rootBytes } }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    try {
+      await waitUntil(() => a.hasOp(replicaHex.b, 1), { message: "expected initial subtree subscribe catch-up" });
+      const scanCountAfterCatchUp = b.listOpRefsCalls;
+
+      const payloadOp = makeOp(replicas.b, 2, 2, {
+        type: "payload",
+        node: child,
+        payload: new Uint8Array([7, 8, 9]),
+      });
+      await b.applyOps([payloadOp]);
+      await pb.notifyLocalUpdate([payloadOp]);
+
+      await waitUntil(() => a.hasOp(replicaHex.b, 2), {
+        message: "expected subtree payload delta to arrive without a full rescan",
+      });
+      expect(b.listOpRefsCalls).toBe(scanCountAfterCatchUp);
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
+  } finally {
+    detach();
+  }
+});
+
+test("subscribe pushes move-into-subtree deltas without rescanning when payload history is known", async () => {
+  const docId = "doc-subscribe-direct-delta-children-move-known";
+  const parentAHex = "a0".repeat(16);
+  const parentBHex = "b0".repeat(16);
+  const parentBBytes = nodeIdToBytes16(parentBHex);
+  const node = nodeIdFromInt(0x21);
+
+  const a = new MemoryBackend(docId);
+  const b = new CountingListBackend(docId);
+
+  const { peerA: pa, peerB: pb, transportA: ta, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerBOptions: {
+      deriveOpRef: (op) => opRefFor(docId, bytesToHex(op.meta.id.replica), op.meta.id.counter),
+    },
+  });
+  try {
+    const sub = pa.subscribe(ta, { children: { parent: parentBBytes } }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    try {
+      await sub.ready;
+      const scanCountAfterSubscribe = b.listOpRefsCalls;
+
+      const insertOp = makeOp(replicas.b, 1, 1, {
+        type: "insert",
+        parent: parentAHex,
+        node,
+        orderKey: orderKeyFromPosition(0),
+      });
+      const payloadOp = makeOp(replicas.b, 2, 2, {
+        type: "payload",
+        node,
+        payload: new Uint8Array([3, 1, 4]),
+      });
+      const moveOp = makeOp(replicas.b, 3, 3, {
+        type: "move",
+        node,
+        newParent: parentBHex,
+        orderKey: orderKeyFromPosition(0),
+      });
+
+      await b.applyOps([insertOp]);
+      await pb.notifyLocalUpdate([insertOp]);
+      await b.applyOps([payloadOp]);
+      await pb.notifyLocalUpdate([payloadOp]);
+      await b.applyOps([moveOp]);
+      await pb.notifyLocalUpdate([moveOp]);
+
+      await waitUntil(() => a.hasOp(replicaHex.b, 2) && a.hasOp(replicaHex.b, 3), {
+        message: "expected move and latest payload to arrive via subtree delta push",
+      });
+      expect(a.hasOp(replicaHex.b, 1)).toBe(false);
+      expect(b.listOpRefsCalls).toBe(scanCountAfterSubscribe);
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
+  } finally {
+    detach();
+  }
+});
+
+test("subscribe falls back to subtree rescan when move-into-subtree payload history is unknown", async () => {
+  const docId = "doc-subscribe-direct-delta-children-move-fallback";
+  const parentAHex = "a0".repeat(16);
+  const parentBHex = "b0".repeat(16);
+  const parentBBytes = nodeIdToBytes16(parentBHex);
+  const node = nodeIdFromInt(0x22);
+
+  const a = new MemoryBackend(docId);
+  const b = new CountingListBackend(docId);
+
+  await b.applyOps([
+    makeOp(replicas.b, 1, 1, {
+      type: "insert",
+      parent: parentAHex,
+      node,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.b, 2, 2, {
+      type: "payload",
+      node,
+      payload: new Uint8Array([9, 9, 9]),
+    }),
+  ]);
+
+  const { peerA: pa, peerB: pb, transportA: ta, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerBOptions: {
+      deriveOpRef: (op) => opRefFor(docId, bytesToHex(op.meta.id.replica), op.meta.id.counter),
+    },
+  });
+  try {
+    const sub = pa.subscribe(ta, { children: { parent: parentBBytes } }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    try {
+      await sub.ready;
+      const scanCountAfterSubscribe = b.listOpRefsCalls;
+
+      const moveOp = makeOp(replicas.b, 3, 3, {
+        type: "move",
+        node,
+        newParent: parentBHex,
+        orderKey: orderKeyFromPosition(0),
+      });
+      await b.applyOps([moveOp]);
+      await pb.notifyLocalUpdate([moveOp]);
+
+      await waitUntil(() => a.hasOp(replicaHex.b, 2) && a.hasOp(replicaHex.b, 3), {
+        message: "expected subtree fallback scan to deliver move and payload",
+      });
+      expect(b.listOpRefsCalls).toBeGreaterThan(scanCountAfterSubscribe);
     } finally {
       sub.stop();
       await sub.done;
