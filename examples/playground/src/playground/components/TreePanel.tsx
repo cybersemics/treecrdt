@@ -235,7 +235,7 @@ export function TreePanel({
                     : "Live sync all"
             }
           >
-            <MdOutlineRssFeed className={`text-[20px] ${liveBusy ? "animate-spin" : liveAllEnabled ? "animate-pulse" : ""}`} />
+            <MdOutlineRssFeed className={`text-[20px] ${liveAllEnabled ? "animate-pulse" : ""}`} />
           </button>
           <button
             className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${

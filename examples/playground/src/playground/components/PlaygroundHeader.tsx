@@ -13,6 +13,7 @@ export function PlaygroundHeader({
   selfPeerIdShort,
   onCopyPubkey,
   onSelectStorage,
+  onNewDoc,
   onReset,
   onExpandAll,
   onCollapseAll,
@@ -27,6 +28,7 @@ export function PlaygroundHeader({
   selfPeerIdShort: string | null;
   onCopyPubkey: () => void;
   onSelectStorage: (next: StorageMode) => void;
+  onNewDoc: () => void;
   onReset: () => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
@@ -129,6 +131,13 @@ export function PlaygroundHeader({
       <div className="flex flex-wrap items-center gap-2">
         <button
           className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+          onClick={onNewDoc}
+          disabled={status !== "ready"}
+        >
+          New
+        </button>
+        <button
+          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
           onClick={onReset}
           disabled={status !== "ready"}
         >
@@ -156,4 +165,3 @@ export function PlaygroundHeader({
     </header>
   );
 }
-
