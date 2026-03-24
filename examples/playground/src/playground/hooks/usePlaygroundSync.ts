@@ -28,8 +28,6 @@ import {
 import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from "../types";
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
-const PLAYGROUND_SCOPED_UPLOAD_MAX_OPS = 64;
-const PLAYGROUND_SCOPED_UPLOAD_MAX_PARENTS = 16;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -188,7 +186,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const remoteLivePushScheduledRef = useRef(false);
   const remoteLivePushRunningRef = useRef(false);
   const remoteLivePushNeedsFullSyncRef = useRef(false);
-  const remoteLivePushParentIdsRef = useRef<Set<string>>(new Set());
+  const remoteLivePushPendingOpsRef = useRef<Map<string, Operation>>(new Map());
   const autoSyncDoneRef = useRef(false);
   const autoSyncInFlightRef = useRef(false);
   const autoSyncAttemptRef = useRef(0);
@@ -217,53 +215,14 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const queueRemoteUploadHints = (ops?: Operation[]) => {
     if (!ops || ops.length === 0) {
-      if (liveAllEnabledRef.current) remoteLivePushNeedsFullSyncRef.current = true;
-      return;
-    }
-
-    // Small edits are cheaper to upload as scoped children(parent) syncs. Large local batches
-    // create too many parent-scoped uploads and can leave the remote server in a partially
-    // uploaded state for seconds, so switch those back to a single full catch-up.
-    if (ops.length > PLAYGROUND_SCOPED_UPLOAD_MAX_OPS) {
       remoteLivePushNeedsFullSyncRef.current = true;
-      remoteLivePushParentIdsRef.current.clear();
       return;
     }
 
-    let foundScopedParent = false;
-    const state = treeStateRef.current;
-    const hintedParents = remoteLivePushParentIdsRef.current;
+    const pendingOps = remoteLivePushPendingOpsRef.current;
     for (const op of ops) {
-      const kind = op.kind;
-      if (kind.type === "insert") {
-        hintedParents.add(kind.parent);
-        foundScopedParent = true;
-      } else if (kind.type === "move") {
-        hintedParents.add(kind.newParent);
-        foundScopedParent = true;
-        const prevParent = state.index[kind.node]?.parentId;
-        if (prevParent) {
-          hintedParents.add(prevParent);
-        }
-      } else {
-        const parentId = state.index[kind.node]?.parentId;
-        if (parentId) {
-          hintedParents.add(parentId);
-          foundScopedParent = true;
-        } else if (liveAllEnabledRef.current) {
-          remoteLivePushNeedsFullSyncRef.current = true;
-        }
-      }
-
-      if (hintedParents.size > PLAYGROUND_SCOPED_UPLOAD_MAX_PARENTS) {
-        remoteLivePushNeedsFullSyncRef.current = true;
-        hintedParents.clear();
-        return;
-      }
-    }
-
-    if (!foundScopedParent && liveAllEnabledRef.current) {
-      remoteLivePushNeedsFullSyncRef.current = true;
+      const opKey = `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`;
+      pendingOps.set(opKey, op);
     }
   };
 
@@ -435,19 +394,28 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           if (remotePeerIds.length === 0) continue;
 
           const liveChildren = Array.from(liveChildrenParentsRef.current).filter((id) => /^[0-9a-f]{32}$/i.test(id));
-          const hintedParents = Array.from(remoteLivePushParentIdsRef.current).filter((id) => /^[0-9a-f]{32}$/i.test(id));
+          const pendingOps = Array.from(remoteLivePushPendingOpsRef.current.values());
           const needsFullSync = remoteLivePushNeedsFullSyncRef.current;
-          remoteLivePushParentIdsRef.current.clear();
+          remoteLivePushPendingOpsRef.current.clear();
           remoteLivePushNeedsFullSyncRef.current = false;
-
-          const uploadParents = hintedParents.length > 0 ? hintedParents : liveChildren;
-          if (!needsFullSync && !liveAllEnabledRef.current && uploadParents.length === 0) continue;
+          if (!needsFullSync && pendingOps.length === 0 && !liveAllEnabledRef.current && liveChildren.length === 0) continue;
 
           for (const peerId of remotePeerIds) {
             const conn = connections.get(peerId);
             if (!conn) continue;
             try {
-              if (needsFullSync || (liveAllEnabledRef.current && uploadParents.length === 0)) {
+              if (pendingOps.length > 0) {
+                await withTimeout(
+                  peer.pushOps(conn.transport, pendingOps, {
+                    maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+                  }),
+                  syncTimeoutMsForPeer(peerId, { autoSync: true }),
+                  `live push with ${peerId.slice(0, 8)}… timed out`
+                );
+                continue;
+              }
+
+              if (needsFullSync || (liveAllEnabledRef.current && liveChildren.length === 0)) {
                 await withTimeout(
                   peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 1024)),
                   syncTimeoutMsForPeer(peerId, { autoSync: true }),
@@ -456,7 +424,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
                 continue;
               }
 
-              for (const parentId of uploadParents) {
+              for (const parentId of liveChildren) {
                 await withTimeout(
                   peer.syncOnce(
                     conn.transport,

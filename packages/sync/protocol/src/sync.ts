@@ -96,6 +96,11 @@ export type SyncOnceOptions = {
   maxOpsPerBatch?: number;
 };
 
+export type SyncPushOptions = {
+  maxOpsPerBatch?: number;
+  filterId?: string;
+};
+
 export type SyncSubscribeOptions = SyncOnceOptions & {
   intervalMs?: number;
   signal?: AbortSignal;
@@ -303,6 +308,14 @@ export class SyncPeer<Op> {
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
   private readonly transportPeerCapabilities = new WeakMap<DuplexTransport<SyncMessage<Op>>, Hello["capabilities"]>();
   private readonly transportLastSentHelloCaps = new WeakMap<DuplexTransport<SyncMessage<Op>>, string>();
+  private readonly transportHelloAckWaiters = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    Set<Pending<void>>
+  >();
+  private readonly transportDirectPushFilterIds = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    string
+  >();
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
@@ -382,7 +395,7 @@ export class SyncPeer<Op> {
 
   private async refreshHelloCapabilities(
     transport: DuplexTransport<SyncMessage<Op>>,
-    opts: { force?: boolean } = {}
+    opts: { force?: boolean; waitForAck?: boolean } = {}
   ): Promise<void> {
     if (!this.auth?.helloCapabilities) return;
 
@@ -393,12 +406,31 @@ export class SyncPeer<Op> {
     const fingerprint = capabilitySetFingerprint(capabilities);
     if (!opts.force && this.transportLastSentHelloCaps.get(transport) === fingerprint) return;
 
-    await transport.send({
-      v: 0,
-      docId: this.backend.docId,
-      payload: { case: "hello", value: { capabilities, filters: [], maxLamport } },
-    });
-    this.transportLastSentHelloCaps.set(transport, fingerprint);
+    let waiter: Pending<void> | undefined;
+    if (opts.waitForAck) {
+      waiter = deferred<void>();
+      const waiters = this.transportHelloAckWaiters.get(transport) ?? new Set<Pending<void>>();
+      waiters.add(waiter);
+      this.transportHelloAckWaiters.set(transport, waiters);
+    }
+
+    try {
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: { case: "hello", value: { capabilities, filters: [], maxLamport } },
+      });
+      this.transportLastSentHelloCaps.set(transport, fingerprint);
+      await waiter?.promise;
+    } catch (err) {
+      if (waiter) {
+        const waiters = this.transportHelloAckWaiters.get(transport);
+        waiters?.delete(waiter);
+        if (waiters && waiters.size === 0) this.transportHelloAckWaiters.delete(transport);
+        waiter.reject(err);
+      }
+      throw err;
+    }
   }
 
   private async pushSubscription(sub: ResponderSubscription<Op>): Promise<void> {
@@ -648,6 +680,58 @@ export class SyncPeer<Op> {
       await session.receivedOps.promise;
     } finally {
       this.initiatorSessions.delete(filterId);
+    }
+  }
+
+  async pushOps(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    ops: readonly Op[],
+    opts: SyncPushOptions = {}
+  ): Promise<void> {
+    if (ops.length === 0) return;
+
+    await this.refreshHelloCapabilities(transport, { waitForAck: true });
+
+    let filterId = opts.filterId;
+    if (!filterId) {
+      filterId = this.transportDirectPushFilterIds.get(transport);
+      if (!filterId) {
+        filterId = randomId("push");
+        this.transportDirectPushFilterIds.set(transport, filterId);
+      }
+    }
+
+    const maxOpsPerBatch = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
+    if (!Number.isFinite(maxOpsPerBatch) || maxOpsPerBatch <= 0) {
+      throw new Error(`invalid maxOpsPerBatch: ${maxOpsPerBatch}`);
+    }
+
+    const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
+    const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+
+    for (let start = 0; start < ops.length; start += maxOpsPerBatch) {
+      const chunk = ops.slice(start, start + maxOpsPerBatch);
+      const auth = shouldAttachAuth && this.auth?.signOps
+        ? await this.auth.signOps(chunk, { docId: this.backend.docId, purpose: "reconcile", filterId })
+        : undefined;
+      if (auth && auth.length !== chunk.length) {
+        throw new Error(`signOps returned ${auth.length} entries for ${chunk.length} ops`);
+      }
+
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: "opsBatch",
+          value: {
+            filterId,
+            ops: [...chunk],
+            ...(auth ? { auth } : {}),
+            done: start + maxOpsPerBatch >= ops.length,
+          },
+        },
+      });
+      await yieldToMacrotask();
     }
   }
 
@@ -1148,6 +1232,11 @@ export class SyncPeer<Op> {
     const hasAuthCapability = ack.capabilities.some(isAuthCapability);
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
     if (peerAdvertisedOpAuth(ack.capabilities)) this.transportPeerCapabilities.set(transport, ack.capabilities);
+    const waiters = this.transportHelloAckWaiters.get(transport);
+    if (waiters && waiters.size > 0) {
+      this.transportHelloAckWaiters.delete(transport);
+      for (const waiter of waiters) waiter.resolve();
+    }
 
     for (const id of ack.acceptedFilters) {
       const session = this.initiatorSessions.get(id);
