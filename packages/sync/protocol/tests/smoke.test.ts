@@ -421,6 +421,113 @@ test("syncOnce waits for responder to apply uploaded ops before resolving", asyn
   expect(b.hasOp(replicaHex.a, 3)).toBe(true);
 });
 
+test("pushOps uploads direct ops without reconcile roundtrips", async () => {
+  const docId = "doc-push-direct";
+  const root = "0".repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  const op = makeOp(replicas.a, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, { maxOpsPerBatch: 1 });
+  const peerB = new SyncPeer(b, { maxOpsPerBatch: 1 });
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    await peerA.pushOps(transportA, [op]);
+
+    await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+      message: "expected direct push to apply on receiver",
+    });
+
+    const serverCases = wire
+      .filter((entry) => entry.dir === "aToB")
+      .map((entry) => entry.msg.payload.case);
+    expect(serverCases).toEqual(["opsBatch"]);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test("pushOps refreshes replay capabilities before uploading newly authorized ops", async () => {
+  const docId = "doc-push-capability-refresh";
+  const root = "0".repeat(32);
+  const proofRef = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  const replayCapValue = bytesToHex(proofRef);
+  const knownReplayCaps = new Set<string>();
+  let senderHelloCaps: Array<{ name: string; value: string }> = [];
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  const op = makeOp(replicas.a, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(11),
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => senderHelloCaps,
+      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array([1]), proofRef })),
+    },
+    maxOpsPerBatch: 1,
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      helloCapabilities: async () => [{ name: "auth.capability", value: "receiver-token" }],
+      onHello: async (hello) => {
+        for (const cap of hello.capabilities) {
+          if (cap.name === "auth.capability.replay") knownReplayCaps.add(cap.value);
+        }
+        return [{ name: "auth.capability", value: "receiver-token" }];
+      },
+      verifyOps: async (_ops, auth) => {
+        if (!auth) throw new Error("expected auth on direct push");
+        for (const entry of auth) {
+          if (!entry?.proofRef) throw new Error("expected proofRef on direct push");
+          if (!knownReplayCaps.has(bytesToHex(entry.proofRef))) {
+            throw new Error("missing replay capability for pushed proofRef");
+          }
+        }
+      },
+    },
+    maxOpsPerBatch: 1,
+  });
+
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    senderHelloCaps = [{ name: "auth.capability.replay", value: replayCapValue }];
+    await peerA.pushOps(transportA, [op]);
+
+    await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+      message: "expected direct push to apply after capability refresh",
+    });
+    expect(knownReplayCaps).toEqual(new Set([replayCapValue]));
+
+    const wireCases = wire.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
+    expect(wireCases).toContain("aToB:hello");
+    expect(wireCases).toContain("bToA:helloAck");
+    expect(wireCases).toContain("aToB:opsBatch");
+    expect(wireCases.indexOf("aToB:hello")).toBeLessThan(wireCases.indexOf("aToB:opsBatch"));
+    expect(wireCases.indexOf("bToA:helloAck")).toBeLessThan(wireCases.indexOf("aToB:opsBatch"));
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
 test("syncOnce protobuf roundtrips ribltStatus.more", () => {
   const msg = {
     v: 0,
