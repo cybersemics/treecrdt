@@ -1009,9 +1009,10 @@ export class SyncPeer<Op> {
 
       let matched: PendingPushAuthedOp<Op>[] | undefined;
       if ("all" in sub.filter) {
+        // Keep the provisional experiment scoped to broad doc subscriptions for now.
+        // Scoped subtree subscriptions already have a more specific delta path and
+        // did not benchmark well with speculative forwarding.
         matched = deltaOps.filter((entry) => !sub.sentOpRefs.has(entry.opRefHex));
-      } else if (isChildrenFilter(sub.filter)) {
-        matched = this.matchChildrenSubscriptionDelta(sub, deltaOps);
       }
       if (!matched || matched.length === 0) continue;
 
