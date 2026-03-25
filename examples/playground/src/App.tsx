@@ -194,6 +194,7 @@ export default function App() {
   const lamportRef = useRef(0);
   const initEpochRef = useRef(0);
   const disposedRef = useRef(false);
+  const localInsertInFlightRef = useRef(false);
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const docPayloadKeyRef = useRef<Uint8Array | null>(null);
   const refreshDocPayloadKey = React.useCallback(async () => {
@@ -641,12 +642,41 @@ export default function App() {
     [refreshParents]
   );
 
+  const scheduleRefreshParentsAfterPaint = React.useCallback(
+    (parentIds: Iterable<string>) => {
+      const ids = Array.from(parentIds);
+      if (ids.length === 0) return;
+      if (typeof window === "undefined") {
+        setTimeout(() => {
+          void refreshParents(ids);
+        }, 0);
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        void refreshParents(ids);
+      });
+    },
+    [refreshParents]
+  );
+
   const refreshNodeCountQueuedRef = useRef(false);
   const scheduleRefreshNodeCount = React.useCallback(() => {
     if (refreshNodeCountQueuedRef.current) return;
     refreshNodeCountQueuedRef.current = true;
     queueMicrotask(() => {
       refreshNodeCountQueuedRef.current = false;
+      void refreshNodeCount();
+    });
+  }, [refreshNodeCount]);
+
+  const scheduleRefreshNodeCountAfterPaint = React.useCallback(() => {
+    if (typeof window === "undefined") {
+      setTimeout(() => {
+        void refreshNodeCount();
+      }, 0);
+      return;
+    }
+    window.requestAnimationFrame(() => {
       void refreshNodeCount();
     });
   }, [refreshNodeCount]);
@@ -1058,6 +1088,7 @@ export default function App() {
     setBulkAddProgress({ total: normalizedCount, completed: 0, phase: "creating", startedAtMs });
     try {
       const stateBefore = treeStateRef.current;
+      const deferLocalReconciliation = syncTransportMode !== "local";
       const ops: Operation[] = [];
       const payloadPreviewEntries: Array<{ nodeId: string; payload: Uint8Array | null }> = [];
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
@@ -1158,8 +1189,14 @@ export default function App() {
         }
         return next;
       });
-      scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
-      scheduleRefreshNodeCount();
+      const affectedParents = parentsAffectedByOps(stateBefore, ops);
+      if (deferLocalReconciliation) {
+        scheduleRefreshParentsAfterPaint(affectedParents);
+        scheduleRefreshNodeCountAfterPaint();
+      } else {
+        scheduleRefreshParents(affectedParents);
+        scheduleRefreshNodeCount();
+      }
       notifyLocalUpdate(ops);
       setCollapse((prev) => {
         const overrides = new Set(prev.overrides);
@@ -1188,9 +1225,11 @@ export default function App() {
   const handleInsert = async (parentId: string) => {
     if (!client || !replica) return;
     if (authEnabled && !canWriteStructure) return;
-    setBusy(true);
+    if (localInsertInFlightRef.current) return;
+    localInsertInFlightRef.current = true;
     try {
       const stateBefore = treeStateRef.current;
+      const deferLocalReconciliation = syncTransportMode !== "local";
       const sourceLocalWriteStartedAtMs = Date.now();
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
@@ -1201,8 +1240,14 @@ export default function App() {
       applyLocalPayloadPreview([{ nodeId, payload }]);
       ingestOps([op], { assumeSorted: true });
       setTreeState((prev) => applyAppendedChildren(prev, parentId, [op.kind.node]));
-      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
-      scheduleRefreshNodeCount();
+      const affectedParents = parentsAffectedByOps(stateBefore, [op]);
+      if (deferLocalReconciliation) {
+        scheduleRefreshParentsAfterPaint(affectedParents);
+        scheduleRefreshNodeCountAfterPaint();
+      } else {
+        scheduleRefreshParents(affectedParents);
+        scheduleRefreshNodeCount();
+      }
       recordBenchNodeTiming([nodeId], { sourceLocalPreviewAppliedAtMs: Date.now() });
       notifyLocalUpdate([op]);
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
@@ -1229,7 +1274,7 @@ export default function App() {
       console.error("Failed to insert node", err);
       setError("Failed to insert node (see console)");
     } finally {
-      setBusy(false);
+      localInsertInFlightRef.current = false;
     }
   };
 
