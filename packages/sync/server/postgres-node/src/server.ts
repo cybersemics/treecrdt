@@ -4,8 +4,11 @@ import { pathToFileURL } from "node:url";
 
 import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from "@treecrdt/auth";
 import type { Operation } from "@treecrdt/interface";
-import { createReplayOnlySyncAuth, deriveOpRefV0 } from "@treecrdt/sync";
-import type { SyncBackend, SyncPeer, SyncPeerOptions } from "@treecrdt/sync";
+import {
+  createReplayOnlySyncAuth,
+  deriveOpRefV0,
+} from "@treecrdt/sync";
+import type { Capability, SyncAuth, SyncBackend, SyncPeer, SyncPeerOptions } from "@treecrdt/sync";
 import {
   createCapabilityMaterialStore,
   createOpAuthStore,
@@ -41,6 +44,7 @@ export type PostgresNodeDocStoreOptions = {
   idleCloseMs?: number;
   broadcastDocUpdate?: (docId: string) => Awaitable<void>;
   peerOptionsFactory?: (docId: string) => Awaitable<SyncPeerOptions<Operation> | undefined>;
+  metrics?: SyncServerMetrics;
 };
 
 export type SyncServerOptions = {
@@ -65,6 +69,7 @@ export type SyncServerOptions = {
   gitSha?: string;
   gitDirty?: boolean;
   startedAt?: string;
+  instanceId?: string;
   hooks?: WebSocketSyncServerHooks;
 };
 
@@ -98,10 +103,21 @@ type PostgresNodeDocStore = {
   closeAll: () => Promise<void>;
 };
 
+type SyncServerMetrics = {
+  localDeltaPushes: number;
+  localInvalidationPushes: number;
+  pgNotifyPublishes: number;
+  pgNotifyReceives: number;
+};
+
+const SERVER_INSTANCE_CAPABILITY = "treecrdt.sync.server.instance.v1";
+
 type PostgresDocUpdateBusOptions = {
   postgresUrl: string;
   channel: string;
   onDocUpdate: (docId: string) => void;
+  onReceiveDocUpdate?: (docId: string) => void;
+  onPublishDocUpdate?: (docId: string) => void;
 };
 
 export {
@@ -159,6 +175,27 @@ function parseDocIdRegex(input: string | RegExp | undefined): RegExp | undefined
   return new RegExp(trimmed);
 }
 
+function withExtraHelloCapabilities<Op>(
+  auth: SyncAuth<Op> | undefined,
+  extraCapabilities: readonly Capability[]
+): SyncAuth<Op> | undefined {
+  if (extraCapabilities.length === 0) return auth;
+  return {
+    ...auth,
+    onHello: async (hello, ctx) => {
+      const base = auth?.onHello ? await auth.onHello(hello, ctx) : [];
+      const merged = [...base];
+      for (const capability of extraCapabilities) {
+        if (merged.some((existing) => existing.name === capability.name && existing.value === capability.value)) {
+          continue;
+        }
+        merged.push(capability);
+      }
+      return merged;
+    },
+  };
+}
+
 type DocUpdatePayload = {
   docId: string;
   source?: string;
@@ -198,6 +235,7 @@ export class PostgresDocUpdateBus {
       }
       if (!payload || typeof payload.docId !== "string" || payload.docId.length === 0) return;
       if (payload.source && payload.source === this.sourceId) return;
+      this.opts.onReceiveDocUpdate?.(payload.docId);
       this.opts.onDocUpdate(payload.docId);
     });
 
@@ -213,6 +251,7 @@ export class PostgresDocUpdateBus {
     if (this.closed || docId.length === 0) return;
     const payload = JSON.stringify({ docId, source: this.sourceId } satisfies DocUpdatePayload);
     await this.queryPool.query("SELECT pg_notify($1, $2)", [this.channel, payload]);
+    this.opts.onPublishDocUpdate?.(docId);
   }
 
   async ping(): Promise<void> {
@@ -407,6 +446,8 @@ export function createPostgresNodeDocStore(opts: PostgresNodeDocStoreOptions): P
   const notifyDocUpdate = (docId: string, ops?: readonly Operation[]): void => {
     const ctx = docs.get(docId);
     if (!ctx) return;
+    if (ops && ops.length > 0) opts.metrics && (opts.metrics.localDeltaPushes += 1);
+    else opts.metrics && (opts.metrics.localInvalidationPushes += 1);
     for (const peer of ctx.peers) void peer.notifyLocalUpdate(ops);
   };
 
@@ -610,6 +651,16 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const gitDirty = Boolean(opts.gitDirty);
   const startedAt = opts.startedAt?.trim() || new Date().toISOString();
   const startedAtMs = Date.parse(startedAt);
+  const instanceId =
+    opts.instanceId?.trim() ||
+    process.env.HOSTNAME?.trim() ||
+    randomUUID();
+  const metrics: SyncServerMetrics = {
+    localDeltaPushes: 0,
+    localInvalidationPushes: 0,
+    pgNotifyPublishes: 0,
+    pgNotifyReceives: 0,
+  };
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
   if (maxCodewords != null && (!Number.isFinite(maxCodewords) || maxCodewords <= 0)) {
@@ -641,17 +692,21 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const docs = createPostgresNodeDocStore({
     backendFactory,
     idleCloseMs,
+    metrics,
     broadcastDocUpdate: async (docId) => {
       await docUpdateBus?.publishDocUpdate(docId);
     },
     peerOptionsFactory: async (docId) => ({
-      auth: createReplayOnlySyncAuth({
-        docId,
-        authMaterialStore: {
-          opAuth: opAuthStore.forDoc(docId),
-          capabilities: capabilityMaterialStore.forDoc(docId),
-        },
-      }),
+      auth: withExtraHelloCapabilities(
+        createReplayOnlySyncAuth({
+          docId,
+          authMaterialStore: {
+            opAuth: opAuthStore.forDoc(docId),
+            capabilities: capabilityMaterialStore.forDoc(docId),
+          },
+        }),
+        [{ name: SERVER_INSTANCE_CAPABILITY, value: instanceId }]
+      ),
       deriveOpRef: (op: Operation) =>
         deriveOpRefV0(docId, {
           replica: op.meta.id.replica,
@@ -667,6 +722,12 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
       docUpdateBus = await PostgresDocUpdateBus.create({
         postgresUrl,
         channel: pgNotifyChannel,
+        onReceiveDocUpdate: () => {
+          metrics.pgNotifyReceives += 1;
+        },
+        onPublishDocUpdate: () => {
+          metrics.pgNotifyPublishes += 1;
+        },
         onDocUpdate: (docId) => docs.notifyDocUpdate(docId),
       });
     } catch (err) {
@@ -750,6 +811,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
             gitSha: gitSha ?? null,
             gitDirty,
             buildRef: gitSha ? `${gitSha}${gitDirty ? "-dirty" : ""}` : null,
+            instanceId,
             protocolVersion: 0,
             startedAt,
             uptimeMs: Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : null,
@@ -757,6 +819,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
             authMode: describeAuthMode(authToken, authCapabilityIssuerPublicKeys),
             pgNotifyEnabled: Boolean(docUpdateBus),
             pgNotifyChannel: docUpdateBus ? pgNotifyChannel : null,
+            metrics,
             docIdPattern: docIdPattern?.source ?? null,
             allowDocCreate,
             idleCloseMs,

@@ -55,6 +55,7 @@ const DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY = "treecrdt.sync.direct_send_sma
 const DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY = "treecrdt.sync.direct_send_empty_receiver.v1";
 const DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY = "treecrdt.sync.direct_send_empty_receiver.filter.v1";
 const DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH = 5_000;
+export const SERVER_INSTANCE_CAPABILITY_NAME = "treecrdt.sync.server.instance.v1";
 
 type ResponderSession<Op> = {
   filter: Filter;
@@ -413,6 +414,17 @@ export class SyncPeer<Op> {
         }
       });
     });
+  }
+
+  getPeerCapabilities(transport: DuplexTransport<SyncMessage<Op>>): readonly Capability[] {
+    return this.transportPeerCapabilities.get(transport) ?? [];
+  }
+
+  getPeerCapabilityValue(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    name: string
+  ): string | undefined {
+    return this.getPeerCapabilities(transport).find((capability) => capability.name === name)?.value;
   }
 
   notifyLocalUpdate(ops?: readonly Op[]): Promise<void> {

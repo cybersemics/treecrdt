@@ -90,6 +90,7 @@ type SeedServerStateResult = {
 
 type SyncBenchSample = {
   totalMs: number;
+  connectMs: number;
   syncMs: number;
   firstViewReadMs: number;
   backendProfile?: unknown;
@@ -1944,6 +1945,7 @@ async function runBenchOnceDirect(
 
       return {
         totalMs: syncedAt - start + firstViewReadMs,
+        connectMs: 0,
         syncMs: syncedAt - start,
         firstViewReadMs,
         backendProfile: profileBackend ? takeBackendProfilerSnapshot(docId) : undefined,
@@ -2034,7 +2036,9 @@ async function runBenchOnceViaServer(
       directSendThreshold,
       ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
     });
+    const connectStartedAt = performance.now();
     const connection = await runtime.connect(docId);
+    const connectMs = performance.now() - connectStartedAt;
     const transportProfile = profileTransport
       ? createProfiledSyncTransport(connection.transport)
       : undefined;
@@ -2069,6 +2073,7 @@ async function runBenchOnceViaServer(
 
       return {
         totalMs: syncedAt - start + firstViewReadMs,
+        connectMs,
         syncMs: syncedAt - start,
         firstViewReadMs,
         backendProfile: profileBackend ? takeBackendProfilerSnapshot(docId) : undefined,
@@ -2183,6 +2188,7 @@ async function runBenchCase(
   }
 
   const totalSamplesMs = samples.map((sample) => sample.totalMs);
+  const connectSamplesMs = samples.map((sample) => sample.connectMs);
   const syncSamplesMs = samples.map((sample) => sample.syncMs);
   const firstViewReadSamplesMs = samples.map((sample) => sample.firstViewReadMs);
   const backendProfiles = samples
@@ -2247,8 +2253,10 @@ async function runBenchCase(
       warmupIterations: warmupIterations > 0 ? warmupIterations : undefined,
       avgDurationMs: iterations > 1 ? durationMs : undefined,
       samplesMs: totalSamplesMs,
+      connectSamplesMs,
       syncSamplesMs,
       firstViewReadSamplesMs: includeFirstView ? firstViewReadSamplesMs : undefined,
+      connectMedianMs: quantile(connectSamplesMs, 0.5),
       syncMedianMs: quantile(syncSamplesMs, 0.5),
       firstViewReadMedianMs: includeFirstView ? quantile(firstViewReadSamplesMs, 0.5) : undefined,
       p95Ms: quantile(totalSamplesMs, 0.95),

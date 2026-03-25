@@ -144,6 +144,14 @@ For custom `--count` or `--counts` runs, the sync bench now defaults to multiple
 
 Add `--post-seed-wait-ms=N` when you want to probe whether immediate post-upload backlog is skewing the measured first-view path. This is mainly a debugging aid for remote runs.
 
+Result files now split remote sync-server first-view runs into:
+
+- `connectSamplesMs` / `connectMedianMs` for opening the websocket transport
+- `syncSamplesMs` / `syncMedianMs` for the sync exchange after the socket is open
+- `firstViewReadSamplesMs` / `firstViewReadMedianMs` for the immediate local read
+
+That makes it easier to distinguish "proxy / websocket setup got slower" from "the protocol path after connect fell back to a more expensive mode."
+
 ### Upload Benchmarks
 
 Use prime/upload mode when you want an explicit benchmark for seeding a sync-server doc.
@@ -192,6 +200,30 @@ pnpm benchmark:sync:remote -- \
   --direct-send-threshold=64 \
   --max-ops-per-batch=500
 ```
+
+### Route Fanout Bench
+
+Use `benchmark:sync:route-fanout` when you want to isolate the relay path instead of the full browser UI path.
+
+This opens two independent websocket clients to the same sync doc, records the server `instanceId` each one lands on, then measures how long a direct `pushOps(...)` write takes to appear on the subscribed peer.
+
+- `--route=same` retries until both clients land on the same sync task
+- `--route=cross` retries until they land on different sync tasks
+- `--mode=all|children` chooses the subscribed filter on the receiving peer
+
+```sh
+TREECRDT_SYNC_SERVER_URL=ws://host/sync \
+pnpm benchmark:sync:route-fanout -- \
+  --mode=all \
+  --route=cross \
+  --iterations=5
+```
+
+This is the benchmark to use when you want a direct before/after comparison between:
+
+- same-task live fanout
+- cross-task fallback via `pg_notify`
+- doc-affinity routing that keeps same-doc peers on one task
 
 ### Backend Call Profiling
 
