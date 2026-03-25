@@ -11,6 +11,7 @@ import {
 import {
   SyncPeer,
   deriveOpRefV0,
+  SERVER_INSTANCE_CAPABILITY_NAME,
   type Filter,
   type SyncSubscription,
 } from "@treecrdt/sync";
@@ -91,6 +92,11 @@ function formatSyncError(err: unknown): string {
     return "This document contains ops from an author whose capability token is not available here yet. Sync from a peer that has the full author history, or try a fresh doc.";
   }
   return errorMessage(err);
+}
+
+function formatRemoteConnectedDetail(host: string, instanceId?: string): string {
+  if (!instanceId) return `Connected to ${host}`;
+  return `Connected to ${host} (${instanceId})`;
 }
 
 export type PlaygroundSyncApi = {
@@ -1100,6 +1106,18 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           if (disposed || syncConnRef.current !== connections) return;
           if (!remotePeerId) return;
           remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
+          const conn = syncConnRef.current.get(remotePeerId);
+          const instanceId = conn
+            ? sharedPeer.getPeerCapabilityValue(conn.transport, SERVER_INSTANCE_CAPABILITY_NAME)
+            : undefined;
+          setRemoteSyncStatus((prev) =>
+            prev.state === "connected"
+              ? {
+                  state: "connected",
+                  detail: formatRemoteConnectedDetail(remoteUrl.host, instanceId),
+                }
+              : prev
+          );
           publishPeers();
         });
 
