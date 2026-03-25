@@ -210,10 +210,22 @@ This opens two independent websocket clients to the same sync doc, records the s
 - `--route=same` retries until both clients land on the same sync task
 - `--route=cross` retries until they land on different sync tasks
 - `--mode=all|children` chooses the subscribed filter on the receiving peer
+- `--source-sync-server-url` and `--target-sync-server-url` let you force the writer and subscriber onto different endpoints, which is useful for deterministic two-process tests
 
 ```sh
 TREECRDT_SYNC_SERVER_URL=ws://host/sync \
 pnpm benchmark:sync:route-fanout -- \
+  --mode=all \
+  --route=cross \
+  --iterations=5
+```
+
+For a controlled local comparison, run two Postgres sync-server processes against the same database and point the writer/subscriber at different ports:
+
+```sh
+node scripts/bench-sync-route-fanout.mjs \
+  --source-sync-server-url=ws://127.0.0.1:8787/sync \
+  --target-sync-server-url=ws://127.0.0.1:8789/sync \
   --mode=all \
   --route=cross \
   --iterations=5

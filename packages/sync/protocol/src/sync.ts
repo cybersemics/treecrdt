@@ -1407,7 +1407,7 @@ export class SyncPeer<Op> {
     // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
     // can't race and get rejected before `onHello` completes.
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(hello.capabilities)) this.transportPeerCapabilities.set(transport, hello.capabilities);
+    this.transportPeerCapabilities.set(transport, hello.capabilities);
 
     let ackCapabilities: HelloAck["capabilities"] = [];
     try {
@@ -1596,7 +1596,7 @@ export class SyncPeer<Op> {
 
     const hasAuthCapability = ack.capabilities.some(isAuthCapability);
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(ack.capabilities)) this.transportPeerCapabilities.set(transport, ack.capabilities);
+    this.transportPeerCapabilities.set(transport, ack.capabilities);
     const waiters = this.transportHelloAckWaiters.get(transport);
     if (waiters && waiters.size > 0) {
       this.transportHelloAckWaiters.delete(transport);

@@ -1,25 +1,28 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 
-import Database from "better-sqlite3";
-
-import { createTreecrdtClient, loadTreecrdtExtension } from "@treecrdt/sqlite-node";
-import { createTreecrdtSyncBackendFromClient } from "@treecrdt/sync-sqlite";
+import {
+  createTreecrdtClient,
+  loadTreecrdtExtension,
+} from "../packages/treecrdt-sqlite-node/dist/index.js";
+import { createTreecrdtSyncBackendFromClient } from "../packages/sync/material/sqlite/dist/index.js";
 import {
   SyncPeer,
   deriveOpRefV0,
   SERVER_INSTANCE_CAPABILITY_NAME,
-} from "@treecrdt/sync";
-import { hexToBytes } from "@treecrdt/interface/ids";
-import { createBrowserWebSocketTransport } from "@treecrdt/sync/browser";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { wrapDuplexTransportWithCodec } from "@treecrdt/sync/transport";
+} from "../packages/sync/protocol/dist/index.js";
+import { createBrowserWebSocketTransport } from "../packages/sync/protocol/dist/browser.js";
+import { treecrdtSyncV0ProtobufCodec } from "../packages/sync/protocol/dist/protobuf.js";
+import { wrapDuplexTransportWithCodec } from "../packages/sync/protocol/dist/transport.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+const sqliteNodeRequire = createRequire(path.join(repoRoot, "packages", "treecrdt-sqlite-node", "package.json"));
+const BetterSqlite3 = sqliteNodeRequire("better-sqlite3");
 const ROOT_ID = "00000000000000000000000000000000";
 const ROOT_BYTES = hexToBytes(ROOT_ID);
 const CODEWORDS_PER_MESSAGE = 512;
@@ -27,12 +30,27 @@ const MAX_CODEWORDS = 200_000;
 const MAX_OPS_PER_BATCH = 500;
 const ROUTE_WAIT_TIMEOUT_MS = 10_000;
 
+function hexToBytes(hex) {
+  if (typeof hex !== "string" || hex.length % 2 !== 0) {
+    throw new Error(`invalid hex string: ${hex}`);
+  }
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i += 1) {
+    const byte = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    if (!Number.isFinite(byte)) throw new Error(`invalid hex string: ${hex}`);
+    out[i] = byte;
+  }
+  return out;
+}
+
 function usage() {
   console.log(`Usage:
   node scripts/bench-sync-route-fanout.mjs [options]
 
 Options:
   --sync-server-url=ws://host/sync     Sync server websocket URL (required; default: env TREECRDT_SYNC_SERVER_URL)
+  --source-sync-server-url=ws://host/sync  Optional source/writer websocket URL override
+  --target-sync-server-url=ws://host/sync  Optional target/subscriber websocket URL override
   --mode=all|children                  Filter to subscribe on the target (default: all)
   --route=any|same|cross               Desired routing classification per sample (default: any)
   --iterations=N                       Measured samples (default: 5)
@@ -104,8 +122,13 @@ function routeLabel(sourceInstanceId, targetInstanceId) {
   return "unknown";
 }
 
-function defaultOutPath({ syncServerUrl, mode, route }) {
-  const safeHost = new URL(syncServerUrl).host.replace(/[^a-z0-9.-]+/gi, "_");
+function safeEndpointLabel(rawUrl) {
+  const normalized = rawUrl.trim().length === 0 ? "unknown" : normalizeSyncServerUrl(rawUrl, "bench").host;
+  return normalized.replace(/[^a-z0-9.-]+/gi, "_");
+}
+
+function defaultOutPath({ sourceSyncServerUrl, targetSyncServerUrl, mode, route }) {
+  const safeHost = `${safeEndpointLabel(sourceSyncServerUrl)}--${safeEndpointLabel(targetSyncServerUrl)}`;
   return path.join(
     repoRoot,
     "benchmarks",
@@ -185,7 +208,7 @@ async function openConnection(baseUrl, docId) {
 }
 
 async function createMemoryClient(docId) {
-  const db = new Database(":memory:");
+  const db = new BetterSqlite3(":memory:");
   loadTreecrdtExtension(db);
   const client = await createTreecrdtClient(db, { docId });
   const backend = createTreecrdtSyncBackendFromClient(client, docId, {
@@ -210,7 +233,7 @@ async function waitForRootChildren(client, expectedCount, timeoutMs) {
   throw new Error(`timed out waiting for ${expectedCount} root children (last=${lastCount})`);
 }
 
-async function setupRouteSample(syncServerUrl, mode, sampleLabel) {
+async function setupRouteSample(sourceSyncServerUrl, targetSyncServerUrl, mode, sampleLabel) {
   const docId = `route-fanout-${mode}-${sampleLabel}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const source = await createMemoryClient(docId);
   const target = await createMemoryClient(docId);
@@ -225,8 +248,8 @@ async function setupRouteSample(syncServerUrl, mode, sampleLabel) {
     deriveOpRef: (op) => deriveOpRefV0(docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
 
-  const sourceConn = await openConnection(syncServerUrl, docId);
-  const targetConn = await openConnection(syncServerUrl, docId);
+  const sourceConn = await openConnection(sourceSyncServerUrl, docId);
+  const targetConn = await openConnection(targetSyncServerUrl, docId);
   const detachSource = sourcePeer.attach(sourceConn.transport);
   const detachTarget = targetPeer.attach(targetConn.transport);
   const filter = syncFilter(mode);
@@ -313,13 +336,20 @@ async function main() {
   }
 
   const syncServerUrl = getArg("sync-server-url") ?? process.env.TREECRDT_SYNC_SERVER_URL ?? "";
-  if (!syncServerUrl) throw new Error("missing --sync-server-url or TREECRDT_SYNC_SERVER_URL");
+  const sourceSyncServerUrl = getArg("source-sync-server-url") ?? syncServerUrl;
+  const targetSyncServerUrl = getArg("target-sync-server-url") ?? syncServerUrl;
+  if (!sourceSyncServerUrl) {
+    throw new Error("missing --source-sync-server-url, --sync-server-url, or TREECRDT_SYNC_SERVER_URL");
+  }
+  if (!targetSyncServerUrl) {
+    throw new Error("missing --target-sync-server-url, --sync-server-url, or TREECRDT_SYNC_SERVER_URL");
+  }
   const mode = getArg("mode") ?? "all";
   const route = getArg("route") ?? "any";
   const iterations = parseIntArg("iterations", 5);
   const warmup = parseIntArg("warmup", 1);
   const maxRouteAttempts = parseIntArg("max-route-attempts", 20);
-  const outPath = getArg("out") ?? defaultOutPath({ syncServerUrl, mode, route });
+  const outPath = getArg("out") ?? defaultOutPath({ sourceSyncServerUrl, targetSyncServerUrl, mode, route });
 
   if (!["all", "children"].includes(mode)) throw new Error(`--mode must be all or children, got ${mode}`);
   if (!["any", "same", "cross"].includes(route)) throw new Error(`--route must be any, same, or cross, got ${route}`);
@@ -336,7 +366,7 @@ async function main() {
     let lastRouteError = null;
 
     for (let attempt = 1; attempt <= maxRouteAttempts; attempt += 1) {
-      const sample = await setupRouteSample(syncServerUrl, mode, `${i}-${attempt}`);
+      const sample = await setupRouteSample(sourceSyncServerUrl, targetSyncServerUrl, mode, `${i}-${attempt}`);
       try {
         if (route !== "any" && sample.classification !== route) {
           lastRouteError = new Error(
@@ -394,6 +424,8 @@ async function main() {
     source: "sync-route-fanout",
     measuredAt: new Date().toISOString(),
     syncServerUrl,
+    sourceSyncServerUrl,
+    targetSyncServerUrl,
     mode,
     route,
     warmup,
