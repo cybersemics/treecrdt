@@ -1,17 +1,26 @@
 import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import http from "node:http";
+import type { Operation } from "@treecrdt/interface";
+import { deriveOpRefV0 } from "@treecrdt/sync";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import { startWebSocketSyncServer } from "../../../packages/sync/server/core/dist/index.js";
 
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-type MockSyncServer = {
+type TestSyncServer = {
   host: string;
   wsUrl: string;
   close: () => Promise<void>;
 };
 
-async function startMockSyncServer(): Promise<MockSyncServer> {
+type InMemorySyncServer = TestSyncServer & {
+  waitForDocOps: (docId: string, minCount: number, timeoutMs?: number) => Promise<void>;
+  waitForServedOps: (docId: string, minCount: number, timeoutMs?: number) => Promise<void>;
+};
+
+async function startMockSyncServer(): Promise<TestSyncServer> {
   const sockets = new Set<import("node:stream").Duplex>();
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -77,6 +86,104 @@ async function startMockSyncServer(): Promise<MockSyncServer> {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
+  };
+}
+
+type InMemoryDocState = {
+  opsByRef: Map<string, { opRef: Uint8Array; op: Operation }>;
+  maxLamport: number;
+  servedOps: number;
+  openCount: number;
+};
+
+function opRefHex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("hex");
+}
+
+function opRefFor(docId: string, op: Operation): Uint8Array {
+  return deriveOpRefV0(docId, { replica: op.meta.id.replica, counter: op.meta.id.counter });
+}
+
+async function startInMemorySyncServer(): Promise<InMemorySyncServer> {
+  const docs = new Map<string, InMemoryDocState>();
+  const server = await startWebSocketSyncServer<Operation>({
+    host: "127.0.0.1",
+    port: 0,
+    codec: treecrdtSyncV0ProtobufCodec,
+    docs: {
+      async open(docId) {
+        let state = docs.get(docId);
+        if (!state) {
+          state = {
+            opsByRef: new Map(),
+            maxLamport: 0,
+            servedOps: 0,
+            openCount: 0,
+          };
+          docs.set(docId, state);
+        }
+        state.openCount += 1;
+
+        return {
+          backend: {
+            docId,
+            maxLamport: async () => BigInt(state.maxLamport),
+            listOpRefs: async () => Array.from(state.opsByRef.values(), (entry) => entry.opRef),
+            getOpsByOpRefs: async (opRefs) => {
+              const found = opRefs
+                .map((opRef) => state!.opsByRef.get(opRefHex(opRef))?.op)
+                .filter((op): op is Operation => Boolean(op));
+              state!.servedOps += found.length;
+              return found;
+            },
+            applyOps: async (ops) => {
+              for (const op of ops) {
+                const opRef = opRefFor(docId, op);
+                const key = opRefHex(opRef);
+                if (!state!.opsByRef.has(key)) {
+                  state!.opsByRef.set(key, { opRef, op });
+                }
+                state!.maxLamport = Math.max(state!.maxLamport, op.meta.lamport);
+              }
+            },
+          },
+          release: () => {
+            state!.openCount = Math.max(0, state!.openCount - 1);
+            if (state!.openCount === 0 && state!.opsByRef.size === 0) {
+              docs.delete(docId);
+            }
+          },
+        };
+      },
+    },
+  });
+
+  return {
+    host: `${server.host}:${server.port}`,
+    wsUrl: `ws://${server.host}:${server.port}/sync`,
+    waitForDocOps: async (docId, minCount, timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const count = docs.get(docId)?.opsByRef.size ?? 0;
+        if (count >= minCount) return;
+        if (Date.now() >= deadline) {
+          throw new Error(`timed out waiting for ${minCount} ops in ${docId}; saw ${count}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+    waitForServedOps: async (docId, minCount, timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const count = docs.get(docId)?.servedOps ?? 0;
+        if (count >= minCount) return;
+        if (Date.now() >= deadline) {
+          throw new Error(`timed out waiting for ${minCount} served ops in ${docId}; saw ${count}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+    close: server.close,
   };
 }
 
@@ -323,6 +430,28 @@ async function clickSyncAllowRevokedCapabilityTokenError(page: import("@playwrig
   }
 }
 
+test("playground mints a fresh default doc", async ({ browser }) => {
+  const freshProfile = `pw-doc-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const freshContext = await browser.newContext();
+  const freshPage = await freshContext.newPage();
+
+  try {
+    await waitForReady(freshPage, `/?profile=${encodeURIComponent(freshProfile)}`);
+
+    const freshDoc = new URL(freshPage.url()).searchParams.get("doc");
+    expect(freshDoc).toMatch(/^treecrdt-playground-[0-9a-f]{16}$/);
+    expect(freshDoc).not.toBe("treecrdt-playground");
+
+    const storedFreshDoc = await freshPage.evaluate((profile) => {
+      return window.localStorage.getItem(`treecrdt-playground-profile:${profile}:treecrdt-playground-doc`);
+    }, freshProfile);
+    expect(storedFreshDoc).toBe(freshDoc);
+  } finally {
+    await freshContext.close();
+  }
+
+});
+
 test("insert and delete node", async ({ page }) => {
   test.setTimeout(90_000);
 
@@ -374,6 +503,29 @@ test("switching remote sync server URL reconnects to the new endpoint", async ({
   } finally {
     await Promise.all([serverA.close(), serverB.close()]);
   }
+});
+
+test("switching to remote transport does not auto-fill a default sync URL", async ({ page }) => {
+  const doc = uniqueDocId("pw-playground-sync-no-default");
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+
+  await page.getByRole("button", { name: /Connections/ }).click();
+  const remoteInput = page.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+  await expect(remoteInput).toHaveValue("");
+
+  await page.getByRole("button", { name: "Remote server", exact: true }).click();
+  await expect(remoteInput).toHaveValue("");
+  await expect(page.getByText("Missing URL")).toBeVisible({ timeout: 30_000 });
+
+  await expect
+    .poll(async () => {
+      const url = new URL(page.url());
+      return {
+        sync: url.searchParams.get("sync"),
+        transport: url.searchParams.get("transport"),
+      };
+    })
+    .toEqual({ sync: null, transport: "remote" });
 });
 
 test("remote sync settings persist into a shareable URL", async ({ browser, page }) => {
@@ -465,6 +617,151 @@ test("invite link preserves auth material and remote sync settings", async ({ br
   } finally {
     await context.close();
     await server.close();
+  }
+});
+
+test("remote sync server transfers ops between isolated pages", async ({ browser }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-remote-sync");
+  const server = await startInMemorySyncServer();
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
+  const remotePath = `/?doc=${encodeURIComponent(doc)}&auth=0&transport=remote&sync=${encodeURIComponent(server.wsUrl)}`;
+
+  try {
+    await Promise.all([waitForReady(pageA, remotePath), waitForReady(pageB, remotePath)]);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    await pageA.getByRole("button", { name: /Connections/ }).click();
+    await expect(pageA.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+
+    await pageB.getByRole("button", { name: /Connections/ }).click();
+    await expect(pageB.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });
+
+    const nodeLabel = "remote-server-child";
+    await pageA.getByPlaceholder("Stored as payload bytes").fill(nodeLabel);
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, nodeLabel)).toBeVisible({ timeout: 30_000 });
+
+    const syncErrorA = pageA.getByTestId("sync-error");
+    await pageA.getByRole("button", { name: "Sync", exact: true }).click();
+    await Promise.race([
+      server.waitForDocOps(doc, 1),
+      (async () => {
+        await syncErrorA.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await syncErrorA.textContent()}`);
+      })(),
+    ]);
+
+    const syncErrorB = pageB.getByTestId("sync-error");
+    await pageB.getByRole("button", { name: "Sync", exact: true }).click();
+    await Promise.race([
+      server.waitForServedOps(doc, 1),
+      (async () => {
+        await syncErrorB.waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (B): ${await syncErrorB.textContent()}`);
+      })(),
+    ]);
+
+    await pageB.getByTitle("Toggle operations panel").click();
+    await expect(pageB.getByText(/Head lamport:\s*[1-9]/)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await Promise.all([contextA.close(), contextB.close(), server.close()]);
+  }
+});
+
+test("remote sync server handles 1000-node composer fanout between same-device pages", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-remote-fanout");
+  const server = await startInMemorySyncServer();
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const remotePath = `/?doc=${encodeURIComponent(doc)}&auth=0&transport=remote&sync=${encodeURIComponent(server.wsUrl)}`;
+
+  try {
+    await Promise.all([waitForReady(pageA, remotePath), waitForReady(pageB, remotePath)]);
+
+    await pageA.getByPlaceholder("Stored as payload bytes").fill("fanout");
+    await pageA.locator('label:has-text("Node count") input[type="number"]').fill("1000");
+    await pageA.locator('label:has-text("Fanout") select').selectOption("10");
+
+    await pageA.getByRole("button", { name: "Add nodes", exact: true }).click();
+    await expect(pageA.getByText(/1000 nodes/)).toBeVisible({ timeout: 120_000 });
+
+    await clickSync(pageA, "A");
+    await clickSync(pageB, "B");
+
+    await expect(pageB.getByText(/1000 nodes/)).toBeVisible({ timeout: 120_000 });
+    await pageB.getByTitle("Toggle operations panel").click();
+    await expect(pageB.getByText(/Head lamport:\s*1000/)).toBeVisible({ timeout: 120_000 });
+    await pageB.getByRole("button", { name: "Expand", exact: true }).click();
+    await expect(pageB.getByRole("button", { name: "fanout 1", exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(pageB.getByRole("button", { name: "fanout 10", exact: true })).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await Promise.all([context.close(), server.close()]);
+  }
+});
+
+test("remote live sync all pushes new ops without a manual sync click", async ({ browser }) => {
+  test.setTimeout(180_000);
+
+  const doc = uniqueDocId("pw-playground-remote-live-all");
+  const server = await startInMemorySyncServer();
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const remotePath = `/?doc=${encodeURIComponent(doc)}&auth=0&transport=remote&sync=${encodeURIComponent(server.wsUrl)}`;
+
+  try {
+    await Promise.all([waitForReady(pageA, remotePath), waitForReady(pageB, remotePath)]);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    const liveA = pageA.getByRole("button", { name: "Live sync all" });
+    const liveB = pageB.getByRole("button", { name: "Live sync all" });
+    await liveA.click();
+    await liveB.click();
+    await expect(liveA).toHaveAttribute("aria-pressed", "true");
+    await expect(liveB).toHaveAttribute("aria-pressed", "true");
+    await expect(liveA).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
+    await expect(liveB).toHaveAttribute("aria-busy", "false", { timeout: 30_000 });
+
+    const nodeLabel = `remote-live-all-${Date.now()}`;
+    await pageA.getByPlaceholder("Stored as payload bytes").fill(nodeLabel);
+    await treeRowByNodeId(pageA, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageA, nodeLabel)).toBeVisible({ timeout: 30_000 });
+    await Promise.race([
+      server.waitForDocOps(doc, 1),
+      (async () => {
+        await pageA.getByTestId("sync-error").waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (A): ${await pageA.getByTestId("sync-error").textContent()}`);
+      })(),
+    ]);
+    await Promise.race([
+      server.waitForServedOps(doc, 1),
+      (async () => {
+        await pageB.getByTestId("sync-error").waitFor({ state: "visible", timeout: 30_000 });
+        throw new Error(`sync error (B): ${await pageB.getByTestId("sync-error").textContent()}`);
+      })(),
+    ]);
+    await expect(treeRowByLabel(pageB, nodeLabel)).toBeVisible({ timeout: 60_000 });
+
+    await expect(pageA.getByTestId("sync-error")).toBeHidden();
+    await expect(pageB.getByTestId("sync-error")).toBeHidden();
+  } finally {
+    await Promise.all([context.close(), server.close()]);
   }
 });
 
@@ -1308,6 +1605,70 @@ test("isolated peer tab uses separate storage namespace and requires invite", as
     if (!pushed) throw new Error("failed to sync public node");
 
     await expect(treeRowByNodeId(pageB, secretNodeId)).toHaveCount(0, { timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("new device can sync historical authors learned by the inviter", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-historical-authors");
+  const profileB = `pw-hist-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const profileC = `pw-hist-c-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const pageC = await context.newPage();
+
+  try {
+    await Promise.all([
+      waitForReady(pageA, `/?doc=${encodeURIComponent(doc)}`),
+      waitForReady(pageB, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileB)}&join=1`),
+      waitForReady(pageC, `/?doc=${encodeURIComponent(doc)}&profile=${encodeURIComponent(profileC)}&join=1`),
+    ]);
+
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    const inviteToB = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageB, inviteToB);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+
+    const historicalLabel = `from-b-before-reload-${Date.now()}`;
+    await pageB.getByPlaceholder("Stored as payload bytes").fill(historicalLabel);
+    await treeRowByNodeId(pageB, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+    await expect(treeRowByLabel(pageB, historicalLabel)).toBeVisible({ timeout: 30_000 });
+
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B");
+    await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+    await expect(treeRowByLabel(pageA, historicalLabel)).toBeVisible({ timeout: 30_000 });
+
+    await pageB.close();
+
+    const inviteToC = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageC, inviteToC);
+
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageC.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await clickSyncWithRetryOnTransientAuthError(pageA, "A");
+      await clickSyncWithRetryOnTransientAuthError(pageC, "C");
+      if (await treeRowByLabel(pageC, historicalLabel).count()) break;
+      await pageC.waitForTimeout(300);
+    }
+
+    await expect(treeRowByLabel(pageC, historicalLabel)).toBeVisible({ timeout: 30_000 });
   } finally {
     await context.close();
   }

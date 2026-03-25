@@ -8,7 +8,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "pnpm -C ../../packages/treecrdt-auth run build && pnpm -C ../../packages/treecrdt-wa-sqlite-vendor run build && pnpm -C ../../packages/treecrdt-wa-sqlite run build:ts && playwright test",
+    "test:e2e": "pnpm -C ../../packages/sync/protocol run build && pnpm -C ../../packages/sync/server/core run build && pnpm -C ../../packages/treecrdt-auth run build && pnpm -C ../../packages/treecrdt-wa-sqlite-vendor run build && pnpm -C ../../packages/treecrdt-wa-sqlite run build:ts && playwright test",
     "deploy": "pnpm run build && gh-pages -d dist"
   },
   "dependencies": {
@@ -17,6 +17,7 @@
     "@treecrdt/crypto": "workspace:*",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync": "workspace:*",
+    "@treecrdt/sync-sqlite": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
