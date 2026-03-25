@@ -8,6 +8,7 @@ import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
 
 import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
 import { SyncPeer } from "../dist/sync.js";
+import { AUTH_CAPABILITY_NAME } from "../dist/auth-capabilities.js";
 import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
 import { wrapDuplexTransportWithCodec } from "../dist/transport/index.js";
 import type { DuplexTransport } from "../dist/transport/index.js";
@@ -534,6 +535,90 @@ test("pushOps refreshes replay capabilities before uploading newly authorized op
   } finally {
     detachA();
     detachB();
+  }
+});
+
+test("fast-forward relay can provisional-push subscribed peers before server apply completes", async () => {
+  const docId = "doc-fast-forward-relay";
+  const root = "0".repeat(32);
+  const sourceBackend = new MemoryBackend(docId);
+  const relayBackend = new DelayedApplyBackend(docId, 120);
+  const targetBackend = new MemoryBackend(docId);
+  const op = makeOp(replicas.a, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(21),
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  const [sourceWire, relaySourceWire] = createMacrotaskDuplex<SyncMessage<Operation>>();
+  const [targetWire, relayTargetWire] = createMacrotaskDuplex<SyncMessage<Operation>>();
+  const sourcePeer = new SyncPeer(sourceBackend, {
+    maxOpsPerBatch: 1,
+    deriveOpRef: (nextOp) =>
+      opRefFor(docId, bytesToHex(nextOp.meta.id.replica), nextOp.meta.id.counter),
+    auth: {
+      helloCapabilities: async () => [{ name: AUTH_CAPABILITY_NAME, value: "source-token" }],
+      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array([1, 2, 3]) })),
+    },
+  });
+  const relayPeer = new SyncPeer(relayBackend, {
+    maxOpsPerBatch: 1,
+    fastForwardRelaySubscriptions: true,
+    deriveOpRef: (nextOp) =>
+      opRefFor(docId, bytesToHex(nextOp.meta.id.replica), nextOp.meta.id.counter),
+    auth: {
+      helloCapabilities: async () => [{ name: AUTH_CAPABILITY_NAME, value: "relay-token" }],
+      onHello: async () => [{ name: AUTH_CAPABILITY_NAME, value: "relay-token" }],
+      verifyOps: async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 120));
+      },
+    },
+  });
+  const targetPeer = new SyncPeer(targetBackend, {
+    maxOpsPerBatch: 1,
+    deriveOpRef: (nextOp) =>
+      opRefFor(docId, bytesToHex(nextOp.meta.id.replica), nextOp.meta.id.counter),
+    auth: {
+      helloCapabilities: async () => [{ name: AUTH_CAPABILITY_NAME, value: "target-token" }],
+      onHello: async () => [{ name: AUTH_CAPABILITY_NAME, value: "target-token" }],
+      verifyOps: async (_ops, auth) => {
+        expect(auth?.length).toBe(1);
+        expect(auth?.[0]?.sig).toEqual(new Uint8Array([1, 2, 3]));
+      },
+    },
+  });
+
+  const detachSource = sourcePeer.attach(sourceWire);
+  const detachRelaySource = relayPeer.attach(relaySourceWire);
+  const detachTarget = targetPeer.attach(targetWire);
+  const detachRelayTarget = relayPeer.attach(relayTargetWire);
+
+  try {
+    const subscription = targetPeer.subscribe(targetWire, { all: {} }, { immediate: false });
+    await subscription.ready;
+
+    const startedAt = performance.now();
+    await sourcePeer.pushOps(sourceWire, [op]);
+    await waitUntil(() => targetBackend.hasOp(replicaHex.a, 1), {
+      timeoutMs: 140,
+      message: "expected target to receive provisional relay push before server apply completes",
+    });
+    expect(performance.now() - startedAt).toBeLessThan(140);
+    expect(relayBackend.hasOp(replicaHex.a, 1)).toBe(false);
+
+    await waitUntil(() => relayBackend.hasOp(replicaHex.a, 1), {
+      timeoutMs: 500,
+      message: "expected relay backend to apply op eventually",
+    });
+
+    subscription.stop();
+    await subscription.done;
+  } finally {
+    detachSource();
+    detachRelaySource();
+    detachTarget();
+    detachRelayTarget();
   }
 });
 

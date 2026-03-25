@@ -9,6 +9,7 @@ import type {
   Filter,
   Hello,
   HelloAck,
+  OpAuth,
   OpRef,
   OpsBatch,
   PendingOp,
@@ -83,6 +84,7 @@ export type SyncPeerOptions<Op = unknown> = {
   maxOpsPerBatch?: number;
   maxHelloFilters?: number;
   directSendThreshold?: number;
+  fastForwardRelaySubscriptions?: boolean;
   requireAuthForFilters?: boolean;
   auth?: SyncAuth<Op>;
   deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
@@ -248,6 +250,10 @@ type PendingPushOp<Op> = {
   op: Op;
 };
 
+type PendingPushAuthedOp<Op> = PendingPushOp<Op> & {
+  auth?: OpAuth;
+};
+
 type ResponderChildrenState = {
   parentHex: string;
   visibleNodeHexes: Set<string>;
@@ -353,6 +359,7 @@ export class SyncPeer<Op> {
   private readonly maxOpsPerBatch: number;
   private readonly maxHelloFilters: number;
   private readonly directSendThreshold: number;
+  private readonly fastForwardRelaySubscriptions: boolean;
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
   private readonly deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
@@ -393,6 +400,7 @@ export class SyncPeer<Op> {
     this.auth = opts.auth;
     this.maxHelloFilters = opts.maxHelloFilters ?? 8;
     this.directSendThreshold = opts.directSendThreshold ?? 0;
+    this.fastForwardRelaySubscriptions = opts.fastForwardRelaySubscriptions ?? false;
     if (!Number.isInteger(this.directSendThreshold) || this.directSendThreshold < 0) {
       throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
     }
@@ -873,6 +881,145 @@ export class SyncPeer<Op> {
       this.recordSentEntries(sub, sentEntries);
       await yieldToMacrotask();
     }
+  }
+
+  private async pushSubscriptionProvisionalEntries(
+    sub: ResponderSubscription<Op>,
+    entries: readonly PendingPushAuthedOp<Op>[]
+  ): Promise<PendingPushOp<Op>[]> {
+    if (entries.length === 0) return [];
+
+    // Provisional relay still needs current replay/auth capability material so
+    // receivers can resolve proof_ref on newly seen authors.
+    await this.refreshHelloCapabilities(sub.transport);
+
+    const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
+    const filter = sub.filter;
+    const maxOpsPerBatch = this.maxOpsPerBatch;
+    const forwarded: PendingPushOp<Op>[] = [];
+
+    for (let start = 0; start < entries.length; start += maxOpsPerBatch) {
+      const chunk = entries.slice(start, start + maxOpsPerBatch);
+      let refs = chunk.map((entry) => entry.opRef);
+      let ops = chunk.map((entry) => entry.op);
+      let auth = chunk.map((entry) => entry.auth);
+      let sentEntries = chunk.slice();
+
+      if (this.auth?.filterOutgoingOps && ops.length > 0) {
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: "subscribe",
+          filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+        }
+
+        const allowedRefs: OpRef[] = [];
+        const allowedOps: Op[] = [];
+        const allowedAuth: Array<OpAuth | undefined> = [];
+        const allowedEntries: PendingPushAuthedOp<Op>[] = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          if (allowed[i] === true) {
+            allowedRefs.push(refs[i]!);
+            allowedOps.push(ops[i]!);
+            allowedAuth.push(auth[i]);
+            allowedEntries.push(chunk[i]!);
+          }
+        }
+
+        if (allowedOps.length === 0) {
+          await yieldToMacrotask();
+          continue;
+        }
+
+        refs = allowedRefs;
+        ops = allowedOps;
+        auth = allowedAuth;
+        sentEntries = allowedEntries;
+      }
+
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const outgoingAuth = shouldAttachAuth ? auth : undefined;
+      if (
+        outgoingAuth &&
+        outgoingAuth.some((entry) => entry == null)
+      ) {
+        throw new Error("provisional relay requires auth for every forwarded op");
+      }
+
+      const done = start + maxOpsPerBatch >= entries.length;
+      await sub.transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: "opsBatch",
+          value: {
+            filterId: sub.subscriptionId,
+            ops,
+            ...(outgoingAuth ? { auth: outgoingAuth as OpAuth[] } : {}),
+            done,
+          },
+        },
+      });
+
+      forwarded.push(
+        ...sentEntries.map((entry) => ({
+          opRef: entry.opRef,
+          opRefHex: entry.opRefHex,
+          op: entry.op,
+        }))
+      );
+      await yieldToMacrotask();
+    }
+
+    return forwarded;
+  }
+
+  private async fastForwardRelayBatch(
+    originTransport: DuplexTransport<SyncMessage<Op>>,
+    filterId: string,
+    ops: readonly Op[],
+    auth: readonly OpAuth[]
+  ): Promise<Array<{ sub: ResponderSubscription<Op>; entries: PendingPushOp<Op>[] }>> {
+    if (
+      !this.fastForwardRelaySubscriptions ||
+      this.responderSubscriptions.size === 0 ||
+      ops.length === 0 ||
+      !this.deriveOpRef
+    ) {
+      return [];
+    }
+
+    const deltaOps: PendingPushAuthedOp<Op>[] = ops.map((op, i) => {
+      const opRef = this.deriveOpRef!(op, { docId: this.backend.docId });
+      return {
+        opRef,
+        opRefHex: bytesToHex(opRef),
+        op,
+        auth: auth[i],
+      };
+    });
+    this.rememberPayloadKnowledgeEntries(deltaOps);
+
+    const forwarded: Array<{ sub: ResponderSubscription<Op>; entries: PendingPushOp<Op>[] }> = [];
+    for (const sub of this.responderSubscriptions.values()) {
+      if (sub.transport === originTransport || sub.subscriptionId === filterId) continue;
+
+      let matched: PendingPushAuthedOp<Op>[] | undefined;
+      if ("all" in sub.filter) {
+        matched = deltaOps.filter((entry) => !sub.sentOpRefs.has(entry.opRefHex));
+      } else if (isChildrenFilter(sub.filter)) {
+        matched = this.matchChildrenSubscriptionDelta(sub, deltaOps);
+      }
+      if (!matched || matched.length === 0) continue;
+
+      const sentEntries = await this.pushSubscriptionProvisionalEntries(sub, matched);
+      if (sentEntries.length > 0) forwarded.push({ sub, entries: sentEntries });
+    }
+
+    return forwarded;
   }
 
   async syncOnce(
@@ -1967,6 +2114,10 @@ export class SyncPeer<Op> {
     if (auth && auth.length !== batch.ops.length) {
       throw new Error(`OpsBatch.auth length ${auth.length} does not match ops length ${batch.ops.length}`);
     }
+    const provisionalForwards =
+      purpose === "reconcile" && auth
+        ? await this.fastForwardRelayBatch(transport, batch.filterId, batch.ops, auth)
+        : [];
 
     const verifyRes = await this.auth?.verifyOps?.(batch.ops, auth, {
       docId: this.backend.docId,
@@ -2014,6 +2165,17 @@ export class SyncPeer<Op> {
     }
 
     await this.backend.applyOps(allowedOps);
+    if (allowedOps.length > 0 && this.deriveOpRef && provisionalForwards.length > 0) {
+      const allowedOpRefHexes = new Set(
+        allowedOps.map((op) => bytesToHex(this.deriveOpRef!(op, { docId: this.backend.docId })))
+      );
+      for (const forwarded of provisionalForwards) {
+        const committed = forwarded.entries.filter((entry) => allowedOpRefHexes.has(entry.opRefHex));
+        if (committed.length === 0) continue;
+        for (const entry of committed) forwarded.sub.sentOpRefs.add(entry.opRefHex);
+        this.recordSentEntries(forwarded.sub, committed);
+      }
+    }
     if (allowedOps.length > 0) void this.notifyLocalUpdate(allowedOps);
     await this.reprocessPendingOps();
 

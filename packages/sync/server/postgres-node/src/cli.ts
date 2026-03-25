@@ -78,6 +78,10 @@ async function main() {
   const postgresUrl = process.env.TREECRDT_POSTGRES_URL?.trim() || buildPostgresUrlFromParts();
   const maxCodewords = Number(process.env.TREECRDT_SYNC_MAX_CODEWORDS ?? "0");
   const directSendThreshold = Number(process.env.TREECRDT_SYNC_DIRECT_SEND_THRESHOLD ?? "0");
+  const fastForwardRelaySubscriptions = parseBooleanEnv(
+    "TREECRDT_SYNC_FAST_FORWARD_RELAY_SUBSCRIPTIONS",
+    false
+  );
   const idleCloseMs = Number(process.env.TREECRDT_IDLE_CLOSE_MS ?? "30000");
   const maxPayloadBytes = Number(process.env.TREECRDT_MAX_PAYLOAD_BYTES ?? String(10 * 1024 * 1024));
   const authToken = process.env.TREECRDT_SYNC_AUTH_TOKEN?.trim() || undefined;
@@ -129,6 +133,7 @@ async function main() {
     postgresUrl,
     maxCodewords: maxCodewords > 0 ? maxCodewords : undefined,
     directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
+    fastForwardRelaySubscriptions,
     idleCloseMs,
     maxPayloadBytes,
     backendModule,
@@ -155,6 +160,7 @@ async function main() {
   console.log(`- backend module: ${handle.backendModule}`);
   if (packageVersion) console.log(`- version: ${packageVersion}`);
   if (gitSha) console.log(`- git sha: ${gitSha}${gitDirty ? " (dirty)" : ""}`);
+  if (fastForwardRelaySubscriptions) console.log("- relay: provisional subscription fast-forward enabled");
   if (authCapabilityIssuerPublicKeys.length > 0) {
     console.log(`- auth: capability CWT enabled (${authCapabilityIssuerPublicKeys.length} issuer keys)`);
   } else if (authToken) {

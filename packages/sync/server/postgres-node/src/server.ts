@@ -54,6 +54,7 @@ export type SyncServerOptions = {
   backendModule?: string;
   maxCodewords?: number;
   directSendThreshold?: number;
+  fastForwardRelaySubscriptions?: boolean;
   idleCloseMs?: number;
   maxPayloadBytes?: number;
   authToken?: string;
@@ -632,6 +633,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     opts.maxCodewords == null ? undefined : Number(opts.maxCodewords);
   const directSendThreshold =
     opts.directSendThreshold == null ? undefined : Number(opts.directSendThreshold);
+  const fastForwardRelaySubscriptions = opts.fastForwardRelaySubscriptions ?? false;
   const idleCloseMs = Number(opts.idleCloseMs ?? 30_000);
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
   const authToken =
@@ -715,6 +717,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
       requireAuthForFilters: false,
       ...(maxCodewords != null ? { maxCodewords } : {}),
       ...(directSendThreshold != null ? { directSendThreshold } : {}),
+      ...(fastForwardRelaySubscriptions ? { fastForwardRelaySubscriptions } : {}),
     }),
   });
   if (enablePgNotify || !allowDocCreate) {
