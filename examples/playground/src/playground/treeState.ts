@@ -68,6 +68,23 @@ export function nodesAffectedByPayloadOps(ops: Operation[]): Set<string> {
   return out;
 }
 
+export function applyAppendedChildren(state: TreeState, parentId: string, childIds: Iterable<string>): TreeState {
+  const existingChildren = state.childrenByParent[parentId];
+  if (!existingChildren) return state;
+
+  const nextChildren = [...existingChildren];
+  const seen = new Set(existingChildren);
+  let changed = false;
+  for (const childId of childIds) {
+    if (seen.has(childId)) continue;
+    seen.add(childId);
+    nextChildren.push(childId);
+    changed = true;
+  }
+  if (!changed) return state;
+  return applyChildrenLoaded(state, parentId, nextChildren);
+}
+
 export function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<string> {
   const out = new Set<string>();
   for (const op of ops) {

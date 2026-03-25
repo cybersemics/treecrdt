@@ -34,6 +34,7 @@ import {
 } from "./playground/persist";
 import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
 import {
+  applyAppendedChildren,
   applyChildrenLoaded,
   flattenForSelectState,
   nodesAffectedByPayloadOps,
@@ -88,6 +89,33 @@ type BulkAddProgress = {
   phase: "creating" | "applying";
   startedAtMs: number;
 };
+
+type BenchNodeTiming = {
+  sourceLocalWriteStartedAtMs?: number;
+  sourceLocalPersistedAtMs?: number;
+  sourceLocalPreviewAppliedAtMs?: number;
+  remoteOpsAppliedStartedAtMs?: number;
+  payloadsRefreshedAtMs?: number;
+  remoteOpsAppliedFinishedAtMs?: number;
+  treeRefreshAppliedAtMs?: number;
+};
+
+declare global {
+  interface Window {
+    __treecrdtPlaygroundBench?: {
+      nodes: Record<string, BenchNodeTiming>;
+    };
+  }
+}
+
+function recordBenchNodeTiming(nodeIds: Iterable<string>, patch: BenchNodeTiming) {
+  if (typeof window === "undefined") return;
+  const bench = (window.__treecrdtPlaygroundBench ??= { nodes: {} });
+  for (const nodeId of nodeIds) {
+    if (!nodeId || nodeId === ROOT_ID) continue;
+    bench.nodes[nodeId] = { ...bench.nodes[nodeId], ...patch };
+  }
+}
 
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
@@ -346,6 +374,97 @@ export default function App() {
     [docId, requireDocPayloadKey]
   );
 
+  const applyLocalPayloadPreview = React.useCallback((entries: Iterable<{ nodeId: string; payload: Uint8Array | null }>) => {
+    const payloads = payloadByNodeRef.current;
+    let changed = false;
+    for (const { nodeId, payload } of entries) {
+      if (!nodeId || nodeId === ROOT_ID) continue;
+      payloads.set(nodeId, { payload, encrypted: false });
+      changed = true;
+    }
+    if (changed) setPayloadVersion((v) => v + 1);
+  }, []);
+
+  const applyPayloadsFromOps = React.useCallback(
+    async (ops: Iterable<Operation>) => {
+      const payloads = payloadByNodeRef.current;
+      const handled = new Set<string>();
+      let changed = false;
+      let payloadKeyPromise: Promise<Uint8Array> | null = null;
+      const getPayloadKey = () => {
+        payloadKeyPromise ??= requireDocPayloadKey();
+        return payloadKeyPromise;
+      };
+
+      for (const op of ops) {
+        const kind = op.kind;
+        if (kind.type === "insert") {
+          if (kind.payload === undefined) {
+            payloads.set(kind.node, { payload: null, encrypted: false });
+            handled.add(kind.node);
+            changed = true;
+            continue;
+          }
+          try {
+            const res = await maybeDecryptTreecrdtPayloadV1({
+              docId,
+              payloadKey: await getPayloadKey(),
+              bytes: kind.payload,
+            });
+            payloads.set(kind.node, { payload: res.plaintext, encrypted: res.encrypted });
+          } catch {
+            payloads.set(kind.node, { payload: null, encrypted: true });
+          }
+          handled.add(kind.node);
+          changed = true;
+          continue;
+        }
+
+        if (kind.type === "payload") {
+          if (kind.payload === null) {
+            payloads.set(kind.node, { payload: null, encrypted: false });
+          } else {
+            try {
+              const res = await maybeDecryptTreecrdtPayloadV1({
+                docId,
+                payloadKey: await getPayloadKey(),
+                bytes: kind.payload,
+              });
+              payloads.set(kind.node, { payload: res.plaintext, encrypted: res.encrypted });
+            } catch {
+              payloads.set(kind.node, { payload: null, encrypted: true });
+            }
+          }
+          handled.add(kind.node);
+          changed = true;
+          continue;
+        }
+
+        if (kind.type === "delete" || kind.type === "tombstone") {
+          payloads.set(kind.node, { payload: null, encrypted: false });
+          handled.add(kind.node);
+          changed = true;
+        }
+      }
+
+      if (changed) setPayloadVersion((v) => v + 1);
+      return handled;
+    },
+    [docId, requireDocPayloadKey]
+  );
+
+  const hydratePayloadsForOps = React.useCallback(
+    async (active: TreecrdtClient, ops: Iterable<Operation>) => {
+      const materialized = Array.isArray(ops) ? ops : Array.from(ops);
+      const handled = await applyPayloadsFromOps(materialized);
+      const remaining = [...nodesAffectedByPayloadOps(materialized)].filter((nodeId) => !handled.has(nodeId));
+      if (remaining.length > 0) {
+        await refreshPayloadsForNodes(active, remaining);
+      }
+    },
+    [applyPayloadsFromOps, refreshPayloadsForNodes]
+  );
+
   const encryptPayloadBytes = React.useCallback(
     async (payload: Uint8Array | null): Promise<Uint8Array | null> => {
       if (payload === null) return null;
@@ -456,6 +575,10 @@ export default function App() {
           }
           return next;
         });
+        const treeRefreshAppliedAtMs = Date.now();
+        for (const [, children] of childrenResults) {
+          recordBenchNodeTiming(children, { treeRefreshAppliedAtMs });
+        }
       } catch (err) {
         console.error("Failed to refresh tree parents", err);
       }
@@ -532,21 +655,28 @@ export default function App() {
 
   const onRemoteOpsApplied = React.useCallback(
     async (appliedOps: Operation[]) => {
+      const affectedNodes = nodesAffectedByPayloadOps(appliedOps);
+      const treeStateBefore = treeStateRef.current;
+      const affectedParents = parentsAffectedByOps(treeStateBefore, appliedOps);
+      const remoteOpsAppliedStartedAtMs = Date.now();
+      recordBenchNodeTiming(affectedNodes, { remoteOpsAppliedStartedAtMs });
       const active = clientRef.current ?? client;
       if (active && appliedOps.length > 0) {
-        await refreshPayloadsForNodes(active, nodesAffectedByPayloadOps(appliedOps));
+        await hydratePayloadsForOps(active, appliedOps);
+        recordBenchNodeTiming(affectedNodes, { payloadsRefreshedAtMs: Date.now() });
       }
       ingestOps(appliedOps);
+      recordBenchNodeTiming(affectedNodes, { remoteOpsAppliedFinishedAtMs: Date.now() });
       if (appliedOps.length > 0) {
         let max = 0;
         for (const op of appliedOps) max = Math.max(max, op.meta.lamport);
         lamportRef.current = Math.max(lamportRef.current, max);
         setHeadLamport(lamportRef.current);
       }
-      scheduleRefreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      scheduleRefreshParents(affectedParents);
       scheduleRefreshNodeCount();
     },
-    [client, ingestOps, refreshPayloadsForNodes, scheduleRefreshNodeCount, scheduleRefreshParents]
+    [client, hydratePayloadsForOps, ingestOps, scheduleRefreshNodeCount, scheduleRefreshParents]
   );
 
   const openNewPeerTab = () => {
@@ -836,7 +966,7 @@ export default function App() {
       fetched.sort(compareOps);
       setOps(fetched);
       knownOpsRef.current = new Set(fetched.map(opKey));
-      await refreshPayloadsForNodes(active, nodesAffectedByPayloadOps(fetched));
+      await hydratePayloadsForOps(active, fetched);
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
@@ -856,6 +986,7 @@ export default function App() {
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
+      const sourceLocalWriteStartedAtMs = Date.now();
 
       let op: Operation;
       if (kind.type === "payload") {
@@ -867,16 +998,24 @@ export default function App() {
         throw new Error(`unsupported operation kind: ${kind.type}`);
       }
       await verifyLocalOps([op]);
+      recordBenchNodeTiming([op.kind.node], { sourceLocalWriteStartedAtMs, sourceLocalPersistedAtMs: Date.now() });
 
       lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
       counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
 
-      notifyLocalUpdate([op]);
-      await refreshPayloadsForNodes(client, nodesAffectedByPayloadOps([op]));
+      if (kind.type === "payload") {
+        applyLocalPayloadPreview([{ nodeId: kind.node, payload: kind.payload }]);
+      } else if (kind.type === "delete") {
+        applyLocalPayloadPreview([{ nodeId: kind.node, payload: null }]);
+      } else {
+        await hydratePayloadsForOps(client, [op]);
+      }
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
+      recordBenchNodeTiming([op.kind.node], { sourceLocalPreviewAppliedAtMs: Date.now() });
+      notifyLocalUpdate([op]);
     } catch (err) {
       console.error("Failed to append op", err);
       setError("Failed to append operation (see console)");
@@ -920,6 +1059,7 @@ export default function App() {
     try {
       const stateBefore = treeStateRef.current;
       const ops: Operation[] = [];
+      const payloadPreviewEntries: Array<{ nodeId: string; payload: Uint8Array | null }> = [];
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
@@ -931,6 +1071,7 @@ export default function App() {
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload));
+          payloadPreviewEntries.push({ nodeId, payload });
           const completed = i + 1;
           if (completed === normalizedCount || completed % progressStep === 0) {
             setBulkAddProgress((prev) =>
@@ -978,6 +1119,7 @@ export default function App() {
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await client.local.insert(replica, targetParent, nodeId, { type: "last" }, encryptedPayload));
+          payloadPreviewEntries.push({ nodeId, payload });
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
@@ -1000,11 +1142,25 @@ export default function App() {
       }
       setHeadLamport(lamportRef.current);
 
-      notifyLocalUpdate(ops);
-      await refreshPayloadsForNodes(client, nodesAffectedByPayloadOps(ops));
+      applyLocalPayloadPreview(payloadPreviewEntries);
       ingestOps(ops, { assumeSorted: true });
+      setTreeState((prev) => {
+        let next = prev;
+        const groupedChildren = new Map<string, string[]>();
+        for (const op of ops) {
+          if (op.kind.type !== "insert") continue;
+          const children = groupedChildren.get(op.kind.parent);
+          if (children) children.push(op.kind.node);
+          else groupedChildren.set(op.kind.parent, [op.kind.node]);
+        }
+        for (const [insertParentId, childIds] of groupedChildren) {
+          next = applyAppendedChildren(next, insertParentId, childIds);
+        }
+        return next;
+      });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
       scheduleRefreshNodeCount();
+      notifyLocalUpdate(ops);
       setCollapse((prev) => {
         const overrides = new Set(prev.overrides);
         const setExpanded = (id: string) => {
@@ -1035,16 +1191,20 @@ export default function App() {
     setBusy(true);
     try {
       const stateBefore = treeStateRef.current;
+      const sourceLocalWriteStartedAtMs = Date.now();
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
-      notifyLocalUpdate([op]);
-      await refreshPayloadsForNodes(client, [op.kind.node]);
+      recordBenchNodeTiming([nodeId], { sourceLocalWriteStartedAtMs, sourceLocalPersistedAtMs: Date.now() });
+      applyLocalPayloadPreview([{ nodeId, payload }]);
       ingestOps([op], { assumeSorted: true });
+      setTreeState((prev) => applyAppendedChildren(prev, parentId, [op.kind.node]));
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
+      recordBenchNodeTiming([nodeId], { sourceLocalPreviewAppliedAtMs: Date.now() });
+      notifyLocalUpdate([op]);
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
       }

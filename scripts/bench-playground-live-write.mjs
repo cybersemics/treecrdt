@@ -221,19 +221,45 @@ async function addNode(page, label) {
   const input = page.getByPlaceholder("Stored as payload bytes");
   await input.fill(label);
   await rootRow(page).getByRole("button", { name: "Add child" }).click();
-  await page.getByTestId("tree-row").filter({ hasText: label }).first().waitFor({ timeout: 30_000 });
+  const row = page.getByTestId("tree-row").filter({ hasText: label }).first();
+  await row.waitFor({ state: "visible", timeout: 30_000 });
+  const nodeId = await row.getAttribute("data-node-id");
+  if (!nodeId) throw new Error(`missing node id for inserted label "${label}"`);
+  return { nodeId };
 }
 
-async function waitForLabel(page, label, timeoutMs, startedAtMs) {
-  const row = page.getByTestId("tree-row").filter({ hasText: label }).first();
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const syncError = await readSyncError(page);
-    if (syncError) throw new Error(`sync error on ${page.url()}: ${syncError}`);
-    if ((await row.count()) > 0) return performance.now() - startedAtMs;
-    await sleep(50);
+async function resetBenchState(page) {
+  await page.evaluate(() => {
+    window.__treecrdtPlaygroundBench = { nodes: {} };
+  });
+}
+
+async function readBenchNodeTiming(page, nodeId) {
+  return await page.evaluate((id) => window.__treecrdtPlaygroundBench?.nodes?.[id] ?? null, nodeId);
+}
+
+async function waitForNode(page, nodeId, timeoutMs, startedAtMs) {
+  const handle = await page.waitForFunction(
+    ({ targetNodeId }) => {
+      const syncError = document.querySelector('[data-testid="sync-error"]');
+      const syncErrorText = syncError?.textContent?.trim();
+      if (syncErrorText) return { ok: false, error: syncErrorText };
+      const row = document.querySelector(
+        `[data-testid="tree-row"][data-node-id="${targetNodeId}"]`
+      );
+      return row ? { ok: true } : null;
+    },
+    { targetNodeId: nodeId },
+    { timeout: timeoutMs }
+  );
+  const result = await handle.jsonValue();
+  await handle.dispose();
+  if (!result?.ok) {
+    throw new Error(`sync error on ${page.url()}: ${result?.error ?? `timed out waiting for node ${nodeId}`}`);
   }
-  throw new Error(`timed out waiting for label "${label}" on ${page.url()}`);
+  const durationMs = performance.now() - startedAtMs;
+  const benchTiming = await readBenchNodeTiming(page, nodeId);
+  return { durationMs, benchTiming };
 }
 
 function percentile(sorted, p) {
@@ -253,6 +279,16 @@ function summarize(values) {
     maxMs: sorted[sorted.length - 1],
     meanMs: mean,
   };
+}
+
+function normalizeBenchTiming(benchTiming, startedAtWallClockMs) {
+  if (!benchTiming) return null;
+  const out = {};
+  for (const [key, value] of Object.entries(benchTiming)) {
+    if (typeof value !== "number") continue;
+    out[`${key}AfterMs`] = value - startedAtWallClockMs;
+  }
+  return out;
 }
 
 function defaultOutPath({ transport, syncServerUrl, mode, auth, tabs, contexts }) {
@@ -319,12 +355,14 @@ async function main() {
     await waitReady(pageA);
     if (transport === "remote") await waitRemoteConnection(pageA);
     await enableLiveMode(pageA, mode);
+    await resetBenchState(pageA);
 
     const pageB = await openNewDevice(browser, pageA, {
       waitForRemote: transport === "remote",
       contextMode: contexts,
     });
     await enableLiveMode(pageB, mode);
+    await resetBenchState(pageB);
 
     const pages = [pageA, pageB];
     if (tabs === 3) {
@@ -333,6 +371,7 @@ async function main() {
         contextMode: contexts,
       });
       await enableLiveMode(pageC, mode);
+      await resetBenchState(pageC);
       pages.push(pageC);
     }
 
@@ -344,20 +383,31 @@ async function main() {
     for (let i = 0; i < total; i += 1) {
       const label = `${labelPrefix}-${i}-${Date.now()}`;
       const warmupSample = i < warmup;
+      const startedAtWallClockMs = Date.now();
       const start = performance.now();
-      await addNode(sourcePage, label);
+      const { nodeId } = await addNode(sourcePage, label);
       const sourceApplyMs = performance.now() - start;
-      const targetDurationsMs = await Promise.all(
-        targetPages.map((page) => waitForLabel(page, label, 60_000, start))
+      const sourceBenchTiming = await readBenchNodeTiming(sourcePage, nodeId);
+      const targetResults = await Promise.all(
+        targetPages.map((page) => waitForNode(page, nodeId, 60_000, start))
       );
+      const targetDurationsMs = targetResults.map((entry) => entry.durationMs);
       const durationMs = Math.max(...targetDurationsMs);
       const sample = {
         index: i - warmup,
         warmup: warmupSample,
         label,
+        nodeId,
+        startedAtWallClockMs,
         sourceApplyMs,
+        sourceBenchTiming,
+        sourceBenchOffsetsMs: normalizeBenchTiming(sourceBenchTiming, startedAtWallClockMs),
         durationMs,
         targetDurationsMs,
+        targetBenchTimings: targetResults.map((entry) => entry.benchTiming),
+        targetBenchOffsetsMs: targetResults.map((entry) =>
+          normalizeBenchTiming(entry.benchTiming, startedAtWallClockMs)
+        ),
       };
       console.log(
         `[bench-playground-live-write] ${warmupSample ? "warmup" : "sample"} ${i + 1}/${total}: ${durationMs.toFixed(1)}ms`
