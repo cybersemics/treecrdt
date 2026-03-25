@@ -22,6 +22,7 @@ Options:
   --transport=local|remote           Sync transport to benchmark (default: remote)
   --sync-server-url=...              Sync server websocket URL (required for --transport=remote; default: env TREECRDT_SYNC_SERVER_URL)
   --mode=all|children                Live mode to benchmark (default: all)
+  --contexts=shared|isolated         Reuse one browser context or simulate isolated devices (default: shared)
   --iterations=N                     Measured samples (default: 5)
   --warmup=N                         Warmup samples (default: 1)
   --tabs=2|3                         Number of tabs/devices (default: 3)
@@ -183,15 +184,37 @@ async function readSyncError(page) {
   return ((await syncError.textContent()) ?? "").trim();
 }
 
-async function openNewDevice(page, opts = {}) {
-  const { waitForRemote = false } = opts;
+async function waitForNonBlankUrl(page, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const currentUrl = page.url();
+    if (currentUrl && currentUrl !== "about:blank") return currentUrl;
+    await sleep(25);
+  }
+  throw new Error("timed out waiting for popup URL");
+}
+
+async function openNewDevice(browser, page, opts = {}) {
+  const { waitForRemote = false, contextMode = "shared" } = opts;
   const [popup] = await Promise.all([
     page.waitForEvent("popup", { timeout: 30_000 }),
     page.getByRole("button", { name: /New device/ }).click(),
   ]);
-  await waitReady(popup);
-  if (waitForRemote) await waitRemoteConnection(popup);
-  return popup;
+  if (contextMode === "shared") {
+    await waitReady(popup);
+    if (waitForRemote) await waitRemoteConnection(popup);
+    return popup;
+  }
+
+  const inviteUrl = await waitForNonBlankUrl(popup);
+  await popup.close({ runBeforeUnload: false }).catch(() => {});
+
+  const context = await browser.newContext();
+  const isolatedPage = await context.newPage();
+  await isolatedPage.goto(inviteUrl);
+  await waitReady(isolatedPage);
+  if (waitForRemote) await waitRemoteConnection(isolatedPage);
+  return isolatedPage;
 }
 
 async function addNode(page, label) {
@@ -232,7 +255,7 @@ function summarize(values) {
   };
 }
 
-function defaultOutPath({ transport, syncServerUrl, mode, auth, tabs }) {
+function defaultOutPath({ transport, syncServerUrl, mode, auth, tabs, contexts }) {
   const safeHost =
     transport === "local"
       ? "local-mesh"
@@ -241,7 +264,7 @@ function defaultOutPath({ transport, syncServerUrl, mode, auth, tabs }) {
     repoRoot,
     "benchmarks",
     "playground-live-write",
-    `playground-live-write-${safeHost}-${transport}-${mode}-auth${auth ? "1" : "0"}-${tabs}tabs.json`
+    `playground-live-write-${safeHost}-${transport}-${mode}-${contexts}-auth${auth ? "1" : "0"}-${tabs}tabs.json`
   );
 }
 
@@ -262,16 +285,20 @@ async function main() {
   }
 
   const mode = getArg("mode") ?? "all";
+  const contexts = getArg("contexts") ?? "shared";
   const iterations = parseIntArg("iterations", 5);
   const warmup = parseIntArg("warmup", 1);
   const tabs = parseIntArg("tabs", 3);
   const auth = parseBoolArg("auth", true);
   const headless = parseBoolArg("headless", true);
   const labelPrefix = getArg("label-prefix") ?? `pw-live-write-${mode}`;
-  const outPath = getArg("out") ?? defaultOutPath({ transport, syncServerUrl, mode, auth, tabs });
+  const outPath = getArg("out") ?? defaultOutPath({ transport, syncServerUrl, mode, auth, tabs, contexts });
 
   if (tabs < 2 || tabs > 3) throw new Error(`--tabs must be 2 or 3, got ${tabs}`);
   if (!["all", "children"].includes(mode)) throw new Error(`--mode must be all or children, got ${mode}`);
+  if (!["shared", "isolated"].includes(contexts)) {
+    throw new Error(`--contexts must be shared or isolated, got ${contexts}`);
+  }
   if (iterations <= 0) throw new Error(`--iterations must be > 0, got ${iterations}`);
 
   const playground = await maybeStartPlaygroundServer(baseUrl);
@@ -293,12 +320,18 @@ async function main() {
     if (transport === "remote") await waitRemoteConnection(pageA);
     await enableLiveMode(pageA, mode);
 
-    const pageB = await openNewDevice(pageA, { waitForRemote: transport === "remote" });
+    const pageB = await openNewDevice(browser, pageA, {
+      waitForRemote: transport === "remote",
+      contextMode: contexts,
+    });
     await enableLiveMode(pageB, mode);
 
     const pages = [pageA, pageB];
     if (tabs === 3) {
-      const pageC = await openNewDevice(pageB, { waitForRemote: transport === "remote" });
+      const pageC = await openNewDevice(browser, pageB, {
+        waitForRemote: transport === "remote",
+        contextMode: contexts,
+      });
       await enableLiveMode(pageC, mode);
       pages.push(pageC);
     }
@@ -340,6 +373,7 @@ async function main() {
       transport,
       syncServerUrl,
       mode,
+      contexts,
       auth,
       tabs,
       warmup,

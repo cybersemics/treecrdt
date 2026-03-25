@@ -237,6 +237,34 @@ This is the benchmark to use when you want a direct before/after comparison betw
 - cross-task fallback via `pg_notify`
 - doc-affinity routing that keeps same-doc peers on one task
 
+### Browser Live-Write Bench
+
+Use `benchmark:playground:live-write` when you want the full browser path:
+
+- source tab local write
+- upload to the sync server
+- live fanout back to subscribed peers
+- target tab apply/render
+
+The benchmark can now run in two device modes:
+
+- `--contexts=shared`: reuse one Playwright browser context and open additional tabs with `New device`
+- `--contexts=isolated`: capture the `New device` invite URL, then reopen that device in a brand new Playwright context
+
+`shared` is useful for same-session regressions. `isolated` is the better approximation for real separate devices and is the mode to use when evaluating doc-affinity routing.
+
+```sh
+TREECRDT_SYNC_SERVER_URL=ws://host/sync \
+pnpm benchmark:playground:live-write -- \
+  --transport=remote \
+  --mode=all \
+  --contexts=isolated \
+  --tabs=3 \
+  --iterations=5
+```
+
+Compare `shared` vs `isolated` on the same endpoint when you want to see how much session stickiness is hiding cross-task fanout costs.
+
 ### Backend Call Profiling
 
 Add `--profile-backend` when you want per-backend timings for:
