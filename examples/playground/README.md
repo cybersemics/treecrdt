@@ -16,9 +16,48 @@ pnpm install --filter @treecrdt/playground
 pnpm -C examples/playground dev
 ```
 
+## Quick start with a real sync server
+
+If you want to test the playground against a real local sync server, use this flow first:
+
+```bash
+# Build all workspace packages, including the Postgres sync-server path.
+pnpm build
+# Start a disposable local Postgres instance in Docker on localhost:5432.
+pnpm sync-server:postgres:db:start
+# Start the TreeCRDT sync server on ws://localhost:8787 using that Postgres DB.
+pnpm sync-server:postgres:local
+# Start the playground UI.
+pnpm -C examples/playground dev
+```
+
+Then in the playground:
+
+- Open the `Connections` panel
+- Paste `ws://localhost:8787` into `Remote sync server`
+- Leave mode as `Hybrid`, or switch to `Remote server` if you want to disable local tab sync
+
+`pnpm sync-server:postgres:db:start` starts a disposable local Postgres at:
+
+```bash
+postgres://postgres:postgres@127.0.0.1:5432/postgres
+```
+
+Stop it later with:
+
+```bash
+pnpm sync-server:postgres:db:stop
+```
+
 ## Sync (v0 draft)
 
-The playground includes a simple sync panel that discovers other open tabs via `BroadcastChannel`.
+The playground includes a `Connections` panel with three sync modes:
+
+- `Local tabs`: sync same-origin tabs via `BroadcastChannel`
+- `Remote server`: sync only via websocket
+- `Hybrid`: use both local tabs and websocket
+
+For local tab sync:
 
 - Open tab A with a chosen doc: `http://localhost:5167/?doc=demo`
 - Open tab B with the same doc: `http://localhost:5167/?doc=demo` (each tab gets its own replica key)

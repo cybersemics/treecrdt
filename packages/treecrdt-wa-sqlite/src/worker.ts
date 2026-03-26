@@ -1,7 +1,6 @@
 /// <reference lib="webworker" />
-import {
-  type Database,
-} from "./index.js";
+import { dbGetText } from "./sql.js";
+import type { Database } from "./index.js";
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
 import type { Operation, ReplicaId } from "@treecrdt/interface";
 import type { TreecrdtAdapter } from "@treecrdt/interface";
@@ -13,8 +12,11 @@ import {
 } from "@treecrdt/interface/sqlite";
 import type { RpcMethod, RpcRequest, RpcSqlParams } from "./rpc.js";
 import { openTreecrdtDb } from "./open.js";
+import { clearOpfsStorage } from "./opfs.js";
 
 let db: Database | null = null;
+let storedFilename: string | undefined;
+let storedStorage: "memory" | "opfs" = "memory";
 let api: TreecrdtAdapter | null = null;
 let runner: SqliteRunner | null = null;
 const localWriters = new Map<string, TreecrdtSqliteWriter>();
@@ -34,6 +36,7 @@ const methods = {
   treeDump,
   treeNodeCount,
   treeParent,
+  treeExists,
   treePayload,
   headLamport,
   replicaMaxCounter,
@@ -42,6 +45,7 @@ const methods = {
   localDelete,
   localPayload,
   close,
+  drop,
 } as const;
 
 self.onmessage = async (ev: MessageEvent<RpcRequest>) => {
@@ -85,6 +89,8 @@ async function init(
   db = opened.db;
   api = opened.api;
   runner = makeRunner(opened.db);
+  storedFilename = opened.filename;
+  storedStorage = opened.storage;
   localWriters.clear();
   return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
 }
@@ -174,6 +180,11 @@ async function treeParent(node: string) {
   return result === null ? null : Array.from(result);
 }
 
+async function treeExists(node: string) {
+  const api = ensureApi();
+  return await api.treeExists(nodeIdToBytes16(node));
+}
+
 async function headLamport() {
   const api = ensureApi();
   return await api.headLamport();
@@ -210,12 +221,28 @@ async function localPayload(replica: number[], node: string, payload: Uint8Array
   return await writer.payload(node, payload);
 }
 
-async function close() {
+async function closeDbAndReset() {
   if (db?.close) await db.close();
   db = null;
   api = null;
   runner = null;
+  storedFilename = undefined;
+  storedStorage = "memory";
   localWriters.clear();
+}
+
+async function close() {
+  await closeDbAndReset();
+  return null;
+}
+
+async function drop() {
+  const filename = storedFilename;
+  const storage = storedStorage;
+  await closeDbAndReset();
+  if (storage === "opfs" && filename) {
+    await clearOpfsStorage(filename);
+  }
   return null;
 }
 
@@ -254,18 +281,3 @@ function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
   return writer;
 }
 
-async function dbGetText(db: Database, sql: string, params: RpcSqlParams = []): Promise<string | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stmt: any = await db.prepare(sql);
-  try {
-    let idx = 1;
-    for (const p of params) {
-      await db.bind(stmt, idx++, p);
-    }
-    const row = await db.step(stmt);
-    if (row === 0) return null;
-    return await db.column_text(stmt, 0);
-  } finally {
-    await db.finalize(stmt);
-  }
-}

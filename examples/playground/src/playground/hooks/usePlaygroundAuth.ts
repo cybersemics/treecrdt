@@ -13,9 +13,9 @@ import {
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
 import {
-  createTreecrdtSyncSqliteOpAuthStore,
-  createTreecrdtSyncSqlitePendingOpsStore,
-} from "@treecrdt/sync";
+  createOpAuthStore,
+  createPendingOpsStore,
+} from "@treecrdt/sync-sqlite";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {
@@ -40,10 +40,11 @@ import {
 } from "../../auth";
 import { hexToBytes16, type AuthGrantMessageV1 } from "../../sync-v0";
 import { ROOT_ID } from "../constants";
-import { loadPrivateRoots, persistPrivateRoots } from "../persist";
+import { applySyncSettingsToUrl, loadPrivateRoots, persistPrivateRoots } from "../persist";
 import { prefixPlaygroundStorageKey } from "../storage";
 import type { InviteActions } from "../invite";
 import type { ToastState } from "../components/PlaygroundToast";
+import type { SyncTransportMode } from "../types";
 
 function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: string): string[] {
   return Array.from(privateRoots).filter((id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id));
@@ -303,6 +304,8 @@ export type UsePlaygroundAuthOptions = {
   docId: string;
   joinMode: boolean;
   client: TreecrdtClient | null;
+  syncServerUrl: string;
+  syncTransportMode: SyncTransportMode;
   /**
    * App-owned doc payload key refresher (used by invite/grant import flows).
    * This keeps crypto state (decrypt/encrypt) in App while auth UI is extracted.
@@ -311,7 +314,7 @@ export type UsePlaygroundAuthOptions = {
 };
 
 export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAuthApi {
-  const { docId, joinMode, client, refreshDocPayloadKey } = opts;
+  const { docId, joinMode, client, syncServerUrl, syncTransportMode, refreshDocPayloadKey } = opts;
 
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
   const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
@@ -568,7 +571,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const localPk = base64urlDecode(authMaterial.localPkB64);
       const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
       const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
-      const opAuthStore = createTreecrdtSyncSqliteOpAuthStore({ runner: client.runner, docId });
+      const opAuthStore = createOpAuthStore({ runner: client.runner, docId });
 
       localAuthRef.current = createTreecrdtCoseCwtAuth({
         issuerPublicKeys: [issuerPk],
@@ -992,6 +995,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
+    applySyncSettingsToUrl(url, syncServerUrl, syncTransportMode);
     url.searchParams.delete("join");
     url.searchParams.delete("fresh");
     url.searchParams.set("auth", "1");
@@ -1197,6 +1201,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
       const url = new URL(window.location.href);
       url.searchParams.set("doc", docId);
+      applySyncSettingsToUrl(url, syncServerUrl, syncTransportMode);
       url.searchParams.delete("replica");
       url.searchParams.delete("fresh");
       url.searchParams.set("join", "1");
@@ -1250,7 +1255,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const store = createTreecrdtSyncSqlitePendingOpsStore({ runner: client.runner, docId });
+      const store = createPendingOpsStore({ runner: client.runner, docId });
       await store.init();
       const listed = await store.listPendingOps();
       setPendingOps(
@@ -1480,6 +1485,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
     const url = new URL(window.location.href);
     url.searchParams.set("doc", docId);
+    applySyncSettingsToUrl(url, syncServerUrl, syncTransportMode);
     url.searchParams.delete("replica");
     url.searchParams.set("profile", makeNewProfileId());
     url.searchParams.set("join", "1");

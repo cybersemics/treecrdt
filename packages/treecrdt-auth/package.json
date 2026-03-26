@@ -16,7 +16,7 @@
     "src"
   ],
   "scripts": {
-    "build": "pnpm -C ../treecrdt-ts run build && pnpm -C ../treecrdt-sync run build && tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
     "test": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && vitest run"
   },
   "dependencies": {

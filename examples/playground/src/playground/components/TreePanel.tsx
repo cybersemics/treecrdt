@@ -32,6 +32,7 @@ export function TreePanel({
   ready,
   busy,
   syncBusy,
+  liveBusy,
   peerCount,
   authCanSyncAll,
   onSync,
@@ -39,7 +40,6 @@ export function TreePanel({
   setLiveAllEnabled,
   showPeersPanel,
   setShowPeersPanel,
-  peerTotal,
   showAuthPanel,
   setShowAuthPanel,
   authEnabled,
@@ -90,6 +90,7 @@ export function TreePanel({
   ready: boolean;
   busy: boolean;
   syncBusy: boolean;
+  liveBusy: boolean;
   peerCount: number;
   authCanSyncAll: boolean;
   onSync: () => void;
@@ -97,7 +98,6 @@ export function TreePanel({
   setLiveAllEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   showPeersPanel: boolean;
   setShowPeersPanel: React.Dispatch<React.SetStateAction<boolean>>;
-  peerTotal: number;
   showAuthPanel: boolean;
   setShowAuthPanel: React.Dispatch<React.SetStateAction<boolean>>;
   authEnabled: boolean;
@@ -200,17 +200,23 @@ export function TreePanel({
             <span>{online ? "Online" : "Offline"}</span>
           </button>
           <button
-            className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+            className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-50 ${
+              syncBusy
+                ? "border-accent bg-accent/15 text-white"
+                : "border-slate-700 bg-slate-800/70 text-slate-200 hover:border-accent hover:text-white"
+            }`}
             onClick={onSync}
             disabled={!ready || busy || syncBusy || peerCount === 0 || !online}
             title={authCanSyncAll ? "Sync all (one-shot)" : "Sync loaded parents (scoped)"}
           >
-            <MdSync className="text-[18px]" />
-            <span>Sync</span>
+            <MdSync className={`text-[18px] ${syncBusy ? "animate-spin" : ""}`} />
+            <span>{syncBusy ? "Syncing..." : "Sync"}</span>
           </button>
           <button
             className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition disabled:opacity-50 ${
-              liveAllEnabled
+              liveBusy
+                ? "border-accent bg-accent/15 text-white shadow-sm shadow-accent/20"
+                : liveAllEnabled
                 ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
                 : "border-slate-700 bg-slate-800/70 hover:border-accent hover:text-white"
             }`}
@@ -218,11 +224,18 @@ export function TreePanel({
             disabled={!ready || busy || !online || !authCanSyncAll}
             aria-label="Live sync all"
             aria-pressed={liveAllEnabled}
+            aria-busy={liveBusy}
             title={
-              authCanSyncAll ? "Live sync all (polling)" : "Live sync all is not allowed by this token scope"
+              !authCanSyncAll
+                ? "Live sync all is not allowed by this token scope"
+                : liveBusy
+                  ? "Live sync all is starting or pushing updates"
+                  : liveAllEnabled
+                    ? "Live sync all is active"
+                    : "Live sync all"
             }
           >
-            <MdOutlineRssFeed className="text-[20px]" />
+            <MdOutlineRssFeed className={`text-[20px] ${liveBusy ? "animate-spin" : liveAllEnabled ? "animate-pulse" : ""}`} />
           </button>
           <button
             className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
@@ -232,10 +245,20 @@ export function TreePanel({
             }`}
             onClick={() => setShowPeersPanel((v) => !v)}
             type="button"
-            title="Peers"
+            title={showPeersPanel ? "Hide connections panel" : "Show connections panel"}
+            aria-expanded={showPeersPanel}
+            aria-controls="playground-connections-panel"
           >
             <MdGroup className="text-[18px]" />
-            <span className="font-mono">{peerTotal}</span>
+            <span>Connections</span>
+            <span className="rounded-full bg-slate-950/70 px-2 py-0.5 font-mono text-[11px] text-slate-300">
+              {peerCount}
+            </span>
+            {showPeersPanel ? (
+              <MdExpandLess className="text-[18px]" aria-hidden />
+            ) : (
+              <MdExpandMore className="text-[18px]" aria-hidden />
+            )}
           </button>
           <button
             className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${

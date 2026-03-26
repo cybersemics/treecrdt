@@ -11,6 +11,7 @@ import { sha512 } from "@noble/hashes/sha512";
 
 import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
+import { base64urlEncode } from "../dist/base64url.js";
 import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
 import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
 import {
@@ -21,7 +22,7 @@ import {
   issueTreecrdtRevocationRecordV1,
   verifyTreecrdtRevocationRecordV1,
 } from "../dist/treecrdt-auth.js";
-import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
+import type { Capability, Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
 ed25519Hashes.sha512 = sha512;
 
@@ -303,6 +304,403 @@ test("auth: signOps selects proof_ref per op when multiple tokens exist", async 
 
   const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(/capability does not allow op/i);
+});
+
+test("auth ignores foreign peer capability tokens during hello and still verifies known authors", async () => {
+  const docId = "doc-auth-ignore-foreign-hello-cap";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const foreignIssuerSk = ed25519Utils.randomSecretKey();
+
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+  const foreignSubjectSk = ed25519Utils.randomSecretKey();
+  const foreignSubjectPk = await getPublicKey(foreignSubjectSk);
+
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const foreignToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: foreignIssuerSk,
+    subjectPublicKey: foreignSubjectPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
+  await expect(
+    authVerifier.onHelloAck?.(
+      {
+        capabilities: [...writerHelloCaps, { name: "auth.capability", value: base64urlEncode(foreignToken) }],
+        maxLamport: 0n,
+      },
+      { docId }
+    )
+  ).resolves.toBeUndefined();
+
+  const op = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth = await authWriter.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
+  await expect(
+    authWriter.filterOutgoingOps?.([op], {
+      docId,
+      purpose: "subscribe",
+      filterId: "all",
+      capabilities: [...writerHelloCaps, { name: "auth.capability", value: base64urlEncode(foreignToken) }],
+    })
+  ).resolves.toEqual([true]);
+  await expect(authVerifier.verifyOps?.([op], auth, { docId, purpose: "reconcile", filterId: "all" })).resolves
+    .toBeUndefined();
+});
+
+test("auth re-advertises trusted author capability tokens from the capability store after restart", async () => {
+  const docId = "doc-auth-capability-replay";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const relaySk = ed25519Utils.randomSecretKey();
+  const relayPk = await getPublicKey(relaySk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const joinerSk = ed25519Utils.randomSecretKey();
+  const joinerPk = await getPublicKey(joinerSk);
+
+  const relayToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: relayPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authRelay = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: relaySk,
+    localPublicKey: relayPk,
+    localCapabilityTokens: [relayToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+
+  const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
+  await authRelay.onHello?.({ capabilities: writerHelloCaps, filters: [], maxLamport: 0n }, { docId });
+
+  const reloadedRelay = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: relaySk,
+    localPublicKey: relayPk,
+    localCapabilityTokens: [relayToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+  const authJoiner = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: joinerSk,
+    localPublicKey: joinerPk,
+    requireProofRef: true,
+  });
+
+  const relayHelloCaps = (await reloadedRelay.helloCapabilities?.({ docId })) ?? [];
+  expect(relayHelloCaps).toEqual(
+    expect.arrayContaining([
+      { name: "auth.capability", value: base64urlEncode(relayToken) },
+      { name: "auth.capability.replay", value: base64urlEncode(writerToken) },
+    ])
+  );
+
+  await authJoiner.onHello?.({ capabilities: relayHelloCaps, filters: [], maxLamport: 0n }, { docId });
+
+  const op = makeOp(writerPk, 1, 1, {
+    type: "insert",
+    parent: root,
+    node: nodeIdFromInt(7),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const signed = await authWriter.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
+  await expect(authJoiner.verifyOps?.([op], signed, { docId, purpose: "reconcile", filterId: "all" })).resolves
+    .toBeUndefined();
+});
+
+test("auth: replayed author capability tokens do not widen peer filter scope", async () => {
+  const docId = "doc-auth-replay-capability-scope";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const senderSk = ed25519Utils.randomSecretKey();
+  const senderPk = await getPublicKey(senderSk);
+  const scopedPeerSk = ed25519Utils.randomSecretKey();
+  const scopedPeerPk = await getPublicKey(scopedPeerSk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+
+  const publicNode = nodeIdFromInt(1);
+  const privateRoot = nodeIdFromInt(2);
+  const parentByNodeHex = new Map<string, string | null>([
+    [root, null],
+    [publicNode, root],
+    [privateRoot, root],
+  ]);
+
+  const scopeEvaluator = ({
+    node,
+    scope,
+  }: {
+    node: Uint8Array;
+    scope: { root: Uint8Array; maxDepth?: number; exclude?: Uint8Array[] };
+  }) => {
+    const rootHex = bytesToHex(scope.root);
+    const excludeHex = new Set((scope.exclude ?? []).map((b) => bytesToHex(b)));
+
+    let curHex = bytesToHex(node);
+    for (let hops = 0; hops < 10_000; hops += 1) {
+      if (excludeHex.has(curHex)) return "deny" as const;
+      if (curHex === rootHex) return "allow" as const;
+      if (curHex === root || curHex === "f".repeat(32)) return "deny" as const;
+
+      const parentHex = parentByNodeHex.get(curHex);
+      if (parentHex === undefined) return "unknown" as const;
+      if (parentHex === null) return "deny" as const;
+      curHex = parentHex;
+    }
+
+    return "unknown" as const;
+  };
+
+  const scopedToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: scopedPeerPk,
+    docId,
+    actions: ["write_structure"],
+    rootNodeId: root,
+    excludeNodeIds: [privateRoot],
+  });
+  const writerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [writerToken],
+    requireProofRef: true,
+  });
+  const authScopedPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: scopedPeerSk,
+    localPublicKey: scopedPeerPk,
+    localCapabilityTokens: [scopedToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+  const authSender = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: senderSk,
+    localPublicKey: senderPk,
+    requireProofRef: true,
+    scopeEvaluator,
+  });
+
+  const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
+  await authScopedPeer.onHello?.({ capabilities: writerHelloCaps, filters: [], maxLamport: 0n }, { docId });
+
+  const reloadedScopedPeer = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: scopedPeerSk,
+    localPublicKey: scopedPeerPk,
+    localCapabilityTokens: [scopedToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+
+  const scopedPeerCaps = (await reloadedScopedPeer.helloCapabilities?.({ docId })) ?? [];
+  expect(scopedPeerCaps).toEqual(
+    expect.arrayContaining([
+      { name: "auth.capability", value: base64urlEncode(scopedToken) },
+      { name: "auth.capability.replay", value: base64urlEncode(writerToken) },
+    ])
+  );
+
+  const ops: Operation[] = [
+    makeOp(senderPk, 1, 1, { type: "insert", parent: root, node: publicNode, orderKey: orderKeyFromPosition(0) }),
+    makeOp(senderPk, 2, 2, { type: "insert", parent: root, node: privateRoot, orderKey: orderKeyFromPosition(1) }),
+  ];
+
+  await expect(
+    authSender.filterOutgoingOps?.(ops, {
+      docId,
+      purpose: "reconcile",
+      filter: { all: {} },
+      capabilities: scopedPeerCaps,
+    })
+  ).resolves.toEqual([true, false]);
+});
+
+test("auth: cached stale local tokens cannot authorize new local writes after an access downgrade", async () => {
+  const docId = "doc-auth-stale-local-token-downgrade";
+  const root = "0".repeat(32);
+  const secretRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const localSk = ed25519Utils.randomSecretKey();
+  const localPk = await getPublicKey(localSk);
+
+  const oldWriterToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: localPk,
+    docId,
+    rootNodeId: secretRoot,
+    actions: ["write_structure", "write_payload"],
+  });
+  const newReadOnlyToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: localPk,
+    docId,
+    rootNodeId: secretRoot,
+    actions: ["read_structure", "read_payload"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+  await capabilityStore.storeCapabilities([{ name: "auth.capability", value: base64urlEncode(oldWriterToken) }]);
+
+  const auth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: localSk,
+    localPublicKey: localPk,
+    localCapabilityTokens: [newReadOnlyToken],
+    capabilityStore,
+    requireProofRef: true,
+  });
+
+  const op = makeOp(localPk, 1, 1, {
+    type: "insert",
+    parent: secretRoot,
+    node: child,
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  await expect(auth.signOps?.([op], { docId, purpose: "reconcile", filterId: root })).rejects.toThrow(/capability does not allow op/i);
+});
+
+test("auth: helloCapabilities ignores locally cached revoked replay tokens", async () => {
+  const docId = "doc-auth-ignore-revoked-cached-replay";
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const localSk = ed25519Utils.randomSecretKey();
+  const localPk = await getPublicKey(localSk);
+  const peerSk = ed25519Utils.randomSecretKey();
+  const peerPk = await getPublicKey(peerSk);
+
+  const localToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: localPk,
+    docId,
+    actions: ["write_structure"],
+  });
+  const revokedPeerToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: peerPk,
+    docId,
+    actions: ["write_structure"],
+  });
+
+  const storedCapabilities = new Map<string, Capability>();
+  const capabilityStore = {
+    init: async () => {},
+    storeCapabilities: async (caps: Capability[]) => {
+      for (const cap of caps) storedCapabilities.set(`${cap.name}\u0000${cap.value}`, cap);
+    },
+    listCapabilities: async () => Array.from(storedCapabilities.values()),
+  };
+  await capabilityStore.storeCapabilities([
+    { name: "auth.capability", value: base64urlEncode(revokedPeerToken) },
+  ]);
+
+  const auth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: localSk,
+    localPublicKey: localPk,
+    localCapabilityTokens: [localToken],
+    capabilityStore,
+    revokedCapabilityTokenIds: [deriveTokenIdV1(revokedPeerToken)],
+    requireProofRef: true,
+  });
+
+  await expect(auth.helloCapabilities?.({ docId })).resolves.toEqual([
+    { name: "auth.capability", value: base64urlEncode(localToken) },
+  ]);
 });
 
 test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async () => {
@@ -1269,6 +1667,56 @@ test("auth: onHello rejects revoked peer capability tokens", async () => {
   await expect(
     authReceiver.onHello!({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId })
   ).rejects.toThrow(/capability token revoked/i);
+});
+
+test("auth: onHello ignores revoked replay capability tokens", async () => {
+  const docId = "doc-auth-revoked-replay-hello";
+  const root = "0".repeat(32);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+
+  const senderSk = ed25519Utils.randomSecretKey();
+  const senderPk = await getPublicKey(senderSk);
+  const receiverSk = ed25519Utils.randomSecretKey();
+  const receiverPk = await getPublicKey(receiverSk);
+
+  const activeToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: senderPk,
+    docId,
+    rootNodeId: root,
+    actions: ["read_structure"],
+  });
+  const revokedReplayToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: senderPk,
+    docId,
+    rootNodeId: root,
+    actions: ["write_structure"],
+  });
+
+  const authReceiver = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: receiverSk,
+    localPublicKey: receiverPk,
+    revokedCapabilityTokenIds: [deriveTokenIdV1(revokedReplayToken)],
+    requireProofRef: true,
+  });
+
+  await expect(
+    authReceiver.onHello!(
+      {
+        capabilities: [
+          { name: "auth.capability", value: base64urlEncode(activeToken) },
+          { name: "auth.capability.replay", value: base64urlEncode(revokedReplayToken) },
+        ],
+        filters: [],
+        maxLamport: 0n,
+      },
+      { docId }
+    )
+  ).resolves.toEqual([{ name: "auth.capability.replay", value: base64urlEncode(activeToken) }]);
 });
 
 test("auth: late hard revocation rejects future ops and re-verification of past ops", async () => {
