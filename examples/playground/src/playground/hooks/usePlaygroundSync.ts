@@ -2,22 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import {
-  base64urlDecode,
-  createTreecrdtCoseCwtAuth,
-  createTreecrdtIdentityChainCapabilityV1,
-  createTreecrdtSqliteSubtreeScopeEvaluator,
-  type TreecrdtIdentityChainV1,
-} from "@treecrdt/auth";
-import {
   SyncPeer,
   type Filter,
+  type SyncAuth,
   type SyncSubscription,
 } from "@treecrdt/sync";
-import {
-  createTreecrdtSyncBackendFromClient,
-  createCapabilityMaterialStore,
-  createOpAuthStore,
-} from "@treecrdt/sync-sqlite";
+import { createTreecrdtSyncBackendFromClient } from "@treecrdt/sync-sqlite";
 import type { BroadcastPresenceAckMessageV1, BroadcastPresenceMessageV1 } from "@treecrdt/sync/browser";
 import { createBroadcastPresenceMesh, createBrowserWebSocketTransport } from "@treecrdt/sync/browser";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
@@ -36,7 +26,6 @@ import {
   ROOT_ID,
 } from "../constants";
 import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from "../types";
-import type { StoredAuthMaterial } from "../../auth";
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
 
@@ -82,24 +71,9 @@ function isCapabilityRevokedError(err: unknown): boolean {
   return /capability token revoked/i.test(errorMessage(err));
 }
 
-function isTransientAuthReadinessError(err: unknown): boolean {
-  const message = errorMessage(err);
-  return (
-    /auth enabled but no local capability tokens are recorded/i.test(message) ||
-    /initializing keys\/tokens/i.test(message)
-  );
-}
-
-function shouldDropPeerConnection(err: unknown): boolean {
-  return !isCapabilityRevokedError(err) && !isTransientAuthReadinessError(err);
-}
-
 function formatSyncError(err: unknown): string {
   if (isCapabilityRevokedError(err)) {
     return "Access revoked for this capability. Import/update access, then sync again.";
-  }
-  if (isTransientAuthReadinessError(err)) {
-    return "Auth enabled: initializing keys/tokens...";
   }
   if (/unknown author:/i.test(errorMessage(err))) {
     return "This document contains ops from an author whose capability token is not available here yet. Sync from a peer that has the full author history, or try a fresh doc.";
@@ -138,25 +112,16 @@ export type UsePlaygroundSyncOptions = {
   online: boolean;
   getMaxLamport: () => bigint;
   authEnabled: boolean;
-  authMaterial: StoredAuthMaterial;
+  syncAuth: SyncAuth<Operation> | null;
   authError: string | null;
   joinMode: boolean;
+  authNeedsInvite: boolean;
   authCanSyncAll: boolean;
   viewRootId: string;
-  hardRevokedTokenIds: string[];
-  revocationCutoverEnabled: boolean;
-  revocationCutoverTokenId: string;
-  revocationCutoverCounter: string;
   treeStateRef: React.MutableRefObject<TreeState>;
   refreshMeta: () => Promise<void>;
   refreshParents: (parentIds: string[]) => Promise<void>;
   refreshNodeCount: () => Promise<void>;
-  getLocalIdentityChain: () => Promise<TreecrdtIdentityChainV1 | null>;
-  onPeerIdentityChain: (chain: {
-    identityPublicKey: Uint8Array;
-    devicePublicKey: Uint8Array;
-    replicaPublicKey: Uint8Array;
-  }) => void;
   onAuthGrantMessage?: (grant: AuthGrantMessageV1) => void;
   onRemoteOpsApplied: (ops: Operation[]) => Promise<void> | void;
 };
@@ -173,21 +138,16 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     online,
     getMaxLamport,
     authEnabled,
-    authMaterial,
+    syncAuth,
     authError,
     joinMode,
+    authNeedsInvite,
     authCanSyncAll,
     viewRootId,
-    hardRevokedTokenIds,
-    revocationCutoverEnabled,
-    revocationCutoverTokenId,
-    revocationCutoverCounter,
     treeStateRef,
     refreshMeta,
     refreshParents,
     refreshNodeCount,
-    getLocalIdentityChain,
-    onPeerIdentityChain,
     onAuthGrantMessage,
     onRemoteOpsApplied,
   } = opts;
@@ -222,7 +182,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
   const liveAllStartingRef = useRef<Set<string>>(new Set());
   const liveChildrenStartingRef = useRef<Set<string>>(new Set());
-  const liveRetryTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const liveBusyCountRef = useRef(0);
   const remoteLivePushScheduledRef = useRef(false);
   const remoteLivePushRunningRef = useRef(false);
@@ -253,7 +212,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const stopLiveAllForPeer = (peerId: string) => {
-    clearLiveRetry(liveAllRetryKey(peerId));
     const existing = liveAllSubsRef.current.get(peerId);
     if (!existing) return;
     existing.stop();
@@ -273,46 +231,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const endLiveWork = () => {
     liveBusyCountRef.current = Math.max(0, liveBusyCountRef.current - 1);
     setLiveBusy(liveBusyCountRef.current > 0);
-  };
-
-  const liveAllRetryKey = (peerId: string) => `all\u0000${peerId}`;
-  const liveChildrenRetryKey = (peerId: string, parentId: string) => `children\u0000${peerId}\u0000${parentId}`;
-
-  const clearLiveRetry = (retryKey: string) => {
-    const existing = liveRetryTimersRef.current.get(retryKey);
-    if (existing === undefined) return;
-    clearTimeout(existing);
-    liveRetryTimersRef.current.delete(retryKey);
-  };
-
-  const clearLiveRetriesForPeer = (peerId: string) => {
-    clearLiveRetry(liveAllRetryKey(peerId));
-    for (const key of Array.from(liveRetryTimersRef.current.keys())) {
-      if (!key.startsWith(`children\u0000${peerId}\u0000`)) continue;
-      clearLiveRetry(key);
-    }
-  };
-
-  const scheduleLiveAllRetry = (peerId: string) => {
-    const retryKey = liveAllRetryKey(peerId);
-    if (liveRetryTimersRef.current.has(retryKey)) return;
-    const timer = setTimeout(() => {
-      liveRetryTimersRef.current.delete(retryKey);
-      if (!liveAllEnabledRef.current) return;
-      startLiveAll(peerId);
-    }, 300);
-    liveRetryTimersRef.current.set(retryKey, timer);
-  };
-
-  const scheduleLiveChildrenRetry = (peerId: string, parentId: string) => {
-    const retryKey = liveChildrenRetryKey(peerId, parentId);
-    if (liveRetryTimersRef.current.has(retryKey)) return;
-    const timer = setTimeout(() => {
-      liveRetryTimersRef.current.delete(retryKey);
-      if (!liveChildrenParentsRef.current.has(parentId)) return;
-      startLiveChildren(peerId, parentId);
-    }, 300);
-    liveRetryTimersRef.current.set(retryKey, timer);
   };
 
   const startLiveAll = (peerId: string) => {
@@ -341,7 +259,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (!started) return;
         console.error("Live sync(all) failed", err);
         stopLiveAllForPeer(peerId);
-        if (isTransientAuthReadinessError(err)) scheduleLiveAllRetry(peerId);
         setSyncError(formatSyncError(err));
       });
 
@@ -351,7 +268,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       } catch (err) {
         console.error("Live sync(all) initial catch-up failed", err);
         stopLiveAllForPeer(peerId);
-        if (isTransientAuthReadinessError(err)) scheduleLiveAllRetry(peerId);
         setSyncError(formatSyncError(err));
         return;
       }
@@ -362,7 +278,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const stopLiveChildrenForPeer = (peerId: string) => {
-    clearLiveRetriesForPeer(peerId);
     const byParent = liveChildSubsRef.current.get(peerId);
     if (!byParent) return;
     for (const sub of byParent.values()) sub.stop();
@@ -370,7 +285,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const stopLiveChildren = (peerId: string, parentId: string) => {
-    clearLiveRetry(liveChildrenRetryKey(peerId, parentId));
     const byParent = liveChildSubsRef.current.get(peerId);
     if (!byParent) return;
     const sub = byParent.get(parentId);
@@ -414,7 +328,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (!started) return;
         console.error("Live sync failed", err);
         stopLiveChildren(peerId, parentId);
-        if (isTransientAuthReadinessError(err)) scheduleLiveChildrenRetry(peerId, parentId);
         setSyncError(formatSyncError(err));
       });
 
@@ -424,7 +337,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       } catch (err) {
         console.error("Live sync(children) initial catch-up failed", err);
         stopLiveChildren(peerId, parentId);
-        if (isTransientAuthReadinessError(err)) scheduleLiveChildrenRetry(peerId, parentId);
         setSyncError(formatSyncError(err));
         return;
       }
@@ -495,7 +407,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             } catch (err) {
               console.error("Remote live sync push failed", err);
               setSyncError(formatSyncError(err));
-              if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
+              if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
             }
           }
         }
@@ -579,7 +491,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Sync failed for peer", peerId, err);
-          if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
+          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -650,7 +562,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Scoped sync failed for peer", peerId, err);
-          if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
+          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -684,12 +596,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     if (!onlineRef.current) return;
     if (syncBusy) return;
 
-    const authReady =
-      !authEnabled ||
-      (authMaterial.issuerPkB64 &&
-        authMaterial.localSkB64 &&
-        authMaterial.localPkB64 &&
-        authMaterial.localTokensB64.length > 0);
+    const authReady = !authEnabled || Boolean(syncAuth);
     if (!authReady) return;
 
     const mesh = presenceMeshRef.current;
@@ -758,7 +665,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         console.error("Auto sync failed", err);
         setSyncError(formatSyncError(err));
         autoSyncPeerIdRef.current = null;
-        if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
+        if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
       } finally {
         autoSyncInFlightRef.current = false;
         setSyncBusy(false);
@@ -768,15 +675,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   }, [
     authEnabled,
     authCanSyncAll,
-    authMaterial.issuerPkB64,
-    authMaterial.localPkB64,
-    authMaterial.localSkB64,
-    authMaterial.localTokensB64.length,
     autoSyncJoinTick,
     joinMode,
     refreshMeta,
     refreshNodeCount,
     refreshParents,
+    syncAuth,
     syncBusy,
     viewRootId,
   ]);
@@ -866,34 +770,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       return;
     }
 
-    const peerAuthConfig =
-      authEnabled &&
-      authMaterial.issuerPkB64 &&
-      authMaterial.localSkB64 &&
-      authMaterial.localPkB64 &&
-      authMaterial.localTokensB64.length > 0
-        ? {
-            issuerPk: base64urlDecode(authMaterial.issuerPkB64),
-            localSk: base64urlDecode(authMaterial.localSkB64),
-            localPk: base64urlDecode(authMaterial.localPkB64),
-            localTokens: authMaterial.localTokensB64.map((t) => base64urlDecode(t)),
-            hardRevokedTokenIds: hardRevokedTokenIds.map((id) => hexToBytes16(id)),
-            cutoverRule: (() => {
-              if (!revocationCutoverEnabled) return null;
-              const tokenIdHex = revocationCutoverTokenId.trim().toLowerCase().replace(/^0x/, "");
-              if (!/^[0-9a-f]{32}$/.test(tokenIdHex)) return null;
-              const parsedCounter = Number(revocationCutoverCounter.trim());
-              if (!Number.isInteger(parsedCounter) || parsedCounter < 0) return null;
-              return { tokenIdHex, counter: parsedCounter };
-            })(),
-            opAuthStore: createOpAuthStore({ runner: client.runner, docId }),
-            capabilityStore: createCapabilityMaterialStore({ runner: client.runner, docId }),
-            scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(client.runner),
-            getLocalIdentityChain,
-            onPeerIdentityChain,
-          }
-        : null;
-
     if (!authEnabled) {
       // If auth is off, clear any auth-gating error strings so the UI doesn't keep telling users to import invites.
       setSyncError((prev) =>
@@ -901,9 +777,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       );
     }
 
-    if (authEnabled && !peerAuthConfig) {
-      const waitingForInvite = joinMode && authMaterial.localTokensB64.length === 0;
-      setSyncError(waitingForInvite ? null : authError ?? "Auth enabled: initializing keys/tokens...");
+    if (authEnabled && !syncAuth) {
+      setSyncError(authNeedsInvite ? null : authError ?? "Auth enabled: initializing keys/tokens...");
       return;
     }
 
@@ -959,54 +834,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const sharedPeer = new SyncPeer<Operation>(backend, {
       maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
       maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-      ...(peerAuthConfig
+      ...(syncAuth
         ? {
-            auth: (() => {
-              const baseAuth = createTreecrdtCoseCwtAuth({
-                issuerPublicKeys: [peerAuthConfig.issuerPk],
-                localPrivateKey: peerAuthConfig.localSk,
-                localPublicKey: peerAuthConfig.localPk,
-                localCapabilityTokens: peerAuthConfig.localTokens,
-                capabilityStore: peerAuthConfig.capabilityStore,
-                revokedCapabilityTokenIds: peerAuthConfig.hardRevokedTokenIds,
-                isCapabilityTokenRevoked: (ctx) => {
-                  if (ctx.stage !== "runtime") return false;
-                  if (!peerAuthConfig.cutoverRule) return false;
-                  if (ctx.tokenIdHex !== peerAuthConfig.cutoverRule.tokenIdHex) return false;
-                  return ctx.op.meta.id.counter >= peerAuthConfig.cutoverRule.counter;
-                },
-                requireProofRef: true,
-                opAuthStore: peerAuthConfig.opAuthStore,
-                scopeEvaluator: peerAuthConfig.scopeEvaluator,
-                onPeerIdentityChain: peerAuthConfig.onPeerIdentityChain,
-              });
-
-              const withIdentity: typeof baseAuth = {
-                ...baseAuth,
-                helloCapabilities: async (ctx) => {
-                  const caps = (await baseAuth.helloCapabilities?.(ctx)) ?? [];
-                  try {
-                    const chain = await peerAuthConfig.getLocalIdentityChain();
-                    if (chain) caps.push(createTreecrdtIdentityChainCapabilityV1(chain));
-                  } catch {
-                    // Best-effort; identity chains are optional.
-                  }
-                  return caps;
-                },
-                onHello: async (hello, ctx) => {
-                  const ackCaps = (await baseAuth.onHello?.(hello, ctx)) ?? [];
-                  try {
-                    const chain = await peerAuthConfig.getLocalIdentityChain();
-                    if (chain) ackCaps.push(createTreecrdtIdentityChainCapabilityV1(chain));
-                  } catch {
-                    // Best-effort; identity chains are optional.
-                  }
-                  return ackCaps;
-                },
-              };
-
-              return withIdentity;
-            })(),
+            auth: syncAuth,
           }
         : {}),
     });
@@ -1183,8 +1013,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       channel?.close();
       liveAllStartingRef.current.clear();
       liveChildrenStartingRef.current.clear();
-      for (const timer of liveRetryTimersRef.current.values()) clearTimeout(timer);
-      liveRetryTimersRef.current.clear();
       remoteLivePushScheduledRef.current = false;
       remoteLivePushRunningRef.current = false;
       liveBusyCountRef.current = 0;
@@ -1197,24 +1025,15 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     authEnabled,
-    // Avoid restarting the mesh when `authMaterial` is re-read with the same values.
-    authMaterial.issuerPkB64,
-    authMaterial.localPkB64,
-    authMaterial.localSkB64,
-    authMaterial.localTokensB64.join(","),
-    hardRevokedTokenIds.join(","),
-    revocationCutoverEnabled,
-    revocationCutoverTokenId,
-    revocationCutoverCounter,
+    authNeedsInvite,
     client,
     docId,
-    getLocalIdentityChain,
     getMaxLamport,
     joinMode,
     onAuthGrantMessage,
-    onPeerIdentityChain,
     onRemoteOpsApplied,
     selfPeerId,
+    syncAuth,
     syncServerUrl,
     transportMode,
     status,
