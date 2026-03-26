@@ -82,9 +82,24 @@ function isCapabilityRevokedError(err: unknown): boolean {
   return /capability token revoked/i.test(errorMessage(err));
 }
 
+function isTransientAuthReadinessError(err: unknown): boolean {
+  const message = errorMessage(err);
+  return (
+    /auth enabled but no local capability tokens are recorded/i.test(message) ||
+    /initializing keys\/tokens/i.test(message)
+  );
+}
+
+function shouldDropPeerConnection(err: unknown): boolean {
+  return !isCapabilityRevokedError(err) && !isTransientAuthReadinessError(err);
+}
+
 function formatSyncError(err: unknown): string {
   if (isCapabilityRevokedError(err)) {
     return "Access revoked for this capability. Import/update access, then sync again.";
+  }
+  if (isTransientAuthReadinessError(err)) {
+    return "Auth enabled: initializing keys/tokens...";
   }
   if (/unknown author:/i.test(errorMessage(err))) {
     return "This document contains ops from an author whose capability token is not available here yet. Sync from a peer that has the full author history, or try a fresh doc.";
@@ -207,6 +222,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
   const liveAllStartingRef = useRef<Set<string>>(new Set());
   const liveChildrenStartingRef = useRef<Set<string>>(new Set());
+  const liveRetryTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const liveBusyCountRef = useRef(0);
   const remoteLivePushScheduledRef = useRef(false);
   const remoteLivePushRunningRef = useRef(false);
@@ -237,6 +253,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const stopLiveAllForPeer = (peerId: string) => {
+    clearLiveRetry(liveAllRetryKey(peerId));
     const existing = liveAllSubsRef.current.get(peerId);
     if (!existing) return;
     existing.stop();
@@ -256,6 +273,46 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const endLiveWork = () => {
     liveBusyCountRef.current = Math.max(0, liveBusyCountRef.current - 1);
     setLiveBusy(liveBusyCountRef.current > 0);
+  };
+
+  const liveAllRetryKey = (peerId: string) => `all\u0000${peerId}`;
+  const liveChildrenRetryKey = (peerId: string, parentId: string) => `children\u0000${peerId}\u0000${parentId}`;
+
+  const clearLiveRetry = (retryKey: string) => {
+    const existing = liveRetryTimersRef.current.get(retryKey);
+    if (existing === undefined) return;
+    clearTimeout(existing);
+    liveRetryTimersRef.current.delete(retryKey);
+  };
+
+  const clearLiveRetriesForPeer = (peerId: string) => {
+    clearLiveRetry(liveAllRetryKey(peerId));
+    for (const key of Array.from(liveRetryTimersRef.current.keys())) {
+      if (!key.startsWith(`children\u0000${peerId}\u0000`)) continue;
+      clearLiveRetry(key);
+    }
+  };
+
+  const scheduleLiveAllRetry = (peerId: string) => {
+    const retryKey = liveAllRetryKey(peerId);
+    if (liveRetryTimersRef.current.has(retryKey)) return;
+    const timer = setTimeout(() => {
+      liveRetryTimersRef.current.delete(retryKey);
+      if (!liveAllEnabledRef.current) return;
+      startLiveAll(peerId);
+    }, 300);
+    liveRetryTimersRef.current.set(retryKey, timer);
+  };
+
+  const scheduleLiveChildrenRetry = (peerId: string, parentId: string) => {
+    const retryKey = liveChildrenRetryKey(peerId, parentId);
+    if (liveRetryTimersRef.current.has(retryKey)) return;
+    const timer = setTimeout(() => {
+      liveRetryTimersRef.current.delete(retryKey);
+      if (!liveChildrenParentsRef.current.has(parentId)) return;
+      startLiveChildren(peerId, parentId);
+    }, 300);
+    liveRetryTimersRef.current.set(retryKey, timer);
   };
 
   const startLiveAll = (peerId: string) => {
@@ -284,6 +341,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (!started) return;
         console.error("Live sync(all) failed", err);
         stopLiveAllForPeer(peerId);
+        if (isTransientAuthReadinessError(err)) scheduleLiveAllRetry(peerId);
         setSyncError(formatSyncError(err));
       });
 
@@ -293,6 +351,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       } catch (err) {
         console.error("Live sync(all) initial catch-up failed", err);
         stopLiveAllForPeer(peerId);
+        if (isTransientAuthReadinessError(err)) scheduleLiveAllRetry(peerId);
         setSyncError(formatSyncError(err));
         return;
       }
@@ -303,6 +362,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const stopLiveChildrenForPeer = (peerId: string) => {
+    clearLiveRetriesForPeer(peerId);
     const byParent = liveChildSubsRef.current.get(peerId);
     if (!byParent) return;
     for (const sub of byParent.values()) sub.stop();
@@ -310,6 +370,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const stopLiveChildren = (peerId: string, parentId: string) => {
+    clearLiveRetry(liveChildrenRetryKey(peerId, parentId));
     const byParent = liveChildSubsRef.current.get(peerId);
     if (!byParent) return;
     const sub = byParent.get(parentId);
@@ -353,6 +414,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (!started) return;
         console.error("Live sync failed", err);
         stopLiveChildren(peerId, parentId);
+        if (isTransientAuthReadinessError(err)) scheduleLiveChildrenRetry(peerId, parentId);
         setSyncError(formatSyncError(err));
       });
 
@@ -362,6 +424,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       } catch (err) {
         console.error("Live sync(children) initial catch-up failed", err);
         stopLiveChildren(peerId, parentId);
+        if (isTransientAuthReadinessError(err)) scheduleLiveChildrenRetry(peerId, parentId);
         setSyncError(formatSyncError(err));
         return;
       }
@@ -432,7 +495,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             } catch (err) {
               console.error("Remote live sync push failed", err);
               setSyncError(formatSyncError(err));
-              if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
+              if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
             }
           }
         }
@@ -516,7 +579,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Sync failed for peer", peerId, err);
-          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
+          if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -587,7 +650,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         } catch (err) {
           lastErr = err;
           console.error("Scoped sync failed for peer", peerId, err);
-          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
+          if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
         }
       }
       if (successes === 0) {
@@ -695,7 +758,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         console.error("Auto sync failed", err);
         setSyncError(formatSyncError(err));
         autoSyncPeerIdRef.current = null;
-        if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
+        if (shouldDropPeerConnection(err)) dropPeerConnection(peerId);
       } finally {
         autoSyncInFlightRef.current = false;
         setSyncBusy(false);
@@ -1120,6 +1183,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       channel?.close();
       liveAllStartingRef.current.clear();
       liveChildrenStartingRef.current.clear();
+      for (const timer of liveRetryTimersRef.current.values()) clearTimeout(timer);
+      liveRetryTimersRef.current.clear();
       remoteLivePushScheduledRef.current = false;
       remoteLivePushRunningRef.current = false;
       liveBusyCountRef.current = 0;
