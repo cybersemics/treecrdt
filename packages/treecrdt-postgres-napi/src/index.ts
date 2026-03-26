@@ -1,4 +1,5 @@
 import type { Operation } from "@treecrdt/interface";
+import { loadScopedChildrenOpRefs } from "@treecrdt/sync";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
 import { nativeToOperation, operationToNative } from "./codec.js";
@@ -42,18 +43,10 @@ export function createPostgresNapiSyncBackendFactory(url: string): PostgresNapiS
         listOpRefs: async (filter: Filter) => {
           if ("all" in filter) return nativeBackend.listOpRefsAll();
           const parent = Buffer.from(filter.children.parent);
-          const refs = nativeBackend.listOpRefsChildren(parent);
-          // `children(parent)` is used for scoped subtree sync. The scope root's own latest
-          // payload opRef may not be reachable via its parent (which can be out of scope), so
-          // include it explicitly, but only once to avoid duplicate reconcile symbols.
-          const payloadWriter = nativeBackend.latestPayloadWriterOpRef(parent);
-          if (!payloadWriter) return refs;
-
-          const payloadWriterHex = Buffer.from(payloadWriter).toString("hex");
-          if (refs.some((ref) => Buffer.from(ref).toString("hex") === payloadWriterHex)) {
-            return refs;
-          }
-          return [...refs, payloadWriter];
+          return await loadScopedChildrenOpRefs({
+            listChildRefs: async () => nativeBackend.listOpRefsChildren(parent),
+            loadScopeRootPayloadWriter: async () => nativeBackend.latestPayloadWriterOpRef(parent),
+          });
         },
         getOpsByOpRefs: async (opRefs: OpRef[]) => {
           if (opRefs.length === 0) return [];

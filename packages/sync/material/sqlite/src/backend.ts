@@ -1,7 +1,7 @@
 import type { Operation } from "@treecrdt/interface";
 import { bytesToHex, hexToBytes } from "@treecrdt/interface/ids";
 import type { SqliteRunner } from "@treecrdt/interface/sqlite";
-import { deriveOpRefV0 } from "@treecrdt/sync";
+import { deriveOpRefV0, loadScopedChildrenOpRefs } from "@treecrdt/sync";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
 import { createPendingOpsStore } from "./proof-material/index.js";
@@ -142,23 +142,17 @@ export function createTreecrdtSyncBackendFromClient(
       }
 
       const parentHex = bytesToHex(filter.children.parent);
-      const refs = await client.opRefs.children(parentHex);
-
-      // Scoped sync often starts at a subtree root where the node's own payload opRef is not
-      // discoverable via its parent (which may be outside scope). Include the node's latest
-      // payload-writer opRef so `children(node)` can render the scope root label/value.
-      if (!client.runner) return refs;
-      const payloadWriter = await maybeLoadNodePayloadWriterOpRef({
-        runner: client.runner,
-        docId,
-        nodeBytes: filter.children.parent,
+      return await loadScopedChildrenOpRefs({
+        listChildRefs: async () => await client.opRefs.children(parentHex),
+        loadScopeRootPayloadWriter: async () => {
+          if (!client.runner) return null;
+          return await maybeLoadNodePayloadWriterOpRef({
+            runner: client.runner,
+            docId,
+            nodeBytes: filter.children.parent,
+          });
+        },
       });
-      if (!payloadWriter) return refs;
-
-      const seen = new Set(refs.map((r) => bytesToHex(r)));
-      const hex = bytesToHex(payloadWriter);
-      if (seen.has(hex)) return refs;
-      return [...refs, payloadWriter];
     },
 
     getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
