@@ -37,6 +37,16 @@ Then in the playground:
 - Paste `ws://localhost:8787` into `Remote sync server`
 - Leave mode as `Hybrid`, or switch to `Remote server` if you want to disable local tab sync
 
+## Public sync server
+
+If you want to test against the shared dev deployment instead of running Postgres locally:
+
+- Open the `Connections` panel
+- Click `Use public`, or paste `wss://sync.emhub.net/sync`
+- Use `Hybrid` for browser-local tabs plus remote sync, or `Remote server` for remote-only behavior
+
+The public hostname is TLS-enabled, so use `wss://`, not `ws://`.
+
 `pnpm sync-server:postgres:db:start` starts a disposable local Postgres at:
 
 ```bash

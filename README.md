@@ -29,6 +29,7 @@ For benchmark commands, product-facing note/sync scenarios, and the sync target 
 
 ## Playground
 - Live demo (GitHub Pages): https://cybersemics.github.io/treecrdt/
+- Shared sync endpoint: `wss://sync.emhub.net/sync`
 
 ### Local playground with a real sync server
 If you want the most useful local setup, start the sync server first and then point the playground at it:
@@ -68,6 +69,16 @@ For full sync-server configuration and environment variables, see:
 
 - `packages/sync/server/postgres-node/README.md`
 - `examples/playground/README.md`
+
+### Playground against the shared dev sync server
+If you just want to try the realtime path without running local Postgres, open the
+`Connections` panel and use:
+
+```
+wss://sync.emhub.net/sync
+```
+
+The playground also has a `Use public` shortcut in the remote sync server panel.
 
 ## Contribute
 Contributions are welcome!
