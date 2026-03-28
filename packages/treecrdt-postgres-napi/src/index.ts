@@ -1,4 +1,5 @@
 import type { Operation } from "@treecrdt/interface";
+import { loadScopedChildrenOpRefs } from "@treecrdt/sync";
 import type { Filter, OpRef, SyncBackend } from "@treecrdt/sync";
 
 import { nativeToOperation, operationToNative } from "./codec.js";
@@ -42,7 +43,10 @@ export function createPostgresNapiSyncBackendFactory(url: string): PostgresNapiS
         listOpRefs: async (filter: Filter) => {
           if ("all" in filter) return nativeBackend.listOpRefsAll();
           const parent = Buffer.from(filter.children.parent);
-          return nativeBackend.listOpRefsChildren(parent);
+          return await loadScopedChildrenOpRefs({
+            listChildRefs: async () => nativeBackend.listOpRefsChildren(parent),
+            loadScopeRootPayloadWriter: async () => nativeBackend.latestPayloadWriterOpRef(parent),
+          });
         },
         getOpsByOpRefs: async (opRefs: OpRef[]) => {
           if (opRefs.length === 0) return [];

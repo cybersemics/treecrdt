@@ -6,9 +6,22 @@ export { ErrorCode, RibltFailureReason } from "./gen/sync/v0/messages_pb.js";
 export type Bytes = Uint8Array;
 export type OpRef = Bytes; // fixed-width (16 bytes in v0)
 
+/**
+ * Scoped subtree filter rooted at `parent`.
+ *
+ * `SyncBackend.listOpRefs({ children: { parent } })` is defined as the opRef set required to
+ * render and synchronize that subtree, not merely ops whose current parent equals `parent`.
+ * Implementations MUST include:
+ * - ops that affect the canonical child set of `parent`
+ * - boundary-crossing moves relevant to that child set
+ * - payload visibility needed for nodes that move into scope
+ * - the scope root node's own latest payload-writer opRef, if any
+ */
+export type ChildrenFilter = { children: { parent: Bytes } };
+
 export type Filter =
   | { all: Record<string, never> }
-  | { children: { parent: Bytes } };
+  | ChildrenFilter;
 
 export type FilterSpec = {
   id: string;
@@ -132,6 +145,12 @@ export type SyncMessage<Op> = {
 export interface SyncBackend<Op> {
   docId: string;
   maxLamport(): Promise<bigint>;
+  /**
+   * Return the opRef set for a sync filter.
+   *
+   * For `children(parent)`, implementations MUST follow `ChildrenFilter` semantics so all
+   * backends advertise the same subtree state during reconcile and subscribe flows.
+   */
   listOpRefs(filter: Filter): Promise<OpRef[]>;
   getOpsByOpRefs(opRefs: OpRef[]): Promise<Op[]>;
   applyOps(ops: Op[]): Promise<void>;
