@@ -1,19 +1,19 @@
-import { describe } from "vitest";
-import { defineProofMaterialStoreContract } from "../../protocol/tests/helpers/proof-material-contract.ts";
-import { definePendingProofMaterialStoreContract } from "../../protocol/tests/helpers/pending-proof-material-contract.ts";
-import { defineReplayOnlyAuthStoreContract } from "../../protocol/tests/helpers/replay-only-auth-contract.ts";
+import { describe } from 'vitest';
+import { defineProofMaterialStoreContract } from '../../protocol/tests/helpers/proof-material-contract.ts';
+import { definePendingProofMaterialStoreContract } from '../../protocol/tests/helpers/pending-proof-material-contract.ts';
+import { defineReplayOnlyAuthStoreContract } from '../../protocol/tests/helpers/replay-only-auth-contract.ts';
 
 import {
   createCapabilityMaterialStore,
   createOpAuthStore,
   createPendingOpsStore,
-} from "../dist/index.js";
+} from '../dist/index.js';
 
 const POSTGRES_URL = process.env.TREECRDT_POSTGRES_URL;
 const maybeDescribe = POSTGRES_URL ? describe : describe.skip;
 
-maybeDescribe("postgres proof material stores", () => {
-  defineProofMaterialStoreContract("postgres proof material stores", async () => {
+maybeDescribe('postgres proof material stores', () => {
+  defineProofMaterialStoreContract('postgres proof material stores', async () => {
     const opAuthStore = createOpAuthStore({ postgresUrl: POSTGRES_URL! });
     const capabilityStore = createCapabilityMaterialStore({ postgresUrl: POSTGRES_URL! });
     await opAuthStore.init();
@@ -30,7 +30,7 @@ maybeDescribe("postgres proof material stores", () => {
     };
   });
 
-  definePendingProofMaterialStoreContract("postgres pending proof material stores", async () => {
+  definePendingProofMaterialStoreContract('postgres pending proof material stores', async () => {
     const pendingStore = createPendingOpsStore({ postgresUrl: POSTGRES_URL! });
     await pendingStore.init();
 
@@ -42,7 +42,7 @@ maybeDescribe("postgres proof material stores", () => {
     };
   });
 
-  defineReplayOnlyAuthStoreContract("postgres replay-only auth material stores", async () => {
+  defineReplayOnlyAuthStoreContract('postgres replay-only auth material stores', async () => {
     const opAuthStore = createOpAuthStore({ postgresUrl: POSTGRES_URL! });
     const capabilityStore = createCapabilityMaterialStore({ postgresUrl: POSTGRES_URL! });
     await opAuthStore.init();

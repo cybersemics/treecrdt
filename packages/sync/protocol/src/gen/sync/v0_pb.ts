@@ -2,17 +2,31 @@
 // @generated from file sync/v0.proto (package treecrdt.sync.v0, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Hello, HelloAck, OpsBatch, RibltCodewords, RibltStatus, Subscribe, SubscribeAck, SyncError, Unsubscribe } from "./v0/messages_pb.js";
-import { file_sync_v0_messages } from "./v0/messages_pb.js";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from '@bufbuild/protobuf/codegenv2';
+import { fileDesc, messageDesc } from '@bufbuild/protobuf/codegenv2';
+import type {
+  Hello,
+  HelloAck,
+  OpsBatch,
+  RibltCodewords,
+  RibltStatus,
+  Subscribe,
+  SubscribeAck,
+  SyncError,
+  Unsubscribe,
+} from './v0/messages_pb.js';
+import { file_sync_v0_messages } from './v0/messages_pb.js';
+import type { Message } from '@bufbuild/protobuf';
 
 /**
  * Describes the file sync/v0.proto.
  */
-export const file_sync_v0: GenFile = /*@__PURE__*/
-  fileDesc("Cg1zeW5jL3YwLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIoIECgtTeW5jTWVzc2FnZRIJCgF2GAEgASgNEg4KBmRvY19pZBgCIAEoCRIoCgVoZWxsbxgKIAEoCzIXLnRyZWVjcmR0LnN5bmMudjAuSGVsbG9IABIvCgloZWxsb19hY2sYCyABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkhlbGxvQWNrSAASOwoPcmlibHRfY29kZXdvcmRzGAwgASgLMiAudHJlZWNyZHQuc3luYy52MC5SaWJsdENvZGV3b3Jkc0gAEjUKDHJpYmx0X3N0YXR1cxgNIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuUmlibHRTdGF0dXNIABIvCglvcHNfYmF0Y2gYDiABKAsyGi50cmVlY3JkdC5zeW5jLnYwLk9wc0JhdGNoSAASMAoJc3Vic2NyaWJlGA8gASgLMhsudHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVIABI3Cg1zdWJzY3JpYmVfYWNrGBAgASgLMh4udHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVBY2tIABI0Cgt1bnN1YnNjcmliZRgRIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuVW5zdWJzY3JpYmVIABIsCgVlcnJvchgSIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuU3luY0Vycm9ySABCCQoHcGF5bG9hZGIGcHJvdG8z", [file_sync_v0_messages]);
+export const file_sync_v0: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    'Cg1zeW5jL3YwLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIoIECgtTeW5jTWVzc2FnZRIJCgF2GAEgASgNEg4KBmRvY19pZBgCIAEoCRIoCgVoZWxsbxgKIAEoCzIXLnRyZWVjcmR0LnN5bmMudjAuSGVsbG9IABIvCgloZWxsb19hY2sYCyABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkhlbGxvQWNrSAASOwoPcmlibHRfY29kZXdvcmRzGAwgASgLMiAudHJlZWNyZHQuc3luYy52MC5SaWJsdENvZGV3b3Jkc0gAEjUKDHJpYmx0X3N0YXR1cxgNIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuUmlibHRTdGF0dXNIABIvCglvcHNfYmF0Y2gYDiABKAsyGi50cmVlY3JkdC5zeW5jLnYwLk9wc0JhdGNoSAASMAoJc3Vic2NyaWJlGA8gASgLMhsudHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVIABI3Cg1zdWJzY3JpYmVfYWNrGBAgASgLMh4udHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVBY2tIABI0Cgt1bnN1YnNjcmliZRgRIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuVW5zdWJzY3JpYmVIABIsCgVlcnJvchgSIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuU3luY0Vycm9ySABCCQoHcGF5bG9hZGIGcHJvdG8z',
+    [file_sync_v0_messages],
+  );
 
 /**
  * Envelope type for all protocol messages.
@@ -24,7 +38,7 @@ export const file_sync_v0: GenFile = /*@__PURE__*/
  *
  * @generated from message treecrdt.sync.v0.SyncMessage
  */
-export type SyncMessage = Message<"treecrdt.sync.v0.SyncMessage"> & {
+export type SyncMessage = Message<'treecrdt.sync.v0.SyncMessage'> & {
   /**
    * @generated from field: uint32 v = 1;
    */
@@ -38,67 +52,77 @@ export type SyncMessage = Message<"treecrdt.sync.v0.SyncMessage"> & {
   /**
    * @generated from oneof treecrdt.sync.v0.SyncMessage.payload
    */
-  payload: {
-    /**
-     * @generated from field: treecrdt.sync.v0.Hello hello = 10;
-     */
-    value: Hello;
-    case: "hello";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.HelloAck hello_ack = 11;
-     */
-    value: HelloAck;
-    case: "helloAck";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.RibltCodewords riblt_codewords = 12;
-     */
-    value: RibltCodewords;
-    case: "ribltCodewords";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.RibltStatus riblt_status = 13;
-     */
-    value: RibltStatus;
-    case: "ribltStatus";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.OpsBatch ops_batch = 14;
-     */
-    value: OpsBatch;
-    case: "opsBatch";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.Subscribe subscribe = 15;
-     */
-    value: Subscribe;
-    case: "subscribe";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.SubscribeAck subscribe_ack = 16;
-     */
-    value: SubscribeAck;
-    case: "subscribeAck";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.Unsubscribe unsubscribe = 17;
-     */
-    value: Unsubscribe;
-    case: "unsubscribe";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.SyncError error = 18;
-     */
-    value: SyncError;
-    case: "error";
-  } | { case: undefined; value?: undefined };
+  payload:
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.Hello hello = 10;
+         */
+        value: Hello;
+        case: 'hello';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.HelloAck hello_ack = 11;
+         */
+        value: HelloAck;
+        case: 'helloAck';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.RibltCodewords riblt_codewords = 12;
+         */
+        value: RibltCodewords;
+        case: 'ribltCodewords';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.RibltStatus riblt_status = 13;
+         */
+        value: RibltStatus;
+        case: 'ribltStatus';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.OpsBatch ops_batch = 14;
+         */
+        value: OpsBatch;
+        case: 'opsBatch';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.Subscribe subscribe = 15;
+         */
+        value: Subscribe;
+        case: 'subscribe';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.SubscribeAck subscribe_ack = 16;
+         */
+        value: SubscribeAck;
+        case: 'subscribeAck';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.Unsubscribe unsubscribe = 17;
+         */
+        value: Unsubscribe;
+        case: 'unsubscribe';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.SyncError error = 18;
+         */
+        value: SyncError;
+        case: 'error';
+      }
+    | { case: undefined; value?: undefined };
 };
 
 /**
  * Describes the message treecrdt.sync.v0.SyncMessage.
  * Use `create(SyncMessageSchema)` to create a new message.
  */
-export const SyncMessageSchema: GenMessage<SyncMessage> = /*@__PURE__*/
+export const SyncMessageSchema: GenMessage<SyncMessage> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0, 0);
-

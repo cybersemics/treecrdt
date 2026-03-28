@@ -1,8 +1,13 @@
-import type { Operation, SerializeNodeId, SerializeReplica, TreecrdtAdapter } from "@treecrdt/interface";
-import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
+import type {
+  Operation,
+  SerializeNodeId,
+  SerializeReplica,
+  TreecrdtAdapter,
+} from '@treecrdt/interface';
+import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
 
-import { nativeOpToSqliteRow, operationToNativeWithSerializers } from "./codec.js";
-import { loadNative } from "./native.js";
+import { nativeOpToSqliteRow, operationToNativeWithSerializers } from './codec.js';
+import { loadNative } from './native.js';
 
 export type PostgresNapiAdapterFactory = {
   ensureSchema: () => Promise<void>;
@@ -12,7 +17,7 @@ export type PostgresNapiAdapterFactory = {
 };
 
 function ensureNonEmptyString(name: string, value: string): void {
-  if (typeof value !== "string" || value.length === 0) {
+  if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`${name} must be a non-empty string`);
   }
 }
@@ -24,12 +29,16 @@ function bigintToSafeNumber(name: string, value: bigint): number {
   return Number(value);
 }
 
-function opToNative(op: Operation, serializeNodeId: SerializeNodeId, serializeReplica: SerializeReplica) {
+function opToNative(
+  op: Operation,
+  serializeNodeId: SerializeNodeId,
+  serializeReplica: SerializeReplica,
+) {
   return operationToNativeWithSerializers(op, serializeNodeId, serializeReplica);
 }
 
 export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapterFactory {
-  ensureNonEmptyString("url", url);
+  ensureNonEmptyString('url', url);
   const native = loadNative();
   const factory = new native.PgFactory(url);
 
@@ -37,17 +46,17 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
     ensureSchema: async () => factory.ensureSchema(),
     resetForTests: async () => factory.resetForTests(),
     resetDocForTests: async (docId: string) => {
-      ensureNonEmptyString("docId", docId);
+      ensureNonEmptyString('docId', docId);
       factory.resetDocForTests(docId);
     },
     open: async (initialDocId: string) => {
-      ensureNonEmptyString("docId", initialDocId);
+      ensureNonEmptyString('docId', initialDocId);
       let docId = initialDocId;
       let backend = factory.open(docId);
 
       const adapter: TreecrdtAdapter = {
         setDocId: async (next) => {
-          ensureNonEmptyString("docId", next);
+          ensureNonEmptyString('docId', next);
           docId = next;
           backend = factory.open(docId);
         },
@@ -57,7 +66,12 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
         opsByOpRefs: async (opRefs) => backend.getOpsByOpRefs(opRefs).map(nativeOpToSqliteRow),
         treeChildren: async (parent) => backend.treeChildren(parent),
         treeChildrenPage: async (parent, cursor, limit) => {
-          const rows = backend.treeChildrenPage(parent, cursor?.orderKey ?? null, cursor?.node ?? null, limit);
+          const rows = backend.treeChildrenPage(
+            parent,
+            cursor?.orderKey ?? null,
+            cursor?.node ?? null,
+            limit,
+          );
           return rows.map((r) => ({ node: r.node, order_key: r.orderKey ?? null }));
         },
         treeDump: async () => {
@@ -69,16 +83,16 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
             tombstone: r.tombstone,
           }));
         },
-        treeNodeCount: async () => bigintToSafeNumber("treeNodeCount", backend.treeNodeCount()),
+        treeNodeCount: async () => bigintToSafeNumber('treeNodeCount', backend.treeNodeCount()),
         treeParent: async (node) => {
           const result = backend.treeParent(node);
           return result === null || result === undefined ? null : result;
         },
         treeExists: async (node) => backend.treeExists(node),
         treePayload: async (node) => backend.treePayload(node),
-        headLamport: async () => bigintToSafeNumber("headLamport", backend.maxLamport()),
+        headLamport: async () => bigintToSafeNumber('headLamport', backend.maxLamport()),
         replicaMaxCounter: async (replica) =>
-          bigintToSafeNumber("replicaMaxCounter", backend.replicaMaxCounter(replica)),
+          bigintToSafeNumber('replicaMaxCounter', backend.replicaMaxCounter(replica)),
         appendOp: async (op, serializeNodeId, serializeReplica) => {
           backend.applyOps([opToNative(op, serializeNodeId, serializeReplica)]);
         },

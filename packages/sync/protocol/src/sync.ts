@@ -1,8 +1,12 @@
-import { RibltDecoder16, RibltEncoder16 } from "@treecrdt/riblt-wasm";
+import { RibltDecoder16, RibltEncoder16 } from '@treecrdt/riblt-wasm';
 
-import { AUTH_CAPABILITY_NAME, isAnyAuthCapability, isAuthCapability } from "./auth-capabilities.js";
-import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from "./auth.js";
-import { ErrorCode, RibltFailureReason } from "./types.js";
+import {
+  AUTH_CAPABILITY_NAME,
+  isAnyAuthCapability,
+  isAuthCapability,
+} from './auth-capabilities.js';
+import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from './auth.js';
+import { ErrorCode, RibltFailureReason } from './types.js';
 import type {
   Capability,
   Filter,
@@ -18,12 +22,12 @@ import type {
   SyncBackend,
   SyncMessage,
   Unsubscribe,
-} from "./types.js";
-import type { DuplexTransport } from "./transport/index.js";
+} from './types.js';
+import type { DuplexTransport } from './transport/index.js';
 
 function randomId(prefix: string): string {
   const uuid =
-    typeof globalThis.crypto?.randomUUID === "function"
+    typeof globalThis.crypto?.randomUUID === 'function'
       ? globalThis.crypto.randomUUID()
       : `${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
   return `${prefix}_${uuid}`;
@@ -106,7 +110,7 @@ function sleepUntil(ms: number, signal?: AbortSignal): Promise<boolean> {
     const timer = setTimeout(() => {
       if (done) return;
       done = true;
-      signal?.removeEventListener("abort", onAbort);
+      signal?.removeEventListener('abort', onAbort);
       resolve(true);
     }, ms);
 
@@ -114,7 +118,7 @@ function sleepUntil(ms: number, signal?: AbortSignal): Promise<boolean> {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
+      signal?.removeEventListener('abort', onAbort);
       resolve(false);
     };
 
@@ -123,18 +127,20 @@ function sleepUntil(ms: number, signal?: AbortSignal): Promise<boolean> {
         onAbort();
         return;
       }
-      signal.addEventListener("abort", onAbort);
+      signal.addEventListener('abort', onAbort);
     }
   });
 }
 
 const yieldToMacrotask: () => Promise<void> = (() => {
-  const setImmediateImpl = (globalThis as any).setImmediate as undefined | ((cb: () => void) => void);
-  if (typeof setImmediateImpl === "function") {
+  const setImmediateImpl = (globalThis as any).setImmediate as
+    | undefined
+    | ((cb: () => void) => void);
+  if (typeof setImmediateImpl === 'function') {
     return async () => new Promise<void>((resolve) => setImmediateImpl(resolve));
   }
 
-  if (typeof MessageChannel !== "undefined") {
+  if (typeof MessageChannel !== 'undefined') {
     const queue: Array<() => void> = [];
     const channel = new MessageChannel();
     channel.port1.onmessage = () => {
@@ -151,14 +157,16 @@ const yieldToMacrotask: () => Promise<void> = (() => {
 })();
 
 function bytesToHex(bytes: Uint8Array): string {
-  let out = "";
-  for (const b of bytes) out += b.toString(16).padStart(2, "0");
+  let out = '';
+  for (const b of bytes) out += b.toString(16).padStart(2, '0');
   return out;
 }
 
 function waitForAbort(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
-  return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+  return new Promise<void>((resolve) =>
+    signal.addEventListener('abort', () => resolve(), { once: true }),
+  );
 }
 
 type ResponderSubscription<Op> = {
@@ -184,7 +192,10 @@ export class SyncPeer<Op> {
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
-  private readonly transportPeerCapabilities = new WeakMap<DuplexTransport<SyncMessage<Op>>, Hello["capabilities"]>();
+  private readonly transportPeerCapabilities = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    Hello['capabilities']
+  >();
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
@@ -197,7 +208,7 @@ export class SyncPeer<Op> {
 
   constructor(
     private readonly backend: SyncBackend<Op>,
-    opts: SyncPeerOptions<Op> = {}
+    opts: SyncPeerOptions<Op> = {},
   ) {
     this.maxCodewords = opts.maxCodewords ?? 50_000;
     this.maxOpsPerBatch = opts.maxOpsPerBatch ?? 5_000;
@@ -208,7 +219,7 @@ export class SyncPeer<Op> {
 
   attach(
     transport: DuplexTransport<SyncMessage<Op>>,
-    opts: SyncPeerAttachOptions<Op> = {}
+    opts: SyncPeerAttachOptions<Op> = {},
   ): () => void {
     return transport.onMessage((msg) => {
       void this.handleMessage(transport, msg).catch((error) => {
@@ -280,12 +291,14 @@ export class SyncPeer<Op> {
       if (this.auth?.filterOutgoingOps && ops.length > 0) {
         const allowed = await this.auth.filterOutgoingOps(ops, {
           docId: this.backend.docId,
-          purpose: "subscribe",
+          purpose: 'subscribe',
           filter: sub.filter,
           capabilities: peerCaps,
         });
         if (allowed.length !== ops.length) {
-          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+          throw new Error(
+            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
+          );
         }
 
         const allowedRefs: OpRef[] = [];
@@ -311,15 +324,24 @@ export class SyncPeer<Op> {
       }
 
       const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
-      const auth = shouldAttachAuth && this.auth?.signOps
-        ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "subscribe", filterId: sub.subscriptionId })
-        : undefined;
-      if (auth && auth.length !== ops.length) throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
+      const auth =
+        shouldAttachAuth && this.auth?.signOps
+          ? await this.auth.signOps(ops, {
+              docId: this.backend.docId,
+              purpose: 'subscribe',
+              filterId: sub.subscriptionId,
+            })
+          : undefined;
+      if (auth && auth.length !== ops.length)
+        throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       const done = start + this.maxOpsPerBatch >= newOpRefs.length;
       await sub.transport.send({
         v: 0,
         docId: this.backend.docId,
-        payload: { case: "opsBatch", value: { filterId: sub.subscriptionId, ops, ...(auth ? { auth } : {}), done } },
+        payload: {
+          case: 'opsBatch',
+          value: { filterId: sub.subscriptionId, ops, ...(auth ? { auth } : {}), done },
+        },
       });
 
       for (const r of chunk) sub.sentOpRefs.add(bytesToHex(r));
@@ -330,12 +352,13 @@ export class SyncPeer<Op> {
   async syncOnce(
     transport: DuplexTransport<SyncMessage<Op>>,
     filter: Filter,
-    opts: SyncOnceOptions = {}
+    opts: SyncOnceOptions = {},
   ): Promise<void> {
-    const filterId = randomId("f");
+    const filterId = randomId('f');
     const round = 0;
     const maxLamport = await this.backend.maxLamport();
-    const capabilities = (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [];
+    const capabilities =
+      (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [];
     const hello: Hello = { capabilities, filters: [{ id: filterId, filter }], maxLamport };
 
     const session: InitiatorSession<Op> = {
@@ -355,7 +378,7 @@ export class SyncPeer<Op> {
       await transport.send({
         v: 0,
         docId: this.backend.docId,
-        payload: { case: "hello", value: hello },
+        payload: { case: 'hello', value: hello },
       });
       await session.ack.promise;
 
@@ -368,12 +391,14 @@ export class SyncPeer<Op> {
         const ops = await this.backend.getOpsByOpRefs(opRefs);
         const allowed = await this.auth.filterOutgoingOps(ops, {
           docId: this.backend.docId,
-          purpose: "reconcile",
+          purpose: 'reconcile',
           filter,
           capabilities: peerCaps,
         });
         if (allowed.length !== ops.length) {
-          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+          throw new Error(
+            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
+          );
         }
         opRefs = opRefs.filter((_r, idx) => allowed[idx] === true);
       }
@@ -389,7 +414,10 @@ export class SyncPeer<Op> {
         if (session.codewordCredits <= 0) {
           const wakeForCredits = session.codewordCreditSignal.promise;
           await Promise.race([
-            session.terminalStatus.promise.then(() => undefined, () => undefined),
+            session.terminalStatus.promise.then(
+              () => undefined,
+              () => undefined,
+            ),
             wakeForCredits,
           ]);
           continue;
@@ -397,7 +425,7 @@ export class SyncPeer<Op> {
 
         session.codewordCredits -= 1;
         const startIndex = nextIndex;
-        const codewords: RibltCodewords["codewords"] = [];
+        const codewords: RibltCodewords['codewords'] = [];
         for (let i = 0; i < codewordsPerMessage && nextIndex < maxCodewords; i += 1) {
           codewords.push(enc.nextCodeword() as any);
           nextIndex += 1n;
@@ -407,25 +435,25 @@ export class SyncPeer<Op> {
           v: 0,
           docId: this.backend.docId,
           payload: {
-            case: "ribltCodewords",
+            case: 'ribltCodewords',
             value: { filterId, round, startIndex, codewords },
           },
         });
         await yieldToMacrotask();
       }
 
-      if (!session.done) throw new Error("riblt: max codewords exceeded");
+      if (!session.done) throw new Error('riblt: max codewords exceeded');
 
       const status = await session.terminalStatus.promise;
-      if (status.payload.case === "failed") {
+      if (status.payload.case === 'failed') {
         const { reason, message } = status.payload.value;
         const name = RibltFailureReason[reason] ?? String(reason);
-        const detail = message ? `: ${message}` : "";
+        const detail = message ? `: ${message}` : '';
         throw new Error(`riblt: ${name}${detail}`);
       }
 
       const receiverMissing =
-        status.payload.case === "decoded" ? status.payload.value.receiverMissing : [];
+        status.payload.case === 'decoded' ? status.payload.value.receiverMissing : [];
       if (receiverMissing.length > 0) {
         await this.sendOpsBatches(transport, filterId, receiverMissing, {
           maxOpsPerBatch: opts.maxOpsPerBatch,
@@ -434,7 +462,7 @@ export class SyncPeer<Op> {
         await transport.send({
           v: 0,
           docId: this.backend.docId,
-          payload: { case: "opsBatch", value: { filterId, ops: [], done: true } },
+          payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
         });
       }
 
@@ -448,7 +476,7 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     filterId: string,
     opRefs: OpRef[],
-    opts: { maxOpsPerBatch?: number } = {}
+    opts: { maxOpsPerBatch?: number } = {},
   ): Promise<void> {
     const maxOpsPerBatch = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
     if (!Number.isFinite(maxOpsPerBatch) || maxOpsPerBatch <= 0) {
@@ -465,7 +493,7 @@ export class SyncPeer<Op> {
       await transport.send({
         v: 0,
         docId: this.backend.docId,
-        payload: { case: "opsBatch", value: { filterId, ops: [], done: true } },
+        payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
       });
       return;
     }
@@ -477,12 +505,14 @@ export class SyncPeer<Op> {
       if (filter && this.auth?.filterOutgoingOps && ops.length > 0) {
         const allowed = await this.auth.filterOutgoingOps(ops, {
           docId: this.backend.docId,
-          purpose: "reconcile",
+          purpose: 'reconcile',
           filter,
           capabilities: peerCaps,
         });
         if (allowed.length !== ops.length) {
-          throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+          throw new Error(
+            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
+          );
         }
 
         const nextOps: Op[] = [];
@@ -499,16 +529,21 @@ export class SyncPeer<Op> {
           await transport.send({
             v: 0,
             docId: this.backend.docId,
-            payload: { case: "opsBatch", value: { filterId, ops: [], done: true } },
+            payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
           });
         }
         continue;
       }
 
       const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
-      const auth = shouldAttachAuth && this.auth?.signOps
-        ? await this.auth.signOps(ops, { docId: this.backend.docId, purpose: "reconcile", filterId })
-        : undefined;
+      const auth =
+        shouldAttachAuth && this.auth?.signOps
+          ? await this.auth.signOps(ops, {
+              docId: this.backend.docId,
+              purpose: 'reconcile',
+              filterId,
+            })
+          : undefined;
       if (auth && auth.length !== ops.length) {
         throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       }
@@ -516,7 +551,7 @@ export class SyncPeer<Op> {
       await transport.send({
         v: 0,
         docId: this.backend.docId,
-        payload: { case: "opsBatch", value: { filterId, ops, ...(auth ? { auth } : {}), done } },
+        payload: { case: 'opsBatch', value: { filterId, ops, ...(auth ? { auth } : {}), done } },
       });
       await yieldToMacrotask();
     }
@@ -525,14 +560,14 @@ export class SyncPeer<Op> {
   subscribe(
     transport: DuplexTransport<SyncMessage<Op>>,
     filter: Filter,
-    opts: SyncSubscribeOptions = {}
+    opts: SyncSubscribeOptions = {},
   ): SyncSubscription {
     const controller = new AbortController();
     if (opts.signal) {
       if (opts.signal.aborted) {
         controller.abort();
       } else {
-        opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+        opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
       }
     }
 
@@ -543,8 +578,11 @@ export class SyncPeer<Op> {
     const maxCodewords = opts.maxCodewords;
     const maxOpsPerBatch = opts.maxOpsPerBatch;
 
-    const subscriptionId = randomId("sub");
-    const session: InitiatorSubscription = { ack: deferred<SubscribeAck>(), failed: deferred<unknown>() };
+    const subscriptionId = randomId('sub');
+    const session: InitiatorSubscription = {
+      ack: deferred<SubscribeAck>(),
+      failed: deferred<unknown>(),
+    };
     this.initiatorSubscriptions.set(subscriptionId, session);
     const ready = deferred<void>();
     let readySettled = false;
@@ -577,27 +615,27 @@ export class SyncPeer<Op> {
           await transport.send({
             v: 0,
             docId: this.backend.docId,
-            payload: { case: "hello", value: { capabilities, filters: [], maxLamport } },
+            payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
           });
         }
 
         await transport.send({
           v: 0,
           docId: this.backend.docId,
-          payload: { case: "subscribe", value: { subscriptionId, filter } },
+          payload: { case: 'subscribe', value: { subscriptionId, filter } },
         });
         sentSubscribe = true;
 
         const ackOrAbort = await Promise.race([
-          session.ack.promise.then(() => ({ case: "ack" as const })),
-          session.failed.promise.then((err) => ({ case: "failed" as const, err })),
-          waitForAbort(signal).then(() => ({ case: "aborted" as const })),
+          session.ack.promise.then(() => ({ case: 'ack' as const })),
+          session.failed.promise.then((err) => ({ case: 'failed' as const, err })),
+          waitForAbort(signal).then(() => ({ case: 'aborted' as const })),
         ]);
-        if (ackOrAbort.case === "aborted") {
+        if (ackOrAbort.case === 'aborted') {
           resolveReady();
           return;
         }
-        if (ackOrAbort.case === "failed") {
+        if (ackOrAbort.case === 'failed') {
           rejectReady(ackOrAbort.err);
           throw ackOrAbort.err;
         }
@@ -607,7 +645,11 @@ export class SyncPeer<Op> {
           return;
         }
         if (immediate) {
-          await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch });
+          await this.syncOnce(transport, filter, {
+            codewordsPerMessage,
+            maxCodewords,
+            maxOpsPerBatch,
+          });
         }
         resolveReady();
 
@@ -616,7 +658,11 @@ export class SyncPeer<Op> {
             const slept = await sleepUntil(intervalMs, signal);
             if (!slept) break;
             if (signal.aborted) break;
-            await this.syncOnce(transport, filter, { codewordsPerMessage, maxCodewords, maxOpsPerBatch });
+            await this.syncOnce(transport, filter, {
+              codewordsPerMessage,
+              maxCodewords,
+              maxOpsPerBatch,
+            });
           }
         } else {
           await Promise.race([
@@ -637,7 +683,7 @@ export class SyncPeer<Op> {
             await transport.send({
               v: 0,
               docId: this.backend.docId,
-              payload: { case: "unsubscribe", value: { subscriptionId } },
+              payload: { case: 'unsubscribe', value: { subscriptionId } },
             });
           } catch {
             // ignore transport failures during teardown
@@ -651,11 +697,11 @@ export class SyncPeer<Op> {
 
   private async handleMessage(
     transport: DuplexTransport<SyncMessage<Op>>,
-    msg: SyncMessage<Op>
+    msg: SyncMessage<Op>,
   ): Promise<void> {
     if (msg.docId !== this.backend.docId) return;
 
-    if (msg.payload.case === "error") {
+    if (msg.payload.case === 'error') {
       try {
         await this.onError(msg.payload.value);
       } catch {
@@ -666,28 +712,28 @@ export class SyncPeer<Op> {
 
     try {
       switch (msg.payload.case) {
-        case "hello":
+        case 'hello':
           await this.onHello(transport, msg.payload.value);
           return;
-        case "helloAck":
+        case 'helloAck':
           await this.onHelloAck(transport, msg.payload.value);
           return;
-        case "ribltCodewords":
+        case 'ribltCodewords':
           await this.onRibltCodewords(transport, msg.payload.value);
           return;
-        case "ribltStatus":
+        case 'ribltStatus':
           await this.onRibltStatus(msg.payload.value);
           return;
-        case "opsBatch":
+        case 'opsBatch':
           await this.onOpsBatch(msg.payload.value);
           return;
-        case "subscribe":
+        case 'subscribe':
           await this.onSubscribe(transport, msg.payload.value);
           return;
-        case "subscribeAck":
+        case 'subscribeAck':
           await this.onSubscribeAck(msg.payload.value);
           return;
-        case "unsubscribe":
+        case 'unsubscribe':
           await this.onUnsubscribe(msg.payload.value);
           return;
         default: {
@@ -699,17 +745,17 @@ export class SyncPeer<Op> {
       let filterId: string | undefined;
       let subscriptionId: string | undefined;
       switch (msg.payload.case) {
-        case "ribltCodewords":
-        case "ribltStatus":
-        case "opsBatch":
+        case 'ribltCodewords':
+        case 'ribltStatus':
+        case 'opsBatch':
           filterId = msg.payload.value.filterId;
-          if (msg.payload.case === "opsBatch" && this.initiatorSubscriptions.has(filterId)) {
+          if (msg.payload.case === 'opsBatch' && this.initiatorSubscriptions.has(filterId)) {
             subscriptionId = filterId;
           }
           break;
-        case "subscribe":
-        case "subscribeAck":
-        case "unsubscribe":
+        case 'subscribe':
+        case 'subscribeAck':
+        case 'unsubscribe':
           subscriptionId = msg.payload.value.subscriptionId;
           break;
       }
@@ -717,7 +763,7 @@ export class SyncPeer<Op> {
       try {
         await this.onError({
           code: ErrorCode.ERROR_CODE_UNSPECIFIED,
-          message: String(err?.message ?? err ?? "error"),
+          message: String(err?.message ?? err ?? 'error'),
           ...(filterId ? { filterId } : {}),
           ...(subscriptionId ? { subscriptionId } : {}),
         });
@@ -726,10 +772,10 @@ export class SyncPeer<Op> {
           v: 0,
           docId: this.backend.docId,
           payload: {
-            case: "error",
+            case: 'error',
             value: {
               code: ErrorCode.ERROR_CODE_UNSPECIFIED,
-              message: String(err?.message ?? err ?? "error"),
+              message: String(err?.message ?? err ?? 'error'),
               ...(filterId ? { filterId } : {}),
               ...(subscriptionId ? { subscriptionId } : {}),
             },
@@ -741,18 +787,16 @@ export class SyncPeer<Op> {
     }
   }
 
-  private async onHello(
-    transport: DuplexTransport<SyncMessage<Op>>,
-    hello: Hello
-  ): Promise<void> {
+  private async onHello(transport: DuplexTransport<SyncMessage<Op>>, hello: Hello): Promise<void> {
     const hasAuthCapability = hello.capabilities.some(isAuthCapability);
 
     // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
     // can't race and get rejected before `onHello` completes.
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(hello.capabilities)) this.transportPeerCapabilities.set(transport, hello.capabilities);
+    if (peerAdvertisedOpAuth(hello.capabilities))
+      this.transportPeerCapabilities.set(transport, hello.capabilities);
 
-    let ackCapabilities: HelloAck["capabilities"] = [];
+    let ackCapabilities: HelloAck['capabilities'] = [];
     try {
       ackCapabilities = (await this.auth?.onHello?.(hello, { docId: this.backend.docId })) ?? [];
     } catch (err: any) {
@@ -760,8 +804,11 @@ export class SyncPeer<Op> {
         v: 0,
         docId: this.backend.docId,
         payload: {
-          case: "error",
-          value: { code: ErrorCode.ERROR_CODE_UNSPECIFIED, message: String(err?.message ?? err ?? "auth error") },
+          case: 'error',
+          value: {
+            code: ErrorCode.ERROR_CODE_UNSPECIFIED,
+            message: String(err?.message ?? err ?? 'auth error'),
+          },
         },
       });
       return;
@@ -769,7 +816,7 @@ export class SyncPeer<Op> {
 
     const maxLamport = await this.backend.maxLamport();
     const acceptedFilters: string[] = [];
-    const rejectedFilters: HelloAck["rejectedFilters"] = [];
+    const rejectedFilters: HelloAck['rejectedFilters'] = [];
 
     for (let i = 0; i < hello.filters.length; i += 1) {
       const spec = hello.filters[i]!;
@@ -790,18 +837,22 @@ export class SyncPeer<Op> {
         rejectedFilters.push({
           id,
           reason: ErrorCode.UNAUTHORIZED,
-            message: `missing "${AUTH_CAPABILITY_NAME}" token; send a valid capability token in Hello.capabilities`,
+          message: `missing "${AUTH_CAPABILITY_NAME}" token; send a valid capability token in Hello.capabilities`,
         });
         continue;
       }
 
       try {
-        await this.auth?.authorizeFilter?.(filter, { docId: this.backend.docId, purpose: "hello", capabilities: hello.capabilities });
+        await this.auth?.authorizeFilter?.(filter, {
+          docId: this.backend.docId,
+          purpose: 'hello',
+          capabilities: hello.capabilities,
+        });
       } catch (err: any) {
         rejectedFilters.push({
           id,
           reason: ErrorCode.UNAUTHORIZED,
-          message: String(err?.message ?? err ?? "unauthorized filter"),
+          message: String(err?.message ?? err ?? 'unauthorized filter'),
         });
         continue;
       }
@@ -813,29 +864,31 @@ export class SyncPeer<Op> {
         rejectedFilters.push({
           id,
           reason: ErrorCode.FILTER_NOT_SUPPORTED,
-          message: String(err?.message ?? err ?? "filter not supported"),
+          message: String(err?.message ?? err ?? 'filter not supported'),
         });
         continue;
       }
 
-      if (!("all" in filter) && this.auth?.filterOutgoingOps && localOpRefs.length > 0) {
+      if (!('all' in filter) && this.auth?.filterOutgoingOps && localOpRefs.length > 0) {
         try {
           const ops = await this.backend.getOpsByOpRefs(localOpRefs);
           const allowed = await this.auth.filterOutgoingOps(ops, {
             docId: this.backend.docId,
-            purpose: "hello",
+            purpose: 'hello',
             filter,
             capabilities: hello.capabilities,
           });
           if (allowed.length !== ops.length) {
-            throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`);
+            throw new Error(
+              `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
+            );
           }
           localOpRefs = localOpRefs.filter((_r, idx) => allowed[idx] === true);
         } catch (err: any) {
           rejectedFilters.push({
             id,
             reason: ErrorCode.UNAUTHORIZED,
-            message: String(err?.message ?? err ?? "failed to filter ops"),
+            message: String(err?.message ?? err ?? 'failed to filter ops'),
           });
           continue;
         }
@@ -856,7 +909,7 @@ export class SyncPeer<Op> {
       v: 0,
       docId: this.backend.docId,
       payload: {
-        case: "helloAck",
+        case: 'helloAck',
         value: {
           capabilities: ackCapabilities,
           acceptedFilters,
@@ -867,12 +920,16 @@ export class SyncPeer<Op> {
     });
   }
 
-  private async onHelloAck(transport: DuplexTransport<SyncMessage<Op>>, ack: HelloAck): Promise<void> {
+  private async onHelloAck(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    ack: HelloAck,
+  ): Promise<void> {
     await this.auth?.onHelloAck?.(ack, { docId: this.backend.docId });
 
     const hasAuthCapability = ack.capabilities.some(isAuthCapability);
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(ack.capabilities)) this.transportPeerCapabilities.set(transport, ack.capabilities);
+    if (peerAdvertisedOpAuth(ack.capabilities))
+      this.transportPeerCapabilities.set(transport, ack.capabilities);
 
     for (const id of ack.acceptedFilters) {
       const session = this.initiatorSessions.get(id);
@@ -882,7 +939,7 @@ export class SyncPeer<Op> {
       const session = this.initiatorSessions.get(rej.id);
       if (session) {
         const reason = ErrorCode[rej.reason] ?? String(rej.reason);
-        const detail = rej.message ? `: ${rej.message}` : "";
+        const detail = rej.message ? `: ${rej.message}` : '';
         session.ack.reject(new Error(`${reason}${detail}`));
       }
     }
@@ -890,7 +947,7 @@ export class SyncPeer<Op> {
 
   private async onRibltCodewords(
     transport: DuplexTransport<SyncMessage<Op>>,
-    msg: RibltCodewords
+    msg: RibltCodewords,
   ): Promise<void> {
     const session = this.responderSessions.get(msg.filterId);
     if (!session) return;
@@ -901,11 +958,11 @@ export class SyncPeer<Op> {
         v: 0,
         docId: this.backend.docId,
         payload: {
-          case: "ribltStatus",
+          case: 'ribltStatus',
           value: {
             filterId: msg.filterId,
             round: msg.round,
-            payload: { case: "failed", value: { reason: RibltFailureReason.OUT_OF_ORDER } },
+            payload: { case: 'failed', value: { reason: RibltFailureReason.OUT_OF_ORDER } },
           },
         },
       });
@@ -925,15 +982,15 @@ export class SyncPeer<Op> {
         v: 0,
         docId: this.backend.docId,
         payload: {
-          case: "ribltStatus",
+          case: 'ribltStatus',
           value: {
             filterId: msg.filterId,
             round: msg.round,
             payload: {
-              case: "failed",
+              case: 'failed',
               value: {
                 reason: RibltFailureReason.DECODE_FAILED,
-                message: String(err?.message ?? err ?? ""),
+                message: String(err?.message ?? err ?? ''),
               },
             },
           },
@@ -949,27 +1006,29 @@ export class SyncPeer<Op> {
           v: 0,
           docId: this.backend.docId,
           payload: {
-            case: "ribltStatus",
-            value: {
-              filterId: msg.filterId,
-              round: msg.round,
-              payload: { case: "failed", value: { reason: RibltFailureReason.MAX_CODEWORDS_EXCEEDED } },
-            },
-          },
-        });
-        this.responderSessions.delete(msg.filterId);
-      }
-      else {
-        await transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: {
-            case: "ribltStatus",
+            case: 'ribltStatus',
             value: {
               filterId: msg.filterId,
               round: msg.round,
               payload: {
-                case: "more",
+                case: 'failed',
+                value: { reason: RibltFailureReason.MAX_CODEWORDS_EXCEEDED },
+              },
+            },
+          },
+        });
+        this.responderSessions.delete(msg.filterId);
+      } else {
+        await transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: {
+            case: 'ribltStatus',
+            value: {
+              filterId: msg.filterId,
+              round: msg.round,
+              payload: {
+                case: 'more',
                 value: { codewordsReceived: session.decoder.codewordsReceived(), credits: 1 },
               },
             },
@@ -987,12 +1046,12 @@ export class SyncPeer<Op> {
       v: 0,
       docId: this.backend.docId,
       payload: {
-        case: "ribltStatus",
+        case: 'ribltStatus',
         value: {
           filterId: msg.filterId,
           round: msg.round,
           payload: {
-            case: "decoded",
+            case: 'decoded',
             value: { senderMissing, receiverMissing, codewordsReceived },
           },
         },
@@ -1005,7 +1064,7 @@ export class SyncPeer<Op> {
       await transport.send({
         v: 0,
         docId: this.backend.docId,
-        payload: { case: "opsBatch", value: { filterId: msg.filterId, ops: [], done: true } },
+        payload: { case: 'opsBatch', value: { filterId: msg.filterId, ops: [], done: true } },
       });
     }
 
@@ -1014,7 +1073,7 @@ export class SyncPeer<Op> {
 
   private async onSubscribe(
     transport: DuplexTransport<SyncMessage<Op>>,
-    msg: Subscribe
+    msg: Subscribe,
   ): Promise<void> {
     if (!msg.subscriptionId) return;
     if (!msg.filter) return;
@@ -1024,7 +1083,7 @@ export class SyncPeer<Op> {
         v: 0,
         docId: this.backend.docId,
         payload: {
-          case: "error",
+          case: 'error',
           value: {
             code: ErrorCode.UNAUTHORIZED,
             message: `missing "${AUTH_CAPABILITY_NAME}" token; send Hello before Subscribe`,
@@ -1037,16 +1096,20 @@ export class SyncPeer<Op> {
 
     try {
       const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
-      await this.auth?.authorizeFilter?.(msg.filter, { docId: this.backend.docId, purpose: "subscribe", capabilities: peerCaps });
+      await this.auth?.authorizeFilter?.(msg.filter, {
+        docId: this.backend.docId,
+        purpose: 'subscribe',
+        capabilities: peerCaps,
+      });
     } catch (err: any) {
       await transport.send({
         v: 0,
         docId: this.backend.docId,
         payload: {
-          case: "error",
+          case: 'error',
           value: {
             code: ErrorCode.UNAUTHORIZED,
-            message: String(err?.message ?? err ?? "unauthorized filter"),
+            message: String(err?.message ?? err ?? 'unauthorized filter'),
             subscriptionId: msg.subscriptionId,
           },
         },
@@ -1074,7 +1137,7 @@ export class SyncPeer<Op> {
         v: 0,
         docId: this.backend.docId,
         payload: {
-          case: "subscribeAck",
+          case: 'subscribeAck',
           value: { subscriptionId: msg.subscriptionId, currentLamport: maxLamport },
         },
       });
@@ -1088,10 +1151,10 @@ export class SyncPeer<Op> {
         v: 0,
         docId: this.backend.docId,
         payload: {
-          case: "error",
+          case: 'error',
           value: {
             code: ErrorCode.FILTER_NOT_SUPPORTED,
-            message: String(err?.message ?? err ?? "subscribe failed"),
+            message: String(err?.message ?? err ?? 'subscribe failed'),
             subscriptionId: msg.subscriptionId,
           },
         },
@@ -1109,7 +1172,12 @@ export class SyncPeer<Op> {
     this.responderSubscriptions.delete(msg.subscriptionId);
   }
 
-  private async onError(err: { code: ErrorCode; message: string; filterId?: string; subscriptionId?: string }): Promise<void> {
+  private async onError(err: {
+    code: ErrorCode;
+    message: string;
+    filterId?: string;
+    subscriptionId?: string;
+  }): Promise<void> {
     if (err.subscriptionId) {
       const sub = this.initiatorSubscriptions.get(err.subscriptionId);
       if (sub) {
@@ -1172,7 +1240,7 @@ export class SyncPeer<Op> {
     if (!session) return;
     if (status.round !== session.round) return;
     if (session.done) return;
-    if (status.payload.case === "more") {
+    if (status.payload.case === 'more') {
       const credits = Math.max(1, Math.trunc(status.payload.value.credits));
       session.codewordCredits += credits;
       const signal = session.codewordCreditSignal;
@@ -1188,10 +1256,14 @@ export class SyncPeer<Op> {
   }
 
   private async onOpsBatch(batch: OpsBatch<Op>): Promise<void> {
-    const purpose: SyncOpPurpose = this.initiatorSubscriptions.has(batch.filterId) ? "subscribe" : "reconcile";
+    const purpose: SyncOpPurpose = this.initiatorSubscriptions.has(batch.filterId)
+      ? 'subscribe'
+      : 'reconcile';
     const auth = batch.auth;
     if (auth && auth.length !== batch.ops.length) {
-      throw new Error(`OpsBatch.auth length ${auth.length} does not match ops length ${batch.ops.length}`);
+      throw new Error(
+        `OpsBatch.auth length ${auth.length} does not match ops length ${batch.ops.length}`,
+      );
     }
 
     const verifyRes = await this.auth?.verifyOps?.(batch.ops, auth, {
@@ -1202,15 +1274,21 @@ export class SyncPeer<Op> {
     const dispositions =
       verifyRes === undefined
         ? undefined
-        : (verifyRes as SyncAuthVerifyOpsResult)?.dispositions ??
+        : ((verifyRes as SyncAuthVerifyOpsResult)?.dispositions ??
           (() => {
-            throw new Error("verifyOps must return void or { dispositions: [...] }");
-          })();
+            throw new Error('verifyOps must return void or { dispositions: [...] }');
+          })());
     if (dispositions && dispositions.length !== batch.ops.length) {
-      throw new Error(`verifyOps returned ${dispositions.length} dispositions for ${batch.ops.length} ops`);
+      throw new Error(
+        `verifyOps returned ${dispositions.length} dispositions for ${batch.ops.length} ops`,
+      );
     }
     if (auth && auth.length > 0) {
-      await this.auth?.onVerifiedOps?.(batch.ops, auth, { docId: this.backend.docId, purpose, filterId: batch.filterId });
+      await this.auth?.onVerifiedOps?.(batch.ops, auth, {
+        docId: this.backend.docId,
+        purpose,
+        filterId: batch.filterId,
+      });
     }
 
     const pending: PendingOp<Op>[] = [];
@@ -1219,22 +1297,29 @@ export class SyncPeer<Op> {
     for (let i = 0; i < batch.ops.length; i += 1) {
       const op = batch.ops[i]!;
       const d = dispositions?.[i];
-      if (!d || d.status === "allow") {
+      if (!d || d.status === 'allow') {
         allowedOps.push(op);
         continue;
       }
-      if (d.status !== "pending_context") {
+      if (d.status !== 'pending_context') {
         throw new Error(`unknown disposition: ${(d as any)?.status ?? String(d)}`);
       }
       if (!auth) {
-        throw new Error("verifyOps returned pending_context but OpsBatch.auth is missing");
+        throw new Error('verifyOps returned pending_context but OpsBatch.auth is missing');
       }
-      pending.push({ op, auth: auth[i]!, reason: "missing_context", ...(d.message ? { message: d.message } : {}) });
+      pending.push({
+        op,
+        auth: auth[i]!,
+        reason: 'missing_context',
+        ...(d.message ? { message: d.message } : {}),
+      });
     }
 
     if (pending.length > 0) {
       if (!this.backend.storePendingOps) {
-        throw new Error("received ops requiring pending-context handling, but backend.storePendingOps is not implemented");
+        throw new Error(
+          'received ops requiring pending-context handling, but backend.storePendingOps is not implemented',
+        );
       }
       await this.backend.storePendingOps(pending);
     }
@@ -1269,7 +1354,11 @@ export class SyncPeer<Op> {
         let appliedAny = false;
 
         for (const p of pending) {
-          const ctx = { docId: this.backend.docId, purpose: "reprocess_pending" as const, filterId: "__pending__" };
+          const ctx = {
+            docId: this.backend.docId,
+            purpose: 'reprocess_pending' as const,
+            filterId: '__pending__',
+          };
           let res: void | SyncAuthVerifyOpsResult;
           try {
             res = await this.auth!.verifyOps!([p.op], [p.auth], ctx);
@@ -1284,12 +1373,12 @@ export class SyncPeer<Op> {
           const dispositions =
             res === undefined
               ? undefined
-              : (res as SyncAuthVerifyOpsResult)?.dispositions ??
+              : ((res as SyncAuthVerifyOpsResult)?.dispositions ??
                 (() => {
-                  throw new Error("verifyOps must return void or { dispositions: [...] }");
-                })();
+                  throw new Error('verifyOps must return void or { dispositions: [...] }');
+                })());
           const d = dispositions?.[0];
-          if (d && d.status === "pending_context") continue;
+          if (d && d.status === 'pending_context') continue;
 
           await this.backend.applyOps([p.op]);
           await this.backend.deletePendingOps!([p.op]);
@@ -1300,7 +1389,7 @@ export class SyncPeer<Op> {
         if (appliedAny) void this.notifyLocalUpdate();
         if (!progress) return;
       }
-      throw new Error("pending-op reprocessing exceeded max rounds");
+      throw new Error('pending-op reprocessing exceeded max rounds');
     })().finally(() => {
       this.reprocessPendingRunning = false;
     });

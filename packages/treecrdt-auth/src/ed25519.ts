@@ -1,5 +1,11 @@
-import { hashes as ed25519Hashes, getPublicKey as getPublicKeyImpl, sign as signImpl, utils, verify as verifyImpl } from "@noble/ed25519";
-import { sha512 } from "@noble/hashes/sha512";
+import {
+  hashes as ed25519Hashes,
+  getPublicKey as getPublicKeyImpl,
+  sign as signImpl,
+  utils,
+  verify as verifyImpl,
+} from '@noble/ed25519';
+import { sha512 } from '@noble/hashes/sha512';
 
 let ed25519Ready = false;
 
@@ -24,7 +30,11 @@ export function signEd25519(message: Uint8Array, privateKey: Uint8Array): Uint8A
   return signImpl(message, privateKey);
 }
 
-export async function verifyEd25519(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): Promise<boolean> {
+export async function verifyEd25519(
+  signature: Uint8Array,
+  message: Uint8Array,
+  publicKey: Uint8Array,
+): Promise<boolean> {
   ensureEd25519();
   return await verifyImpl(signature, message, publicKey);
 }

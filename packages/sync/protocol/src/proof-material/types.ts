@@ -1,4 +1,4 @@
-import type { Capability, OpAuth, OpRef, PendingOp } from "../types.js";
+import type { Capability, OpAuth, OpRef, PendingOp } from '../types.js';
 
 export interface SyncOpAuthStore {
   storeOpAuth: (entries: Array<{ opRef: OpRef; auth: OpAuth }>) => Promise<void>;

@@ -1,6 +1,6 @@
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,9 +29,14 @@ export type NativeBackend = {
     parent: Uint8Array,
     cursorOrderKey: Uint8Array | null,
     cursorNode: Uint8Array | null,
-    limit: number
+    limit: number,
   ): { node: Uint8Array; orderKey: Uint8Array | null }[];
-  treeDump(): { node: Uint8Array; parent: Uint8Array | null; orderKey: Uint8Array | null; tombstone: boolean }[];
+  treeDump(): {
+    node: Uint8Array;
+    parent: Uint8Array | null;
+    orderKey: Uint8Array | null;
+    tombstone: boolean;
+  }[];
   treeNodeCount(): bigint;
   treeParent(node: Uint8Array): Uint8Array | null;
   treeExists(node: Uint8Array): boolean;
@@ -44,14 +49,14 @@ export type NativeBackend = {
     node: Uint8Array,
     placement: string,
     after: Uint8Array | null,
-    payload: Uint8Array | null
+    payload: Uint8Array | null,
   ): NativeOp;
   localMove(
     replica: Uint8Array,
     node: Uint8Array,
     newParent: Uint8Array,
     placement: string,
-    after: Uint8Array | null
+    after: Uint8Array | null,
   ): NativeOp;
   localDelete(replica: Uint8Array, node: Uint8Array): NativeOp;
   localPayload(replica: Uint8Array, node: Uint8Array, payload: Uint8Array | null): NativeOp;
@@ -70,6 +75,6 @@ type NativeExports = {
 
 // NOTE: we vendor the built binary into `native/` during `pnpm run build:native`.
 export function loadNative(): NativeExports {
-  const modPath = join(__dirname, "..", "native", "treecrdt-postgres-napi.node");
+  const modPath = join(__dirname, '..', 'native', 'treecrdt-postgres-napi.node');
   return require(modPath) as NativeExports;
 }

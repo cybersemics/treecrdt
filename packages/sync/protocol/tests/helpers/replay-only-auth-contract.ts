@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID } from 'node:crypto';
 
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest';
 
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex } from "@treecrdt/interface/ids";
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
 import {
   createReplayOnlySyncAuth,
   deriveOpRefV0,
@@ -12,15 +12,17 @@ import {
   type OpRef,
   type SyncAuth,
   type SyncBackend,
-} from "@treecrdt/sync";
-import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import type { Capability, SyncAuthMaterialStore } from "@treecrdt/sync";
+} from '@treecrdt/sync';
+import { createInMemoryConnectedPeers } from '@treecrdt/sync/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
+import type { Capability, SyncAuthMaterialStore } from '@treecrdt/sync';
 
 type ReplayAuthHarness = {
   createDocStores: (
-    docId: string
-  ) => Promise<Pick<SyncAuthMaterialStore<Operation>, "opAuth" | "capabilities">> | Pick<SyncAuthMaterialStore<Operation>, "opAuth" | "capabilities">;
+    docId: string,
+  ) =>
+    | Promise<Pick<SyncAuthMaterialStore<Operation>, 'opAuth' | 'capabilities'>>
+    | Pick<SyncAuthMaterialStore<Operation>, 'opAuth' | 'capabilities'>;
   close?: () => Promise<void> | void;
 };
 
@@ -43,7 +45,8 @@ class SimpleMemoryBackend implements SyncBackend<Operation> {
 
   hasOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.opsByRefHex.values()).some(
-      (entry) => bytesToHex(entry.op.meta.id.replica) === replicaHex && entry.op.meta.id.counter === counter
+      (entry) =>
+        bytesToHex(entry.op.meta.id.replica) === replicaHex && entry.op.meta.id.counter === counter,
     );
   }
 
@@ -52,7 +55,7 @@ class SimpleMemoryBackend implements SyncBackend<Operation> {
   }
 
   async listOpRefs(filter: Filter): Promise<OpRef[]> {
-    if (!("all" in filter)) throw new Error("SimpleMemoryBackend only supports filter(all)");
+    if (!('all' in filter)) throw new Error('SimpleMemoryBackend only supports filter(all)');
     return Array.from(this.opsByRefHex.values(), (entry) => entry.opRef);
   }
 
@@ -84,9 +87,9 @@ function makeInsertOp(replicaFill: number, counter: number): Operation {
       lamport: counter,
     },
     kind: {
-      type: "insert",
-      parent: "0".repeat(32),
-      node: counter.toString(16).padStart(32, "0").slice(-32),
+      type: 'insert',
+      parent: '0'.repeat(32),
+      node: counter.toString(16).padStart(32, '0').slice(-32),
       orderKey: new Uint8Array([counter & 0xff]),
     },
   };
@@ -102,7 +105,7 @@ function normalizeOpAuth(value: OpAuth): OpAuth {
 async function waitFor(
   check: () => boolean | Promise<boolean>,
   message: string,
-  timeoutMs = 2_000
+  timeoutMs = 2_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (true) {
@@ -114,7 +117,7 @@ async function waitFor(
 
 export function defineReplayOnlyAuthStoreContract(
   label: string,
-  createHarness: () => Promise<ReplayAuthHarness> | ReplayAuthHarness
+  createHarness: () => Promise<ReplayAuthHarness> | ReplayAuthHarness,
 ): void {
   test(`${label}: replay-only auth survives restart and relays historical ops`, async () => {
     const harness = await createHarness();
@@ -130,8 +133,8 @@ export function defineReplayOnlyAuthStoreContract(
       const op = makeInsertOp(7, 1);
       await authorBackend.applyOps([op]);
 
-      const authorCapability: Capability = { name: "auth.capability", value: "token-author" };
-      const ignoredCapability: Capability = { name: "peer.name", value: "author" };
+      const authorCapability: Capability = { name: 'auth.capability', value: 'token-author' };
+      const ignoredCapability: Capability = { name: 'peer.name', value: 'author' };
       const authEntry: OpAuth = {
         sig: new Uint8Array(64).fill(9),
         proofRef: new Uint8Array(16).fill(3),
@@ -163,14 +166,18 @@ export function defineReplayOnlyAuthStoreContract(
         peerBOptions: { auth: warmRelayAuth },
       });
       try {
-        await firstHop.peerA.syncOnce(firstHop.transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+        await firstHop.peerA.syncOnce(
+          firstHop.transportA,
+          { all: {} },
+          { maxCodewords: 10_000, codewordsPerMessage: 256 },
+        );
       } finally {
         firstHop.detach();
       }
 
       await waitFor(
         () => relayBackend.hasOp(bytesToHex(op.meta.id.replica), op.meta.id.counter),
-        "relay backend to apply first-hop op"
+        'relay backend to apply first-hop op',
       );
 
       const secondHop = createInMemoryConnectedPeers({
@@ -181,20 +188,24 @@ export function defineReplayOnlyAuthStoreContract(
         peerBOptions: { auth: joinerAuth },
       });
       try {
-        await secondHop.peerA.syncOnce(secondHop.transportA, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+        await secondHop.peerA.syncOnce(
+          secondHop.transportA,
+          { all: {} },
+          { maxCodewords: 10_000, codewordsPerMessage: 256 },
+        );
       } finally {
         secondHop.detach();
       }
 
       await waitFor(
         () => joinerBackend.hasOp(bytesToHex(op.meta.id.replica), op.meta.id.counter),
-        "joiner backend to apply replayed op"
+        'joiner backend to apply replayed op',
       );
       expect(await relayJoinerAuth.helloCapabilities?.({ docId })).toEqual([authorCapability]);
       const replayed = await relayJoinerAuth.signOps?.([op], {
         docId,
-        purpose: "reconcile",
-        filterId: "all",
+        purpose: 'reconcile',
+        filterId: 'all',
       });
       expect(replayed?.map(normalizeOpAuth)).toEqual([normalizeOpAuth(authEntry)]);
     } finally {

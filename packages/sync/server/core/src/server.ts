@@ -1,11 +1,11 @@
-import http from "node:http";
+import http from 'node:http';
 
-import WebSocket, { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from 'ws';
 
-import type { SyncBackend, SyncMessage, SyncPeerOptions } from "@treecrdt/sync";
-import { SyncPeer } from "@treecrdt/sync";
-import type { DuplexTransport, WireCodec } from "@treecrdt/sync/transport";
-import { wrapDuplexTransportWithCodec } from "@treecrdt/sync/transport";
+import type { SyncBackend, SyncMessage, SyncPeerOptions } from '@treecrdt/sync';
+import { SyncPeer } from '@treecrdt/sync';
+import type { DuplexTransport, WireCodec } from '@treecrdt/sync/transport';
+import { wrapDuplexTransportWithCodec } from '@treecrdt/sync/transport';
 
 type Awaitable<T> = T | Promise<T>;
 type UpgradeSocket = {
@@ -19,7 +19,7 @@ function toUint8Array(data: WebSocket.RawData): Uint8Array {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (Array.isArray(data)) return Buffer.concat(data);
-  if (typeof data === "string") return Buffer.from(data);
+  if (typeof data === 'string') return Buffer.from(data);
   return Buffer.from(data);
 }
 
@@ -35,8 +35,8 @@ function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
       }),
     onMessage: (handler) => {
       const onMessage = (data: WebSocket.RawData) => handler(toUint8Array(data));
-      ws.on("message", onMessage);
-      return () => ws.off("message", onMessage);
+      ws.on('message', onMessage);
+      return () => ws.off('message', onMessage);
     },
   };
 }
@@ -71,7 +71,7 @@ export type WebSocketSyncServerUpgradeDecision =
     };
 
 export type WebSocketSyncServerUpgradeHook = (
-  ctx: WebSocketSyncServerUpgradeContext
+  ctx: WebSocketSyncServerUpgradeContext,
 ) => Awaitable<void | boolean | WebSocketSyncServerUpgradeDecision>;
 
 export type WebSocketSyncServerHooks = {
@@ -81,8 +81,8 @@ export type WebSocketSyncServerHooks = {
   onError?: (
     error: unknown,
     ctx: WebSocketSyncServerUpgradeContext & {
-      stage: "rate_limit" | "authenticate" | "authorize";
-    }
+      stage: 'rate_limit' | 'authenticate' | 'authorize';
+    },
   ) => void;
 };
 
@@ -123,14 +123,14 @@ function denyUpgrade(socket: UpgradeSocket, statusCode: number, body: string): v
   if (socket.destroyed) return;
   const safeStatusCode =
     Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599 ? statusCode : 403;
-  const statusText = http.STATUS_CODES[safeStatusCode] ?? "Forbidden";
-  const payload = Buffer.from(body, "utf8");
+  const statusText = http.STATUS_CODES[safeStatusCode] ?? 'Forbidden';
+  const payload = Buffer.from(body, 'utf8');
   const response =
     `HTTP/1.1 ${safeStatusCode} ${statusText}\r\n` +
-    "Connection: close\r\n" +
-    "Content-Type: text/plain; charset=utf-8\r\n" +
+    'Connection: close\r\n' +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
     `Content-Length: ${payload.length}\r\n` +
-    "\r\n";
+    '\r\n';
   try {
     socket.write(response);
     socket.write(payload);
@@ -139,22 +139,23 @@ function denyUpgrade(socket: UpgradeSocket, statusCode: number, body: string): v
   }
 }
 
-function defaultDenyForStage(stage: "rate_limit" | "authenticate" | "authorize"): {
+function defaultDenyForStage(stage: 'rate_limit' | 'authenticate' | 'authorize'): {
   statusCode: number;
   body: string;
 } {
-  if (stage === "rate_limit") return { statusCode: 429, body: "rate limited" };
-  if (stage === "authenticate") return { statusCode: 401, body: "unauthorized" };
-  return { statusCode: 403, body: "forbidden" };
+  if (stage === 'rate_limit') return { statusCode: 429, body: 'rate limited' };
+  if (stage === 'authenticate') return { statusCode: 401, body: 'unauthorized' };
+  return { statusCode: 403, body: 'forbidden' };
 }
 
 function normalizeHookDecision(
-  stage: "rate_limit" | "authenticate" | "authorize",
-  decision: void | boolean | WebSocketSyncServerUpgradeDecision
+  stage: 'rate_limit' | 'authenticate' | 'authorize',
+  decision: void | boolean | WebSocketSyncServerUpgradeDecision,
 ): { allow: true } | { allow: false; statusCode: number; body: string } {
-  if (typeof decision === "undefined" || decision === true) return { allow: true };
+  if (typeof decision === 'undefined' || decision === true) return { allow: true };
   const fallback = defaultDenyForStage(stage);
-  if (decision === false) return { allow: false, statusCode: fallback.statusCode, body: fallback.body };
+  if (decision === false)
+    return { allow: false, statusCode: fallback.statusCode, body: fallback.body };
   if (decision.allow) return { allow: true };
   return {
     allow: false,
@@ -164,10 +165,10 @@ function normalizeHookDecision(
 }
 
 async function runUpgradeHook(
-  stage: "rate_limit" | "authenticate" | "authorize",
+  stage: 'rate_limit' | 'authenticate' | 'authorize',
   hook: WebSocketSyncServerUpgradeHook | undefined,
-  onError: WebSocketSyncServerHooks["onError"] | undefined,
-  ctx: WebSocketSyncServerUpgradeContext
+  onError: WebSocketSyncServerHooks['onError'] | undefined,
+  ctx: WebSocketSyncServerUpgradeContext,
 ): Promise<{ allow: true } | { allow: false; statusCode: number; body: string }> {
   if (!hook) return { allow: true };
   try {
@@ -185,48 +186,48 @@ async function runUpgradeHook(
 }
 
 export async function startWebSocketSyncServer<Op>(
-  opts: WebSocketSyncServerOptions<Op>
+  opts: WebSocketSyncServerOptions<Op>,
 ): Promise<WebSocketSyncServerHandle> {
-  const host = opts.host ?? "0.0.0.0";
+  const host = opts.host ?? '0.0.0.0';
   const port = Number(opts.port ?? 8787);
-  const syncPath = opts.syncPath ?? "/sync";
-  const healthPath = opts.healthPath ?? "/health";
-  const statusPath = opts.statusPath ?? "/status";
+  const syncPath = opts.syncPath ?? '/sync';
+  const healthPath = opts.healthPath ?? '/health';
+  const statusPath = opts.statusPath ?? '/status';
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
 
   if (!Number.isFinite(port) || port < 0) throw new Error(`invalid port: ${opts.port}`);
-  if (!syncPath.startsWith("/")) throw new Error(`syncPath must start with "/": ${syncPath}`);
-  if (!healthPath.startsWith("/")) throw new Error(`healthPath must start with "/": ${healthPath}`);
-  if (!statusPath.startsWith("/")) throw new Error(`statusPath must start with "/": ${statusPath}`);
+  if (!syncPath.startsWith('/')) throw new Error(`syncPath must start with "/": ${syncPath}`);
+  if (!healthPath.startsWith('/')) throw new Error(`healthPath must start with "/": ${healthPath}`);
+  if (!statusPath.startsWith('/')) throw new Error(`statusPath must start with "/": ${statusPath}`);
   if (!Number.isFinite(maxPayloadBytes) || maxPayloadBytes <= 0) {
     throw new Error(`invalid maxPayloadBytes: ${opts.maxPayloadBytes}`);
   }
 
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     if (url.pathname === healthPath) {
       void (async () => {
         try {
           const result = (await opts.healthCheck?.()) ?? { ok: true as const };
           if (result.ok) {
-            res.writeHead(200, { "content-type": result.contentType ?? "text/plain" });
-            res.end(result.body ?? "ok");
+            res.writeHead(200, { 'content-type': result.contentType ?? 'text/plain' });
+            res.end(result.body ?? 'ok');
             return;
           }
 
           const requestedStatusCode = result.statusCode;
           const statusCode =
-            typeof requestedStatusCode === "number" &&
+            typeof requestedStatusCode === 'number' &&
             Number.isInteger(requestedStatusCode) &&
             requestedStatusCode >= 400 &&
             requestedStatusCode <= 599
               ? requestedStatusCode
               : 503;
-          res.writeHead(statusCode, { "content-type": result.contentType ?? "text/plain" });
-          res.end(result.body ?? "not ready");
+          res.writeHead(statusCode, { 'content-type': result.contentType ?? 'text/plain' });
+          res.end(result.body ?? 'not ready');
         } catch {
-          res.writeHead(503, { "content-type": "text/plain" });
-          res.end("not ready");
+          res.writeHead(503, { 'content-type': 'text/plain' });
+          res.end('not ready');
         }
       })();
       return;
@@ -236,18 +237,18 @@ export async function startWebSocketSyncServer<Op>(
       void (async () => {
         try {
           const status = (await opts.statusInfo?.()) ?? { ok: true };
-          res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify(status));
         } catch {
-          res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ ok: false, error: "status unavailable" }));
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'status unavailable' }));
         }
       })();
       return;
     }
 
-    res.writeHead(404, { "content-type": "text/plain" });
-    res.end("not found");
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found');
   });
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxPayloadBytes });
@@ -281,14 +282,14 @@ export async function startWebSocketSyncServer<Op>(
     await Promise.allSettled(pending);
   };
 
-  server.on("upgrade", (req, socket, head) => {
+  server.on('upgrade', (req, socket, head) => {
     const upgradeSocket = socket as UpgradeSocket;
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     if (url.pathname !== syncPath) {
       upgradeSocket.destroy();
       return;
     }
-    const docId = url.searchParams.get("docId");
+    const docId = url.searchParams.get('docId');
     if (!docId) {
       upgradeSocket.destroy();
       return;
@@ -303,10 +304,10 @@ export async function startWebSocketSyncServer<Op>(
 
     void (async () => {
       const rateLimitDecision = await runUpgradeHook(
-        "rate_limit",
+        'rate_limit',
         opts.hooks?.onRateLimit,
         opts.hooks?.onError,
-        ctx
+        ctx,
       );
       if (!rateLimitDecision.allow) {
         denyUpgrade(upgradeSocket, rateLimitDecision.statusCode, rateLimitDecision.body);
@@ -314,10 +315,10 @@ export async function startWebSocketSyncServer<Op>(
       }
 
       const authDecision = await runUpgradeHook(
-        "authenticate",
+        'authenticate',
         opts.hooks?.onAuthenticate,
         opts.hooks?.onError,
-        ctx
+        ctx,
       );
       if (!authDecision.allow) {
         denyUpgrade(upgradeSocket, authDecision.statusCode, authDecision.body);
@@ -325,10 +326,10 @@ export async function startWebSocketSyncServer<Op>(
       }
 
       const authorizeDecision = await runUpgradeHook(
-        "authorize",
+        'authorize',
         opts.hooks?.onAuthorize,
         opts.hooks?.onError,
-        ctx
+        ctx,
       );
       if (!authorizeDecision.allow) {
         denyUpgrade(upgradeSocket, authorizeDecision.statusCode, authorizeDecision.body);
@@ -337,14 +338,14 @@ export async function startWebSocketSyncServer<Op>(
 
       (req as any).treecrdtDocId = docId;
       wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, req);
+        wss.emit('connection', ws, req);
       });
     })();
   });
 
-  wss.on("connection", (ws, req) => {
+  wss.on('connection', (ws, req) => {
     void (async () => {
-      const docId = String((req as any).treecrdtDocId ?? "");
+      const docId = String((req as any).treecrdtDocId ?? '');
       if (!docId) {
         ws.close();
         return;
@@ -372,15 +373,15 @@ export async function startWebSocketSyncServer<Op>(
         } catch {}
       };
 
-      ws.once("close", () => void cleanup());
-      ws.once("error", () => void cleanup());
+      ws.once('close', () => void cleanup());
+      ws.once('error', () => void cleanup());
 
       let openedDoc: WebSocketSyncServerDocHandle<Op>;
       try {
         openedDoc = await opts.docs.open(docId);
       } catch {
         if (!cleaned && ws.readyState === WebSocket.OPEN) {
-          ws.close(1011, "failed to open doc");
+          ws.close(1011, 'failed to open doc');
         }
         return;
       }
@@ -406,15 +407,21 @@ export async function startWebSocketSyncServer<Op>(
           if (ops.length === 0) return;
           await notifyOtherDocPeers(docId, peer);
         },
-        ...(docBackend.storePendingOps ? { storePendingOps: (ops) => docBackend.storePendingOps!(ops) } : {}),
-        ...(docBackend.listPendingOps ? { listPendingOps: () => docBackend.listPendingOps!() } : {}),
-        ...(docBackend.deletePendingOps ? { deletePendingOps: (ops) => docBackend.deletePendingOps!(ops) } : {}),
+        ...(docBackend.storePendingOps
+          ? { storePendingOps: (ops) => docBackend.storePendingOps!(ops) }
+          : {}),
+        ...(docBackend.listPendingOps
+          ? { listPendingOps: () => docBackend.listPendingOps!() }
+          : {}),
+        ...(docBackend.deletePendingOps
+          ? { deletePendingOps: (ops) => docBackend.deletePendingOps!(ops) }
+          : {}),
       };
       peer = new SyncPeer<Op>(backend, doc.peerOptions);
       addDocPeer(docId, peer);
       detach = peer.attach(transport, {
         onError: () => {
-          if (ws.readyState === WebSocket.OPEN) ws.close(1011, "sync handler error");
+          if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'sync handler error');
         },
       });
 
@@ -423,12 +430,12 @@ export async function startWebSocketSyncServer<Op>(
   });
 
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
+    server.once('error', reject);
     server.listen(port, host, resolve);
   });
 
   const address = server.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
+  const actualPort = typeof address === 'object' && address ? address.port : port;
 
   const close = async (): Promise<void> => {
     try {

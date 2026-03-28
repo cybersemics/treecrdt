@@ -1,13 +1,13 @@
-import type { Operation, ReplicaId } from "@treecrdt/interface";
-import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
-import type { TreecrdtEngine } from "@treecrdt/interface/engine";
-import type { TreecrdtSqlitePlacement } from "@treecrdt/interface/sqlite";
+import type { Operation, ReplicaId } from '@treecrdt/interface';
+import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import type { TreecrdtEngine } from '@treecrdt/interface/engine';
+import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
-import { nativeToOperation, operationToNativeWithSerializers } from "./codec.js";
-import { loadNative } from "./native.js";
+import { nativeToOperation, operationToNativeWithSerializers } from './codec.js';
+import { loadNative } from './native.js';
 
 function ensureNonEmptyString(name: string, value: string): void {
-  if (typeof value !== "string" || value.length === 0) {
+  if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`${name} must be a non-empty string`);
   }
 }
@@ -19,10 +19,13 @@ function bigintToSafeNumber(name: string, value: bigint): number {
   return Number(value);
 }
 
-function placementToArgs(placement: TreecrdtSqlitePlacement): { type: string; after: Uint8Array | null } {
-  if (placement.type === "first") return { type: "first", after: null };
-  if (placement.type === "last") return { type: "last", after: null };
-  return { type: "after", after: nodeIdToBytes16(placement.after) };
+function placementToArgs(placement: TreecrdtSqlitePlacement): {
+  type: string;
+  after: Uint8Array | null;
+} {
+  if (placement.type === 'first') return { type: 'first', after: null };
+  if (placement.type === 'last') return { type: 'last', after: null };
+  return { type: 'after', after: nodeIdToBytes16(placement.after) };
 }
 
 /**
@@ -33,19 +36,20 @@ function placementToArgs(placement: TreecrdtSqlitePlacement): { type: string; af
  */
 export async function createTreecrdtPostgresClient(
   url: string,
-  opts: { docId?: string } = {}
+  opts: { docId?: string } = {},
 ): Promise<TreecrdtEngine> {
-  ensureNonEmptyString("url", url);
+  ensureNonEmptyString('url', url);
   const native = loadNative();
   const factory = new native.PgFactory(url);
   await factory.ensureSchema();
 
-  const docId = opts.docId ?? "treecrdt";
-  ensureNonEmptyString("docId", docId);
+  const docId = opts.docId ?? 'treecrdt';
+  ensureNonEmptyString('docId', docId);
 
   const backend = factory.open(docId);
 
-  const encodeReplica = (replica: Operation["meta"]["id"]["replica"]): Uint8Array => replicaIdToBytes(replica);
+  const encodeReplica = (replica: Operation['meta']['id']['replica']): Uint8Array =>
+    replicaIdToBytes(replica);
 
   const opsSinceImpl = async (lamport: number, root?: string): Promise<Operation[]> => {
     const rootBytes = root === undefined ? null : nodeIdToBytes16(root);
@@ -53,7 +57,8 @@ export async function createTreecrdtPostgresClient(
   };
 
   const opRefsAllImpl = async () => backend.listOpRefsAll();
-  const opRefsChildrenImpl = async (parent: string) => backend.listOpRefsChildren(nodeIdToBytes16(parent));
+  const opRefsChildrenImpl = async (parent: string) =>
+    backend.listOpRefsChildren(nodeIdToBytes16(parent));
 
   const opsByOpRefsImpl = async (opRefs: Uint8Array[]) => {
     if (opRefs.length === 0) return [];
@@ -66,13 +71,13 @@ export async function createTreecrdtPostgresClient(
   const treeChildrenPageImpl = async (
     parent: string,
     cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
-    limit: number
+    limit: number,
   ) => {
     const rows = backend.treeChildrenPage(
       nodeIdToBytes16(parent),
       cursor?.orderKey ?? null,
       cursor?.node ?? null,
-      limit
+      limit,
     );
     return rows.map((r) => ({ node: nodeIdFromBytes16(r.node), orderKey: r.orderKey ?? null }));
   };
@@ -87,7 +92,8 @@ export async function createTreecrdtPostgresClient(
     }));
   };
 
-  const treeNodeCountImpl = async () => bigintToSafeNumber("treeNodeCount", backend.treeNodeCount());
+  const treeNodeCountImpl = async () =>
+    bigintToSafeNumber('treeNodeCount', backend.treeNodeCount());
   const treeParentImpl = async (node: string) => {
     const result = backend.treeParent(nodeIdToBytes16(node));
     return result === null || result === undefined ? null : nodeIdFromBytes16(result);
@@ -97,16 +103,16 @@ export async function createTreecrdtPostgresClient(
     const result = backend.treePayload(nodeIdToBytes16(node));
     return result === null || result === undefined ? null : result;
   };
-  const headLamportImpl = async () => bigintToSafeNumber("headLamport", backend.maxLamport());
+  const headLamportImpl = async () => bigintToSafeNumber('headLamport', backend.maxLamport());
   const replicaMaxCounterImpl = async (replica: ReplicaId) =>
-    bigintToSafeNumber("replicaMaxCounter", backend.replicaMaxCounter(encodeReplica(replica)));
+    bigintToSafeNumber('replicaMaxCounter', backend.replicaMaxCounter(encodeReplica(replica)));
 
   const localInsertImpl = async (
     replica: ReplicaId,
     parent: string,
     node: string,
     placement: TreecrdtSqlitePlacement,
-    payload: Uint8Array | null
+    payload: Uint8Array | null,
   ) => {
     const { type, after } = placementToArgs(placement);
     const op = backend.localInsert(
@@ -115,7 +121,7 @@ export async function createTreecrdtPostgresClient(
       nodeIdToBytes16(node),
       type,
       after,
-      payload
+      payload,
     );
     return nativeToOperation(op);
   };
@@ -124,7 +130,7 @@ export async function createTreecrdtPostgresClient(
     replica: ReplicaId,
     node: string,
     newParent: string,
-    placement: TreecrdtSqlitePlacement
+    placement: TreecrdtSqlitePlacement,
   ) => {
     const { type, after } = placementToArgs(placement);
     const op = backend.localMove(
@@ -132,7 +138,7 @@ export async function createTreecrdtPostgresClient(
       nodeIdToBytes16(node),
       nodeIdToBytes16(newParent),
       type,
-      after
+      after,
     );
     return nativeToOperation(op);
   };
@@ -148,8 +154,8 @@ export async function createTreecrdtPostgresClient(
   };
 
   return {
-    mode: "node",
-    storage: "postgres",
+    mode: 'node',
+    storage: 'postgres',
     docId,
     ops: {
       append: async (op) => {
@@ -157,7 +163,9 @@ export async function createTreecrdtPostgresClient(
       },
       appendMany: async (ops) => {
         if (ops.length === 0) return;
-        backend.applyOps(ops.map((op) => operationToNativeWithSerializers(op, nodeIdToBytes16, encodeReplica)));
+        backend.applyOps(
+          ops.map((op) => operationToNativeWithSerializers(op, nodeIdToBytes16, encodeReplica)),
+        );
       },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
@@ -192,4 +200,3 @@ export async function createTreecrdtPostgresClient(
     },
   };
 }
-

@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
-import type { Operation } from "@treecrdt/interface";
-import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
-import { makeOp } from "@treecrdt/benchmark";
-import { orderKeyFromPosition, replicaFromLabel } from "./op-helpers.js";
+import React, { useEffect, useState } from 'react';
+import type { Operation } from '@treecrdt/interface';
+import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { makeOp } from '@treecrdt/benchmark';
+import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
 type ViewOp = Operation & { asText: string };
 
@@ -12,9 +12,16 @@ export default function App() {
 
   useEffect(() => {
     // Expose a small helper for e2e tests to assert client mode.
-    if (typeof window !== "undefined") {
-      (window as any).__createTreecrdtClient = async (storage: "memory" | "opfs", baseUrl?: string) => {
-        const c = await createTreecrdtClient({ storage, baseUrl, preferWorker: storage === "opfs" });
+    if (typeof window !== 'undefined') {
+      (window as any).__createTreecrdtClient = async (
+        storage: 'memory' | 'opfs',
+        baseUrl?: string,
+      ) => {
+        const c = await createTreecrdtClient({
+          storage,
+          baseUrl,
+          preferWorker: storage === 'opfs',
+        });
         const summary = { mode: c.mode, storage: c.storage };
         if (c.close) await c.close();
         return summary;
@@ -23,10 +30,10 @@ export default function App() {
 
     (async () => {
       try {
-        const c = await createTreecrdtClient({ storage: "memory" });
+        const c = await createTreecrdtClient({ storage: 'memory' });
         setClient(c);
       } catch (err) {
-        console.error("Failed to init wa-sqlite", err);
+        console.error('Failed to init wa-sqlite', err);
       }
     })();
     return () => {
@@ -38,12 +45,12 @@ export default function App() {
   const runDemo = async () => {
     if (!client) return;
 
-    const replica = replicaFromLabel("demo");
-    const rootId = "0".padStart(32, "0");
-    const childId = "1".padStart(32, "0");
+    const replica = replicaFromLabel('demo');
+    const rootId = '0'.padStart(32, '0');
+    const childId = '1'.padStart(32, '0');
 
     const insertOp = makeOp(replica, 1, 1, {
-      type: "insert",
+      type: 'insert',
       parent: rootId,
       node: childId,
       orderKey: orderKeyFromPosition(0),
@@ -51,7 +58,7 @@ export default function App() {
     await client.ops.append(insertOp);
 
     const moveOp = makeOp(replica, 2, 2, {
-      type: "move",
+      type: 'move',
       node: childId,
       newParent: rootId,
       orderKey: orderKeyFromPosition(0),
@@ -65,19 +72,19 @@ export default function App() {
   const runPayloadDemo = async () => {
     if (!client) return;
 
-    const replica = replicaFromLabel("demo");
-    const rootId = "0".padStart(32, "0");
-    const childId = "1".padStart(32, "0");
+    const replica = replicaFromLabel('demo');
+    const rootId = '0'.padStart(32, '0');
+    const childId = '1'.padStart(32, '0');
 
     const insertOp = makeOp(replica, 1, 1, {
-      type: "insert",
+      type: 'insert',
       parent: rootId,
       node: childId,
       orderKey: orderKeyFromPosition(0),
     });
     const payloadOp: Operation = {
       meta: { id: { replica, counter: 2 }, lamport: 2 },
-      kind: { type: "payload", node: childId, payload: new TextEncoder().encode("hello") },
+      kind: { type: 'payload', node: childId, payload: new TextEncoder().encode('hello') },
     };
 
     // Exercise the bulk append path (treecrdt_append_ops).
@@ -90,18 +97,18 @@ export default function App() {
   const runInsertWithPayloadDemo = async () => {
     if (!client) return;
 
-    const replica = replicaFromLabel("demo");
-    const rootId = "0".padStart(32, "0");
-    const childId = "1".padStart(32, "0");
+    const replica = replicaFromLabel('demo');
+    const rootId = '0'.padStart(32, '0');
+    const childId = '1'.padStart(32, '0');
 
     const insertOp: Operation = {
       meta: { id: { replica, counter: 1 }, lamport: 1 },
       kind: {
-        type: "insert",
+        type: 'insert',
         parent: rootId,
         node: childId,
         orderKey: orderKeyFromPosition(0),
-        payload: new TextEncoder().encode("hello"),
+        payload: new TextEncoder().encode('hello'),
       },
     };
     await client.ops.append(insertOp);
@@ -111,12 +118,17 @@ export default function App() {
   };
 
   return (
-    <div style={{ fontFamily: "sans-serif", padding: 24 }}>
+    <div style={{ fontFamily: 'sans-serif', padding: 24 }}>
       <h1>TreeCRDT wa-sqlite demo</h1>
       <button data-testid="run-demo" onClick={runDemo} disabled={!client}>
         Run insert + move
       </button>
-      <button data-testid="run-payload-demo" onClick={runPayloadDemo} disabled={!client} style={{ marginLeft: 12 }}>
+      <button
+        data-testid="run-payload-demo"
+        onClick={runPayloadDemo}
+        disabled={!client}
+        style={{ marginLeft: 12 }}
+      >
         Run insert + payload
       </button>
       <button
@@ -139,7 +151,7 @@ export default function App() {
 function makeJsonFriendlyOp(op: Operation): unknown {
   const outReplica = Array.from(op.meta.id.replica);
   const kind = op.kind;
-  if (kind.type === "payload") {
+  if (kind.type === 'payload') {
     return {
       ...op,
       meta: { ...op.meta, id: { ...op.meta.id, replica: outReplica } },
@@ -149,7 +161,7 @@ function makeJsonFriendlyOp(op: Operation): unknown {
       },
     };
   }
-  if (kind.type === "insert" && kind.payload !== undefined) {
+  if (kind.type === 'insert' && kind.payload !== undefined) {
     return {
       ...op,
       meta: { ...op.meta, id: { ...op.meta.id, replica: outReplica } },

@@ -1,15 +1,15 @@
-import type { Operation } from "@treecrdt/interface";
-import { replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { Operation } from '@treecrdt/interface';
+import { replicaIdToBytes } from '@treecrdt/interface/ids';
 
-import { isAnyAuthCapability } from "../auth-capabilities.js";
-import type { SyncAuth } from "../auth.js";
-import { deriveOpRefV0 } from "../opref.js";
-import type { Capability, OpAuth, OpRef } from "../types.js";
-import type { SyncAuthMaterialStore } from "./types.js";
+import { isAnyAuthCapability } from '../auth-capabilities.js';
+import type { SyncAuth } from '../auth.js';
+import { deriveOpRefV0 } from '../opref.js';
+import type { Capability, OpAuth, OpRef } from '../types.js';
+import type { SyncAuthMaterialStore } from './types.js';
 
 export function createReplayOnlySyncAuth(opts: {
   docId: string;
-  authMaterialStore: Pick<SyncAuthMaterialStore<Operation>, "opAuth" | "capabilities">;
+  authMaterialStore: Pick<SyncAuthMaterialStore<Operation>, 'opAuth' | 'capabilities'>;
 }): SyncAuth<Operation> {
   const opRefForOp = (op: Operation): OpRef =>
     deriveOpRefV0(opts.docId, {
@@ -50,7 +50,7 @@ export function createReplayOnlySyncAuth(opts: {
     onVerifiedOps: async (ops, auth) => {
       if (ops.length === 0 || auth.length === 0) return;
       await opts.authMaterialStore.opAuth.storeOpAuth(
-        ops.map((op, index) => ({ opRef: opRefForOp(op), auth: auth[index]! }))
+        ops.map((op, index) => ({ opRef: opRefForOp(op), auth: auth[index]! })),
       );
     },
 
@@ -60,7 +60,7 @@ export function createReplayOnlySyncAuth(opts: {
       const found = await opts.authMaterialStore.opAuth.getOpAuthByOpRefs(opRefs);
       const missing = found.findIndex((entry) => !entry);
       if (missing !== -1) {
-        throw new Error("missing op auth for non-local replica; cannot forward unsigned op");
+        throw new Error('missing op auth for non-local replica; cannot forward unsigned op');
       }
       return found as OpAuth[];
     },

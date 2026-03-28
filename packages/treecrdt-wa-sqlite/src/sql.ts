@@ -1,4 +1,4 @@
-import type { Database } from "./types.js";
+import type { Database } from './types.js';
 
 /** SQLITE_ROW = 100. See https://www.sqlite.org/c3ref/step.html */
 const SQLITE_ROW = 100;
@@ -10,7 +10,7 @@ const SQLITE_ROW = 100;
 export async function dbGetText(
   db: Database,
   sql: string,
-  params: unknown[] = []
+  params: unknown[] = [],
 ): Promise<string | null> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stmt: any = await db.prepare(sql);

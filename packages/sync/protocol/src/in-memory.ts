@@ -1,8 +1,8 @@
-import type { SyncPeerOptions } from "./sync.js";
-import { SyncPeer } from "./sync.js";
-import type { DuplexTransport, WireCodec } from "./transport/index.js";
-import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from "./transport/index.js";
-import type { Filter, OpRef, SyncBackend, SyncMessage } from "./types.js";
+import type { SyncPeerOptions } from './sync.js';
+import { SyncPeer } from './sync.js';
+import type { DuplexTransport, WireCodec } from './transport/index.js';
+import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from './transport/index.js';
+import type { Filter, OpRef, SyncBackend, SyncMessage } from './types.js';
 
 export type FlushableSyncBackend<Op> = SyncBackend<Op> & { flush: () => Promise<void> };
 

@@ -1,7 +1,12 @@
-import type { Operation, SerializeNodeId, SerializeReplica } from "@treecrdt/interface";
-import { decodeReplicaId, nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
+import type { Operation, SerializeNodeId, SerializeReplica } from '@treecrdt/interface';
+import {
+  decodeReplicaId,
+  nodeIdFromBytes16,
+  nodeIdToBytes16,
+  replicaIdToBytes,
+} from '@treecrdt/interface/ids';
 
-import type { NativeOp } from "./native.js";
+import type { NativeOp } from './native.js';
 
 function assertSafeNonNegativeInteger(name: string, value: number): void {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -10,17 +15,17 @@ function assertSafeNonNegativeInteger(name: string, value: number): void {
 }
 
 function parseSafeInteger(name: string, value: unknown): number {
-  if (typeof value === "number") {
+  if (typeof value === 'number') {
     assertSafeNonNegativeInteger(name, value);
     return value;
   }
-  if (typeof value === "bigint") {
+  if (typeof value === 'bigint') {
     if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new Error(`${name} out of JS safe range: ${String(value)}`);
     }
     return Number(value);
   }
-  if (typeof value === "string") {
+  if (typeof value === 'string') {
     const n = Number(value);
     assertSafeNonNegativeInteger(name, n);
     return n;
@@ -30,8 +35,8 @@ function parseSafeInteger(name: string, value: unknown): number {
 
 export function nativeToOperation(row: NativeOp): Operation {
   const kind = String(row.kind);
-  const lamport = parseSafeInteger("lamport", row.lamport);
-  const counter = parseSafeInteger("counter", row.counter);
+  const lamport = parseSafeInteger('lamport', row.lamport);
+  const counter = parseSafeInteger('counter', row.counter);
   const replica = decodeReplicaId(row.replica);
   const node = nodeIdFromBytes16(row.node);
 
@@ -42,16 +47,16 @@ export function nativeToOperation(row: NativeOp): Operation {
   };
 
   switch (kind) {
-    case "insert": {
-      if (!row.parent) throw new Error("native insert op missing parent");
-      if (!row.orderKey) throw new Error("native insert op missing orderKey");
+    case 'insert': {
+      if (!row.parent) throw new Error('native insert op missing parent');
+      if (!row.orderKey) throw new Error('native insert op missing orderKey');
       const parent = nodeIdFromBytes16(row.parent);
       const orderKey = row.orderKey;
       const payload = row.payload;
       return {
         meta: baseMeta,
         kind: {
-          type: "insert",
+          type: 'insert',
           parent,
           node,
           orderKey,
@@ -59,33 +64,33 @@ export function nativeToOperation(row: NativeOp): Operation {
         },
       };
     }
-    case "move": {
-      if (!row.newParent) throw new Error("native move op missing newParent");
-      if (!row.orderKey) throw new Error("native move op missing orderKey");
+    case 'move': {
+      if (!row.newParent) throw new Error('native move op missing newParent');
+      if (!row.orderKey) throw new Error('native move op missing orderKey');
       return {
         meta: baseMeta,
         kind: {
-          type: "move",
+          type: 'move',
           node,
           newParent: nodeIdFromBytes16(row.newParent),
           orderKey: row.orderKey,
         },
       };
     }
-    case "delete":
+    case 'delete':
       return {
         meta: baseMeta,
-        kind: { type: "delete", node },
+        kind: { type: 'delete', node },
       };
-    case "tombstone":
+    case 'tombstone':
       return {
         meta: baseMeta,
-        kind: { type: "tombstone", node },
+        kind: { type: 'tombstone', node },
       };
-    case "payload":
+    case 'payload':
       return {
         meta: baseMeta,
-        kind: { type: "payload", node, payload: row.payload ?? null },
+        kind: { type: 'payload', node, payload: row.payload ?? null },
       };
     default:
       throw new Error(`unknown operation kind in native: ${kind}`);
@@ -99,10 +104,10 @@ export function operationToNative(op: Operation): NativeOp {
 export function operationToNativeWithSerializers(
   op: Operation,
   serializeNodeId: SerializeNodeId,
-  serializeReplica: SerializeReplica
+  serializeReplica: SerializeReplica,
 ): NativeOp {
-  assertSafeNonNegativeInteger("lamport", op.meta.lamport);
-  assertSafeNonNegativeInteger("counter", op.meta.id.counter);
+  assertSafeNonNegativeInteger('lamport', op.meta.lamport);
+  assertSafeNonNegativeInteger('counter', op.meta.id.counter);
 
   const replicaBytes = serializeReplica(op.meta.id.replica);
   const meta = {
@@ -113,39 +118,39 @@ export function operationToNativeWithSerializers(
   };
 
   switch (op.kind.type) {
-    case "insert":
+    case 'insert':
       return {
         ...meta,
-        kind: "insert",
+        kind: 'insert',
         parent: Buffer.from(serializeNodeId(op.kind.parent)),
         node: Buffer.from(serializeNodeId(op.kind.node)),
         orderKey: Buffer.from(op.kind.orderKey),
         ...(op.kind.payload !== undefined ? { payload: Buffer.from(op.kind.payload) } : {}),
       };
-    case "move":
+    case 'move':
       return {
         ...meta,
-        kind: "move",
+        kind: 'move',
         node: Buffer.from(serializeNodeId(op.kind.node)),
         newParent: Buffer.from(serializeNodeId(op.kind.newParent)),
         orderKey: Buffer.from(op.kind.orderKey),
       };
-    case "delete":
+    case 'delete':
       return {
         ...meta,
-        kind: "delete",
+        kind: 'delete',
         node: Buffer.from(serializeNodeId(op.kind.node)),
       };
-    case "tombstone":
+    case 'tombstone':
       return {
         ...meta,
-        kind: "tombstone",
+        kind: 'tombstone',
         node: Buffer.from(serializeNodeId(op.kind.node)),
       };
-    case "payload":
+    case 'payload':
       return {
         ...meta,
-        kind: "payload",
+        kind: 'payload',
         node: Buffer.from(serializeNodeId(op.kind.node)),
         ...(op.kind.payload ? { payload: Buffer.from(op.kind.payload) } : {}),
       };
@@ -170,4 +175,3 @@ export function nativeOpToSqliteRow(row: NativeOp): Record<string, unknown> {
     known_state: row.knownState ?? null,
   };
 }
-
