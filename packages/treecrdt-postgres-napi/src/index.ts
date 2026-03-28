@@ -46,8 +46,8 @@ export function createPostgresNapiSyncBackendFactory(url: string): PostgresNapiS
           const payloadWriter = nativeBackend.latestPayloadWriterOpRef(parent);
           if (!payloadWriter) return refs;
 
-          const payloadWriterHex = Buffer.from(payloadWriter).toString("hex");
-          if (refs.some((ref) => Buffer.from(ref).toString("hex") === payloadWriterHex)) {
+          const payloadWriterHex = Buffer.from(payloadWriter).toString('hex');
+          if (refs.some((ref) => Buffer.from(ref).toString('hex') === payloadWriterHex)) {
             return refs;
           }
           return [...refs, payloadWriter];
