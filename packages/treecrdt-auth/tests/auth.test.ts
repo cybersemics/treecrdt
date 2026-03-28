@@ -1,19 +1,23 @@
-import { createHash } from "node:crypto";
+import { createHash } from 'node:crypto';
 
-import { expect, test } from "vitest";
-import { encode as cborEncode, rfc8949EncodeOptions } from "cborg";
+import { expect, test } from 'vitest';
+import { encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
-import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
-import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from "@noble/ed25519";
-import { sha512 } from "@noble/hashes/sha512";
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
+import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
+import { sha512 } from '@noble/hashes/sha512';
 
-import { createInMemoryConnectedPeers } from "@treecrdt/sync/in-memory";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { base64urlEncode } from "../dist/base64url.js";
-import { coseSign1Ed25519, deriveTokenIdV1 } from "../dist/cose.js";
-import { createTreecrdtIdentityChainCapabilityV1, issueDeviceCertV1, issueReplicaCertV1 } from "../dist/identity.js";
+import { createInMemoryConnectedPeers } from '@treecrdt/sync/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
+import { base64urlEncode } from '../dist/base64url.js';
+import { coseSign1Ed25519, deriveTokenIdV1 } from '../dist/cose.js';
+import {
+  createTreecrdtIdentityChainCapabilityV1,
+  issueDeviceCertV1,
+  issueReplicaCertV1,
+} from '../dist/identity.js';
 import {
   createTreecrdtCoseCwtAuth,
   describeTreecrdtCapabilityTokenV1,
@@ -21,8 +25,8 @@ import {
   issueTreecrdtDelegatedCapabilityTokenV1,
   issueTreecrdtRevocationRecordV1,
   verifyTreecrdtRevocationRecordV1,
-} from "../dist/treecrdt-auth.js";
-import type { Capability, Filter, OpRef, SyncBackend } from "@treecrdt/sync";
+} from '../dist/treecrdt-auth.js';
+import type { Capability, Filter, OpRef, SyncBackend } from '@treecrdt/sync';
 
 ed25519Hashes.sha512 = sha512;
 
@@ -36,8 +40,8 @@ function orderKeyFromPosition(position: number): Uint8Array {
 }
 
 function opRefFor(docId: string, replica: string, counter: number): OpRef {
-  const h = createHash("sha256");
-  h.update("treecrdt/opref/test");
+  const h = createHash('sha256');
+  h.update('treecrdt/opref/test');
   h.update(docId);
   h.update(replica);
   h.update(String(counter));
@@ -54,7 +58,7 @@ async function tick(): Promise<void> {
 
 async function waitUntil(
   predicate: () => Promise<boolean> | boolean,
-  opts: { timeoutMs?: number; intervalMs?: number; message?: string } = {}
+  opts: { timeoutMs?: number; intervalMs?: number; message?: string } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 2_000;
   const intervalMs = opts.intervalMs ?? 10;
@@ -87,7 +91,7 @@ class MemoryBackend implements SyncBackend<Operation> {
 
   hasOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.opsByRefHex.values()).some(
-      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter,
     );
   }
 
@@ -96,23 +100,23 @@ class MemoryBackend implements SyncBackend<Operation> {
   }
 
   async listOpRefs(filter: Filter): Promise<OpRef[]> {
-    if ("all" in filter) {
+    if ('all' in filter) {
       return Array.from(this.opsByRefHex.values(), (v) => v.opRef);
     }
-    if ("children" in filter) {
+    if ('children' in filter) {
       const parentHex = bytesToHex(filter.children.parent);
       return Array.from(this.opsByRefHex.values(), (v) => v).flatMap((v) => {
         switch (v.op.kind.type) {
-          case "insert":
+          case 'insert':
             return v.op.kind.parent === parentHex ? [v.opRef] : [];
-          case "move":
+          case 'move':
             return v.op.kind.newParent === parentHex ? [v.opRef] : [];
           default:
             return [];
         }
       });
     }
-    throw new Error("MemoryBackend only supports filter { all: {} } and { children: { parent } }");
+    throw new Error('MemoryBackend only supports filter { all: {} } and { children: { parent } }');
   }
 
   async getOpsByOpRefs(opRefs: OpRef[]): Promise<Operation[]> {
@@ -139,9 +143,9 @@ class MemoryBackend implements SyncBackend<Operation> {
   }
 }
 
-test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
-  const docId = "doc-auth-happy";
-  const root = "0".repeat(32);
+test('syncOnce with COSE+CWT auth converges and verifies ops', async () => {
+  const docId = 'doc-auth-happy';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -158,24 +162,39 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
   const bHex = bytesToHex(bPk);
 
   await a.applyOps([
-    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(aPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
   await b.applyOps([
-    makeOp(bPk, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
-    makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+    makeOp(bPk, 1, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(bPk, 2, 3, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const tokenA = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const tokenB = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: bPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -194,7 +213,12 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
     requireProofRef: true,
   });
 
-  const { peerA: pa, transportA: ta, peerB: pb, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    peerB: pb,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -208,14 +232,17 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
 
     await waitUntil(
       async () => {
-        const [aRefs, bRefs] = await Promise.all([a.listOpRefs({ all: {} }), b.listOpRefs({ all: {} })]);
+        const [aRefs, bRefs] = await Promise.all([
+          a.listOpRefs({ all: {} }),
+          b.listOpRefs({ all: {} }),
+        ]);
         const aSet = setHex(aRefs);
         const bSet = setHex(bRefs);
         if (aSet.size !== bSet.size) return false;
         for (const v of aSet) if (!bSet.has(v)) return false;
         return true;
       },
-      { message: "expected convergence after syncOnce" }
+      { message: 'expected convergence after syncOnce' },
     );
 
     expect(a.hasOp(aHex, 1)).toBe(true);
@@ -230,9 +257,9 @@ test("syncOnce with COSE+CWT auth converges and verifies ops", async () => {
   }
 });
 
-test("auth: signOps selects proof_ref per op when multiple tokens exist", async () => {
-  const docId = "doc-auth-multitoken";
-  const root = "0".repeat(32);
+test('auth: signOps selects proof_ref per op when multiple tokens exist', async () => {
+  const docId = 'doc-auth-multitoken';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -247,13 +274,13 @@ test("auth: signOps selects proof_ref per op when multiple tokens exist", async 
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const tokenDelete = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["delete"],
+    actions: ['delete'],
   });
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -275,18 +302,18 @@ test("auth: signOps selects proof_ref per op when multiple tokens exist", async 
   await authB.onHello?.({ capabilities: helloCapsA ?? [], filters: [], maxLamport: 0n }, { docId });
 
   const opInsert = makeOp(aPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
   const opDelete = makeOp(aPk, 2, 2, {
-    type: "delete",
+    type: 'delete',
     node: nodeIdFromInt(1),
   });
 
   const ops = [opInsert, opDelete];
-  const ctx = { docId, purpose: "reconcile" as const, filterId: "all" };
+  const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
 
   const auth = await authA.signOps?.(ops, ctx);
   expect(auth).toBeTruthy();
@@ -303,12 +330,14 @@ test("auth: signOps selects proof_ref per op when multiple tokens exist", async 
   await authB.verifyOps?.(ops, auth, ctx);
 
   const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
-  await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(/capability does not allow op/i);
+  await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(
+    /capability does not allow op/i,
+  );
 });
 
-test("auth ignores foreign peer capability tokens during hello and still verifies known authors", async () => {
-  const docId = "doc-auth-ignore-foreign-hello-cap";
-  const root = "0".repeat(32);
+test('auth ignores foreign peer capability tokens during hello and still verifies known authors', async () => {
+  const docId = 'doc-auth-ignore-foreign-hello-cap';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -325,13 +354,13 @@ test("auth ignores foreign peer capability tokens during hello and still verifie
     issuerPrivateKey: issuerSk,
     subjectPublicKey: writerPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const foreignToken = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: foreignIssuerSk,
     subjectPublicKey: foreignSubjectPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const authWriter = createTreecrdtCoseCwtAuth({
@@ -352,35 +381,42 @@ test("auth ignores foreign peer capability tokens during hello and still verifie
   await expect(
     authVerifier.onHelloAck?.(
       {
-        capabilities: [...writerHelloCaps, { name: "auth.capability", value: base64urlEncode(foreignToken) }],
+        capabilities: [
+          ...writerHelloCaps,
+          { name: 'auth.capability', value: base64urlEncode(foreignToken) },
+        ],
         maxLamport: 0n,
       },
-      { docId }
-    )
+      { docId },
+    ),
   ).resolves.toBeUndefined();
 
   const op = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth = await authWriter.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
+  const auth = await authWriter.signOps?.([op], { docId, purpose: 'reconcile', filterId: 'all' });
   await expect(
     authWriter.filterOutgoingOps?.([op], {
       docId,
-      purpose: "subscribe",
-      filterId: "all",
-      capabilities: [...writerHelloCaps, { name: "auth.capability", value: base64urlEncode(foreignToken) }],
-    })
+      purpose: 'subscribe',
+      filterId: 'all',
+      capabilities: [
+        ...writerHelloCaps,
+        { name: 'auth.capability', value: base64urlEncode(foreignToken) },
+      ],
+    }),
   ).resolves.toEqual([true]);
-  await expect(authVerifier.verifyOps?.([op], auth, { docId, purpose: "reconcile", filterId: "all" })).resolves
-    .toBeUndefined();
+  await expect(
+    authVerifier.verifyOps?.([op], auth, { docId, purpose: 'reconcile', filterId: 'all' }),
+  ).resolves.toBeUndefined();
 });
 
-test("auth re-advertises trusted author capability tokens from the capability store after restart", async () => {
-  const docId = "doc-auth-capability-replay";
-  const root = "0".repeat(32);
+test('auth re-advertises trusted author capability tokens from the capability store after restart', async () => {
+  const docId = 'doc-auth-capability-replay';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -396,13 +432,13 @@ test("auth re-advertises trusted author capability tokens from the capability st
     issuerPrivateKey: issuerSk,
     subjectPublicKey: relayPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const writerToken = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: writerPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const storedCapabilities = new Map<string, Capability>();
@@ -431,7 +467,10 @@ test("auth re-advertises trusted author capability tokens from the capability st
   });
 
   const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
-  await authRelay.onHello?.({ capabilities: writerHelloCaps, filters: [], maxLamport: 0n }, { docId });
+  await authRelay.onHello?.(
+    { capabilities: writerHelloCaps, filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const reloadedRelay = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -451,27 +490,31 @@ test("auth re-advertises trusted author capability tokens from the capability st
   const relayHelloCaps = (await reloadedRelay.helloCapabilities?.({ docId })) ?? [];
   expect(relayHelloCaps).toEqual(
     expect.arrayContaining([
-      { name: "auth.capability", value: base64urlEncode(relayToken) },
-      { name: "auth.capability.replay", value: base64urlEncode(writerToken) },
-    ])
+      { name: 'auth.capability', value: base64urlEncode(relayToken) },
+      { name: 'auth.capability.replay', value: base64urlEncode(writerToken) },
+    ]),
   );
 
-  await authJoiner.onHello?.({ capabilities: relayHelloCaps, filters: [], maxLamport: 0n }, { docId });
+  await authJoiner.onHello?.(
+    { capabilities: relayHelloCaps, filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(7),
     orderKey: orderKeyFromPosition(0),
   });
-  const signed = await authWriter.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
-  await expect(authJoiner.verifyOps?.([op], signed, { docId, purpose: "reconcile", filterId: "all" })).resolves
-    .toBeUndefined();
+  const signed = await authWriter.signOps?.([op], { docId, purpose: 'reconcile', filterId: 'all' });
+  await expect(
+    authJoiner.verifyOps?.([op], signed, { docId, purpose: 'reconcile', filterId: 'all' }),
+  ).resolves.toBeUndefined();
 });
 
-test("auth: replayed author capability tokens do not widen peer filter scope", async () => {
-  const docId = "doc-auth-replay-capability-scope";
-  const root = "0".repeat(32);
+test('auth: replayed author capability tokens do not widen peer filter scope', async () => {
+  const docId = 'doc-auth-replay-capability-scope';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -503,24 +546,24 @@ test("auth: replayed author capability tokens do not widen peer filter scope", a
 
     let curHex = bytesToHex(node);
     for (let hops = 0; hops < 10_000; hops += 1) {
-      if (excludeHex.has(curHex)) return "deny" as const;
-      if (curHex === rootHex) return "allow" as const;
-      if (curHex === root || curHex === "f".repeat(32)) return "deny" as const;
+      if (excludeHex.has(curHex)) return 'deny' as const;
+      if (curHex === rootHex) return 'allow' as const;
+      if (curHex === root || curHex === 'f'.repeat(32)) return 'deny' as const;
 
       const parentHex = parentByNodeHex.get(curHex);
-      if (parentHex === undefined) return "unknown" as const;
-      if (parentHex === null) return "deny" as const;
+      if (parentHex === undefined) return 'unknown' as const;
+      if (parentHex === null) return 'deny' as const;
       curHex = parentHex;
     }
 
-    return "unknown" as const;
+    return 'unknown' as const;
   };
 
   const scopedToken = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: scopedPeerPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
     rootNodeId: root,
     excludeNodeIds: [privateRoot],
   });
@@ -528,7 +571,7 @@ test("auth: replayed author capability tokens do not widen peer filter scope", a
     issuerPrivateKey: issuerSk,
     subjectPublicKey: writerPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const storedCapabilities = new Map<string, Capability>();
@@ -564,7 +607,10 @@ test("auth: replayed author capability tokens do not widen peer filter scope", a
   });
 
   const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
-  await authScopedPeer.onHello?.({ capabilities: writerHelloCaps, filters: [], maxLamport: 0n }, { docId });
+  await authScopedPeer.onHello?.(
+    { capabilities: writerHelloCaps, filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const reloadedScopedPeer = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -578,29 +624,39 @@ test("auth: replayed author capability tokens do not widen peer filter scope", a
   const scopedPeerCaps = (await reloadedScopedPeer.helloCapabilities?.({ docId })) ?? [];
   expect(scopedPeerCaps).toEqual(
     expect.arrayContaining([
-      { name: "auth.capability", value: base64urlEncode(scopedToken) },
-      { name: "auth.capability.replay", value: base64urlEncode(writerToken) },
-    ])
+      { name: 'auth.capability', value: base64urlEncode(scopedToken) },
+      { name: 'auth.capability.replay', value: base64urlEncode(writerToken) },
+    ]),
   );
 
   const ops: Operation[] = [
-    makeOp(senderPk, 1, 1, { type: "insert", parent: root, node: publicNode, orderKey: orderKeyFromPosition(0) }),
-    makeOp(senderPk, 2, 2, { type: "insert", parent: root, node: privateRoot, orderKey: orderKeyFromPosition(1) }),
+    makeOp(senderPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: publicNode,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(senderPk, 2, 2, {
+      type: 'insert',
+      parent: root,
+      node: privateRoot,
+      orderKey: orderKeyFromPosition(1),
+    }),
   ];
 
   await expect(
     authSender.filterOutgoingOps?.(ops, {
       docId,
-      purpose: "reconcile",
+      purpose: 'reconcile',
       filter: { all: {} },
       capabilities: scopedPeerCaps,
-    })
+    }),
   ).resolves.toEqual([true, false]);
 });
 
-test("auth: cached stale local tokens cannot authorize new local writes after an access downgrade", async () => {
-  const docId = "doc-auth-stale-local-token-downgrade";
-  const root = "0".repeat(32);
+test('auth: cached stale local tokens cannot authorize new local writes after an access downgrade', async () => {
+  const docId = 'doc-auth-stale-local-token-downgrade';
+  const root = '0'.repeat(32);
   const secretRoot = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
 
@@ -614,14 +670,14 @@ test("auth: cached stale local tokens cannot authorize new local writes after an
     subjectPublicKey: localPk,
     docId,
     rootNodeId: secretRoot,
-    actions: ["write_structure", "write_payload"],
+    actions: ['write_structure', 'write_payload'],
   });
   const newReadOnlyToken = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: localPk,
     docId,
     rootNodeId: secretRoot,
-    actions: ["read_structure", "read_payload"],
+    actions: ['read_structure', 'read_payload'],
   });
 
   const storedCapabilities = new Map<string, Capability>();
@@ -632,7 +688,9 @@ test("auth: cached stale local tokens cannot authorize new local writes after an
     },
     listCapabilities: async () => Array.from(storedCapabilities.values()),
   };
-  await capabilityStore.storeCapabilities([{ name: "auth.capability", value: base64urlEncode(oldWriterToken) }]);
+  await capabilityStore.storeCapabilities([
+    { name: 'auth.capability', value: base64urlEncode(oldWriterToken) },
+  ]);
 
   const auth = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -644,17 +702,19 @@ test("auth: cached stale local tokens cannot authorize new local writes after an
   });
 
   const op = makeOp(localPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: secretRoot,
     node: child,
     orderKey: orderKeyFromPosition(0),
   });
 
-  await expect(auth.signOps?.([op], { docId, purpose: "reconcile", filterId: root })).rejects.toThrow(/capability does not allow op/i);
+  await expect(
+    auth.signOps?.([op], { docId, purpose: 'reconcile', filterId: root }),
+  ).rejects.toThrow(/capability does not allow op/i);
 });
 
-test("auth: helloCapabilities ignores locally cached revoked replay tokens", async () => {
-  const docId = "doc-auth-ignore-revoked-cached-replay";
+test('auth: helloCapabilities ignores locally cached revoked replay tokens', async () => {
+  const docId = 'doc-auth-ignore-revoked-cached-replay';
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -667,13 +727,13 @@ test("auth: helloCapabilities ignores locally cached revoked replay tokens", asy
     issuerPrivateKey: issuerSk,
     subjectPublicKey: localPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const revokedPeerToken = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: peerPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const storedCapabilities = new Map<string, Capability>();
@@ -685,7 +745,7 @@ test("auth: helloCapabilities ignores locally cached revoked replay tokens", asy
     listCapabilities: async () => Array.from(storedCapabilities.values()),
   };
   await capabilityStore.storeCapabilities([
-    { name: "auth.capability", value: base64urlEncode(revokedPeerToken) },
+    { name: 'auth.capability', value: base64urlEncode(revokedPeerToken) },
   ]);
 
   const auth = createTreecrdtCoseCwtAuth({
@@ -699,12 +759,12 @@ test("auth: helloCapabilities ignores locally cached revoked replay tokens", asy
   });
 
   await expect(auth.helloCapabilities?.({ docId })).resolves.toEqual([
-    { name: "auth.capability", value: base64urlEncode(localToken) },
+    { name: 'auth.capability', value: base64urlEncode(localToken) },
   ]);
 });
 
-test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async () => {
-  const docId = "doc-auth-token-describe";
+test('auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions', async () => {
+  const docId = 'doc-auth-token-describe';
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -719,7 +779,7 @@ test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async ()
     issuerPrivateKey: issuerSk,
     subjectPublicKey: subjectPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
     rootNodeId,
     maxDepth: 2,
     excludeNodeIds: [excludeNodeId],
@@ -733,7 +793,7 @@ test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async ()
 
   expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(subjectPk));
   expect(described.caps.length).toBe(1);
-  expect(described.caps[0]!.actions).toContain("write_structure");
+  expect(described.caps[0]!.actions).toContain('write_structure');
   expect(described.caps[0]!.res.docId).toBe(docId);
   expect(described.caps[0]!.res.rootNodeId).toBe(rootNodeId);
   expect(described.caps[0]!.res.maxDepth).toBe(2);
@@ -743,8 +803,8 @@ test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async ()
     describeTreecrdtCapabilityTokenV1({
       tokenBytes,
       issuerPublicKeys: [issuerPk],
-      docId: "wrong-doc",
-    })
+      docId: 'wrong-doc',
+    }),
   ).rejects.toThrow(/audience mismatch/i);
 
   const otherIssuerSk = ed25519Utils.randomSecretKey();
@@ -754,13 +814,13 @@ test("auth: describeTreecrdtCapabilityTokenV1 decodes scope + actions", async ()
       tokenBytes,
       issuerPublicKeys: [otherIssuerPk],
       docId,
-    })
+    }),
   ).rejects.toThrow(/verification failed/i);
 });
 
-test("syncOnce fails when responder requires auth but initiator sends unsigned ops", async () => {
-  const docId = "doc-auth-missing";
-  const root = "0".repeat(32);
+test('syncOnce fails when responder requires auth but initiator sends unsigned ops', async () => {
+  const docId = 'doc-auth-missing';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -776,17 +836,32 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
     issuerPrivateKey: issuerSk,
     subjectPublicKey: bPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const aHex = bytesToHex(aPk);
 
   await a.applyOps([
-    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(aPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
   await b.applyOps([
-    makeOp(bPk, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
-    makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+    makeOp(bPk, 1, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(bPk, 2, 3, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const authB = createTreecrdtCoseCwtAuth({
@@ -797,7 +872,11 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
     requireProofRef: true,
   });
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -806,9 +885,9 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
   });
 
   try {
-    await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 })).rejects.toThrow(
-      /missing op auth|unauthorized|auth\.capability/i
-    );
+    await expect(
+      pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 }),
+    ).rejects.toThrow(/missing op auth|unauthorized|auth\.capability/i);
     await tick();
     expect(b.hasOp(aHex, 1)).toBe(false);
   } finally {
@@ -816,9 +895,9 @@ test("syncOnce fails when responder requires auth but initiator sends unsigned o
   }
 });
 
-test("syncOnce fails when op signatures do not match the claimed replica_id", async () => {
-  const docId = "doc-auth-badsig";
-  const root = "0".repeat(32);
+test('syncOnce fails when op signatures do not match the claimed replica_id', async () => {
+  const docId = 'doc-auth-badsig';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -836,24 +915,39 @@ test("syncOnce fails when op signatures do not match the claimed replica_id", as
   const aHex = bytesToHex(aClaimPk);
 
   await a.applyOps([
-    makeOp(aClaimPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(aClaimPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
   await b.applyOps([
-    makeOp(bPk, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
-    makeOp(bPk, 2, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
+    makeOp(bPk, 1, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(bPk, 2, 3, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const tokenA = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aClaimPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const tokenB = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: bPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -872,7 +966,11 @@ test("syncOnce fails when op signatures do not match the claimed replica_id", as
     requireProofRef: true,
   });
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -881,9 +979,9 @@ test("syncOnce fails when op signatures do not match the claimed replica_id", as
   });
 
   try {
-    await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 })).rejects.toThrow(
-      /invalid op signature|unknown author|capability/i
-    );
+    await expect(
+      pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 }),
+    ).rejects.toThrow(/invalid op signature|unknown author|capability/i);
     await tick();
     expect(b.hasOp(aHex, 1)).toBe(false);
   } finally {
@@ -891,9 +989,9 @@ test("syncOnce fails when op signatures do not match the claimed replica_id", as
   }
 });
 
-test("auth: syncOnce rejects filters when capability scope does not allow read access", async () => {
-  const docId = "doc-auth-filter-scope";
-  const root = "0".repeat(32);
+test('auth: syncOnce rejects filters when capability scope does not allow read access', async () => {
+  const docId = 'doc-auth-filter-scope';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -914,14 +1012,14 @@ test("auth: syncOnce rejects filters when capability scope does not allow read a
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["read_structure"],
+    actions: ['read_structure'],
     rootNodeId: subtreeRoot,
   });
 
   const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
     const nodeHex = bytesToHex(node);
     const rootHex = bytesToHex(scope.root);
-    return nodeHex === rootHex ? "allow" : "deny";
+    return nodeHex === rootHex ? 'allow' : 'deny';
   };
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -942,10 +1040,19 @@ test("auth: syncOnce rejects filters when capability scope does not allow read a
 
   // Insert a no-op op so maxLamport isn't trivially zero (not required, but keeps the setup realistic).
   await a.applyOps([
-    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(aPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -954,18 +1061,18 @@ test("auth: syncOnce rejects filters when capability scope does not allow read a
   });
 
   try {
-    await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_000, codewordsPerMessage: 64 })).rejects.toThrow(
-      /UNAUTHORIZED.*capability does not allow filter/i
-    );
+    await expect(
+      pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_000, codewordsPerMessage: 64 }),
+    ).rejects.toThrow(/UNAUTHORIZED.*capability does not allow filter/i);
   } finally {
     detach();
   }
   void bPk;
 });
 
-test("auth: subscribe rejects filters when capability scope does not allow read access", async () => {
-  const docId = "doc-auth-subscribe-scope";
-  const root = "0".repeat(32);
+test('auth: subscribe rejects filters when capability scope does not allow read access', async () => {
+  const docId = 'doc-auth-subscribe-scope';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -985,14 +1092,14 @@ test("auth: subscribe rejects filters when capability scope does not allow read 
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["read_structure"],
+    actions: ['read_structure'],
     rootNodeId: subtreeRoot,
   });
 
   const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
     const nodeHex = bytesToHex(node);
     const rootHex = bytesToHex(scope.root);
-    return nodeHex === rootHex ? "allow" : "deny";
+    return nodeHex === rootHex ? 'allow' : 'deny';
   };
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -1012,10 +1119,19 @@ test("auth: subscribe rejects filters when capability scope does not allow read 
   });
 
   await a.applyOps([
-    makeOp(aPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(aPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -1032,9 +1148,9 @@ test("auth: subscribe rejects filters when capability scope does not allow read 
   void bPk;
 });
 
-test("auth: filters require read_structure action (read_payload alone is insufficient)", async () => {
-  const docId = "doc-auth-filter-actions";
-  const root = "0".repeat(32);
+test('auth: filters require read_structure action (read_payload alone is insufficient)', async () => {
+  const docId = 'doc-auth-filter-actions';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -1052,7 +1168,7 @@ test("auth: filters require read_structure action (read_payload alone is insuffi
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["read_payload"],
+    actions: ['read_payload'],
     rootNodeId: root,
   });
 
@@ -1071,7 +1187,11 @@ test("auth: filters require read_structure action (read_payload alone is insuffi
     requireProofRef: true,
   });
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -1080,18 +1200,18 @@ test("auth: filters require read_structure action (read_payload alone is insuffi
   });
 
   try {
-    await expect(pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_000, codewordsPerMessage: 64 })).rejects.toThrow(
-      /UNAUTHORIZED.*capability does not allow filter/i
-    );
+    await expect(
+      pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_000, codewordsPerMessage: 64 }),
+    ).rejects.toThrow(/UNAUTHORIZED.*capability does not allow filter/i);
   } finally {
     detach();
   }
   void bPk;
 });
 
-test("auth: syncOnce accepts doc-wide read_structure capability for filter(all)", async () => {
-  const docId = "doc-auth-filter-allow-all";
-  const root = "0".repeat(32);
+test('auth: syncOnce accepts doc-wide read_structure capability for filter(all)', async () => {
+  const docId = 'doc-auth-filter-allow-all';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -1110,7 +1230,7 @@ test("auth: syncOnce accepts doc-wide read_structure capability for filter(all)"
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["read_structure"],
+    actions: ['read_structure'],
     rootNodeId: root,
   });
 
@@ -1119,13 +1239,18 @@ test("auth: syncOnce accepts doc-wide read_structure capability for filter(all)"
     issuerPrivateKey: issuerSk,
     subjectPublicKey: bPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
     rootNodeId: root,
   });
 
   // Put one op on B so A has something to fetch (A won't send ops).
   await b.applyOps([
-    makeOp(bPk, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(bPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -1144,7 +1269,11 @@ test("auth: syncOnce accepts doc-wide read_structure capability for filter(all)"
     requireProofRef: true,
   });
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -1160,9 +1289,9 @@ test("auth: syncOnce accepts doc-wide read_structure capability for filter(all)"
   }
 });
 
-test("auth: syncOnce accepts filter(children) when capability scope matches the parent", async () => {
-  const docId = "doc-auth-filter-allow-children";
-  const root = "0".repeat(32);
+test('auth: syncOnce accepts filter(children) when capability scope matches the parent', async () => {
+  const docId = 'doc-auth-filter-allow-children';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -1182,14 +1311,14 @@ test("auth: syncOnce accepts filter(children) when capability scope matches the 
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["read_structure"],
+    actions: ['read_structure'],
     rootNodeId: parent,
   });
 
   const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
     const nodeHex = bytesToHex(node);
     const rootHex = bytesToHex(scope.root);
-    return nodeHex === rootHex ? "allow" : "deny";
+    return nodeHex === rootHex ? 'allow' : 'deny';
   };
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -1208,7 +1337,11 @@ test("auth: syncOnce accepts filter(children) when capability scope matches the 
     scopeEvaluator,
   });
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -1217,16 +1350,20 @@ test("auth: syncOnce accepts filter(children) when capability scope matches the 
   });
 
   try {
-    await pa.syncOnce(ta, { children: { parent: nodeIdToBytes16(parent) } }, { maxCodewords: 1_000, codewordsPerMessage: 64 });
+    await pa.syncOnce(
+      ta,
+      { children: { parent: nodeIdToBytes16(parent) } },
+      { maxCodewords: 1_000, codewordsPerMessage: 64 },
+    );
   } finally {
     detach();
   }
   void bPk;
 });
 
-test("auth: syncOnce rejects filter(children) when capability scope does not match the parent", async () => {
-  const docId = "doc-auth-filter-deny-children";
-  const root = "0".repeat(32);
+test('auth: syncOnce rejects filter(children) when capability scope does not match the parent', async () => {
+  const docId = 'doc-auth-filter-deny-children';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -1247,14 +1384,14 @@ test("auth: syncOnce rejects filter(children) when capability scope does not mat
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
     docId,
-    actions: ["read_structure"],
+    actions: ['read_structure'],
     rootNodeId: tokenScopeRoot,
   });
 
   const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
     const nodeHex = bytesToHex(node);
     const rootHex = bytesToHex(scope.root);
-    return nodeHex === rootHex ? "allow" : "deny";
+    return nodeHex === rootHex ? 'allow' : 'deny';
   };
 
   const authA = createTreecrdtCoseCwtAuth({
@@ -1273,7 +1410,11 @@ test("auth: syncOnce rejects filter(children) when capability scope does not mat
     scopeEvaluator,
   });
 
-  const { peerA: pa, transportA: ta, detach } = createInMemoryConnectedPeers({
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
     backendA: a,
     backendB: b,
     codec: treecrdtSyncV0ProtobufCodec,
@@ -1283,7 +1424,11 @@ test("auth: syncOnce rejects filter(children) when capability scope does not mat
 
   try {
     await expect(
-      pa.syncOnce(ta, { children: { parent: nodeIdToBytes16(requestedParent) } }, { maxCodewords: 1_000, codewordsPerMessage: 64 })
+      pa.syncOnce(
+        ta,
+        { children: { parent: nodeIdToBytes16(requestedParent) } },
+        { maxCodewords: 1_000, codewordsPerMessage: 64 },
+      ),
     ).rejects.toThrow(/UNAUTHORIZED.*capability does not allow filter/i);
   } finally {
     detach();
@@ -1291,9 +1436,9 @@ test("auth: syncOnce rejects filter(children) when capability scope does not mat
   void bPk;
 });
 
-test("auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees", async () => {
-  const docId = "doc-auth-filter-outgoing-exclude";
-  const root = "0".repeat(32);
+test('auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees', async () => {
+  const docId = 'doc-auth-filter-outgoing-exclude';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1333,35 +1478,35 @@ test("auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees"
     let distance = 0;
 
     for (let hops = 0; hops < 10_000; hops += 1) {
-      if (excludeHex.has(curHex)) return "deny" as const;
+      if (excludeHex.has(curHex)) return 'deny' as const;
       if (curHex === rootHex) {
-        if (maxDepth !== undefined && distance > maxDepth) return "deny" as const;
-        return "allow" as const;
+        if (maxDepth !== undefined && distance > maxDepth) return 'deny' as const;
+        return 'allow' as const;
       }
 
       // Reserved ids terminate the chain (unless they are the scope root, handled above).
-      if (curHex === root || curHex === "f".repeat(32)) return "deny" as const;
+      if (curHex === root || curHex === 'f'.repeat(32)) return 'deny' as const;
 
       // If we already traversed `maxDepth` edges without reaching `root`, the node cannot be within scope.
-      if (maxDepth !== undefined && distance >= maxDepth) return "deny" as const;
+      if (maxDepth !== undefined && distance >= maxDepth) return 'deny' as const;
 
       const parentHex = parentByNodeHex.get(curHex);
-      if (parentHex === undefined) return "unknown" as const;
-      if (parentHex === null) return "deny" as const;
+      if (parentHex === undefined) return 'unknown' as const;
+      if (parentHex === null) return 'deny' as const;
 
       curHex = parentHex;
       distance += 1;
     }
 
     // Defensive: cycles or extreme depth.
-    return "unknown" as const;
+    return 'unknown' as const;
   };
 
   const tokenReceiver = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: receiverPk,
     docId,
-    actions: ["read_structure"],
+    actions: ['read_structure'],
     rootNodeId: root,
     excludeNodeIds: [privateRoot],
   });
@@ -1386,21 +1531,55 @@ test("auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees"
   expect(receiverCaps).toBeTruthy();
 
   const ops: Operation[] = [
-    makeOp(senderPk, 1, 1, { type: "insert", parent: root, node: publicNode, orderKey: orderKeyFromPosition(0) }),
-    makeOp(senderPk, 2, 2, { type: "insert", parent: root, node: privateRoot, orderKey: orderKeyFromPosition(1) }),
-    makeOp(senderPk, 3, 3, { type: "insert", parent: privateRoot, node: privateSibling, orderKey: orderKeyFromPosition(0) }),
-    makeOp(senderPk, 4, 4, { type: "insert", parent: privateRoot, node: privateChild, orderKey: orderKeyFromPosition(1) }),
-    makeOp(senderPk, 5, 5, { type: "move", node: privateChild, newParent: privateSibling, orderKey: orderKeyFromPosition(0) }),
-    makeOp(senderPk, 6, 6, { type: "payload", node: privateChild, payload: new Uint8Array([1, 2, 3]) }),
-    makeOp(senderPk, 7, 7, { type: "delete", node: privateChild }),
-    makeOp(senderPk, 8, 8, { type: "tombstone", node: privateChild }),
-    makeOp(senderPk, 9, 9, { type: "move", node: publicNode, newParent: root, orderKey: orderKeyFromPosition(0) }),
-    makeOp(senderPk, 10, 10, { type: "delete", node: publicNode }),
+    makeOp(senderPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: publicNode,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(senderPk, 2, 2, {
+      type: 'insert',
+      parent: root,
+      node: privateRoot,
+      orderKey: orderKeyFromPosition(1),
+    }),
+    makeOp(senderPk, 3, 3, {
+      type: 'insert',
+      parent: privateRoot,
+      node: privateSibling,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(senderPk, 4, 4, {
+      type: 'insert',
+      parent: privateRoot,
+      node: privateChild,
+      orderKey: orderKeyFromPosition(1),
+    }),
+    makeOp(senderPk, 5, 5, {
+      type: 'move',
+      node: privateChild,
+      newParent: privateSibling,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(senderPk, 6, 6, {
+      type: 'payload',
+      node: privateChild,
+      payload: new Uint8Array([1, 2, 3]),
+    }),
+    makeOp(senderPk, 7, 7, { type: 'delete', node: privateChild }),
+    makeOp(senderPk, 8, 8, { type: 'tombstone', node: privateChild }),
+    makeOp(senderPk, 9, 9, {
+      type: 'move',
+      node: publicNode,
+      newParent: root,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(senderPk, 10, 10, { type: 'delete', node: publicNode }),
   ];
 
   const allowed = await authSender.filterOutgoingOps?.(ops, {
     docId,
-    purpose: "reconcile",
+    purpose: 'reconcile',
     filter: { all: {} },
     capabilities: receiverCaps ?? [],
   });
@@ -1419,9 +1598,9 @@ test("auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees"
   }
 });
 
-test("auth: delegated capability token can be verified via issuer-signed proof", async () => {
-  const docId = "doc-auth-delegation-basic";
-  const root = "0".repeat(32);
+test('auth: delegated capability token can be verified via issuer-signed proof', async () => {
+  const docId = 'doc-auth-delegation-basic';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1437,7 +1616,7 @@ test("auth: delegated capability token can be verified via issuer-signed proof",
     subjectPublicKey: delegatorPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure", "grant"],
+    actions: ['write_structure', 'grant'],
   });
 
   const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
@@ -1446,10 +1625,14 @@ test("auth: delegated capability token can be verified via issuer-signed proof",
     subjectPublicKey: recipientPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
-  const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes: delegated, issuerPublicKeys: [issuerPk], docId });
+  const described = await describeTreecrdtCapabilityTokenV1({
+    tokenBytes: delegated,
+    issuerPublicKeys: [issuerPk],
+    docId,
+  });
   expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
 
   const verifierSk = ed25519Utils.randomSecretKey();
@@ -1471,19 +1654,35 @@ test("auth: delegated capability token can be verified via issuer-signed proof",
 
   const helloCaps = await authRecipient.helloCapabilities?.({ docId });
   expect(helloCaps).toBeTruthy();
-  await authVerifier.onHello?.({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const node = nodeIdFromInt(1);
-  const op: Operation = makeOp(recipientPk, 1, 1, { type: "insert", parent: root, node, orderKey: orderKeyFromPosition(0) });
-  const auth = await authRecipient.signOps?.([op], { docId, purpose: "reconcile", filterId: "all" });
+  const op: Operation = makeOp(recipientPk, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const auth = await authRecipient.signOps?.([op], {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
   expect(auth).toBeTruthy();
 
-  await authVerifier.verifyOps?.([op], auth ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.verifyOps?.([op], auth ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 });
 
-test("auth: delegation requires grant action in proof token", async () => {
-  const docId = "doc-auth-delegation-requires-grant";
-  const root = "0".repeat(32);
+test('auth: delegation requires grant action in proof token', async () => {
+  const docId = 'doc-auth-delegation-requires-grant';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1498,7 +1697,7 @@ test("auth: delegation requires grant action in proof token", async () => {
     subjectPublicKey: delegatorPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
@@ -1507,17 +1706,21 @@ test("auth: delegation requires grant action in proof token", async () => {
     subjectPublicKey: recipientPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   await expect(
-    describeTreecrdtCapabilityTokenV1({ tokenBytes: delegated, issuerPublicKeys: [issuerPk], docId })
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes: delegated,
+      issuerPublicKeys: [issuerPk],
+      docId,
+    }),
   ).rejects.toThrow(/delegation proof/i);
 });
 
-test("auth: delegation proof can itself be delegated (chain)", async () => {
-  const docId = "doc-auth-delegation-chain";
-  const root = "0".repeat(32);
+test('auth: delegation proof can itself be delegated (chain)', async () => {
+  const docId = 'doc-auth-delegation-chain';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1536,7 +1739,7 @@ test("auth: delegation proof can itself be delegated (chain)", async () => {
     subjectPublicKey: delegatorPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure", "grant"],
+    actions: ['write_structure', 'grant'],
   });
 
   // Delegator grants intermediate the ability to further delegate (chain).
@@ -1546,7 +1749,7 @@ test("auth: delegation proof can itself be delegated (chain)", async () => {
     subjectPublicKey: intermediatePk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure", "grant"],
+    actions: ['write_structure', 'grant'],
   });
 
   // Intermediate delegates to recipient using delegated proof token.
@@ -1556,15 +1759,19 @@ test("auth: delegation proof can itself be delegated (chain)", async () => {
     subjectPublicKey: recipientPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
-  const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes: delegatedCtoD, issuerPublicKeys: [issuerPk], docId });
+  const described = await describeTreecrdtCapabilityTokenV1({
+    tokenBytes: delegatedCtoD,
+    issuerPublicKeys: [issuerPk],
+    docId,
+  });
   expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
 });
 
-test("auth: revoked token id is rejected by describeTreecrdtCapabilityTokenV1", async () => {
-  const docId = "doc-auth-revoked-token";
+test('auth: revoked token id is rejected by describeTreecrdtCapabilityTokenV1', async () => {
+  const docId = 'doc-auth-revoked-token';
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1574,7 +1781,7 @@ test("auth: revoked token id is rejected by describeTreecrdtCapabilityTokenV1", 
     issuerPrivateKey: issuerSk,
     subjectPublicKey: subjectPk,
     docId,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   await expect(
@@ -1583,13 +1790,13 @@ test("auth: revoked token id is rejected by describeTreecrdtCapabilityTokenV1", 
       issuerPublicKeys: [issuerPk],
       docId,
       revokedCapabilityTokenIds: [deriveTokenIdV1(token)],
-    })
+    }),
   ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: delegated token is rejected when proof token is revoked", async () => {
-  const docId = "doc-auth-revoked-proof";
-  const root = "0".repeat(32);
+test('auth: delegated token is rejected when proof token is revoked', async () => {
+  const docId = 'doc-auth-revoked-proof';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1603,7 +1810,7 @@ test("auth: delegated token is rejected when proof token is revoked", async () =
     subjectPublicKey: delegatorPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure", "grant"],
+    actions: ['write_structure', 'grant'],
   });
 
   const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
@@ -1612,7 +1819,7 @@ test("auth: delegated token is rejected when proof token is revoked", async () =
     subjectPublicKey: recipientPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   await expect(
@@ -1621,13 +1828,13 @@ test("auth: delegated token is rejected when proof token is revoked", async () =
       issuerPublicKeys: [issuerPk],
       docId,
       revokedCapabilityTokenIds: [deriveTokenIdV1(proof)],
-    })
+    }),
   ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: onHello rejects revoked peer capability tokens", async () => {
-  const docId = "doc-auth-revoked-hello";
-  const root = "0".repeat(32);
+test('auth: onHello rejects revoked peer capability tokens', async () => {
+  const docId = 'doc-auth-revoked-hello';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1642,7 +1849,7 @@ test("auth: onHello rejects revoked peer capability tokens", async () => {
     subjectPublicKey: senderPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const authSender = createTreecrdtCoseCwtAuth({
@@ -1665,13 +1872,16 @@ test("auth: onHello rejects revoked peer capability tokens", async () => {
   expect(helloCaps).toBeTruthy();
 
   await expect(
-    authReceiver.onHello!({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId })
+    authReceiver.onHello!(
+      { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
+      { docId },
+    ),
   ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: onHello ignores revoked replay capability tokens", async () => {
-  const docId = "doc-auth-revoked-replay-hello";
-  const root = "0".repeat(32);
+test('auth: onHello ignores revoked replay capability tokens', async () => {
+  const docId = 'doc-auth-revoked-replay-hello';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1686,14 +1896,14 @@ test("auth: onHello ignores revoked replay capability tokens", async () => {
     subjectPublicKey: senderPk,
     docId,
     rootNodeId: root,
-    actions: ["read_structure"],
+    actions: ['read_structure'],
   });
   const revokedReplayToken = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: senderPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const authReceiver = createTreecrdtCoseCwtAuth({
@@ -1708,20 +1918,20 @@ test("auth: onHello ignores revoked replay capability tokens", async () => {
     authReceiver.onHello!(
       {
         capabilities: [
-          { name: "auth.capability", value: base64urlEncode(activeToken) },
-          { name: "auth.capability.replay", value: base64urlEncode(revokedReplayToken) },
+          { name: 'auth.capability', value: base64urlEncode(activeToken) },
+          { name: 'auth.capability.replay', value: base64urlEncode(revokedReplayToken) },
         ],
         filters: [],
         maxLamport: 0n,
       },
-      { docId }
-    )
-  ).resolves.toEqual([{ name: "auth.capability.replay", value: base64urlEncode(activeToken) }]);
+      { docId },
+    ),
+  ).resolves.toEqual([{ name: 'auth.capability.replay', value: base64urlEncode(activeToken) }]);
 });
 
-test("auth: late hard revocation rejects future ops and re-verification of past ops", async () => {
-  const docId = "doc-auth-late-hard-revocation";
-  const root = "0".repeat(32);
+test('auth: late hard revocation rejects future ops and re-verification of past ops', async () => {
+  const docId = 'doc-auth-late-hard-revocation';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1736,7 +1946,7 @@ test("auth: late hard revocation rejects future ops and re-verification of past 
     subjectPublicKey: writerPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
   const hardRevoked = { value: false };
@@ -1754,42 +1964,57 @@ test("auth: late hard revocation rejects future ops and re-verification of past 
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
     requireProofRef: true,
-    isCapabilityTokenRevoked: ({ stage }) => stage === "runtime" && hardRevoked.value,
+    isCapabilityTokenRevoked: ({ stage }) => stage === 'runtime' && hardRevoked.value,
   });
 
   const helloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 
   hardRevoked.value = true;
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(2),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
 
-  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
-  await expect(authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
+  await expect(
+    authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
+  await expect(
+    authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: runtime revocation callback supports counter cutover policy", async () => {
-  const docId = "doc-auth-revocation-counter-cutover";
-  const root = "0".repeat(32);
+test('auth: runtime revocation callback supports counter cutover policy', async () => {
+  const docId = 'doc-auth-revocation-counter-cutover';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1804,7 +2029,7 @@ test("auth: runtime revocation callback supports counter cutover policy", async 
     subjectPublicKey: writerPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const writerTokenIdHex = bytesToHex(deriveTokenIdV1(writerToken));
   let revokedFromCounter: number | null = null;
@@ -1824,43 +2049,58 @@ test("auth: runtime revocation callback supports counter cutover policy", async 
     requireProofRef: true,
     isCapabilityTokenRevoked: ({ stage, tokenIdHex, op }) => {
       if (tokenIdHex !== writerTokenIdHex) return false;
-      if (stage !== "runtime") return false;
+      if (stage !== 'runtime') return false;
       if (revokedFromCounter === null) return false;
       return op.meta.id.counter >= revokedFromCounter;
     },
   });
 
   const helloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: helloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(3),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 
   revokedFromCounter = 2;
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(4),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
 
-  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  await expect(
+    authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 });
 
-test("auth: revocation record from hello capabilities hard-revokes token across peers", async () => {
-  const docId = "doc-auth-wire-hard-revocation";
-  const root = "0".repeat(32);
+test('auth: revocation record from hello capabilities hard-revokes token across peers', async () => {
+  const docId = 'doc-auth-wire-hard-revocation';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1877,13 +2117,13 @@ test("auth: revocation record from hello capabilities hard-revokes token across 
     subjectPublicKey: writerPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const revocationRecord = issueTreecrdtRevocationRecordV1({
     issuerPrivateKey: issuerSk,
     docId,
     tokenId: deriveTokenIdV1(writerToken),
-    mode: "hard",
+    mode: 'hard',
     revSeq: 1,
   });
 
@@ -1909,51 +2149,69 @@ test("auth: revocation record from hello capabilities hard-revokes token across 
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(10),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 
   const revokerHelloCaps = await authRevoker.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: revokerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: revokerHelloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(11),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
 
-  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
-  await expect(authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
+  await expect(
+    authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
+  await expect(
+    authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: revocation records reject unknown claims", async () => {
-  const docId = "doc-auth-wire-revocation-unknown-claim";
+test('auth: revocation records reject unknown claims', async () => {
+  const docId = 'doc-auth-wire-revocation-unknown-claim';
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
   const tokenId = ed25519Utils.randomSecretKey().slice(0, 16);
 
   const claims = new Map<unknown, unknown>();
-  claims.set("v", 1);
-  claims.set("t", "treecrdt/revocation/v1");
-  claims.set("doc_id", docId);
-  claims.set("token_id", tokenId);
-  claims.set("mode", "write_cutover");
-  claims.set("rev_seq", 1);
-  claims.set("effective_from_counter", 5);
-  claims.set("unexpected_claim", "nope");
+  claims.set('v', 1);
+  claims.set('t', 'treecrdt/revocation/v1');
+  claims.set('doc_id', docId);
+  claims.set('token_id', tokenId);
+  claims.set('mode', 'write_cutover');
+  claims.set('rev_seq', 1);
+  claims.set('effective_from_counter', 5);
+  claims.set('unexpected_claim', 'nope');
 
   const recordBytes = coseSign1Ed25519({
     payload: cborEncode(claims, rfc8949EncodeOptions),
@@ -1965,13 +2223,13 @@ test("auth: revocation records reject unknown claims", async () => {
       recordBytes,
       issuerPublicKeys: [issuerPk],
       expectedDocId: docId,
-    })
+    }),
   ).rejects.toThrow(/unknown claim/i);
 });
 
-test("auth: highest rev_seq revocation record wins for a token", async () => {
-  const docId = "doc-auth-wire-rev-seq";
-  const root = "0".repeat(32);
+test('auth: highest rev_seq revocation record wins for a token', async () => {
+  const docId = 'doc-auth-wire-rev-seq';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -1990,7 +2248,7 @@ test("auth: highest rev_seq revocation record wins for a token", async () => {
     subjectPublicKey: writerPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const tokenId = deriveTokenIdV1(writerToken);
 
@@ -1998,14 +2256,14 @@ test("auth: highest rev_seq revocation record wins for a token", async () => {
     issuerPrivateKey: issuerSk,
     docId,
     tokenId,
-    mode: "hard",
+    mode: 'hard',
     revSeq: 1,
   });
   const highSeqCutover = issueTreecrdtRevocationRecordV1({
     issuerPrivateKey: issuerSk,
     docId,
     tokenId,
-    mode: "write_cutover",
+    mode: 'write_cutover',
     revSeq: 2,
     effectiveFromCounter: 2,
     effectiveFromReplica: writerPk,
@@ -2040,45 +2298,70 @@ test("auth: highest rev_seq revocation record wins for a token", async () => {
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(20),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 
   const highSeqCaps = await authHighSeq.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   // High-seq cutover keeps pre-cutover ops valid.
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 
   const lowSeqCaps = await authLowSeq.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   // Lower-seq hard revoke must not override higher-seq cutover.
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(21),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
 
-  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
+  await expect(
+    authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: out-of-order revocation records use highest rev_seq even when it arrives later", async () => {
-  const docId = "doc-auth-wire-rev-seq-out-of-order";
-  const root = "0".repeat(32);
+test('auth: out-of-order revocation records use highest rev_seq even when it arrives later', async () => {
+  const docId = 'doc-auth-wire-rev-seq-out-of-order';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -2097,7 +2380,7 @@ test("auth: out-of-order revocation records use highest rev_seq even when it arr
     subjectPublicKey: writerPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const tokenId = deriveTokenIdV1(writerToken);
 
@@ -2105,14 +2388,14 @@ test("auth: out-of-order revocation records use highest rev_seq even when it arr
     issuerPrivateKey: issuerSk,
     docId,
     tokenId,
-    mode: "hard",
+    mode: 'hard',
     revSeq: 1,
   });
   const highSeqCutover = issueTreecrdtRevocationRecordV1({
     issuerPrivateKey: issuerSk,
     docId,
     tokenId,
-    mode: "write_cutover",
+    mode: 'write_cutover',
     revSeq: 2,
     effectiveFromCounter: 2,
     effectiveFromReplica: writerPk,
@@ -2147,41 +2430,62 @@ test("auth: out-of-order revocation records use highest rev_seq even when it arr
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifier.onHello?.(
+    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(30),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
 
   const lowSeqCaps = await authLowSeqPeer.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
-  await expect(authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
+  await authVerifier.onHello?.(
+    { capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
   );
+  await expect(
+    authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
 
   const highSeqCaps = await authHighSeqPeer.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.({ capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n }, { docId });
-  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+  await authVerifier.onHello?.(
+    { capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
+  await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
+    docId,
+    purpose: 'reconcile',
+    filterId: 'all',
+  });
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(31),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
-  await expect(authVerifier.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
+  await expect(
+    authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: same rev_seq revocation conflicts converge regardless delivery order", async () => {
-  const docId = "doc-auth-wire-rev-seq-tie";
-  const root = "0".repeat(32);
+test('auth: same rev_seq revocation conflicts converge regardless delivery order', async () => {
+  const docId = 'doc-auth-wire-rev-seq-tie';
+  const root = '0'.repeat(32);
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -2204,7 +2508,7 @@ test("auth: same rev_seq revocation conflicts converge regardless delivery order
     subjectPublicKey: writerPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
   const tokenId = deriveTokenIdV1(writerToken);
 
@@ -2212,14 +2516,14 @@ test("auth: same rev_seq revocation conflicts converge regardless delivery order
     issuerPrivateKey: issuerSk,
     docId,
     tokenId,
-    mode: "hard",
+    mode: 'hard',
     revSeq: 7,
   });
   const cutoverRecord = issueTreecrdtRevocationRecordV1({
     issuerPrivateKey: issuerSk,
     docId,
     tokenId,
-    mode: "write_cutover",
+    mode: 'write_cutover',
     revSeq: 7,
     effectiveFromCounter: 2,
     effectiveFromReplica: writerPk,
@@ -2261,59 +2565,101 @@ test("auth: same rev_seq revocation conflicts converge regardless delivery order
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifierA.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
-  await authVerifierB.onHello?.({ capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifierA.onHello?.(
+    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
+  await authVerifierB.onHello?.(
+    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(40),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: "reconcile", filterId: "all" });
+  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
-    type: "insert",
+    type: 'insert',
     parent: root,
     node: nodeIdFromInt(41),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: "reconcile", filterId: "all" });
+  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
 
   const hardCaps = await authHardPeer.helloCapabilities?.({ docId });
   const cutoverCaps = await authCutoverPeer.helloCapabilities?.({ docId });
 
   // A sees hard then cutover.
-  await authVerifierA.onHello?.({ capabilities: hardCaps ?? [], filters: [], maxLamport: 0n }, { docId });
-  await authVerifierA.onHello?.({ capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifierA.onHello?.(
+    { capabilities: hardCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
+  await authVerifierA.onHello?.(
+    { capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
   // B sees cutover then hard.
-  await authVerifierB.onHello?.({ capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n }, { docId });
-  await authVerifierB.onHello?.({ capabilities: hardCaps ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authVerifierB.onHello?.(
+    { capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
+  await authVerifierB.onHello?.(
+    { capabilities: hardCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
 
   const winnerIsHard = bytesToHex(hardRecord) > bytesToHex(cutoverRecord);
 
   if (winnerIsHard) {
-    await expect(authVerifierA.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-      /capability token revoked/i
-    );
-    await expect(authVerifierB.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-      /capability token revoked/i
-    );
+    await expect(
+      authVerifierA.verifyOps?.([op1], auth1 ?? undefined, {
+        docId,
+        purpose: 'reconcile',
+        filterId: 'all',
+      }),
+    ).rejects.toThrow(/capability token revoked/i);
+    await expect(
+      authVerifierB.verifyOps?.([op1], auth1 ?? undefined, {
+        docId,
+        purpose: 'reconcile',
+        filterId: 'all',
+      }),
+    ).rejects.toThrow(/capability token revoked/i);
   } else {
-    await authVerifierA.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
-    await authVerifierB.verifyOps?.([op1], auth1 ?? undefined, { docId, purpose: "reconcile", filterId: "all" });
+    await authVerifierA.verifyOps?.([op1], auth1 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    });
+    await authVerifierB.verifyOps?.([op1], auth1 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    });
   }
 
-  await expect(authVerifierA.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
-  await expect(authVerifierB.verifyOps?.([op2], auth2 ?? undefined, { docId, purpose: "reconcile", filterId: "all" })).rejects.toThrow(
-    /capability token revoked/i
-  );
+  await expect(
+    authVerifierA.verifyOps?.([op2], auth2 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
+  await expect(
+    authVerifierB.verifyOps?.([op2], auth2 ?? undefined, {
+      docId,
+      purpose: 'reconcile',
+      filterId: 'all',
+    }),
+  ).rejects.toThrow(/capability token revoked/i);
 });
 
-test("auth: delegated capability root may be a descendant of proof root (with scope evaluator)", async () => {
-  const docId = "doc-auth-delegation-narrow-root";
+test('auth: delegated capability root may be a descendant of proof root (with scope evaluator)', async () => {
+  const docId = 'doc-auth-delegation-narrow-root';
   const root = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
 
@@ -2330,7 +2676,7 @@ test("auth: delegated capability root may be a descendant of proof root (with sc
     subjectPublicKey: delegatorPk,
     docId,
     rootNodeId: root,
-    actions: ["write_structure", "grant"],
+    actions: ['write_structure', 'grant'],
   });
 
   const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
@@ -2339,24 +2685,34 @@ test("auth: delegated capability root may be a descendant of proof root (with sc
     subjectPublicKey: recipientPk,
     docId,
     rootNodeId: child,
-    actions: ["write_structure"],
+    actions: ['write_structure'],
   });
 
-  await expect(describeTreecrdtCapabilityTokenV1({ tokenBytes: delegated, issuerPublicKeys: [issuerPk], docId })).rejects.toThrow(
-    /scope evaluator/i
-  );
+  await expect(
+    describeTreecrdtCapabilityTokenV1({
+      tokenBytes: delegated,
+      issuerPublicKeys: [issuerPk],
+      docId,
+    }),
+  ).rejects.toThrow(/scope evaluator/i);
 
   const parentByNode = new Map<string, string>([[child, root]]);
-  const scopeEvaluator = async ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+  const scopeEvaluator = async ({
+    node,
+    scope,
+  }: {
+    node: Uint8Array;
+    scope: { root: Uint8Array };
+  }) => {
     const rootHex = bytesToHex(scope.root);
     let curHex = bytesToHex(node);
     for (let hops = 0; hops < 16; hops += 1) {
-      if (curHex === rootHex) return "allow" as const;
+      if (curHex === rootHex) return 'allow' as const;
       const parent = parentByNode.get(curHex);
-      if (!parent) return "deny" as const;
+      if (!parent) return 'deny' as const;
       curHex = parent;
     }
-    return "unknown" as const;
+    return 'unknown' as const;
   };
 
   const described = await describeTreecrdtCapabilityTokenV1({
@@ -2368,8 +2724,8 @@ test("auth: delegated capability root may be a descendant of proof root (with sc
   expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
 });
 
-test("auth: records peer identity chain capability via onPeerIdentityChain", async () => {
-  const docId = "doc-auth-identity-chain";
+test('auth: records peer identity chain capability via onPeerIdentityChain', async () => {
+  const docId = 'doc-auth-identity-chain';
 
   const issuerSk = ed25519Utils.randomSecretKey();
   const issuerPk = await getPublicKey(issuerSk);
@@ -2385,9 +2741,20 @@ test("auth: records peer identity chain capability via onPeerIdentityChain", asy
   const replicaPk = await getPublicKey(replicaSk);
   void replicaSk;
 
-  const deviceCertBytes = issueDeviceCertV1({ identityPrivateKey: identitySk, devicePublicKey: devicePk });
-  const replicaCertBytes = issueReplicaCertV1({ devicePrivateKey: deviceSk, docId, replicaPublicKey: replicaPk });
-  const chainCap = createTreecrdtIdentityChainCapabilityV1({ identityPublicKey: identityPk, deviceCertBytes, replicaCertBytes });
+  const deviceCertBytes = issueDeviceCertV1({
+    identityPrivateKey: identitySk,
+    devicePublicKey: devicePk,
+  });
+  const replicaCertBytes = issueReplicaCertV1({
+    devicePrivateKey: deviceSk,
+    docId,
+    replicaPublicKey: replicaPk,
+  });
+  const chainCap = createTreecrdtIdentityChainCapabilityV1({
+    identityPublicKey: identityPk,
+    deviceCertBytes,
+    replicaCertBytes,
+  });
 
   let seen: { identityPkHex: string; devicePkHex: string; replicaPkHex: string } | null = null;
 

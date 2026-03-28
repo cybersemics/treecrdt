@@ -9,7 +9,7 @@ export function orderKeyFromPosition(position: number): Uint8Array {
 
 export function replicaFromLabel(label: string): Uint8Array {
   const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  if (encoded.length === 0) throw new Error('replica label must not be empty');
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;

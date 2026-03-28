@@ -1,22 +1,22 @@
 /// <reference lib="webworker" />
-import { dbGetText } from "./sql.js";
-import type { Database } from "./index.js";
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from "@treecrdt/interface/ids";
-import type { Operation, ReplicaId } from "@treecrdt/interface";
-import type { TreecrdtAdapter } from "@treecrdt/interface";
+import { dbGetText } from './sql.js';
+import type { Database } from './index.js';
+import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import type { Operation, ReplicaId } from '@treecrdt/interface';
+import type { TreecrdtAdapter } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteWriter,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
-} from "@treecrdt/interface/sqlite";
-import type { RpcMethod, RpcRequest, RpcSqlParams } from "./rpc.js";
-import { openTreecrdtDb } from "./open.js";
-import { clearOpfsStorage } from "./opfs.js";
+} from '@treecrdt/interface/sqlite';
+import type { RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
+import { openTreecrdtDb } from './open.js';
+import { clearOpfsStorage } from './opfs.js';
 
 let db: Database | null = null;
 let storedFilename: string | undefined;
-let storedStorage: "memory" | "opfs" = "memory";
+let storedStorage: 'memory' | 'opfs' = 'memory';
 let api: TreecrdtAdapter | null = null;
 let runner: SqliteRunner | null = null;
 const localWriters = new Map<string, TreecrdtSqliteWriter>();
@@ -70,9 +70,9 @@ self.onmessage = async (ev: MessageEvent<RpcRequest>) => {
 async function init(
   baseUrl: string,
   filename: string | undefined,
-  storageParam: "memory" | "opfs",
-  docId: string
-): Promise<{ storage: "memory" | "opfs"; opfsError?: string }> {
+  storageParam: 'memory' | 'opfs',
+  docId: string,
+): Promise<{ storage: 'memory' | 'opfs'; opfsError?: string }> {
   if (db) {
     if (db.close) await db.close();
     db = null;
@@ -92,7 +92,9 @@ async function init(
   storedFilename = opened.filename;
   storedStorage = opened.storage;
   localWriters.clear();
-  return opened.opfsError ? { storage: opened.storage, opfsError: opened.opfsError } : { storage: opened.storage };
+  return opened.opfsError
+    ? { storage: opened.storage, opfsError: opened.opfsError }
+    : { storage: opened.storage };
 }
 
 async function sqlExec(sql: string) {
@@ -146,7 +148,7 @@ async function treeChildren(parent: string) {
 async function treeChildrenPage(
   parent: string,
   cursor: { orderKey: number[]; node: number[] } | null,
-  limit: number
+  limit: number,
 ) {
   const api = ensureApi();
   const cursorBytes = cursor
@@ -200,13 +202,18 @@ async function localInsert(
   parent: string,
   node: string,
   placement: TreecrdtSqlitePlacement,
-  payload: Uint8Array | null
+  payload: Uint8Array | null,
 ) {
   const writer = ensureLocalWriter(Uint8Array.from(replica));
   return await writer.insert(parent, node, placement, payload ? { payload } : {});
 }
 
-async function localMove(replica: number[], node: string, newParent: string, placement: TreecrdtSqlitePlacement) {
+async function localMove(
+  replica: number[],
+  node: string,
+  newParent: string,
+  placement: TreecrdtSqlitePlacement,
+) {
   const writer = ensureLocalWriter(Uint8Array.from(replica));
   return await writer.move(node, newParent, placement);
 }
@@ -227,7 +234,7 @@ async function closeDbAndReset() {
   api = null;
   runner = null;
   storedFilename = undefined;
-  storedStorage = "memory";
+  storedStorage = 'memory';
   localWriters.clear();
 }
 
@@ -240,24 +247,24 @@ async function drop() {
   const filename = storedFilename;
   const storage = storedStorage;
   await closeDbAndReset();
-  if (storage === "opfs" && filename) {
+  if (storage === 'opfs' && filename) {
     await clearOpfsStorage(filename);
   }
   return null;
 }
 
 function ensureApi(): TreecrdtAdapter {
-  if (!db || !api) throw new Error("db not initialized");
+  if (!db || !api) throw new Error('db not initialized');
   return api;
 }
 
 function ensureDb(): Database {
-  if (!db) throw new Error("db not initialized");
+  if (!db) throw new Error('db not initialized');
   return db;
 }
 
 function ensureRunner(): SqliteRunner {
-  if (!runner) throw new Error("db not initialized");
+  if (!runner) throw new Error('db not initialized');
   return runner;
 }
 
@@ -280,4 +287,3 @@ function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
   localWriters.set(key, writer);
   return writer;
 }
-

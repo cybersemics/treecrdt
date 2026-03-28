@@ -1,21 +1,21 @@
-import { createHash } from "node:crypto";
+import { createHash } from 'node:crypto';
 
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest';
 
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex, nodeIdToBytes16 } from "@treecrdt/interface/ids";
-import { makeOp, nodeIdFromInt } from "@treecrdt/benchmark";
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 
-import { treecrdtSyncV0ProtobufCodec } from "../dist/protobuf.js";
-import { SyncPeer } from "../dist/sync.js";
-import { createInMemoryConnectedPeers } from "../dist/in-memory.js";
-import { wrapDuplexTransportWithCodec } from "../dist/transport/index.js";
-import type { DuplexTransport } from "../dist/transport/index.js";
-import type { Filter, OpRef, SyncBackend, SyncMessage } from "../dist/types.js";
+import { treecrdtSyncV0ProtobufCodec } from '../dist/protobuf.js';
+import { SyncPeer } from '../dist/sync.js';
+import { createInMemoryConnectedPeers } from '../dist/in-memory.js';
+import { wrapDuplexTransportWithCodec } from '../dist/transport/index.js';
+import type { DuplexTransport } from '../dist/transport/index.js';
+import type { Filter, OpRef, SyncBackend, SyncMessage } from '../dist/types.js';
 
 function opRefFor(docId: string, replica: string, counter: number): OpRef {
-  const h = createHash("sha256");
-  h.update("treecrdt/opref/test");
+  const h = createHash('sha256');
+  h.update('treecrdt/opref/test');
   h.update(docId);
   h.update(replica);
   h.update(String(counter));
@@ -41,16 +41,16 @@ function orderKeyFromPosition(position: number): Uint8Array {
 
 function replicaFromLabel(label: string): Uint8Array {
   const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error("replica label must not be empty");
+  if (encoded.length === 0) throw new Error('replica label must not be empty');
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
 }
 
 const replicas = {
-  a: replicaFromLabel("a"),
-  b: replicaFromLabel("b"),
-  s: replicaFromLabel("s"),
+  a: replicaFromLabel('a'),
+  b: replicaFromLabel('b'),
+  s: replicaFromLabel('s'),
 };
 
 const replicaHex = {
@@ -59,7 +59,9 @@ const replicaHex = {
   s: bytesToHex(replicas.s),
 };
 
-function createTimedDuplex<M>(opts: { aToBDelayMs?: number; bToADelayMs?: number } = {}): [DuplexTransport<M>, DuplexTransport<M>] {
+function createTimedDuplex<M>(
+  opts: { aToBDelayMs?: number; bToADelayMs?: number } = {},
+): [DuplexTransport<M>, DuplexTransport<M>] {
   const aHandlers = new Set<(msg: M) => void>();
   const bHandlers = new Set<(msg: M) => void>();
   const aToBDelayMs = opts.aToBDelayMs ?? 0;
@@ -93,17 +95,17 @@ function createTimedDuplex<M>(opts: { aToBDelayMs?: number; bToADelayMs?: number
 }
 
 function createLoggedTimedDuplex<M>(
-  opts: { aToBDelayMs?: number; bToADelayMs?: number } = {}
-): [DuplexTransport<M>, DuplexTransport<M>, Array<{ dir: "aToB" | "bToA"; msg: M }>] {
+  opts: { aToBDelayMs?: number; bToADelayMs?: number } = {},
+): [DuplexTransport<M>, DuplexTransport<M>, Array<{ dir: 'aToB' | 'bToA'; msg: M }>] {
   const aHandlers = new Set<(msg: M) => void>();
   const bHandlers = new Set<(msg: M) => void>();
-  const log: Array<{ dir: "aToB" | "bToA"; msg: M }> = [];
+  const log: Array<{ dir: 'aToB' | 'bToA'; msg: M }> = [];
   const aToBDelayMs = opts.aToBDelayMs ?? 0;
   const bToADelayMs = opts.bToADelayMs ?? 0;
 
   const a: DuplexTransport<M> = {
     async send(msg) {
-      log.push({ dir: "aToB", msg });
+      log.push({ dir: 'aToB', msg });
       setTimeout(() => {
         for (const h of bHandlers) h(msg);
       }, aToBDelayMs);
@@ -116,7 +118,7 @@ function createLoggedTimedDuplex<M>(
 
   const b: DuplexTransport<M> = {
     async send(msg) {
-      log.push({ dir: "bToA", msg });
+      log.push({ dir: 'bToA', msg });
       setTimeout(() => {
         for (const h of aHandlers) h(msg);
       }, bToADelayMs);
@@ -144,7 +146,7 @@ function createPeers(a: SyncBackend<Operation>, b: SyncBackend<Operation>) {
 
 async function waitUntil(
   predicate: () => Promise<boolean> | boolean,
-  opts: { timeoutMs?: number; intervalMs?: number; message?: string } = {}
+  opts: { timeoutMs?: number; intervalMs?: number; message?: string } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 2_000;
   const intervalMs = opts.intervalMs ?? 10;
@@ -160,7 +162,7 @@ async function waitUntil(
   }
 }
 
-const TRASH_HEX = "ff".repeat(16);
+const TRASH_HEX = 'ff'.repeat(16);
 
 class MemoryBackend implements SyncBackend<Operation> {
   readonly docId: string;
@@ -179,7 +181,7 @@ class MemoryBackend implements SyncBackend<Operation> {
 
   hasOp(replicaHex: string, counter: number): boolean {
     return Array.from(this.opsByRefHex.values()).some(
-      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter
+      (v) => bytesToHex(v.op.meta.id.replica) === replicaHex && v.op.meta.id.counter === counter,
     );
   }
 
@@ -188,7 +190,7 @@ class MemoryBackend implements SyncBackend<Operation> {
   }
 
   async listOpRefs(filter: Filter): Promise<OpRef[]> {
-    if ("all" in filter) {
+    if ('all' in filter) {
       return Array.from(this.opsByRefHex.values(), (v) => v.opRef);
     }
 
@@ -220,7 +222,7 @@ class MemoryBackend implements SyncBackend<Operation> {
 
     for (const { opRef, op } of entries) {
       switch (op.kind.type) {
-        case "insert": {
+        case 'insert': {
           const nodeHex = op.kind.node;
           const oldParentHex = parentByNodeHex.get(nodeHex);
           const newParentHex = op.kind.parent;
@@ -236,7 +238,7 @@ class MemoryBackend implements SyncBackend<Operation> {
           parentByNodeHex.set(nodeHex, newParentHex);
           break;
         }
-        case "move": {
+        case 'move': {
           const nodeHex = op.kind.node;
           const oldParentHex = parentByNodeHex.get(nodeHex);
           const newParentHex = op.kind.newParent;
@@ -252,8 +254,8 @@ class MemoryBackend implements SyncBackend<Operation> {
           parentByNodeHex.set(nodeHex, newParentHex);
           break;
         }
-        case "delete":
-        case "tombstone": {
+        case 'delete':
+        case 'tombstone': {
           const nodeHex = op.kind.node;
           const oldParentHex = parentByNodeHex.get(nodeHex);
           const newParentHex = TRASH_HEX;
@@ -265,7 +267,7 @@ class MemoryBackend implements SyncBackend<Operation> {
           parentByNodeHex.set(nodeHex, newParentHex);
           break;
         }
-        case "payload": {
+        case 'payload': {
           const nodeHex = op.kind.node;
           const parentHex = parentByNodeHex.get(nodeHex);
           if (parentHex === targetParentHex) add(opRef);
@@ -285,7 +287,7 @@ class MemoryBackend implements SyncBackend<Operation> {
   async getOpsByOpRefs(opRefs: OpRef[]): Promise<Operation[]> {
     return opRefs.map((r) => {
       const stored = this.opsByRefHex.get(bytesToHex(r));
-      if (!stored) throw new Error("opRef missing locally");
+      if (!stored) throw new Error('opRef missing locally');
       return stored.op;
     });
   }
@@ -305,20 +307,20 @@ class MemoryBackend implements SyncBackend<Operation> {
 
 class FailingApplyBackend extends MemoryBackend {
   override async applyOps(_ops: Operation[]): Promise<void> {
-    throw new Error("apply failed");
+    throw new Error('apply failed');
   }
 }
 
-test("syncOnce does not starve macrotask transports", async () => {
-  const docId = "doc-sync-macrotask";
-  const root = "0".repeat(32);
+test('syncOnce does not starve macrotask transports', async () => {
+  const docId = 'doc-sync-macrotask';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
     makeOp(replicas.a, 1, 1, {
-      type: "insert",
+      type: 'insert',
       parent: root,
       node: nodeIdFromInt(1),
       orderKey: orderKeyFromPosition(0),
@@ -335,19 +337,21 @@ test("syncOnce does not starve macrotask transports", async () => {
 
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
 
-  await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 via macrotask duplex" });
+  await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+    message: 'expected b to receive a:1 via macrotask duplex',
+  });
 });
 
-test("syncOnce paces outbound codewords until delayed ribltStatus arrives", async () => {
-  const docId = "doc-sync-delayed-status";
-  const root = "0".repeat(32);
+test('syncOnce paces outbound codewords until delayed ribltStatus arrives', async () => {
+  const docId = 'doc-sync-delayed-status';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
     makeOp(replicas.a, 1, 1, {
-      type: "insert",
+      type: 'insert',
       parent: root,
       node: nodeIdFromInt(1),
       orderKey: orderKeyFromPosition(0),
@@ -364,20 +368,22 @@ test("syncOnce paces outbound codewords until delayed ribltStatus arrives", asyn
 
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 1_024, codewordsPerMessage: 256 });
 
-  await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 after delayed ribltStatus" });
+  await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+    message: 'expected b to receive a:1 after delayed ribltStatus',
+  });
 });
 
-test("syncOnce protobuf roundtrips ribltStatus.more", () => {
+test('syncOnce protobuf roundtrips ribltStatus.more', () => {
   const msg = {
     v: 0,
-    docId: "doc-sync-more-codec",
+    docId: 'doc-sync-more-codec',
     payload: {
-      case: "ribltStatus" as const,
+      case: 'ribltStatus' as const,
       value: {
-        filterId: "f_more",
+        filterId: 'f_more',
         round: 7,
         payload: {
-          case: "more" as const,
+          case: 'more' as const,
           value: { codewordsReceived: 9n, credits: 2 },
         },
       },
@@ -387,9 +393,9 @@ test("syncOnce protobuf roundtrips ribltStatus.more", () => {
   expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(msg))).toEqual(msg);
 });
 
-test("syncOnce waits for ribltStatus.more before sending another codeword batch", async () => {
-  const docId = "doc-sync-more-flow-control";
-  const root = "0".repeat(32);
+test('syncOnce waits for ribltStatus.more before sending another codeword batch', async () => {
+  const docId = 'doc-sync-more-flow-control';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -398,11 +404,11 @@ test("syncOnce waits for ribltStatus.more before sending another codeword batch"
   for (let i = 1; i <= 12; i += 1) {
     ops.push(
       makeOp(replicas.a, i, i, {
-        type: "insert",
+        type: 'insert',
         parent: root,
         node: nodeIdFromInt(i),
         orderKey: orderKeyFromPosition(i - 1),
-      })
+      }),
     );
   }
   await a.applyOps(ops);
@@ -415,29 +421,34 @@ test("syncOnce waits for ribltStatus.more before sending another codeword batch"
 
   await pa.syncOnce(ta, { all: {} }, { maxCodewords: 4_096, codewordsPerMessage: 1 });
 
-  await waitUntil(() => b.hasOp(replicaHex.a, 12), { message: "expected b to receive all ops after ribltStatus.more flow control" });
+  await waitUntil(() => b.hasOp(replicaHex.a, 12), {
+    message: 'expected b to receive all ops after ribltStatus.more flow control',
+  });
 
   const wire = log.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
   let sawMore = false;
   for (let i = 1; i < wire.length; i += 1) {
-    if (wire[i - 1] === "bToA:ribltStatus") {
-      const status = log[i - 1]!.msg.payload.case === "ribltStatus" ? log[i - 1]!.msg.payload.value : null;
-      if (status?.payload.case === "more") sawMore = true;
+    if (wire[i - 1] === 'bToA:ribltStatus') {
+      const status =
+        log[i - 1]!.msg.payload.case === 'ribltStatus' ? log[i - 1]!.msg.payload.value : null;
+      if (status?.payload.case === 'more') sawMore = true;
     }
-    expect(!(wire[i - 1] === "aToB:ribltCodewords" && wire[i] === "aToB:ribltCodewords")).toBe(true);
+    expect(!(wire[i - 1] === 'aToB:ribltCodewords' && wire[i] === 'aToB:ribltCodewords')).toBe(
+      true,
+    );
   }
   expect(sawMore).toBe(true);
 });
 
-test("syncOnce rejects when local message handler throws during apply", async () => {
-  const docId = "doc-sync-apply-error";
-  const root = "0".repeat(32);
+test('syncOnce rejects when local message handler throws during apply', async () => {
+  const docId = 'doc-sync-apply-error';
+  const root = '0'.repeat(32);
 
   const a = new FailingApplyBackend(docId);
   const b = new MemoryBackend(docId);
   await b.applyOps([
     makeOp(replicas.b, 1, 1, {
-      type: "insert",
+      type: 'insert',
       parent: root,
       node: nodeIdFromInt(1),
       orderKey: orderKeyFromPosition(0),
@@ -448,7 +459,9 @@ test("syncOnce rejects when local message handler throws during apply", async ()
   try {
     const timed = Promise.race([
       pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("syncOnce timed out")), 2_000)),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('syncOnce timed out')), 2_000),
+      ),
     ]);
     await expect(timed).rejects.toThrow(/apply failed/i);
   } finally {
@@ -456,20 +469,40 @@ test("syncOnce rejects when local message handler throws during apply", async ()
   }
 });
 
-test("sync all converges union of opRefs", async () => {
-  const docId = "doc-sync-all";
-  const root = "0".repeat(32);
+test('sync all converges union of opRefs', async () => {
+  const docId = 'doc-sync-all';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp(replicas.a, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-    makeOp(replicas.a, 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
   await b.applyOps([
-    makeOp(replicas.b, 1, 3, { type: "insert", parent: root, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-    makeOp(replicas.a, 2, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.b, 1, 3, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -485,9 +518,9 @@ test("sync all converges union of opRefs", async () => {
   }
 });
 
-test("sync all transfers a single missing op (hole in the middle)", async () => {
-  const docId = "doc-sync-one-missing";
-  const root = "0".repeat(32);
+test('sync all transfers a single missing op (hole in the middle)', async () => {
+  const docId = 'doc-sync-one-missing';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
@@ -498,11 +531,11 @@ test("sync all transfers a single missing op (hole in the middle)", async () => 
   for (let counter = 1; counter <= size; counter += 1) {
     ops.push(
       makeOp(replicas.s, counter, counter, {
-        type: "insert",
+        type: 'insert',
         parent: root,
         node: nodeIdFromInt(counter),
         orderKey: orderKeyFromPosition(counter - 1),
-      })
+      }),
     );
   }
 
@@ -523,22 +556,42 @@ test("sync all transfers a single missing op (hole in the middle)", async () => 
   }
 });
 
-test("sync children(parent) only transfers those children", async () => {
-  const docId = "doc-sync-children";
-  const parentAHex = "a0".repeat(16);
-  const parentBHex = "b0".repeat(16);
+test('sync children(parent) only transfers those children', async () => {
+  const docId = 'doc-sync-children';
+  const parentAHex = 'a0'.repeat(16);
+  const parentBHex = 'b0'.repeat(16);
   const parentABytes = nodeIdToBytes16(parentAHex);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp(replicas.a, 1, 1, { type: "insert", parent: parentAHex, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
-    makeOp(replicas.a, 2, 2, { type: "insert", parent: parentBHex, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: parentAHex,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, {
+      type: 'insert',
+      parent: parentBHex,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
   await b.applyOps([
-    makeOp(replicas.b, 1, 3, { type: "insert", parent: parentAHex, node: nodeIdFromInt(3), orderKey: orderKeyFromPosition(0) }),
-    makeOp(replicas.b, 2, 4, { type: "insert", parent: parentBHex, node: nodeIdFromInt(4), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.b, 1, 3, {
+      type: 'insert',
+      parent: parentAHex,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.b, 2, 4, {
+      type: 'insert',
+      parent: parentBHex,
+      node: nodeIdFromInt(4),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -546,7 +599,7 @@ test("sync children(parent) only transfers those children", async () => {
     await pa.syncOnce(
       ta,
       { children: { parent: parentABytes } },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 }
+      { maxCodewords: 10_000, codewordsPerMessage: 256 },
     );
     await tick();
 
@@ -565,10 +618,10 @@ test("sync children(parent) only transfers those children", async () => {
   }
 });
 
-test("sync children(parent) includes boundary-crossing moves", async () => {
-  const docId = "doc-sync-boundary-move";
-  const parentAHex = "a0".repeat(16);
-  const parentBHex = "b0".repeat(16);
+test('sync children(parent) includes boundary-crossing moves', async () => {
+  const docId = 'doc-sync-boundary-move';
+  const parentAHex = 'a0'.repeat(16);
+  const parentBHex = 'b0'.repeat(16);
   const parentABytes = nodeIdToBytes16(parentAHex);
 
   const a = new MemoryBackend(docId);
@@ -577,10 +630,20 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
   const node = nodeIdFromInt(0x10);
 
   await a.applyOps([
-    makeOp(replicas.a, 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: parentAHex,
+      node,
+      orderKey: orderKeyFromPosition(0),
+    }),
     // Move the node out of the subtree. The move is still relevant to `children(parentA)`
     // because it changes the canonical child set of `parentA`.
-    makeOp(replicas.a, 2, 2, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 2, 2, {
+      type: 'move',
+      node,
+      newParent: parentBHex,
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -588,7 +651,7 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
     await pa.syncOnce(
       ta,
       { children: { parent: parentABytes } },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 }
+      { maxCodewords: 10_000, codewordsPerMessage: 256 },
     );
     await tick();
 
@@ -602,10 +665,10 @@ test("sync children(parent) includes boundary-crossing moves", async () => {
   }
 });
 
-test("sync children(parent) includes latest payload when node moves into parent", async () => {
-  const docId = "doc-sync-children-payload";
-  const parentAHex = "a0".repeat(16);
-  const parentBHex = "b0".repeat(16);
+test('sync children(parent) includes latest payload when node moves into parent', async () => {
+  const docId = 'doc-sync-children-payload';
+  const parentAHex = 'a0'.repeat(16);
+  const parentBHex = 'b0'.repeat(16);
   const parentBBytes = nodeIdToBytes16(parentBHex);
 
   const a = new MemoryBackend(docId);
@@ -615,9 +678,19 @@ test("sync children(parent) includes latest payload when node moves into parent"
   const payload = new Uint8Array([1, 2, 3]);
 
   await a.applyOps([
-    makeOp(replicas.a, 1, 1, { type: "insert", parent: parentAHex, node, orderKey: orderKeyFromPosition(0) }),
-    makeOp(replicas.a, 2, 2, { type: "payload", node, payload }),
-    makeOp(replicas.a, 3, 3, { type: "move", node, newParent: parentBHex, orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: parentAHex,
+      node,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, { type: 'payload', node, payload }),
+    makeOp(replicas.a, 3, 3, {
+      type: 'move',
+      node,
+      newParent: parentBHex,
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const { peerA: pa, transportA: ta, detach } = createPeers(a, b);
@@ -625,7 +698,7 @@ test("sync children(parent) includes latest payload when node moves into parent"
     await pa.syncOnce(
       ta,
       { children: { parent: parentBBytes } },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 }
+      { maxCodewords: 10_000, codewordsPerMessage: 256 },
     );
     await tick();
 
@@ -638,37 +711,51 @@ test("sync children(parent) includes latest payload when node moves into parent"
     expect(setHex(aChildrenB)).toEqual(setHex(bChildrenB));
 
     const ops = await b.getOpsByOpRefs(bChildrenB);
-    const payloadOps = ops.filter((op) => op.kind.type === "payload" && op.kind.payload !== null);
+    const payloadOps = ops.filter((op) => op.kind.type === 'payload' && op.kind.payload !== null);
     expect(payloadOps.length).toBe(1);
-    expect(payloadOps[0]?.kind.type).toBe("payload");
+    expect(payloadOps[0]?.kind.type).toBe('payload');
     expect(payloadOps[0]?.kind.payload).toEqual(payload);
   } finally {
     detach();
   }
 });
 
-test("subscribe keeps peers converging (push deltas)", async () => {
-  const docId = "doc-subscribe";
-  const root = "0".repeat(32);
+test('subscribe keeps peers converging (push deltas)', async () => {
+  const docId = 'doc-subscribe';
+  const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
   await a.applyOps([
-    makeOp(replicas.a, 1, 1, { type: "insert", parent: root, node: nodeIdFromInt(1), orderKey: orderKeyFromPosition(0) }),
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
   ]);
 
   const { peerA: pa, peerB: pb, transportA: ta, detach } = createPeers(a, b);
   try {
     const sub = pa.subscribe(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
     try {
-      await waitUntil(() => b.hasOp(replicaHex.a, 1), { message: "expected b to receive a:1 via subscription" });
+      await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+        message: 'expected b to receive a:1 via subscription',
+      });
 
       await b.applyOps([
-        makeOp(replicas.b, 1, 2, { type: "insert", parent: root, node: nodeIdFromInt(2), orderKey: orderKeyFromPosition(0) }),
+        makeOp(replicas.b, 1, 2, {
+          type: 'insert',
+          parent: root,
+          node: nodeIdFromInt(2),
+          orderKey: orderKeyFromPosition(0),
+        }),
       ]);
       await pb.notifyLocalUpdate();
-      await waitUntil(() => a.hasOp(replicaHex.b, 1), { message: "expected a to receive b:1 via subscription" });
+      await waitUntil(() => a.hasOp(replicaHex.b, 1), {
+        message: 'expected a to receive b:1 via subscription',
+      });
     } finally {
       sub.stop();
       await sub.done;

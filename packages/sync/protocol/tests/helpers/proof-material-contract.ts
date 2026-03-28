@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID } from 'node:crypto';
 
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest';
 
 import type {
   Capability,
@@ -8,7 +8,7 @@ import type {
   OpRef,
   SyncCapabilityMaterialStore,
   SyncOpAuthStore,
-} from "@treecrdt/sync";
+} from '@treecrdt/sync';
 
 type ProofMaterialDocStores = {
   opAuth: SyncOpAuthStore;
@@ -48,7 +48,7 @@ function normalizeOpAuthList(values: Array<OpAuth | null>): Array<OpAuth | null>
 
 export function defineProofMaterialStoreContract(
   label: string,
-  createHarness: () => Promise<ProofMaterialHarness> | ProofMaterialHarness
+  createHarness: () => Promise<ProofMaterialHarness> | ProofMaterialHarness,
 ): void {
   test(`${label}: op auth round-trips in request order`, async () => {
     const harness = await createHarness();
@@ -65,7 +65,11 @@ export function defineProofMaterialStoreContract(
         { opRef: refB, auth: authB },
       ]);
 
-      expect(normalizeOpAuthList(await opAuth.getOpAuthByOpRefs([refB, missing, refA]))).toEqual([authB, null, authA]);
+      expect(normalizeOpAuthList(await opAuth.getOpAuthByOpRefs([refB, missing, refA]))).toEqual([
+        authB,
+        null,
+        authA,
+      ]);
     } finally {
       await harness.close?.();
     }
@@ -85,8 +89,12 @@ export function defineProofMaterialStoreContract(
       await docA.opAuth.storeOpAuth([{ opRef: sharedRef, auth: authA2 }]);
       await docB.opAuth.storeOpAuth([{ opRef: sharedRef, auth: authB }]);
 
-      expect(normalizeOpAuthList(await docA.opAuth.getOpAuthByOpRefs([sharedRef]))).toEqual([authA2]);
-      expect(normalizeOpAuthList(await docB.opAuth.getOpAuthByOpRefs([sharedRef]))).toEqual([authB]);
+      expect(normalizeOpAuthList(await docA.opAuth.getOpAuthByOpRefs([sharedRef]))).toEqual([
+        authA2,
+      ]);
+      expect(normalizeOpAuthList(await docB.opAuth.getOpAuthByOpRefs([sharedRef]))).toEqual([
+        authB,
+      ]);
     } finally {
       await harness.close?.();
     }
@@ -97,14 +105,16 @@ export function defineProofMaterialStoreContract(
     try {
       const docA = await harness.createDocStores(`doc-cap-a-${randomUUID()}`);
       const docB = await harness.createDocStores(`doc-cap-b-${randomUUID()}`);
-      const capA1: Capability = { name: "auth.capability", value: "token-a1" };
-      const capA2: Capability = { name: "auth.capability", value: "token-a2" };
-      const capB: Capability = { name: "auth.capability", value: "token-b" };
+      const capA1: Capability = { name: 'auth.capability', value: 'token-a1' };
+      const capA2: Capability = { name: 'auth.capability', value: 'token-a2' };
+      const capB: Capability = { name: 'auth.capability', value: 'token-b' };
 
       await docA.capabilities.storeCapabilities([capA1, capA2, capA1]);
       await docB.capabilities.storeCapabilities([capB]);
 
-      await expect(docA.capabilities.listCapabilities()).resolves.toEqual(sortCapabilities([capA1, capA2]));
+      await expect(docA.capabilities.listCapabilities()).resolves.toEqual(
+        sortCapabilities([capA1, capA2]),
+      );
       await expect(docB.capabilities.listCapabilities()).resolves.toEqual([capB]);
     } finally {
       await harness.close?.();

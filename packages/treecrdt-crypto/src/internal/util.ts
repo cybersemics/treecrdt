@@ -1,4 +1,4 @@
-import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from "cborg";
+import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
 export function encodeCbor(value: unknown): Uint8Array {
   return cborEncode(value, rfc8949EncodeOptions);
@@ -21,7 +21,7 @@ export function assertBytes(val: unknown, field: string): Uint8Array {
 }
 
 export function assertString(val: unknown, field: string): string {
-  if (typeof val !== "string") throw new Error(`${field} must be a string`);
+  if (typeof val !== 'string') throw new Error(`${field} must be a string`);
   return val;
 }
 
@@ -42,8 +42,10 @@ export function mapGet(map: Map<unknown, unknown>, key: unknown): unknown {
 }
 
 export function randomBytes(len: number): Uint8Array {
-  const cryptoObj = (globalThis as any).crypto as { getRandomValues?: (arr: Uint8Array) => Uint8Array } | undefined;
-  if (!cryptoObj?.getRandomValues) throw new Error("crypto.getRandomValues is not available");
+  const cryptoObj = (globalThis as any).crypto as
+    | { getRandomValues?: (arr: Uint8Array) => Uint8Array }
+    | undefined;
+  if (!cryptoObj?.getRandomValues) throw new Error('crypto.getRandomValues is not available');
   const bytes = new Uint8Array(len);
   cryptoObj.getRandomValues(bytes);
   return bytes;
@@ -56,18 +58,20 @@ export async function aesGcmEncrypt(opts: {
   aad?: Uint8Array;
 }): Promise<Uint8Array> {
   const cryptoObj = (globalThis as any).crypto as { subtle?: any } | undefined;
-  if (!cryptoObj?.subtle) throw new Error("crypto.subtle is not available");
+  if (!cryptoObj?.subtle) throw new Error('crypto.subtle is not available');
 
-  const key = await cryptoObj.subtle.importKey("raw", opts.key, { name: "AES-GCM" }, false, ["encrypt"]);
+  const key = await cryptoObj.subtle.importKey('raw', opts.key, { name: 'AES-GCM' }, false, [
+    'encrypt',
+  ]);
   const ciphertext = await cryptoObj.subtle.encrypt(
     {
-      name: "AES-GCM",
+      name: 'AES-GCM',
       iv: opts.nonce,
       ...(opts.aad ? { additionalData: opts.aad } : {}),
       tagLength: 128,
     },
     key,
-    opts.plaintext
+    opts.plaintext,
   );
   return new Uint8Array(ciphertext);
 }
@@ -79,19 +83,20 @@ export async function aesGcmDecrypt(opts: {
   aad?: Uint8Array;
 }): Promise<Uint8Array> {
   const cryptoObj = (globalThis as any).crypto as { subtle?: any } | undefined;
-  if (!cryptoObj?.subtle) throw new Error("crypto.subtle is not available");
+  if (!cryptoObj?.subtle) throw new Error('crypto.subtle is not available');
 
-  const key = await cryptoObj.subtle.importKey("raw", opts.key, { name: "AES-GCM" }, false, ["decrypt"]);
+  const key = await cryptoObj.subtle.importKey('raw', opts.key, { name: 'AES-GCM' }, false, [
+    'decrypt',
+  ]);
   const plaintext = await cryptoObj.subtle.decrypt(
     {
-      name: "AES-GCM",
+      name: 'AES-GCM',
       iv: opts.nonce,
       ...(opts.aad ? { additionalData: opts.aad } : {}),
       tagLength: 128,
     },
     key,
-    opts.ciphertext
+    opts.ciphertext,
   );
   return new Uint8Array(plaintext);
 }
-

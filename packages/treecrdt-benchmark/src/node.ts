@@ -1,10 +1,10 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import type { BenchmarkResult } from "./index.js";
-import { parseBenchCliArgs, type BenchCliArgs } from "./cli.js";
+import type { BenchmarkResult } from './index.js';
+import { parseBenchCliArgs, type BenchCliArgs } from './cli.js';
 
 export { parseBenchCliArgs, type BenchCliArgs };
 
@@ -26,12 +26,10 @@ export async function writeResult(
     workload?: string;
     outFile: string;
     extra?: Record<string, unknown>;
-  }
+  },
 ): Promise<BenchmarkOutput> {
   const mergedExtra =
-    result.extra && opts.extra
-      ? { ...result.extra, ...opts.extra }
-      : result.extra ?? opts.extra;
+    result.extra && opts.extra ? { ...result.extra, ...opts.extra } : (result.extra ?? opts.extra);
   const workload = opts.workload ?? result.name;
   const payload: BenchmarkOutput = {
     implementation: opts.implementation,
@@ -50,12 +48,12 @@ export async function writeResult(
     sourceFile: (() => {
       const abs = path.resolve(opts.outFile);
       const parts = abs.split(path.sep);
-      const idx = parts.lastIndexOf("benchmarks");
+      const idx = parts.lastIndexOf('benchmarks');
       return idx === -1 ? abs : parts.slice(idx).join(path.sep);
     })(),
   };
   await fs.mkdir(path.dirname(opts.outFile), { recursive: true });
-  await fs.writeFile(opts.outFile, JSON.stringify(payload, null, 2), "utf-8");
+  await fs.writeFile(opts.outFile, JSON.stringify(payload, null, 2), 'utf-8');
   return payload;
 }
 
@@ -66,6 +64,5 @@ export function dirnameFromImportMeta(importMetaUrl: string): string {
 export function repoRootFromImportMeta(importMetaUrl: string, levelsUp: number): string {
   if (!Number.isInteger(levelsUp) || levelsUp < 0) throw new Error(`invalid levelsUp: ${levelsUp}`);
   const dir = dirnameFromImportMeta(importMetaUrl);
-  return path.resolve(dir, ...Array.from({ length: levelsUp }, () => ".."));
+  return path.resolve(dir, ...Array.from({ length: levelsUp }, () => '..'));
 }
-
