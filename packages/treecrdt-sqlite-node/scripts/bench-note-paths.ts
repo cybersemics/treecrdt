@@ -1,7 +1,7 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
-import Database from "better-sqlite3";
+import Database from 'better-sqlite3';
 
 import {
   buildFanoutInsertTreeOps,
@@ -9,57 +9,53 @@ import {
   quantile,
   runBenchmark,
   type BenchmarkWorkload,
-} from "@treecrdt/benchmark";
-import { repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
-import type { Operation, ReplicaId } from "@treecrdt/interface";
-import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
+} from '@treecrdt/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
+import type { Operation, ReplicaId } from '@treecrdt/interface';
+import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
 
-import {
-  createTreecrdtClient,
-  createSqliteNodeApi,
-  loadTreecrdtExtension,
-} from "../dist/index.js";
+import { createTreecrdtClient, createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
 
-type StorageKind = "memory" | "file";
-type NotePathBenchKind = "read-children-payloads" | "insert-into-large-tree";
+type StorageKind = 'memory' | 'file';
+type NotePathBenchKind = 'read-children-payloads' | 'insert-into-large-tree';
 type ConfigEntry = [number, number];
 
 const ALL_NOTE_PATH_BENCHES = [
-  "read-children-payloads",
-  "insert-into-large-tree",
+  'read-children-payloads',
+  'insert-into-large-tree',
 ] as const satisfies readonly NotePathBenchKind[];
 const NOTE_PATH_BENCH_CONFIG: ReadonlyArray<ConfigEntry> = [
   [10_000, 3],
   [50_000, 2],
 ];
 
-const STORAGES: readonly StorageKind[] = ["memory", "file"];
+const STORAGES: readonly StorageKind[] = ['memory', 'file'];
 const DEFAULT_FANOUT = 10;
 const DEFAULT_PAGE_SIZE = 10;
 const DEFAULT_PAYLOAD_BYTES = 512;
-const ROOT = "0".repeat(32);
+const ROOT = '0'.repeat(32);
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
-  if (raw == null || raw === "") return undefined;
+  if (raw == null || raw === '') return undefined;
   const n = Number(raw);
   return Number.isFinite(n) ? n : undefined;
 }
 
 function parseConfigFromArgv(argv: string[]): Array<ConfigEntry> | null {
   let customConfig: Array<ConfigEntry> | null = null;
-  const defaultIterations = Math.max(1, envInt("BENCH_ITERATIONS") ?? 1);
+  const defaultIterations = Math.max(1, envInt('BENCH_ITERATIONS') ?? 1);
   for (const arg of argv) {
-    if (arg.startsWith("--count=")) {
-      const val = arg.slice("--count=".length).trim();
+    if (arg.startsWith('--count=')) {
+      const val = arg.slice('--count='.length).trim();
       const count = val ? Number(val) : 10_000;
       customConfig = [[Number.isFinite(count) && count > 0 ? count : 10_000, defaultIterations]];
       break;
     }
-    if (arg.startsWith("--counts=")) {
+    if (arg.startsWith('--counts=')) {
       const vals = arg
-        .slice("--counts=".length)
-        .split(",")
+        .slice('--counts='.length)
+        .split(',')
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
       const parsed = vals
@@ -82,7 +78,12 @@ function parseFlagValue(argv: string[], flag: string): string | undefined {
   return raw ? raw.slice(prefix.length).trim() : undefined;
 }
 
-function parsePositiveIntFlag(argv: string[], flag: string, envName: string, fallback: number): number {
+function parsePositiveIntFlag(
+  argv: string[],
+  flag: string,
+  envName: string,
+  fallback: number,
+): number {
   const raw = parseFlagValue(argv, flag) ?? process.env[envName];
   if (!raw) return fallback;
   const value = Number(raw);
@@ -94,16 +95,21 @@ function parsePositiveIntFlag(argv: string[], flag: string, envName: string, fal
 
 function parseKinds(argv: string[]): NotePathBenchKind[] {
   const raw =
-    parseFlagValue(argv, "--benches") ??
-    parseFlagValue(argv, "--bench") ??
+    parseFlagValue(argv, '--benches') ??
+    parseFlagValue(argv, '--bench') ??
     process.env.NOTE_PATH_BENCHES ??
     process.env.NOTE_PATH_BENCH;
   if (!raw) return Array.from(ALL_NOTE_PATH_BENCHES);
 
   const seen = new Set<NotePathBenchKind>();
-  for (const value of raw.split(",").map((part) => part.trim()).filter((part) => part.length > 0)) {
+  for (const value of raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)) {
     if (!(ALL_NOTE_PATH_BENCHES as readonly string[]).includes(value)) {
-      throw new Error(`invalid note-path bench "${value}", expected one of: ${ALL_NOTE_PATH_BENCHES.join(", ")}`);
+      throw new Error(
+        `invalid note-path bench "${value}", expected one of: ${ALL_NOTE_PATH_BENCHES.join(', ')}`,
+      );
     }
     seen.add(value as NotePathBenchKind);
   }
@@ -121,21 +127,27 @@ function payloadBytesFromSeed(seed: number, size = DEFAULT_PAYLOAD_BYTES): Uint8
 
 function replicaFromLabel(label: string): Uint8Array {
   const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error("label must not be empty");
+  if (encoded.length === 0) throw new Error('label must not be empty');
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
 }
 
-function makePayloadOp(replica: ReplicaId, counter: number, lamport: number, node: string, payload: Uint8Array): Operation {
+function makePayloadOp(
+  replica: ReplicaId,
+  counter: number,
+  lamport: number,
+  node: string,
+  payload: Uint8Array,
+): Operation {
   return {
     meta: { id: { replica, counter }, lamport },
-    kind: { type: "payload", node, payload },
+    kind: { type: 'payload', node, payload },
   };
 }
 
 function buildNotePathSeedOps(opts: { size: number; fanout: number; payloadBytes: number }) {
-  const replica = replicaFromLabel("bench");
+  const replica = replicaFromLabel('bench');
   const insertOps = buildFanoutInsertTreeOps({
     replica,
     size: opts.size,
@@ -145,14 +157,22 @@ function buildNotePathSeedOps(opts: { size: number; fanout: number; payloadBytes
 
   const targetParent = nodeIdFromInt(1);
   const targetChildrenCount = Math.min(opts.fanout, Math.max(0, opts.size - opts.fanout));
-  const targetChildren = Array.from({ length: targetChildrenCount }, (_, i) => nodeIdFromInt(opts.fanout + i + 1));
+  const targetChildren = Array.from({ length: targetChildrenCount }, (_, i) =>
+    nodeIdFromInt(opts.fanout + i + 1),
+  );
 
   const payloadOps: Operation[] = [];
   let counter = insertOps.length;
   let lamport = insertOps.length;
 
   payloadOps.push(
-    makePayloadOp(replica, ++counter, ++lamport, targetParent, payloadBytesFromSeed(10_000, opts.payloadBytes))
+    makePayloadOp(
+      replica,
+      ++counter,
+      ++lamport,
+      targetParent,
+      payloadBytesFromSeed(10_000, opts.payloadBytes),
+    ),
   );
   for (let i = 0; i < targetChildren.length; i += 1) {
     payloadOps.push(
@@ -161,8 +181,8 @@ function buildNotePathSeedOps(opts: { size: number; fanout: number; payloadBytes
         ++counter,
         ++lamport,
         targetChildren[i]!,
-        payloadBytesFromSeed(20_000 + i, opts.payloadBytes)
-      )
+        payloadBytesFromSeed(20_000 + i, opts.payloadBytes),
+      ),
     );
   }
 
@@ -181,35 +201,31 @@ async function openSeededClient(opts: {
   seedOps: Operation[];
 }): Promise<Awaited<ReturnType<typeof createTreecrdtClient>>> {
   const dbPath =
-    opts.storage === "memory"
-      ? ":memory:"
+    opts.storage === 'memory'
+      ? ':memory:'
       : path.join(
           opts.repoRoot,
-          "tmp",
-          "sqlite-node-note-paths",
-          `${opts.bench}-${opts.size}-${crypto.randomUUID()}.db`
+          'tmp',
+          'sqlite-node-note-paths',
+          `${opts.bench}-${opts.size}-${crypto.randomUUID()}.db`,
         );
 
-  if (opts.storage === "file") {
+  if (opts.storage === 'file') {
     await fs.mkdir(path.dirname(dbPath), { recursive: true });
   }
 
   const db = new Database(dbPath);
   loadTreecrdtExtension(db);
   const api = createSqliteNodeApi(db);
-  await api.setDocId("treecrdt-note-paths-bench");
-  await api.appendOps!(
-    opts.seedOps,
-    nodeIdToBytes16,
-    (replica) => replica
-  );
+  await api.setDocId('treecrdt-note-paths-bench');
+  await api.appendOps!(opts.seedOps, nodeIdToBytes16, (replica) => replica);
 
-  const client = await createTreecrdtClient(db, { docId: "treecrdt-note-paths-bench" });
+  const client = await createTreecrdtClient(db, { docId: 'treecrdt-note-paths-bench' });
   return {
     ...client,
     close: async () => {
       await client.close();
-      if (opts.storage === "file") {
+      if (opts.storage === 'file') {
         await fs.rm(dbPath).catch(() => {});
       }
     },
@@ -232,19 +248,25 @@ function readChildrenPayloadsWorkload(opts: {
     warmupIterations: 0,
     run: async (adapter: any) => {
       const rows = await adapter.tree.childrenPage(opts.targetParent, null, opts.pageSize);
-      if (!Array.isArray(rows)) throw new Error("childrenPage did not return rows");
+      if (!Array.isArray(rows)) throw new Error('childrenPage did not return rows');
       if (rows.length !== visibleChildren) {
         throw new Error(`expected ${visibleChildren} child rows, got ${rows.length}`);
       }
 
       const parentPayload = await adapter.tree.getPayload(opts.targetParent);
       if (!(parentPayload instanceof Uint8Array) || parentPayload.length !== opts.payloadBytes) {
-        throw new Error("target parent payload missing");
+        throw new Error('target parent payload missing');
       }
 
-      const payloads = await Promise.all(rows.map((row: { node: string }) => adapter.tree.getPayload(row.node)));
-      if (payloads.some((payload) => !(payload instanceof Uint8Array) || payload.length !== opts.payloadBytes)) {
-        throw new Error("one or more child payloads missing");
+      const payloads = await Promise.all(
+        rows.map((row: { node: string }) => adapter.tree.getPayload(row.node)),
+      );
+      if (
+        payloads.some(
+          (payload) => !(payload instanceof Uint8Array) || payload.length !== opts.payloadBytes,
+        )
+      ) {
+        throw new Error('one or more child payloads missing');
       }
 
       return {
@@ -266,7 +288,7 @@ function insertIntoLargeTreeWorkload(opts: {
   payloadBytes: number;
   fanout: number;
 }): BenchmarkWorkload {
-  const replica = replicaFromLabel("writer");
+  const replica = replicaFromLabel('writer');
   const newNode = nodeIdFromInt(opts.size + 10_000);
   const payload = payloadBytesFromSeed(90_000, opts.payloadBytes);
 
@@ -276,19 +298,27 @@ function insertIntoLargeTreeWorkload(opts: {
     iterations: 1,
     warmupIterations: 0,
     run: async (adapter: any) => {
-      const op = await adapter.local.insert(replica, opts.targetParent, newNode, { type: "last" }, payload);
-      if (op.kind.type !== "insert" || op.kind.node !== newNode) {
-        throw new Error("insert did not return the new node");
+      const op = await adapter.local.insert(
+        replica,
+        opts.targetParent,
+        newNode,
+        { type: 'last' },
+        payload,
+      );
+      if (op.kind.type !== 'insert' || op.kind.node !== newNode) {
+        throw new Error('insert did not return the new node');
       }
 
       const parent = await adapter.tree.parent(newNode);
       if (parent !== opts.targetParent) {
-        throw new Error(`inserted node parent mismatch: expected ${opts.targetParent}, got ${String(parent)}`);
+        throw new Error(
+          `inserted node parent mismatch: expected ${opts.targetParent}, got ${String(parent)}`,
+        );
       }
 
       const storedPayload = await adapter.tree.getPayload(newNode);
       if (!(storedPayload instanceof Uint8Array) || storedPayload.length !== opts.payloadBytes) {
-        throw new Error("inserted node payload missing");
+        throw new Error('inserted node payload missing');
       }
 
       return {
@@ -358,12 +388,12 @@ async function runWorkload(opts: {
 
   const outFile = path.join(
     opts.repoRoot,
-    "benchmarks",
-    "sqlite-node-note-paths",
-    `${opts.storage}-${result.name}.json`
+    'benchmarks',
+    'sqlite-node-note-paths',
+    `${opts.storage}-${result.name}.json`,
   );
   const payload = await writeResult(result, {
-    implementation: "sqlite-node",
+    implementation: 'sqlite-node',
     storage: opts.storage,
     workload: result.name,
     outFile,
@@ -383,13 +413,18 @@ async function main() {
   const argv = process.argv.slice(2);
   const config = parseConfigFromArgv(argv) ?? [...NOTE_PATH_BENCH_CONFIG];
   const benches = parseKinds(argv);
-  const fanout = parsePositiveIntFlag(argv, "--fanout", "NOTE_PATH_BENCH_FANOUT", DEFAULT_FANOUT);
-  const pageSize = parsePositiveIntFlag(argv, "--page-size", "NOTE_PATH_BENCH_PAGE_SIZE", DEFAULT_PAGE_SIZE);
+  const fanout = parsePositiveIntFlag(argv, '--fanout', 'NOTE_PATH_BENCH_FANOUT', DEFAULT_FANOUT);
+  const pageSize = parsePositiveIntFlag(
+    argv,
+    '--page-size',
+    'NOTE_PATH_BENCH_PAGE_SIZE',
+    DEFAULT_PAGE_SIZE,
+  );
   const payloadBytes = parsePositiveIntFlag(
     argv,
-    "--payload-bytes",
-    "NOTE_PATH_BENCH_PAYLOAD_BYTES",
-    DEFAULT_PAYLOAD_BYTES
+    '--payload-bytes',
+    'NOTE_PATH_BENCH_PAYLOAD_BYTES',
+    DEFAULT_PAYLOAD_BYTES,
   );
 
   for (const [size, iterations] of config) {
@@ -410,11 +445,11 @@ async function main() {
     });
 
     for (const storage of STORAGES) {
-      if (benches.includes("read-children-payloads")) {
+      if (benches.includes('read-children-payloads')) {
         await runWorkload({
           repoRoot,
           storage,
-          bench: "read-children-payloads",
+          bench: 'read-children-payloads',
           size,
           iterations,
           fanout,
@@ -423,11 +458,11 @@ async function main() {
           workload: readWorkload,
         });
       }
-      if (benches.includes("insert-into-large-tree")) {
+      if (benches.includes('insert-into-large-tree')) {
         await runWorkload({
           repoRoot,
           storage,
-          bench: "insert-into-large-tree",
+          bench: 'insert-into-large-tree',
           size,
           iterations,
           fanout,

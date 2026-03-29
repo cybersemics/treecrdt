@@ -1,18 +1,18 @@
-import type { Operation, OperationKind, ReplicaId } from "@treecrdt/interface";
-import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
-import { envIntList } from "./stats.js";
-import { benchTiming } from "./timing.js";
+import type { Operation, OperationKind, ReplicaId } from '@treecrdt/interface';
+import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { envIntList } from './stats.js';
+import { benchTiming } from './timing.js';
 
 export type SyncBenchWorkload =
-  | "sync-all"
-  | "sync-balanced-children-cold-start"
-  | "sync-balanced-children-payloads-cold-start"
-  | "sync-children"
-  | "sync-children-cold-start"
-  | "sync-children-payloads"
-  | "sync-children-payloads-cold-start"
-  | "sync-root-children-fanout10"
-  | "sync-one-missing";
+  | 'sync-all'
+  | 'sync-balanced-children-cold-start'
+  | 'sync-balanced-children-payloads-cold-start'
+  | 'sync-children'
+  | 'sync-children-cold-start'
+  | 'sync-children-payloads'
+  | 'sync-children-payloads-cold-start'
+  | 'sync-root-children-fanout10'
+  | 'sync-one-missing';
 
 export const DEFAULT_SYNC_BENCH_SIZES = [100, 1000, 10_000] as const;
 export const DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES = [1110] as const;
@@ -21,23 +21,23 @@ export const DEFAULT_SYNC_BENCH_PAGE_SIZE = 10;
 export const DEFAULT_SYNC_BENCH_PAYLOAD_BYTES = 512;
 
 export const DEFAULT_SYNC_BENCH_WORKLOADS = [
-  "sync-one-missing",
-  "sync-balanced-children-cold-start",
-  "sync-balanced-children-payloads-cold-start",
+  'sync-one-missing',
+  'sync-balanced-children-cold-start',
+  'sync-balanced-children-payloads-cold-start',
 ] as const satisfies readonly SyncBenchWorkload[];
 export const SYNTHETIC_SYNC_BENCH_WORKLOADS = [
-  "sync-all",
-  "sync-children",
-  "sync-children-cold-start",
-  "sync-children-payloads",
-  "sync-children-payloads-cold-start",
+  'sync-all',
+  'sync-children',
+  'sync-children-cold-start',
+  'sync-children-payloads',
+  'sync-children-payloads-cold-start',
 ] as const satisfies readonly SyncBenchWorkload[];
 export const ALL_SYNC_BENCH_WORKLOADS = [
   ...DEFAULT_SYNC_BENCH_WORKLOADS,
   ...SYNTHETIC_SYNC_BENCH_WORKLOADS,
 ] as const satisfies readonly SyncBenchWorkload[];
 export const DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS = [
-  "sync-root-children-fanout10",
+  'sync-root-children-fanout10',
 ] as const satisfies readonly SyncBenchWorkload[];
 
 export const SYNC_BENCH_DEFAULT_MAX_CODEWORDS = 200_000;
@@ -45,24 +45,28 @@ export const SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE = 2048;
 export const SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE = 1024;
 
 export function syncBenchSizesFromEnv(): number[] {
-  return envIntList("SYNC_BENCH_SIZES") ?? Array.from(DEFAULT_SYNC_BENCH_SIZES);
+  return envIntList('SYNC_BENCH_SIZES') ?? Array.from(DEFAULT_SYNC_BENCH_SIZES);
 }
 
 export function syncBenchRootChildrenSizesFromEnv(): number[] {
-  return envIntList("SYNC_BENCH_ROOT_CHILDREN_SIZES") ?? Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES);
+  return (
+    envIntList('SYNC_BENCH_ROOT_CHILDREN_SIZES') ??
+    Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES)
+  );
 }
 
-export function syncBenchTiming(opts: { defaultIterations?: number } = {}): { iterations: number; warmupIterations: number } {
+export function syncBenchTiming(opts: { defaultIterations?: number } = {}): {
+  iterations: number;
+  warmupIterations: number;
+} {
   return benchTiming({
-    iterationsEnv: ["SYNC_BENCH_ITERATIONS", "BENCH_ITERATIONS"],
-    warmupEnv: ["SYNC_BENCH_WARMUP", "BENCH_WARMUP"],
+    iterationsEnv: ['SYNC_BENCH_ITERATIONS', 'BENCH_ITERATIONS'],
+    warmupEnv: ['SYNC_BENCH_WARMUP', 'BENCH_WARMUP'],
     defaultIterations: opts.defaultIterations ?? 10,
   });
 }
 
-export type SyncFilter =
-  | { all: Record<string, never> }
-  | { children: { parent: Uint8Array } };
+export type SyncFilter = { all: Record<string, never> } | { children: { parent: Uint8Array } };
 
 export type SyncBenchCase = {
   name: string;
@@ -84,7 +88,7 @@ export type SyncBenchCase = {
 
 export function nodeIdFromInt(i: number): string {
   if (!Number.isInteger(i) || i < 0) throw new Error(`invalid node id: ${i}`);
-  return i.toString(16).padStart(32, "0");
+  return i.toString(16).padStart(32, '0');
 }
 
 function orderKeyFromPosition(position: number): Uint8Array {
@@ -98,7 +102,7 @@ function orderKeyFromPosition(position: number): Uint8Array {
 
 function replicaFromLabel(label: string): Uint8Array {
   const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error("label must not be empty");
+  if (encoded.length === 0) throw new Error('label must not be empty');
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
@@ -108,7 +112,7 @@ export function makeOp(
   replica: ReplicaId,
   counter: number,
   lamport: number,
-  kind: OperationKind
+  kind: OperationKind,
 ): Operation {
   return { meta: { id: { replica, counter }, lamport }, kind };
 }
@@ -136,14 +140,15 @@ export function buildFanoutInsertTreeOps(opts: {
   root: string;
 }): Operation[] {
   if (!Number.isInteger(opts.size) || opts.size <= 0) throw new Error(`invalid size: ${opts.size}`);
-  if (!Number.isInteger(opts.fanout) || opts.fanout <= 0) throw new Error(`invalid fanout: ${opts.fanout}`);
+  if (!Number.isInteger(opts.fanout) || opts.fanout <= 0)
+    throw new Error(`invalid fanout: ${opts.fanout}`);
 
   const ops: Operation[] = [];
   const queue: ParentCursor[] = [{ parent: opts.root, nextChildPosition: 0 }];
 
   for (let i = 1; i <= opts.size; i += 1) {
     const cursor = queue[0];
-    if (!cursor) throw new Error("fanout tree queue empty");
+    if (!cursor) throw new Error('fanout tree queue empty');
 
     const parent = cursor.parent;
     const position = cursor.nextChildPosition;
@@ -152,7 +157,12 @@ export function buildFanoutInsertTreeOps(opts: {
 
     const node = nodeIdFromInt(i);
     ops.push(
-      makeOp(opts.replica, i, i, { type: "insert", parent, node, orderKey: orderKeyFromPosition(position) })
+      makeOp(opts.replica, i, i, {
+        type: 'insert',
+        parent,
+        node,
+        orderKey: orderKeyFromPosition(position),
+      }),
     );
     queue.push({ parent: node, nextChildPosition: 0 });
   }
@@ -185,8 +195,8 @@ function buildBalancedChildrenColdStartCase(opts: {
     root: opts.root,
   });
   const scopeRootInsert = sharedOps[0];
-  if (!scopeRootInsert || scopeRootInsert.kind.type !== "insert") {
-    throw new Error("expected balanced tree seed to start with scope root insert");
+  if (!scopeRootInsert || scopeRootInsert.kind.type !== 'insert') {
+    throw new Error('expected balanced tree seed to start with scope root insert');
   }
 
   const targetParent = scopeRootInsert.kind.node;
@@ -199,20 +209,20 @@ function buildBalancedChildrenColdStartCase(opts: {
     let lamport = maxLamport(sharedOps);
     for (let i = 0; i < sharedOps.length; i += 1) {
       const op = sharedOps[i];
-      if (op?.kind.type !== "insert") continue;
+      if (op?.kind.type !== 'insert') continue;
       opsB.push(
         makeOp(opts.replicas.p, ++counter, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: op.kind.node,
           payload: payloadBytesFromSeed(i + 1, opts.payloadBytes),
-        })
+        }),
       );
     }
   }
 
   const transferredOps = opts.withPayloads ? 1 + targetChildren.length * 2 : targetChildren.length;
   return {
-    name: `sync-balanced-children${opts.withPayloads ? "-payloads" : ""}-cold-start-fanout${opts.fanout}-${treeSize}`,
+    name: `sync-balanced-children${opts.withPayloads ? '-payloads' : ''}-cold-start-fanout${opts.fanout}-${treeSize}`,
     opsA,
     opsB,
     filter: { children: { parent: nodeIdToBytes16(targetParent) } },
@@ -250,22 +260,23 @@ export function buildSyncBenchCase(opts: {
 }): SyncBenchCase {
   const { workload } = opts;
   const size = opts.size;
-  const root = "0".repeat(32);
+  const root = '0'.repeat(32);
   const replicas = {
-    a: replicaFromLabel("a"),
-    b: replicaFromLabel("b"),
-    m: replicaFromLabel("m"),
-    p: replicaFromLabel("p"),
-    s: replicaFromLabel("s"),
-    x: replicaFromLabel("x"),
-    y: replicaFromLabel("y"),
+    a: replicaFromLabel('a'),
+    b: replicaFromLabel('b'),
+    m: replicaFromLabel('m'),
+    p: replicaFromLabel('p'),
+    s: replicaFromLabel('s'),
+    x: replicaFromLabel('x'),
+    y: replicaFromLabel('y'),
   };
   const fanout = opts.fanout ?? DEFAULT_SYNC_BENCH_FANOUT;
   const payloadBytes = opts.payloadBytes ?? DEFAULT_SYNC_BENCH_PAYLOAD_BYTES;
 
-  if (workload === "sync-one-missing") {
+  if (workload === 'sync-one-missing') {
     const treeSize = size;
-    if (!Number.isInteger(treeSize) || treeSize <= 0) throw new Error(`sync-one-missing requires size > 0`);
+    if (!Number.isInteger(treeSize) || treeSize <= 0)
+      throw new Error(`sync-one-missing requires size > 0`);
 
     const missingCounter = Math.min(treeSize, Math.max(1, Math.ceil(treeSize / 2)));
     const missingNode = nodeIdFromInt(missingCounter);
@@ -274,7 +285,7 @@ export function buildSyncBenchCase(opts: {
     const opsA: Operation[] = [];
     for (let counter = 1; counter <= treeSize; counter += 1) {
       const op = makeOp(replicas.s, counter, counter, {
-        type: "insert",
+        type: 'insert',
         parent: root,
         node: nodeIdFromInt(counter),
         orderKey: orderKeyFromPosition(counter - 1),
@@ -295,7 +306,7 @@ export function buildSyncBenchCase(opts: {
     };
   }
 
-  if (workload === "sync-balanced-children-cold-start") {
+  if (workload === 'sync-balanced-children-cold-start') {
     return buildBalancedChildrenColdStartCase({
       size,
       fanout,
@@ -306,7 +317,7 @@ export function buildSyncBenchCase(opts: {
     });
   }
 
-  if (workload === "sync-balanced-children-payloads-cold-start") {
+  if (workload === 'sync-balanced-children-payloads-cold-start') {
     return buildBalancedChildrenColdStartCase({
       size,
       fanout,
@@ -317,21 +328,27 @@ export function buildSyncBenchCase(opts: {
     });
   }
 
-  if (workload === "sync-root-children-fanout10") {
+  if (workload === 'sync-root-children-fanout10') {
     const treeSize = size;
-    if (treeSize < fanout) throw new Error(`sync-root-children-fanout10 requires size >= ${fanout}`);
+    if (treeSize < fanout)
+      throw new Error(`sync-root-children-fanout10 requires size >= ${fanout}`);
 
-    const sharedOps = buildFanoutInsertTreeOps({ replica: replicas.s, size: treeSize, fanout, root });
+    const sharedOps = buildFanoutInsertTreeOps({
+      replica: replicas.s,
+      size: treeSize,
+      fanout,
+      root,
+    });
     const movedNode = nodeIdFromInt(fanout);
-    const trash = "f".repeat(32);
+    const trash = 'f'.repeat(32);
     const moveOut = makeOp(replicas.m, 1, treeSize + 1, {
-      type: "move",
+      type: 'move',
       node: movedNode,
       newParent: trash,
       orderKey: orderKeyFromPosition(0),
     });
     const moveBack = makeOp(replicas.m, 2, treeSize + 2, {
-      type: "move",
+      type: 'move',
       node: movedNode,
       newParent: root,
       orderKey: orderKeyFromPosition(fanout - 1),
@@ -352,7 +369,7 @@ export function buildSyncBenchCase(opts: {
     };
   }
 
-  if (workload === "sync-all") {
+  if (workload === 'sync-all') {
     const shared = Math.floor(size / 2);
     const unique = size - shared;
     const sharedOps: Operation[] = [];
@@ -363,11 +380,11 @@ export function buildSyncBenchCase(opts: {
       const counter = i + 1;
       sharedOps.push(
         makeOp(replicas.s, counter, counter, {
-          type: "insert",
+          type: 'insert',
           parent: root,
           node: nodeIdFromInt(counter),
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
     }
     for (let i = 0; i < unique; i++) {
@@ -375,19 +392,19 @@ export function buildSyncBenchCase(opts: {
       const lamport = shared + counter;
       aOps.push(
         makeOp(replicas.a, counter, lamport, {
-          type: "insert",
+          type: 'insert',
           parent: root,
           node: nodeIdFromInt(shared + counter),
           orderKey: orderKeyFromPosition(shared + i),
-        })
+        }),
       );
       bOps.push(
         makeOp(replicas.b, counter, lamport, {
-          type: "insert",
+          type: 'insert',
           parent: root,
           node: nodeIdFromInt(shared + unique + counter),
           orderKey: orderKeyFromPosition(shared + i),
-        })
+        }),
       );
     }
 
@@ -407,9 +424,9 @@ export function buildSyncBenchCase(opts: {
     };
   }
 
-  if (workload === "sync-children-payloads") {
-    const targetParentHex = "a0".repeat(16);
-    const otherParentHex = "b0".repeat(16);
+  if (workload === 'sync-children-payloads') {
+    const targetParentHex = 'a0'.repeat(16);
+    const otherParentHex = 'b0'.repeat(16);
     const targetCount = Math.floor(size / 2);
     const otherCount = size - targetCount;
     const sharedTarget = Math.floor(targetCount / 2);
@@ -429,52 +446,52 @@ export function buildSyncBenchCase(opts: {
 
     sharedOps.push(
       makeOp(replicas.s, ++counterS, ++lamport, {
-        type: "insert",
+        type: 'insert',
         parent: root,
         node: targetParentHex,
         orderKey: orderKeyFromPosition(0),
-      })
+      }),
     );
     sharedOps.push(
       makeOp(replicas.s, ++counterS, ++lamport, {
-        type: "insert",
+        type: 'insert',
         parent: root,
         node: otherParentHex,
         orderKey: orderKeyFromPosition(1),
-      })
+      }),
     );
     sharedOps.push(
       makeOp(replicas.s, ++counterS, ++lamport, {
-        type: "payload",
+        type: 'payload',
         node: targetParentHex,
         payload: payloadBytesFromSeed(10_000, payloadBytes),
-      })
+      }),
     );
 
     bTarget.push(
       makeOp(replicas.b, ++counterB, ++lamport, {
-        type: "payload",
+        type: 'payload',
         node: targetParentHex,
         payload: payloadBytesFromSeed(20_000, payloadBytes),
-      })
+      }),
     );
 
     for (let i = 0; i < sharedTarget; i += 1) {
       const child = nodeIdFromInt(i + 1);
       sharedOps.push(
         makeOp(replicas.s, ++counterS, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: targetParentHex,
           node: child,
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
       sharedOps.push(
         makeOp(replicas.s, ++counterS, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: child,
           payload: payloadBytesFromSeed(i + 1, payloadBytes),
-        })
+        }),
       );
     }
 
@@ -485,34 +502,34 @@ export function buildSyncBenchCase(opts: {
 
       aTarget.push(
         makeOp(replicas.a, ++counterA, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: targetParentHex,
           node: childA,
           orderKey: orderKeyFromPosition(position),
-        })
+        }),
       );
       aTarget.push(
         makeOp(replicas.a, ++counterA, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: childA,
           payload: payloadBytesFromSeed(30_000 + i, payloadBytes),
-        })
+        }),
       );
 
       bTarget.push(
         makeOp(replicas.b, ++counterB, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: targetParentHex,
           node: childB,
           orderKey: orderKeyFromPosition(position),
-        })
+        }),
       );
       bTarget.push(
         makeOp(replicas.b, ++counterB, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: childB,
           payload: payloadBytesFromSeed(40_000 + i, payloadBytes),
-        })
+        }),
       );
     }
 
@@ -522,34 +539,34 @@ export function buildSyncBenchCase(opts: {
 
       aOther.push(
         makeOp(replicas.x, ++counterX, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: otherParentHex,
           node: childA,
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
       aOther.push(
         makeOp(replicas.x, ++counterX, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: childA,
           payload: payloadBytesFromSeed(50_000 + i, payloadBytes),
-        })
+        }),
       );
 
       bOther.push(
         makeOp(replicas.y, ++counterY, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: otherParentHex,
           node: childB,
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
       bOther.push(
         makeOp(replicas.y, ++counterY, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: childB,
           payload: payloadBytesFromSeed(60_000 + i, payloadBytes),
-        })
+        }),
       );
     }
 
@@ -575,9 +592,9 @@ export function buildSyncBenchCase(opts: {
     };
   }
 
-  if (workload === "sync-children-payloads-cold-start") {
-    const targetParentHex = "a0".repeat(16);
-    const otherParentHex = "b0".repeat(16);
+  if (workload === 'sync-children-payloads-cold-start') {
+    const targetParentHex = 'a0'.repeat(16);
+    const otherParentHex = 'b0'.repeat(16);
     const targetCount = Math.floor(size / 2);
     const otherCount = size - targetCount;
     let lamport = 0;
@@ -586,19 +603,19 @@ export function buildSyncBenchCase(opts: {
     let counterY = 0;
 
     const scopeRootInsert = makeOp(replicas.s, ++counterS, ++lamport, {
-      type: "insert",
+      type: 'insert',
       parent: root,
       node: targetParentHex,
       orderKey: orderKeyFromPosition(0),
     });
     const otherParentInsert = makeOp(replicas.s, ++counterS, ++lamport, {
-      type: "insert",
+      type: 'insert',
       parent: root,
       node: otherParentHex,
       orderKey: orderKeyFromPosition(1),
     });
     const scopeRootPayload = makeOp(replicas.b, ++counterB, ++lamport, {
-      type: "payload",
+      type: 'payload',
       node: targetParentHex,
       payload: payloadBytesFromSeed(20_000, payloadBytes),
     });
@@ -610,18 +627,18 @@ export function buildSyncBenchCase(opts: {
       const child = nodeIdFromInt(i + 1);
       opsB.push(
         makeOp(replicas.b, ++counterB, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: targetParentHex,
           node: child,
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
       opsB.push(
         makeOp(replicas.b, ++counterB, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: child,
           payload: payloadBytesFromSeed(30_000 + i, payloadBytes),
-        })
+        }),
       );
     }
 
@@ -629,18 +646,18 @@ export function buildSyncBenchCase(opts: {
       const child = nodeIdFromInt(targetCount + i + 1);
       opsB.push(
         makeOp(replicas.y, ++counterY, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: otherParentHex,
           node: child,
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
       opsB.push(
         makeOp(replicas.y, ++counterY, ++lamport, {
-          type: "payload",
+          type: 'payload',
           node: child,
           payload: payloadBytesFromSeed(40_000 + i, payloadBytes),
-        })
+        }),
       );
     }
 
@@ -665,9 +682,9 @@ export function buildSyncBenchCase(opts: {
     };
   }
 
-  if (workload === "sync-children-cold-start") {
-    const targetParentHex = "a0".repeat(16);
-    const otherParentHex = "b0".repeat(16);
+  if (workload === 'sync-children-cold-start') {
+    const targetParentHex = 'a0'.repeat(16);
+    const otherParentHex = 'b0'.repeat(16);
     const targetCount = Math.floor(size / 2);
     const otherCount = size - targetCount;
 
@@ -677,13 +694,13 @@ export function buildSyncBenchCase(opts: {
     let counterY = 0;
 
     const scopeRootInsert = makeOp(replicas.s, ++counterS, ++lamport, {
-      type: "insert",
+      type: 'insert',
       parent: root,
       node: targetParentHex,
       orderKey: orderKeyFromPosition(0),
     });
     const otherParentInsert = makeOp(replicas.s, ++counterS, ++lamport, {
-      type: "insert",
+      type: 'insert',
       parent: root,
       node: otherParentHex,
       orderKey: orderKeyFromPosition(1),
@@ -695,22 +712,22 @@ export function buildSyncBenchCase(opts: {
     for (let i = 0; i < targetCount; i += 1) {
       opsB.push(
         makeOp(replicas.b, ++counterB, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: targetParentHex,
           node: nodeIdFromInt(i + 1),
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
     }
 
     for (let i = 0; i < otherCount; i += 1) {
       opsB.push(
         makeOp(replicas.y, ++counterY, ++lamport, {
-          type: "insert",
+          type: 'insert',
           parent: otherParentHex,
           node: nodeIdFromInt(targetCount + i + 1),
           orderKey: orderKeyFromPosition(i),
-        })
+        }),
       );
     }
 
@@ -733,8 +750,8 @@ export function buildSyncBenchCase(opts: {
   }
 
   // sync-children
-  const targetParentHex = "a0".repeat(16);
-  const otherParentHex = "b0".repeat(16);
+  const targetParentHex = 'a0'.repeat(16);
+  const otherParentHex = 'b0'.repeat(16);
   const targetCount = Math.floor(size / 2);
   const otherCount = size - targetCount;
   const sharedTarget = Math.floor(targetCount / 2);
@@ -752,11 +769,11 @@ export function buildSyncBenchCase(opts: {
     const counter = i + 1;
     sharedOps.push(
       makeOp(replicas.s, counter, lamport, {
-        type: "insert",
+        type: 'insert',
         parent: targetParentHex,
         node: nodeIdFromInt(counter),
         orderKey: orderKeyFromPosition(i),
-      })
+      }),
     );
   }
 
@@ -765,19 +782,19 @@ export function buildSyncBenchCase(opts: {
     const counter = i + 1;
     aTarget.push(
       makeOp(replicas.a, counter, lamport, {
-        type: "insert",
+        type: 'insert',
         parent: targetParentHex,
         node: nodeIdFromInt(sharedTarget + counter),
         orderKey: orderKeyFromPosition(sharedTarget + i),
-      })
+      }),
     );
     bTarget.push(
       makeOp(replicas.b, counter, lamport, {
-        type: "insert",
+        type: 'insert',
         parent: targetParentHex,
         node: nodeIdFromInt(sharedTarget + uniqueTarget + counter),
         orderKey: orderKeyFromPosition(sharedTarget + i),
-      })
+      }),
     );
   }
 
@@ -785,19 +802,19 @@ export function buildSyncBenchCase(opts: {
     lamport += 1;
     aOther.push(
       makeOp(replicas.x, i + 1, lamport, {
-        type: "insert",
+        type: 'insert',
         parent: otherParentHex,
         node: nodeIdFromInt(sharedTarget + 2 * uniqueTarget + i + 1),
         orderKey: orderKeyFromPosition(i),
-      })
+      }),
     );
     bOther.push(
       makeOp(replicas.y, i + 1, lamport, {
-        type: "insert",
+        type: 'insert',
         parent: otherParentHex,
         node: nodeIdFromInt(sharedTarget + 2 * uniqueTarget + otherCount + i + 1),
         orderKey: orderKeyFromPosition(i),
-      })
+      }),
     );
   }
 

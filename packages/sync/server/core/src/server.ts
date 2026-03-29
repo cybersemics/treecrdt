@@ -273,7 +273,7 @@ export async function startWebSocketSyncServer<Op>(
   const notifyOtherDocPeers = async (
     docId: string,
     source: SyncPeer<Op> | undefined,
-    ops?: readonly Op[]
+    ops?: readonly Op[],
   ) => {
     const peers = peersByDocId.get(docId);
     if (!peers || peers.size === 0) return;
