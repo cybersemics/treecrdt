@@ -1,4 +1,4 @@
-import { detectOpfsSupport } from './opfs.js';
+import { clearOpfsStorage, detectOpfsSupport } from './opfs.js';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteWriter,
@@ -60,6 +60,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   meta: TreecrdtMetaApi;
   local: TreecrdtLocalApi;
   close: () => Promise<void>;
+  drop: () => Promise<void>;
 };
 
 export type ClientOptions = {
@@ -141,8 +142,12 @@ async function createWorkerClient(opts: {
     { resolve: (value: any) => void; reject: (err: Error) => void }
   >();
   let terminalError: Error | null = null;
+  let closed = false;
+
+  const closedError = new Error(CLIENT_CLOSED_ERROR);
 
   const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+    if (closed) return Promise.reject(closedError);
     const id = nextId++;
     if (terminalError) return Promise.reject(terminalError);
     return new Promise((resolve, reject) => {
@@ -175,6 +180,15 @@ async function createWorkerClient(opts: {
     opts.docId,
   ])) as { storage?: StorageMode; opfsError?: string } | undefined;
   const effectiveStorage: StorageMode = initResult?.storage === 'opfs' ? 'opfs' : 'memory';
+  const cleanup = () => {
+    closed = true;
+    for (const { reject } of pending.values()) reject(closedError);
+    pending.clear();
+    worker.removeEventListener('error', onError);
+    worker.removeEventListener('message', onMessage);
+    worker.terminate();
+  };
+
   if (opts.requireOpfs && effectiveStorage !== 'opfs') {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : '';
     try {
@@ -182,20 +196,28 @@ async function createWorkerClient(opts: {
     } catch {
       // ignore close errors on init failure
     } finally {
-      worker.removeEventListener('error', onError);
-      worker.removeEventListener('message', onMessage);
-      worker.terminate();
+      cleanup();
     }
     throw new Error(`OPFS requested but could not be initialized${reason}`);
   }
 
   const closeImpl = async () => {
+    if (closed) return;
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
+      cleanup();
     } finally {
-      worker.removeEventListener('error', onError);
-      worker.removeEventListener('message', onMessage);
-      worker.terminate();
+      // noop: cleanup already handles terminal teardown, and repeated close is idempotent
+    }
+  };
+
+  const dropImpl = async () => {
+    if (closed) return;
+    try {
+      if (!terminalError) await call('drop', [] as RpcParams<'drop'>);
+      cleanup();
+    } finally {
+      // noop: cleanup already handles terminal teardown, and repeated drop is idempotent
     }
   };
 
@@ -205,6 +227,7 @@ async function createWorkerClient(opts: {
     docId: opts.docId,
     call,
     close: closeImpl,
+    drop: dropImpl,
   });
 }
 
@@ -253,8 +276,11 @@ async function createDirectClient(opts: {
         message: err instanceof Error ? err.message : String(err),
       }),
     );
+  let closed = false;
+  const closedError = new Error(CLIENT_CLOSED_ERROR);
 
   const call: RpcCall = async (method, params) => {
+    if (closed) throw closedError;
     try {
       switch (method) {
         case 'sqlExec': {
@@ -357,9 +383,17 @@ async function createDirectClient(opts: {
           const [replica, node, payload] = params as RpcParams<'localPayload'>;
           return (await localWriterFor(Uint8Array.from(replica)).payload(node, payload)) as any;
         }
-        case 'close':
+        case 'close': {
           if (db.close) await db.close();
           return undefined as any;
+        }
+        case 'drop': {
+          if (db.close) await db.close();
+          if (finalStorage === 'opfs') {
+            await clearOpfsStorage(filename);
+          }
+          return undefined as any;
+        }
         default:
           throw new Error(`unsupported direct method: ${method}`);
       }
@@ -374,7 +408,17 @@ async function createDirectClient(opts: {
     docId: opts.docId,
     call,
     close: async () => {
+      if (closed) return;
       if (db.close) await db.close();
+      closed = true;
+    },
+    drop: async () => {
+      if (closed) return;
+      if (db.close) await db.close();
+      if (finalStorage === 'opfs') {
+        await clearOpfsStorage(filename);
+      }
+      closed = true;
     },
   });
 }
@@ -387,6 +431,7 @@ function makeTreecrdtClientFromCall(opts: {
   docId: string;
   call: RpcCall;
   close: () => Promise<void>;
+  drop: () => Promise<void>;
 }): TreecrdtClient {
   const call = opts.call;
   let closePromise: Promise<void> | null = null;
@@ -510,6 +555,7 @@ function makeTreecrdtClientFromCall(opts: {
       payload: localPayloadImpl,
     },
     close: closeImpl,
+    drop: opts.drop,
   };
 }
 
