@@ -32,6 +32,8 @@ import type { Database } from './index.js';
 import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 
+export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
+
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 
