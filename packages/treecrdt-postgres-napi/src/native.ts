@@ -22,7 +22,7 @@ export type NativeBackend = {
   maxLamport(): bigint;
   listOpRefsAll(): Uint8Array[];
   listOpRefsChildren(parent: Uint8Array): Uint8Array[];
-  latestPayloadWriterOpRef(node: Uint8Array): Uint8Array | null;
+  listOpRefsChildrenWithParentPayload(parent: Uint8Array): Uint8Array[];
   opsSince(lamport: bigint, root: Uint8Array | null): NativeOp[];
   getOpsByOpRefs(opRefs: Uint8Array[]): NativeOp[];
   treeChildren(parent: Uint8Array): Uint8Array[];

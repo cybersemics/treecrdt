@@ -42,15 +42,7 @@ export function createPostgresNapiSyncBackendFactory(url: string): PostgresNapiS
         listOpRefs: async (filter: Filter) => {
           if ('all' in filter) return nativeBackend.listOpRefsAll();
           const parent = Buffer.from(filter.children.parent);
-          const refs = nativeBackend.listOpRefsChildren(parent);
-          const payloadWriter = nativeBackend.latestPayloadWriterOpRef(parent);
-          if (!payloadWriter) return refs;
-
-          const payloadWriterHex = Buffer.from(payloadWriter).toString('hex');
-          if (refs.some((ref) => Buffer.from(ref).toString('hex') === payloadWriterHex)) {
-            return refs;
-          }
-          return [...refs, payloadWriter];
+          return nativeBackend.listOpRefsChildrenWithParentPayload(parent);
         },
         getOpsByOpRefs: async (opRefs: OpRef[]) => {
           if (opRefs.length === 0) return [];
