@@ -1,21 +1,21 @@
-import path from "node:path";
-import { randomUUID } from "node:crypto";
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
-import { benchTiming, buildWorkloads, runWorkloads } from "@treecrdt/benchmark";
-import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from "@treecrdt/benchmark/node";
+import { benchTiming, buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
+import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 
-import { createPostgresNapiAdapterFactory } from "../src/index.js";
+import { createPostgresNapiAdapterFactory } from '../src/index.js';
 
 const POSTGRES_URL = process.env.TREECRDT_POSTGRES_URL;
 
 async function main() {
   if (!POSTGRES_URL) {
-    console.warn("Skipping postgres-napi benchmark because TREECRDT_POSTGRES_URL is not set");
+    console.warn('Skipping postgres-napi benchmark because TREECRDT_POSTGRES_URL is not set');
     return;
   }
 
   const opts = parseBenchCliArgs({
-    defaultWorkloads: ["insert-move", "insert-chain"] as const,
+    defaultWorkloads: ['insert-move', 'insert-chain'] as const,
   });
   const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 
@@ -38,10 +38,11 @@ async function main() {
   }, workloadDefs);
 
   for (const result of results) {
-    const outFile = opts.outFile ?? path.join(repoRoot, "benchmarks", "postgres-napi", `${result.name}.json`);
+    const outFile =
+      opts.outFile ?? path.join(repoRoot, 'benchmarks', 'postgres-napi', `${result.name}.json`);
     const payload = await writeResult(result, {
-      implementation: "postgres-napi",
-      storage: "postgres",
+      implementation: 'postgres-napi',
+      storage: 'postgres',
       workload: result.name,
       outFile,
       extra: { count: result.totalOps, ...result.extra },

@@ -1,7 +1,7 @@
-import { Pool } from "pg";
+import { Pool } from 'pg';
 
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex } from "@treecrdt/interface/ids";
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
 import type {
   Capability,
   OpAuth,
@@ -9,9 +9,12 @@ import type {
   SyncCapabilityMaterialStore,
   SyncOpAuthStore,
   SyncPendingOpsStore,
-} from "@treecrdt/sync";
-import { deriveOpRefV0 } from "@treecrdt/sync";
-import { decodeTreecrdtSyncV0Operation, encodeTreecrdtSyncV0Operation } from "@treecrdt/sync/protobuf";
+} from '@treecrdt/sync';
+import { deriveOpRefV0 } from '@treecrdt/sync';
+import {
+  decodeTreecrdtSyncV0Operation,
+  encodeTreecrdtSyncV0Operation,
+} from '@treecrdt/sync/protobuf';
 
 export type PostgresOpAuthStore = {
   init: () => Promise<void>;
@@ -86,12 +89,14 @@ function insertOpAuthSql(entryCount: number): string {
   const rows: string[] = [];
   for (let i = 0; i < entryCount; i += 1) {
     const base = i * 5;
-    rows.push(`($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5})`);
+    rows.push(
+      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5})`,
+    );
   }
 
   return `
 INSERT INTO treecrdt_sync_op_auth (doc_id, op_ref, sig, proof_ref, created_at_ms)
-VALUES ${rows.join(",\n")}
+VALUES ${rows.join(',\n')}
 ON CONFLICT (doc_id, op_ref)
 DO UPDATE SET
   sig = EXCLUDED.sig,
@@ -104,7 +109,10 @@ function selectOpAuthByRefsSql(opRefCount: number): string {
   if (!Number.isInteger(opRefCount) || opRefCount <= 0) {
     throw new Error(`invalid opRefs length: ${opRefCount}`);
   }
-  const placeholders = Array.from({ length: opRefCount }, (_value, index) => `$${index + 2}::bytea`).join(", ");
+  const placeholders = Array.from(
+    { length: opRefCount },
+    (_value, index) => `$${index + 2}::bytea`,
+  ).join(', ');
   return `
 SELECT op_ref, sig, proof_ref
 FROM treecrdt_sync_op_auth
@@ -175,7 +183,7 @@ function insertCapabilitiesSql(capCount: number): string {
 
   return `
 INSERT INTO treecrdt_sync_capability (doc_id, name, value, created_at_ms)
-VALUES ${rows.join(",\n")}
+VALUES ${rows.join(',\n')}
 ON CONFLICT (doc_id, name, value)
 DO UPDATE SET created_at_ms = EXCLUDED.created_at_ms
 `;
@@ -190,13 +198,13 @@ function insertPendingOpsSql(entryCount: number): string {
   for (let i = 0; i < entryCount; i += 1) {
     const base = i * 8;
     rows.push(
-      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5}::bytea, $${base + 6}, $${base + 7}, $${base + 8})`
+      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5}::bytea, $${base + 6}, $${base + 7}, $${base + 8})`,
     );
   }
 
   return `
 INSERT INTO treecrdt_sync_pending_ops (doc_id, op_ref, op, sig, proof_ref, reason, message, created_at_ms)
-VALUES ${rows.join(",\n")}
+VALUES ${rows.join(',\n')}
 ON CONFLICT (doc_id, op_ref)
 DO UPDATE SET
   op = EXCLUDED.op,
@@ -237,9 +245,9 @@ FROM treecrdt_sync_capability
 WHERE doc_id = $1
 ORDER BY created_at_ms ASC, name ASC, value ASC
 `,
-          [docId]
+          [docId],
         );
-        return res.rows.map((row) => ({ name: row.name, value: row.value } satisfies Capability));
+        return res.rows.map((row) => ({ name: row.name, value: row.value }) satisfies Capability);
       },
     }),
     close: async () => {
@@ -271,7 +279,9 @@ export function createPendingOpsStore(opts: {
       },
       storePendingOps: async (entries) => {
         if (entries.length === 0) return;
-        const deduped = dedupeLatestByKey(entries, (entry) => bytesToHex(opRefForOp(docId, entry.op)));
+        const deduped = dedupeLatestByKey(entries, (entry) =>
+          bytesToHex(opRefForOp(docId, entry.op)),
+        );
 
         const params: Array<string | number | Uint8Array | null> = [];
         for (const entry of deduped) {
@@ -283,7 +293,7 @@ export function createPendingOpsStore(opts: {
             entry.auth.proofRef ?? null,
             entry.reason,
             entry.message ?? null,
-            nowMs()
+            nowMs(),
           );
         }
 
@@ -303,7 +313,7 @@ FROM treecrdt_sync_pending_ops
 WHERE doc_id = $1
 ORDER BY created_at_ms ASC, op_ref ASC
 `,
-          [docId]
+          [docId],
         );
 
         return res.rows.map((row) => ({
@@ -312,9 +322,12 @@ ORDER BY created_at_ms ASC, op_ref ASC
             sig: toBytes(row.sig),
             ...(row.proof_ref ? { proofRef: toBytes(row.proof_ref) } : {}),
           },
-          reason: row.reason === "missing_context" ? "missing_context" : (() => {
-            throw new Error(`unexpected pending reason: ${row.reason}`);
-          })(),
+          reason:
+            row.reason === 'missing_context'
+              ? 'missing_context'
+              : (() => {
+                  throw new Error(`unexpected pending reason: ${row.reason}`);
+                })(),
           ...(row.message ? { message: row.message } : {}),
         }));
       },
@@ -326,7 +339,7 @@ FROM treecrdt_sync_pending_ops
 WHERE doc_id = $1
 ORDER BY created_at_ms ASC, op_ref ASC
 `,
-          [docId]
+          [docId],
         );
         return res.rows.map((row) => toBytes(row.op_ref));
       },
@@ -334,19 +347,19 @@ ORDER BY created_at_ms ASC, op_ref ASC
         if (ops.length === 0) return;
         const client = await pool.connect();
         try {
-          await client.query("BEGIN");
+          await client.query('BEGIN');
           for (const op of ops) {
             await client.query(
               `
 DELETE FROM treecrdt_sync_pending_ops
 WHERE doc_id = $1 AND op_ref = $2::bytea
 `,
-              [docId, opRefForOp(docId, op)]
+              [docId, opRefForOp(docId, op)],
             );
           }
-          await client.query("COMMIT");
+          await client.query('COMMIT');
         } catch (err) {
-          await client.query("ROLLBACK");
+          await client.query('ROLLBACK');
           throw err;
         } finally {
           client.release();

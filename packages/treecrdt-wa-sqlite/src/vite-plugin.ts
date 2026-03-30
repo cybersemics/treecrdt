@@ -1,11 +1,11 @@
-import fs from "node:fs/promises";
-import { createRequire } from "node:module";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type Plugin = {
   name: string;
-  apply?: "serve" | "build" | ((...args: any[]) => boolean);
+  apply?: 'serve' | 'build' | ((...args: any[]) => boolean);
   configResolved?: () => void | Promise<void>;
   buildStart?: () => void | Promise<void>;
 };
@@ -18,12 +18,12 @@ export type WaSqlitePluginOptions = {
 };
 
 const defaultFiles = [
-  "wa-sqlite.mjs",
-  "wa-sqlite.wasm",
-  "wa-sqlite-async.mjs",
-  "wa-sqlite-async.wasm",
-  "sqlite-api.js",
-  "sqlite-constants.js",
+  'wa-sqlite.mjs',
+  'wa-sqlite.wasm',
+  'wa-sqlite-async.mjs',
+  'wa-sqlite-async.wasm',
+  'sqlite-api.js',
+  'sqlite-constants.js',
 ];
 
 /**
@@ -31,31 +31,33 @@ const defaultFiles = [
  * This removes the need for ad-hoc copy scripts in example apps.
  */
 export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
-  const outDirsRaw = opts.outDirs ?? (opts.outDir ? [opts.outDir] : ["public/wa-sqlite"]);
-  const outDirs = Array.from(new Set(outDirsRaw.filter((d) => typeof d === "string" && d.length > 0)));
+  const outDirsRaw = opts.outDirs ?? (opts.outDir ? [opts.outDir] : ['public/wa-sqlite']);
+  const outDirs = Array.from(
+    new Set(outDirsRaw.filter((d) => typeof d === 'string' && d.length > 0)),
+  );
   const here = path.dirname(fileURLToPath(import.meta.url));
   const vendorPkgRoot = (() => {
     try {
       const require = createRequire(import.meta.url);
-      const pkgJson = require.resolve("@treecrdt/wa-sqlite-vendor/package.json");
+      const pkgJson = require.resolve('@treecrdt/wa-sqlite-vendor/package.json');
       return path.dirname(pkgJson);
     } catch {
-      return path.resolve(here, "../../treecrdt-wa-sqlite-vendor");
+      return path.resolve(here, '../../treecrdt-wa-sqlite-vendor');
     }
   })();
-  const vendorWaSqliteRoot = path.join(vendorPkgRoot, "wa-sqlite");
-  const vendorDistRoot = path.join(vendorPkgRoot, "dist");
+  const vendorWaSqliteRoot = path.join(vendorPkgRoot, 'wa-sqlite');
+  const vendorDistRoot = path.join(vendorPkgRoot, 'dist');
 
   let copied: Promise<void> | null = null;
   const copyOnce = async () => {
     if (copied) return copied;
     copied = (async () => {
       const srcDir = vendorDistRoot;
-      const srcExtra = path.join(vendorWaSqliteRoot, "src");
+      const srcExtra = path.join(vendorWaSqliteRoot, 'src');
       await Promise.all(outDirs.map((dir) => fs.mkdir(dir, { recursive: true })));
       for (const file of defaultFiles) {
         const from =
-          file.endsWith(".js") && !file.startsWith("wa-sqlite")
+          file.endsWith('.js') && !file.startsWith('wa-sqlite')
             ? path.join(srcExtra, file)
             : path.join(srcDir, file);
         const fromStat = await fs.stat(from);
@@ -70,7 +72,7 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
               // destination missing or stat failed; copy below
             }
             await fs.copyFile(from, to);
-          })
+          }),
         );
       }
     })();
@@ -78,7 +80,7 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
   };
 
   return {
-    name: "treecrdt-wa-sqlite-assets",
+    name: 'treecrdt-wa-sqlite-assets',
     async configResolved() {
       await copyOnce();
     },

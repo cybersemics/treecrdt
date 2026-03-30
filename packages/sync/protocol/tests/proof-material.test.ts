@@ -1,19 +1,19 @@
-import { expect, test, vi } from "vitest";
+import { expect, test, vi } from 'vitest';
 
-import type { Operation } from "@treecrdt/interface";
+import type { Operation } from '@treecrdt/interface';
 
-import { createReplayOnlySyncAuth } from "../dist/index.js";
-import type { Capability } from "../dist/types.js";
+import { createReplayOnlySyncAuth } from '../dist/index.js';
+import type { Capability } from '../dist/types.js';
 
-test("replay-only auth filters non-auth capabilities during hello exchange", async () => {
+test('replay-only auth filters non-auth capabilities during hello exchange', async () => {
   const storedCaps: Capability[] = [];
   const visibleCaps: Capability[] = [
-    { name: "auth.capability", value: "token-1" },
-    { name: "peer.name", value: "relay" },
-    { name: "auth.capability.replay", value: "token-2" },
+    { name: 'auth.capability', value: 'token-1' },
+    { name: 'peer.name', value: 'relay' },
+    { name: 'auth.capability.replay', value: 'token-2' },
   ];
   const auth = createReplayOnlySyncAuth({
-    docId: "doc-replay-auth",
+    docId: 'doc-replay-auth',
     authMaterialStore: {
       opAuth: {
         storeOpAuth: vi.fn(async () => {}),
@@ -29,32 +29,32 @@ test("replay-only auth filters non-auth capabilities during hello exchange", asy
   });
 
   const helloCaps: Capability[] = [
-    { name: "auth.capability", value: "token-1" },
-    { name: "peer.name", value: "author" },
-    { name: "auth.capability.replay", value: "token-2" },
+    { name: 'auth.capability', value: 'token-1' },
+    { name: 'peer.name', value: 'author' },
+    { name: 'auth.capability.replay', value: 'token-2' },
   ];
 
   const ackCaps = await auth.onHello?.(
     { capabilities: helloCaps, filters: [], maxLamport: 0n },
-    { docId: "doc-replay-auth" }
+    { docId: 'doc-replay-auth' },
   );
   expect(storedCaps).toEqual([
-    { name: "auth.capability", value: "token-1" },
-    { name: "auth.capability.replay", value: "token-2" },
+    { name: 'auth.capability', value: 'token-1' },
+    { name: 'auth.capability.replay', value: 'token-2' },
   ]);
   expect(ackCaps).toEqual([
-    { name: "auth.capability", value: "token-1" },
-    { name: "auth.capability.replay", value: "token-2" },
+    { name: 'auth.capability', value: 'token-1' },
+    { name: 'auth.capability.replay', value: 'token-2' },
   ]);
-  expect(await auth.helloCapabilities?.({ docId: "doc-replay-auth" })).toEqual([
-    { name: "auth.capability", value: "token-1" },
-    { name: "auth.capability.replay", value: "token-2" },
+  expect(await auth.helloCapabilities?.({ docId: 'doc-replay-auth' })).toEqual([
+    { name: 'auth.capability', value: 'token-1' },
+    { name: 'auth.capability.replay', value: 'token-2' },
   ]);
 });
 
-test("replay-only auth fails fast when auth sidecar is missing", async () => {
+test('replay-only auth fails fast when auth sidecar is missing', async () => {
   const auth = createReplayOnlySyncAuth({
-    docId: "doc-missing-auth",
+    docId: 'doc-missing-auth',
     authMaterialStore: {
       opAuth: {
         storeOpAuth: async () => {},
@@ -70,18 +70,18 @@ test("replay-only auth fails fast when auth sidecar is missing", async () => {
       lamport: 1,
     },
     kind: {
-      type: "insert",
-      parent: "0".repeat(32),
-      node: "2".repeat(32),
+      type: 'insert',
+      parent: '0'.repeat(32),
+      node: '2'.repeat(32),
       orderKey: new Uint8Array([2]),
     },
   };
 
   await expect(
     auth.signOps?.([op], {
-      docId: "doc-missing-auth",
-      purpose: "reconcile",
-      filterId: "filter-2",
-    })
-  ).rejects.toThrow("missing op auth for non-local replica");
+      docId: 'doc-missing-auth',
+      purpose: 'reconcile',
+      filterId: 'filter-2',
+    }),
+  ).rejects.toThrow('missing op auth for non-local replica');
 });

@@ -1,14 +1,14 @@
-import Database from "better-sqlite3";
-import { defineProofMaterialStoreContract } from "../../protocol/tests/helpers/proof-material-contract.ts";
-import { definePendingProofMaterialStoreContract } from "../../protocol/tests/helpers/pending-proof-material-contract.ts";
-import { defineReplayOnlyAuthStoreContract } from "../../protocol/tests/helpers/replay-only-auth-contract.ts";
-import type { SqliteRunner } from "@treecrdt/interface/sqlite";
+import Database from 'better-sqlite3';
+import { defineProofMaterialStoreContract } from '../../protocol/tests/helpers/proof-material-contract.ts';
+import { definePendingProofMaterialStoreContract } from '../../protocol/tests/helpers/pending-proof-material-contract.ts';
+import { defineReplayOnlyAuthStoreContract } from '../../protocol/tests/helpers/replay-only-auth-contract.ts';
+import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
 import {
   createCapabilityMaterialStore,
   createOpAuthStore,
   createPendingOpsStore,
-} from "../dist/index.js";
+} from '../dist/index.js';
 
 function createRunner(db: Database.Database): SqliteRunner {
   const toBindings = (params: unknown[]) =>
@@ -26,15 +26,15 @@ function createRunner(db: Database.Database): SqliteRunner {
       if (!row) return null;
       const value = Object.values(row)[0];
       if (value === undefined || value === null) return null;
-      if (Buffer.isBuffer(value)) return value.toString("utf8");
-      if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
-      return typeof value === "string" ? value : String(value);
+      if (Buffer.isBuffer(value)) return value.toString('utf8');
+      if (value instanceof Uint8Array) return Buffer.from(value).toString('utf8');
+      return typeof value === 'string' ? value : String(value);
     },
   };
 }
 
-defineProofMaterialStoreContract("sqlite proof material stores", async () => {
-  const db = new Database(":memory:");
+defineProofMaterialStoreContract('sqlite proof material stores', async () => {
+  const db = new Database(':memory:');
   const runner = createRunner(db);
 
   return {
@@ -51,8 +51,8 @@ defineProofMaterialStoreContract("sqlite proof material stores", async () => {
   };
 });
 
-definePendingProofMaterialStoreContract("sqlite pending proof material stores", async () => {
-  const db = new Database(":memory:");
+definePendingProofMaterialStoreContract('sqlite pending proof material stores', async () => {
+  const db = new Database(':memory:');
   const runner = createRunner(db);
 
   return {
@@ -66,8 +66,8 @@ definePendingProofMaterialStoreContract("sqlite pending proof material stores", 
   };
 });
 
-defineReplayOnlyAuthStoreContract("sqlite replay-only auth material stores", async () => {
-  const db = new Database(":memory:");
+defineReplayOnlyAuthStoreContract('sqlite replay-only auth material stores', async () => {
+  const db = new Database(':memory:');
   const runner = createRunner(db);
 
   return {

@@ -1,11 +1,11 @@
-import type { Capability, Hello, HelloAck, OpAuth } from "./types.js";
-import type { Filter } from "./types.js";
+import type { Capability, Hello, HelloAck, OpAuth } from './types.js';
+import type { Filter } from './types.js';
 
-export type SyncOpPurpose = "reconcile" | "subscribe" | "reprocess_pending";
+export type SyncOpPurpose = 'reconcile' | 'subscribe' | 'reprocess_pending';
 
 export type SyncAuthOpDisposition =
-  | { status: "allow" }
-  | { status: "pending_context"; message?: string };
+  | { status: 'allow' }
+  | { status: 'pending_context'; message?: string };
 
 export type SyncAuthVerifyOpsResult = {
   dispositions: SyncAuthOpDisposition[];
@@ -23,13 +23,13 @@ export type SyncAuthHelloContext = {
 
 export type SyncAuthAuthorizeFilterContext = {
   docId: string;
-  purpose: "hello" | "subscribe";
+  purpose: 'hello' | 'subscribe';
   capabilities: Capability[];
 };
 
 export type SyncAuthFilterOutgoingOpsContext = {
   docId: string;
-  purpose: "hello" | "subscribe" | "reconcile";
+  purpose: 'hello' | 'subscribe' | 'reconcile';
   filter: Filter;
   capabilities: Capability[];
 };
@@ -70,7 +70,7 @@ export interface SyncAuth<Op> {
    */
   filterOutgoingOps?: (
     ops: readonly Op[],
-    ctx: SyncAuthFilterOutgoingOpsContext
+    ctx: SyncAuthFilterOutgoingOpsContext,
   ) => Promise<boolean[]> | boolean[];
 
   /**
@@ -86,11 +86,15 @@ export interface SyncAuth<Op> {
   verifyOps?: (
     ops: readonly Op[],
     auth: readonly OpAuth[] | undefined,
-    ctx: SyncAuthOpsContext
+    ctx: SyncAuthOpsContext,
   ) => Promise<void | SyncAuthVerifyOpsResult> | void | SyncAuthVerifyOpsResult;
 
   /**
    * Optional hook to persist proofs (sidecar storage) after successful verification.
    */
-  onVerifiedOps?: (ops: readonly Op[], auth: readonly OpAuth[], ctx: SyncAuthOpsContext) => Promise<void> | void;
+  onVerifiedOps?: (
+    ops: readonly Op[],
+    auth: readonly OpAuth[],
+    ctx: SyncAuthOpsContext,
+  ) => Promise<void> | void;
 }

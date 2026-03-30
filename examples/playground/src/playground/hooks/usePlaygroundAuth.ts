@@ -5,6 +5,7 @@ import {
   base64urlDecode,
   base64urlEncode,
   createTreecrdtCoseCwtAuth,
+  createTreecrdtIdentityChainCapabilityV1,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   describeTreecrdtCapabilityTokenV1,
   deriveKeyIdV1,
@@ -13,9 +14,11 @@ import {
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
 import {
+  createCapabilityMaterialStore,
   createOpAuthStore,
   createPendingOpsStore,
 } from "@treecrdt/sync-sqlite";
+import type { SyncAuth } from "@treecrdt/sync";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {
@@ -217,6 +220,7 @@ export type PlaygroundAuthApi = {
   setDeviceSigningKeyBlobImportText: React.Dispatch<React.SetStateAction<string>>;
 
   authMaterial: StoredAuthMaterial;
+  syncAuth: SyncAuth<Operation> | null;
   refreshAuthMaterial: () => Promise<StoredAuthMaterial>;
   localIdentityChainPromiseRef: React.MutableRefObject<
     Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
@@ -306,6 +310,11 @@ export type UsePlaygroundAuthOptions = {
   client: TreecrdtClient | null;
   syncServerUrl: string;
   syncTransportMode: SyncTransportMode;
+  onPeerIdentityChain: (chain: {
+    identityPublicKey: Uint8Array;
+    devicePublicKey: Uint8Array;
+    replicaPublicKey: Uint8Array;
+  }) => void;
   /**
    * App-owned doc payload key refresher (used by invite/grant import flows).
    * This keeps crypto state (decrypt/encrypt) in App while auth UI is extracted.
@@ -314,7 +323,7 @@ export type UsePlaygroundAuthOptions = {
 };
 
 export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAuthApi {
-  const { docId, joinMode, client, syncServerUrl, syncTransportMode, refreshDocPayloadKey } = opts;
+  const { docId, joinMode, client, syncServerUrl, syncTransportMode, onPeerIdentityChain, refreshDocPayloadKey } = opts;
 
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
   const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
@@ -343,7 +352,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     localTokensB64: [],
   }));
 
-  const localAuthRef = useRef<ReturnType<typeof createTreecrdtCoseCwtAuth> | null>(null);
+  const [syncAuth, setSyncAuth] = useState<SyncAuth<Operation> | null>(null);
+  const localAuthRef = useRef<SyncAuth<Operation> | null>(null);
   const localIdentityChainPromiseRef = useRef<
     Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
   >(null);
@@ -550,44 +560,98 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   }, [docId]);
 
   useEffect(() => {
+    let cancelled = false;
+    setSyncAuth(null);
+
     if (!authEnabled || !client) {
       localAuthRef.current = null;
-      return;
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (
+      !authMaterial.issuerPkB64 ||
+      !authMaterial.localSkB64 ||
+      !authMaterial.localPkB64 ||
+      authMaterial.localTokensB64.length === 0
+    ) {
+      localAuthRef.current = null;
+      return () => {
+        cancelled = true;
+      };
     }
 
     try {
-      if (
-        !authMaterial.issuerPkB64 ||
-        !authMaterial.localSkB64 ||
-        !authMaterial.localPkB64 ||
-        authMaterial.localTokensB64.length === 0
-      ) {
-        localAuthRef.current = null;
-        return;
-      }
-
       const issuerPk = base64urlDecode(authMaterial.issuerPkB64);
       const localSk = base64urlDecode(authMaterial.localSkB64);
       const localPk = base64urlDecode(authMaterial.localPkB64);
       const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
       const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
       const opAuthStore = createOpAuthStore({ runner: client.runner, docId });
+      const capabilityStore = createCapabilityMaterialStore({ runner: client.runner, docId });
 
-      localAuthRef.current = createTreecrdtCoseCwtAuth({
+      const baseAuth = createTreecrdtCoseCwtAuth({
         issuerPublicKeys: [issuerPk],
         localPrivateKey: localSk,
         localPublicKey: localPk,
         localCapabilityTokens: localTokens,
+        capabilityStore,
         revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
         isCapabilityTokenRevoked: runtimeCutoverRevocationChecker,
         requireProofRef: true,
         scopeEvaluator,
         opAuthStore,
+        onPeerIdentityChain,
       });
+
+      const preparedAuth: SyncAuth<Operation> = {
+        ...baseAuth,
+        helloCapabilities: async (ctx) => {
+          const caps = (await baseAuth.helloCapabilities?.(ctx)) ?? [];
+          try {
+            const chain = await getLocalIdentityChain();
+            if (chain) caps.push(createTreecrdtIdentityChainCapabilityV1(chain));
+          } catch {
+            // Identity chains are optional and best-effort.
+          }
+          return caps;
+        },
+        onHello: async (hello, ctx) => {
+          const ackCaps = (await baseAuth.onHello?.(hello, ctx)) ?? [];
+          try {
+            const chain = await getLocalIdentityChain();
+            if (chain) ackCaps.push(createTreecrdtIdentityChainCapabilityV1(chain));
+          } catch {
+            // Identity chains are optional and best-effort.
+          }
+          return ackCaps;
+        },
+      };
+
+      localAuthRef.current = preparedAuth;
+
+      void (async () => {
+        try {
+          await preparedAuth.helloCapabilities?.({ docId });
+          if (cancelled) return;
+          setSyncAuth(preparedAuth);
+        } catch (err) {
+          if (cancelled) return;
+          if (localAuthRef.current === preparedAuth) localAuthRef.current = null;
+          setAuthError(err instanceof Error ? err.message : String(err));
+        }
+      })();
     } catch (err) {
       localAuthRef.current = null;
+      setSyncAuth(null);
       setAuthError(err instanceof Error ? err.message : String(err));
     }
+
+    return () => {
+      cancelled = true;
+      if (localAuthRef.current) localAuthRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     authEnabled,
@@ -598,6 +662,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authMaterial.localPkB64,
     authMaterial.localTokensB64.join(","),
     hardRevokedTokenIds.join(","),
+    getLocalIdentityChain,
+    onPeerIdentityChain,
     revocationCutoverEnabled,
     revocationCutoverTokenId,
     revocationCutoverCounter,
@@ -1550,6 +1616,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     deviceSigningKeyBlobImportText,
     setDeviceSigningKeyBlobImportText,
     authMaterial,
+    syncAuth,
     refreshAuthMaterial,
     localIdentityChainPromiseRef,
     getLocalIdentityChain,

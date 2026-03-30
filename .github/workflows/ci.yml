@@ -91,7 +91,10 @@ jobs:
       run: pnpm --filter @treecrdt/playground run typecheck
 
     - name: Check Rust formatting
-      run: pnpm run fmt:check
+      run: pnpm run fmt:check:rust
+
+    - name: Check TypeScript formatting
+      run: pnpm run fmt:check:ts
 
     - name: Run Clippy linter
       run: pnpm run clippy

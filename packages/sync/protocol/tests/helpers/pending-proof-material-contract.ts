@@ -1,14 +1,16 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID } from 'node:crypto';
 
-import { expect, test } from "vitest";
+import { expect, test } from 'vitest';
 
-import type { Operation } from "@treecrdt/interface";
-import { bytesToHex } from "@treecrdt/interface/ids";
-import { deriveOpRefV0 } from "@treecrdt/sync";
-import type { PendingOp, SyncPendingOpsStore } from "@treecrdt/sync";
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
+import { deriveOpRefV0 } from '@treecrdt/sync';
+import type { PendingOp, SyncPendingOpsStore } from '@treecrdt/sync';
 
 type PendingProofMaterialHarness = {
-  createPendingStore: (docId: string) => Promise<SyncPendingOpsStore<Operation>> | SyncPendingOpsStore<Operation>;
+  createPendingStore: (
+    docId: string,
+  ) => Promise<SyncPendingOpsStore<Operation>> | SyncPendingOpsStore<Operation>;
   close?: () => Promise<void> | void;
 };
 
@@ -17,7 +19,7 @@ function makeReplica(fill: number): Uint8Array {
 }
 
 function makeNodeHex(counter: number): string {
-  return counter.toString(16).padStart(32, "0").slice(-32);
+  return counter.toString(16).padStart(32, '0').slice(-32);
 }
 
 function makeInsertOp(replicaFill: number, counter: number): Operation {
@@ -27,29 +29,35 @@ function makeInsertOp(replicaFill: number, counter: number): Operation {
       lamport: counter,
     },
     kind: {
-      type: "insert",
-      parent: "0".repeat(32),
+      type: 'insert',
+      parent: '0'.repeat(32),
       node: makeNodeHex(counter),
       orderKey: new Uint8Array([counter & 0xff]),
     },
   };
 }
 
-function makePending(replicaFill: number, counter: number, sigFill: number, proofFill?: number, message?: string): PendingOp<Operation> {
+function makePending(
+  replicaFill: number,
+  counter: number,
+  sigFill: number,
+  proofFill?: number,
+  message?: string,
+): PendingOp<Operation> {
   return {
     op: makeInsertOp(replicaFill, counter),
     auth: {
       sig: new Uint8Array(64).fill(sigFill),
       ...(proofFill === undefined ? {} : { proofRef: new Uint8Array(16).fill(proofFill) }),
     },
-    reason: "missing_context",
+    reason: 'missing_context',
     ...(message ? { message } : {}),
   };
 }
 
 function normalizePending(value: PendingOp<Operation>) {
   const kind =
-    value.op.kind.type === "insert"
+    value.op.kind.type === 'insert'
       ? {
           ...value.op.kind,
           orderKey: Array.from(value.op.kind.orderKey),
@@ -80,14 +88,14 @@ function sortHex(values: Uint8Array[]): string[] {
 
 export function definePendingProofMaterialStoreContract(
   label: string,
-  createHarness: () => Promise<PendingProofMaterialHarness> | PendingProofMaterialHarness
+  createHarness: () => Promise<PendingProofMaterialHarness> | PendingProofMaterialHarness,
 ): void {
   test(`${label}: pending ops round-trip with auth sidecar`, async () => {
     const harness = await createHarness();
     try {
       const docId = `doc-pending-${randomUUID()}`;
       const pending = await harness.createPendingStore(docId);
-      const first = makePending(7, 1, 9, 4, "need ancestry");
+      const first = makePending(7, 1, 9, 4, 'need ancestry');
       const second = makePending(7, 2, 8);
 
       await pending.init();
@@ -96,9 +104,15 @@ export function definePendingProofMaterialStoreContract(
       expect(sortPending(await pending.listPendingOps())).toEqual(sortPending([first, second]));
       expect(sortHex(await pending.listPendingOpRefs())).toEqual(
         sortHex([
-          deriveOpRefV0(docId, { replica: first.op.meta.id.replica, counter: BigInt(first.op.meta.id.counter) }),
-          deriveOpRefV0(docId, { replica: second.op.meta.id.replica, counter: BigInt(second.op.meta.id.counter) }),
-        ])
+          deriveOpRefV0(docId, {
+            replica: first.op.meta.id.replica,
+            counter: BigInt(first.op.meta.id.counter),
+          }),
+          deriveOpRefV0(docId, {
+            replica: second.op.meta.id.replica,
+            counter: BigInt(second.op.meta.id.counter),
+          }),
+        ]),
       );
     } finally {
       await harness.close?.();
@@ -112,9 +126,9 @@ export function definePendingProofMaterialStoreContract(
       const docB = `doc-pending-b-${randomUUID()}`;
       const pendingA = await harness.createPendingStore(docA);
       const pendingB = await harness.createPendingStore(docB);
-      const original = makePending(5, 1, 1, 2, "old");
-      const updated = makePending(5, 1, 3, 4, "new");
-      const otherDoc = makePending(5, 1, 7, 8, "other-doc");
+      const original = makePending(5, 1, 1, 2, 'old');
+      const updated = makePending(5, 1, 3, 4, 'new');
+      const otherDoc = makePending(5, 1, 7, 8, 'other-doc');
 
       await pendingA.init();
       await pendingB.init();

@@ -1,29 +1,29 @@
-import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from "cborg";
+import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
-import type { Capability } from "@treecrdt/sync";
+import type { Capability } from '@treecrdt/sync';
 
-import { base64urlDecode, base64urlEncode } from "./base64url.js";
-import { coseSign1Ed25519, coseVerifySign1Ed25519 } from "./cose.js";
+import { base64urlDecode, base64urlEncode } from './base64url.js';
+import { coseSign1Ed25519, coseVerifySign1Ed25519 } from './cose.js';
 
-const TREECRDT_REVOCATION_RECORD_V1_TAG = "treecrdt/revocation/v1";
+const TREECRDT_REVOCATION_RECORD_V1_TAG = 'treecrdt/revocation/v1';
 const REVOCATION_TOKEN_ID_LEN = 16;
 const ED25519_PUBLIC_KEY_LEN = 32;
 
 // Canonical claim keys for signed revocation records (v1).
 // These keys are wire-level protocol names and must stay stable for interop.
 const REVOCATION_V1_CLAIM = {
-  VERSION: "v",
-  TYPE_TAG: "t",
-  DOC_ID: "doc_id",
-  TOKEN_ID: "token_id",
-  MODE: "mode",
-  REV_SEQ: "rev_seq",
-  IAT: "iat",
-  EFFECTIVE_FROM_COUNTER: "effective_from_counter",
-  EFFECTIVE_FROM_REPLICA: "effective_from_replica",
+  VERSION: 'v',
+  TYPE_TAG: 't',
+  DOC_ID: 'doc_id',
+  TOKEN_ID: 'token_id',
+  MODE: 'mode',
+  REV_SEQ: 'rev_seq',
+  IAT: 'iat',
+  EFFECTIVE_FROM_COUNTER: 'effective_from_counter',
+  EFFECTIVE_FROM_REPLICA: 'effective_from_replica',
 } as const;
 
-const REVOCATION_RECORD_V1_CONTEXT = "RevocationRecordV1";
+const REVOCATION_RECORD_V1_CONTEXT = 'RevocationRecordV1';
 
 const REVOCATION_V1_ALLOWED_CLAIMS = new Set<string>([
   REVOCATION_V1_CLAIM.VERSION,
@@ -37,9 +37,9 @@ const REVOCATION_V1_ALLOWED_CLAIMS = new Set<string>([
   REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA,
 ]);
 
-export const TREECRDT_REVOCATION_CAPABILITY = "auth.revocation";
+export const TREECRDT_REVOCATION_CAPABILITY = 'auth.revocation';
 
-export type TreecrdtRevocationModeV1 = "hard" | "write_cutover";
+export type TreecrdtRevocationModeV1 = 'hard' | 'write_cutover';
 
 export type TreecrdtRevocationRecordV1 = {
   docId: string;
@@ -74,18 +74,19 @@ function assertPayloadMap(payload: unknown, ctx: string): Map<unknown, unknown> 
 
 function assertNoUnknownClaims(payloadMap: Map<unknown, unknown>, ctx: string): void {
   for (const key of payloadMap.keys()) {
-    if (typeof key !== "string") throw new Error(`${ctx} contains non-string claim key`);
-    if (!REVOCATION_V1_ALLOWED_CLAIMS.has(key)) throw new Error(`${ctx} contains unknown claim: ${key}`);
+    if (typeof key !== 'string') throw new Error(`${ctx} contains non-string claim key`);
+    if (!REVOCATION_V1_ALLOWED_CLAIMS.has(key))
+      throw new Error(`${ctx} contains unknown claim: ${key}`);
   }
 }
 
 function assertString(val: unknown, field: string): string {
-  if (typeof val !== "string") throw new Error(`${field} must be a string`);
+  if (typeof val !== 'string') throw new Error(`${field} must be a string`);
   return val;
 }
 
 function assertInteger(val: unknown, field: string): number {
-  if (typeof val !== "number" || !Number.isFinite(val) || !Number.isInteger(val) || val < 0) {
+  if (typeof val !== 'number' || !Number.isFinite(val) || !Number.isInteger(val) || val < 0) {
     throw new Error(`${field} must be a non-negative integer`);
   }
   return val;
@@ -98,22 +99,25 @@ function assertBytesLen(val: unknown, expectedLen: number, field: string): Uint8
 }
 
 function parseRevocationMode(value: unknown): TreecrdtRevocationModeV1 {
-  if (value === "hard" || value === "write_cutover") return value;
-  throw new Error("RevocationRecordV1.mode must be \"hard\" or \"write_cutover\"");
+  if (value === 'hard' || value === 'write_cutover') return value;
+  throw new Error('RevocationRecordV1.mode must be "hard" or "write_cutover"');
 }
 
-function validateModeFields(mode: TreecrdtRevocationModeV1, record: {
-  effectiveFromCounter?: number;
-  effectiveFromReplica?: Uint8Array;
-}) {
-  if (mode === "hard") return;
+function validateModeFields(
+  mode: TreecrdtRevocationModeV1,
+  record: {
+    effectiveFromCounter?: number;
+    effectiveFromReplica?: Uint8Array;
+  },
+) {
+  if (mode === 'hard') return;
 
   const hasCounter = record.effectiveFromCounter !== undefined;
   if (!hasCounter) {
-    throw new Error("RevocationRecordV1.write_cutover requires effective_from_counter");
+    throw new Error('RevocationRecordV1.write_cutover requires effective_from_counter');
   }
   if (record.effectiveFromReplica && !hasCounter) {
-    throw new Error("RevocationRecordV1.effective_from_replica requires effective_from_counter");
+    throw new Error('RevocationRecordV1.effective_from_replica requires effective_from_counter');
   }
 }
 
@@ -127,19 +131,19 @@ export function issueTreecrdtRevocationRecordV1(opts: {
   effectiveFromCounter?: number;
   effectiveFromReplica?: Uint8Array;
 }): Uint8Array {
-  if (!opts.docId || opts.docId.trim().length === 0) throw new Error("docId must not be empty");
-  const tokenId = assertBytesLen(opts.tokenId, REVOCATION_TOKEN_ID_LEN, "tokenId");
+  if (!opts.docId || opts.docId.trim().length === 0) throw new Error('docId must not be empty');
+  const tokenId = assertBytesLen(opts.tokenId, REVOCATION_TOKEN_ID_LEN, 'tokenId');
   const mode = parseRevocationMode(opts.mode);
-  const revSeq = assertInteger(opts.revSeq, "revSeq");
-  const iat = opts.iat === undefined ? undefined : assertInteger(opts.iat, "iat");
+  const revSeq = assertInteger(opts.revSeq, 'revSeq');
+  const iat = opts.iat === undefined ? undefined : assertInteger(opts.iat, 'iat');
   const effectiveFromCounter =
     opts.effectiveFromCounter === undefined
       ? undefined
-      : assertInteger(opts.effectiveFromCounter, "effectiveFromCounter");
+      : assertInteger(opts.effectiveFromCounter, 'effectiveFromCounter');
   const effectiveFromReplica =
     opts.effectiveFromReplica === undefined
       ? undefined
-      : assertBytesLen(opts.effectiveFromReplica, ED25519_PUBLIC_KEY_LEN, "effectiveFromReplica");
+      : assertBytesLen(opts.effectiveFromReplica, ED25519_PUBLIC_KEY_LEN, 'effectiveFromReplica');
 
   validateModeFields(mode, { effectiveFromCounter, effectiveFromReplica });
 
@@ -151,8 +155,10 @@ export function issueTreecrdtRevocationRecordV1(opts: {
   claims.set(REVOCATION_V1_CLAIM.MODE, mode);
   claims.set(REVOCATION_V1_CLAIM.REV_SEQ, revSeq);
   if (iat !== undefined) claims.set(REVOCATION_V1_CLAIM.IAT, iat);
-  if (effectiveFromCounter !== undefined) claims.set(REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER, effectiveFromCounter);
-  if (effectiveFromReplica !== undefined) claims.set(REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA, effectiveFromReplica);
+  if (effectiveFromCounter !== undefined)
+    claims.set(REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER, effectiveFromCounter);
+  if (effectiveFromReplica !== undefined)
+    claims.set(REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA, effectiveFromReplica);
 
   return coseSign1Ed25519({ payload: encodeCbor(claims), privateKey: opts.issuerPrivateKey });
 }
@@ -163,7 +169,7 @@ export async function verifyTreecrdtRevocationRecordV1(opts: {
   expectedDocId?: string;
   nowSec?: () => number;
 }): Promise<VerifiedTreecrdtRevocationRecordV1> {
-  if (opts.issuerPublicKeys.length === 0) throw new Error("issuerPublicKeys is empty");
+  if (opts.issuerPublicKeys.length === 0) throw new Error('issuerPublicKeys is empty');
 
   let payloadBytes: Uint8Array | null = null;
   let verifiedBy: Uint8Array | null = null;
@@ -176,36 +182,38 @@ export async function verifyTreecrdtRevocationRecordV1(opts: {
       // continue
     }
   }
-  if (!payloadBytes || !verifiedBy) throw new Error("revocation record signature verification failed");
+  if (!payloadBytes || !verifiedBy)
+    throw new Error('revocation record signature verification failed');
 
   const decoded = decodeCbor(payloadBytes);
   const map = assertPayloadMap(decoded, REVOCATION_RECORD_V1_CONTEXT);
   assertNoUnknownClaims(map, REVOCATION_RECORD_V1_CONTEXT);
 
   const v = mapGet(map, REVOCATION_V1_CLAIM.VERSION);
-  if (v !== 1) throw new Error(`${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.VERSION} must be 1`);
+  if (v !== 1)
+    throw new Error(`${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.VERSION} must be 1`);
   const t = assertString(
     mapGet(map, REVOCATION_V1_CLAIM.TYPE_TAG),
-    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.TYPE_TAG}`
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.TYPE_TAG}`,
   );
-  if (t !== TREECRDT_REVOCATION_RECORD_V1_TAG) throw new Error("RevocationRecordV1.t mismatch");
+  if (t !== TREECRDT_REVOCATION_RECORD_V1_TAG) throw new Error('RevocationRecordV1.t mismatch');
 
   const docId = assertString(
     mapGet(map, REVOCATION_V1_CLAIM.DOC_ID),
-    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.DOC_ID}`
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.DOC_ID}`,
   );
   if (opts.expectedDocId !== undefined && docId !== opts.expectedDocId) {
-    throw new Error("RevocationRecordV1.doc_id mismatch");
+    throw new Error('RevocationRecordV1.doc_id mismatch');
   }
   const tokenId = assertBytesLen(
     mapGet(map, REVOCATION_V1_CLAIM.TOKEN_ID),
     REVOCATION_TOKEN_ID_LEN,
-    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.TOKEN_ID}`
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.TOKEN_ID}`,
   );
   const mode = parseRevocationMode(mapGet(map, REVOCATION_V1_CLAIM.MODE));
   const revSeq = assertInteger(
     mapGet(map, REVOCATION_V1_CLAIM.REV_SEQ),
-    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.REV_SEQ}`
+    `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.REV_SEQ}`,
   );
   const iatRaw = mapGet(map, REVOCATION_V1_CLAIM.IAT);
   const iat =
@@ -219,7 +227,7 @@ export async function verifyTreecrdtRevocationRecordV1(opts: {
       ? undefined
       : assertInteger(
           effectiveFromCounterRaw,
-          `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER}`
+          `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.EFFECTIVE_FROM_COUNTER}`,
         );
   const effectiveFromReplicaRaw = mapGet(map, REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA);
   const effectiveFromReplica =
@@ -228,12 +236,12 @@ export async function verifyTreecrdtRevocationRecordV1(opts: {
       : assertBytesLen(
           effectiveFromReplicaRaw,
           ED25519_PUBLIC_KEY_LEN,
-          `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA}`
+          `${REVOCATION_RECORD_V1_CONTEXT}.${REVOCATION_V1_CLAIM.EFFECTIVE_FROM_REPLICA}`,
         );
 
   validateModeFields(mode, { effectiveFromCounter, effectiveFromReplica });
   if (opts.nowSec && iat !== undefined && iat > opts.nowSec()) {
-    throw new Error("RevocationRecordV1.iat is in the future");
+    throw new Error('RevocationRecordV1.iat is in the future');
   }
 
   return {

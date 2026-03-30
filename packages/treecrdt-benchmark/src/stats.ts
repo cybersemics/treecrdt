@@ -1,7 +1,7 @@
 function readEnv(name: string): string | undefined {
   const env = (globalThis as any)?.process?.env as Record<string, string | undefined> | undefined;
   const raw = env?.[name];
-  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
 
 export function envInt(name: string): number | undefined {
@@ -15,7 +15,7 @@ export function envIntList(name: string): number[] | undefined {
   const raw = readEnv(name);
   if (!raw) return undefined;
   const parts = raw
-    .split(",")
+    .split(',')
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
   if (parts.length === 0) return undefined;

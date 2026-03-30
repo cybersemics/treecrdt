@@ -2,22 +2,26 @@
 // @generated from file sync/v0/ops.proto (package treecrdt.sync.v0, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { NodeId, OperationMetadata } from "./types_pb.js";
-import { file_sync_v0_types } from "./types_pb.js";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from '@bufbuild/protobuf/codegenv2';
+import { fileDesc, messageDesc } from '@bufbuild/protobuf/codegenv2';
+import type { NodeId, OperationMetadata } from './types_pb.js';
+import { file_sync_v0_types } from './types_pb.js';
+import type { Message } from '@bufbuild/protobuf';
 
 /**
  * Describes the file sync/v0/ops.proto.
  */
-export const file_sync_v0_ops: GenFile = /*@__PURE__*/
-  fileDesc("ChFzeW5jL3YwL29wcy5wcm90bxIQdHJlZWNyZHQuc3luYy52MCKRAQoISW5zZXJ0T3ASKAoGcGFyZW50GAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSJgoEbm9kZRgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEhEKCW9yZGVyX2tleRgDIAEoDBIUCgdwYXlsb2FkGAQgASgMSACIAQFCCgoIX3BheWxvYWQicQoGTW92ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBIsCgpuZXdfcGFyZW50GAIgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSEQoJb3JkZXJfa2V5GAMgASgMIjIKCERlbGV0ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZCI1CgtUb21ic3RvbmVPcBImCgRub2RlGAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQiDgoMQ2xlYXJQYXlsb2FkIoABCglQYXlsb2FkT3ASJgoEbm9kZRgBIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEi8KBWNsZWFyGAIgASgLMh4udHJlZWNyZHQuc3luYy52MC5DbGVhclBheWxvYWRIABIRCgdwYXlsb2FkGAMgASgMSABCBwoFdmFsdWUisAIKCU9wZXJhdGlvbhIxCgRtZXRhGAEgASgLMiMudHJlZWNyZHQuc3luYy52MC5PcGVyYXRpb25NZXRhZGF0YRIsCgZpbnNlcnQYAiABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkluc2VydE9wSAASKAoEbW92ZRgDIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTW92ZU9wSAASLAoGZGVsZXRlGAQgASgLMhoudHJlZWNyZHQuc3luYy52MC5EZWxldGVPcEgAEjIKCXRvbWJzdG9uZRgFIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuVG9tYnN0b25lT3BIABIuCgdwYXlsb2FkGAYgASgLMhsudHJlZWNyZHQuc3luYy52MC5QYXlsb2FkT3BIAEIGCgRraW5kYgZwcm90bzM", [file_sync_v0_types]);
+export const file_sync_v0_ops: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    'ChFzeW5jL3YwL29wcy5wcm90bxIQdHJlZWNyZHQuc3luYy52MCKRAQoISW5zZXJ0T3ASKAoGcGFyZW50GAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSJgoEbm9kZRgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEhEKCW9yZGVyX2tleRgDIAEoDBIUCgdwYXlsb2FkGAQgASgMSACIAQFCCgoIX3BheWxvYWQicQoGTW92ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZBIsCgpuZXdfcGFyZW50GAIgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQSEQoJb3JkZXJfa2V5GAMgASgMIjIKCERlbGV0ZU9wEiYKBG5vZGUYASABKAsyGC50cmVlY3JkdC5zeW5jLnYwLk5vZGVJZCI1CgtUb21ic3RvbmVPcBImCgRub2RlGAEgASgLMhgudHJlZWNyZHQuc3luYy52MC5Ob2RlSWQiDgoMQ2xlYXJQYXlsb2FkIoABCglQYXlsb2FkT3ASJgoEbm9kZRgBIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTm9kZUlkEi8KBWNsZWFyGAIgASgLMh4udHJlZWNyZHQuc3luYy52MC5DbGVhclBheWxvYWRIABIRCgdwYXlsb2FkGAMgASgMSABCBwoFdmFsdWUisAIKCU9wZXJhdGlvbhIxCgRtZXRhGAEgASgLMiMudHJlZWNyZHQuc3luYy52MC5PcGVyYXRpb25NZXRhZGF0YRIsCgZpbnNlcnQYAiABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkluc2VydE9wSAASKAoEbW92ZRgDIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuTW92ZU9wSAASLAoGZGVsZXRlGAQgASgLMhoudHJlZWNyZHQuc3luYy52MC5EZWxldGVPcEgAEjIKCXRvbWJzdG9uZRgFIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuVG9tYnN0b25lT3BIABIuCgdwYXlsb2FkGAYgASgLMhsudHJlZWNyZHQuc3luYy52MC5QYXlsb2FkT3BIAEIGCgRraW5kYgZwcm90bzM',
+    [file_sync_v0_types],
+  );
 
 /**
  * @generated from message treecrdt.sync.v0.InsertOp
  */
-export type InsertOp = Message<"treecrdt.sync.v0.InsertOp"> & {
+export type InsertOp = Message<'treecrdt.sync.v0.InsertOp'> & {
   /**
    * @generated from field: treecrdt.sync.v0.NodeId parent = 1;
    */
@@ -43,13 +47,12 @@ export type InsertOp = Message<"treecrdt.sync.v0.InsertOp"> & {
  * Describes the message treecrdt.sync.v0.InsertOp.
  * Use `create(InsertOpSchema)` to create a new message.
  */
-export const InsertOpSchema: GenMessage<InsertOp> = /*@__PURE__*/
-  messageDesc(file_sync_v0_ops, 0);
+export const InsertOpSchema: GenMessage<InsertOp> = /*@__PURE__*/ messageDesc(file_sync_v0_ops, 0);
 
 /**
  * @generated from message treecrdt.sync.v0.MoveOp
  */
-export type MoveOp = Message<"treecrdt.sync.v0.MoveOp"> & {
+export type MoveOp = Message<'treecrdt.sync.v0.MoveOp'> & {
   /**
    * @generated from field: treecrdt.sync.v0.NodeId node = 1;
    */
@@ -70,13 +73,12 @@ export type MoveOp = Message<"treecrdt.sync.v0.MoveOp"> & {
  * Describes the message treecrdt.sync.v0.MoveOp.
  * Use `create(MoveOpSchema)` to create a new message.
  */
-export const MoveOpSchema: GenMessage<MoveOp> = /*@__PURE__*/
-  messageDesc(file_sync_v0_ops, 1);
+export const MoveOpSchema: GenMessage<MoveOp> = /*@__PURE__*/ messageDesc(file_sync_v0_ops, 1);
 
 /**
  * @generated from message treecrdt.sync.v0.DeleteOp
  */
-export type DeleteOp = Message<"treecrdt.sync.v0.DeleteOp"> & {
+export type DeleteOp = Message<'treecrdt.sync.v0.DeleteOp'> & {
   /**
    * @generated from field: treecrdt.sync.v0.NodeId node = 1;
    */
@@ -87,13 +89,12 @@ export type DeleteOp = Message<"treecrdt.sync.v0.DeleteOp"> & {
  * Describes the message treecrdt.sync.v0.DeleteOp.
  * Use `create(DeleteOpSchema)` to create a new message.
  */
-export const DeleteOpSchema: GenMessage<DeleteOp> = /*@__PURE__*/
-  messageDesc(file_sync_v0_ops, 2);
+export const DeleteOpSchema: GenMessage<DeleteOp> = /*@__PURE__*/ messageDesc(file_sync_v0_ops, 2);
 
 /**
  * @generated from message treecrdt.sync.v0.TombstoneOp
  */
-export type TombstoneOp = Message<"treecrdt.sync.v0.TombstoneOp"> & {
+export type TombstoneOp = Message<'treecrdt.sync.v0.TombstoneOp'> & {
   /**
    * @generated from field: treecrdt.sync.v0.NodeId node = 1;
    */
@@ -104,7 +105,8 @@ export type TombstoneOp = Message<"treecrdt.sync.v0.TombstoneOp"> & {
  * Describes the message treecrdt.sync.v0.TombstoneOp.
  * Use `create(TombstoneOpSchema)` to create a new message.
  */
-export const TombstoneOpSchema: GenMessage<TombstoneOp> = /*@__PURE__*/
+export const TombstoneOpSchema: GenMessage<TombstoneOp> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_ops, 3);
 
 /**
@@ -112,20 +114,20 @@ export const TombstoneOpSchema: GenMessage<TombstoneOp> = /*@__PURE__*/
  *
  * @generated from message treecrdt.sync.v0.ClearPayload
  */
-export type ClearPayload = Message<"treecrdt.sync.v0.ClearPayload"> & {
-};
+export type ClearPayload = Message<'treecrdt.sync.v0.ClearPayload'> & {};
 
 /**
  * Describes the message treecrdt.sync.v0.ClearPayload.
  * Use `create(ClearPayloadSchema)` to create a new message.
  */
-export const ClearPayloadSchema: GenMessage<ClearPayload> = /*@__PURE__*/
+export const ClearPayloadSchema: GenMessage<ClearPayload> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_ops, 4);
 
 /**
  * @generated from message treecrdt.sync.v0.PayloadOp
  */
-export type PayloadOp = Message<"treecrdt.sync.v0.PayloadOp"> & {
+export type PayloadOp = Message<'treecrdt.sync.v0.PayloadOp'> & {
   /**
    * @generated from field: treecrdt.sync.v0.NodeId node = 1;
    */
@@ -134,32 +136,36 @@ export type PayloadOp = Message<"treecrdt.sync.v0.PayloadOp"> & {
   /**
    * @generated from oneof treecrdt.sync.v0.PayloadOp.value
    */
-  value: {
-    /**
-     * @generated from field: treecrdt.sync.v0.ClearPayload clear = 2;
-     */
-    value: ClearPayload;
-    case: "clear";
-  } | {
-    /**
-     * @generated from field: bytes payload = 3;
-     */
-    value: Uint8Array;
-    case: "payload";
-  } | { case: undefined; value?: undefined };
+  value:
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.ClearPayload clear = 2;
+         */
+        value: ClearPayload;
+        case: 'clear';
+      }
+    | {
+        /**
+         * @generated from field: bytes payload = 3;
+         */
+        value: Uint8Array;
+        case: 'payload';
+      }
+    | { case: undefined; value?: undefined };
 };
 
 /**
  * Describes the message treecrdt.sync.v0.PayloadOp.
  * Use `create(PayloadOpSchema)` to create a new message.
  */
-export const PayloadOpSchema: GenMessage<PayloadOp> = /*@__PURE__*/
+export const PayloadOpSchema: GenMessage<PayloadOp> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_ops, 5);
 
 /**
  * @generated from message treecrdt.sync.v0.Operation
  */
-export type Operation = Message<"treecrdt.sync.v0.Operation"> & {
+export type Operation = Message<'treecrdt.sync.v0.Operation'> & {
   /**
    * @generated from field: treecrdt.sync.v0.OperationMetadata meta = 1;
    */
@@ -168,43 +174,49 @@ export type Operation = Message<"treecrdt.sync.v0.Operation"> & {
   /**
    * @generated from oneof treecrdt.sync.v0.Operation.kind
    */
-  kind: {
-    /**
-     * @generated from field: treecrdt.sync.v0.InsertOp insert = 2;
-     */
-    value: InsertOp;
-    case: "insert";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.MoveOp move = 3;
-     */
-    value: MoveOp;
-    case: "move";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.DeleteOp delete = 4;
-     */
-    value: DeleteOp;
-    case: "delete";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.TombstoneOp tombstone = 5;
-     */
-    value: TombstoneOp;
-    case: "tombstone";
-  } | {
-    /**
-     * @generated from field: treecrdt.sync.v0.PayloadOp payload = 6;
-     */
-    value: PayloadOp;
-    case: "payload";
-  } | { case: undefined; value?: undefined };
+  kind:
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.InsertOp insert = 2;
+         */
+        value: InsertOp;
+        case: 'insert';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.MoveOp move = 3;
+         */
+        value: MoveOp;
+        case: 'move';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.DeleteOp delete = 4;
+         */
+        value: DeleteOp;
+        case: 'delete';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.TombstoneOp tombstone = 5;
+         */
+        value: TombstoneOp;
+        case: 'tombstone';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.PayloadOp payload = 6;
+         */
+        value: PayloadOp;
+        case: 'payload';
+      }
+    | { case: undefined; value?: undefined };
 };
 
 /**
  * Describes the message treecrdt.sync.v0.Operation.
  * Use `create(OperationSchema)` to create a new message.
  */
-export const OperationSchema: GenMessage<Operation> = /*@__PURE__*/
+export const OperationSchema: GenMessage<Operation> =
+  /*@__PURE__*/
   messageDesc(file_sync_v0_ops, 6);
-

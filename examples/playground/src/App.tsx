@@ -162,6 +162,24 @@ export default function App() {
     docPayloadKeyRef.current = base64urlDecode(keyB64);
     return docPayloadKeyRef.current;
   }, [docId]);
+  const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
+  const [, bumpIdentityVersion] = useState(0);
+  const onPeerIdentityChain = React.useCallback(
+    (chain: { identityPublicKey: Uint8Array; devicePublicKey: Uint8Array; replicaPublicKey: Uint8Array }) => {
+      const replicaHex = bytesToHex(chain.replicaPublicKey);
+      const existing = identityByReplicaRef.current.get(replicaHex);
+      if (
+        existing &&
+        bytesToHex(existing.identityPk) === bytesToHex(chain.identityPublicKey) &&
+        bytesToHex(existing.devicePk) === bytesToHex(chain.devicePublicKey)
+      ) {
+        return;
+      }
+      identityByReplicaRef.current.set(replicaHex, { identityPk: chain.identityPublicKey, devicePk: chain.devicePublicKey });
+      bumpIdentityVersion((v) => v + 1);
+    },
+    []
+  );
 
   const {
     authEnabled,
@@ -189,9 +207,9 @@ export default function App() {
     deviceSigningKeyBlobImportText,
     setDeviceSigningKeyBlobImportText,
     authMaterial,
+    syncAuth,
     refreshAuthMaterial,
     localIdentityChainPromiseRef,
-    getLocalIdentityChain,
     authToken,
     replica,
     selfPeerId,
@@ -251,31 +269,13 @@ export default function App() {
     client,
     syncServerUrl,
     syncTransportMode,
+    onPeerIdentityChain,
     refreshDocPayloadKey,
   });
 
   const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const textDecoder = useMemo(() => new TextDecoder(), []);
-
-  const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
-  const [, bumpIdentityVersion] = useState(0);
-  const onPeerIdentityChain = React.useCallback(
-    (chain: { identityPublicKey: Uint8Array; devicePublicKey: Uint8Array; replicaPublicKey: Uint8Array }) => {
-      const replicaHex = bytesToHex(chain.replicaPublicKey);
-      const existing = identityByReplicaRef.current.get(replicaHex);
-      if (
-        existing &&
-        bytesToHex(existing.identityPk) === bytesToHex(chain.identityPublicKey) &&
-        bytesToHex(existing.devicePk) === bytesToHex(chain.devicePublicKey)
-      ) {
-        return;
-      }
-      identityByReplicaRef.current.set(replicaHex, { identityPk: chain.identityPublicKey, devicePk: chain.devicePublicKey });
-      bumpIdentityVersion((v) => v + 1);
-    },
-    []
-  );
 
   useEffect(() => {
     docPayloadKeyRef.current = null;
@@ -585,21 +585,16 @@ export default function App() {
     online,
     getMaxLamport,
     authEnabled,
-    authMaterial,
+    syncAuth,
     authError,
     joinMode,
+    authNeedsInvite,
     authCanSyncAll,
     viewRootId,
-    hardRevokedTokenIds,
-    revocationCutoverEnabled,
-    revocationCutoverTokenId,
-    revocationCutoverCounter,
     treeStateRef,
     refreshMeta,
     refreshParents,
     refreshNodeCount,
-    getLocalIdentityChain,
-    onPeerIdentityChain,
     onAuthGrantMessage,
     onRemoteOpsApplied,
   });

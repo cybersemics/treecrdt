@@ -1,6 +1,6 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from 'vitest';
 
-import { createBrowserWebSocketTransport } from "../dist/browser.js";
+import { createBrowserWebSocketTransport } from '../dist/browser.js';
 
 type MessageListener = (event: { data: unknown }) => void;
 
@@ -22,13 +22,13 @@ class MockBrowserWebSocket {
     this.readyState = MockBrowserWebSocket.CLOSED;
   }
 
-  addEventListener(type: "message", listener: MessageListener): void {
-    if (type !== "message") return;
+  addEventListener(type: 'message', listener: MessageListener): void {
+    if (type !== 'message') return;
     this.listeners.add(listener);
   }
 
-  removeEventListener(type: "message", listener: MessageListener): void {
-    if (type !== "message") return;
+  removeEventListener(type: 'message', listener: MessageListener): void {
+    if (type !== 'message') return;
     this.listeners.delete(listener);
   }
 
@@ -41,7 +41,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("browser websocket transport coerces inbound message payloads to bytes", async () => {
+test('browser websocket transport coerces inbound message payloads to bytes', async () => {
   const ws = new MockBrowserWebSocket();
   const transport = createBrowserWebSocketTransport(ws);
   const received: number[][] = [];
@@ -58,7 +58,7 @@ test("browser websocket transport coerces inbound message payloads to bytes", as
   expect(received).toEqual([[1, 2, 3]]);
 });
 
-test("browser websocket transport serializes sends until buffered data drains", async () => {
+test('browser websocket transport serializes sends until buffered data drains', async () => {
   vi.useFakeTimers();
 
   const ws = new MockBrowserWebSocket();
