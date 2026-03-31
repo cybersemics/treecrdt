@@ -30,7 +30,7 @@
     "@types/node": "^20.19.25",
     "@treecrdt/auth": "workspace:*",
     "@treecrdt/benchmark": "workspace:*",
-    "@treecrdt/sqlite-conformance": "workspace:*",
+    "@treecrdt/engine-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "cborg": "^4.3.2",

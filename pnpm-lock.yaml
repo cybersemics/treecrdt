@@ -303,9 +303,9 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
-      '@treecrdt/sqlite-conformance':
+      '@treecrdt/engine-conformance':
         specifier: workspace:*
-        version: link:../treecrdt-sqlite-conformance
+        version: link:../treecrdt-engine-conformance
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25
@@ -331,7 +331,7 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
-  packages/treecrdt-sqlite-conformance:
+  packages/treecrdt-engine-conformance:
     dependencies:
       '@treecrdt/auth':
         specifier: workspace:*
@@ -368,9 +368,9 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
-      '@treecrdt/sqlite-conformance':
+      '@treecrdt/engine-conformance':
         specifier: workspace:*
-        version: link:../treecrdt-sqlite-conformance
+        version: link:../treecrdt-engine-conformance
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../sync/protocol
@@ -431,9 +431,9 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../../treecrdt-benchmark
-      '@treecrdt/sqlite-conformance':
+      '@treecrdt/engine-conformance':
         specifier: workspace:*
-        version: link:../../treecrdt-sqlite-conformance
+        version: link:../../treecrdt-engine-conformance
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../../sync/protocol

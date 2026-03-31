@@ -43,7 +43,7 @@ flowchart TD
     wasm_pkg["@treecrdt/wasm"]
     riblt_pkg["@treecrdt/riblt-wasm"]
     sqlite_node["@treecrdt/sqlite-node"]
-    conformance["@treecrdt/sqlite-conformance"]
+    conformance["@treecrdt/engine-conformance"]
     bench["@treecrdt/benchmark"]
   end
 

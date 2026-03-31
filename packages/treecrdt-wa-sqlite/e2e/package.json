@@ -11,12 +11,12 @@
     "build:path": "vite build --base /base-path/",
     "preview:path": "vite preview --host --port 4172 --base /base-path/ --strictPort",
     "dev": "vite",
-    "test:e2e": "pnpm -C ../../treecrdt-benchmark run build && pnpm -C ../../sync/protocol run build && pnpm -C ../../sync/material/sqlite run build && pnpm -C ../../treecrdt-sqlite-conformance run build && pnpm run build:wa-sqlite && playwright test",
+    "test:e2e": "pnpm -C ../../treecrdt-benchmark run build && pnpm -C ../../sync/protocol run build && pnpm -C ../../sync/material/sqlite run build && pnpm -C ../../treecrdt-engine-conformance run build && pnpm run build:wa-sqlite && playwright test",
     "bench": "pnpm -C ../../treecrdt-benchmark run build && pnpm run build && playwright test tests/bench-opfs.spec.ts tests/bench-sync.spec.ts --reporter=line"
   },
   "dependencies": {
     "@treecrdt/benchmark": "workspace:*",
-    "@treecrdt/sqlite-conformance": "workspace:*",
+    "@treecrdt/engine-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",
     "react": "^18.2.0",
