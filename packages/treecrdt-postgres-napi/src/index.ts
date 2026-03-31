@@ -42,7 +42,7 @@ export function createPostgresNapiSyncBackendFactory(url: string): PostgresNapiS
         listOpRefs: async (filter: Filter) => {
           if ('all' in filter) return nativeBackend.listOpRefsAll();
           const parent = Buffer.from(filter.children.parent);
-          return nativeBackend.listOpRefsChildren(parent);
+          return nativeBackend.listOpRefsChildrenWithParentPayload(parent);
         },
         getOpsByOpRefs: async (opRefs: OpRef[]) => {
           if (opRefs.length === 0) return [];
