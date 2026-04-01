@@ -111,7 +111,14 @@ export type SyncOnceOptions = {
 };
 
 export type SyncPushOptions = {
+  /** Split a direct push into smaller wire batches to avoid giant frames. */
   maxOpsPerBatch?: number;
+  /**
+   * Reuse an existing opsBatch stream id for a direct push.
+   *
+   * This is not a filter definition; it only groups related push chunks and
+   * the final done marker on the receiver.
+   */
   filterId?: string;
 };
 
@@ -346,7 +353,7 @@ export class SyncPeer<Op> {
     DuplexTransport<SyncMessage<Op>>,
     Set<Pending<void>>
   >();
-  private readonly transportDirectPushFilterIds = new WeakMap<
+  private readonly transportDirectPushStreamIds = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
     string
   >();
@@ -484,6 +491,20 @@ export class SyncPeer<Op> {
       }
       throw err;
     }
+  }
+
+  private resolveDirectPushStreamId(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    requestedStreamId?: string,
+  ): string {
+    if (requestedStreamId) return requestedStreamId;
+
+    let streamId = this.transportDirectPushStreamIds.get(transport);
+    if (!streamId) {
+      streamId = randomId('push');
+      this.transportDirectPushStreamIds.set(transport, streamId);
+    }
+    return streamId;
   }
 
   private async pushSubscription(
@@ -848,6 +869,14 @@ export class SyncPeer<Op> {
     }
   }
 
+  /**
+   * Send a known set of ops directly without first reconciling state via
+   * `syncOnce()`.
+   *
+   * The `opsBatch` wire format still carries a `filterId`; for direct pushes
+   * that field acts only as a stable stream id so the receiver can order chunks
+   * and interpret the final `done` marker correctly.
+   */
   async pushOps(
     transport: DuplexTransport<SyncMessage<Op>>,
     ops: readonly Op[],
@@ -857,31 +886,23 @@ export class SyncPeer<Op> {
 
     await this.refreshHelloCapabilities(transport, { waitForAck: true });
 
-    let filterId = opts.filterId;
-    if (!filterId) {
-      filterId = this.transportDirectPushFilterIds.get(transport);
-      if (!filterId) {
-        filterId = randomId('push');
-        this.transportDirectPushFilterIds.set(transport, filterId);
-      }
+    const streamId = this.resolveDirectPushStreamId(transport, opts.filterId);
+    const batchSize = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
+    if (!Number.isFinite(batchSize) || batchSize <= 0) {
+      throw new Error(`invalid maxOpsPerBatch: ${batchSize}`);
     }
 
-    const maxOpsPerBatch = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
-    if (!Number.isFinite(maxOpsPerBatch) || maxOpsPerBatch <= 0) {
-      throw new Error(`invalid maxOpsPerBatch: ${maxOpsPerBatch}`);
-    }
+    const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
+    const shouldAttachAuth = peerAdvertisedOpAuth(peerCapabilities);
 
-    const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
-    const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
-
-    for (let start = 0; start < ops.length; start += maxOpsPerBatch) {
-      const chunk = ops.slice(start, start + maxOpsPerBatch);
+    for (let start = 0; start < ops.length; start += batchSize) {
+      const chunk = ops.slice(start, start + batchSize);
       const auth =
         shouldAttachAuth && this.auth?.signOps
           ? await this.auth.signOps(chunk, {
               docId: this.backend.docId,
               purpose: 'reconcile',
-              filterId,
+              filterId: streamId,
             })
           : undefined;
       if (auth && auth.length !== chunk.length) {
@@ -894,10 +915,10 @@ export class SyncPeer<Op> {
         payload: {
           case: 'opsBatch',
           value: {
-            filterId,
+            filterId: streamId,
             ops: [...chunk],
             ...(auth ? { auth } : {}),
-            done: start + maxOpsPerBatch >= ops.length,
+            done: start + batchSize >= ops.length,
           },
         },
       });
