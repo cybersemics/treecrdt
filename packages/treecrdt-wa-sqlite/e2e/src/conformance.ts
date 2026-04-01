@@ -2,13 +2,13 @@ import { createTreecrdtClient } from '@treecrdt/wa-sqlite/client';
 import {
   conformanceHashKey,
   conformanceSlugify,
-  runSqliteEngineConformanceScenario,
-  sqliteEngineConformanceScenarios,
-} from '@treecrdt/sqlite-conformance';
+  runTreecrdtEngineConformanceScenario,
+  treecrdtEngineConformanceScenarios,
+} from '@treecrdt/engine-conformance';
 
 type StorageKind = 'memory' | 'opfs';
 
-export async function runTreecrdtSqliteConformanceE2E(
+export async function runTreecrdtEngineConformanceE2E(
   storage: StorageKind = 'memory',
 ): Promise<{ ok: true }> {
   const runId =
@@ -18,7 +18,7 @@ export async function runTreecrdtSqliteConformanceE2E(
 
   const preferWorker = storage === 'opfs';
 
-  for (const scenario of sqliteEngineConformanceScenarios()) {
+  for (const scenario of treecrdtEngineConformanceScenarios()) {
     const runKey = runId.replace(/[^a-z0-9]/gi, '').slice(0, 10) || 'run';
     const scenarioKey = conformanceHashKey(scenario.name);
     const filenameFor = (name: string) => {
@@ -31,8 +31,8 @@ export async function runTreecrdtSqliteConformanceE2E(
       return await createTreecrdtClient({ storage, preferWorker, docId: opts.docId, filename });
     };
 
-    await runSqliteEngineConformanceScenario(scenario, {
-      docIdPrefix: `treecrdt-wa-sqlite-conformance-${storage}`,
+    await runTreecrdtEngineConformanceScenario(scenario, {
+      docIdPrefix: `treecrdt-wa-engine-conformance-${storage}`,
       openEngine,
       openPersistentEngine:
         storage === 'opfs' ? ({ docId, name }) => openEngine({ docId, name }) : undefined,
@@ -43,10 +43,10 @@ export async function runTreecrdtSqliteConformanceE2E(
 
 declare global {
   interface Window {
-    runTreecrdtSqliteConformanceE2E?: typeof runTreecrdtSqliteConformanceE2E;
+    runTreecrdtEngineConformanceE2E?: typeof runTreecrdtEngineConformanceE2E;
   }
 }
 
 if (typeof window !== 'undefined') {
-  window.runTreecrdtSqliteConformanceE2E = runTreecrdtSqliteConformanceE2E;
+  window.runTreecrdtEngineConformanceE2E = runTreecrdtEngineConformanceE2E;
 }

@@ -34,7 +34,7 @@
     "@treecrdt/auth": "workspace:*",
     "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/postgres-napi": "workspace:*",
-    "@treecrdt/sqlite-conformance": "workspace:*",
+    "@treecrdt/engine-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/sync-sqlite": "workspace:*",
     "@treecrdt/sync-server-postgres-node": "workspace:*",

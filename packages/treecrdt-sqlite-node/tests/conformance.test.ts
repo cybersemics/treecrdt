@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   conformanceSlugify,
-  runSqliteEngineConformanceScenario,
-  sqliteEngineConformanceScenarios,
-} from '@treecrdt/sqlite-conformance';
+  runTreecrdtEngineConformanceScenario,
+  treecrdtEngineConformanceScenarios,
+} from '@treecrdt/engine-conformance';
 import {
   createTreecrdtClient,
   defaultExtensionPath,
@@ -25,7 +25,7 @@ async function createNodeEngine(opts: { docId: string; path?: string }) {
   return await createTreecrdtClient(db, { docId: opts.docId });
 }
 
-for (const scenario of sqliteEngineConformanceScenarios()) {
+for (const scenario of treecrdtEngineConformanceScenarios()) {
   test(`sqlite engine conformance (node): ${scenario.name}`, async () => {
     let persistentDir: string | null = null;
     const persistentPaths = new Map<string, string>();
@@ -35,7 +35,7 @@ for (const scenario of sqliteEngineConformanceScenarios()) {
       return persistentDir;
     };
 
-    await runSqliteEngineConformanceScenario(scenario, {
+    await runTreecrdtEngineConformanceScenario(scenario, {
       docIdPrefix: 'treecrdt-node-conformance',
       openEngine: ({ docId }) => createNodeEngine({ docId }),
       openPersistentEngine: ({ docId, name }) => {
