@@ -83,12 +83,19 @@ type InitiatorSession<Op> = {
 };
 
 export type SyncPeerOptions<Op = unknown> = {
+  /** Upper bound on RIBLT codewords exchanged while reconciling one filter. */
   maxCodewords?: number;
+  /** Split uploaded or replayed ops into smaller wire batches to avoid giant frames. */
   maxOpsPerBatch?: number;
+  /** Reject Hello messages that try to attach too many filters at once. */
   maxHelloFilters?: number;
+  /** Direct-send tiny scopes instead of running a full RIBLT round when possible. */
   directSendThreshold?: number;
+  /** Require an auth capability before accepting scoped Hello or Subscribe filters. */
   requireAuthForFilters?: boolean;
+  /** Auth policy hooks for outgoing filters, incoming ops, and post-verify side effects. */
   auth?: SyncAuth<Op>;
+  /** Derive stable op refs from ops so relay fast-forwarding can track delivered entries. */
   deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
 };
 
