@@ -507,6 +507,25 @@ export class SyncPeer<Op> {
     return streamId;
   }
 
+  private resolveMaxOpsPerBatch(requestedBatchSize?: number): number {
+    const batchSize = requestedBatchSize ?? this.maxOpsPerBatch;
+    if (!Number.isFinite(batchSize) || batchSize <= 0) {
+      throw new Error(`invalid maxOpsPerBatch: ${batchSize}`);
+    }
+    return batchSize;
+  }
+
+  private async sendDoneOpsBatch(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    filterId: string,
+  ): Promise<void> {
+    await transport.send({
+      v: 0,
+      docId: this.backend.docId,
+      payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
+    });
+  }
+
   private async pushSubscription(
     sub: ResponderSubscription<Op>,
     opts: { deltaOps?: readonly PendingPushOp<Op>[]; forceFullScan?: boolean } = {},
@@ -790,11 +809,7 @@ export class SyncPeer<Op> {
             filter,
           });
         } else {
-          await transport.send({
-            v: 0,
-            docId: this.backend.docId,
-            payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-          });
+          await this.sendDoneOpsBatch(transport, filterId);
         }
         await session.receivedOps.promise;
         return;
@@ -856,11 +871,7 @@ export class SyncPeer<Op> {
           maxOpsPerBatch: opts.maxOpsPerBatch,
         });
       } else {
-        await transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-        });
+        await this.sendDoneOpsBatch(transport, filterId);
       }
 
       await session.receivedOps.promise;
@@ -887,10 +898,7 @@ export class SyncPeer<Op> {
     await this.refreshHelloCapabilities(transport, { waitForAck: true });
 
     const streamId = this.resolveDirectPushStreamId(transport, opts.filterId);
-    const batchSize = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
-    if (!Number.isFinite(batchSize) || batchSize <= 0) {
-      throw new Error(`invalid maxOpsPerBatch: ${batchSize}`);
-    }
+    const batchSize = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
 
     const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
     const shouldAttachAuth = peerAdvertisedOpAuth(peerCapabilities);
@@ -932,10 +940,7 @@ export class SyncPeer<Op> {
     opRefs: OpRef[],
     opts: { maxOpsPerBatch?: number; filter?: Filter } = {},
   ): Promise<void> {
-    const maxOpsPerBatch = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
-    if (!Number.isFinite(maxOpsPerBatch) || maxOpsPerBatch <= 0) {
-      throw new Error(`invalid maxOpsPerBatch: ${maxOpsPerBatch}`);
-    }
+    const maxOpsPerBatch = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
 
     const filter =
       opts.filter ??
@@ -945,11 +950,7 @@ export class SyncPeer<Op> {
     const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
 
     if (opRefs.length === 0) {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-      });
+      await this.sendDoneOpsBatch(transport, filterId);
       return;
     }
 
@@ -981,11 +982,7 @@ export class SyncPeer<Op> {
 
       if (ops.length === 0) {
         if (done) {
-          await transport.send({
-            v: 0,
-            docId: this.backend.docId,
-            payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-          });
+          await this.sendDoneOpsBatch(transport, filterId);
         }
         continue;
       }
@@ -1590,11 +1587,7 @@ export class SyncPeer<Op> {
         this.responderSessions.delete(msg.filterId);
       }
     } else if (!session.awaitingIncomingDone) {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'opsBatch', value: { filterId: msg.filterId, ops: [], done: true } },
-      });
+      await this.sendDoneOpsBatch(transport, msg.filterId);
       this.responderSessions.delete(msg.filterId);
     }
   }
@@ -1889,20 +1882,12 @@ export class SyncPeer<Op> {
     // finishes so "done" means every prior batch for this filter has been durably handled.
     if (!responderSession && this.responderAwaitingUploadAcks.has(batch.filterId) && batch.done) {
       this.responderAwaitingUploadAcks.delete(batch.filterId);
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'opsBatch', value: { filterId: batch.filterId, ops: [], done: true } },
-      });
+      await this.sendDoneOpsBatch(transport, batch.filterId);
     }
     if (responderSession && batch.done) {
       if (responderSession.awaitingIncomingDone) {
         responderSession.awaitingIncomingDone = false;
-        await transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: { case: 'opsBatch', value: { filterId: batch.filterId, ops: [], done: true } },
-        });
+        await this.sendDoneOpsBatch(transport, batch.filterId);
       }
       this.responderSessions.delete(batch.filterId);
     }
