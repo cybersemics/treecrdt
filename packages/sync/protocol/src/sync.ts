@@ -181,26 +181,37 @@ const yieldToMacrotask: () => Promise<void> = (() => {
   return async () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 })();
 
-const TRACE_HELLO_ENABLED =
-  typeof process !== 'undefined' &&
-  typeof process?.env?.TREECRDT_SYNC_TRACE_HELLO === 'string' &&
-  process.env.TREECRDT_SYNC_TRACE_HELLO !== '0' &&
-  process.env.TREECRDT_SYNC_TRACE_HELLO.toLowerCase() !== 'false';
-
-type HelloTraceRecord = {
+export type HelloTraceRecord = {
   type: 'sync-hello-trace';
   docId: string;
   stage: string;
   ms: number;
 } & Record<string, unknown>;
 
-type HelloTraceSink = (record: HelloTraceRecord) => void;
+export type HelloTraceSink = (record: HelloTraceRecord) => void;
 
 const HELLO_TRACE_SINK_KEY = '__TREECRDT_SYNC_HELLO_TRACE_SINK__';
 
 function getHelloTraceSink(): HelloTraceSink | undefined {
   const sink = (globalThis as Record<string, unknown>)[HELLO_TRACE_SINK_KEY];
   return typeof sink === 'function' ? (sink as HelloTraceSink) : undefined;
+}
+
+export function installHelloTraceSink(sink: HelloTraceSink): () => void {
+  const root = globalThis as Record<string, unknown>;
+  const previousSink = getHelloTraceSink();
+  const nextSink: HelloTraceSink = (record) => {
+    previousSink?.(record);
+    sink(record);
+  };
+  root[HELLO_TRACE_SINK_KEY] = nextSink;
+  return () => {
+    if (previousSink === undefined) {
+      delete root[HELLO_TRACE_SINK_KEY];
+    } else {
+      root[HELLO_TRACE_SINK_KEY] = previousSink;
+    }
+  };
 }
 
 function traceHello(
@@ -210,7 +221,7 @@ function traceHello(
   extra: Record<string, unknown> = {},
 ): void {
   const sink = getHelloTraceSink();
-  if (!TRACE_HELLO_ENABLED && !sink) return;
+  if (!sink) return;
   const record: HelloTraceRecord = {
     type: 'sync-hello-trace',
     docId,
@@ -220,12 +231,6 @@ function traceHello(
   };
   try {
     sink?.(record);
-  } catch {
-    // debug tracing must never affect sync behavior
-  }
-  if (!TRACE_HELLO_ENABLED) return;
-  try {
-    console.log(JSON.stringify(record));
   } catch {
     // debug tracing must never affect sync behavior
   }

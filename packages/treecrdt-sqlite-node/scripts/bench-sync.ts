@@ -23,7 +23,13 @@ import {
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
-import { SyncPeer, type Filter, type SyncBackend } from '@treecrdt/sync';
+import {
+  SyncPeer,
+  installHelloTraceSink,
+  type Filter,
+  type HelloTraceRecord,
+  type SyncBackend,
+} from '@treecrdt/sync';
 import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync/in-memory';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
@@ -142,13 +148,6 @@ type TransportProfileEvent = {
   codewords: number;
   ops: number;
 };
-
-type HelloTraceRecord = {
-  type: 'sync-hello-trace';
-  docId: string;
-  stage: string;
-  ms: number;
-} & Record<string, unknown>;
 
 type HelloTraceProfileEvent = {
   stage: string;
@@ -615,8 +614,6 @@ function createProfiledSyncTransport(transport: DuplexTransport<any>): {
   };
 }
 
-const HELLO_TRACE_SINK_KEY = '__TREECRDT_SYNC_HELLO_TRACE_SINK__';
-
 function normalizeHelloTraceRecord(value: unknown): HelloTraceRecord | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
@@ -755,20 +752,14 @@ function createChildProcessHelloTraceStore(): HelloTraceStore & {
 
 function createProcessHelloTraceStore(): HelloTraceStore {
   const traces = new Map<string, HelloTraceRecord[]>();
-  const root = globalThis as Record<string, unknown>;
-  const previousSink = root[HELLO_TRACE_SINK_KEY];
-  const nextSink = (record: HelloTraceRecord) => {
-    if (typeof previousSink === 'function') {
-      (previousSink as (record: HelloTraceRecord) => void)(record);
-    }
+  const disposeSink = installHelloTraceSink((record: HelloTraceRecord) => {
     const current = traces.get(record.docId);
     if (current) {
       current.push(record);
       return;
     }
     traces.set(record.docId, [record]);
-  };
-  root[HELLO_TRACE_SINK_KEY] = nextSink;
+  });
 
   return {
     clear: (docId) => {
@@ -780,11 +771,7 @@ function createProcessHelloTraceStore(): HelloTraceStore {
       return buildHelloTraceProfile(records);
     },
     dispose: () => {
-      if (previousSink === undefined) {
-        delete root[HELLO_TRACE_SINK_KEY];
-      } else {
-        root[HELLO_TRACE_SINK_KEY] = previousSink;
-      }
+      disposeSink();
       traces.clear();
     },
   };
