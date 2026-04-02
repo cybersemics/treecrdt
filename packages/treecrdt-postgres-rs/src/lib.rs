@@ -5,6 +5,7 @@
 //! while storing state in vanilla PostgreSQL so it works on Aurora Postgres / Supabase / self-hosted.
 
 mod opref;
+mod profile;
 mod schema;
 mod store;
 
