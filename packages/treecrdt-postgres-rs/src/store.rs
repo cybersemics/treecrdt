@@ -91,16 +91,27 @@ fn ensure_doc_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
-    ensure_doc_meta(client, doc_id)?;
-
+fn load_tree_meta_row(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    for_update: bool,
+) -> Result<TreeMeta> {
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = if for_update {
+        ctx.stmt(
+            &mut c,
+            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+             FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
+        )?
+    } else {
+        ctx.stmt(
+            &mut c,
+            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+             FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1",
+        )?
+    };
+    let rows = c.query(&stmt, &[&doc_id]).map_err(storage_debug)?;
 
     let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
 
@@ -113,26 +124,12 @@ fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta
     })
 }
 
+fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
+    load_tree_meta_row(client, doc_id, false)
+}
+
 fn load_tree_meta_for_update(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
-    ensure_doc_meta(client, doc_id)?;
-
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
-            &[&doc_id],
-        )
-        .map_err(storage_debug)?;
-
-    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
-
-    Ok(TreeMeta {
-        dirty: row.get::<_, bool>(0),
-        head_lamport: row.get::<_, i64>(1).max(0) as Lamport,
-        head_replica: row.get::<_, Vec<u8>>(2),
-        head_counter: row.get::<_, i64>(3).max(0) as u64,
-        head_seq: row.get::<_, i64>(4).max(0) as u64,
-    })
+    load_tree_meta_row(client, doc_id, true)
 }
 
 fn set_tree_meta_dirty(client: &Rc<RefCell<Client>>, doc_id: &str, dirty: bool) -> Result<()> {
@@ -1062,12 +1059,14 @@ impl Storage for PgOpStorage {
 
     fn latest_lamport(&self) -> Lamport {
         let mut c = self.ctx.client.borrow_mut();
-        let rows = c
-            .query(
-                "SELECT COALESCE(MAX(lamport), 0) FROM treecrdt_ops WHERE doc_id = $1",
-                &[&self.ctx.doc_id],
-            )
-            .ok();
+        let stmt = match self.ctx.stmt(
+            &mut c,
+            "SELECT COALESCE(MAX(lamport), 0) FROM treecrdt_ops WHERE doc_id = $1",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return 0,
+        };
+        let rows = c.query(&stmt, &[&self.ctx.doc_id]).ok();
         match rows.and_then(|r| r.first().map(|row| row.get::<_, i64>(0))) {
             Some(v) => v.max(0) as Lamport,
             None => 0,
@@ -1739,13 +1738,13 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
 
 pub fn max_lamport(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport> {
     ensure_doc_meta(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT COALESCE(MAX(lamport), 0) FROM treecrdt_ops WHERE doc_id = $1",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT COALESCE(MAX(lamport), 0) FROM treecrdt_ops WHERE doc_id = $1",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id]).map_err(storage_debug)?;
     let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(lamport) row".into()))?;
     Ok(row.get::<_, i64>(0).max(0) as Lamport)
 }
@@ -1755,13 +1754,13 @@ pub fn list_op_refs_all(
     doc_id: &str,
 ) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
     ensure_doc_meta(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT op_ref FROM treecrdt_ops WHERE doc_id = $1 ORDER BY lamport, replica, counter",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT op_ref FROM treecrdt_ops WHERE doc_id = $1 ORDER BY lamport, replica, counter",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id]).map_err(storage_debug)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let bytes: Vec<u8> = row.get(0);
@@ -1776,14 +1775,14 @@ pub fn list_op_refs_children(
     parent: NodeId,
 ) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
     ensure_materialized(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT op_ref FROM treecrdt_oprefs_children WHERE doc_id = $1 AND parent = $2 ORDER BY seq",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT op_ref FROM treecrdt_oprefs_children WHERE doc_id = $1 AND parent = $2 ORDER BY seq",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &parent_bytes.as_slice()]).map_err(storage_debug)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let bytes: Vec<u8> = row.get(0);
@@ -1798,30 +1797,33 @@ pub fn list_op_refs_children_with_parent_payload(
     parent: NodeId,
 ) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
     ensure_materialized(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let mut c = client.borrow_mut();
 
+    let child_stmt = ctx.stmt(
+        &mut c,
+        "SELECT op_ref FROM treecrdt_oprefs_children WHERE doc_id = $1 AND parent = $2 ORDER BY seq",
+    )?;
     let child_rows = c
-        .query(
-            "SELECT op_ref FROM treecrdt_oprefs_children WHERE doc_id = $1 AND parent = $2 ORDER BY seq",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        .query(&child_stmt, &[&doc_id, &parent_bytes.as_slice()])
+        .map_err(storage_debug)?;
     let mut out = Vec::with_capacity(child_rows.len() + 1);
     for row in child_rows {
         let bytes: Vec<u8> = row.get(0);
         out.push(op_ref_from_bytes(&bytes)?);
     }
 
+    let payload_stmt = ctx.stmt(
+        &mut c,
+        "SELECT last_replica, last_counter \
+         FROM treecrdt_payload \
+         WHERE doc_id = $1 AND node = $2 \
+         LIMIT 1",
+    )?;
     let payload_rows = c
-        .query(
-            "SELECT last_replica, last_counter \
-             FROM treecrdt_payload \
-             WHERE doc_id = $1 AND node = $2 \
-             LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        .query(&payload_stmt, &[&doc_id, &parent_bytes.as_slice()])
+        .map_err(storage_debug)?;
     if let Some(row) = payload_rows.first() {
         let replica: Vec<u8> = row.get(0);
         let counter = row.get::<_, i64>(1).max(0) as u64;
@@ -1834,17 +1836,18 @@ pub fn list_op_refs_children_with_parent_payload(
         }
     }
 
+    let fallback_stmt = ctx.stmt(
+        &mut c,
+        "SELECT op_ref \
+         FROM treecrdt_ops \
+         WHERE doc_id = $1 AND node = $2 \
+           AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+         ORDER BY lamport DESC, replica DESC, counter DESC \
+         LIMIT 1",
+    )?;
     let fallback_rows = c
-        .query(
-            "SELECT op_ref \
-             FROM treecrdt_ops \
-             WHERE doc_id = $1 AND node = $2 \
-               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
-             ORDER BY lamport DESC, replica DESC, counter DESC \
-             LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        .query(&fallback_stmt, &[&doc_id, &parent_bytes.as_slice()])
+        .map_err(storage_debug)?;
     if let Some(row) = fallback_rows.first() {
         let op_ref: Vec<u8> = row.get(0);
         let op_ref = op_ref_from_bytes(&op_ref)?;
@@ -1866,21 +1869,21 @@ pub fn get_ops_by_op_refs(
         return Ok(Vec::new());
     }
 
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let refs: Vec<Vec<u8>> = op_refs.iter().map(|r| r.to_vec()).collect();
 
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT \
-              i.ord, \
-              o.lamport, o.replica, o.counter, o.kind, o.parent, o.node, o.new_parent, o.order_key, o.payload, o.known_state \
-             FROM unnest($2::bytea[]) WITH ORDINALITY AS i(op_ref, ord) \
-             LEFT JOIN treecrdt_ops o \
-               ON o.doc_id = $1 AND o.op_ref = i.op_ref \
-             ORDER BY i.ord ASC",
-            &[&doc_id, &refs],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT \
+          i.ord, \
+          o.lamport, o.replica, o.counter, o.kind, o.parent, o.node, o.new_parent, o.order_key, o.payload, o.known_state \
+         FROM unnest($2::bytea[]) WITH ORDINALITY AS i(op_ref, ord) \
+         LEFT JOIN treecrdt_ops o \
+           ON o.doc_id = $1 AND o.op_ref = i.op_ref \
+         ORDER BY i.ord ASC",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &refs]).map_err(storage_debug)?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -1900,17 +1903,19 @@ pub fn ops_since(
     root: Option<NodeId>,
 ) -> Result<Vec<Operation>> {
     ensure_doc_meta(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let root_bytes: Option<Vec<u8>> = root.map(|n| node_to_bytes(n).to_vec());
     let mut c = client.borrow_mut();
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+         FROM treecrdt_ops \
+         WHERE doc_id = $1 AND lamport > $2 \
+           AND ($3::bytea IS NULL OR parent = $3 OR node = $3 OR new_parent = $3) \
+         ORDER BY lamport, replica, counter",
+    )?;
     let rows = c
-        .query(
-             "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-              FROM treecrdt_ops \
-              WHERE doc_id = $1 AND lamport > $2 \
-               AND ($3::bytea IS NULL OR parent = $3 OR node = $3 OR new_parent = $3) \
-              ORDER BY lamport, replica, counter",
-             &[&doc_id, &(lamport as i64), &root_bytes],
-         )
+        .query(&stmt, &[&doc_id, &(lamport as i64), &root_bytes])
         .map_err(storage_debug)?;
     rows.into_iter().map(row_to_op).collect()
 }
@@ -1938,16 +1943,16 @@ pub fn tree_children(
     if parent == NodeId::TRASH {
         return Ok(Vec::new());
     }
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT node FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-             ORDER BY order_key, node",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT node FROM treecrdt_nodes \
+         WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
+         ORDER BY order_key, node",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &parent_bytes.as_slice()]).map_err(storage_debug)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let node: Vec<u8> = row.get(0);
@@ -1967,19 +1972,24 @@ pub fn tree_children_page(
     if parent == NodeId::TRASH {
         return Ok(Vec::new());
     }
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let after_order_key: Option<Vec<u8>> = cursor.as_ref().map(|(k, _n)| k.clone());
     let after_node: Option<Vec<u8>> = cursor.as_ref().map(|(_k, n)| n.clone());
 
     let mut c = client.borrow_mut();
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT node, order_key \
+         FROM treecrdt_nodes \
+         WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
+           AND ($3::bytea IS NULL OR (order_key > $3::bytea OR (order_key = $3::bytea AND node > $4::bytea))) \
+         ORDER BY order_key, node \
+         LIMIT $5",
+    )?;
     let rows = c
         .query(
-            "SELECT node, order_key \
-             FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-               AND ($3::bytea IS NULL OR (order_key > $3::bytea OR (order_key = $3::bytea AND node > $4::bytea))) \
-             ORDER BY order_key, node \
-             LIMIT $5",
+            &stmt,
             &[
                 &doc_id,
                 &parent_bytes.as_slice(),
@@ -1988,7 +1998,7 @@ pub fn tree_children_page(
                 &(limit as i64),
             ],
         )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        .map_err(storage_debug)?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -2004,16 +2014,16 @@ pub fn tree_children_page(
 
 pub fn tree_dump(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Vec<TreeRow>> {
     ensure_materialized(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT node, parent, order_key, tombstone \
-             FROM treecrdt_nodes \
-             WHERE doc_id = $1 \
-             ORDER BY node",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT node, parent, order_key, tombstone \
+         FROM treecrdt_nodes \
+         WHERE doc_id = $1 \
+         ORDER BY node",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id]).map_err(storage_debug)?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -2040,14 +2050,14 @@ pub fn tree_payload(
     node: NodeId,
 ) -> Result<Option<Vec<u8>>> {
     ensure_materialized(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let node_bytes = node_to_bytes(node);
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT payload FROM treecrdt_payload WHERE doc_id = $1 AND node = $2 LIMIT 1",
-            &[&doc_id, &node_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT payload FROM treecrdt_payload WHERE doc_id = $1 AND node = $2 LIMIT 1",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &node_bytes.as_slice()]).map_err(storage_debug)?;
     let Some(row) = rows.first() else {
         return Ok(None);
     };
@@ -2057,15 +2067,15 @@ pub fn tree_payload(
 
 pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64> {
     ensure_materialized(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let root_bytes = node_to_bytes(NodeId::ROOT);
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT COUNT(*) FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND tombstone = FALSE AND node <> $2",
-            &[&doc_id, &root_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT COUNT(*) FROM treecrdt_nodes \
+         WHERE doc_id = $1 AND tombstone = FALSE AND node <> $2",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &root_bytes.as_slice()]).map_err(storage_debug)?;
     let row = rows.first().ok_or_else(|| Error::Storage("missing COUNT(*) row".into()))?;
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
@@ -2076,14 +2086,14 @@ pub fn tree_parent(
     node: NodeId,
 ) -> Result<Option<NodeId>> {
     ensure_materialized(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let node_bytes = node_to_bytes(node);
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT parent FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
-            &[&doc_id, &node_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT parent FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &node_bytes.as_slice()]).map_err(storage_debug)?;
     let row = match rows.first() {
         None => return Ok(None),
         Some(r) => r,
@@ -2094,14 +2104,14 @@ pub fn tree_parent(
 
 pub fn tree_exists(client: &Rc<RefCell<Client>>, doc_id: &str, node: NodeId) -> Result<bool> {
     ensure_materialized(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let node_bytes = node_to_bytes(node);
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT 1 FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2 AND tombstone = FALSE LIMIT 1",
-            &[&doc_id, &node_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT 1 FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2 AND tombstone = FALSE LIMIT 1",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &node_bytes.as_slice()]).map_err(storage_debug)?;
     Ok(!rows.is_empty())
 }
 
@@ -2111,13 +2121,13 @@ pub fn replica_max_counter(
     replica: &[u8],
 ) -> Result<u64> {
     ensure_doc_meta(client, doc_id)?;
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT COALESCE(MAX(counter), 0) FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
-            &[&doc_id, &replica],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT COALESCE(MAX(counter), 0) FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &replica]).map_err(storage_debug)?;
     let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
