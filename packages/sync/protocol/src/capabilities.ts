@@ -12,11 +12,7 @@ export const DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY =
   'treecrdt.sync.direct_send_empty_receiver.filter.v1';
 export const DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH = 5_000;
 
-function pushCapabilityIfMissing(
-  capabilities: Capability[],
-  name: string,
-  value: string,
-): void {
+function pushCapabilityIfMissing(capabilities: Capability[], name: string, value: string): void {
   if (capabilities.some((capability) => capability.name === name && capability.value === value)) {
     return;
   }
@@ -69,13 +65,10 @@ export function peerRequestedDirectSendFilter(
   );
 }
 
-export function peerSupportsDirectSendEmptyReceiver(
-  capabilities: readonly Capability[],
-): boolean {
+export function peerSupportsDirectSendEmptyReceiver(capabilities: readonly Capability[]): boolean {
   return capabilities.some(
     (capability) =>
-      capability.name === DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY &&
-      capability.value === '1',
+      capability.name === DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY && capability.value === '1',
   );
 }
 

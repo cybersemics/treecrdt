@@ -193,7 +193,9 @@ async function main() {
     if (!allowDocCreate) console.log('- doc creation policy: deny unknown docId');
     if (enablePgNotify) console.log(`- pg notify: enabled on channel ${pgNotifyChannel}`);
     if (rateLimitMaxUpgrades > 0) {
-      console.log(`- rate limit: ${rateLimitMaxUpgrades} upgrades per ${rateLimitWindowMs}ms per IP`);
+      console.log(
+        `- rate limit: ${rateLimitMaxUpgrades} upgrades per ${rateLimitWindowMs}ms per IP`,
+      );
     }
   } finally {
     disposeHelloTraceSink?.();
