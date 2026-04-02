@@ -290,17 +290,22 @@ impl PgNodeStore {
     fn preload_for_ops(&self, ops: &[Operation]) -> Result<()> {
         let mut referenced: HashSet<NodeId> = HashSet::new();
         for op in ops {
+            // Always preload the op's own node. Payload / delete / move semantics all consult the
+            // current cached row, not just the incoming operation payload.
             let node = op.kind.node();
             if node != NodeId::TRASH {
                 referenced.insert(node);
             }
             match &op.kind {
                 OperationKind::Insert { parent, .. } => {
+                    // Inserts can immediately affect the parent subtree's tombstone / visibility
+                    // state, so preload the current parent row too.
                     if *parent != NodeId::TRASH {
                         referenced.insert(*parent);
                     }
                 }
                 OperationKind::Move { new_parent, .. } => {
+                    // Moves can revive or reindex under the destination parent, so preload it.
                     if *new_parent != NodeId::TRASH {
                         referenced.insert(*new_parent);
                     }
@@ -324,6 +329,8 @@ impl PgNodeStore {
         let mut loaded_nodes: HashSet<NodeId> = HashSet::with_capacity(requested_nodes.len());
         {
             let mut c = self.ctx.client.borrow_mut();
+            // Fetch every currently-existing node row in one query so the cache reflects the
+            // pre-apply materialized state before core starts mutating it.
             let stmt = self.ctx.stmt(
                 &mut c,
                 "SELECT node, parent, order_key, tombstone, last_change, deleted_at \
@@ -379,6 +386,9 @@ impl PgNodeStore {
             missing.iter().map(|node| node_to_bytes(*node).to_vec()).collect();
         {
             let mut c = self.ctx.client.borrow_mut();
+            // Core assumes referenced nodes exist in the NodeStore. For brand-new nodes that have
+            // never been materialized before, insert placeholder rows now and let later attach /
+            // payload / delete steps fill in the real state.
             let stmt = self.ctx.stmt(
                 &mut c,
                 "INSERT INTO treecrdt_nodes(doc_id, node) \
@@ -413,6 +423,8 @@ impl PgNodeStore {
         Ok(())
     }
 
+    // last_change is updated many times while core applies a batch. Buffer the touched nodes in
+    // memory and flush once at the end so we avoid one UPDATE per node mutation.
     fn flush_last_change(&self) -> Result<()> {
         let dirty_nodes = {
             let mut pending = self.pending_last_change.borrow_mut();
@@ -443,6 +455,8 @@ impl PgNodeStore {
         }
 
         let mut c = self.ctx.client.borrow_mut();
+        // Write the buffered last_change vectors back in one batched UPDATE so the persisted
+        // subtree version vectors stay aligned with the in-memory cache core just mutated.
         let stmt = self.ctx.stmt(
             &mut c,
             "UPDATE treecrdt_nodes AS dst \
@@ -940,6 +954,8 @@ impl PgParentOpIndex {
         }
     }
 
+    // Core records parent->op_ref relationships as it applies ops, but we buffer those rows here
+    // and insert them once per batch to avoid churning treecrdt_oprefs_children on every op.
     fn flush(&mut self) -> Result<()> {
         if self.pending.is_empty() {
             return Ok(());
@@ -956,6 +972,8 @@ impl PgParentOpIndex {
         }
 
         let mut c = self.ctx.client.borrow_mut();
+        // INSERT .. DO NOTHING keeps this flush idempotent if the same parent/op_ref pair was
+        // buffered more than once while applying a batch.
         let stmt = self.ctx.stmt(
             &mut c,
             "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) \
