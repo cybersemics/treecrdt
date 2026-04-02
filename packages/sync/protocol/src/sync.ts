@@ -7,13 +7,11 @@ import {
 } from './auth-capabilities.js';
 import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from './auth.js';
 import {
+  buildInitiatorHelloCapabilities,
   capabilitySetFingerprint,
   DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
   DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH,
-  DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY,
   DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY,
-  DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY,
-  DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY,
   peerRequestedDirectSendFilter,
   peerSelectedDirectSendEmptyReceiverFilter,
   peerSelectedDirectSendFilter,
@@ -614,35 +612,10 @@ export class SyncPeer<Op> {
     const round = 0;
     const maxLamport = await this.backend.maxLamport();
     const localOpRefsBeforeHello = await this.backend.listOpRefs(filter);
-    const capabilities =
-      (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [];
-    // Advertise that this peer understands the "send a tiny scoped result
-    // directly" shortcut, so the responder can skip a full RIBLT round.
-    if (!peerSupportsDirectSendSmallScope(capabilities)) {
-      capabilities.push({
-        name: DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY,
-        value: '1',
-      });
-    }
-    // Advertise that this peer also understands the "I'm empty, just upload"
-    // shortcut when the responder has no local ops for this filter.
-    if (!peerSupportsDirectSendEmptyReceiver(capabilities)) {
-      capabilities.push({
-        name: DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY,
-        value: '1',
-      });
-    }
-    // If we currently have nothing for this filter, ask the responder to pick
-    // the small-scope direct-send path for this specific filter when possible.
-    if (
-      localOpRefsBeforeHello.length === 0 &&
-      !peerRequestedDirectSendFilter(capabilities, filterId)
-    ) {
-      capabilities.push({
-        name: DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY,
-        value: filterId,
-      });
-    }
+    const capabilities = buildInitiatorHelloCapabilities(
+      (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [],
+      { filterId, localHasOps: localOpRefsBeforeHello.length > 0 },
+    );
     const hello: Hello = { capabilities, filters: [{ id: filterId, filter }], maxLamport };
 
     const session: InitiatorSession<Op> = {
