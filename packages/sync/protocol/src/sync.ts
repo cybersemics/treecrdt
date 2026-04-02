@@ -6,6 +6,20 @@ import {
   isAuthCapability,
 } from './auth-capabilities.js';
 import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from './auth.js';
+import {
+  capabilitySetFingerprint,
+  DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
+  DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH,
+  DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY,
+  DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY,
+  DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY,
+  DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY,
+  peerRequestedDirectSendFilter,
+  peerSelectedDirectSendEmptyReceiverFilter,
+  peerSelectedDirectSendFilter,
+  peerSupportsDirectSendEmptyReceiver,
+  peerSupportsDirectSendSmallScope,
+} from './capabilities.js';
 import { ErrorCode, RibltFailureReason } from './types.js';
 import type {
   Capability,
@@ -52,15 +66,6 @@ function deferred<T>(): Pending<T> {
   void promise.catch(() => {});
   return { promise, resolve, reject };
 }
-
-const DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY = 'treecrdt.sync.direct_send_small_scope.v1';
-const DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY =
-  'treecrdt.sync.direct_send_small_scope.request.v1';
-const DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY = 'treecrdt.sync.direct_send_small_scope.filter.v1';
-const DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY = 'treecrdt.sync.direct_send_empty_receiver.v1';
-const DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY =
-  'treecrdt.sync.direct_send_empty_receiver.filter.v1';
-const DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH = 5_000;
 
 type ResponderSession<Op> = {
   filter: Filter;
@@ -222,60 +227,6 @@ type PendingPushOp<Op> = {
 
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
   return capabilities.some(isAnyAuthCapability);
-}
-
-function peerSupportsDirectSendSmallScope(capabilities: readonly Capability[]): boolean {
-  return capabilities.some(
-    (capability) =>
-      capability.name === DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY && capability.value === '1',
-  );
-}
-
-function peerSelectedDirectSendFilter(
-  capabilities: readonly Capability[],
-  filterId: string,
-): boolean {
-  return capabilities.some(
-    (capability) =>
-      capability.name === DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY &&
-      capability.value === filterId,
-  );
-}
-
-function peerRequestedDirectSendFilter(
-  capabilities: readonly Capability[],
-  filterId: string,
-): boolean {
-  return capabilities.some(
-    (capability) =>
-      capability.name === DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY &&
-      capability.value === filterId,
-  );
-}
-
-function peerSupportsDirectSendEmptyReceiver(capabilities: readonly Capability[]): boolean {
-  return capabilities.some(
-    (capability) =>
-      capability.name === DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY && capability.value === '1',
-  );
-}
-
-function peerSelectedDirectSendEmptyReceiverFilter(
-  capabilities: readonly Capability[],
-  filterId: string,
-): boolean {
-  return capabilities.some(
-    (capability) =>
-      capability.name === DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY &&
-      capability.value === filterId,
-  );
-}
-
-function capabilitySetFingerprint(capabilities: readonly Capability[]): string {
-  return capabilities
-    .map((capability) => `${capability.name}\u0000${capability.value}`)
-    .sort()
-    .join('\u0001');
 }
 
 export class SyncPeer<Op> {

@@ -3,5 +3,6 @@ export * from './sync.js';
 export * from './opref.js';
 export * from './auth.js';
 export * from './auth-capabilities.js';
+export * from './capabilities.js';
 export * from './traces.js';
 export * from './proof-material/index.js';
