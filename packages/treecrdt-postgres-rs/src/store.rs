@@ -49,6 +49,8 @@ fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
     serde_json::from_slice(bytes).map_err(|e| Error::Storage(e.to_string()))
 }
 
+// Bench/debug-only upload profiling. This stays off in normal operation and
+// emits one JSON line per append batch when explicitly enabled.
 fn append_profile_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -1507,6 +1509,44 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
     Ok(inserted)
 }
 
+fn select_inserted_ops(
+    ctx: &PgCtx,
+    ops: &[Operation],
+    inserted_op_refs: Vec<Vec<u8>>,
+) -> Vec<Operation> {
+    if inserted_op_refs.is_empty() {
+        return Vec::new();
+    }
+    if inserted_op_refs.len() == ops.len() {
+        return ops.to_vec();
+    }
+
+    // bulk_insert_ops_in_tx returns exactly the op_refs Postgres accepted.
+    // Preserve multiplicity here so a batch like [opA, opA, opB] only
+    // materializes [opA, opB] instead of replaying opA twice.
+    let mut remaining_by_ref: HashMap<Vec<u8>, usize> = HashMap::new();
+    for op_ref in inserted_op_refs {
+        *remaining_by_ref.entry(op_ref).or_insert(0) += 1;
+    }
+
+    let mut inserted_ops = Vec::new();
+    for op in ops {
+        let replica = op.meta.id.replica.as_bytes();
+        let counter = op.meta.id.counter;
+        let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);
+        let Some(remaining) = remaining_by_ref.get_mut(op_ref.as_slice()) else {
+            continue;
+        };
+        if *remaining == 0 {
+            continue;
+        }
+        *remaining -= 1;
+        inserted_ops.push(op.clone());
+    }
+
+    inserted_ops
+}
+
 fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) -> Result<()> {
     if ops.is_empty() {
         return Ok(());
@@ -1579,6 +1619,8 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     // Serialize per-doc writers across all server instances (incremental materialization updates
     // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
     let meta = load_tree_meta_for_update(client, doc_id)?;
+    // This profiler is only for large-upload benchmark/debug runs. The normal
+    // append path keeps the hook disabled and pays only the `OnceLock` check.
     let append_profile = append_profile_enabled().then(|| {
         Rc::new(RefCell::new(PgAppendProfile::new(
             ops.len(),
@@ -1634,20 +1676,7 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     }
 
     let dedupe_filter_started_at = Instant::now();
-    let inserted_ops: Vec<Operation> = if inserted_op_refs.len() == ops.len() {
-        ops.to_vec()
-    } else {
-        let inserted_op_refs: HashSet<Vec<u8>> = inserted_op_refs.into_iter().collect();
-        ops.iter()
-            .filter(|op| {
-                let replica = op.meta.id.replica.as_bytes();
-                let counter = op.meta.id.counter;
-                inserted_op_refs
-                    .contains(derive_op_ref_v0(&ctx.doc_id, replica, counter).as_slice())
-            })
-            .cloned()
-            .collect()
-    };
+    let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
     if let Some(profile) = &append_profile {
         profile.borrow_mut().dedupe_filter_ms +=
             dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;

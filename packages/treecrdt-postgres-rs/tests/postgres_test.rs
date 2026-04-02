@@ -68,6 +68,45 @@ fn postgres_backend_apply_is_idempotent_and_max_lamport_monotonic() {
 }
 
 #[test]
+fn postgres_backend_append_batch_materializes_only_inserted_ops() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"dup");
+    let n1 = node(1);
+    let op1 = Operation::insert(&replica, 1, 1, NodeId::ROOT, n1, order_key_from_position(0));
+    let op2 = Operation::set_payload(&replica, 2, 2, n1, vec![9]);
+
+    let inserted = append_ops(&client, &doc_id, &[op1.clone(), op1.clone(), op2.clone()]).unwrap();
+    assert_eq!(inserted, 2);
+    assert_eq!(list_op_refs_all(&client, &doc_id).unwrap().len(), 2);
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
+        vec![n1]
+    );
+
+    let head_seq = {
+        let mut c = client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT head_seq FROM treecrdt_meta WHERE doc_id = $1",
+                &[&doc_id],
+            )
+            .unwrap();
+        row.get::<_, i64>(0).max(0) as u64
+    };
+    assert_eq!(head_seq, 2);
+}
+
+#[test]
 fn postgres_backend_large_append_rebuilds_materialized_views_on_demand() {
     let Some(client) = connect() else {
         return;
