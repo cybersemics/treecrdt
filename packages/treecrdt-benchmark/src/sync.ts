@@ -6,7 +6,9 @@ import { benchTiming } from './timing.js';
 export type SyncBenchWorkload =
   | 'sync-all'
   | 'sync-balanced-children-cold-start'
+  | 'sync-balanced-children-resync'
   | 'sync-balanced-children-payloads-cold-start'
+  | 'sync-balanced-children-payloads-resync'
   | 'sync-children'
   | 'sync-children-cold-start'
   | 'sync-children-payloads'
@@ -25,6 +27,10 @@ export const DEFAULT_SYNC_BENCH_WORKLOADS = [
   'sync-balanced-children-cold-start',
   'sync-balanced-children-payloads-cold-start',
 ] as const satisfies readonly SyncBenchWorkload[];
+export const PRODUCT_RESYNC_SYNC_BENCH_WORKLOADS = [
+  'sync-balanced-children-resync',
+  'sync-balanced-children-payloads-resync',
+] as const satisfies readonly SyncBenchWorkload[];
 export const SYNTHETIC_SYNC_BENCH_WORKLOADS = [
   'sync-all',
   'sync-children',
@@ -34,6 +40,7 @@ export const SYNTHETIC_SYNC_BENCH_WORKLOADS = [
 ] as const satisfies readonly SyncBenchWorkload[];
 export const ALL_SYNC_BENCH_WORKLOADS = [
   ...DEFAULT_SYNC_BENCH_WORKLOADS,
+  ...PRODUCT_RESYNC_SYNC_BENCH_WORKLOADS,
   ...SYNTHETIC_SYNC_BENCH_WORKLOADS,
 ] as const satisfies readonly SyncBenchWorkload[];
 export const DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS = [
@@ -252,6 +259,89 @@ function buildBalancedChildrenColdStartCase(opts: {
   };
 }
 
+function buildBalancedChildrenResyncCase(opts: {
+  size: number;
+  fanout: number;
+  replicas: { s: ReplicaId; p: ReplicaId };
+  root: string;
+  payloadBytes: number;
+  withPayloads: boolean;
+}): SyncBenchCase {
+  const treeSize = opts.size;
+  if (!Number.isInteger(treeSize) || treeSize <= opts.fanout) {
+    throw new Error(`balanced children re-sync requires size > fanout (${opts.fanout})`);
+  }
+
+  const sharedOps = buildFanoutInsertTreeOps({
+    replica: opts.replicas.s,
+    size: treeSize,
+    fanout: opts.fanout,
+    root: opts.root,
+  });
+  const scopeRootInsert = sharedOps[0];
+  if (!scopeRootInsert || scopeRootInsert.kind.type !== 'insert') {
+    throw new Error('expected balanced tree seed to start with scope root insert');
+  }
+
+  const targetParent = scopeRootInsert.kind.node;
+  const targetChildren = targetChildrenForFirstChild(treeSize, opts.fanout);
+  const scopedNodes = new Set([targetParent, ...targetChildren]);
+  const opsB: Operation[] = [...sharedOps];
+
+  if (opts.withPayloads) {
+    let counter = 0;
+    let lamport = maxLamport(sharedOps);
+    for (let i = 0; i < sharedOps.length; i += 1) {
+      const op = sharedOps[i];
+      if (op?.kind.type !== 'insert') continue;
+      opsB.push(
+        makeOp(opts.replicas.p, ++counter, ++lamport, {
+          type: 'payload',
+          node: op.kind.node,
+          payload: payloadBytesFromSeed(i + 1, opts.payloadBytes),
+        }),
+      );
+    }
+  }
+
+  // Re-sync benchmarks model a client that already has the exact scoped result
+  // from an earlier session, so reconcile should confirm "already in sync"
+  // instead of transferring the subtree again.
+  const opsA = opsB.filter((op) => {
+    if (op.kind.type === 'insert') {
+      return op.kind.node === targetParent || op.kind.parent === targetParent;
+    }
+    if (op.kind.type === 'payload') {
+      return scopedNodes.has(op.kind.node);
+    }
+    return false;
+  });
+
+  return {
+    name: `sync-balanced-children${opts.withPayloads ? '-payloads' : ''}-resync-fanout${opts.fanout}-${treeSize}`,
+    opsA,
+    opsB,
+    filter: { children: { parent: nodeIdToBytes16(targetParent) } },
+    totalOps: 0,
+    extra: {
+      treeSize,
+      fanout: opts.fanout,
+      targetParent,
+      targetDepth: 1,
+      targetChildren: targetChildren.length,
+      coldStart: false,
+      balancedTree: true,
+      knownScopeRoot: true,
+      nonEmptyLocalResult: true,
+      payloadBytes: opts.withPayloads ? opts.payloadBytes : 0,
+      payloadsEverywhere: opts.withPayloads,
+      pageSize: Math.min(DEFAULT_SYNC_BENCH_PAGE_SIZE, targetChildren.length),
+    },
+    expectedFinalOpsA: opsA.length,
+    expectedFinalOpsB: opsB.length,
+  };
+}
+
 export function buildSyncBenchCase(opts: {
   workload: SyncBenchWorkload;
   size: number;
@@ -319,6 +409,28 @@ export function buildSyncBenchCase(opts: {
 
   if (workload === 'sync-balanced-children-payloads-cold-start') {
     return buildBalancedChildrenColdStartCase({
+      size,
+      fanout,
+      replicas: { s: replicas.s, p: replicas.p },
+      root,
+      payloadBytes,
+      withPayloads: true,
+    });
+  }
+
+  if (workload === 'sync-balanced-children-resync') {
+    return buildBalancedChildrenResyncCase({
+      size,
+      fanout,
+      replicas: { s: replicas.s, p: replicas.p },
+      root,
+      payloadBytes,
+      withPayloads: false,
+    });
+  }
+
+  if (workload === 'sync-balanced-children-payloads-resync') {
+    return buildBalancedChildrenResyncCase({
       size,
       fanout,
       replicas: { s: replicas.s, p: replicas.p },

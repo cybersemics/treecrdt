@@ -34,6 +34,7 @@ pnpm benchmark:postgres
 
 - First view on a new device, structure only: `benchmark:sync:*` with `sync-balanced-children-cold-start`
 - First view on a new device, with payloads: `benchmark:sync:*` with `sync-balanced-children-payloads-cold-start`
+- Re-sync the same subtree on a restarted client that already has that scope locally: `benchmark:sync:*` with `sync-balanced-children-resync` or `sync-balanced-children-payloads-resync`
 - Single end-to-end time-to-first-visible-page number: `benchmark:sync:*` with the same balanced workloads plus `--first-view`
 - Local render cost after the data is already present: `benchmark:sqlite-node:note-paths -- --benches=read-children-payloads`
 - Local mutation cost inside a large existing tree: `benchmark:sqlite-node:note-paths -- --benches=insert-into-large-tree`
@@ -75,6 +76,25 @@ pnpm benchmark:sync:remote -- \
 ```
 
 Use `--fanout=20` when you want to model a broader notebook tree.
+
+### Re-Sync The Same Subtree
+
+Balanced-tree re-sync is the closest current benchmark to "restart a client that
+already has this subtree locally, then reconcile that same scope again".
+
+```sh
+pnpm sync-server:postgres:db:start
+pnpm benchmark:sync:local -- \
+  --workloads=sync-balanced-children-resync,sync-balanced-children-payloads-resync \
+  --counts=10000,100000 \
+  --fanout=10
+pnpm sync-server:postgres:db:stop
+```
+
+These workloads keep the same balanced immediate-subtree shape as the first-view
+benchmarks, but the receiver already has the current scoped result. That means
+they measure the normal non-empty scoped reconcile path instead of the
+empty-receiver direct-send shortcut.
 
 ### Prime Sync Server Fixtures
 
@@ -314,6 +334,8 @@ Product-facing defaults:
 - `sync-one-missing`: narrow protocol baseline for a tiny delta
 - `sync-balanced-children-cold-start`: new device already knows the scope root and pulls the immediate children of a node from a balanced tree
 - `sync-balanced-children-payloads-cold-start`: same balanced-tree cold-start path, plus payloads
+- `sync-balanced-children-resync`: same balanced immediate-subtree shape, but the client already has that scoped result locally and re-runs scoped reconcile
+- `sync-balanced-children-payloads-resync`: same balanced re-sync path, plus payloads for the scope root and those immediate children
 
 Specialized or synthetic workloads:
 

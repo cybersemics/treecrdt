@@ -88,6 +88,9 @@ type DocContext = {
 
 type PostgresNodeDocStore = {
   provider: WebSocketSyncServerDocProvider<Operation>;
+  // When the exact applied ops are available in-process, peers can use the
+  // fast delta path. Cross-process invalidation only knows "this doc changed",
+  // so callers may omit ops and force peers to rescan their subscriptions.
   notifyDocUpdate: (docId: string, ops?: readonly Operation[]) => void;
   closeAll: () => Promise<void>;
 };
@@ -407,6 +410,10 @@ export function createPostgresNodeDocStore(
   let closing = false;
   let closeAllPromise: Promise<void> | undefined;
 
+  // `ops` is optional because not every update source can provide the exact
+  // applied batch. Local applyOps calls can forward precise ops to in-process
+  // peers, while pg_notify-style cross-process invalidation only reports the
+  // doc id and falls back to subscription rescans.
   const notifyDocUpdate = (docId: string, ops?: readonly Operation[]): void => {
     const ctx = docs.get(docId);
     if (!ctx) return;
