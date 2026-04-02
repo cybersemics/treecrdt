@@ -300,6 +300,8 @@ export class SyncPeer<Op> {
     });
   }
 
+  // Live subscriptions are responder-owned: once a peer subscribes, local writes
+  // feed this push loop until the subscription is removed or the transport fails.
   notifyLocalUpdate(ops?: readonly Op[]): Promise<void> {
     if (this.responderSubscriptions.size === 0) return Promise.resolve();
     if (ops && ops.length > 0 && this.deriveOpRef) {
@@ -327,6 +329,9 @@ export class SyncPeer<Op> {
     try {
       while (this.pushScheduled) {
         this.pushScheduled = false;
+        // A full scan means "some subscription-relevant state changed, but we
+        // do not have an exact delta set to push from". Delta pushes are only
+        // safe when notifyLocalUpdate supplied concrete ops and deriveOpRef is available.
         const deltaOps =
           this.pushNeedsFullScan || this.pendingPushOpsByRefHex.size === 0
             ? []
@@ -425,6 +430,9 @@ export class SyncPeer<Op> {
     sub: ResponderSubscription<Op>,
     opts: { deltaOps?: readonly PendingPushOp<Op>[]; forceFullScan?: boolean } = {},
   ): Promise<void> {
+    // Only the unscoped "all" filter can use the exact delta list directly.
+    // Scoped filters still need a backend rescan to decide which newly written
+    // ops belong to the subscription.
     if (!opts.forceFullScan && 'all' in sub.filter && opts.deltaOps && opts.deltaOps.length > 0) {
       await this.pushSubscriptionDeltaAll(sub, opts.deltaOps);
       return;
@@ -439,6 +447,9 @@ export class SyncPeer<Op> {
     }
 
     const newOpRefs: OpRef[] = [];
+    // Even in the rescan path we stay incremental: sentOpRefs tracks what this
+    // subscriber has already seen, so a "full scan" here means rediscovering
+    // matching refs, not replaying the entire filter result.
     for (const r of opRefs) {
       const hex = bytesToHex(r);
       if (sub.sentOpRefs.has(hex)) continue;
@@ -521,6 +532,8 @@ export class SyncPeer<Op> {
     sub: ResponderSubscription<Op>,
     deltaOps: readonly PendingPushOp<Op>[],
   ): Promise<void> {
+    // The exact-delta fast path is only safe for { all: true } subscriptions:
+    // every new local op belongs to the filter, so we can skip listOpRefs().
     const unsent = deltaOps.filter((entry) => !sub.sentOpRefs.has(entry.opRefHex));
     if (unsent.length === 0) return;
 
@@ -640,6 +653,8 @@ export class SyncPeer<Op> {
       });
       const ack = await session.ack.promise;
 
+      // For tiny scoped reads the responder can skip RIBLT entirely and send
+      // the result as direct ops once Hello/HelloAck agrees on that shortcut.
       if (
         localOpRefsBeforeHello.length === 0 &&
         peerSelectedDirectSendFilter(ack.capabilities, filterId)
@@ -1675,6 +1690,9 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     batch: OpsBatch<Op>,
   ): Promise<void> {
+    // opsBatch is shared by both flows:
+    // - reconcile / direct-send during syncOnce
+    // - incremental pushes for live subscriptions
     const purpose: SyncOpPurpose = this.initiatorSubscriptions.has(batch.filterId)
       ? 'subscribe'
       : 'reconcile';
@@ -1780,6 +1798,8 @@ export class SyncPeer<Op> {
 
     this.reprocessPendingRunning = true;
     this.reprocessPendingInFlight = (async () => {
+      // Pending ops are retried after every successful applyOps pass so auth
+      // schemes that need causal context can unlock buffered ops incrementally.
       const maxRounds = 100;
       for (let round = 0; round < maxRounds; round += 1) {
         const pending = await this.backend.listPendingOps!();
