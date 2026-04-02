@@ -284,6 +284,9 @@ impl PgNodeStore {
         Ok(loaded)
     }
 
+    // Payload application may need the node's current parent / deleted_at state before core can
+    // decide payload visibility and defensive-delete effects. Preload those node rows in one SQL
+    // pass so incremental materialization does not degrade into per-op lookups.
     fn preload_for_ops(&self, ops: &[Operation]) -> Result<()> {
         let mut referenced: HashSet<NodeId> = HashSet::new();
         for op in ops {
@@ -1456,14 +1459,19 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
         return Ok(());
     }
 
+    // At this point treecrdt_ops already contains the inserted operations. This temporary
+    // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
     let nodes = PgNodeStore::new(ctx.clone());
     if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
+        // Payload ops can depend on the current node row, so front-load the reads here.
         nodes.preload_for_ops(&ops)?;
     }
     let node_flush = nodes.clone();
     let payloads = PgPayloadStore::new(ctx.clone());
     let mut index = PgParentOpIndex::new(ctx.clone());
 
+    // NoopStorage is intentional: append_ops_in_tx already persisted the op log, and this pass is
+    // only responsible for materialized state (nodes/payload/index/head) through treecrdt-core.
     let mut crdt = TreeCrdt::with_stores(
         ReplicaId::new(b"postgres"),
         NoopStorage,
@@ -1473,6 +1481,8 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
     )?;
 
     let materialize_started_at = Instant::now();
+    // This is the main handoff into treecrdt-core for remote/bulk append batches:
+    // defensive delete + revival, payload LWW, tombstone refresh, and oprefs_children updates.
     let next = apply_incremental_ops(&mut crdt, &mut index, meta, ops)?
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
     node_flush.flush_last_change()?;
@@ -1534,9 +1544,11 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     });
     let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
 
-    // treecrdt_ops is the source of truth. If the doc is already dirty, derived tables are stale,
-    // so large uploads only append to the op log and leave the doc dirty for a later rebuild-on-read.
-    // When the doc is clean we can incrementally materialize the inserted ops to keep reads warm.
+    // treecrdt_ops is the source of truth. This function first appends/dedupes the op log in SQL
+    // and only then decides whether it can replay the inserted subset through core materialization.
+    //
+    // If the doc is already dirty, derived tables are stale, so we only append to the op log and
+    // leave full reconstruction to ensure_materialized_in_tx on a later read.
     if meta.dirty {
         let bulk_insert_started_at = Instant::now();
         let inserted = {
@@ -1580,6 +1592,8 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     }
 
     let dedupe_filter_started_at = Instant::now();
+    // Only materialize the ops Postgres actually inserted. This keeps duplicate opRefs in the
+    // input batch from being replayed twice through core materialization.
     let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
     if let Some(profile) = &append_profile {
         profile.borrow_mut().dedupe_filter_ms +=
@@ -1594,6 +1608,8 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     }
 
     let inserted = inserted_ops.len();
+    // If incremental materialization fails, keep the op-log append and mark the doc dirty so the
+    // next rebuild replays the full log through the same core semantics.
     let _ = try_incremental_materialization(
         false,
         || materialize_ops_in_order(ctx, &meta, inserted_ops),
@@ -1680,6 +1696,8 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
         nodes,
         payloads,
     )?;
+    // Full rebuild path: replay the persisted op log through treecrdt-core to reconstruct
+    // nodes, payloads, subtree opRef index rows, and cached tombstone state from scratch.
     crdt.replay_from_storage_with_materialization(&mut index)?;
     node_flush.flush_last_change()?;
     index.flush()?;
@@ -2122,6 +2140,8 @@ fn begin_local_core_op(
     doc_id: &str,
     replica: &ReplicaId,
 ) -> Result<LocalOpSession> {
+    // Local ops take the opposite route from append_ops_in_tx: start from a clean materialized
+    // snapshot, then let TreeCrdt mint/store/apply the local op directly against Postgres stores.
     ensure_materialized_in_tx(client, doc_id)?;
     let meta = load_tree_meta_for_update(client, doc_id)?;
     let ctx = PgCtx::new(client.clone(), doc_id)?;
@@ -2150,6 +2170,8 @@ fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: Loca
     let mut seq = 0u64;
 
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
+    // commit_local() already persisted the op and updated node/payload state. The finalize step
+    // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
     match session
         .crdt
         .finalize_local_with_plan(op, &mut op_index, session.meta.head_seq, &plan)
