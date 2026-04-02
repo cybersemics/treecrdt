@@ -7,9 +7,8 @@ use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
     apply_incremental_ops, try_incremental_materialization, Error, Lamport, LamportClock,
-    LocalFinalizePlan, LocalPlacement, MaterializationCursor, NodeId, NodeStore, NoopStorage,
-    Operation, OperationId, OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage,
-    TreeCrdt, VersionVector,
+    MaterializationCursor, NodeId, NodeStore, NoopStorage, Operation, OperationId, OperationKind,
+    ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -50,7 +49,7 @@ pub(crate) fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
 }
 
 #[derive(Clone, Debug)]
-struct TreeMeta {
+pub(crate) struct TreeMeta {
     dirty: bool,
     head_lamport: Lamport,
     head_replica: Vec<u8>,
@@ -128,11 +127,18 @@ fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta
     load_tree_meta_row(client, doc_id, false)
 }
 
-fn load_tree_meta_for_update(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
+pub(crate) fn load_tree_meta_for_update(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> Result<TreeMeta> {
     load_tree_meta_row(client, doc_id, true)
 }
 
-fn set_tree_meta_dirty(client: &Rc<RefCell<Client>>, doc_id: &str, dirty: bool) -> Result<()> {
+pub(crate) fn set_tree_meta_dirty(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    dirty: bool,
+) -> Result<()> {
     ensure_doc_meta(client, doc_id)?;
     let mut c = client.borrow_mut();
     c.execute(
@@ -143,7 +149,7 @@ fn set_tree_meta_dirty(client: &Rc<RefCell<Client>>, doc_id: &str, dirty: bool) 
     Ok(())
 }
 
-fn update_tree_meta_head(
+pub(crate) fn update_tree_meta_head(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
     lamport: Lamport,
@@ -163,8 +169,8 @@ fn update_tree_meta_head(
 
 #[derive(Clone)]
 pub(crate) struct PgCtx {
-    doc_id: String,
-    client: Rc<RefCell<Client>>,
+    pub(crate) doc_id: String,
+    pub(crate) client: Rc<RefCell<Client>>,
     stmts: Rc<RefCell<HashMap<&'static str, Statement>>>,
     append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
 }
@@ -216,14 +222,14 @@ struct CachedPayloadRow {
 }
 
 #[derive(Clone)]
-struct PgNodeStore {
+pub(crate) struct PgNodeStore {
     ctx: PgCtx,
     cache: Rc<RefCell<HashMap<NodeId, Option<CachedNodeRow>>>>,
     pending_last_change: Rc<RefCell<HashSet<NodeId>>>,
 }
 
 impl PgNodeStore {
-    fn new(ctx: PgCtx) -> Self {
+    pub(crate) fn new(ctx: PgCtx) -> Self {
         Self {
             ctx,
             cache: Rc::new(RefCell::new(HashMap::new())),
@@ -422,7 +428,7 @@ impl PgNodeStore {
 
     // last_change is updated many times while core applies a batch. Buffer the touched nodes in
     // memory and flush once at the end so we avoid one UPDATE per node mutation.
-    fn flush_last_change(&self) -> Result<()> {
+    pub(crate) fn flush_last_change(&self) -> Result<()> {
         let dirty_nodes = {
             let mut pending = self.pending_last_change.borrow_mut();
             std::mem::take(&mut *pending)
@@ -803,13 +809,13 @@ impl treecrdt_core::NodeStore for PgNodeStore {
     }
 }
 
-struct PgPayloadStore {
+pub(crate) struct PgPayloadStore {
     ctx: PgCtx,
     cache: RefCell<HashMap<NodeId, Option<CachedPayloadRow>>>,
 }
 
 impl PgPayloadStore {
-    fn new(ctx: PgCtx) -> Self {
+    pub(crate) fn new(ctx: PgCtx) -> Self {
         Self {
             ctx,
             cache: RefCell::new(HashMap::new()),
@@ -938,13 +944,13 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
     }
 }
 
-struct PgParentOpIndex {
+pub(crate) struct PgParentOpIndex {
     ctx: PgCtx,
     pending: Vec<PendingParentOpRefRow>,
 }
 
 impl PgParentOpIndex {
-    fn new(ctx: PgCtx) -> Self {
+    pub(crate) fn new(ctx: PgCtx) -> Self {
         Self {
             ctx,
             pending: Vec::new(),
@@ -953,7 +959,7 @@ impl PgParentOpIndex {
 
     // Core records parent->op_ref relationships as it applies ops, but we buffer those rows here
     // and insert them once per batch to avoid churning treecrdt_oprefs_children on every op.
-    fn flush(&mut self) -> Result<()> {
+    pub(crate) fn flush(&mut self) -> Result<()> {
         if self.pending.is_empty() {
             return Ok(());
         }
@@ -1029,12 +1035,12 @@ struct PendingParentOpRefRow {
     seq: i64,
 }
 
-struct PgOpStorage {
+pub(crate) struct PgOpStorage {
     ctx: PgCtx,
 }
 
 impl PgOpStorage {
-    fn new(ctx: PgCtx) -> Self {
+    pub(crate) fn new(ctx: PgCtx) -> Self {
         Self { ctx }
     }
 }
@@ -1681,7 +1687,7 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
     }
 }
 
-fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
+pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let meta = load_tree_meta(client, doc_id)?;
     if !meta.dirty {
         return Ok(());
@@ -1734,171 +1740,4 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
     }
 
     Ok(())
-}
-
-type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
-
-struct LocalOpSession {
-    ctx: PgCtx,
-    meta: TreeMeta,
-    nodes: PgNodeStore,
-    crdt: LocalCrdt,
-}
-
-fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = f();
-
-    match res {
-        Ok(v) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
-fn begin_local_core_op(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-) -> Result<LocalOpSession> {
-    // Local ops take the opposite route from append_ops_in_tx: start from a clean materialized
-    // snapshot, then let TreeCrdt mint/store/apply the local op directly against Postgres stores.
-    ensure_materialized_in_tx(client, doc_id)?;
-    let meta = load_tree_meta_for_update(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
-
-    let storage = PgOpStorage::new(ctx.clone());
-    let nodes = PgNodeStore::new(ctx.clone());
-    let payloads = PgPayloadStore::new(ctx.clone());
-    let crdt = TreeCrdt::with_stores(
-        replica.clone(),
-        storage,
-        LamportClock::default(),
-        nodes.clone(),
-        payloads,
-    )?;
-
-    Ok(LocalOpSession {
-        ctx,
-        meta,
-        nodes,
-        crdt,
-    })
-}
-
-fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: LocalFinalizePlan) {
-    let mut post_materialization_ok = true;
-    let mut seq = 0u64;
-
-    let mut op_index = PgParentOpIndex::new(session.ctx.clone());
-    // commit_local() already persisted the op and updated node/payload state. The finalize step
-    // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
-    match session
-        .crdt
-        .finalize_local_with_plan(op, &mut op_index, session.meta.head_seq, &plan)
-    {
-        Ok(v) => {
-            seq = v;
-            if session.nodes.flush_last_change().is_err() || op_index.flush().is_err() {
-                post_materialization_ok = false;
-            }
-        }
-        Err(_) => post_materialization_ok = false,
-    }
-
-    if post_materialization_ok
-        && update_tree_meta_head(
-            &session.ctx.client,
-            &session.ctx.doc_id,
-            op.meta.lamport,
-            op.meta.id.replica.as_bytes(),
-            op.meta.id.counter,
-            seq,
-        )
-        .is_err()
-    {
-        post_materialization_ok = false;
-    }
-
-    if !post_materialization_ok {
-        let _ = set_tree_meta_dirty(&session.ctx.client, &session.ctx.doc_id, true);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn local_insert(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    parent: NodeId,
-    node: NodeId,
-    placement: &str,
-    after: Option<NodeId>,
-    payload: Option<Vec<u8>>,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_insert_with_plan(parent, node, placement, payload)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
-}
-
-pub fn local_move(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    node: NodeId,
-    new_parent: NodeId,
-    placement: &str,
-    after: Option<NodeId>,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_move_with_plan(node, new_parent, placement)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
-}
-
-pub fn local_delete(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    node: NodeId,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_delete_with_plan(node)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
-}
-
-pub fn local_payload(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    node: NodeId,
-    payload: Option<Vec<u8>>,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_payload_with_plan(node, payload)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
 }
