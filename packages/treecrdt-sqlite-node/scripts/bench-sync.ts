@@ -1,3 +1,15 @@
+/**
+ * Runner for the "sqlite-node-sync" benchmark family.
+ *
+ * The sync workloads themselves live in `@treecrdt/benchmark`, but this script
+ * owns the concrete Node runtime used to measure them:
+ * - a sqlite-node receiving client (`memory` or `file`)
+ * - direct peers or Postgres-backed sync-server targets
+ * - fixture priming/reuse, transport profiling, and first-view measurement
+ *
+ * So this file is intentionally runner-specific rather than the generic
+ * benchmark model.
+ */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { setMaxListeners } from 'node:events';
