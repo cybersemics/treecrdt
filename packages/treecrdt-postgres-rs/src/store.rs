@@ -1,27 +1,28 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Instant;
 
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
     apply_incremental_ops, try_incremental_materialization, Error, Lamport, LamportClock,
-    LocalFinalizePlan, LocalPlacement, MaterializationCursor, NodeId, NodeStore, NoopStorage,
-    Operation, OperationId, OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage,
-    TreeCrdt, VersionVector,
+    MaterializationCursor, NodeId, NodeStore, NoopStorage, Operation, OperationId, OperationKind,
+    ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
+use crate::profile::{append_profile_enabled, PgAppendProfile};
 
-fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
+pub(crate) fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
 }
 
-fn node_to_bytes(node: NodeId) -> [u8; 16] {
+pub(crate) fn node_to_bytes(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
 }
 
-fn bytes_to_node(bytes: &[u8]) -> Result<NodeId> {
+pub(crate) fn bytes_to_node(bytes: &[u8]) -> Result<NodeId> {
     if bytes.len() != 16 {
         return Err(Error::Storage("expected 16-byte node id".into()));
     }
@@ -30,7 +31,7 @@ fn bytes_to_node(bytes: &[u8]) -> Result<NodeId> {
     Ok(NodeId(u128::from_be_bytes(arr)))
 }
 
-fn op_ref_from_bytes(bytes: &[u8]) -> Result<[u8; OPREF_V0_WIDTH]> {
+pub(crate) fn op_ref_from_bytes(bytes: &[u8]) -> Result<[u8; OPREF_V0_WIDTH]> {
     if bytes.len() != OPREF_V0_WIDTH {
         return Err(Error::Storage("expected 16-byte op_ref".into()));
     }
@@ -43,12 +44,12 @@ fn vv_to_bytes(vv: &VersionVector) -> Result<Vec<u8>> {
     serde_json::to_vec(vv).map_err(|e| Error::Storage(e.to_string()))
 }
 
-fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
+pub(crate) fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
     serde_json::from_slice(bytes).map_err(|e| Error::Storage(e.to_string()))
 }
 
 #[derive(Clone, Debug)]
-struct TreeMeta {
+pub(crate) struct TreeMeta {
     dirty: bool,
     head_lamport: Lamport,
     head_replica: Vec<u8>,
@@ -78,7 +79,7 @@ impl MaterializationCursor for TreeMeta {
     }
 }
 
-fn ensure_doc_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
+pub(crate) fn ensure_doc_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let mut c = client.borrow_mut();
     c.execute(
         // Default new docs to "clean" so we can incrementally maintain materialized state.
@@ -89,51 +90,55 @@ fn ensure_doc_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn load_tree_meta_row(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    for_update: bool,
+) -> Result<TreeMeta> {
+    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let mut c = client.borrow_mut();
+    let stmt = if for_update {
+        ctx.stmt(
+            &mut c,
+            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+             FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
+        )?
+    } else {
+        ctx.stmt(
+            &mut c,
+            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+             FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1",
+        )?
+    };
+    let rows = c.query(&stmt, &[&doc_id]).map_err(storage_debug)?;
+
+    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
+
+    Ok(TreeMeta {
+        dirty: row.get::<_, bool>(0),
+        head_lamport: row.get::<_, i64>(1).max(0) as Lamport,
+        head_replica: row.get::<_, Vec<u8>>(2),
+        head_counter: row.get::<_, i64>(3).max(0) as u64,
+        head_seq: row.get::<_, i64>(4).max(0) as u64,
+    })
+}
+
 fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
-    ensure_doc_meta(client, doc_id)?;
-
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
-
-    Ok(TreeMeta {
-        dirty: row.get::<_, bool>(0),
-        head_lamport: row.get::<_, i64>(1).max(0) as Lamport,
-        head_replica: row.get::<_, Vec<u8>>(2),
-        head_counter: row.get::<_, i64>(3).max(0) as u64,
-        head_seq: row.get::<_, i64>(4).max(0) as u64,
-    })
+    load_tree_meta_row(client, doc_id, false)
 }
 
-fn load_tree_meta_for_update(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
-    ensure_doc_meta(client, doc_id)?;
-
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
-            &[&doc_id],
-        )
-        .map_err(storage_debug)?;
-
-    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
-
-    Ok(TreeMeta {
-        dirty: row.get::<_, bool>(0),
-        head_lamport: row.get::<_, i64>(1).max(0) as Lamport,
-        head_replica: row.get::<_, Vec<u8>>(2),
-        head_counter: row.get::<_, i64>(3).max(0) as u64,
-        head_seq: row.get::<_, i64>(4).max(0) as u64,
-    })
+pub(crate) fn load_tree_meta_for_update(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> Result<TreeMeta> {
+    load_tree_meta_row(client, doc_id, true)
 }
 
-fn set_tree_meta_dirty(client: &Rc<RefCell<Client>>, doc_id: &str, dirty: bool) -> Result<()> {
+pub(crate) fn set_tree_meta_dirty(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    dirty: bool,
+) -> Result<()> {
     ensure_doc_meta(client, doc_id)?;
     let mut c = client.borrow_mut();
     c.execute(
@@ -144,7 +149,7 @@ fn set_tree_meta_dirty(client: &Rc<RefCell<Client>>, doc_id: &str, dirty: bool) 
     Ok(())
 }
 
-fn update_tree_meta_head(
+pub(crate) fn update_tree_meta_head(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
     lamport: Lamport,
@@ -163,23 +168,33 @@ fn update_tree_meta_head(
 }
 
 #[derive(Clone)]
-struct PgCtx {
-    doc_id: String,
-    client: Rc<RefCell<Client>>,
+pub(crate) struct PgCtx {
+    pub(crate) doc_id: String,
+    pub(crate) client: Rc<RefCell<Client>>,
     stmts: Rc<RefCell<HashMap<&'static str, Statement>>>,
+    append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
 }
 
 impl PgCtx {
-    fn new(client: Rc<RefCell<Client>>, doc_id: &str) -> Result<Self> {
+    pub(crate) fn new(client: Rc<RefCell<Client>>, doc_id: &str) -> Result<Self> {
+        Self::new_with_profile(client, doc_id, None)
+    }
+
+    fn new_with_profile(
+        client: Rc<RefCell<Client>>,
+        doc_id: &str,
+        append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
+    ) -> Result<Self> {
         ensure_doc_meta(&client, doc_id)?;
         Ok(Self {
             doc_id: doc_id.to_string(),
             client,
             stmts: Rc::new(RefCell::new(HashMap::new())),
+            append_profile,
         })
     }
 
-    fn stmt(&self, c: &mut Client, sql: &'static str) -> Result<Statement> {
+    pub(crate) fn stmt(&self, c: &mut Client, sql: &'static str) -> Result<Statement> {
         if let Some(stmt) = self.stmts.borrow().get(sql) {
             return Ok(stmt.clone());
         }
@@ -206,20 +221,24 @@ struct CachedPayloadRow {
     last_counter: u64,
 }
 
-struct PgNodeStore {
+#[derive(Clone)]
+pub(crate) struct PgNodeStore {
     ctx: PgCtx,
-    cache: RefCell<HashMap<NodeId, Option<CachedNodeRow>>>,
+    cache: Rc<RefCell<HashMap<NodeId, Option<CachedNodeRow>>>>,
+    pending_last_change: Rc<RefCell<HashSet<NodeId>>>,
 }
 
 impl PgNodeStore {
-    fn new(ctx: PgCtx) -> Self {
+    pub(crate) fn new(ctx: PgCtx) -> Self {
         Self {
             ctx,
-            cache: RefCell::new(HashMap::new()),
+            cache: Rc::new(RefCell::new(HashMap::new())),
+            pending_last_change: Rc::new(RefCell::new(HashSet::new())),
         }
     }
 
     fn load_node_row(&self, node: NodeId) -> Result<Option<CachedNodeRow>> {
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -244,6 +263,12 @@ impl PgNodeStore {
         let tombstone: bool = row.get(2);
         let last_change: Option<Vec<u8>> = row.get(3);
         let deleted_at: Option<Vec<u8>> = row.get(4);
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_load_count += 1;
+            profile.node_load_ms += elapsed_ms;
+        }
         Ok(Some(CachedNodeRow {
             parent,
             order_key,
@@ -261,11 +286,201 @@ impl PgNodeStore {
         self.cache.borrow_mut().insert(node, loaded.clone());
         Ok(loaded)
     }
+
+    // Payload application may need the node's current parent / deleted_at state before core can
+    // decide payload visibility and defensive-delete effects. Preload those node rows in one SQL
+    // pass so incremental materialization does not degrade into per-op lookups.
+    fn preload_for_ops(&self, ops: &[Operation]) -> Result<()> {
+        let mut referenced: HashSet<NodeId> = HashSet::new();
+        for op in ops {
+            // Always preload the op's own node. Payload / delete / move semantics all consult the
+            // current cached row, not just the incoming operation payload.
+            let node = op.kind.node();
+            if node != NodeId::TRASH {
+                referenced.insert(node);
+            }
+            match &op.kind {
+                OperationKind::Insert { parent, .. } => {
+                    // Inserts can immediately affect the parent subtree's tombstone / visibility
+                    // state, so preload the current parent row too.
+                    if *parent != NodeId::TRASH {
+                        referenced.insert(*parent);
+                    }
+                }
+                OperationKind::Move { new_parent, .. } => {
+                    // Moves can revive or reindex under the destination parent, so preload it.
+                    if *new_parent != NodeId::TRASH {
+                        referenced.insert(*new_parent);
+                    }
+                }
+                OperationKind::Delete { .. }
+                | OperationKind::Tombstone { .. }
+                | OperationKind::Payload { .. } => {}
+            }
+        }
+
+        if referenced.is_empty() {
+            return Ok(());
+        }
+
+        let mut requested_nodes: Vec<NodeId> = referenced.iter().copied().collect();
+        requested_nodes.sort();
+        let requested_bytes: Vec<Vec<u8>> =
+            requested_nodes.iter().map(|node| node_to_bytes(*node).to_vec()).collect();
+
+        let load_started_at = Instant::now();
+        let mut loaded_nodes: HashSet<NodeId> = HashSet::with_capacity(requested_nodes.len());
+        {
+            let mut c = self.ctx.client.borrow_mut();
+            // Fetch every currently-existing node row in one query so the cache reflects the
+            // pre-apply materialized state before core starts mutating it.
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "SELECT node, parent, order_key, tombstone, last_change, deleted_at \
+                 FROM treecrdt_nodes \
+                 WHERE doc_id = $1 \
+                   AND node IN (SELECT DISTINCT i.node FROM unnest($2::bytea[]) AS i(node))",
+            )?;
+            let rows =
+                c.query(&stmt, &[&self.ctx.doc_id, &requested_bytes]).map_err(storage_debug)?;
+            let mut cache = self.cache.borrow_mut();
+            for row in rows {
+                let node_bytes: Vec<u8> = row.get(0);
+                let node = bytes_to_node(&node_bytes)?;
+                let parent_bytes: Option<Vec<u8>> = row.get(1);
+                let parent = match parent_bytes {
+                    None => None,
+                    Some(b) => Some(bytes_to_node(&b)?),
+                };
+                let order_key: Option<Vec<u8>> = row.get(2);
+                let tombstone: bool = row.get(3);
+                let last_change: Option<Vec<u8>> = row.get(4);
+                let deleted_at: Option<Vec<u8>> = row.get(5);
+                loaded_nodes.insert(node);
+                cache.insert(
+                    node,
+                    Some(CachedNodeRow {
+                        parent,
+                        order_key,
+                        tombstone,
+                        last_change,
+                        deleted_at,
+                    }),
+                );
+            }
+        }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = load_started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_load_count += loaded_nodes.len() as u64;
+            profile.node_load_ms += elapsed_ms;
+        }
+
+        let missing: Vec<NodeId> = requested_nodes
+            .into_iter()
+            .filter(|node| !loaded_nodes.contains(node))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let ensure_started_at = Instant::now();
+        let missing_bytes: Vec<Vec<u8>> =
+            missing.iter().map(|node| node_to_bytes(*node).to_vec()).collect();
+        {
+            let mut c = self.ctx.client.borrow_mut();
+            // Core assumes referenced nodes exist in the NodeStore. For brand-new nodes that have
+            // never been materialized before, insert placeholder rows now and let later attach /
+            // payload / delete steps fill in the real state.
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "INSERT INTO treecrdt_nodes(doc_id, node) \
+                 SELECT $1, src.node \
+                 FROM unnest($2::bytea[]) AS src(node) \
+                 ON CONFLICT (doc_id, node) DO NOTHING",
+            )?;
+            c.execute(&stmt, &[&self.ctx.doc_id, &missing_bytes]).map_err(storage_debug)?;
+        }
+        {
+            let mut cache = self.cache.borrow_mut();
+            for node in missing {
+                cache.insert(
+                    node,
+                    Some(CachedNodeRow {
+                        parent: None,
+                        order_key: None,
+                        tombstone: false,
+                        last_change: None,
+                        deleted_at: None,
+                    }),
+                );
+            }
+        }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = ensure_started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_ensure_count += missing_bytes.len() as u64;
+            profile.node_ensure_ms += elapsed_ms;
+        }
+
+        Ok(())
+    }
+
+    // last_change is updated many times while core applies a batch. Buffer the touched nodes in
+    // memory and flush once at the end so we avoid one UPDATE per node mutation.
+    pub(crate) fn flush_last_change(&self) -> Result<()> {
+        let dirty_nodes = {
+            let mut pending = self.pending_last_change.borrow_mut();
+            std::mem::take(&mut *pending)
+        };
+        if dirty_nodes.is_empty() {
+            return Ok(());
+        }
+
+        let started_at = Instant::now();
+        let mut nodes: Vec<Vec<u8>> = Vec::with_capacity(dirty_nodes.len());
+        let mut values: Vec<Vec<u8>> = Vec::with_capacity(dirty_nodes.len());
+        {
+            let cache = self.cache.borrow();
+            for node in dirty_nodes {
+                let Some(Some(row)) = cache.get(&node) else {
+                    continue;
+                };
+                let Some(last_change) = &row.last_change else {
+                    continue;
+                };
+                nodes.push(node_to_bytes(node).to_vec());
+                values.push(last_change.clone());
+            }
+        }
+        if nodes.is_empty() {
+            return Ok(());
+        }
+
+        let mut c = self.ctx.client.borrow_mut();
+        // Write the buffered last_change vectors back in one batched UPDATE so the persisted
+        // subtree version vectors stay aligned with the in-memory cache core just mutated.
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "UPDATE treecrdt_nodes AS dst \
+             SET last_change = src.last_change \
+             FROM unnest($2::bytea[], $3::bytea[]) AS src(node, last_change) \
+             WHERE dst.doc_id = $1 AND dst.node = src.node",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &nodes, &values]).map_err(storage_debug)?;
+
+        if let Some(profile) = &self.ctx.append_profile {
+            profile.borrow_mut().node_last_change_ms += started_at.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        Ok(())
+    }
 }
 
 impl treecrdt_core::NodeStore for PgNodeStore {
     fn reset(&mut self) -> Result<()> {
         self.cache.borrow_mut().clear();
+        self.pending_last_change.borrow_mut().clear();
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(&mut c, "DELETE FROM treecrdt_nodes WHERE doc_id = $1")?;
         c.execute(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?;
@@ -297,6 +512,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             return Ok(());
         }
 
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -319,6 +535,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
                     deleted_at: None,
                 }),
             );
+        }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_ensure_count += 1;
+            profile.node_ensure_ms += elapsed_ms;
         }
         Ok(())
     }
@@ -369,6 +591,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             return Ok(());
         }
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -384,6 +607,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             row.parent = None;
             row.order_key = None;
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_detach_count += 1;
+            profile.node_detach_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -394,6 +623,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         self.ensure_node(node)?;
         self.ensure_node(parent)?;
 
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let parent_bytes = node_to_bytes(parent);
         let mut c = self.ctx.client.borrow_mut();
@@ -419,6 +649,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
                 row.parent = Some(parent);
                 row.order_key = None;
             }
+            if let Some(profile) = &self.ctx.append_profile {
+                let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+                let mut profile = profile.borrow_mut();
+                profile.node_attach_count += 1;
+                profile.node_attach_ms += elapsed_ms;
+            }
             return Ok(());
         }
 
@@ -443,6 +679,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             row.parent = Some(parent);
             row.order_key = Some(order_key);
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_attach_count += 1;
+            profile.node_attach_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -455,6 +697,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
     fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()> {
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -472,6 +715,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.tombstone = tombstone;
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_tombstone_count += 1;
+            profile.node_tombstone_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -488,23 +737,20 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
     fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()> {
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let mut vv = self.last_change(node)?;
         vv.merge(delta);
         let bytes = vv_to_bytes(&vv)?;
 
-        let node_bytes = node_to_bytes(node);
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "UPDATE treecrdt_nodes \
-             SET last_change = $3 \
-             WHERE doc_id = $1 AND node = $2",
-        )?;
-        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
-            .map_err(storage_debug)?;
-
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.last_change = Some(bytes);
+        }
+        self.pending_last_change.borrow_mut().insert(node);
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_last_change_count += 1;
+            profile.node_last_change_ms += elapsed_ms;
         }
         Ok(())
     }
@@ -522,6 +768,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
 
     fn merge_deleted_at(&mut self, node: NodeId, delta: &VersionVector) -> Result<()> {
         self.ensure_node(node)?;
+        let started_at = Instant::now();
         let mut vv = self.deleted_at(node)?.unwrap_or_else(VersionVector::new);
         vv.merge(delta);
         let bytes = vv_to_bytes(&vv)?;
@@ -540,6 +787,12 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.deleted_at = Some(bytes);
         }
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.node_deleted_at_count += 1;
+            profile.node_deleted_at_ms += elapsed_ms;
+        }
         Ok(())
     }
 
@@ -556,13 +809,13 @@ impl treecrdt_core::NodeStore for PgNodeStore {
     }
 }
 
-struct PgPayloadStore {
+pub(crate) struct PgPayloadStore {
     ctx: PgCtx,
     cache: RefCell<HashMap<NodeId, Option<CachedPayloadRow>>>,
 }
 
 impl PgPayloadStore {
-    fn new(ctx: PgCtx) -> Self {
+    pub(crate) fn new(ctx: PgCtx) -> Self {
         Self {
             ctx,
             cache: RefCell::new(HashMap::new()),
@@ -570,6 +823,7 @@ impl PgPayloadStore {
     }
 
     fn load_payload_row(&self, node: NodeId) -> Result<Option<CachedPayloadRow>> {
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -588,6 +842,12 @@ impl PgPayloadStore {
         let last_lamport = row.get::<_, i64>(1).max(0) as Lamport;
         let last_replica: Vec<u8> = row.get(2);
         let last_counter = row.get::<_, i64>(3).max(0) as u64;
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.payload_load_count += 1;
+            profile.payload_load_ms += elapsed_ms;
+        }
         Ok(Some(CachedPayloadRow {
             payload,
             last_lamport,
@@ -641,6 +901,7 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
         payload: Option<Vec<u8>>,
         writer: (Lamport, OperationId),
     ) -> Result<()> {
+        let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let (lamport, id) = writer;
         let OperationId { replica, counter } = id;
@@ -673,22 +934,73 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
                 last_counter: counter,
             }),
         );
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.payload_set_count += 1;
+            profile.payload_set_ms += elapsed_ms;
+        }
         Ok(())
     }
 }
 
-struct PgParentOpIndex {
+pub(crate) struct PgParentOpIndex {
     ctx: PgCtx,
+    pending: Vec<PendingParentOpRefRow>,
 }
 
 impl PgParentOpIndex {
-    fn new(ctx: PgCtx) -> Self {
-        Self { ctx }
+    pub(crate) fn new(ctx: PgCtx) -> Self {
+        Self {
+            ctx,
+            pending: Vec::new(),
+        }
+    }
+
+    // Core records parent->op_ref relationships as it applies ops, but we buffer those rows here
+    // and insert them once per batch to avoid churning treecrdt_oprefs_children on every op.
+    pub(crate) fn flush(&mut self) -> Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+
+        let started_at = Instant::now();
+        let mut parents: Vec<Vec<u8>> = Vec::with_capacity(self.pending.len());
+        let mut op_refs: Vec<Vec<u8>> = Vec::with_capacity(self.pending.len());
+        let mut seqs: Vec<i64> = Vec::with_capacity(self.pending.len());
+        for row in self.pending.drain(..) {
+            parents.push(row.parent);
+            op_refs.push(row.op_ref);
+            seqs.push(row.seq);
+        }
+
+        let mut c = self.ctx.client.borrow_mut();
+        // INSERT .. DO NOTHING keeps this flush idempotent if the same parent/op_ref pair was
+        // buffered more than once while applying a batch.
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) \
+             SELECT $1, src.parent, src.op_ref, src.seq \
+             FROM unnest($2::bytea[], $3::bytea[], $4::bigint[]) AS src(parent, op_ref, seq) \
+             ON CONFLICT (doc_id, parent, op_ref) DO NOTHING",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &parents, &op_refs, &seqs])
+            .map_err(storage_debug)?;
+
+        if let Some(profile) = &self.ctx.append_profile {
+            let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut profile = profile.borrow_mut();
+            profile.index_record_count += parents.len() as u64;
+            profile.index_record_ms += elapsed_ms;
+        }
+
+        Ok(())
     }
 }
 
 impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
     fn reset(&mut self) -> Result<()> {
+        self.pending.clear();
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
             &mut c,
@@ -702,36 +1014,33 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
         if parent == NodeId::TRASH {
             return Ok(());
         }
-        let parent_bytes = node_to_bytes(parent);
-        let op_ref = derive_op_ref_v0(&self.ctx.doc_id, op_id.replica.as_bytes(), op_id.counter);
-        let op_ref_bytes = op_ref.as_slice();
-
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) VALUES ($1,$2,$3,$4) \
-             ON CONFLICT (doc_id, parent, op_ref) DO NOTHING",
-        )?;
-        c.execute(
-            &stmt,
-            &[
-                &self.ctx.doc_id,
-                &parent_bytes.as_slice(),
-                &op_ref_bytes,
-                &(seq as i64),
-            ],
-        )
-        .map_err(storage_debug)?;
+        self.pending.push(PendingParentOpRefRow {
+            parent: node_to_bytes(parent).to_vec(),
+            op_ref: derive_op_ref_v0(&self.ctx.doc_id, op_id.replica.as_bytes(), op_id.counter)
+                .to_vec(),
+            seq: seq as i64,
+        });
+        if self.pending.len() >= PARENT_OP_INDEX_FLUSH_SIZE {
+            self.flush()?;
+        }
         Ok(())
     }
 }
 
-struct PgOpStorage {
+const PARENT_OP_INDEX_FLUSH_SIZE: usize = 4096;
+
+struct PendingParentOpRefRow {
+    parent: Vec<u8>,
+    op_ref: Vec<u8>,
+    seq: i64,
+}
+
+pub(crate) struct PgOpStorage {
     ctx: PgCtx,
 }
 
 impl PgOpStorage {
-    fn new(ctx: PgCtx) -> Self {
+    pub(crate) fn new(ctx: PgCtx) -> Self {
         Self { ctx }
     }
 }
@@ -756,12 +1065,14 @@ impl Storage for PgOpStorage {
 
     fn latest_lamport(&self) -> Lamport {
         let mut c = self.ctx.client.borrow_mut();
-        let rows = c
-            .query(
-                "SELECT COALESCE(MAX(lamport), 0) FROM treecrdt_ops WHERE doc_id = $1",
-                &[&self.ctx.doc_id],
-            )
-            .ok();
+        let stmt = match self.ctx.stmt(
+            &mut c,
+            "SELECT COALESCE(MAX(lamport), 0) FROM treecrdt_ops WHERE doc_id = $1",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return 0,
+        };
+        let rows = c.query(&stmt, &[&self.ctx.doc_id]).ok();
         match rows.and_then(|r| r.first().map(|row| row.get::<_, i64>(0))) {
             Some(v) => v.max(0) as Lamport,
             None => 0,
@@ -793,7 +1104,7 @@ impl Storage for PgOpStorage {
     }
 }
 
-fn row_to_op(row: Row) -> Result<Operation> {
+pub(crate) fn row_to_op(row: Row) -> Result<Operation> {
     let lamport = row.get::<_, i64>(0).max(0) as Lamport;
     let replica: Vec<u8> = row.get(1);
     let counter = row.get::<_, i64>(2).max(0) as u64;
@@ -857,7 +1168,7 @@ fn row_to_op(row: Row) -> Result<Operation> {
     Ok(Operation { meta, kind })
 }
 
-fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
+pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     let lamport = row.get::<_, i64>(base).max(0) as Lamport;
     let replica: Vec<u8> = row.get(base + 1);
     let counter = row.get::<_, i64>(base + 2).max(0) as u64;
@@ -1042,15 +1353,148 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
     Ok(inserted > 0)
 }
 
+fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Result<Vec<Vec<u8>>> {
+    if ops.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut op_refs: Vec<Vec<u8>> = Vec::with_capacity(ops.len());
+    let mut lamports: Vec<i64> = Vec::with_capacity(ops.len());
+    let mut replicas: Vec<Vec<u8>> = Vec::with_capacity(ops.len());
+    let mut counters: Vec<i64> = Vec::with_capacity(ops.len());
+    let mut kinds: Vec<String> = Vec::with_capacity(ops.len());
+    let mut parents: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut nodes: Vec<Vec<u8>> = Vec::with_capacity(ops.len());
+    let mut new_parents: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut order_keys: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut payloads: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut known_states: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+
+    for op in ops {
+        let replica = op.meta.id.replica.as_bytes();
+        let counter = op.meta.id.counter;
+        let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);
+        let row = op_kind_to_db(op)?;
+
+        op_refs.push(op_ref.to_vec());
+        lamports.push(op.meta.lamport as i64);
+        replicas.push(replica.to_vec());
+        counters.push(counter as i64);
+        kinds.push(row.kind.to_string());
+        parents.push(row.parent);
+        nodes.push(row.node);
+        new_parents.push(row.new_parent);
+        order_keys.push(row.order_key);
+        payloads.push(row.payload);
+        known_states.push(row.known_state);
+    }
+
+    let stmt = ctx.stmt(
+        c,
+        "INSERT INTO treecrdt_ops (doc_id, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
+         SELECT \
+           $1, \
+           src.op_ref, src.lamport, src.replica, src.counter, src.kind, src.parent, src.node, src.new_parent, src.order_key, src.payload, src.known_state \
+         FROM unnest( \
+           $2::bytea[], \
+           $3::bigint[], \
+           $4::bytea[], \
+           $5::bigint[], \
+           $6::text[], \
+           $7::bytea[], \
+           $8::bytea[], \
+           $9::bytea[], \
+           $10::bytea[], \
+           $11::bytea[], \
+           $12::bytea[] \
+         ) AS src(op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
+         ON CONFLICT (doc_id, op_ref) DO NOTHING \
+         RETURNING op_ref",
+    )?;
+
+    let rows = c
+        .query(
+            &stmt,
+            &[
+                &ctx.doc_id,
+                &op_refs,
+                &lamports,
+                &replicas,
+                &counters,
+                &kinds,
+                &parents,
+                &nodes,
+                &new_parents,
+                &order_keys,
+                &payloads,
+                &known_states,
+            ],
+        )
+        .map_err(storage_debug)?;
+
+    let mut inserted = Vec::with_capacity(rows.len());
+    for row in rows {
+        inserted.push(row.get::<_, Vec<u8>>(0));
+    }
+    Ok(inserted)
+}
+
+fn select_inserted_ops(
+    ctx: &PgCtx,
+    ops: &[Operation],
+    inserted_op_refs: Vec<Vec<u8>>,
+) -> Vec<Operation> {
+    if inserted_op_refs.is_empty() {
+        return Vec::new();
+    }
+    if inserted_op_refs.len() == ops.len() {
+        return ops.to_vec();
+    }
+
+    // bulk_insert_ops_in_tx returns exactly the op_refs Postgres accepted.
+    // Preserve multiplicity here so a batch like [opA, opA, opB] only
+    // materializes [opA, opB] instead of replaying opA twice.
+    let mut remaining_by_ref: HashMap<Vec<u8>, usize> = HashMap::new();
+    for op_ref in inserted_op_refs {
+        *remaining_by_ref.entry(op_ref).or_insert(0) += 1;
+    }
+
+    let mut inserted_ops = Vec::new();
+    for op in ops {
+        let replica = op.meta.id.replica.as_bytes();
+        let counter = op.meta.id.counter;
+        let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);
+        let Some(remaining) = remaining_by_ref.get_mut(op_ref.as_slice()) else {
+            continue;
+        };
+        if *remaining == 0 {
+            continue;
+        }
+        *remaining -= 1;
+        inserted_ops.push(op.clone());
+    }
+
+    inserted_ops
+}
+
 fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) -> Result<()> {
     if ops.is_empty() {
         return Ok(());
     }
 
+    // At this point treecrdt_ops already contains the inserted operations. This temporary
+    // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
     let nodes = PgNodeStore::new(ctx.clone());
+    if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
+        // Payload ops can depend on the current node row, so front-load the reads here.
+        nodes.preload_for_ops(&ops)?;
+    }
+    let node_flush = nodes.clone();
     let payloads = PgPayloadStore::new(ctx.clone());
     let mut index = PgParentOpIndex::new(ctx.clone());
 
+    // NoopStorage is intentional: append_ops_in_tx already persisted the op log, and this pass is
+    // only responsible for materialized state (nodes/payload/index/head) through treecrdt-core.
     let mut crdt = TreeCrdt::with_stores(
         ReplicaId::new(b"postgres"),
         NoopStorage,
@@ -1059,8 +1503,18 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
         payloads,
     )?;
 
+    let materialize_started_at = Instant::now();
+    // This is the main handoff into treecrdt-core for remote/bulk append batches:
+    // defensive delete + revival, payload LWW, tombstone refresh, and oprefs_children updates.
     let next = apply_incremental_ops(&mut crdt, &mut index, meta, ops)?
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
+    node_flush.flush_last_change()?;
+    index.flush()?;
+    if let Some(profile) = &ctx.append_profile {
+        profile.borrow_mut().materialize_ms +=
+            materialize_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
+    let update_head_started_at = Instant::now();
     update_tree_meta_head(
         &ctx.client,
         &ctx.doc_id,
@@ -1069,6 +1523,10 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
         next.counter,
         next.seq,
     )?;
+    if let Some(profile) = &ctx.append_profile {
+        profile.borrow_mut().update_head_ms +=
+            update_head_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
     Ok(())
 }
 
@@ -1098,30 +1556,97 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
     // Serialize per-doc writers across all server instances (incremental materialization updates
     // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
     let meta = load_tree_meta_for_update(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    // This profiler is only for large-upload benchmark/debug runs. The normal
+    // append path keeps the hook disabled and pays only the `OnceLock` check.
+    let append_profile = append_profile_enabled().then(|| {
+        Rc::new(RefCell::new(PgAppendProfile::new(
+            ops.len(),
+            meta.dirty,
+            meta.head_seq(),
+        )))
+    });
+    let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
 
-    let mut inserted_ops: Vec<Operation> = Vec::new();
-    {
-        let mut c = client.borrow_mut();
-        for op in ops {
-            if insert_op_in_tx(&ctx, &mut c, op)? {
-                inserted_ops.push(op.clone());
+    // treecrdt_ops is the source of truth. This function first appends/dedupes the op log in SQL
+    // and only then decides whether it can replay the inserted subset through core materialization.
+    //
+    // If the doc is already dirty, derived tables are stale, so we only append to the op log and
+    // leave full reconstruction to ensure_materialized_in_tx on a later read.
+    if meta.dirty {
+        let bulk_insert_started_at = Instant::now();
+        let inserted = {
+            let mut c = client.borrow_mut();
+            bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
+        };
+        if let Some(profile) = &append_profile {
+            let mut profile = profile.borrow_mut();
+            profile.bulk_insert_ms += bulk_insert_started_at.elapsed().as_secs_f64() * 1000.0;
+            profile.bulk_inserted_ops += inserted.len();
+        }
+        if !inserted.is_empty() {
+            set_tree_meta_dirty(client, doc_id, true)?;
+            if let Some(profile) = &append_profile {
+                profile.borrow_mut().fallback_mark_dirty = true;
             }
         }
+        let inserted_count = inserted.len().min(u64::MAX as usize) as u64;
+        if let Some(profile) = &append_profile {
+            profile.borrow().log(doc_id, inserted_count as usize);
+        }
+        return Ok(inserted_count);
+    }
+
+    let bulk_insert_started_at = Instant::now();
+    let inserted_op_refs = {
+        let mut c = client.borrow_mut();
+        bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
+    };
+    if let Some(profile) = &append_profile {
+        let mut profile = profile.borrow_mut();
+        profile.bulk_insert_ms += bulk_insert_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.bulk_inserted_ops += inserted_op_refs.len();
+    }
+
+    if inserted_op_refs.is_empty() {
+        if let Some(profile) = &append_profile {
+            profile.borrow().log(doc_id, 0);
+        }
+        return Ok(0);
+    }
+
+    let dedupe_filter_started_at = Instant::now();
+    // Only materialize the ops Postgres actually inserted. This keeps duplicate opRefs in the
+    // input batch from being replayed twice through core materialization.
+    let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
+    if let Some(profile) = &append_profile {
+        profile.borrow_mut().dedupe_filter_ms +=
+            dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
     }
 
     if inserted_ops.is_empty() {
+        if let Some(profile) = &append_profile {
+            profile.borrow().log(doc_id, 0);
+        }
         return Ok(0);
     }
 
     let inserted = inserted_ops.len();
+    // If incremental materialization fails, keep the op-log append and mark the doc dirty so the
+    // next rebuild replays the full log through the same core semantics.
     let _ = try_incremental_materialization(
-        meta.dirty,
+        false,
         || materialize_ops_in_order(ctx, &meta, inserted_ops),
         || {
             let _ = set_tree_meta_dirty(client, doc_id, true);
+            if let Some(profile) = &append_profile {
+                profile.borrow_mut().fallback_mark_dirty = true;
+            }
         },
     );
+
+    if let Some(profile) = &append_profile {
+        profile.borrow().log(doc_id, inserted);
+    }
 
     Ok(inserted.min(u64::MAX as usize) as u64)
 }
@@ -1162,7 +1687,7 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
     }
 }
 
-fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
+pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let meta = load_tree_meta(client, doc_id)?;
     if !meta.dirty {
         return Ok(());
@@ -1179,6 +1704,7 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
     let ctx = PgCtx::new(client.clone(), doc_id)?;
     let storage = PgOpStorage::new(ctx.clone());
     let mut nodes = PgNodeStore::new(ctx.clone());
+    let node_flush = nodes.clone();
     let mut payloads = PgPayloadStore::new(ctx.clone());
     let mut index = PgParentOpIndex::new(ctx.clone());
 
@@ -1193,7 +1719,11 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
         nodes,
         payloads,
     )?;
+    // Full rebuild path: replay the persisted op log through treecrdt-core to reconstruct
+    // nodes, payloads, subtree opRef index rows, and cached tombstone state from scratch.
     crdt.replay_from_storage_with_materialization(&mut index)?;
+    node_flush.flush_last_change()?;
+    index.flush()?;
 
     let seq = crdt.log_len().min(u64::MAX as usize) as u64;
     if let Some(last) = crdt.head_op() {
@@ -1210,541 +1740,4 @@ fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Resu
     }
 
     Ok(())
-}
-
-pub fn max_lamport(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport> {
-    ensure_doc_meta(client, doc_id)?;
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT COALESCE(MAX(lamport), 0) FROM treecrdt_ops WHERE doc_id = $1",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(lamport) row".into()))?;
-    Ok(row.get::<_, i64>(0).max(0) as Lamport)
-}
-
-pub fn list_op_refs_all(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
-    ensure_doc_meta(client, doc_id)?;
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT op_ref FROM treecrdt_ops WHERE doc_id = $1 ORDER BY lamport, replica, counter",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let bytes: Vec<u8> = row.get(0);
-        out.push(op_ref_from_bytes(&bytes)?);
-    }
-    Ok(out)
-}
-
-pub fn list_op_refs_children(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
-    ensure_materialized(client, doc_id)?;
-    let parent_bytes = node_to_bytes(parent);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT op_ref FROM treecrdt_oprefs_children WHERE doc_id = $1 AND parent = $2 ORDER BY seq",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let bytes: Vec<u8> = row.get(0);
-        out.push(op_ref_from_bytes(&bytes)?);
-    }
-    Ok(out)
-}
-
-pub fn list_op_refs_children_with_parent_payload(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
-    ensure_materialized(client, doc_id)?;
-    let parent_bytes = node_to_bytes(parent);
-    let mut c = client.borrow_mut();
-
-    let child_rows = c
-        .query(
-            "SELECT op_ref FROM treecrdt_oprefs_children WHERE doc_id = $1 AND parent = $2 ORDER BY seq",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let mut out = Vec::with_capacity(child_rows.len() + 1);
-    for row in child_rows {
-        let bytes: Vec<u8> = row.get(0);
-        out.push(op_ref_from_bytes(&bytes)?);
-    }
-
-    let payload_rows = c
-        .query(
-            "SELECT last_replica, last_counter \
-             FROM treecrdt_payload \
-             WHERE doc_id = $1 AND node = $2 \
-             LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    if let Some(row) = payload_rows.first() {
-        let replica: Vec<u8> = row.get(0);
-        let counter = row.get::<_, i64>(1).max(0) as u64;
-        if counter > 0 {
-            let op_ref = derive_op_ref_v0(doc_id, &replica, counter);
-            if !out.contains(&op_ref) {
-                out.push(op_ref);
-            }
-            return Ok(out);
-        }
-    }
-
-    let fallback_rows = c
-        .query(
-            "SELECT op_ref \
-             FROM treecrdt_ops \
-             WHERE doc_id = $1 AND node = $2 \
-               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
-             ORDER BY lamport DESC, replica DESC, counter DESC \
-             LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    if let Some(row) = fallback_rows.first() {
-        let op_ref: Vec<u8> = row.get(0);
-        let op_ref = op_ref_from_bytes(&op_ref)?;
-        if !out.contains(&op_ref) {
-            out.push(op_ref);
-        }
-    }
-
-    Ok(out)
-}
-
-pub fn get_ops_by_op_refs(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    op_refs: &[[u8; OPREF_V0_WIDTH]],
-) -> Result<Vec<Operation>> {
-    ensure_doc_meta(client, doc_id)?;
-    if op_refs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let refs: Vec<Vec<u8>> = op_refs.iter().map(|r| r.to_vec()).collect();
-
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT \
-              i.ord, \
-              o.lamport, o.replica, o.counter, o.kind, o.parent, o.node, o.new_parent, o.order_key, o.payload, o.known_state \
-             FROM unnest($2::bytea[]) WITH ORDINALITY AS i(op_ref, ord) \
-             LEFT JOIN treecrdt_ops o \
-               ON o.doc_id = $1 AND o.op_ref = i.op_ref \
-             ORDER BY i.ord ASC",
-            &[&doc_id, &refs],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let kind: Option<String> = row.get(4);
-        if kind.is_none() {
-            return Err(Error::Storage("opRef missing locally".into()));
-        }
-        out.push(row_to_op_at(&row, 1)?);
-    }
-    Ok(out)
-}
-
-pub fn ops_since(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    lamport: Lamport,
-    root: Option<NodeId>,
-) -> Result<Vec<Operation>> {
-    ensure_doc_meta(client, doc_id)?;
-    let root_bytes: Option<Vec<u8>> = root.map(|n| node_to_bytes(n).to_vec());
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-             "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-              FROM treecrdt_ops \
-              WHERE doc_id = $1 AND lamport > $2 \
-               AND ($3::bytea IS NULL OR parent = $3 OR node = $3 OR new_parent = $3) \
-              ORDER BY lamport, replica, counter",
-             &[&doc_id, &(lamport as i64), &root_bytes],
-         )
-        .map_err(storage_debug)?;
-    rows.into_iter().map(row_to_op).collect()
-}
-
-#[derive(Clone, Debug)]
-pub struct TreeChildRow {
-    pub node: NodeId,
-    pub order_key: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TreeRow {
-    pub node: NodeId,
-    pub parent: Option<NodeId>,
-    pub order_key: Option<Vec<u8>>,
-    pub tombstone: bool,
-}
-
-pub fn tree_children(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-) -> Result<Vec<NodeId>> {
-    ensure_materialized(client, doc_id)?;
-    if parent == NodeId::TRASH {
-        return Ok(Vec::new());
-    }
-    let parent_bytes = node_to_bytes(parent);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT node FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-             ORDER BY order_key, node",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let node: Vec<u8> = row.get(0);
-        out.push(bytes_to_node(&node)?);
-    }
-    Ok(out)
-}
-
-pub fn tree_children_page(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-    cursor: Option<(Vec<u8>, Vec<u8>)>,
-    limit: u32,
-) -> Result<Vec<TreeChildRow>> {
-    ensure_materialized(client, doc_id)?;
-    if parent == NodeId::TRASH {
-        return Ok(Vec::new());
-    }
-    let parent_bytes = node_to_bytes(parent);
-    let after_order_key: Option<Vec<u8>> = cursor.as_ref().map(|(k, _n)| k.clone());
-    let after_node: Option<Vec<u8>> = cursor.as_ref().map(|(_k, n)| n.clone());
-
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT node, order_key \
-             FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-               AND ($3::bytea IS NULL OR (order_key > $3::bytea OR (order_key = $3::bytea AND node > $4::bytea))) \
-             ORDER BY order_key, node \
-             LIMIT $5",
-            &[
-                &doc_id,
-                &parent_bytes.as_slice(),
-                &after_order_key,
-                &after_node,
-                &(limit as i64),
-            ],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let node: Vec<u8> = row.get(0);
-        let order_key: Option<Vec<u8>> = row.get(1);
-        out.push(TreeChildRow {
-            node: bytes_to_node(&node)?,
-            order_key,
-        });
-    }
-    Ok(out)
-}
-
-pub fn tree_dump(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Vec<TreeRow>> {
-    ensure_materialized(client, doc_id)?;
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT node, parent, order_key, tombstone \
-             FROM treecrdt_nodes \
-             WHERE doc_id = $1 \
-             ORDER BY node",
-            &[&doc_id],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let node: Vec<u8> = row.get(0);
-        let parent: Option<Vec<u8>> = row.get(1);
-        let order_key: Option<Vec<u8>> = row.get(2);
-        let tombstone: bool = row.get(3);
-        out.push(TreeRow {
-            node: bytes_to_node(&node)?,
-            parent: match parent {
-                None => None,
-                Some(b) => Some(bytes_to_node(&b)?),
-            },
-            order_key,
-            tombstone,
-        });
-    }
-    Ok(out)
-}
-
-pub fn tree_payload(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    node: NodeId,
-) -> Result<Option<Vec<u8>>> {
-    ensure_materialized(client, doc_id)?;
-    let node_bytes = node_to_bytes(node);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT payload FROM treecrdt_payload WHERE doc_id = $1 AND node = $2 LIMIT 1",
-            &[&doc_id, &node_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    let payload: Option<Vec<u8>> = row.get(0);
-    Ok(payload)
-}
-
-pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64> {
-    ensure_materialized(client, doc_id)?;
-    let root_bytes = node_to_bytes(NodeId::ROOT);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT COUNT(*) FROM treecrdt_nodes \
-             WHERE doc_id = $1 AND tombstone = FALSE AND node <> $2",
-            &[&doc_id, &root_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.first().ok_or_else(|| Error::Storage("missing COUNT(*) row".into()))?;
-    Ok(row.get::<_, i64>(0).max(0) as u64)
-}
-
-pub fn tree_parent(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    node: NodeId,
-) -> Result<Option<NodeId>> {
-    ensure_materialized(client, doc_id)?;
-    let node_bytes = node_to_bytes(node);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT parent FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
-            &[&doc_id, &node_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = match rows.first() {
-        None => return Ok(None),
-        Some(r) => r,
-    };
-    let parent: Option<Vec<u8>> = row.get(0);
-    parent.map(|b| bytes_to_node(&b)).transpose()
-}
-
-pub fn tree_exists(client: &Rc<RefCell<Client>>, doc_id: &str, node: NodeId) -> Result<bool> {
-    ensure_materialized(client, doc_id)?;
-    let node_bytes = node_to_bytes(node);
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT 1 FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2 AND tombstone = FALSE LIMIT 1",
-            &[&doc_id, &node_bytes.as_slice()],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(!rows.is_empty())
-}
-
-pub fn replica_max_counter(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &[u8],
-) -> Result<u64> {
-    ensure_doc_meta(client, doc_id)?;
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT COALESCE(MAX(counter), 0) FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
-            &[&doc_id, &replica],
-        )
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
-    Ok(row.get::<_, i64>(0).max(0) as u64)
-}
-
-type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
-
-struct LocalOpSession {
-    ctx: PgCtx,
-    meta: TreeMeta,
-    crdt: LocalCrdt,
-}
-
-fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = f();
-
-    match res {
-        Ok(v) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
-fn begin_local_core_op(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-) -> Result<LocalOpSession> {
-    ensure_materialized_in_tx(client, doc_id)?;
-    let meta = load_tree_meta_for_update(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
-
-    let storage = PgOpStorage::new(ctx.clone());
-    let nodes = PgNodeStore::new(ctx.clone());
-    let payloads = PgPayloadStore::new(ctx.clone());
-    let crdt = TreeCrdt::with_stores(
-        replica.clone(),
-        storage,
-        LamportClock::default(),
-        nodes,
-        payloads,
-    )?;
-
-    Ok(LocalOpSession { ctx, meta, crdt })
-}
-
-fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: LocalFinalizePlan) {
-    let mut post_materialization_ok = true;
-    let mut seq = 0u64;
-
-    let mut op_index = PgParentOpIndex::new(session.ctx.clone());
-    match session
-        .crdt
-        .finalize_local_with_plan(op, &mut op_index, session.meta.head_seq, &plan)
-    {
-        Ok(v) => seq = v,
-        Err(_) => post_materialization_ok = false,
-    }
-
-    if post_materialization_ok
-        && update_tree_meta_head(
-            &session.ctx.client,
-            &session.ctx.doc_id,
-            op.meta.lamport,
-            op.meta.id.replica.as_bytes(),
-            op.meta.id.counter,
-            seq,
-        )
-        .is_err()
-    {
-        post_materialization_ok = false;
-    }
-
-    if !post_materialization_ok {
-        let _ = set_tree_meta_dirty(&session.ctx.client, &session.ctx.doc_id, true);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn local_insert(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    parent: NodeId,
-    node: NodeId,
-    placement: &str,
-    after: Option<NodeId>,
-    payload: Option<Vec<u8>>,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_insert_with_plan(parent, node, placement, payload)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
-}
-
-pub fn local_move(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    node: NodeId,
-    new_parent: NodeId,
-    placement: &str,
-    after: Option<NodeId>,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_move_with_plan(node, new_parent, placement)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
-}
-
-pub fn local_delete(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    node: NodeId,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_delete_with_plan(node)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
-}
-
-pub fn local_payload(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    replica: &ReplicaId,
-    node: NodeId,
-    payload: Option<Vec<u8>>,
-) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_payload_with_plan(node, payload)?;
-        finish_local_core_op(&mut session, &op, plan);
-        Ok(op)
-    })
 }

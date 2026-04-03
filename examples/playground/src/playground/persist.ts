@@ -5,14 +5,14 @@ import { prefixPlaygroundStorageKey } from "./storage";
 
 const DEFAULT_DOC_ID_PREFIX = "treecrdt-playground";
 
+export function makeDefaultDocId(): string {
+  return `${DEFAULT_DOC_ID_PREFIX}-${makeSessionKey()}`;
+}
+
 export function initialStorage(): StorageMode {
   if (typeof window === "undefined") return "memory";
   const param = new URLSearchParams(window.location.search).get("storage");
   return param === "opfs" ? "opfs" : "memory";
-}
-
-function makeDefaultDocId(): string {
-  return `${DEFAULT_DOC_ID_PREFIX}-${makeSessionKey()}`;
 }
 
 export function initialDocId(): string {

@@ -6,6 +6,18 @@ import {
   isAuthCapability,
 } from './auth-capabilities.js';
 import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from './auth.js';
+import {
+  buildInitiatorHelloCapabilities,
+  capabilitySetFingerprint,
+  DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
+  DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH,
+  DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY,
+  peerRequestedDirectSendFilter,
+  peerSelectedDirectSendEmptyReceiverFilter,
+  peerSelectedDirectSendFilter,
+  peerSupportsDirectSendEmptyReceiver,
+  peerSupportsDirectSendSmallScope,
+} from './capabilities.js';
 import { ErrorCode, RibltFailureReason } from './types.js';
 import type {
   Capability,
@@ -23,6 +35,7 @@ import type {
   SyncMessage,
   Unsubscribe,
 } from './types.js';
+import { traceHello } from './traces.js';
 import type { DuplexTransport } from './transport/index.js';
 
 function randomId(prefix: string): string {
@@ -57,6 +70,7 @@ type ResponderSession<Op> = {
   round: number;
   decoder: RibltDecoder16;
   expectedIndex: bigint;
+  awaitingIncomingDone: boolean;
 };
 
 type InitiatorSession<Op> = {
@@ -68,15 +82,25 @@ type InitiatorSession<Op> = {
   codewordCredits: number;
   codewordCreditSignal: Pending<void>;
   receivedOps: Pending<void>;
+  awaitingUploadAck: boolean;
   done: boolean;
 };
 
 export type SyncPeerOptions<Op = unknown> = {
+  /** Upper bound on RIBLT codewords exchanged while reconciling one filter. */
   maxCodewords?: number;
+  /** Split uploaded or replayed ops into smaller wire batches to avoid giant frames. */
   maxOpsPerBatch?: number;
+  /** Reject Hello messages that try to attach too many filters at once. */
   maxHelloFilters?: number;
+  /** Direct-send tiny scopes instead of running a full RIBLT round when possible. */
+  directSendThreshold?: number;
+  /** Require an auth capability before accepting scoped Hello or Subscribe filters. */
   requireAuthForFilters?: boolean;
+  /** Auth policy hooks for outgoing filters, incoming ops, and post-verify side effects. */
   auth?: SyncAuth<Op>;
+  /** Derive stable op refs from ops so relay fast-forwarding can track delivered entries. */
+  deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
 };
 
 export type SyncPeerAttachOptions<Op = unknown> = {
@@ -88,6 +112,18 @@ export type SyncOnceOptions = {
   codewordsPerMessage?: number;
   maxCodewords?: number;
   maxOpsPerBatch?: number;
+};
+
+export type SyncPushOptions = {
+  /** Split a direct push into smaller wire batches to avoid giant frames. */
+  maxOpsPerBatch?: number;
+  /**
+   * Reuse an existing opsBatch stream id for a direct push.
+   *
+   * This is not a filter definition; it only groups related push chunks and
+   * the final done marker on the receiver.
+   */
+  filterId?: string;
 };
 
 export type SyncSubscribeOptions = SyncOnceOptions & {
@@ -181,6 +217,12 @@ type InitiatorSubscription = {
   failed: Pending<unknown>;
 };
 
+type PendingPushOp<Op> = {
+  opRef: OpRef;
+  opRefHex: string;
+  op: Op;
+};
+
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
   return capabilities.some(isAnyAuthCapability);
 }
@@ -189,17 +231,35 @@ export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
   private readonly maxHelloFilters: number;
+  private readonly directSendThreshold: number;
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
+  private readonly deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
   private readonly transportPeerCapabilities = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
     Hello['capabilities']
   >();
+  private readonly transportLastSentHelloCaps = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    string
+  >();
+  private readonly transportHelloAckWaiters = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    Set<Pending<void>>
+  >();
+  private readonly transportDirectPushStreamIds = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    string
+  >();
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription>();
+  private readonly responderAwaitingUploadAcks = new Set<string>();
+  private readonly opsBatchQueues = new Map<string, Promise<void>>();
+  private readonly pendingPushOpsByRefHex = new Map<string, PendingPushOp<Op>>();
+  private pushNeedsFullScan = false;
   private pushScheduled = false;
   private pushRunning = false;
   private pushInFlight: Promise<void> = Promise.resolve();
@@ -211,10 +271,17 @@ export class SyncPeer<Op> {
     opts: SyncPeerOptions<Op> = {},
   ) {
     this.maxCodewords = opts.maxCodewords ?? 50_000;
-    this.maxOpsPerBatch = opts.maxOpsPerBatch ?? 5_000;
+    // Keep wire batches modest by default; large 5k-op frames were a real
+    // source of remote ingest instability on production-like sync servers.
+    this.maxOpsPerBatch = opts.maxOpsPerBatch ?? 500;
     this.auth = opts.auth;
     this.maxHelloFilters = opts.maxHelloFilters ?? 8;
+    this.directSendThreshold = opts.directSendThreshold ?? 0;
+    if (!Number.isInteger(this.directSendThreshold) || this.directSendThreshold < 0) {
+      throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
+    }
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
+    this.deriveOpRef = opts.deriveOpRef;
   }
 
   attach(
@@ -233,8 +300,19 @@ export class SyncPeer<Op> {
     });
   }
 
-  notifyLocalUpdate(): Promise<void> {
+  // Live subscriptions are responder-owned: once a peer subscribes, local writes
+  // feed this push loop until the subscription is removed or the transport fails.
+  notifyLocalUpdate(ops?: readonly Op[]): Promise<void> {
     if (this.responderSubscriptions.size === 0) return Promise.resolve();
+    if (ops && ops.length > 0 && this.deriveOpRef) {
+      for (const op of ops) {
+        const opRef = this.deriveOpRef(op, { docId: this.backend.docId });
+        const opRefHex = bytesToHex(opRef);
+        this.pendingPushOpsByRefHex.set(opRefHex, { opRef, opRefHex, op });
+      }
+    } else {
+      this.pushNeedsFullScan = true;
+    }
     this.pushScheduled = true;
     if (!this.pushRunning) {
       this.pushRunning = true;
@@ -251,9 +329,19 @@ export class SyncPeer<Op> {
     try {
       while (this.pushScheduled) {
         this.pushScheduled = false;
+        // A full scan means "some subscription-relevant state changed, but we
+        // do not have an exact delta set to push from". Delta pushes are only
+        // safe when notifyLocalUpdate supplied concrete ops and deriveOpRef is available.
+        const deltaOps =
+          this.pushNeedsFullScan || this.pendingPushOpsByRefHex.size === 0
+            ? []
+            : Array.from(this.pendingPushOpsByRefHex.values());
+        const forceFullScan = this.pushNeedsFullScan;
+        this.pushNeedsFullScan = false;
+        this.pendingPushOpsByRefHex.clear();
         for (const sub of this.responderSubscriptions.values()) {
           try {
-            await this.pushSubscription(sub);
+            await this.pushSubscription(sub, { deltaOps, forceFullScan });
           } catch {
             this.responderSubscriptions.delete(sub.subscriptionId);
           }
@@ -265,7 +353,91 @@ export class SyncPeer<Op> {
     }
   }
 
-  private async pushSubscription(sub: ResponderSubscription<Op>): Promise<void> {
+  private async refreshHelloCapabilities(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    opts: { force?: boolean; waitForAck?: boolean } = {},
+  ): Promise<void> {
+    if (!this.auth?.helloCapabilities) return;
+
+    const [maxLamport, capabilities] = await Promise.all([
+      this.backend.maxLamport(),
+      this.auth.helloCapabilities({ docId: this.backend.docId }),
+    ]);
+    const fingerprint = capabilitySetFingerprint(capabilities);
+    if (!opts.force && this.transportLastSentHelloCaps.get(transport) === fingerprint) return;
+
+    let waiter: Pending<void> | undefined;
+    if (opts.waitForAck) {
+      waiter = deferred<void>();
+      const waiters = this.transportHelloAckWaiters.get(transport) ?? new Set<Pending<void>>();
+      waiters.add(waiter);
+      this.transportHelloAckWaiters.set(transport, waiters);
+    }
+
+    try {
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
+      });
+      this.transportLastSentHelloCaps.set(transport, fingerprint);
+      await waiter?.promise;
+    } catch (err) {
+      if (waiter) {
+        const waiters = this.transportHelloAckWaiters.get(transport);
+        waiters?.delete(waiter);
+        if (waiters && waiters.size === 0) this.transportHelloAckWaiters.delete(transport);
+        waiter.reject(err);
+      }
+      throw err;
+    }
+  }
+
+  private resolveDirectPushStreamId(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    requestedStreamId?: string,
+  ): string {
+    if (requestedStreamId) return requestedStreamId;
+
+    let streamId = this.transportDirectPushStreamIds.get(transport);
+    if (!streamId) {
+      streamId = randomId('push');
+      this.transportDirectPushStreamIds.set(transport, streamId);
+    }
+    return streamId;
+  }
+
+  private resolveMaxOpsPerBatch(requestedBatchSize?: number): number {
+    const batchSize = requestedBatchSize ?? this.maxOpsPerBatch;
+    if (!Number.isFinite(batchSize) || batchSize <= 0) {
+      throw new Error(`invalid maxOpsPerBatch: ${batchSize}`);
+    }
+    return batchSize;
+  }
+
+  private async sendDoneOpsBatch(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    filterId: string,
+  ): Promise<void> {
+    await transport.send({
+      v: 0,
+      docId: this.backend.docId,
+      payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
+    });
+  }
+
+  private async pushSubscription(
+    sub: ResponderSubscription<Op>,
+    opts: { deltaOps?: readonly PendingPushOp<Op>[]; forceFullScan?: boolean } = {},
+  ): Promise<void> {
+    // Only the unscoped "all" filter can use the exact delta list directly.
+    // Scoped filters still need a backend rescan to decide which newly written
+    // ops belong to the subscription.
+    if (!opts.forceFullScan && 'all' in sub.filter && opts.deltaOps && opts.deltaOps.length > 0) {
+      await this.pushSubscriptionDeltaAll(sub, opts.deltaOps);
+      return;
+    }
+
     let opRefs: OpRef[];
     try {
       opRefs = await this.backend.listOpRefs(sub.filter);
@@ -275,12 +447,19 @@ export class SyncPeer<Op> {
     }
 
     const newOpRefs: OpRef[] = [];
+    // Even in the rescan path we stay incremental: sentOpRefs tracks what this
+    // subscriber has already seen, so a "full scan" here means rediscovering
+    // matching refs, not replaying the entire filter result.
     for (const r of opRefs) {
       const hex = bytesToHex(r);
       if (sub.sentOpRefs.has(hex)) continue;
       newOpRefs.push(r);
     }
     if (newOpRefs.length === 0) return;
+
+    // Live subscriptions can outlive the capability snapshot from the initial handshake.
+    // Refresh it before the push so proof_ref verification can succeed on newly seen authors.
+    await this.refreshHelloCapabilities(sub.transport);
 
     for (let start = 0; start < newOpRefs.length; start += this.maxOpsPerBatch) {
       const chunk = newOpRefs.slice(start, start + this.maxOpsPerBatch);
@@ -349,16 +528,107 @@ export class SyncPeer<Op> {
     }
   }
 
+  private async pushSubscriptionDeltaAll(
+    sub: ResponderSubscription<Op>,
+    deltaOps: readonly PendingPushOp<Op>[],
+  ): Promise<void> {
+    // The exact-delta fast path is only safe for { all: true } subscriptions:
+    // every new local op belongs to the filter, so we can skip listOpRefs().
+    const unsent = deltaOps.filter((entry) => !sub.sentOpRefs.has(entry.opRefHex));
+    if (unsent.length === 0) return;
+
+    // Live subscriptions can outlive the capability snapshot from the initial handshake.
+    // Refresh it before the push so proof_ref verification can succeed on newly seen authors.
+    await this.refreshHelloCapabilities(sub.transport);
+
+    const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
+    const filter = sub.filter;
+    const maxOpsPerBatch = this.maxOpsPerBatch;
+
+    for (let start = 0; start < unsent.length; start += maxOpsPerBatch) {
+      const chunk = unsent.slice(start, start + maxOpsPerBatch);
+      let refs = chunk.map((entry) => entry.opRef);
+      let ops = chunk.map((entry) => entry.op);
+
+      if (this.auth?.filterOutgoingOps && ops.length > 0) {
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: 'subscribe',
+          filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(
+            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
+          );
+        }
+
+        const allowedRefs: OpRef[] = [];
+        const allowedOps: Op[] = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          if (allowed[i] === true) {
+            allowedRefs.push(refs[i]!);
+            allowedOps.push(ops[i]!);
+          }
+        }
+
+        for (const ref of refs) sub.sentOpRefs.add(bytesToHex(ref));
+
+        if (allowedOps.length === 0) {
+          await yieldToMacrotask();
+          continue;
+        }
+
+        refs = allowedRefs;
+        ops = allowedOps;
+      }
+
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const auth =
+        shouldAttachAuth && this.auth?.signOps
+          ? await this.auth.signOps(ops, {
+              docId: this.backend.docId,
+              purpose: 'subscribe',
+              filterId: sub.subscriptionId,
+            })
+          : undefined;
+      if (auth && auth.length !== ops.length) {
+        throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
+      }
+
+      const done = start + maxOpsPerBatch >= unsent.length;
+      await sub.transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: 'opsBatch',
+          value: { filterId: sub.subscriptionId, ops, ...(auth ? { auth } : {}), done },
+        },
+      });
+
+      for (const ref of refs) sub.sentOpRefs.add(bytesToHex(ref));
+      await yieldToMacrotask();
+    }
+  }
+
   async syncOnce(
     transport: DuplexTransport<SyncMessage<Op>>,
     filter: Filter,
     opts: SyncOnceOptions = {},
   ): Promise<void> {
+    // syncOnce negotiates one of three wire modes for this filter:
+    // 1. the normal RIBLT reconcile path,
+    // 2. direct-send for small scoped reads, or
+    // 3. direct-send upload when the initiator is an empty receiver.
+    // The capability exchange below advertises support and lets the peer pick the cheaper mode.
     const filterId = randomId('f');
     const round = 0;
     const maxLamport = await this.backend.maxLamport();
-    const capabilities =
-      (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [];
+    const localOpRefsBeforeHello = await this.backend.listOpRefs(filter);
+    const capabilities = buildInitiatorHelloCapabilities(
+      (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [],
+      { filterId, localHasOps: localOpRefsBeforeHello.length > 0 },
+    );
     const hello: Hello = { capabilities, filters: [{ id: filterId, filter }], maxLamport };
 
     const session: InitiatorSession<Op> = {
@@ -370,6 +640,7 @@ export class SyncPeer<Op> {
       codewordCredits: 1,
       codewordCreditSignal: deferred<void>(),
       receivedOps: deferred<void>(),
+      awaitingUploadAck: false,
       done: false,
     };
     this.initiatorSessions.set(filterId, session);
@@ -380,7 +651,17 @@ export class SyncPeer<Op> {
         docId: this.backend.docId,
         payload: { case: 'hello', value: hello },
       });
-      await session.ack.promise;
+      const ack = await session.ack.promise;
+
+      // For tiny scoped reads the responder can skip RIBLT entirely and send
+      // the result as direct ops once Hello/HelloAck agrees on that shortcut.
+      if (
+        localOpRefsBeforeHello.length === 0 &&
+        peerSelectedDirectSendFilter(ack.capabilities, filterId)
+      ) {
+        await session.receivedOps.promise;
+        return;
+      }
 
       let opRefs = await this.backend.listOpRefs(filter);
 
@@ -401,6 +682,22 @@ export class SyncPeer<Op> {
           );
         }
         opRefs = opRefs.filter((_r, idx) => allowed[idx] === true);
+      }
+
+      if (peerSelectedDirectSendEmptyReceiverFilter(ack.capabilities, filterId)) {
+        session.awaitingUploadAck = true;
+        const uploadMaxOpsPerBatch =
+          opts.maxOpsPerBatch ?? DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH;
+        if (opRefs.length > 0) {
+          await this.sendOpsBatches(transport, filterId, opRefs, {
+            maxOpsPerBatch: uploadMaxOpsPerBatch,
+            filter,
+          });
+        } else {
+          await this.sendDoneOpsBatch(transport, filterId);
+        }
+        await session.receivedOps.promise;
+        return;
       }
 
       const enc = new RibltEncoder16();
@@ -459,11 +756,7 @@ export class SyncPeer<Op> {
           maxOpsPerBatch: opts.maxOpsPerBatch,
         });
       } else {
-        await transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-        });
+        await this.sendDoneOpsBatch(transport, filterId);
       }
 
       await session.receivedOps.promise;
@@ -472,29 +765,77 @@ export class SyncPeer<Op> {
     }
   }
 
+  /**
+   * Send a known set of ops directly without first reconciling state via
+   * `syncOnce()`.
+   *
+   * The `opsBatch` wire format still carries a `filterId`; for direct pushes
+   * that field acts only as a stable stream id so the receiver can order chunks
+   * and interpret the final `done` marker correctly.
+   */
+  async pushOps(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    ops: readonly Op[],
+    opts: SyncPushOptions = {},
+  ): Promise<void> {
+    if (ops.length === 0) return;
+
+    await this.refreshHelloCapabilities(transport, { waitForAck: true });
+
+    const streamId = this.resolveDirectPushStreamId(transport, opts.filterId);
+    const batchSize = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
+
+    const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
+    const shouldAttachAuth = peerAdvertisedOpAuth(peerCapabilities);
+
+    for (let start = 0; start < ops.length; start += batchSize) {
+      const chunk = ops.slice(start, start + batchSize);
+      const auth =
+        shouldAttachAuth && this.auth?.signOps
+          ? await this.auth.signOps(chunk, {
+              docId: this.backend.docId,
+              purpose: 'reconcile',
+              filterId: streamId,
+            })
+          : undefined;
+      if (auth && auth.length !== chunk.length) {
+        throw new Error(`signOps returned ${auth.length} entries for ${chunk.length} ops`);
+      }
+
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: 'opsBatch',
+          value: {
+            filterId: streamId,
+            ops: [...chunk],
+            ...(auth ? { auth } : {}),
+            done: start + batchSize >= ops.length,
+          },
+        },
+      });
+      await yieldToMacrotask();
+    }
+  }
+
   private async sendOpsBatches(
     transport: DuplexTransport<SyncMessage<Op>>,
     filterId: string,
     opRefs: OpRef[],
-    opts: { maxOpsPerBatch?: number } = {},
+    opts: { maxOpsPerBatch?: number; filter?: Filter } = {},
   ): Promise<void> {
-    const maxOpsPerBatch = opts.maxOpsPerBatch ?? this.maxOpsPerBatch;
-    if (!Number.isFinite(maxOpsPerBatch) || maxOpsPerBatch <= 0) {
-      throw new Error(`invalid maxOpsPerBatch: ${maxOpsPerBatch}`);
-    }
+    const maxOpsPerBatch = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
 
     const filter =
+      opts.filter ??
       this.responderSessions.get(filterId)?.filter ??
       this.initiatorSessions.get(filterId)?.filter ??
       undefined;
     const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
 
     if (opRefs.length === 0) {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-      });
+      await this.sendDoneOpsBatch(transport, filterId);
       return;
     }
 
@@ -526,11 +867,7 @@ export class SyncPeer<Op> {
 
       if (ops.length === 0) {
         if (done) {
-          await transport.send({
-            v: 0,
-            docId: this.backend.docId,
-            payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-          });
+          await this.sendDoneOpsBatch(transport, filterId);
         }
         continue;
       }
@@ -608,15 +945,7 @@ export class SyncPeer<Op> {
         // If the responder requires capability-gated filters/subscriptions, send an initial
         // Hello (no filters) so it can record our capabilities before Subscribe arrives.
         if (this.auth?.helloCapabilities) {
-          const [maxLamport, capabilities] = await Promise.all([
-            this.backend.maxLamport(),
-            this.auth.helloCapabilities({ docId: this.backend.docId }),
-          ]);
-          await transport.send({
-            v: 0,
-            docId: this.backend.docId,
-            payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
-          });
+          await this.refreshHelloCapabilities(transport, { force: true });
         }
 
         await transport.send({
@@ -725,7 +1054,7 @@ export class SyncPeer<Op> {
           await this.onRibltStatus(msg.payload.value);
           return;
         case 'opsBatch':
-          await this.onOpsBatch(msg.payload.value);
+          await this.enqueueOpsBatch(transport, msg.payload.value);
           return;
         case 'subscribe':
           await this.onSubscribe(transport, msg.payload.value);
@@ -788,7 +1117,13 @@ export class SyncPeer<Op> {
   }
 
   private async onHello(transport: DuplexTransport<SyncMessage<Op>>, hello: Hello): Promise<void> {
+    const traceStartedAt = performance.now();
+    traceHello(this.backend.docId, traceStartedAt, 'start', {
+      filters: hello.filters.length,
+      capabilities: hello.capabilities.length,
+    });
     const hasAuthCapability = hello.capabilities.some(isAuthCapability);
+    const supportsDirectSendSmallScope = peerSupportsDirectSendSmallScope(hello.capabilities);
 
     // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
     // can't race and get rejected before `onHello` completes.
@@ -799,6 +1134,9 @@ export class SyncPeer<Op> {
     let ackCapabilities: HelloAck['capabilities'] = [];
     try {
       ackCapabilities = (await this.auth?.onHello?.(hello, { docId: this.backend.docId })) ?? [];
+      traceHello(this.backend.docId, traceStartedAt, 'after-auth-onHello', {
+        ackCapabilities: ackCapabilities.length,
+      });
     } catch (err: any) {
       await transport.send({
         v: 0,
@@ -815,8 +1153,16 @@ export class SyncPeer<Op> {
     }
 
     const maxLamport = await this.backend.maxLamport();
+    traceHello(this.backend.docId, traceStartedAt, 'after-maxLamport', {
+      maxLamport: Number(maxLamport),
+    });
     const acceptedFilters: string[] = [];
     const rejectedFilters: HelloAck['rejectedFilters'] = [];
+    const directSendFilters: Array<{
+      id: string;
+      filter: Filter;
+      opRefs: OpRef[];
+    }> = [];
 
     for (let i = 0; i < hello.filters.length; i += 1) {
       const spec = hello.filters[i]!;
@@ -860,6 +1206,10 @@ export class SyncPeer<Op> {
       let localOpRefs: OpRef[];
       try {
         localOpRefs = await this.backend.listOpRefs(filter);
+        traceHello(this.backend.docId, traceStartedAt, 'after-listOpRefs', {
+          filterId: id,
+          opRefs: localOpRefs.length,
+        });
       } catch (err: any) {
         rejectedFilters.push({
           id,
@@ -884,6 +1234,11 @@ export class SyncPeer<Op> {
             );
           }
           localOpRefs = localOpRefs.filter((_r, idx) => allowed[idx] === true);
+          traceHello(this.backend.docId, traceStartedAt, 'after-filterOutgoingOps', {
+            filterId: id,
+            fetchedOps: ops.length,
+            allowedOpRefs: localOpRefs.length,
+          });
         } catch (err: any) {
           rejectedFilters.push({
             id,
@@ -895,13 +1250,50 @@ export class SyncPeer<Op> {
       }
 
       acceptedFilters.push(id);
+
+      if (
+        supportsDirectSendSmallScope &&
+        this.directSendThreshold > 0 &&
+        peerRequestedDirectSendFilter(hello.capabilities, id) &&
+        localOpRefs.length <= this.directSendThreshold
+      ) {
+        ackCapabilities.push({
+          name: DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY,
+          value: id,
+        });
+        directSendFilters.push({
+          id,
+          filter,
+          opRefs: localOpRefs,
+        });
+        traceHello(this.backend.docId, traceStartedAt, 'after-direct-send-selection', {
+          filterId: id,
+          opRefs: localOpRefs.length,
+        });
+        continue;
+      }
+
+      if (peerSupportsDirectSendEmptyReceiver(hello.capabilities) && localOpRefs.length === 0) {
+        ackCapabilities.push({
+          name: DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
+          value: id,
+        });
+        this.responderAwaitingUploadAcks.add(id);
+        continue;
+      }
+
       const decoder = new RibltDecoder16();
       for (const r of localOpRefs) decoder.addLocalSymbol(r);
+      traceHello(this.backend.docId, traceStartedAt, 'after-decoder-setup', {
+        filterId: id,
+        opRefs: localOpRefs.length,
+      });
       this.responderSessions.set(id, {
         filter,
         round: 0,
         decoder,
         expectedIndex: 0n,
+        awaitingIncomingDone: false,
       });
     }
 
@@ -918,6 +1310,16 @@ export class SyncPeer<Op> {
         },
       },
     });
+    traceHello(this.backend.docId, traceStartedAt, 'after-helloAck-send', {
+      acceptedFilters: acceptedFilters.length,
+      rejectedFilters: rejectedFilters.length,
+    });
+
+    for (const directSend of directSendFilters) {
+      await this.sendOpsBatches(transport, directSend.id, directSend.opRefs, {
+        filter: directSend.filter,
+      });
+    }
   }
 
   private async onHelloAck(
@@ -930,6 +1332,11 @@ export class SyncPeer<Op> {
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
     if (peerAdvertisedOpAuth(ack.capabilities))
       this.transportPeerCapabilities.set(transport, ack.capabilities);
+    const waiters = this.transportHelloAckWaiters.get(transport);
+    if (waiters && waiters.size > 0) {
+      this.transportHelloAckWaiters.delete(transport);
+      for (const waiter of waiters) waiter.resolve();
+    }
 
     for (const id of ack.acceptedFilters) {
       const session = this.initiatorSessions.get(id);
@@ -1041,6 +1448,7 @@ export class SyncPeer<Op> {
     const receiverMissing = session.decoder.remoteMissing() as unknown as OpRef[];
     const senderMissing = session.decoder.localMissing() as unknown as OpRef[];
     const codewordsReceived = session.decoder.codewordsReceived();
+    session.awaitingIncomingDone = receiverMissing.length > 0;
 
     await transport.send({
       v: 0,
@@ -1060,15 +1468,13 @@ export class SyncPeer<Op> {
 
     if (senderMissing.length > 0) {
       await this.sendOpsBatches(transport, msg.filterId, senderMissing);
-    } else {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'opsBatch', value: { filterId: msg.filterId, ops: [], done: true } },
-      });
+      if (!session.awaitingIncomingDone) {
+        this.responderSessions.delete(msg.filterId);
+      }
+    } else if (!session.awaitingIncomingDone) {
+      await this.sendDoneOpsBatch(transport, msg.filterId);
+      this.responderSessions.delete(msg.filterId);
     }
-
-    this.responderSessions.delete(msg.filterId);
   }
 
   private async onSubscribe(
@@ -1249,13 +1655,44 @@ export class SyncPeer<Op> {
       return;
     }
     session.done = true;
+    if (status.payload.case === 'decoded') {
+      session.awaitingUploadAck = status.payload.value.receiverMissing.length > 0;
+    }
     session.terminalStatus.resolve(status);
     const signal = session.codewordCreditSignal;
     session.codewordCreditSignal = deferred<void>();
     signal.resolve();
   }
 
-  private async onOpsBatch(batch: OpsBatch<Op>): Promise<void> {
+  private async enqueueOpsBatch(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    batch: OpsBatch<Op>,
+  ): Promise<void> {
+    // Apply batches sequentially per filter so a later done marker cannot overtake earlier ops.
+    // Upload completion only becomes observable after the full queue for that filter has finished.
+    const previous = this.opsBatchQueues.get(batch.filterId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {
+        // A prior batch failure should not permanently poison the queue.
+      })
+      .then(() => this.onOpsBatch(transport, batch));
+    this.opsBatchQueues.set(batch.filterId, current);
+    try {
+      await current;
+    } finally {
+      if (this.opsBatchQueues.get(batch.filterId) === current) {
+        this.opsBatchQueues.delete(batch.filterId);
+      }
+    }
+  }
+
+  private async onOpsBatch(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    batch: OpsBatch<Op>,
+  ): Promise<void> {
+    // opsBatch is shared by both flows:
+    // - reconcile / direct-send during syncOnce
+    // - incremental pushes for live subscriptions
     const purpose: SyncOpPurpose = this.initiatorSubscriptions.has(batch.filterId)
       ? 'subscribe'
       : 'reconcile';
@@ -1325,14 +1762,30 @@ export class SyncPeer<Op> {
     }
 
     await this.backend.applyOps(allowedOps);
-    if (allowedOps.length > 0) void this.notifyLocalUpdate();
+    if (allowedOps.length > 0) void this.notifyLocalUpdate(allowedOps);
     await this.reprocessPendingOps();
 
-    const session = this.initiatorSessions.get(batch.filterId);
-    if (session && batch.done) session.receivedOps.resolve();
-
     const responderSession = this.responderSessions.get(batch.filterId);
-    if (responderSession && batch.done) this.responderSessions.delete(batch.filterId);
+    // The empty done ack is only a completion signal. Send it after applyOps/reprocessPending
+    // finishes so "done" means every prior batch for this filter has been durably handled.
+    if (!responderSession && this.responderAwaitingUploadAcks.has(batch.filterId) && batch.done) {
+      this.responderAwaitingUploadAcks.delete(batch.filterId);
+      await this.sendDoneOpsBatch(transport, batch.filterId);
+    }
+    if (responderSession && batch.done) {
+      if (responderSession.awaitingIncomingDone) {
+        responderSession.awaitingIncomingDone = false;
+        await this.sendDoneOpsBatch(transport, batch.filterId);
+      }
+      this.responderSessions.delete(batch.filterId);
+    }
+
+    const session = this.initiatorSessions.get(batch.filterId);
+    if (session && batch.done) {
+      if (!session.awaitingUploadAck || batch.ops.length === 0) {
+        session.receivedOps.resolve();
+      }
+    }
   }
 
   private async reprocessPendingOps(): Promise<void> {
@@ -1345,13 +1798,15 @@ export class SyncPeer<Op> {
 
     this.reprocessPendingRunning = true;
     this.reprocessPendingInFlight = (async () => {
+      // Pending ops are retried after every successful applyOps pass so auth
+      // schemes that need causal context can unlock buffered ops incrementally.
       const maxRounds = 100;
       for (let round = 0; round < maxRounds; round += 1) {
         const pending = await this.backend.listPendingOps!();
         if (pending.length === 0) return;
 
         let progress = false;
-        let appliedAny = false;
+        const appliedOps: Op[] = [];
 
         for (const p of pending) {
           const ctx = {
@@ -1383,10 +1838,10 @@ export class SyncPeer<Op> {
           await this.backend.applyOps([p.op]);
           await this.backend.deletePendingOps!([p.op]);
           progress = true;
-          appliedAny = true;
+          appliedOps.push(p.op);
         }
 
-        if (appliedAny) void this.notifyLocalUpdate();
+        if (appliedOps.length > 0) void this.notifyLocalUpdate(appliedOps);
         if (!progress) return;
       }
       throw new Error('pending-op reprocessing exceeded max rounds');

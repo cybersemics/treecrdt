@@ -24,6 +24,9 @@ pnpm build
 pnpm test
 ```
 
+## Benchmarks
+For benchmark commands, product-facing note/sync scenarios, and the sync target matrix (`direct`, local Postgres sync server, remote sync server), see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
 ## Playground
 - Live demo (GitHub Pages): https://cybersemics.github.io/treecrdt/
 

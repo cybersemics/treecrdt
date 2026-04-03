@@ -28,11 +28,11 @@ import type {
   TreecrdtEngineTree,
 } from '@treecrdt/interface/engine';
 import { dbGetText } from './sql.js';
+import type { Database } from './index.js';
 import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
-export const CLIENT_NOT_INITIALIZED_ERROR = 'TreecrdtClient is not initialized';
 
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
@@ -148,8 +148,8 @@ async function createWorkerClient(opts: {
 
   const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
     if (closed) return Promise.reject(closedError);
-    if (terminalError) return Promise.reject(terminalError);
     const id = nextId++;
+    if (terminalError) return Promise.reject(terminalError);
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
       worker.postMessage({ id, method, params } satisfies RpcRequest<M>);
@@ -192,7 +192,7 @@ async function createWorkerClient(opts: {
   if (opts.requireOpfs && effectiveStorage !== 'opfs') {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : '';
     try {
-      if (!terminalError) await call('close', []);
+      if (!terminalError) await call('close', [] as RpcParams<'close'>);
     } catch {
       // ignore close errors on init failure
     } finally {
@@ -204,20 +204,20 @@ async function createWorkerClient(opts: {
   const closeImpl = async () => {
     if (closed) return;
     try {
-      if (!terminalError) await call('close', []);
+      if (!terminalError) await call('close', [] as RpcParams<'close'>);
       cleanup();
-    } catch (err) {
-      throw err;
+    } finally {
+      // noop: cleanup already handles terminal teardown, and repeated close is idempotent
     }
   };
 
   const dropImpl = async () => {
     if (closed) return;
     try {
-      if (!terminalError) await call('drop', []);
+      if (!terminalError) await call('drop', [] as RpcParams<'drop'>);
       cleanup();
-    } catch (err) {
-      throw err;
+    } finally {
+      // noop: cleanup already handles terminal teardown, and repeated drop is idempotent
     }
   };
 
@@ -276,7 +276,6 @@ async function createDirectClient(opts: {
         message: err instanceof Error ? err.message : String(err),
       }),
     );
-
   let closed = false;
   const closedError = new Error(CLIENT_CLOSED_ERROR);
 
@@ -435,6 +434,7 @@ function makeTreecrdtClientFromCall(opts: {
   drop: () => Promise<void>;
 }): TreecrdtClient {
   const call = opts.call;
+  let closePromise: Promise<void> | null = null;
 
   const runner: SqliteRunner = {
     exec: (sql) => call('sqlExec', [sql]).then(() => undefined),
@@ -511,6 +511,19 @@ function makeTreecrdtClientFromCall(opts: {
     return (await call('localPayload', [rid, node, payload])) as unknown as Operation;
   };
 
+  const closeImpl = async () => {
+    if (closePromise) return await closePromise;
+    closePromise = (async () => {
+      try {
+        await opts.close();
+      } catch {
+        // Client teardown is best-effort. Fast refresh and overlapping resets can race a prior
+        // close, and the underlying sqlite handle may already be gone by the time this runs.
+      }
+    })();
+    await closePromise;
+  };
+
   return {
     mode: opts.mode,
     storage: opts.storage,
@@ -541,7 +554,7 @@ function makeTreecrdtClientFromCall(opts: {
       delete: localDeleteImpl,
       payload: localPayloadImpl,
     },
-    close: opts.close,
+    close: closeImpl,
     drop: opts.drop,
   };
 }

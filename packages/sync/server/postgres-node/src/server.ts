@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from '@treecrdt/auth';
 import type { Operation } from '@treecrdt/interface';
-import { createReplayOnlySyncAuth } from '@treecrdt/sync';
+import { createReplayOnlySyncAuth, deriveOpRefV0 } from '@treecrdt/sync';
 import type { SyncBackend, SyncPeer, SyncPeerOptions } from '@treecrdt/sync';
 import { createCapabilityMaterialStore, createOpAuthStore } from '@treecrdt/sync-postgres';
 import type { PostgresCapabilityMaterialStore, PostgresOpAuthStore } from '@treecrdt/sync-postgres';
@@ -17,7 +17,7 @@ import type {
   WebSocketSyncServerUpgradeHook,
 } from '@treecrdt/sync-server-core';
 import { startWebSocketSyncServer } from '@treecrdt/sync-server-core';
-import { Client as PgClient } from 'pg';
+import { Client as PgClient, Pool as PgPool } from 'pg';
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -42,6 +42,8 @@ export type SyncServerOptions = {
   port?: number;
   postgresUrl: string;
   backendModule?: string;
+  maxCodewords?: number;
+  directSendThreshold?: number;
   idleCloseMs?: number;
   maxPayloadBytes?: number;
   authToken?: string;
@@ -86,7 +88,10 @@ type DocContext = {
 
 type PostgresNodeDocStore = {
   provider: WebSocketSyncServerDocProvider<Operation>;
-  notifyDocUpdate: (docId: string) => void;
+  // When the exact applied ops are available in-process, peers can use the
+  // fast delta path. Cross-process invalidation only knows "this doc changed",
+  // so callers may omit ops and force peers to rescan their subscriptions.
+  notifyDocUpdate: (docId: string, ops?: readonly Operation[]) => void;
   closeAll: () => Promise<void>;
 };
 
@@ -150,16 +155,16 @@ type DocUpdatePayload = {
   source?: string;
 };
 
-class PostgresDocUpdateBus {
+export class PostgresDocUpdateBus {
   private readonly channel: string;
-  private readonly queryClient: PgClient;
+  private readonly queryPool: PgPool;
   private readonly listenClient: PgClient;
   private readonly sourceId: string;
   private closed = false;
 
   private constructor(private readonly opts: PostgresDocUpdateBusOptions) {
     this.channel = ensurePostgresChannelName(opts.channel);
-    this.queryClient = new PgClient({ connectionString: opts.postgresUrl });
+    this.queryPool = new PgPool({ connectionString: opts.postgresUrl });
     this.listenClient = new PgClient({ connectionString: opts.postgresUrl });
     this.sourceId = randomUUID();
   }
@@ -171,7 +176,7 @@ class PostgresDocUpdateBus {
   }
 
   private async start(): Promise<void> {
-    await Promise.all([this.queryClient.connect(), this.listenClient.connect()]);
+    await this.listenClient.connect();
 
     this.listenClient.on('notification', (msg: { channel: string; payload?: string }) => {
       if (msg.channel !== this.channel) return;
@@ -191,7 +196,7 @@ class PostgresDocUpdateBus {
   }
 
   async hasDoc(docId: string): Promise<boolean> {
-    const res = await this.queryClient.query(
+    const res = await this.queryPool.query(
       'SELECT 1 FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1',
       [docId],
     );
@@ -201,11 +206,11 @@ class PostgresDocUpdateBus {
   async publishDocUpdate(docId: string): Promise<void> {
     if (this.closed || docId.length === 0) return;
     const payload = JSON.stringify({ docId, source: this.sourceId } satisfies DocUpdatePayload);
-    await this.queryClient.query('SELECT pg_notify($1, $2)', [this.channel, payload]);
+    await this.queryPool.query('SELECT pg_notify($1, $2)', [this.channel, payload]);
   }
 
   async ping(): Promise<void> {
-    await this.queryClient.query('SELECT 1');
+    await this.queryPool.query('SELECT 1');
   }
 
   async close(): Promise<void> {
@@ -216,7 +221,7 @@ class PostgresDocUpdateBus {
     } catch {
       // ignore
     }
-    await Promise.allSettled([this.listenClient.end(), this.queryClient.end()]);
+    await Promise.allSettled([this.listenClient.end(), this.queryPool.end()]);
   }
 }
 
@@ -405,10 +410,14 @@ export function createPostgresNodeDocStore(
   let closing = false;
   let closeAllPromise: Promise<void> | undefined;
 
-  const notifyDocUpdate = (docId: string): void => {
+  // `ops` is optional because not every update source can provide the exact
+  // applied batch. Local applyOps calls can forward precise ops to in-process
+  // peers, while pg_notify-style cross-process invalidation only reports the
+  // doc id and falls back to subscription rescans.
+  const notifyDocUpdate = (docId: string, ops?: readonly Operation[]): void => {
     const ctx = docs.get(docId);
     if (!ctx) return;
-    for (const peer of ctx.peers) void peer.notifyLocalUpdate();
+    for (const peer of ctx.peers) void peer.notifyLocalUpdate(ops);
   };
 
   const closeBackend = async (backend: SyncBackend<Operation>): Promise<void> => {
@@ -462,7 +471,9 @@ export function createPostgresNodeDocStore(
       } catch {
         // ignore notify failures; local update path still proceeds
       }
-      notifyDocUpdate(ctx.docId);
+      // Local peers in this Node process can take the exact applied ops fast path.
+      // Cross-process listeners still fall back to doc-level pg_notify invalidation.
+      notifyDocUpdate(ctx.docId, ops);
     };
     return {
       ...backend,
@@ -568,18 +579,7 @@ export function createPostgresNodeDocStore(
   };
 }
 
-async function createReadinessProbe(
-  postgresUrl: string,
-  docUpdateBus: PostgresDocUpdateBus | undefined,
-): Promise<SyncServerReadinessProbe> {
-  if (docUpdateBus) {
-    return {
-      check: async () => {
-        await withTimeout(docUpdateBus.ping(), 3_000, 'postgres readiness ping');
-      },
-    };
-  }
-
+async function createReadinessProbe(postgresUrl: string): Promise<SyncServerReadinessProbe> {
   const client = new PgClient({ connectionString: postgresUrl });
   await client.connect();
   return {
@@ -600,6 +600,9 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     opts.backendModule ?? '@treecrdt/postgres-napi',
   );
   const postgresUrl = ensureNonEmptyString('postgresUrl', opts.postgresUrl);
+  const maxCodewords = opts.maxCodewords == null ? undefined : Number(opts.maxCodewords);
+  const directSendThreshold =
+    opts.directSendThreshold == null ? undefined : Number(opts.directSendThreshold);
   const idleCloseMs = Number(opts.idleCloseMs ?? 30_000);
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
   const authToken =
@@ -625,6 +628,15 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const startedAtMs = Date.parse(startedAt);
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
+  if (maxCodewords != null && (!Number.isFinite(maxCodewords) || maxCodewords <= 0)) {
+    throw new Error(`invalid maxCodewords: ${opts.maxCodewords}`);
+  }
+  if (
+    directSendThreshold != null &&
+    (!Number.isFinite(directSendThreshold) || directSendThreshold < 0)
+  ) {
+    throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
+  }
   if (!Number.isFinite(idleCloseMs) || idleCloseMs < 0)
     throw new Error(`invalid idleCloseMs: ${opts.idleCloseMs}`);
   if (!Number.isFinite(maxPayloadBytes) || maxPayloadBytes <= 0) {
@@ -660,7 +672,14 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
           capabilities: capabilityMaterialStore.forDoc(docId),
         },
       }),
+      deriveOpRef: (op: Operation) =>
+        deriveOpRefV0(docId, {
+          replica: op.meta.id.replica,
+          counter: op.meta.id.counter,
+        }),
       requireAuthForFilters: false,
+      ...(maxCodewords != null ? { maxCodewords } : {}),
+      ...(directSendThreshold != null ? { directSendThreshold } : {}),
     }),
   });
   if (enablePgNotify || !allowDocCreate) {
@@ -680,7 +699,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
 
   let readinessProbe: SyncServerReadinessProbe | undefined;
   try {
-    readinessProbe = await createReadinessProbe(postgresUrl, docUpdateBus);
+    readinessProbe = await createReadinessProbe(postgresUrl);
   } catch (err) {
     await docs.closeAll();
     await docUpdateBus?.close();

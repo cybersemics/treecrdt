@@ -311,6 +311,29 @@ class FailingApplyBackend extends MemoryBackend {
   }
 }
 
+class DelayedApplyBackend extends MemoryBackend {
+  constructor(
+    docId: string,
+    private readonly delayMs: number,
+  ) {
+    super(docId);
+  }
+
+  override async applyOps(ops: Operation[]): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, this.delayMs));
+    await super.applyOps(ops);
+  }
+}
+
+class CountingListBackend extends MemoryBackend {
+  listOpRefsCalls = 0;
+
+  override async listOpRefs(filter: Filter): Promise<OpRef[]> {
+    this.listOpRefsCalls += 1;
+    return super.listOpRefs(filter);
+  }
+}
+
 test('syncOnce does not starve macrotask transports', async () => {
   const docId = 'doc-sync-macrotask';
   const root = '0'.repeat(32);
@@ -371,6 +394,160 @@ test('syncOnce paces outbound codewords until delayed ribltStatus arrives', asyn
   await waitUntil(() => b.hasOp(replicaHex.a, 1), {
     message: 'expected b to receive a:1 after delayed ribltStatus',
   });
+});
+
+test('syncOnce waits for responder to apply uploaded ops before resolving', async () => {
+  const docId = 'doc-sync-upload-ack';
+  const root = '0'.repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new DelayedApplyBackend(docId, 20);
+
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(1),
+    }),
+    makeOp(replicas.a, 3, 3, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(2),
+    }),
+  ]);
+
+  const [wa, wb] = createMacrotaskDuplex<Uint8Array>();
+  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
+  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(
+    ta,
+    { all: {} },
+    { maxCodewords: 10_000, codewordsPerMessage: 256, maxOpsPerBatch: 1 },
+  );
+
+  expect(b.hasOp(replicaHex.a, 1)).toBe(true);
+  expect(b.hasOp(replicaHex.a, 2)).toBe(true);
+  expect(b.hasOp(replicaHex.a, 3)).toBe(true);
+});
+
+test('pushOps uploads direct ops without reconcile roundtrips', async () => {
+  const docId = 'doc-push-direct';
+  const root = '0'.repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  const op = makeOp(replicas.a, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, { maxOpsPerBatch: 1 });
+  const peerB = new SyncPeer(b, { maxOpsPerBatch: 1 });
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    await peerA.pushOps(transportA, [op]);
+
+    await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+      message: 'expected direct push to apply on receiver',
+    });
+
+    const serverCases = wire
+      .filter((entry) => entry.dir === 'aToB')
+      .map((entry) => entry.msg.payload.case);
+    expect(serverCases).toEqual(['opsBatch']);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('pushOps refreshes replay capabilities before uploading newly authorized ops', async () => {
+  const docId = 'doc-push-capability-refresh';
+  const root = '0'.repeat(32);
+  const proofRef = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  const replayCapValue = bytesToHex(proofRef);
+  const knownReplayCaps = new Set<string>();
+  let senderHelloCaps: Array<{ name: string; value: string }> = [];
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  const op = makeOp(replicas.a, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(11),
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => senderHelloCaps,
+      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array([1]), proofRef })),
+    },
+    maxOpsPerBatch: 1,
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      helloCapabilities: async () => [{ name: 'auth.capability', value: 'receiver-token' }],
+      onHello: async (hello) => {
+        for (const cap of hello.capabilities) {
+          if (cap.name === 'auth.capability.replay') knownReplayCaps.add(cap.value);
+        }
+        return [{ name: 'auth.capability', value: 'receiver-token' }];
+      },
+      verifyOps: async (_ops, auth) => {
+        if (!auth) throw new Error('expected auth on direct push');
+        for (const entry of auth) {
+          if (!entry?.proofRef) throw new Error('expected proofRef on direct push');
+          if (!knownReplayCaps.has(bytesToHex(entry.proofRef))) {
+            throw new Error('missing replay capability for pushed proofRef');
+          }
+        }
+      },
+    },
+    maxOpsPerBatch: 1,
+  });
+
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    senderHelloCaps = [{ name: 'auth.capability.replay', value: replayCapValue }];
+    await peerA.pushOps(transportA, [op]);
+
+    await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+      message: 'expected direct push to apply after capability refresh',
+    });
+    expect(knownReplayCaps).toEqual(new Set([replayCapValue]));
+
+    const wireCases = wire.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
+    expect(wireCases).toContain('aToB:hello');
+    expect(wireCases).toContain('bToA:helloAck');
+    expect(wireCases).toContain('aToB:opsBatch');
+    expect(wireCases.indexOf('aToB:hello')).toBeLessThan(wireCases.indexOf('aToB:opsBatch'));
+    expect(wireCases.indexOf('bToA:helloAck')).toBeLessThan(wireCases.indexOf('aToB:opsBatch'));
+  } finally {
+    detachA();
+    detachB();
+  }
 });
 
 test('syncOnce protobuf roundtrips ribltStatus.more', () => {
@@ -438,6 +615,106 @@ test('syncOnce waits for ribltStatus.more before sending another codeword batch'
     );
   }
   expect(sawMore).toBe(true);
+});
+
+test('syncOnce can direct-send a small clean-slate scope without riblt codewords', async () => {
+  const docId = 'doc-sync-direct-send-small-scope';
+  const root = '0'.repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  await b.applyOps([
+    makeOp(replicas.b, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.b, 2, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(1),
+    }),
+  ]);
+
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const pa = new SyncPeer(a, { directSendThreshold: 8 });
+  const pb = new SyncPeer(b, { directSendThreshold: 8 });
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(
+    ta,
+    { children: { parent: nodeIdToBytes16(root) } },
+    {
+      maxCodewords: 4_096,
+      codewordsPerMessage: 16,
+    },
+  );
+
+  await waitUntil(() => a.hasOp(replicaHex.b, 2), {
+    message: 'expected clean-slate initiator to receive direct-sent scope',
+  });
+
+  const wire = log.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
+  expect(wire).toContain('aToB:hello');
+  expect(wire).toContain('bToA:helloAck');
+  expect(wire).toContain('bToA:opsBatch');
+  expect(wire).not.toContain('aToB:ribltCodewords');
+  expect(wire).not.toContain('bToA:ribltStatus');
+});
+
+test('syncOnce can direct-send a clean-slate upload to an empty receiver without riblt codewords', async () => {
+  const docId = 'doc-sync-direct-send-empty-receiver';
+  const root = '0'.repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(replicas.a, 2, 2, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(1),
+    }),
+  ]);
+
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  await pa.syncOnce(
+    ta,
+    { all: {} },
+    {
+      maxCodewords: 4_096,
+      codewordsPerMessage: 16,
+      maxOpsPerBatch: 1,
+    },
+  );
+
+  await waitUntil(() => b.hasOp(replicaHex.a, 2), {
+    message: 'expected empty receiver to receive direct-sent upload',
+  });
+
+  const wire = log.map((entry) => `${entry.dir}:${entry.msg.payload.case}`);
+  expect(wire).toContain('aToB:hello');
+  expect(wire).toContain('bToA:helloAck');
+  expect(wire).toContain('aToB:opsBatch');
+  expect(wire).toContain('bToA:opsBatch');
+  expect(wire).not.toContain('aToB:ribltCodewords');
+  expect(wire).not.toContain('bToA:ribltStatus');
 });
 
 test('syncOnce rejects when local message handler throws during apply', async () => {
@@ -762,5 +1039,148 @@ test('subscribe keeps peers converging (push deltas)', async () => {
     }
   } finally {
     detach();
+  }
+});
+
+test('subscribe pushes exact all-filter deltas without rescanning full state', async () => {
+  const docId = 'doc-subscribe-direct-delta-all';
+  const root = '0'.repeat(32);
+
+  const a = new MemoryBackend(docId);
+  const b = new CountingListBackend(docId);
+
+  await a.applyOps([
+    makeOp(replicas.a, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const {
+    peerA: pa,
+    peerB: pb,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerBOptions: {
+      deriveOpRef: (op) => opRefFor(docId, bytesToHex(op.meta.id.replica), op.meta.id.counter),
+    },
+  });
+  try {
+    const sub = pa.subscribe(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+    try {
+      await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+        message: 'expected initial subscribe catch-up',
+      });
+      const scanCountAfterCatchUp = b.listOpRefsCalls;
+
+      const op = makeOp(replicas.b, 1, 2, {
+        type: 'insert',
+        parent: root,
+        node: nodeIdFromInt(2),
+        orderKey: orderKeyFromPosition(0),
+      });
+      await b.applyOps([op]);
+      await pb.notifyLocalUpdate([op]);
+
+      await waitUntil(() => a.hasOp(replicaHex.b, 1), {
+        message: 'expected direct all-filter delta push to arrive',
+      });
+      expect(b.listOpRefsCalls).toBe(scanCountAfterCatchUp);
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
+  } finally {
+    detach();
+  }
+});
+
+test('subscribe refreshes replay capabilities before pushing newly authorized ops', async () => {
+  const docId = 'doc-subscribe-capability-refresh';
+  const root = '0'.repeat(32);
+  const proofRef = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  const replayCapValue = bytesToHex(proofRef);
+
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const knownReplayCaps = new Set<string>();
+  let serverHelloCaps: Array<{ name: string; value: string }> = [];
+
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => serverHelloCaps,
+      onHello: async () => serverHelloCaps,
+      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array([1]), proofRef })),
+    },
+    maxOpsPerBatch: 1,
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      helloCapabilities: async () => [{ name: 'auth.capability', value: 'client-token' }],
+      onHello: async (hello) => {
+        for (const cap of hello.capabilities) {
+          if (cap.name === 'auth.capability.replay') knownReplayCaps.add(cap.value);
+        }
+        return [];
+      },
+      verifyOps: async (_ops, auth) => {
+        if (!auth) throw new Error('expected auth on subscribed push');
+        for (const entry of auth) {
+          if (!entry?.proofRef) throw new Error('expected proofRef on subscribed push');
+          if (!knownReplayCaps.has(bytesToHex(entry.proofRef))) {
+            throw new Error('missing replay capability for pushed proofRef');
+          }
+        }
+      },
+    },
+    maxOpsPerBatch: 1,
+  });
+
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    const sub = peerB.subscribe(transportB, { all: {} }, { immediate: false, intervalMs: 0 });
+    try {
+      await waitUntil(() => (peerA as any).responderSubscriptions?.size === 1, {
+        message: 'expected responder subscription to be registered',
+      });
+
+      serverHelloCaps = [{ name: 'auth.capability.replay', value: replayCapValue }];
+      await a.applyOps([
+        makeOp(replicas.a, 1, 1, {
+          type: 'insert',
+          parent: root,
+          node: nodeIdFromInt(11),
+          orderKey: orderKeyFromPosition(0),
+        }),
+      ]);
+      await peerA.notifyLocalUpdate();
+
+      await waitUntil(() => b.hasOp(replicaHex.a, 1), {
+        message: 'expected subscriber to accept live op after capability refresh',
+      });
+      expect(knownReplayCaps).toEqual(new Set([replayCapValue]));
+
+      const serverCases = wire
+        .filter((entry) => entry.dir === 'aToB')
+        .map((entry) => entry.msg.payload.case);
+      expect(serverCases).toContain('hello');
+      expect(serverCases).toContain('opsBatch');
+      expect(serverCases.indexOf('hello')).toBeLessThan(serverCases.lastIndexOf('opsBatch'));
+    } finally {
+      sub.stop();
+      await sub.done;
+    }
+  } finally {
+    detachA();
+    detachB();
   }
 });

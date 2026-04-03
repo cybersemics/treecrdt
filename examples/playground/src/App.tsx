@@ -24,6 +24,7 @@ import {
   ensureOpfsKey,
   initialDocId,
   initialStorage,
+  makeDefaultDocId,
   makeNodeId,
   makeSessionKey,
   persistDocId,
@@ -81,6 +82,13 @@ function initialSyncTransportMode(): SyncTransportMode {
   return "local";
 }
 
+type BulkAddProgress = {
+  total: number;
+  completed: number;
+  phase: "creating" | "applying";
+  startedAtMs: number;
+};
+
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const clientRef = useRef<TreecrdtClient | null>(null);
@@ -104,6 +112,7 @@ export default function App() {
     overrides: new Set([ROOT_ID]),
   }));
   const [busy, setBusy] = useState(false);
+  const [bulkAddProgress, setBulkAddProgress] = useState<BulkAddProgress | null>(null);
   const [nodeCount, setNodeCount] = useState(1);
   const [fanout, setFanout] = useState(10);
   const [newNodeValue, setNewNodeValue] = useState("");
@@ -155,6 +164,8 @@ export default function App() {
 
   const counterRef = useRef(0);
   const lamportRef = useRef(0);
+  const initEpochRef = useRef(0);
+  const disposedRef = useRef(false);
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const docPayloadKeyRef = useRef<Uint8Array | null>(null);
   const refreshDocPayloadKey = React.useCallback(async () => {
@@ -210,6 +221,7 @@ export default function App() {
     syncAuth,
     refreshAuthMaterial,
     localIdentityChainPromiseRef,
+    getLocalIdentityChain,
     authToken,
     replica,
     selfPeerId,
@@ -585,16 +597,21 @@ export default function App() {
     online,
     getMaxLamport,
     authEnabled,
-    syncAuth,
+    authMaterial,
     authError,
     joinMode,
-    authNeedsInvite,
     authCanSyncAll,
     viewRootId,
+    hardRevokedTokenIds,
+    revocationCutoverEnabled,
+    revocationCutoverTokenId,
+    revocationCutoverCounter,
     treeStateRef,
     refreshMeta,
     refreshParents,
     refreshNodeCount,
+    getLocalIdentityChain,
+    onPeerIdentityChain,
     onAuthGrantMessage,
     onRemoteOpsApplied,
   });
@@ -723,13 +740,28 @@ export default function App() {
     persistDocId(docId);
   }, [docId]);
 
-  useEffect(() => {
-    return () => {
-      void clientRef.current?.close();
-    };
+  const closeClientSafely = React.useCallback(async (closingClient: TreecrdtClient | null) => {
+    if (!closingClient?.close) return;
+    try {
+      await closingClient.close();
+    } catch {
+      // Client teardown is best-effort. HMR/remount/reset can race prior close calls.
+    }
   }, []);
 
-  const initClient = async (storageMode: StorageMode, keyOverride?: string) => {
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+      initEpochRef.current += 1;
+      const closingClient = clientRef.current;
+      clientRef.current = null;
+      void closeClientSafely(closingClient);
+    };
+  }, [closeClientSafely]);
+
+  const initClient = async (storageMode: StorageMode, keyOverride?: string, docIdOverride?: string) => {
+    const initEpoch = ++initEpochRef.current;
     setStatus("booting");
     setError(null);
     try {
@@ -744,8 +776,12 @@ export default function App() {
         baseUrl,
         preferWorker: storageMode === "opfs",
         filename,
-        docId,
+        docId: docIdOverride ?? docId,
       });
+      if (disposedRef.current || initEpoch !== initEpochRef.current) {
+        await closeClientSafely(c);
+        return;
+      }
       clientRef.current = c;
       setClient(c);
       setStorage(c.storage);
@@ -760,7 +796,8 @@ export default function App() {
     }
   };
 
-  const resetAndInit = async (target: StorageMode, opts: { resetKey?: boolean } = {}) => {
+  const resetAndInit = async (target: StorageMode, opts: { resetKey?: boolean; docId?: string } = {}) => {
+    setStatus("booting");
     const nextKey =
       target === "opfs"
         ? opts.resetKey
@@ -781,12 +818,15 @@ export default function App() {
     lamportRef.current = 0;
     setHeadLamport(0);
     setTotalNodes(null);
-    if (clientRef.current?.close) {
-      await clientRef.current.close();
-    }
+    setParentChoice(ROOT_ID);
+    setNewNodeValue("");
+    setBulkAddProgress(null);
+    setError(null);
+    const closingClient = clientRef.current;
     clientRef.current = null;
     setClient(null);
-    await initClient(target, nextKey);
+    await closeClientSafely(closingClient);
+    await initClient(target, nextKey, opts.docId);
   };
 
   const refreshOps = async (nextClient?: TreecrdtClient, opts: { preserveParent?: boolean } = {}) => {
@@ -833,7 +873,7 @@ export default function App() {
       counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
 
-      notifyLocalUpdate();
+      notifyLocalUpdate([op]);
       await refreshPayloadsForNodes(client, nodesAffectedByPayloadOps([op]));
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
@@ -854,7 +894,7 @@ export default function App() {
       const stateBefore = treeStateRef.current;
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
       const op = await client.local.move(replica, nodeId, newParent, placement);
-      notifyLocalUpdate();
+      notifyLocalUpdate([op]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
@@ -875,6 +915,9 @@ export default function App() {
     const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
     setBusy(true);
+    const startedAtMs = Date.now();
+    const progressStep = normalizedCount >= 1_000 ? 50 : normalizedCount >= 200 ? 20 : normalizedCount >= 50 ? 5 : 1;
+    setBulkAddProgress({ total: normalizedCount, completed: 0, phase: "creating", startedAtMs });
     try {
       const stateBefore = treeStateRef.current;
       const ops: Operation[] = [];
@@ -889,6 +932,12 @@ export default function App() {
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload));
+          const completed = i + 1;
+          if (completed === normalizedCount || completed % progressStep === 0) {
+            setBulkAddProgress((prev) =>
+              prev ? { ...prev, completed } : prev
+            );
+          }
         }
       } else {
         const expanded = new Set<string>();
@@ -933,8 +982,18 @@ export default function App() {
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
+          const completed = i + 1;
+          if (completed === normalizedCount || completed % progressStep === 0) {
+            setBulkAddProgress((prev) =>
+              prev ? { ...prev, completed } : prev
+            );
+          }
         }
       }
+
+      setBulkAddProgress((prev) =>
+        prev ? { ...prev, completed: normalizedCount, phase: "applying" } : prev
+      );
 
       for (const op of ops) {
         lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
@@ -942,7 +1001,7 @@ export default function App() {
       }
       setHeadLamport(lamportRef.current);
 
-      notifyLocalUpdate();
+      notifyLocalUpdate(ops);
       await refreshPayloadsForNodes(client, nodesAffectedByPayloadOps(ops));
       ingestOps(ops, { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
@@ -966,6 +1025,7 @@ export default function App() {
       console.error("Failed to add nodes", err);
       setError("Failed to add nodes (see console)");
     } finally {
+      setBulkAddProgress(null);
       setBusy(false);
     }
   };
@@ -981,7 +1041,7 @@ export default function App() {
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
-      notifyLocalUpdate();
+      notifyLocalUpdate([op]);
       await refreshPayloadsForNodes(client, [op.kind.node]);
       ingestOps([op], { assumeSorted: true });
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
@@ -1051,6 +1111,29 @@ export default function App() {
     setLiveChildrenParents(new Set());
     setLiveAllEnabled(false);
     await resetAndInit(storage, { resetKey: true });
+  };
+
+  const handleNewDoc = async () => {
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("doc", makeDefaultDocId());
+      url.searchParams.delete("join");
+      url.searchParams.delete("autosync");
+      url.hash = "";
+      window.history.replaceState({}, "", url);
+      const nextDocId = url.searchParams.get("doc")!;
+      setDocId(nextDocId);
+      setLiveChildrenParents(new Set());
+      setLiveAllEnabled(false);
+      await resetAndInit(storage, { resetKey: true, docId: nextDocId });
+      return;
+    }
+
+    const nextDocId = makeDefaultDocId();
+    setDocId(nextDocId);
+    setLiveChildrenParents(new Set());
+    setLiveAllEnabled(false);
+    await resetAndInit(storage, { resetKey: true, docId: nextDocId });
   };
 
   const handleStorageToggle = (next: StorageMode) => {
@@ -1154,6 +1237,7 @@ export default function App() {
           )
         }
         onSelectStorage={handleStorageToggle}
+        onNewDoc={handleNewDoc}
         onReset={handleReset}
         onExpandAll={expandAll}
         onCollapseAll={collapseAll}
@@ -1178,6 +1262,7 @@ export default function App() {
             onAddNodes={handleAddNodes}
             ready={status === "ready"}
             busy={busy}
+            bulkAddProgress={bulkAddProgress}
             canWritePayload={canWritePayload}
             canWriteStructure={canWriteStructure}
           />
