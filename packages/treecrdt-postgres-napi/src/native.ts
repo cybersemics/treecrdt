@@ -19,6 +19,7 @@ export type NativeOp = {
 };
 
 export type NativeBackend = {
+  close(): void;
   maxLamport(): bigint;
   listOpRefsAll(): Uint8Array[];
   listOpRefsChildren(parent: Uint8Array): Uint8Array[];
@@ -67,6 +68,16 @@ export type NativeFactory = {
   ensureSchema(): void;
   resetForTests(): void;
   resetDocForTests(docId: string): void;
+  cloneDocForTests(sourceDocId: string, targetDocId: string): void;
+  cloneMaterializedDocForTests(sourceDocId: string, targetDocId: string): void;
+  primeDocForTests(docId: string, ops: NativeOp[]): void;
+  primeBalancedFanoutDocForTests(
+    docId: string,
+    size: number,
+    fanout: number,
+    payloadBytes: number,
+    replicaLabel: string,
+  ): void;
   open(docId: string): NativeBackend;
 };
 

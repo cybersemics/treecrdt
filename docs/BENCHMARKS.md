@@ -15,9 +15,12 @@ Useful top-level entrypoints:
 
 ```sh
 pnpm benchmark
+pnpm benchmark:hot-write
 pnpm benchmark:sqlite-node
+pnpm benchmark:sqlite-node:hot-write
 pnpm benchmark:sqlite-node:ops
 pnpm benchmark:sqlite-node:note-paths
+pnpm benchmark:postgres:hot-write
 pnpm benchmark:sync
 pnpm benchmark:sync:direct
 pnpm benchmark:sync:local
@@ -40,12 +43,57 @@ pnpm benchmark:postgres
 - One-time bootstrap/discovery tax before opening the regional websocket: `benchmark:sync:bootstrap`
 - Local render cost after the data is already present: `benchmark:sqlite-node:note-paths -- --benches=read-children-payloads`
 - Local mutation cost inside a large existing tree: `benchmark:sqlite-node:note-paths -- --benches=insert-into-large-tree`
+- Hot write cost inside a large existing tree, standardized across local backends: `benchmark:hot-write`
 - Protocol/storage baselines and worst-case stress: `sync-one-missing`, `sync-all`, `sync-children*`, `sync-root-children-fanout10`
 
 That split is intentional:
 
 - The sync benches answer "how long until the needed subtree data is in the local store?"
 - The note-path benches answer "once the data is local, how quickly can the app render and mutate it?"
+- The hot-write benches answer "how expensive is one new live edit after the large doc already exists?"
+
+## Hot Write Benchmarks
+
+Use the hot-write suite when you want an apples-to-apples answer for one edit against an existing large doc.
+
+The current standardized cases are:
+
+- `payload-edit`
+- `insert-sibling`
+- `move-leaf`
+- `move-subtree`
+
+`move-leaf` is the small-write move case.
+`move-subtree` intentionally moves a top-level branch so its cost includes moving a larger subtree, not just a single node.
+
+By default each case reseeds a balanced tree, performs exactly one live local mutation, and writes JSON under `benchmarks/hot-write/`.
+
+You can also switch the suite into a warmed session mode so one already-open doc handles several writes before it closes. That is useful when you want to isolate ongoing live-edit cost from sample setup.
+
+Top-level entrypoints:
+
+```sh
+pnpm benchmark:hot-write
+pnpm benchmark:sqlite-node:hot-write -- --counts=10000,100000
+TREECRDT_POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres \
+pnpm benchmark:postgres:hot-write -- --counts=10000,100000
+```
+
+Useful flags:
+
+- `--benches=payload-edit,insert-sibling,move-leaf,move-subtree`
+- `--counts=10000,100000`
+- `--fanout=10`
+- `--payload-bytes=512`
+- `--writes-per-sample=10`
+- `--warmup-writes=1`
+
+Useful env vars:
+
+- `TREECRDT_POSTGRES_URL=...` for the Postgres runner
+- `HOT_WRITE_SKIP_SAMPLE_CLEANUP=1` if you want faster local iteration on very large Postgres samples and do not mind keeping temporary sample docs around
+
+This suite is intentionally separate from the default `pnpm benchmark` run because reseeding large docs for each measured sample is expensive.
 
 ## Recommended Product-Facing Runs
 

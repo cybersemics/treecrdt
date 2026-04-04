@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use postgres::Client;
 
@@ -9,24 +11,71 @@ use treecrdt_core::{
 };
 
 use crate::store::{
-    ensure_materialized_in_tx, load_tree_meta_for_update, set_tree_meta_replay_frontier,
-    update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage, PgParentOpIndex, PgPayloadStore,
-    TreeMeta,
+    ensure_materialized_in_tx, load_tree_meta_for_update, replica_max_counter_in_tx,
+    set_tree_meta_replay_frontier, update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage,
+    PgParentOpIndex, PgPayloadStore, TreeMeta,
 };
 
 type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
+
+fn local_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("TREECRDT_PG_PROFILE_LOCAL").ok().as_deref(),
+            Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+        )
+    })
+}
+
+#[derive(Clone, Debug, Default)]
+struct PgLocalOpProfile {
+    kind: &'static str,
+    ensure_materialized_ms: f64,
+    replica_counter_ms: f64,
+    ctx_init_ms: f64,
+    crdt_init_ms: f64,
+    plan_ms: f64,
+    flush_last_change_ms: f64,
+    index_flush_ms: f64,
+    update_head_ms: f64,
+    fallback_replay_frontier: bool,
+    total_ms: f64,
+}
+
+impl PgLocalOpProfile {
+    fn log(&self, doc_id: &str) {
+        eprintln!(
+            "treecrdt_pg_local_profile kind={} doc_id={} ensure_materialized_ms={:.3} replica_counter_ms={:.3} ctx_init_ms={:.3} crdt_init_ms={:.3} plan_ms={:.3} flush_last_change_ms={:.3} index_flush_ms={:.3} update_head_ms={:.3} fallback_replay_frontier={} total_ms={:.3}",
+            self.kind,
+            doc_id,
+            self.ensure_materialized_ms,
+            self.replica_counter_ms,
+            self.ctx_init_ms,
+            self.crdt_init_ms,
+            self.plan_ms,
+            self.flush_last_change_ms,
+            self.index_flush_ms,
+            self.update_head_ms,
+            self.fallback_replay_frontier,
+            self.total_ms,
+        );
+    }
+}
 
 struct LocalOpSession {
     ctx: PgCtx,
     meta: TreeMeta,
     nodes: PgNodeStore,
     crdt: LocalCrdt,
+    profile: Option<PgLocalOpProfile>,
 }
 
 fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN")
+            .map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = f();
@@ -34,7 +83,8 @@ fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> 
     match res {
         Ok(v) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT")
+                .map_err(|e| Error::Storage(e.to_string()))?;
             Ok(v)
         }
         Err(e) => {
@@ -49,29 +99,61 @@ fn begin_local_core_op(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
     replica: &ReplicaId,
+    kind: &'static str,
 ) -> Result<LocalOpSession> {
-    // Local ops take the opposite route from append_ops_in_tx: start from a clean materialized
-    // snapshot, then let TreeCrdt mint/store/apply the local op directly against Postgres stores.
+    let mut profile = local_profile_enabled().then(|| PgLocalOpProfile {
+        kind,
+        ..PgLocalOpProfile::default()
+    });
+
+    let ensure_started_at = Instant::now();
     ensure_materialized_in_tx(client, doc_id)?;
     let meta = load_tree_meta_for_update(client, doc_id)?;
+    if let Some(profile) = &mut profile {
+        profile.ensure_materialized_ms = ensure_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    let replica_started_at = Instant::now();
+    let replica_counter = replica_max_counter_in_tx(client, doc_id, replica.as_bytes())?;
+    if let Some(profile) = &mut profile {
+        profile.replica_counter_ms = replica_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    let ctx_started_at = Instant::now();
     let ctx = PgCtx::new(client.clone(), doc_id)?;
+    if let Some(profile) = &mut profile {
+        profile.ctx_init_ms = ctx_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
 
     let storage = PgOpStorage::new(ctx.clone());
     let nodes = PgNodeStore::new(ctx.clone());
     let payloads = PgPayloadStore::new(ctx.clone());
-    let crdt = TreeCrdt::with_stores(
+    let crdt_started_at = Instant::now();
+    let latest_lamport = meta
+        .state()
+        .head
+        .as_ref()
+        .map(|head| head.at.lamport)
+        .unwrap_or(0);
+    let crdt = TreeCrdt::with_stores_seeded(
         replica.clone(),
         storage,
         LamportClock::default(),
         nodes.clone(),
         payloads,
+        replica_counter,
+        latest_lamport,
     )?;
+    if let Some(profile) = &mut profile {
+        profile.crdt_init_ms = crdt_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
 
     Ok(LocalOpSession {
         ctx,
         meta,
         nodes,
         crdt,
+        profile,
     })
 }
 
@@ -84,15 +166,27 @@ fn finish_local_core_op(
     let mut seq = 0u64;
 
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
-    // commit_local() already persisted the op and updated node/payload state. The finalize step
-    // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
     match session
         .crdt
         .finalize_local(op, &mut op_index, session.meta.state().head_seq(), &plan)
     {
         Ok(v) => {
             seq = v;
-            if session.nodes.flush_last_change().is_err() || op_index.flush().is_err() {
+
+            let flush_last_change_started_at = Instant::now();
+            let flush_last_change_ok = session.nodes.flush_last_change().is_ok();
+            if let Some(profile) = &mut session.profile {
+                profile.flush_last_change_ms =
+                    flush_last_change_started_at.elapsed().as_secs_f64() * 1000.0;
+            }
+
+            let index_flush_started_at = Instant::now();
+            let index_flush_ok = op_index.flush().is_ok();
+            if let Some(profile) = &mut session.profile {
+                profile.index_flush_ms = index_flush_started_at.elapsed().as_secs_f64() * 1000.0;
+            }
+
+            if !flush_last_change_ok || !index_flush_ok {
                 post_materialization_ok = false;
             }
         }
@@ -107,10 +201,14 @@ fn finish_local_core_op(
         },
         seq,
     };
-    if post_materialization_ok
-        && update_tree_meta_head(&session.ctx.client, &session.ctx.doc_id, Some(&head)).is_err()
-    {
-        post_materialization_ok = false;
+    if post_materialization_ok {
+        let update_head_started_at = Instant::now();
+        if update_tree_meta_head(&session.ctx.client, &session.ctx.doc_id, Some(&head)).is_err() {
+            post_materialization_ok = false;
+        }
+        if let Some(profile) = &mut session.profile {
+            profile.update_head_ms = update_head_started_at.elapsed().as_secs_f64() * 1000.0;
+        }
     }
 
     if !post_materialization_ok {
@@ -123,9 +221,43 @@ fn finish_local_core_op(
                 counter: 0,
             },
         )?;
+        if let Some(profile) = &mut session.profile {
+            profile.fallback_replay_frontier = true;
+        }
     }
 
     Ok(())
+}
+
+fn run_profiled_local_core_op<F>(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    kind: &'static str,
+    build: F,
+) -> Result<Operation>
+where
+    F: FnOnce(&mut LocalCrdt) -> Result<(Operation, LocalFinalizePlan)>,
+{
+    run_in_tx(client, || {
+        let total_started_at = Instant::now();
+        let mut session = begin_local_core_op(client, doc_id, replica, kind)?;
+
+        let plan_started_at = Instant::now();
+        let (op, plan) = build(&mut session.crdt)?;
+        if let Some(profile) = &mut session.profile {
+            profile.plan_ms = plan_started_at.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        finish_local_core_op(&mut session, &op, plan)?;
+
+        if let Some(profile) = &mut session.profile {
+            profile.total_ms = total_started_at.elapsed().as_secs_f64() * 1000.0;
+            profile.log(doc_id);
+        }
+
+        Ok(op)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -139,12 +271,9 @@ pub fn local_insert(
     after: Option<NodeId>,
     payload: Option<Vec<u8>>,
 ) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_insert(parent, node, placement, payload)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+    let placement = LocalPlacement::from_parts(placement, after)?;
+    run_profiled_local_core_op(client, doc_id, replica, "insert", move |crdt| {
+        crdt.local_insert(parent, node, placement, payload)
     })
 }
 
@@ -157,12 +286,9 @@ pub fn local_move(
     placement: &str,
     after: Option<NodeId>,
 ) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_move(node, new_parent, placement)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+    let placement = LocalPlacement::from_parts(placement, after)?;
+    run_profiled_local_core_op(client, doc_id, replica, "move", move |crdt| {
+        crdt.local_move(node, new_parent, placement)
     })
 }
 
@@ -172,11 +298,8 @@ pub fn local_delete(
     replica: &ReplicaId,
     node: NodeId,
 ) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_delete(node)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+    run_profiled_local_core_op(client, doc_id, replica, "delete", move |crdt| {
+        crdt.local_delete(node)
     })
 }
 
@@ -187,10 +310,7 @@ pub fn local_payload(
     node: NodeId,
     payload: Option<Vec<u8>>,
 ) -> Result<Operation> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_payload(node, payload)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+    run_profiled_local_core_op(client, doc_id, replica, "payload", move |crdt| {
+        crdt.local_payload(node, payload)
     })
 }

@@ -60,16 +60,17 @@ where
     N: NodeStore,
     P: PayloadStore,
 {
-    pub fn with_stores(
+    pub fn with_stores_seeded(
         replica_id: ReplicaId,
         storage: S,
         clock: C,
         nodes: N,
         payloads: P,
+        counter: u64,
+        latest_lamport: Lamport,
     ) -> Result<Self> {
-        let counter = storage.latest_counter(&replica_id)?;
         let mut clock = clock;
-        clock.observe(storage.latest_lamport());
+        clock.observe(latest_lamport);
         Ok(Self {
             replica_id,
             storage,
@@ -81,6 +82,26 @@ where
             head: None,
             op_count: 0,
         })
+    }
+
+    pub fn with_stores(
+        replica_id: ReplicaId,
+        storage: S,
+        clock: C,
+        nodes: N,
+        payloads: P,
+    ) -> Result<Self> {
+        let counter = storage.latest_counter(&replica_id)?;
+        let latest_lamport = storage.latest_lamport();
+        Self::with_stores_seeded(
+            replica_id,
+            storage,
+            clock,
+            nodes,
+            payloads,
+            counter,
+            latest_lamport,
+        )
     }
 
     fn is_in_order(&self, op: &Operation) -> bool {
