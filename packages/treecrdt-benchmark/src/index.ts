@@ -5,7 +5,7 @@ import type {
   Operation,
 } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import { envInt, quantile } from './stats.js';
+import { envInt, quantile, summarizeSamples } from './stats.js';
 import type { WorkloadName } from './workloads.js';
 
 export type BenchmarkResult = {
@@ -82,6 +82,7 @@ export async function runBenchmark(
   }
 
   const durationMs = quantile(samplesMs, 0.5);
+  const sampleSummary = summarizeSamples(samplesMs);
   const opsPerSec =
     totalOps > 0 && durationMs > 0
       ? (totalOps / durationMs) * 1000
@@ -100,9 +101,11 @@ export async function runBenchmark(
             iterations,
             warmupIterations,
             samplesMs,
-            p95Ms: quantile(samplesMs, 0.95),
-            minMs: Math.min(...samplesMs),
-            maxMs: Math.max(...samplesMs),
+            minMs: sampleSummary.min,
+            meanMs: sampleSummary.mean,
+            p95Ms: sampleSummary.p95,
+            p99Ms: sampleSummary.p99,
+            maxMs: sampleSummary.max,
           }
         : undefined,
   };
