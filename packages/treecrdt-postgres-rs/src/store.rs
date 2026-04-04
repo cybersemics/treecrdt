@@ -13,6 +13,7 @@ use treecrdt_core::{
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
 use crate::profile::{append_profile_enabled, PgAppendProfile};
+use crate::schema::{reset_doc_for_tests, reset_doc_for_tests_within_tx};
 
 pub(crate) fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
@@ -29,6 +30,59 @@ pub(crate) fn bytes_to_node(bytes: &[u8]) -> Result<NodeId> {
     let mut arr = [0u8; 16];
     arr.copy_from_slice(bytes);
     Ok(NodeId(u128::from_be_bytes(arr)))
+}
+
+fn order_key_from_position(position: usize) -> Result<Vec<u8>> {
+    if position >= u16::MAX as usize {
+        return Err(Error::Storage(format!(
+            "position too large for u16 order key: {position}"
+        )));
+    }
+    Ok(((position + 1) as u16).to_be_bytes().to_vec())
+}
+
+fn repeated_replica_from_label(label: &str) -> Result<ReplicaId> {
+    if label.is_empty() {
+        return Err(Error::Storage("replica label must not be empty".into()));
+    }
+    let encoded = label.as_bytes();
+    let mut out = vec![0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = encoded[index % encoded.len()];
+    }
+    Ok(ReplicaId::new(out))
+}
+
+fn payload_bytes_from_seed(seed: usize, size: usize) -> Vec<u8> {
+    let mut out = vec![0u8; size];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = ((seed + index * 31) % 251) as u8;
+    }
+    out
+}
+
+fn single_counter_vv_bytes(replica: &ReplicaId, counter: u64) -> Result<Vec<u8>> {
+    let mut vv = VersionVector::new();
+    vv.observe(replica, counter);
+    vv_to_bytes(&vv)
+}
+
+fn balanced_parent_and_position(node_index: usize, fanout: usize) -> (NodeId, usize) {
+    if node_index <= fanout {
+        return (NodeId::ROOT, (node_index - 1) % fanout);
+    }
+    (
+        NodeId((((node_index - (fanout + 1)) / fanout) + 1) as u128),
+        (node_index - 1) % fanout,
+    )
+}
+
+fn balanced_direct_child_max_counter(node_index: usize, size: usize, fanout: usize) -> Option<u64> {
+    let start = node_index.saturating_mul(fanout).saturating_add(1);
+    if start > size {
+        return None;
+    }
+    Some((node_index.saturating_mul(fanout).saturating_add(fanout).min(size)) as u64)
 }
 
 pub(crate) fn op_ref_from_bytes(bytes: &[u8]) -> Result<[u8; OPREF_V0_WIDTH]> {
@@ -95,7 +149,7 @@ fn load_tree_meta_row(
     doc_id: &str,
     for_update: bool,
 ) -> Result<TreeMeta> {
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
     let stmt = if for_update {
         ctx.stmt(
@@ -124,6 +178,7 @@ fn load_tree_meta_row(
 }
 
 fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
+    ensure_doc_meta(client, doc_id)?;
     load_tree_meta_row(client, doc_id, false)
 }
 
@@ -131,6 +186,7 @@ pub(crate) fn load_tree_meta_for_update(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
 ) -> Result<TreeMeta> {
+    ensure_doc_meta(client, doc_id)?;
     load_tree_meta_row(client, doc_id, true)
 }
 
@@ -180,12 +236,24 @@ impl PgCtx {
         Self::new_with_profile(client, doc_id, None)
     }
 
+    pub(crate) fn new_assume_doc_meta(client: Rc<RefCell<Client>>, doc_id: &str) -> Result<Self> {
+        Self::new_with_profile_assume_doc_meta(client, doc_id, None)
+    }
+
     fn new_with_profile(
         client: Rc<RefCell<Client>>,
         doc_id: &str,
         append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
     ) -> Result<Self> {
         ensure_doc_meta(&client, doc_id)?;
+        Self::new_with_profile_assume_doc_meta(client, doc_id, append_profile)
+    }
+
+    fn new_with_profile_assume_doc_meta(
+        client: Rc<RefCell<Client>>,
+        doc_id: &str,
+        append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
+    ) -> Result<Self> {
         Ok(Self {
             doc_id: doc_id.to_string(),
             client,
@@ -902,28 +970,49 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
         writer: (Lamport, OperationId),
     ) -> Result<()> {
         let started_at = Instant::now();
+        let row_exists = matches!(self.cache.borrow().get(&node), Some(Some(_)));
         let node_bytes = node_to_bytes(node);
         let (lamport, id) = writer;
         let OperationId { replica, counter } = id;
         let ReplicaId(replica_bytes) = replica;
         let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "INSERT INTO treecrdt_payload(doc_id, node, payload, last_lamport, last_replica, last_counter) VALUES ($1,$2,$3,$4,$5,$6) \
-             ON CONFLICT (doc_id, node) DO UPDATE SET payload = EXCLUDED.payload, last_lamport = EXCLUDED.last_lamport, last_replica = EXCLUDED.last_replica, last_counter = EXCLUDED.last_counter",
-        )?;
-        c.execute(
-            &stmt,
-            &[
-                &self.ctx.doc_id,
-                &node_bytes.as_slice(),
-                &payload,
-                &(lamport as i64),
-                &replica_bytes,
-                &(counter as i64),
-            ],
-        )
-        .map_err(storage_debug)?;
+        if row_exists {
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "UPDATE treecrdt_payload \
+                 SET payload = $3, last_lamport = $4, last_replica = $5, last_counter = $6 \
+                 WHERE doc_id = $1 AND node = $2",
+            )?;
+            c.execute(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &node_bytes.as_slice(),
+                    &payload,
+                    &(lamport as i64),
+                    &replica_bytes,
+                    &(counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?;
+        } else {
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "INSERT INTO treecrdt_payload(doc_id, node, payload, last_lamport, last_replica, last_counter) VALUES ($1,$2,$3,$4,$5,$6)",
+            )?;
+            c.execute(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &node_bytes.as_slice(),
+                    &payload,
+                    &(lamport as i64),
+                    &replica_bytes,
+                    &(counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?;
+        }
 
         self.cache.borrow_mut().insert(
             node,
@@ -1049,6 +1138,14 @@ impl Storage for PgOpStorage {
     fn apply(&mut self, op: Operation) -> Result<bool> {
         let mut c = self.ctx.client.borrow_mut();
         let inserted = insert_op_in_tx(&self.ctx, &mut c, &op)?;
+        drop(c);
+        if inserted {
+            upsert_replica_counters_in_tx(
+                &self.ctx.client,
+                &self.ctx.doc_id,
+                std::slice::from_ref(&op),
+            )?;
+        }
         Ok(inserted)
     }
 
@@ -1319,6 +1416,45 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
     }
 }
 
+fn upsert_replica_counters_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    ops: &[Operation],
+) -> Result<()> {
+    if ops.is_empty() {
+        return Ok(());
+    }
+
+    let mut per_replica: HashMap<Vec<u8>, i64> = HashMap::new();
+    for op in ops {
+        let replica = op.meta.id.replica.as_bytes().to_vec();
+        let counter = (op.meta.id.counter.min(i64::MAX as u64)) as i64;
+        per_replica
+            .entry(replica)
+            .and_modify(|current| *current = (*current).max(counter))
+            .or_insert(counter);
+    }
+
+    let mut replicas = Vec::with_capacity(per_replica.len());
+    let mut counters = Vec::with_capacity(per_replica.len());
+    for (replica, counter) in per_replica {
+        replicas.push(replica);
+        counters.push(counter);
+    }
+
+    let mut c = client.borrow_mut();
+    c.execute(
+        "INSERT INTO treecrdt_replica_meta (doc_id, replica, max_counter) \
+         SELECT $1, src.replica, src.max_counter \
+         FROM unnest($2::bytea[], $3::bigint[]) AS src(replica, max_counter) \
+         ON CONFLICT (doc_id, replica) DO UPDATE \
+         SET max_counter = GREATEST(treecrdt_replica_meta.max_counter, EXCLUDED.max_counter)",
+        &[&doc_id, &replicas, &counters],
+    )
+    .map_err(storage_debug)?;
+    Ok(())
+}
+
 fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> {
     let replica = op.meta.id.replica.as_bytes();
     let counter = op.meta.id.counter;
@@ -1439,6 +1575,77 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
     Ok(inserted)
 }
 
+fn bulk_insert_fixture_nodes_in_tx(
+    ctx: &PgCtx,
+    c: &mut Client,
+    nodes: &[Vec<u8>],
+    parents: &[Option<Vec<u8>>],
+    order_keys: &[Option<Vec<u8>>],
+    last_changes: &[Option<Vec<u8>>],
+) -> Result<()> {
+    if nodes.is_empty() {
+        return Ok(());
+    }
+
+    let stmt = ctx.stmt(
+        c,
+        "INSERT INTO treecrdt_nodes(doc_id, node, parent, order_key, tombstone, last_change, deleted_at) \
+         SELECT $1, src.node, src.parent, src.order_key, FALSE, src.last_change, NULL::bytea \
+         FROM unnest($2::bytea[], $3::bytea[], $4::bytea[], $5::bytea[]) \
+           AS src(node, parent, order_key, last_change)",
+    )?;
+    c.execute(
+        &stmt,
+        &[&ctx.doc_id, &nodes, &parents, &order_keys, &last_changes],
+    )
+    .map_err(storage_debug)?;
+    Ok(())
+}
+
+fn bulk_insert_fixture_index_rows_in_tx(
+    ctx: &PgCtx,
+    c: &mut Client,
+    parents: &[Vec<u8>],
+    op_refs: &[Vec<u8>],
+    seqs: &[i64],
+) -> Result<()> {
+    if parents.is_empty() {
+        return Ok(());
+    }
+
+    let stmt = ctx.stmt(
+        c,
+        "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) \
+         SELECT $1, src.parent, src.op_ref, src.seq \
+         FROM unnest($2::bytea[], $3::bytea[], $4::bigint[]) AS src(parent, op_ref, seq)",
+    )?;
+    c.execute(&stmt, &[&ctx.doc_id, &parents, &op_refs, &seqs])
+        .map_err(storage_debug)?;
+    Ok(())
+}
+
+fn upsert_replica_counter_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &[u8],
+    max_counter: u64,
+) -> Result<()> {
+    let mut c = client.borrow_mut();
+    c.execute(
+        "INSERT INTO treecrdt_replica_meta (doc_id, replica, max_counter) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (doc_id, replica) DO UPDATE \
+         SET max_counter = GREATEST(treecrdt_replica_meta.max_counter, EXCLUDED.max_counter)",
+        &[
+            &doc_id,
+            &replica,
+            &((max_counter.min(i64::MAX as u64)) as i64),
+        ],
+    )
+    .map_err(storage_debug)?;
+    Ok(())
+}
+
 fn select_inserted_ops(
     ctx: &PgCtx,
     ops: &[Operation],
@@ -1552,6 +1759,293 @@ pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation])
     }
 }
 
+fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    {
+        let mut c = client.borrow_mut();
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
+    }
+
+    let res = f();
+
+    match res {
+        Ok(v) => {
+            let mut c = client.borrow_mut();
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
+            Ok(v)
+        }
+        Err(e) => {
+            let mut c = client.borrow_mut();
+            let _ = c.batch_execute("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+pub fn prime_doc_for_tests(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    ops: &[Operation],
+) -> Result<()> {
+    run_in_tx(client, || {
+        {
+            let mut c = client.borrow_mut();
+            reset_doc_for_tests_within_tx(&mut c, doc_id)?;
+        }
+
+        if ops.is_empty() {
+            return Ok(());
+        }
+
+        ensure_doc_meta(client, doc_id)?;
+        set_tree_meta_dirty(client, doc_id, true)?;
+
+        let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
+        {
+            let mut c = client.borrow_mut();
+            bulk_insert_ops_in_tx(&ctx, &mut c, ops)?;
+        }
+        upsert_replica_counters_in_tx(client, doc_id, ops)?;
+        Ok(())
+    })?;
+
+    if ops.is_empty() {
+        return Ok(());
+    }
+
+    // Fixture import wants one bulk append followed by one rebuild, rather than eager
+    // incremental materialization during the append path.
+    ensure_materialized(client, doc_id)
+}
+
+pub fn prime_balanced_fanout_doc_for_tests(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    size: usize,
+    fanout: usize,
+    payload_bytes: usize,
+    replica_label: &str,
+) -> Result<()> {
+    if size == 0 {
+        return Err(Error::Storage("fixture size must be positive".into()));
+    }
+    if fanout == 0 {
+        return Err(Error::Storage("fixture fanout must be positive".into()));
+    }
+    if payload_bytes > 0 && size <= fanout {
+        return Err(Error::Storage(format!(
+            "payload fixture requires size > fanout ({fanout})"
+        )));
+    }
+
+    const BATCH_SIZE: usize = 50_000;
+
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, doc_id)?;
+    }
+
+    ensure_doc_meta(client, doc_id)?;
+
+    let replica = repeated_replica_from_label(replica_label)?;
+    let replica_bytes = replica.as_bytes().to_vec();
+    let payload_counter = (size + 1) as u64;
+    let total_ops = if payload_bytes > 0 {
+        payload_counter
+    } else {
+        size as u64
+    };
+
+    run_in_tx(client, || {
+        let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
+        set_tree_meta_dirty(client, doc_id, true)?;
+
+        let root_last_change = if size == 0 {
+            None
+        } else {
+            Some(single_counter_vv_bytes(&replica, size.min(fanout) as u64)?)
+        };
+
+        {
+            let mut c = client.borrow_mut();
+            bulk_insert_fixture_nodes_in_tx(
+                &ctx,
+                &mut c,
+                &[node_to_bytes(NodeId::ROOT).to_vec()],
+                &[None],
+                &[Some(Vec::new())],
+                &[root_last_change],
+            )?;
+        }
+
+        let mut batch_ops = Vec::with_capacity(BATCH_SIZE);
+        let mut node_rows: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
+        let mut node_parents: Vec<Option<Vec<u8>>> = Vec::with_capacity(BATCH_SIZE);
+        let mut node_order_keys: Vec<Option<Vec<u8>>> = Vec::with_capacity(BATCH_SIZE);
+        let mut node_last_changes: Vec<Option<Vec<u8>>> = Vec::with_capacity(BATCH_SIZE);
+        let mut index_parents: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
+        let mut index_op_refs: Vec<Vec<u8>> = Vec::with_capacity(BATCH_SIZE);
+        let mut index_seqs: Vec<i64> = Vec::with_capacity(BATCH_SIZE);
+
+        let flush_batch = |batch_ops: &mut Vec<Operation>,
+                           node_rows: &mut Vec<Vec<u8>>,
+                           node_parents: &mut Vec<Option<Vec<u8>>>,
+                           node_order_keys: &mut Vec<Option<Vec<u8>>>,
+                           node_last_changes: &mut Vec<Option<Vec<u8>>>,
+                           index_parents: &mut Vec<Vec<u8>>,
+                           index_op_refs: &mut Vec<Vec<u8>>,
+                           index_seqs: &mut Vec<i64>|
+         -> Result<()> {
+            if batch_ops.is_empty() {
+                return Ok(());
+            }
+            {
+                let mut c = client.borrow_mut();
+                bulk_insert_ops_in_tx(&ctx, &mut c, batch_ops)?;
+                bulk_insert_fixture_nodes_in_tx(
+                    &ctx,
+                    &mut c,
+                    node_rows,
+                    node_parents,
+                    node_order_keys,
+                    node_last_changes,
+                )?;
+                bulk_insert_fixture_index_rows_in_tx(
+                    &ctx,
+                    &mut c,
+                    index_parents,
+                    index_op_refs,
+                    index_seqs,
+                )?;
+            }
+            batch_ops.clear();
+            node_rows.clear();
+            node_parents.clear();
+            node_order_keys.clear();
+            node_last_changes.clear();
+            index_parents.clear();
+            index_op_refs.clear();
+            index_seqs.clear();
+            Ok(())
+        };
+
+        for node_index in 1..=size {
+            let (parent, position) = balanced_parent_and_position(node_index, fanout);
+            let node = NodeId(node_index as u128);
+            let order_key = order_key_from_position(position)?;
+            let op = Operation::insert(
+                &replica,
+                node_index as u64,
+                node_index as Lamport,
+                parent,
+                node,
+                order_key.clone(),
+            );
+            let op_ref = derive_op_ref_v0(doc_id, replica.as_bytes(), node_index as u64).to_vec();
+            let mut last_change_counter = node_index as u64;
+            if let Some(child_max) = balanced_direct_child_max_counter(node_index, size, fanout) {
+                last_change_counter = last_change_counter.max(child_max);
+            }
+            if payload_bytes > 0 && node_index == fanout + 1 {
+                last_change_counter = last_change_counter.max(payload_counter);
+            }
+
+            batch_ops.push(op);
+            node_rows.push(node_to_bytes(node).to_vec());
+            node_parents.push(Some(node_to_bytes(parent).to_vec()));
+            node_order_keys.push(Some(order_key));
+            node_last_changes.push(Some(single_counter_vv_bytes(
+                &replica,
+                last_change_counter,
+            )?));
+            index_parents.push(node_to_bytes(parent).to_vec());
+            index_op_refs.push(op_ref);
+            index_seqs.push(node_index as i64);
+
+            if batch_ops.len() >= BATCH_SIZE {
+                flush_batch(
+                    &mut batch_ops,
+                    &mut node_rows,
+                    &mut node_parents,
+                    &mut node_order_keys,
+                    &mut node_last_changes,
+                    &mut index_parents,
+                    &mut index_op_refs,
+                    &mut index_seqs,
+                )?;
+            }
+        }
+
+        flush_batch(
+            &mut batch_ops,
+            &mut node_rows,
+            &mut node_parents,
+            &mut node_order_keys,
+            &mut node_last_changes,
+            &mut index_parents,
+            &mut index_op_refs,
+            &mut index_seqs,
+        )?;
+
+        if payload_bytes > 0 {
+            let payload_node = NodeId((fanout + 1) as u128);
+            let payload_node_bytes = node_to_bytes(payload_node);
+            let payload_op = Operation::set_payload(
+                &replica,
+                payload_counter,
+                payload_counter as Lamport,
+                payload_node,
+                payload_bytes_from_seed(10_000, payload_bytes),
+            );
+            let payload_parent = NodeId(1);
+            let payload_op_ref =
+                derive_op_ref_v0(doc_id, replica.as_bytes(), payload_counter).to_vec();
+            let payload_bytes_value = payload_bytes_from_seed(10_000, payload_bytes);
+
+            {
+                let mut c = client.borrow_mut();
+                bulk_insert_ops_in_tx(&ctx, &mut c, &[payload_op])?;
+                let stmt = ctx.stmt(
+                    &mut c,
+                    "INSERT INTO treecrdt_payload(doc_id, node, payload, last_lamport, last_replica, last_counter) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )?;
+                c.execute(
+                    &stmt,
+                    &[
+                        &ctx.doc_id,
+                        &payload_node_bytes.as_slice(),
+                        &payload_bytes_value,
+                        &(payload_counter as i64),
+                        &replica_bytes,
+                        &(payload_counter as i64),
+                    ],
+                )
+                .map_err(storage_debug)?;
+                bulk_insert_fixture_index_rows_in_tx(
+                    &ctx,
+                    &mut c,
+                    &[node_to_bytes(payload_parent).to_vec()],
+                    &[payload_op_ref],
+                    &[payload_counter as i64],
+                )?;
+            }
+        }
+
+        upsert_replica_counter_in_tx(client, doc_id, replica.as_bytes(), total_ops)?;
+        update_tree_meta_head(
+            client,
+            doc_id,
+            total_ops as Lamport,
+            replica.as_bytes(),
+            total_ops,
+            total_ops,
+        )?;
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
 fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
     // Serialize per-doc writers across all server instances (incremental materialization updates
     // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
@@ -1565,7 +2059,8 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
             meta.head_seq(),
         )))
     });
-    let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
+    let ctx =
+        PgCtx::new_with_profile_assume_doc_meta(client.clone(), doc_id, append_profile.clone())?;
 
     // treecrdt_ops is the source of truth. This function first appends/dedupes the op log in SQL
     // and only then decides whether it can replay the inserted subset through core materialization.
@@ -1583,13 +2078,26 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
             profile.bulk_insert_ms += bulk_insert_started_at.elapsed().as_secs_f64() * 1000.0;
             profile.bulk_inserted_ops += inserted.len();
         }
-        if !inserted.is_empty() {
+        let inserted_count = inserted.len();
+        if inserted_count > 0 {
+            let inserted_op_refs: HashSet<Vec<u8>> = inserted.into_iter().collect();
+            let inserted_ops: Vec<Operation> = ops
+                .iter()
+                .filter(|op| {
+                    let replica = op.meta.id.replica.as_bytes();
+                    let counter = op.meta.id.counter;
+                    inserted_op_refs
+                        .contains(derive_op_ref_v0(&ctx.doc_id, replica, counter).as_slice())
+                })
+                .cloned()
+                .collect();
+            upsert_replica_counters_in_tx(client, doc_id, &inserted_ops)?;
             set_tree_meta_dirty(client, doc_id, true)?;
             if let Some(profile) = &append_profile {
                 profile.borrow_mut().fallback_mark_dirty = true;
             }
         }
-        let inserted_count = inserted.len().min(u64::MAX as usize) as u64;
+        let inserted_count = inserted_count.min(u64::MAX as usize) as u64;
         if let Some(profile) = &append_profile {
             profile.borrow().log(doc_id, inserted_count as usize);
         }
@@ -1629,6 +2137,8 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
         }
         return Ok(0);
     }
+
+    upsert_replica_counters_in_tx(client, doc_id, &inserted_ops)?;
 
     let inserted = inserted_ops.len();
     // If incremental materialization fails, keep the op-log append and mark the doc dirty so the
@@ -1687,7 +2197,7 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
     }
 }
 
-pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
+fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let meta = load_tree_meta(client, doc_id)?;
     if !meta.dirty {
         return Ok(());
@@ -1740,4 +2250,83 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
     }
 
     Ok(())
+}
+
+pub(crate) fn ensure_materialized_and_load_meta_for_update_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> Result<TreeMeta> {
+    ensure_doc_meta(client, doc_id)?;
+    let meta = load_tree_meta_row(client, doc_id, true)?;
+    if !meta.dirty {
+        return Ok(meta);
+    }
+
+    clear_materialized(client, doc_id)?;
+
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
+    let storage = PgOpStorage::new(ctx.clone());
+    let mut nodes = PgNodeStore::new(ctx.clone());
+    let node_flush = nodes.clone();
+    let mut payloads = PgPayloadStore::new(ctx.clone());
+    let mut index = PgParentOpIndex::new(ctx.clone());
+
+    nodes.reset()?;
+    payloads.reset()?;
+    index.reset()?;
+
+    let mut crdt = TreeCrdt::with_stores(
+        ReplicaId::new(b"postgres"),
+        storage,
+        LamportClock::default(),
+        nodes,
+        payloads,
+    )?;
+    crdt.replay_from_storage_with_materialization(&mut index)?;
+    node_flush.flush_last_change()?;
+    index.flush()?;
+
+    let seq = crdt.log_len().min(u64::MAX as usize) as u64;
+    if let Some(last) = crdt.head_op() {
+        update_tree_meta_head(
+            client,
+            doc_id,
+            last.meta.lamport,
+            last.meta.id.replica.as_bytes(),
+            last.meta.id.counter,
+            seq,
+        )?;
+        return Ok(TreeMeta {
+            dirty: false,
+            head_lamport: last.meta.lamport,
+            head_replica: last.meta.id.replica.as_bytes().to_vec(),
+            head_counter: last.meta.id.counter,
+            head_seq: seq,
+        });
+    }
+
+    update_tree_meta_head(client, doc_id, 0, &[], 0, 0)?;
+    Ok(TreeMeta {
+        dirty: false,
+        head_lamport: 0,
+        head_replica: Vec::new(),
+        head_counter: 0,
+        head_seq: 0,
+    })
+}
+
+pub(crate) fn replica_max_counter_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &[u8],
+) -> Result<u64> {
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
+    let mut c = client.borrow_mut();
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT COALESCE(MAX(max_counter), 0) FROM treecrdt_replica_meta WHERE doc_id = $1 AND replica = $2",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &replica]).map_err(storage_debug)?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
+    Ok(row.get::<_, i64>(0).max(0) as u64)
 }
