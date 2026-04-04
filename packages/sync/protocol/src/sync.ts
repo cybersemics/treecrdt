@@ -1,4 +1,5 @@
 import { RibltDecoder16, RibltEncoder16 } from '@treecrdt/riblt-wasm';
+import type { Operation as TreeOperation } from '@treecrdt/interface';
 
 import {
   AUTH_CAPABILITY_NAME,
@@ -17,6 +18,7 @@ import {
   peerSelectedDirectSendFilter,
   peerSupportsDirectSendEmptyReceiver,
   peerSupportsDirectSendSmallScope,
+  SERVER_INSTANCE_CAPABILITY_NAME,
 } from './capabilities.js';
 import { ErrorCode, RibltFailureReason } from './types.js';
 import type {
@@ -24,6 +26,7 @@ import type {
   Filter,
   Hello,
   HelloAck,
+  OpAuth,
   OpRef,
   OpsBatch,
   PendingOp,
@@ -95,6 +98,11 @@ export type SyncPeerOptions<Op = unknown> = {
   maxHelloFilters?: number;
   /** Direct-send tiny scopes instead of running a full RIBLT round when possible. */
   directSendThreshold?: number;
+  /**
+   * Proactively relay newly verified delta ops to active subscribers before the normal
+   * pending-push scan catches up.
+   */
+  fastForwardRelaySubscriptions?: boolean;
   /** Require an auth capability before accepting scoped Hello or Subscribe filters. */
   requireAuthForFilters?: boolean;
   /** Auth policy hooks for outgoing filters, incoming ops, and post-verify side effects. */
@@ -210,6 +218,7 @@ type ResponderSubscription<Op> = {
   filter: Filter;
   sentOpRefs: Set<string>;
   transport: DuplexTransport<SyncMessage<Op>>;
+  childrenState?: ResponderChildrenState;
 };
 
 type InitiatorSubscription = {
@@ -223,6 +232,52 @@ type PendingPushOp<Op> = {
   op: Op;
 };
 
+type PendingPushAuthedOp<Op> = PendingPushOp<Op> & {
+  auth?: OpAuth;
+};
+
+type ResponderChildrenState = {
+  parentHex: string;
+  visibleNodeHexes: Set<string>;
+};
+
+type PayloadWriterState<Op> = {
+  marker: TreeOperation;
+  writer?: PendingPushOp<Op>;
+};
+
+function isChildrenFilter(
+  filter: Filter,
+): filter is Extract<Filter, { children: { parent: Uint8Array } }> {
+  return 'children' in filter;
+}
+
+function isTreecrdtOperation(op: unknown): op is TreeOperation {
+  if (typeof op !== 'object' || op === null) return false;
+  const candidate = op as Partial<TreeOperation>;
+  if (typeof candidate.meta?.lamport !== 'number') return false;
+  if (!(candidate.meta?.id?.replica instanceof Uint8Array)) return false;
+  if (typeof candidate.meta?.id?.counter !== 'number') return false;
+  if (typeof candidate.kind?.type !== 'string') return false;
+  return true;
+}
+
+function compareBytesLex(a: Uint8Array, b: Uint8Array): number {
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i += 1) {
+    const delta = (a[i] ?? 0) - (b[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return a.length - b.length;
+}
+
+function compareTreeOps(a: TreeOperation, b: TreeOperation): number {
+  if (a.meta.lamport !== b.meta.lamport) return a.meta.lamport - b.meta.lamport;
+  const replicaDelta = compareBytesLex(a.meta.id.replica, b.meta.id.replica);
+  if (replicaDelta !== 0) return replicaDelta;
+  return a.meta.id.counter - b.meta.id.counter;
+}
+
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
   return capabilities.some(isAnyAuthCapability);
 }
@@ -232,6 +287,7 @@ export class SyncPeer<Op> {
   private readonly maxOpsPerBatch: number;
   private readonly maxHelloFilters: number;
   private readonly directSendThreshold: number;
+  private readonly fastForwardRelaySubscriptions: boolean;
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
   private readonly deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
@@ -259,6 +315,7 @@ export class SyncPeer<Op> {
   private readonly responderAwaitingUploadAcks = new Set<string>();
   private readonly opsBatchQueues = new Map<string, Promise<void>>();
   private readonly pendingPushOpsByRefHex = new Map<string, PendingPushOp<Op>>();
+  private readonly latestPayloadWriterByNodeHex = new Map<string, PayloadWriterState<Op>>();
   private pushNeedsFullScan = false;
   private pushScheduled = false;
   private pushRunning = false;
@@ -277,6 +334,7 @@ export class SyncPeer<Op> {
     this.auth = opts.auth;
     this.maxHelloFilters = opts.maxHelloFilters ?? 8;
     this.directSendThreshold = opts.directSendThreshold ?? 0;
+    this.fastForwardRelaySubscriptions = opts.fastForwardRelaySubscriptions ?? false;
     if (!Number.isInteger(this.directSendThreshold) || this.directSendThreshold < 0) {
       throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
     }
@@ -300,16 +358,32 @@ export class SyncPeer<Op> {
     });
   }
 
+  getPeerCapabilities(transport: DuplexTransport<SyncMessage<Op>>): readonly Capability[] {
+    return this.transportPeerCapabilities.get(transport) ?? [];
+  }
+
+  getPeerCapabilityValue(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    name: string,
+  ): string | undefined {
+    return this.getPeerCapabilities(transport).find((capability) => capability.name === name)
+      ?.value;
+  }
+
   // Live subscriptions are responder-owned: once a peer subscribes, local writes
   // feed this push loop until the subscription is removed or the transport fails.
   notifyLocalUpdate(ops?: readonly Op[]): Promise<void> {
     if (this.responderSubscriptions.size === 0) return Promise.resolve();
     if (ops && ops.length > 0 && this.deriveOpRef) {
+      const exactEntries: PendingPushOp<Op>[] = [];
       for (const op of ops) {
         const opRef = this.deriveOpRef(op, { docId: this.backend.docId });
         const opRefHex = bytesToHex(opRef);
-        this.pendingPushOpsByRefHex.set(opRefHex, { opRef, opRefHex, op });
+        const entry = { opRef, opRefHex, op };
+        this.pendingPushOpsByRefHex.set(opRefHex, entry);
+        exactEntries.push(entry);
       }
+      this.rememberPayloadKnowledgeEntries(exactEntries);
     } else {
       this.pushNeedsFullScan = true;
     }
@@ -351,6 +425,184 @@ export class SyncPeer<Op> {
     } finally {
       this.pushRunning = false;
     }
+  }
+
+  private rememberPayloadKnowledgeEntries(entries: readonly PendingPushOp<Op>[]): void {
+    for (const entry of entries) {
+      if (!isTreecrdtOperation(entry.op)) continue;
+      const op = entry.op;
+      let nodeHex: string | undefined;
+      let writer: PendingPushOp<Op> | undefined;
+      switch (op.kind.type) {
+        case 'insert':
+          nodeHex = op.kind.node;
+          writer = op.kind.payload !== undefined ? entry : undefined;
+          break;
+        case 'payload':
+          nodeHex = op.kind.node;
+          writer = entry;
+          break;
+        default:
+          continue;
+      }
+
+      const current = this.latestPayloadWriterByNodeHex.get(nodeHex);
+      if (current) {
+        const cmp = compareTreeOps(current.marker, op);
+        if (cmp > 0) continue;
+        if (cmp === 0 && current.writer) continue;
+      }
+      this.latestPayloadWriterByNodeHex.set(nodeHex, { marker: op, writer });
+    }
+  }
+
+  private buildChildrenState(
+    parentHex: string,
+    entries: readonly PendingPushOp<Op>[],
+  ): ResponderChildrenState | undefined {
+    const sorted: Array<PendingPushOp<Op> & { op: TreeOperation }> = [];
+    for (const entry of entries) {
+      if (!isTreecrdtOperation(entry.op)) return undefined;
+      sorted.push(entry as PendingPushOp<Op> & { op: TreeOperation });
+    }
+    sorted.sort((a, b) => compareTreeOps(a.op, b.op));
+    const visibleNodeHexes = new Set<string>();
+    for (const entry of sorted) {
+      const op = entry.op;
+      switch (op.kind.type) {
+        case 'insert':
+          if (op.kind.parent === parentHex) visibleNodeHexes.add(op.kind.node);
+          break;
+        case 'move':
+          if (op.kind.newParent === parentHex) visibleNodeHexes.add(op.kind.node);
+          else visibleNodeHexes.delete(op.kind.node);
+          break;
+        case 'delete':
+        case 'tombstone':
+          visibleNodeHexes.delete(op.kind.node);
+          break;
+        case 'payload':
+          break;
+        default: {
+          const _exhaustive: never = op.kind;
+          throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
+        }
+      }
+    }
+    return { parentHex, visibleNodeHexes };
+  }
+
+  private recordSentEntries(
+    sub: ResponderSubscription<Op>,
+    entries: readonly PendingPushOp<Op>[],
+  ): void {
+    if (entries.length === 0) return;
+    this.rememberPayloadKnowledgeEntries(entries);
+    if (!sub.childrenState) return;
+
+    const sorted: Array<PendingPushOp<Op> & { op: TreeOperation }> = [];
+    for (const entry of entries) {
+      if (!isTreecrdtOperation(entry.op)) {
+        sub.childrenState = undefined;
+        return;
+      }
+      sorted.push(entry as PendingPushOp<Op> & { op: TreeOperation });
+    }
+    sorted.sort((a, b) => compareTreeOps(a.op, b.op));
+
+    for (const entry of sorted) {
+      const op = entry.op;
+      switch (op.kind.type) {
+        case 'insert':
+          if (op.kind.parent === sub.childrenState.parentHex) {
+            sub.childrenState.visibleNodeHexes.add(op.kind.node);
+          }
+          break;
+        case 'move':
+          if (op.kind.newParent === sub.childrenState.parentHex) {
+            sub.childrenState.visibleNodeHexes.add(op.kind.node);
+          } else {
+            sub.childrenState.visibleNodeHexes.delete(op.kind.node);
+          }
+          break;
+        case 'delete':
+        case 'tombstone':
+          sub.childrenState.visibleNodeHexes.delete(op.kind.node);
+          break;
+        case 'payload':
+          break;
+        default: {
+          const _exhaustive: never = op.kind;
+          throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
+        }
+      }
+    }
+  }
+
+  private matchChildrenSubscriptionDelta(
+    sub: ResponderSubscription<Op>,
+    deltaOps: readonly PendingPushOp<Op>[],
+  ): PendingPushOp<Op>[] | undefined {
+    if (!sub.childrenState) return undefined;
+    const visibleNodeHexes = new Set(sub.childrenState.visibleNodeHexes);
+    const targetParentHex = sub.childrenState.parentHex;
+    const sorted: Array<PendingPushOp<Op> & { op: TreeOperation }> = [];
+    for (const entry of deltaOps) {
+      if (!isTreecrdtOperation(entry.op)) return undefined;
+      sorted.push(entry as PendingPushOp<Op> & { op: TreeOperation });
+    }
+    sorted.sort((a, b) => compareTreeOps(a.op, b.op));
+
+    const selected = new Map<string, PendingPushOp<Op>>();
+    const add = (entry: PendingPushOp<Op>) => {
+      if (!sub.sentOpRefs.has(entry.opRefHex) && !selected.has(entry.opRefHex)) {
+        selected.set(entry.opRefHex, entry);
+      }
+    };
+
+    for (const entry of sorted) {
+      const op = entry.op;
+      switch (op.kind.type) {
+        case 'insert':
+          if (op.kind.parent === targetParentHex) {
+            add(entry);
+            visibleNodeHexes.add(op.kind.node);
+          }
+          break;
+        case 'move': {
+          const wasVisible = visibleNodeHexes.has(op.kind.node);
+          const enters = op.kind.newParent === targetParentHex;
+          if (!wasVisible && !enters) break;
+          add(entry);
+          if (enters) {
+            if (!wasVisible) {
+              const payloadState = this.latestPayloadWriterByNodeHex.get(op.kind.node);
+              if (!payloadState) return undefined;
+              if (payloadState.writer) add(payloadState.writer);
+            }
+            visibleNodeHexes.add(op.kind.node);
+          } else {
+            visibleNodeHexes.delete(op.kind.node);
+          }
+          break;
+        }
+        case 'delete':
+        case 'tombstone':
+          if (!visibleNodeHexes.has(op.kind.node)) break;
+          add(entry);
+          visibleNodeHexes.delete(op.kind.node);
+          break;
+        case 'payload':
+          if (op.kind.node === targetParentHex || visibleNodeHexes.has(op.kind.node)) add(entry);
+          break;
+        default: {
+          const _exhaustive: never = op.kind;
+          throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
+        }
+      }
+    }
+
+    return Array.from(selected.values());
   }
 
   private async refreshHelloCapabilities(
@@ -437,6 +689,18 @@ export class SyncPeer<Op> {
       await this.pushSubscriptionDeltaAll(sub, opts.deltaOps);
       return;
     }
+    if (
+      !opts.forceFullScan &&
+      isChildrenFilter(sub.filter) &&
+      opts.deltaOps &&
+      opts.deltaOps.length > 0
+    ) {
+      const matched = this.matchChildrenSubscriptionDelta(sub, opts.deltaOps);
+      if (matched) {
+        await this.pushSubscriptionDeltaEntries(sub, matched);
+        return;
+      }
+    }
 
     let opRefs: OpRef[];
     try {
@@ -464,6 +728,11 @@ export class SyncPeer<Op> {
     for (let start = 0; start < newOpRefs.length; start += this.maxOpsPerBatch) {
       const chunk = newOpRefs.slice(start, start + this.maxOpsPerBatch);
       let ops = await this.backend.getOpsByOpRefs(chunk);
+      let sentEntries = chunk.map((opRef, i) => ({
+        opRef,
+        opRefHex: bytesToHex(opRef),
+        op: ops[i]!,
+      }));
       const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
 
       // Apply peer-scoped visibility restrictions (best-effort).
@@ -498,6 +767,11 @@ export class SyncPeer<Op> {
         }
 
         ops = allowedOps;
+        sentEntries = allowedRefs.map((opRef, i) => ({
+          opRef,
+          opRefHex: bytesToHex(opRef),
+          op: allowedOps[i]!,
+        }));
         chunk.length = 0;
         chunk.push(...allowedRefs);
       }
@@ -524,6 +798,7 @@ export class SyncPeer<Op> {
       });
 
       for (const r of chunk) sub.sentOpRefs.add(bytesToHex(r));
+      this.recordSentEntries(sub, sentEntries);
       await yieldToMacrotask();
     }
   }
@@ -536,6 +811,14 @@ export class SyncPeer<Op> {
     // every new local op belongs to the filter, so we can skip listOpRefs().
     const unsent = deltaOps.filter((entry) => !sub.sentOpRefs.has(entry.opRefHex));
     if (unsent.length === 0) return;
+    await this.pushSubscriptionDeltaEntries(sub, unsent);
+  }
+
+  private async pushSubscriptionDeltaEntries(
+    sub: ResponderSubscription<Op>,
+    entries: readonly PendingPushOp<Op>[],
+  ): Promise<void> {
+    if (entries.length === 0) return;
 
     // Live subscriptions can outlive the capability snapshot from the initial handshake.
     // Refresh it before the push so proof_ref verification can succeed on newly seen authors.
@@ -545,10 +828,11 @@ export class SyncPeer<Op> {
     const filter = sub.filter;
     const maxOpsPerBatch = this.maxOpsPerBatch;
 
-    for (let start = 0; start < unsent.length; start += maxOpsPerBatch) {
-      const chunk = unsent.slice(start, start + maxOpsPerBatch);
+    for (let start = 0; start < entries.length; start += maxOpsPerBatch) {
+      const chunk = entries.slice(start, start + maxOpsPerBatch);
       let refs = chunk.map((entry) => entry.opRef);
       let ops = chunk.map((entry) => entry.op);
+      let sentEntries = chunk.slice();
 
       if (this.auth?.filterOutgoingOps && ops.length > 0) {
         const allowed = await this.auth.filterOutgoingOps(ops, {
@@ -581,6 +865,7 @@ export class SyncPeer<Op> {
 
         refs = allowedRefs;
         ops = allowedOps;
+        sentEntries = chunk.filter((_, i) => allowed[i] === true);
       }
 
       const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
@@ -596,7 +881,7 @@ export class SyncPeer<Op> {
         throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       }
 
-      const done = start + maxOpsPerBatch >= unsent.length;
+      const done = start + maxOpsPerBatch >= entries.length;
       await sub.transport.send({
         v: 0,
         docId: this.backend.docId,
@@ -607,8 +892,148 @@ export class SyncPeer<Op> {
       });
 
       for (const ref of refs) sub.sentOpRefs.add(bytesToHex(ref));
+      this.recordSentEntries(sub, sentEntries);
       await yieldToMacrotask();
     }
+  }
+
+  private async pushSubscriptionProvisionalEntries(
+    sub: ResponderSubscription<Op>,
+    entries: readonly PendingPushAuthedOp<Op>[],
+  ): Promise<PendingPushOp<Op>[]> {
+    if (entries.length === 0) return [];
+
+    // Provisional relay still needs current replay/auth capability material so
+    // receivers can resolve proof_ref on newly seen authors.
+    await this.refreshHelloCapabilities(sub.transport);
+
+    const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
+    const filter = sub.filter;
+    const maxOpsPerBatch = this.maxOpsPerBatch;
+    const forwarded: PendingPushOp<Op>[] = [];
+
+    for (let start = 0; start < entries.length; start += maxOpsPerBatch) {
+      const chunk = entries.slice(start, start + maxOpsPerBatch);
+      let refs = chunk.map((entry) => entry.opRef);
+      let ops = chunk.map((entry) => entry.op);
+      let auth = chunk.map((entry) => entry.auth);
+      let sentEntries = chunk.slice();
+
+      if (this.auth?.filterOutgoingOps && ops.length > 0) {
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: 'subscribe',
+          filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(
+            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
+          );
+        }
+
+        const allowedRefs: OpRef[] = [];
+        const allowedOps: Op[] = [];
+        const allowedAuth: Array<OpAuth | undefined> = [];
+        const allowedEntries: PendingPushAuthedOp<Op>[] = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          if (allowed[i] === true) {
+            allowedRefs.push(refs[i]!);
+            allowedOps.push(ops[i]!);
+            allowedAuth.push(auth[i]);
+            allowedEntries.push(chunk[i]!);
+          }
+        }
+
+        if (allowedOps.length === 0) {
+          await yieldToMacrotask();
+          continue;
+        }
+
+        refs = allowedRefs;
+        ops = allowedOps;
+        auth = allowedAuth;
+        sentEntries = allowedEntries;
+      }
+
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+      const outgoingAuth = shouldAttachAuth ? auth : undefined;
+      if (outgoingAuth && outgoingAuth.some((entry) => entry == null)) {
+        throw new Error('provisional relay requires auth for every forwarded op');
+      }
+
+      const done = start + maxOpsPerBatch >= entries.length;
+      await sub.transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: 'opsBatch',
+          value: {
+            filterId: sub.subscriptionId,
+            ops,
+            ...(outgoingAuth ? { auth: outgoingAuth as OpAuth[] } : {}),
+            done,
+          },
+        },
+      });
+
+      forwarded.push(
+        ...sentEntries.map((entry) => ({
+          opRef: entry.opRef,
+          opRefHex: entry.opRefHex,
+          op: entry.op,
+        })),
+      );
+      await yieldToMacrotask();
+    }
+
+    return forwarded;
+  }
+
+  private async fastForwardRelayBatch(
+    originTransport: DuplexTransport<SyncMessage<Op>>,
+    filterId: string,
+    ops: readonly Op[],
+    auth: readonly OpAuth[],
+  ): Promise<Array<{ sub: ResponderSubscription<Op>; entries: PendingPushOp<Op>[] }>> {
+    if (
+      !this.fastForwardRelaySubscriptions ||
+      this.responderSubscriptions.size === 0 ||
+      ops.length === 0 ||
+      !this.deriveOpRef
+    ) {
+      return [];
+    }
+
+    const deltaOps: PendingPushAuthedOp<Op>[] = ops.map((op, i) => {
+      const opRef = this.deriveOpRef!(op, { docId: this.backend.docId });
+      return {
+        opRef,
+        opRefHex: bytesToHex(opRef),
+        op,
+        auth: auth[i],
+      };
+    });
+    this.rememberPayloadKnowledgeEntries(deltaOps);
+
+    const forwarded: Array<{ sub: ResponderSubscription<Op>; entries: PendingPushOp<Op>[] }> = [];
+    for (const sub of this.responderSubscriptions.values()) {
+      if (sub.transport === originTransport || sub.subscriptionId === filterId) continue;
+
+      let matched: PendingPushAuthedOp<Op>[] | undefined;
+      if ('all' in sub.filter) {
+        // Keep the provisional experiment scoped to broad doc subscriptions for now.
+        // Scoped subtree subscriptions already have a more specific delta path and
+        // did not benchmark well with speculative forwarding.
+        matched = deltaOps.filter((entry) => !sub.sentOpRefs.has(entry.opRefHex));
+      }
+      if (!matched || matched.length === 0) continue;
+
+      const sentEntries = await this.pushSubscriptionProvisionalEntries(sub, matched);
+      if (sentEntries.length > 0) forwarded.push({ sub, entries: sentEntries });
+    }
+
+    return forwarded;
   }
 
   async syncOnce(
@@ -1128,8 +1553,7 @@ export class SyncPeer<Op> {
     // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
     // can't race and get rejected before `onHello` completes.
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(hello.capabilities))
-      this.transportPeerCapabilities.set(transport, hello.capabilities);
+    this.transportPeerCapabilities.set(transport, hello.capabilities);
 
     let ackCapabilities: HelloAck['capabilities'] = [];
     try {
@@ -1330,8 +1754,7 @@ export class SyncPeer<Op> {
 
     const hasAuthCapability = ack.capabilities.some(isAuthCapability);
     if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(ack.capabilities))
-      this.transportPeerCapabilities.set(transport, ack.capabilities);
+    this.transportPeerCapabilities.set(transport, ack.capabilities);
     const waiters = this.transportHelloAckWaiters.get(transport);
     if (waiters && waiters.size > 0) {
       this.transportHelloAckWaiters.delete(transport);
@@ -1531,12 +1954,29 @@ export class SyncPeer<Op> {
 
       const sentOpRefs = new Set<string>();
       for (const r of opRefs) sentOpRefs.add(bytesToHex(r));
+      let childrenState: ResponderChildrenState | undefined;
+      if (isChildrenFilter(msg.filter) && opRefs.length > 0) {
+        const ops = await this.backend.getOpsByOpRefs(opRefs);
+        const entries = opRefs.map((opRef, i) => ({
+          opRef,
+          opRefHex: bytesToHex(opRef),
+          op: ops[i]!,
+        }));
+        this.rememberPayloadKnowledgeEntries(entries);
+        childrenState = this.buildChildrenState(bytesToHex(msg.filter.children.parent), entries);
+      } else if (isChildrenFilter(msg.filter)) {
+        childrenState = {
+          parentHex: bytesToHex(msg.filter.children.parent),
+          visibleNodeHexes: new Set(),
+        };
+      }
 
       this.responderSubscriptions.set(msg.subscriptionId, {
         subscriptionId: msg.subscriptionId,
         filter: msg.filter,
         sentOpRefs,
         transport,
+        ...(childrenState ? { childrenState } : {}),
       });
 
       await transport.send({
@@ -1702,6 +2142,10 @@ export class SyncPeer<Op> {
         `OpsBatch.auth length ${auth.length} does not match ops length ${batch.ops.length}`,
       );
     }
+    const provisionalForwards =
+      purpose === 'reconcile' && auth
+        ? await this.fastForwardRelayBatch(transport, batch.filterId, batch.ops, auth)
+        : [];
 
     const verifyRes = await this.auth?.verifyOps?.(batch.ops, auth, {
       docId: this.backend.docId,
@@ -1762,6 +2206,19 @@ export class SyncPeer<Op> {
     }
 
     await this.backend.applyOps(allowedOps);
+    if (allowedOps.length > 0 && this.deriveOpRef && provisionalForwards.length > 0) {
+      const allowedOpRefHexes = new Set(
+        allowedOps.map((op) => bytesToHex(this.deriveOpRef!(op, { docId: this.backend.docId }))),
+      );
+      for (const forwarded of provisionalForwards) {
+        const committed = forwarded.entries.filter((entry) =>
+          allowedOpRefHexes.has(entry.opRefHex),
+        );
+        if (committed.length === 0) continue;
+        for (const entry of committed) forwarded.sub.sentOpRefs.add(entry.opRefHex);
+        this.recordSentEntries(forwarded.sub, committed);
+      }
+    }
     if (allowedOps.length > 0) void this.notifyLocalUpdate(allowedOps);
     await this.reprocessPendingOps();
 

@@ -94,6 +94,10 @@ async function main() {
   const postgresUrl = process.env.TREECRDT_POSTGRES_URL?.trim() || buildPostgresUrlFromParts();
   const maxCodewords = Number(process.env.TREECRDT_SYNC_MAX_CODEWORDS ?? '0');
   const directSendThreshold = Number(process.env.TREECRDT_SYNC_DIRECT_SEND_THRESHOLD ?? '0');
+  const fastForwardRelaySubscriptions = parseBooleanEnv(
+    'TREECRDT_SYNC_FAST_FORWARD_RELAY_SUBSCRIPTIONS',
+    false,
+  );
   const idleCloseMs = Number(process.env.TREECRDT_IDLE_CLOSE_MS ?? '30000');
   const maxPayloadBytes = Number(
     process.env.TREECRDT_MAX_PAYLOAD_BYTES ?? String(10 * 1024 * 1024),
@@ -112,6 +116,15 @@ async function main() {
   const packageVersion = readPackageVersion();
   const gitSha = process.env.TREECRDT_SYNC_GIT_SHA?.trim() || undefined;
   const gitDirty = parseBooleanEnv('TREECRDT_SYNC_GIT_DIRTY', false);
+  const discoveryResolvePath = process.env.TREECRDT_DISCOVERY_RESOLVE_PATH?.trim() || undefined;
+  const discoveryPublicHttpBaseUrl =
+    process.env.TREECRDT_DISCOVERY_PUBLIC_HTTP_BASE_URL?.trim() || undefined;
+  const discoveryPublicWebSocketBaseUrl =
+    process.env.TREECRDT_DISCOVERY_PUBLIC_WS_BASE_URL?.trim() || undefined;
+  const discoveryCacheTtlMs = Number(
+    process.env.TREECRDT_DISCOVERY_CACHE_TTL_MS ?? String(60 * 60 * 1000),
+  );
+  const discoveryRouteVersion = process.env.TREECRDT_DISCOVERY_ROUTE_VERSION?.trim() || undefined;
   const startedAt = new Date().toISOString();
 
   const backendModule =
@@ -148,6 +161,9 @@ async function main() {
   if (!Number.isFinite(rateLimitWindowMs) || rateLimitWindowMs <= 0) {
     throw new Error('invalid TREECRDT_RATE_LIMIT_WINDOW_MS');
   }
+  if (!Number.isFinite(discoveryCacheTtlMs) || discoveryCacheTtlMs < 0) {
+    throw new Error('invalid TREECRDT_DISCOVERY_CACHE_TTL_MS');
+  }
 
   try {
     const handle = await startSyncServer({
@@ -156,6 +172,7 @@ async function main() {
       postgresUrl,
       maxCodewords: maxCodewords > 0 ? maxCodewords : undefined,
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
+      fastForwardRelaySubscriptions,
       idleCloseMs,
       maxPayloadBytes,
       backendModule,
@@ -170,6 +187,11 @@ async function main() {
       packageVersion,
       gitSha,
       gitDirty,
+      discoveryResolvePath,
+      discoveryPublicHttpBaseUrl,
+      discoveryPublicWebSocketBaseUrl,
+      discoveryCacheTtlMs,
+      discoveryRouteVersion,
       startedAt,
     });
     const clientHost = clientHostForBindHost(handle.host);
@@ -177,11 +199,16 @@ async function main() {
     console.log(`- bind: http://${handle.host}:${handle.port}`);
     console.log(`- health: http://${clientHost}:${handle.port}/health`);
     console.log(`- status: http://${clientHost}:${handle.port}/status`);
+    console.log(
+      `- resolve: http://${clientHost}:${handle.port}${discoveryResolvePath ?? '/resolve-doc'}?docId=YOUR_DOC_ID`,
+    );
     console.log(`- ws: ws://${clientHost}:${handle.port}`);
     console.log(`- sync endpoint: ws://${clientHost}:${handle.port}/sync?docId=YOUR_DOC_ID`);
     console.log(`- backend module: ${handle.backendModule}`);
     if (packageVersion) console.log(`- version: ${packageVersion}`);
     if (gitSha) console.log(`- git sha: ${gitSha}${gitDirty ? ' (dirty)' : ''}`);
+    if (fastForwardRelaySubscriptions)
+      console.log('- relay: provisional subscription fast-forward enabled');
     if (authCapabilityIssuerPublicKeys.length > 0) {
       console.log(
         `- auth: capability CWT enabled (${authCapabilityIssuerPublicKeys.length} issuer keys)`,
@@ -199,6 +226,13 @@ async function main() {
     }
   } finally {
     disposeHelloTraceSink?.();
+  }
+  if (discoveryPublicHttpBaseUrl || discoveryPublicWebSocketBaseUrl) {
+    console.log(
+      `- discovery public base: ${discoveryPublicHttpBaseUrl ?? '(derived from request)'} / ${
+        discoveryPublicWebSocketBaseUrl ?? '(derived from request)'
+      }`,
+    );
   }
 }
 
