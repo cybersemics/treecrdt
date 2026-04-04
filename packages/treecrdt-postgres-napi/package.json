@@ -23,7 +23,8 @@
     "build:native": "cargo build -p treecrdt-postgres-napi --release && node ./scripts/copy-native.mjs",
     "build": "pnpm run build:native && tsc -p tsconfig.json",
     "test": "pnpm -C ../treecrdt-benchmark run build && pnpm -C ../treecrdt-engine-conformance run build && pnpm run build && vitest run",
-    "benchmark": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench.ts"
+    "benchmark": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench.ts",
+    "benchmark:hot-write": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench-hot-writes.ts"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",

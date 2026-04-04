@@ -1,4 +1,4 @@
-use postgres::Client;
+use postgres::{Client, GenericClient};
 use treecrdt_core::{Error, Result};
 
 const SCHEMA_LOCK_KEY: i64 = 0x7472656563726474; // "treecrdt"
@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS treecrdt_meta (
   head_replica BYTEA NOT NULL DEFAULT ''::bytea,
   head_counter BIGINT NOT NULL DEFAULT 0,
   head_seq BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS treecrdt_replica_meta (
+  doc_id TEXT NOT NULL,
+  replica BYTEA NOT NULL,
+  max_counter BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (doc_id, replica)
 );
 
 CREATE TABLE IF NOT EXISTS treecrdt_nodes (
@@ -69,22 +76,17 @@ CREATE INDEX IF NOT EXISTS idx_treecrdt_oprefs_children_doc_parent_seq
   ON treecrdt_oprefs_children (doc_id, parent, seq);
 "#;
 
-pub fn ensure_schema(client: &mut Client) -> Result<()> {
-    // `CREATE TABLE IF NOT EXISTS` is not fully concurrency-safe in Postgres; concurrent calls can
-    // still fail with catalog uniqueness violations. Serialize schema creation across processes.
+fn configure_fast_test_tx(client: &mut Client) -> Result<()> {
     client
-        .query_one("SELECT pg_advisory_lock($1)", &[&SCHEMA_LOCK_KEY])
+        .batch_execute(
+            "SET LOCAL synchronous_commit = OFF;
+             SET LOCAL statement_timeout = 0;",
+        )
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
-
-    let res = client.batch_execute(SCHEMA_SQL).map_err(|e| Error::Storage(format!("{e:?}")));
-
-    // Best-effort unlock. Locks are also released when the connection is dropped.
-    let _ = client.query_one("SELECT pg_advisory_unlock($1)", &[&SCHEMA_LOCK_KEY]);
-
-    res
+    Ok(())
 }
 
-pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
+fn reset_doc_for_tests_in_tx(client: &mut impl GenericClient, doc_id: &str) -> Result<()> {
     client
         .execute(
             "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",
@@ -103,5 +105,237 @@ pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
     client
         .execute("DELETE FROM treecrdt_meta WHERE doc_id = $1", &[&doc_id])
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    client
+        .execute(
+            "DELETE FROM treecrdt_replica_meta WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    Ok(())
+}
+
+pub fn ensure_schema(client: &mut Client) -> Result<()> {
+    // `CREATE TABLE IF NOT EXISTS` is not fully concurrency-safe in Postgres; concurrent calls can
+    // still fail with catalog uniqueness violations. Serialize schema creation across processes.
+    client
+        .query_one("SELECT pg_advisory_lock($1)", &[&SCHEMA_LOCK_KEY])
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+
+    let res = client.batch_execute(SCHEMA_SQL).map_err(|e| Error::Storage(format!("{e:?}")));
+
+    // Best-effort unlock. Locks are also released when the connection is dropped.
+    let _ = client.query_one("SELECT pg_advisory_unlock($1)", &[&SCHEMA_LOCK_KEY]);
+
+    res
+}
+
+pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
+    client.batch_execute("BEGIN").map_err(|e| Error::Storage(format!("{e:?}")))?;
+    let res = (|| {
+        configure_fast_test_tx(client)?;
+        reset_doc_for_tests_in_tx(client, doc_id)
+    })();
+
+    match res {
+        Ok(()) => client.batch_execute("COMMIT").map_err(|e| Error::Storage(format!("{e:?}"))),
+        Err(err) => {
+            let _ = client.batch_execute("ROLLBACK");
+            Err(err)
+        }
+    }
+}
+
+pub fn reset_doc_for_tests_within_tx(client: &mut Client, doc_id: &str) -> Result<()> {
+    reset_doc_for_tests_in_tx(client, doc_id)
+}
+
+pub fn clone_doc_for_tests(
+    client: &mut Client,
+    source_doc_id: &str,
+    target_doc_id: &str,
+) -> Result<()> {
+    if source_doc_id == target_doc_id {
+        return Err(Error::Storage(
+            "source_doc_id and target_doc_id must differ".to_string(),
+        ));
+    }
+
+    let mut tx = client.transaction().map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.batch_execute(
+        "SET LOCAL synchronous_commit = OFF;
+         SET LOCAL statement_timeout = 0;",
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+
+    tx.execute(
+        "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",
+        &[&target_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "DELETE FROM treecrdt_payload WHERE doc_id = $1",
+        &[&target_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "DELETE FROM treecrdt_nodes WHERE doc_id = $1",
+        &[&target_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "DELETE FROM treecrdt_ops WHERE doc_id = $1",
+        &[&target_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "DELETE FROM treecrdt_meta WHERE doc_id = $1",
+        &[&target_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "DELETE FROM treecrdt_replica_meta WHERE doc_id = $1",
+        &[&target_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+
+    tx.execute(
+        "INSERT INTO treecrdt_meta (doc_id, dirty, head_lamport, head_replica, head_counter, head_seq)
+         SELECT $1, dirty, head_lamport, head_replica, head_counter, head_seq
+           FROM treecrdt_meta
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_replica_meta (doc_id, replica, max_counter)
+         SELECT $1, replica, max_counter
+           FROM treecrdt_replica_meta
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_ops
+           (doc_id, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state)
+         SELECT $1, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state
+           FROM treecrdt_ops
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_nodes
+           (doc_id, node, parent, order_key, tombstone, last_change, deleted_at)
+         SELECT $1, node, parent, order_key, tombstone, last_change, deleted_at
+           FROM treecrdt_nodes
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_payload
+           (doc_id, node, payload, last_lamport, last_replica, last_counter)
+         SELECT $1, node, payload, last_lamport, last_replica, last_counter
+           FROM treecrdt_payload
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_oprefs_children
+           (doc_id, parent, op_ref, seq)
+         SELECT $1, parent, op_ref, seq
+           FROM treecrdt_oprefs_children
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+
+    let copied = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM treecrdt_meta WHERE doc_id = $1)",
+            &[&target_doc_id],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?
+        .get::<_, bool>(0);
+    if !copied {
+        return Err(Error::Storage(format!(
+            "source doc not found for clone: {source_doc_id}"
+        )));
+    }
+
+    tx.commit().map_err(|e| Error::Storage(format!("{e:?}")))?;
+    Ok(())
+}
+
+pub fn clone_materialized_doc_for_tests(
+    client: &mut Client,
+    source_doc_id: &str,
+    target_doc_id: &str,
+) -> Result<()> {
+    if source_doc_id == target_doc_id {
+        return Err(Error::Storage(
+            "source_doc_id and target_doc_id must differ".to_string(),
+        ));
+    }
+
+    let mut tx = client.transaction().map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.batch_execute(
+        "SET LOCAL synchronous_commit = OFF;
+         SET LOCAL statement_timeout = 0;",
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+
+    reset_doc_for_tests_in_tx(&mut tx, target_doc_id)?;
+
+    tx.execute(
+        "INSERT INTO treecrdt_meta (doc_id, dirty, head_lamport, head_replica, head_counter, head_seq)
+         SELECT $1, dirty, head_lamport, head_replica, head_counter, head_seq
+           FROM treecrdt_meta
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_replica_meta (doc_id, replica, max_counter)
+         SELECT $1, replica, max_counter
+           FROM treecrdt_replica_meta
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_nodes
+           (doc_id, node, parent, order_key, tombstone, last_change, deleted_at)
+         SELECT $1, node, parent, order_key, tombstone, last_change, deleted_at
+           FROM treecrdt_nodes
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    tx.execute(
+        "INSERT INTO treecrdt_payload
+           (doc_id, node, payload, last_lamport, last_replica, last_counter)
+         SELECT $1, node, payload, last_lamport, last_replica, last_counter
+           FROM treecrdt_payload
+          WHERE doc_id = $2",
+        &[&target_doc_id, &source_doc_id],
+    )
+    .map_err(|e| Error::Storage(format!("{e:?}")))?;
+
+    let copied = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM treecrdt_meta WHERE doc_id = $1)",
+            &[&target_doc_id],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?
+        .get::<_, bool>(0);
+    if !copied {
+        return Err(Error::Storage(format!(
+            "source doc not found for materialized clone: {source_doc_id}"
+        )));
+    }
+
+    tx.commit().map_err(|e| Error::Storage(format!("{e:?}")))?;
     Ok(())
 }

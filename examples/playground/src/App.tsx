@@ -44,6 +44,7 @@ import type {
   CollapseState,
   DisplayNode,
   PayloadRecord,
+  PlaygroundBenchWindow,
   Status,
   StorageMode,
   SyncTransportMode,
@@ -102,9 +103,7 @@ type BenchNodeTiming = {
 
 declare global {
   interface Window {
-    __treecrdtPlaygroundBench?: {
-      nodes: Record<string, Record<string, number>>;
-    };
+    __treecrdtPlaygroundBench?: PlaygroundBenchWindow;
   }
 }
 
@@ -707,6 +706,13 @@ export default function App() {
       const affectedNodes = nodesAffectedByPayloadOps(appliedOps);
       const treeStateBefore = treeStateRef.current;
       const affectedParents = parentsAffectedByOps(treeStateBefore, appliedOps);
+      const canApplyAppendedChildren =
+        appliedOps.length > 0 &&
+        appliedOps.every(
+          (op) =>
+            op.kind.type === 'insert' &&
+            Object.prototype.hasOwnProperty.call(treeStateBefore.childrenByParent, op.kind.parent),
+        );
       const remoteOpsAppliedStartedAtMs = Date.now();
       recordBenchNodeTiming(affectedNodes, { remoteOpsAppliedStartedAtMs });
       const active = clientRef.current ?? client;
@@ -722,7 +728,25 @@ export default function App() {
         lamportRef.current = Math.max(lamportRef.current, max);
         setHeadLamport(lamportRef.current);
       }
-      scheduleRefreshParents(affectedParents);
+      if (canApplyAppendedChildren) {
+        const groupedChildren = new Map<string, string[]>();
+        for (const op of appliedOps) {
+          if (op.kind.type !== 'insert') continue;
+          const children = groupedChildren.get(op.kind.parent);
+          if (children) children.push(op.kind.node);
+          else groupedChildren.set(op.kind.parent, [op.kind.node]);
+        }
+        setTreeState((prev) => {
+          let next = prev;
+          for (const [parentId, childIds] of groupedChildren) {
+            next = applyAppendedChildren(next, parentId, childIds);
+          }
+          return next;
+        });
+        recordBenchNodeTiming(affectedNodes, { treeRefreshAppliedAtMs: Date.now() });
+      } else {
+        scheduleRefreshParents(affectedParents);
+      }
       scheduleRefreshNodeCount();
     },
     [client, hydratePayloadsForOps, ingestOps, scheduleRefreshNodeCount, scheduleRefreshParents],
@@ -741,7 +765,7 @@ export default function App() {
     }
     url.searchParams.set('fresh', '1');
     url.searchParams.delete('replica');
-    url.searchParams.delete('auth');
+    url.searchParams.set('auth', authEnabled ? '1' : '0');
     url.hash = '';
     window.open(url.toString(), '_blank', 'noopener,noreferrer');
   };
@@ -1269,6 +1293,27 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const bench = (window.__treecrdtPlaygroundBench ??= { nodes: {} });
+    bench.seedBalancedTree = async ({ count, fanout }) => {
+      await handleAddNodes(ROOT_ID, count, { fanout });
+    };
+    bench.getState = () => ({
+      status,
+      totalNodes,
+      headLamport,
+      syncBusy,
+      liveBusy,
+    });
+    return () => {
+      const current = window.__treecrdtPlaygroundBench;
+      if (!current) return;
+      delete current.seedBalancedTree;
+      delete current.getState;
+    };
+  }, [handleAddNodes, headLamport, liveBusy, status, syncBusy, totalNodes]);
 
   const handleInsert = async (parentId: string) => {
     if (!client || !replica) return;

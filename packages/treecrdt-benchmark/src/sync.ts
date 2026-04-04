@@ -74,6 +74,16 @@ export function syncBenchTiming(opts: { defaultIterations?: number } = {}): {
 }
 
 export type SyncFilter = { all: Record<string, never> } | { children: { parent: Uint8Array } };
+export type SyncBenchPayloadDistribution = 'none' | 'everywhere' | 'measured-subtree';
+export type SyncBenchServerPrime = {
+  kind: 'balanced-fanout';
+  size: number;
+  fanout: number;
+  treeReplicaLabel: string;
+  expectedServerOpCount: number;
+  expectedServerMaxLamport: number;
+  overlayOps: Operation[];
+};
 
 export type SyncBenchCase = {
   name: string;
@@ -84,6 +94,7 @@ export type SyncBenchCase = {
   extra: Record<string, unknown>;
   expectedFinalOpsA: number;
   expectedFinalOpsB: number;
+  serverPrime?: SyncBenchServerPrime;
   firstView?: {
     parent: string;
     pageSize: number;
@@ -189,45 +200,73 @@ function buildBalancedChildrenColdStartCase(opts: {
   root: string;
   payloadBytes: number;
   withPayloads: boolean;
+  materializeServerOps: boolean;
 }): SyncBenchCase {
   const treeSize = opts.size;
   if (!Number.isInteger(treeSize) || treeSize <= opts.fanout) {
     throw new Error(`balanced children cold-start requires size > fanout (${opts.fanout})`);
   }
 
-  const sharedOps = buildFanoutInsertTreeOps({
-    replica: opts.replicas.s,
-    size: treeSize,
-    fanout: opts.fanout,
-    root: opts.root,
-  });
-  const scopeRootInsert = sharedOps[0];
-  if (!scopeRootInsert || scopeRootInsert.kind.type !== 'insert') {
-    throw new Error('expected balanced tree seed to start with scope root insert');
-  }
-
-  const targetParent = scopeRootInsert.kind.node;
+  const targetParent = nodeIdFromInt(1);
   const targetChildren = targetChildrenForFirstChild(treeSize, opts.fanout);
+  const scopeRootInsert = makeOp(opts.replicas.s, 1, 1, {
+    type: 'insert',
+    parent: opts.root,
+    node: targetParent,
+    orderKey: orderKeyFromPosition(0),
+  });
   const opsA: Operation[] = [scopeRootInsert];
-  const opsB: Operation[] = [...sharedOps];
 
-  if (opts.withPayloads) {
-    let counter = 0;
-    let lamport = maxLamport(sharedOps);
-    for (let i = 0; i < sharedOps.length; i += 1) {
-      const op = sharedOps[i];
-      if (op?.kind.type !== 'insert') continue;
-      opsB.push(
-        makeOp(opts.replicas.p, ++counter, ++lamport, {
+  const subtreePayloadOps = opts.withPayloads
+    ? [targetParent, ...targetChildren].map((node, index) => {
+        const counter = index === 0 ? 1 : opts.fanout + index;
+        return makeOp(opts.replicas.p, counter, treeSize + counter, {
           type: 'payload',
-          node: op.kind.node,
-          payload: payloadBytesFromSeed(i + 1, opts.payloadBytes),
-        }),
-      );
+          node,
+          payload: payloadBytesFromSeed(counter, opts.payloadBytes),
+        });
+      })
+    : [];
+
+  let opsB: Operation[] = [];
+  if (opts.materializeServerOps) {
+    const sharedOps = buildFanoutInsertTreeOps({
+      replica: opts.replicas.s,
+      size: treeSize,
+      fanout: opts.fanout,
+      root: opts.root,
+    });
+    opsB = [...sharedOps];
+
+    if (opts.withPayloads) {
+      let counter = 0;
+      let lamport = maxLamport(sharedOps);
+      for (let i = 0; i < sharedOps.length; i += 1) {
+        const op = sharedOps[i];
+        if (op?.kind.type !== 'insert') continue;
+        opsB.push(
+          makeOp(opts.replicas.p, ++counter, ++lamport, {
+            type: 'payload',
+            node: op.kind.node,
+            payload: payloadBytesFromSeed(i + 1, opts.payloadBytes),
+          }),
+        );
+      }
     }
   }
 
+  const payloadDistribution: SyncBenchPayloadDistribution = !opts.withPayloads
+    ? 'none'
+    : opts.materializeServerOps
+      ? 'everywhere'
+      : 'measured-subtree';
   const transferredOps = opts.withPayloads ? 1 + targetChildren.length * 2 : targetChildren.length;
+  const expectedServerOpCount = opts.materializeServerOps
+    ? opsB.length
+    : treeSize + subtreePayloadOps.length;
+  const expectedServerMaxLamport = opts.materializeServerOps
+    ? maxLamport(opsB)
+    : treeSize + (subtreePayloadOps.at(-1)?.meta.id.counter ?? 0);
   return {
     name: `sync-balanced-children${opts.withPayloads ? '-payloads' : ''}-cold-start-fanout${opts.fanout}-${treeSize}`,
     opsA,
@@ -244,11 +283,20 @@ function buildBalancedChildrenColdStartCase(opts: {
       balancedTree: true,
       knownScopeRoot: true,
       payloadBytes: opts.withPayloads ? opts.payloadBytes : 0,
-      payloadsEverywhere: opts.withPayloads,
+      payloadDistribution,
       pageSize: Math.min(DEFAULT_SYNC_BENCH_PAGE_SIZE, targetChildren.length),
     },
     expectedFinalOpsA: opsA.length + transferredOps,
-    expectedFinalOpsB: opsB.length,
+    expectedFinalOpsB: expectedServerOpCount,
+    serverPrime: {
+      kind: 'balanced-fanout',
+      size: treeSize,
+      fanout: opts.fanout,
+      treeReplicaLabel: 's',
+      expectedServerOpCount,
+      expectedServerMaxLamport,
+      overlayOps: subtreePayloadOps,
+    },
     firstView: {
       parent: targetParent,
       pageSize: Math.min(DEFAULT_SYNC_BENCH_PAGE_SIZE, targetChildren.length),
@@ -287,6 +335,9 @@ function buildBalancedChildrenResyncCase(opts: {
   const targetChildren = targetChildrenForFirstChild(treeSize, opts.fanout);
   const scopedNodes = new Set([targetParent, ...targetChildren]);
   const opsB: Operation[] = [...sharedOps];
+  const payloadDistribution: SyncBenchPayloadDistribution = opts.withPayloads
+    ? 'everywhere'
+    : 'none';
 
   if (opts.withPayloads) {
     let counter = 0;
@@ -334,7 +385,7 @@ function buildBalancedChildrenResyncCase(opts: {
       knownScopeRoot: true,
       nonEmptyLocalResult: true,
       payloadBytes: opts.withPayloads ? opts.payloadBytes : 0,
-      payloadsEverywhere: opts.withPayloads,
+      payloadDistribution,
       pageSize: Math.min(DEFAULT_SYNC_BENCH_PAGE_SIZE, targetChildren.length),
     },
     expectedFinalOpsA: opsA.length,
@@ -347,6 +398,7 @@ export function buildSyncBenchCase(opts: {
   size: number;
   fanout?: number;
   payloadBytes?: number;
+  materializeServerOps?: boolean;
 }): SyncBenchCase {
   const { workload } = opts;
   const size = opts.size;
@@ -362,6 +414,7 @@ export function buildSyncBenchCase(opts: {
   };
   const fanout = opts.fanout ?? DEFAULT_SYNC_BENCH_FANOUT;
   const payloadBytes = opts.payloadBytes ?? DEFAULT_SYNC_BENCH_PAYLOAD_BYTES;
+  const materializeServerOps = opts.materializeServerOps ?? true;
 
   if (workload === 'sync-one-missing') {
     const treeSize = size;
@@ -404,6 +457,7 @@ export function buildSyncBenchCase(opts: {
       root,
       payloadBytes,
       withPayloads: false,
+      materializeServerOps,
     });
   }
 
@@ -415,6 +469,7 @@ export function buildSyncBenchCase(opts: {
       root,
       payloadBytes,
       withPayloads: true,
+      materializeServerOps,
     });
   }
 

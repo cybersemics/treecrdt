@@ -7,9 +7,10 @@ use uuid::Uuid;
 
 use treecrdt_core::{NodeId, Operation, ReplicaId, VersionVector};
 use treecrdt_postgres::{
-    append_ops, ensure_materialized, ensure_schema, get_ops_by_op_refs, list_op_refs_all,
-    list_op_refs_children, local_delete, local_insert, local_move, local_payload, max_lamport,
-    replica_max_counter, reset_doc_for_tests, tree_children,
+    append_ops, clone_materialized_doc_for_tests, ensure_materialized, ensure_schema,
+    get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
+    local_move, local_payload, max_lamport, prime_balanced_fanout_doc_for_tests,
+    prime_doc_for_tests, replica_max_counter, reset_doc_for_tests, tree_children, tree_node_count,
 };
 
 fn order_key_from_position(position: u16) -> Vec<u8> {
@@ -19,6 +20,47 @@ fn order_key_from_position(position: u16) -> Vec<u8> {
 
 fn node(n: u128) -> NodeId {
     NodeId(n)
+}
+
+fn balanced_parent_and_position(node_index: usize, fanout: usize) -> (NodeId, u16) {
+    if node_index <= fanout {
+        return (NodeId::ROOT, ((node_index - 1) % fanout) as u16);
+    }
+    (
+        node((((node_index - (fanout + 1)) / fanout) + 1) as u128),
+        ((node_index - 1) % fanout) as u16,
+    )
+}
+
+fn build_balanced_fixture_ops(
+    size: usize,
+    fanout: usize,
+    payload_bytes: usize,
+    replica_label: &[u8],
+) -> Vec<Operation> {
+    let replica = ReplicaId::new(replica_label);
+    let mut ops = Vec::with_capacity(size + usize::from(payload_bytes > 0));
+    for node_index in 1..=size {
+        let (parent, position) = balanced_parent_and_position(node_index, fanout);
+        ops.push(Operation::insert(
+            &replica,
+            node_index as u64,
+            node_index as u64,
+            parent,
+            node(node_index as u128),
+            order_key_from_position(position),
+        ));
+    }
+    if payload_bytes > 0 {
+        ops.push(Operation::set_payload(
+            &replica,
+            (size + 1) as u64,
+            (size + 1) as u64,
+            node((fanout + 1) as u128),
+            vec![0xAB; payload_bytes],
+        ));
+    }
+    ops
 }
 
 fn connect() -> Option<Rc<RefCell<Client>>> {
@@ -147,6 +189,243 @@ fn postgres_backend_large_append_rebuilds_materialized_views_on_demand() {
 
     let refs_root = list_op_refs_children(&client, &doc_id, NodeId::ROOT).unwrap();
     assert_eq!(refs_root.len(), op_count as usize);
+}
+
+#[test]
+fn postgres_backend_prime_doc_for_tests_builds_materialized_fixture() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    let replica = ReplicaId::new(b"fixture");
+    let op_count = 2_500u64;
+    let ops: Vec<Operation> = (0..op_count)
+        .map(|index| {
+            Operation::insert(
+                &replica,
+                index + 1,
+                index + 1,
+                NodeId::ROOT,
+                node(20_000 + index as u128),
+                order_key_from_position(index as u16),
+            )
+        })
+        .collect();
+
+    prime_doc_for_tests(&client, &doc_id, &ops).unwrap();
+
+    assert_eq!(
+        replica_max_counter(&client, &doc_id, replica.as_bytes()).unwrap(),
+        op_count
+    );
+    assert_eq!(max_lamport(&client, &doc_id).unwrap(), op_count);
+    assert_eq!(
+        list_op_refs_all(&client, &doc_id).unwrap().len(),
+        op_count as usize
+    );
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap().len(),
+        op_count as usize
+    );
+    assert_eq!(
+        list_op_refs_children(&client, &doc_id, NodeId::ROOT).unwrap().len(),
+        op_count as usize
+    );
+}
+
+#[test]
+fn postgres_backend_prime_balanced_fanout_doc_for_tests_generates_expected_shape() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    prime_balanced_fanout_doc_for_tests(&client, &doc_id, 25, 3, 8, "playground-seed").unwrap();
+
+    assert_eq!(tree_node_count(&client, &doc_id).unwrap(), 25);
+    assert_eq!(max_lamport(&client, &doc_id).unwrap(), 26);
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap().len(),
+        3
+    );
+    assert_eq!(
+        list_op_refs_children(&client, &doc_id, NodeId::ROOT).unwrap().len(),
+        3
+    );
+    assert_eq!(
+        treecrdt_postgres::tree_payload(&client, &doc_id, node(4))
+            .unwrap()
+            .unwrap()
+            .len(),
+        8
+    );
+}
+
+#[test]
+fn postgres_backend_prime_balanced_fanout_doc_for_tests_matches_replay_materialization() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let direct_doc_id = format!("test-direct-{}", Uuid::new_v4());
+    let replay_doc_id = format!("test-replay-{}", Uuid::new_v4());
+    let size = 25usize;
+    let fanout = 3usize;
+    let payload_bytes = 8usize;
+    let ops = build_balanced_fixture_ops(size, fanout, payload_bytes, b"playground-seed");
+
+    prime_doc_for_tests(&client, &replay_doc_id, &ops).unwrap();
+    prime_balanced_fanout_doc_for_tests(
+        &client,
+        &direct_doc_id,
+        size,
+        fanout,
+        payload_bytes,
+        "playground-seed",
+    )
+    .unwrap();
+
+    type NodeRow = (
+        Vec<u8>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        bool,
+        Option<Vec<u8>>,
+    );
+
+    let mut c = client.borrow_mut();
+    let node_rows = |doc_id: &str, c: &mut Client| -> Vec<NodeRow> {
+        c.query(
+            "SELECT node, parent, order_key, tombstone, last_change \
+             FROM treecrdt_nodes WHERE doc_id = $1 ORDER BY node",
+            &[&doc_id],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+        .collect()
+    };
+    let payload_rows =
+        |doc_id: &str, c: &mut Client| -> Vec<(Vec<u8>, Vec<u8>, i64, Vec<u8>, i64)> {
+            c.query(
+                "SELECT node, payload, last_lamport, last_replica, last_counter \
+             FROM treecrdt_payload WHERE doc_id = $1 ORDER BY node",
+                &[&doc_id],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+            .collect()
+        };
+    let index_rows = |doc_id: &str, c: &mut Client| -> Vec<(Vec<u8>, Vec<u8>, i64)> {
+        c.query(
+            "SELECT parent, op_ref, seq \
+             FROM treecrdt_oprefs_children WHERE doc_id = $1 ORDER BY parent, seq, op_ref",
+            &[&doc_id],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect()
+    };
+    let meta_row = |doc_id: &str, c: &mut Client| -> (bool, i64, Vec<u8>, i64, i64) {
+        let row = c
+            .query_one(
+                "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+                 FROM treecrdt_meta WHERE doc_id = $1",
+                &[&doc_id],
+            )
+            .unwrap();
+        (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
+    };
+    let replica_rows = |doc_id: &str, c: &mut Client| -> Vec<(Vec<u8>, i64)> {
+        c.query(
+            "SELECT replica, max_counter \
+             FROM treecrdt_replica_meta WHERE doc_id = $1 ORDER BY replica",
+            &[&doc_id],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect()
+    };
+
+    assert_eq!(
+        node_rows(&replay_doc_id, &mut c),
+        node_rows(&direct_doc_id, &mut c)
+    );
+    assert_eq!(
+        payload_rows(&replay_doc_id, &mut c),
+        payload_rows(&direct_doc_id, &mut c)
+    );
+    assert_eq!(
+        index_rows(&replay_doc_id, &mut c),
+        index_rows(&direct_doc_id, &mut c)
+    );
+    assert_eq!(
+        meta_row(&replay_doc_id, &mut c),
+        meta_row(&direct_doc_id, &mut c)
+    );
+    assert_eq!(
+        replica_rows(&replay_doc_id, &mut c),
+        replica_rows(&direct_doc_id, &mut c)
+    );
+}
+
+#[test]
+fn postgres_backend_materialized_clone_supports_local_writes() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let source_doc_id = format!("test-source-{}", Uuid::new_v4());
+    let target_doc_id = format!("test-target-{}", Uuid::new_v4());
+    prime_balanced_fanout_doc_for_tests(&client, &source_doc_id, 25, 3, 8, "playground-seed")
+        .unwrap();
+
+    {
+        let mut c = client.borrow_mut();
+        clone_materialized_doc_for_tests(&mut c, &source_doc_id, &target_doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"writer");
+    let inserted = local_insert(
+        &client,
+        &target_doc_id,
+        &replica,
+        NodeId::ROOT,
+        node(999),
+        "last",
+        None,
+        Some(vec![1, 2, 3]),
+    )
+    .unwrap();
+    assert_eq!(inserted.kind.node(), node(999));
+    assert_eq!(
+        treecrdt_postgres::tree_parent(&client, &target_doc_id, node(999)).unwrap(),
+        Some(NodeId::ROOT)
+    );
+    assert_eq!(
+        treecrdt_postgres::tree_payload(&client, &target_doc_id, node(999))
+            .unwrap()
+            .unwrap(),
+        vec![1, 2, 3]
+    );
+
+    let updated =
+        local_payload(&client, &target_doc_id, &replica, node(4), Some(vec![9, 9])).unwrap();
+    assert_eq!(updated.kind.node(), node(4));
+    assert_eq!(
+        treecrdt_postgres::tree_payload(&client, &target_doc_id, node(4))
+            .unwrap()
+            .unwrap(),
+        vec![9, 9]
+    );
 }
 
 #[test]
