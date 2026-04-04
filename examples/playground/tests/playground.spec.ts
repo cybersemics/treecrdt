@@ -8,6 +8,7 @@ import { startWebSocketSyncServer } from "../../../packages/sync/server/core/dis
 
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const REMOTE_PLACEHOLDER = "https://sync.emhub.net or ws://localhost:8787/sync";
 
 type TestSyncServer = {
   host: string;
@@ -488,7 +489,7 @@ test("switching remote sync server URL reconnects to the new endpoint", async ({
     await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
 
     await page.getByRole("button", { name: /Connections/ }).click();
-    const remoteInput = page.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+    const remoteInput = page.getByPlaceholder(REMOTE_PLACEHOLDER);
     await expect(remoteInput).toBeVisible({ timeout: 30_000 });
 
     await remoteInput.fill(serverA.wsUrl);
@@ -510,7 +511,7 @@ test("switching to remote transport does not auto-fill a default sync URL", asyn
   await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
 
   await page.getByRole("button", { name: /Connections/ }).click();
-  const remoteInput = page.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+  const remoteInput = page.getByPlaceholder(REMOTE_PLACEHOLDER);
   await expect(remoteInput).toHaveValue("");
 
   await page.getByRole("button", { name: "Remote server", exact: true }).click();
@@ -528,6 +529,27 @@ test("switching to remote transport does not auto-fill a default sync URL", asyn
     .toEqual({ sync: null, transport: "remote" });
 });
 
+test("public sync shortcut fills the shared dev sync endpoint", async ({ page }) => {
+  const doc = uniqueDocId("pw-playground-sync-public-shortcut");
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+
+  await page.getByRole("button", { name: /Connections/ }).click();
+  const remoteInput = page.getByPlaceholder(REMOTE_PLACEHOLDER);
+  await expect(remoteInput).toHaveValue("");
+
+  await page.getByRole("button", { name: "Use public", exact: true }).click();
+  await expect(remoteInput).toHaveValue("https://sync.emhub.net");
+  await expect
+    .poll(async () => {
+      const url = new URL(page.url());
+      return {
+        sync: url.searchParams.get("sync"),
+        transport: url.searchParams.get("transport"),
+      };
+    })
+    .toEqual({ sync: "https://sync.emhub.net", transport: "hybrid" });
+});
+
 test("remote sync settings persist into a shareable URL", async ({ browser, page }) => {
   test.setTimeout(120_000);
 
@@ -539,7 +561,7 @@ test("remote sync settings persist into a shareable URL", async ({ browser, page
     await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
 
     await page.getByRole("button", { name: /Connections/ }).click();
-    const remoteInput = page.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+    const remoteInput = page.getByPlaceholder(REMOTE_PLACEHOLDER);
     await expect(remoteInput).toBeVisible({ timeout: 30_000 });
 
     await page.getByRole("button", { name: "Remote server", exact: true }).click();
@@ -558,7 +580,7 @@ test("remote sync settings persist into a shareable URL", async ({ browser, page
     const sharedPage = await sharedContext.newPage();
     await waitForReady(sharedPage, page.url());
     await sharedPage.getByRole("button", { name: /Connections/ }).click();
-    await expect(sharedPage.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync")).toHaveValue(
+    await expect(sharedPage.getByPlaceholder(REMOTE_PLACEHOLDER)).toHaveValue(
       server.wsUrl,
       { timeout: 30_000 }
     );
@@ -584,7 +606,7 @@ test("invite link preserves auth material and remote sync settings", async ({ br
     await waitForLocalAuthTokens(pageA);
 
     await pageA.getByRole("button", { name: /Connections/ }).click();
-    const remoteInput = pageA.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync");
+    const remoteInput = pageA.getByPlaceholder(REMOTE_PLACEHOLDER);
     await expect(remoteInput).toBeVisible({ timeout: 30_000 });
     await pageA.getByRole("button", { name: "Remote server", exact: true }).click();
     await remoteInput.fill(server.wsUrl);
@@ -610,7 +632,7 @@ test("invite link preserves auth material and remote sync settings", async ({ br
 
     await joinViaInviteLink(pageB, inviteLink);
     await pageB.getByRole("button", { name: /Connections/ }).click();
-    await expect(pageB.getByPlaceholder("ws://localhost:8787 or ws://localhost:8787/sync")).toHaveValue(server.wsUrl, {
+    await expect(pageB.getByPlaceholder(REMOTE_PLACEHOLDER)).toHaveValue(server.wsUrl, {
       timeout: 30_000,
     });
     await expect(pageB.getByText(`remote(${server.host})`)).toBeVisible({ timeout: 30_000 });

@@ -60,6 +60,11 @@ Environment variables:
 - `TREECRDT_PG_NOTIFY_CHANNEL` (default: `treecrdt_sync_doc_updates`)
 - `TREECRDT_RATE_LIMIT_MAX_UPGRADES` (default: `0`, disabled; per-IP upgrades per window)
 - `TREECRDT_RATE_LIMIT_WINDOW_MS` (default: `60000`)
+- `TREECRDT_DISCOVERY_RESOLVE_PATH` (default: `/resolve-doc`)
+- `TREECRDT_DISCOVERY_PUBLIC_HTTP_BASE_URL` (optional absolute base URL advertised to clients)
+- `TREECRDT_DISCOVERY_PUBLIC_WS_BASE_URL` (optional absolute websocket base URL advertised to clients)
+- `TREECRDT_DISCOVERY_CACHE_TTL_MS` (default: `3600000`)
+- `TREECRDT_DISCOVERY_ROUTE_VERSION` (optional opaque cache-busting string)
 
 Health check:
 
@@ -70,6 +75,13 @@ Status endpoint:
 - `GET http://localhost:8787/status`
   Returns JSON debug metadata for the running server, including readiness, package version, git SHA when available,
   protocol version, startup time, and key runtime settings.
+
+Bootstrap discovery endpoint:
+
+- `GET http://localhost:8787/resolve-doc?docId=YOUR_DOC_ID`
+  Returns a JSON attachment plan that points clients at the current websocket
+  sync endpoint. This is intended for connect-time bootstrap and route caching,
+  not per-op lookups.
 
 WebSocket endpoint:
 

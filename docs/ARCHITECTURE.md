@@ -31,6 +31,7 @@ flowchart TD
   %% TypeScript packages (pnpm workspace)
   subgraph TS["TypeScript packages (pnpm workspace)"]
     iface["@treecrdt/interface"]
+    discovery["@treecrdt/discovery"]
     sync_core["@treecrdt/sync"]
     sync_sqlite["@treecrdt/sync-sqlite"]
     sync_postgres["@treecrdt/sync-postgres"]

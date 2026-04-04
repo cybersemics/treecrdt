@@ -1,0 +1,26 @@
+{
+  "name": "@treecrdt/discovery",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"TODO: add discovery contract tests\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
