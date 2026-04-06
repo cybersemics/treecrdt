@@ -7,4 +7,3 @@ export const PLAYGROUND_SYNC_MAX_OPS_PER_BATCH = 20_000;
 export const PLAYGROUND_PEER_TIMEOUT_MS = 30_000;
 export const PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS = 120_000;
 export const PLAYGROUND_PUBLIC_DISCOVERY_URL = "https://sync.emhub.net";
-export const PLAYGROUND_PUBLIC_SYNC_SERVER_URL = "wss://sync.emhub.net/sync";
