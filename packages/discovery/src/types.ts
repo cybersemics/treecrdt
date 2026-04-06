@@ -1,28 +1,3 @@
-export type DiscoveryPrincipalKind = 'user' | 'device' | 'workspace' | 'team' | 'service';
-
-export type DiscoveryPrincipal = {
-  kind: DiscoveryPrincipalKind;
-  id: string;
-};
-
-export type DocAccessSummary = {
-  canRead: boolean;
-  canWriteStructure: boolean;
-  canWritePayload: boolean;
-  canDelete: boolean;
-  canManageAccess?: boolean;
-};
-
-export type DocDiscoveryMetadata = {
-  title?: string;
-  snippet?: string;
-  archived?: boolean;
-  deleted?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-  lastActivityAt?: string;
-};
-
 export type DiscoveryTopology = 'relay' | 'regional-relay' | 'peer-mesh' | 'hybrid';
 
 export type DiscoveryAttachmentProtocol = 'websocket' | 'https' | 'webrtc-signal';
@@ -50,14 +25,11 @@ export type DocAttachmentPlan = {
 
 export type ResolveDocRequest = {
   docId: string;
-  principal?: DiscoveryPrincipal;
 };
 
 export type ResolveDocResponse = {
   docId: string;
   plan: DocAttachmentPlan;
-  metadata?: DocDiscoveryMetadata;
-  access?: DocAccessSummary;
 };
 
 /**
