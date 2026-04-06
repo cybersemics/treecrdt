@@ -263,50 +263,6 @@ test('status endpoint returns provided status payload', async () => {
   }
 });
 
-test('custom http request hook can serve discovery-style payloads', async () => {
-  const server = await startWebSocketSyncServer({
-    host: '127.0.0.1',
-    port: 0,
-    codec: jsonCodec(),
-    docs: {
-      async open() {
-        throw new Error('docs.open should not be called by /resolve-doc');
-      },
-    },
-    onHttpRequest: async ({ url }) => {
-      if (url.pathname !== '/resolve-doc') return undefined;
-      return {
-        statusCode: 200,
-        body: {
-          docId: url.searchParams.get('docId'),
-          plan: {
-            topology: 'relay',
-            attachments: [
-              { protocol: 'websocket', url: 'wss://sync.example.com/sync', role: 'preferred' },
-            ],
-          },
-        },
-      };
-    },
-  });
-
-  try {
-    const response = await httpGet(`http://${server.host}:${server.port}/resolve-doc?docId=abc123`);
-    expect(response.status).toBe(200);
-    expect(JSON.parse(response.body)).toEqual({
-      docId: 'abc123',
-      plan: {
-        topology: 'relay',
-        attachments: [
-          { protocol: 'websocket', url: 'wss://sync.example.com/sync', role: 'preferred' },
-        ],
-      },
-    });
-  } finally {
-    await server.close();
-  }
-});
-
 test('status endpoint surfaces callback failures', async () => {
   const server = await startWebSocketSyncServer({
     host: '127.0.0.1',

@@ -97,6 +97,25 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/discovery-server-node:
+    dependencies:
+      '@treecrdt/discovery':
+        specifier: workspace:*
+        version: link:../discovery
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
+
   packages/sync/material/postgres:
     dependencies:
       '@treecrdt/interface':
@@ -303,6 +322,25 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
+  packages/treecrdt-engine-conformance:
+    dependencies:
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../treecrdt-auth
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../sync/protocol
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../sync/material/sqlite
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/treecrdt-postgres-napi:
     dependencies:
       '@treecrdt/interface':
@@ -343,25 +381,6 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
-  packages/treecrdt-engine-conformance:
-    dependencies:
-      '@treecrdt/auth':
-        specifier: workspace:*
-        version: link:../treecrdt-auth
-      '@treecrdt/interface':
-        specifier: workspace:*
-        version: link:../treecrdt-ts
-      '@treecrdt/sync':
-        specifier: workspace:*
-        version: link:../sync/protocol
-      '@treecrdt/sync-sqlite':
-        specifier: workspace:*
-        version: link:../sync/material/sqlite
-    devDependencies:
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
   packages/treecrdt-sqlite-node:
     dependencies:
       '@treecrdt/interface':
@@ -380,12 +399,12 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
-      '@treecrdt/postgres-napi':
-        specifier: workspace:*
-        version: link:../treecrdt-postgres-napi
       '@treecrdt/engine-conformance':
         specifier: workspace:*
         version: link:../treecrdt-engine-conformance
+      '@treecrdt/postgres-napi':
+        specifier: workspace:*
+        version: link:../treecrdt-postgres-napi
       '@treecrdt/sync':
         specifier: workspace:*
         version: link:../sync/protocol

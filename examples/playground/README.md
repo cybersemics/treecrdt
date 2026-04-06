@@ -3,6 +3,7 @@
 A small, self-contained demo that exercises the `@treecrdt/wa-sqlite` adapter inside a Vite + React + Tailwind UI. It runs the TreeCRDT SQLite extension in wa-sqlite and lets you insert, move, and delete nodes in an expandable tree while watching the underlying operation log.
 
 ## Features
+
 - Insert children under any node, reorder siblings (up/down), move nodes back to the root, or delete them (root is protected).
 - Collapsible tree with per-node controls and a composer form to target any parent.
 - Live CRDT operation log with lamport/counter metadata.
@@ -11,6 +12,7 @@ A small, self-contained demo that exercises the `@treecrdt/wa-sqlite` adapter in
 - Optional auth/ACL demo (COSE_Sign1 + CWT subtree capabilities) with invite links, per-op signatures, and a pending-op inspector.
 
 ## Running locally
+
 ```bash
 pnpm install --filter @treecrdt/playground
 pnpm -C examples/playground dev
@@ -27,6 +29,8 @@ pnpm build
 pnpm sync-server:postgres:db:start
 # Start the TreeCRDT sync server on ws://localhost:8787 using that Postgres DB.
 pnpm sync-server:postgres:local
+# Start the standalone bootstrap server on http://localhost:8788.
+pnpm discovery-server:local
 # Start the playground UI.
 pnpm -C examples/playground dev
 ```
@@ -34,12 +38,13 @@ pnpm -C examples/playground dev
 Then in the playground:
 
 - Open the `Connections` panel
-- Paste `ws://localhost:8787` into `Remote sync server`
+- Paste `http://localhost:8788` into `Remote sync / bootstrap`
 - Leave mode as `Hybrid`, or switch to `Remote server` if you want to disable local tab sync
 
 ## Bootstrap endpoint
 
-If you want to test against a bootstrap endpoint instead of running Postgres locally:
+If you want to test against a bootstrap endpoint instead of entering the
+websocket sync server directly:
 
 - Open the `Connections` panel
 - Paste the HTTPS bootstrap URL you want to test
@@ -48,6 +53,9 @@ If you want to test against a bootstrap endpoint instead of running Postgres loc
 The playground will call `/resolve-doc` once, cache the returned websocket
 attachment, and then connect directly to the resolved `wss://.../sync`
 endpoint.
+
+If you want to skip bootstrap entirely, you can still paste a direct websocket
+endpoint such as `ws://localhost:8787`.
 
 `pnpm sync-server:postgres:db:start` starts a disposable local Postgres at:
 
@@ -95,6 +103,7 @@ pnpm --filter @treecrdt/wa-sqlite-vendor rebuild
 The example does not depend on the npm `wa-sqlite` package; it consumes the repo's git submodule build directly via the copy step above.
 
 ## Building / deploying to GitHub Pages
+
 ```bash
 pnpm -C examples/playground build     # outputs to dist/
 pnpm -C examples/playground deploy    # pushes dist/ via gh-pages

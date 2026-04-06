@@ -7,6 +7,7 @@ It covers:
 
 - `resolveDoc`: return an attachment plan for a known doc
 - cache helpers for "resolve once, reconnect directly later"
+- shared types used by standalone bootstrap servers such as `@treecrdt/discovery-server-node`
 
 Typical flow:
 

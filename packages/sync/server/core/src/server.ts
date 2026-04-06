@@ -74,18 +74,6 @@ export type WebSocketSyncServerUpgradeHook = (
   ctx: WebSocketSyncServerUpgradeContext,
 ) => Awaitable<void | boolean | WebSocketSyncServerUpgradeDecision>;
 
-export type WebSocketSyncServerHttpContext = {
-  req: http.IncomingMessage;
-  url: URL;
-};
-
-export type WebSocketSyncServerHttpResponse = {
-  statusCode?: number;
-  contentType?: string;
-  headers?: Record<string, string>;
-  body?: string | Uint8Array | Buffer | Record<string, unknown> | unknown[];
-};
-
 export type WebSocketSyncServerHooks = {
   onRateLimit?: WebSocketSyncServerUpgradeHook;
   onAuthenticate?: WebSocketSyncServerUpgradeHook;
@@ -104,9 +92,6 @@ export type WebSocketSyncServerOptions<Op> = {
   syncPath?: string;
   healthPath?: string;
   statusPath?: string;
-  onHttpRequest?: (
-    ctx: WebSocketSyncServerHttpContext,
-  ) => Awaitable<WebSocketSyncServerHttpResponse | undefined>;
   healthCheck?: () => Awaitable<WebSocketSyncServerHealthResult>;
   statusInfo?: () => Awaitable<Record<string, unknown>>;
   maxPayloadBytes?: number;
@@ -257,43 +242,6 @@ export async function startWebSocketSyncServer<Op>(
         } catch {
           res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: 'status unavailable' }));
-        }
-      })();
-      return;
-    }
-
-    if (opts.onHttpRequest) {
-      void (async () => {
-        try {
-          const response = await opts.onHttpRequest?.({ req, url });
-          if (!response) {
-            res.writeHead(404, { 'content-type': 'text/plain' });
-            res.end('not found');
-            return;
-          }
-          const headers = { ...(response.headers ?? {}) };
-          const body = response.body;
-          if (
-            body != null &&
-            typeof body === 'object' &&
-            !(body instanceof Uint8Array) &&
-            !(body instanceof Buffer)
-          ) {
-            res.writeHead(response.statusCode ?? 200, {
-              'content-type': response.contentType ?? 'application/json; charset=utf-8',
-              ...headers,
-            });
-            res.end(JSON.stringify(body));
-            return;
-          }
-          res.writeHead(response.statusCode ?? 200, {
-            'content-type': response.contentType ?? 'text/plain; charset=utf-8',
-            ...headers,
-          });
-          res.end(body ?? '');
-        } catch {
-          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false, error: 'request failed' }));
         }
       })();
       return;

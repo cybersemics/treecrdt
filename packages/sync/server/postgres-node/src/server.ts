@@ -59,10 +59,6 @@ export type SyncServerOptions = {
   gitSha?: string;
   gitDirty?: boolean;
   startedAt?: string;
-  discoveryResolvePath?: string;
-  discoveryPublicHttpBaseUrl?: string;
-  discoveryPublicWebSocketBaseUrl?: string;
-  discoveryCacheTtlMs?: number;
   hooks?: WebSocketSyncServerHooks;
 };
 
@@ -152,50 +148,6 @@ function parseDocIdRegex(input: string | RegExp | undefined): RegExp | undefined
   const trimmed = input.trim();
   if (trimmed.length === 0) return undefined;
   return new RegExp(trimmed);
-}
-
-function normalizeOptionalUrl(name: string, value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return undefined;
-  try {
-    return new URL(trimmed).toString().replace(/\/$/, '');
-  } catch {
-    throw new Error(`${name} must be a valid absolute URL`);
-  }
-}
-
-function normalizeOptionalPath(name: string, value: string | undefined, fallback: string): string {
-  const trimmed = value?.trim() || fallback;
-  if (!trimmed.startsWith('/')) throw new Error(`${name} must start with "/"`);
-  return trimmed;
-}
-
-function firstForwardedHeader(value: string | string[] | undefined): string | undefined {
-  if (Array.isArray(value)) {
-    value = value[0];
-  }
-  if (!value) return undefined;
-  const first = value.split(',')[0]?.trim();
-  return first && first.length > 0 ? first : undefined;
-}
-
-function derivePublicBaseUrl(
-  req: WebSocketSyncServerUpgradeContext['req'],
-  fallbackProtocol: 'http' | 'ws',
-): string {
-  const host =
-    firstForwardedHeader(req.headers['x-forwarded-host']) ?? req.headers.host ?? 'localhost';
-  const forwardedProto = firstForwardedHeader(req.headers['x-forwarded-proto']);
-  const protocol =
-    forwardedProto && forwardedProto.length > 0
-      ? fallbackProtocol === 'ws'
-        ? forwardedProto === 'https'
-          ? 'wss'
-          : 'ws'
-        : forwardedProto
-      : fallbackProtocol;
-  return `${protocol}://${host}`.replace(/\/$/, '');
 }
 
 type DocUpdatePayload = {
@@ -674,21 +626,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const gitDirty = Boolean(opts.gitDirty);
   const startedAt = opts.startedAt?.trim() || new Date().toISOString();
   const startedAtMs = Date.parse(startedAt);
-  const discoveryResolvePath = normalizeOptionalPath(
-    'discoveryResolvePath',
-    opts.discoveryResolvePath,
-    '/resolve-doc',
-  );
-  const discoveryPublicHttpBaseUrl = normalizeOptionalUrl(
-    'discoveryPublicHttpBaseUrl',
-    opts.discoveryPublicHttpBaseUrl,
-  );
-  const discoveryPublicWebSocketBaseUrl = normalizeOptionalUrl(
-    'discoveryPublicWebSocketBaseUrl',
-    opts.discoveryPublicWebSocketBaseUrl,
-  );
-  const discoveryCacheTtlMs =
-    opts.discoveryCacheTtlMs == null ? 60 * 60 * 1000 : Number(opts.discoveryCacheTtlMs);
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
   if (maxCodewords != null && (!Number.isFinite(maxCodewords) || maxCodewords <= 0)) {
@@ -710,9 +647,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   }
   if (!Number.isFinite(rateLimitWindowMs) || rateLimitWindowMs <= 0) {
     throw new Error(`invalid rateLimitWindowMs: ${opts.rateLimitWindowMs}`);
-  }
-  if (!Number.isFinite(discoveryCacheTtlMs) || discoveryCacheTtlMs < 0) {
-    throw new Error(`invalid discoveryCacheTtlMs: ${opts.discoveryCacheTtlMs}`);
   }
 
   const module = await loadPostgresBackendModule(backendModule);
@@ -800,11 +734,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
 
   const server = await (async () => {
     try {
-      const discoveryCorsHeaders = {
-        'access-control-allow-origin': '*',
-        'access-control-allow-methods': 'GET,OPTIONS',
-        'access-control-allow-headers': 'content-type,authorization',
-      };
       return await startWebSocketSyncServer<Operation>({
         host,
         port,
@@ -812,52 +741,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
         codec: treecrdtSyncV0ProtobufCodec,
         docs: docs.provider,
         hooks,
-        onHttpRequest: async ({ req, url }) => {
-          if (url.pathname !== discoveryResolvePath) return undefined;
-          if (req.method === 'OPTIONS') {
-            return {
-              statusCode: 204,
-              headers: discoveryCorsHeaders,
-            };
-          }
-          const docId = url.searchParams.get('docId')?.trim();
-          if (!docId) {
-            return {
-              statusCode: 400,
-              headers: discoveryCorsHeaders,
-              body: {
-                ok: false,
-                error: 'missing docId',
-              },
-            };
-          }
-          const publicHttpBaseUrl = discoveryPublicHttpBaseUrl ?? derivePublicBaseUrl(req, 'http');
-          const publicWebSocketBaseUrl =
-            discoveryPublicWebSocketBaseUrl ?? derivePublicBaseUrl(req, 'ws');
-          return {
-            statusCode: 200,
-            headers: discoveryCorsHeaders,
-            body: {
-              docId,
-              plan: {
-                topology: 'relay',
-                attachments: [
-                  {
-                    protocol: 'websocket',
-                    role: 'preferred',
-                    url: `${publicWebSocketBaseUrl}/sync`,
-                  },
-                  {
-                    protocol: 'https',
-                    role: 'bootstrap',
-                    url: publicHttpBaseUrl,
-                  },
-                ],
-                cacheTtlMs: discoveryCacheTtlMs,
-              },
-            },
-          };
-        },
         healthCheck: async () => {
           try {
             await readinessProbe!.check();
@@ -900,10 +783,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
             allowDocCreate,
             idleCloseMs,
             maxPayloadBytes,
-            discoveryResolvePath,
-            discoveryPublicHttpBaseUrl: discoveryPublicHttpBaseUrl ?? null,
-            discoveryPublicWebSocketBaseUrl: discoveryPublicWebSocketBaseUrl ?? null,
-            discoveryCacheTtlMs,
           };
         },
       });
