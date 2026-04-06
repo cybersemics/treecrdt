@@ -48,20 +48,6 @@ export type DocAttachmentPlan = {
   routeVersion?: string;
 };
 
-export type CreateDocRequest = {
-  creator: DiscoveryPrincipal;
-  docId?: string;
-  metadata?: DocDiscoveryMetadata;
-  placementHint?: string;
-};
-
-export type CreateDocResponse = {
-  docId: string;
-  plan: DocAttachmentPlan;
-  metadata?: DocDiscoveryMetadata;
-  access: DocAccessSummary;
-};
-
 export type ResolveDocRequest = {
   docId: string;
   principal?: DiscoveryPrincipal;
@@ -74,40 +60,13 @@ export type ResolveDocResponse = {
   access?: DocAccessSummary;
 };
 
-export type DocListingEntry = {
-  docId: string;
-  access: DocAccessSummary;
-  metadata?: DocDiscoveryMetadata;
-  discoveredVia?: 'owner' | 'invite' | 'grant' | 'workspace' | 'catalog';
-  lastOpenedAt?: string;
-  /**
-   * Optional eager attachment plan to avoid a second lookup when the UI
-   * immediately opens a doc from the listing.
-   */
-  plan?: DocAttachmentPlan;
-};
-
-export type ListAccessibleDocsRequest = {
-  principal: DiscoveryPrincipal;
-  cursor?: string;
-  limit?: number;
-  includePlans?: boolean;
-};
-
-export type ListAccessibleDocsResponse = {
-  items: DocListingEntry[];
-  nextCursor?: string;
-};
-
 /**
- * Control-plane contract for document creation, bootstrap routing, and listing.
+ * Connect-time bootstrap contract for document routing and attachment planning.
  *
  * This service is intentionally separate from the sync protocol hot path:
  * clients should resolve once, cache the returned attachment plan, and then
  * connect directly to the chosen data-plane endpoint for live traffic.
  */
 export interface DocDiscoveryService {
-  createDoc(request: CreateDocRequest): Promise<CreateDocResponse>;
   resolveDoc(request: ResolveDocRequest): Promise<ResolveDocResponse>;
-  listAccessibleDocs(request: ListAccessibleDocsRequest): Promise<ListAccessibleDocsResponse>;
 }

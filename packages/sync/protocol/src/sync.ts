@@ -18,7 +18,6 @@ import {
   peerSelectedDirectSendFilter,
   peerSupportsDirectSendEmptyReceiver,
   peerSupportsDirectSendSmallScope,
-  SERVER_INSTANCE_CAPABILITY_NAME,
 } from './capabilities.js';
 import { ErrorCode, RibltFailureReason } from './types.js';
 import type {
@@ -360,14 +359,6 @@ export class SyncPeer<Op> {
 
   getPeerCapabilities(transport: DuplexTransport<SyncMessage<Op>>): readonly Capability[] {
     return this.transportPeerCapabilities.get(transport) ?? [];
-  }
-
-  getPeerCapabilityValue(
-    transport: DuplexTransport<SyncMessage<Op>>,
-    name: string,
-  ): string | undefined {
-    return this.getPeerCapabilities(transport).find((capability) => capability.name === name)
-      ?.value;
   }
 
   // Live subscriptions are responder-owned: once a peer subscribes, local writes

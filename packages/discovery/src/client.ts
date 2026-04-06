@@ -3,12 +3,8 @@ import type {
   DiscoveryAttachmentProtocol,
   DocAttachmentPlan,
   DocDiscoveryService,
-  ListAccessibleDocsRequest,
-  ListAccessibleDocsResponse,
   ResolveDocResponse,
   ResolveDocRequest,
-  CreateDocRequest,
-  CreateDocResponse,
 } from './types.js';
 
 type Awaitable<T> = T | Promise<T>;
@@ -33,8 +29,6 @@ export interface DiscoveryRouteCache {
 export type ResolveDocHttpClientOptions = {
   baseUrl: string;
   resolveDocPath?: string;
-  createDocPath?: string;
-  listDocsPath?: string;
   fetch?: typeof fetch;
   headers?: Record<string, string>;
 };
@@ -152,15 +146,13 @@ export function createStringStoreRouteCache(
 
 export function createHttpDocDiscoveryClient(
   opts: ResolveDocHttpClientOptions,
-): Pick<DocDiscoveryService, 'createDoc' | 'resolveDoc' | 'listAccessibleDocs'> {
+): Pick<DocDiscoveryService, 'resolveDoc'> {
   const fetchImpl = opts.fetch ?? fetch;
   if (typeof fetchImpl !== 'function') {
     throw new Error('fetch is not available; pass options.fetch explicitly');
   }
 
   const resolveDocPath = opts.resolveDocPath ?? '/resolve-doc';
-  const createDocPath = opts.createDocPath ?? '/create-doc';
-  const listDocsPath = opts.listDocsPath ?? '/list-docs';
 
   const requestJson = async <T>(url: URL, init: RequestInit): Promise<T> => {
     const res = await fetchImpl(url, {
@@ -182,26 +174,6 @@ export function createHttpDocDiscoveryClient(
     async resolveDoc(request: ResolveDocRequest): Promise<ResolveDocResponse> {
       const url = buildResolveDocUrl(opts.baseUrl, request.docId, resolveDocPath);
       return await requestJson<ResolveDocResponse>(url, { method: 'GET' });
-    },
-    async createDoc(request: CreateDocRequest): Promise<CreateDocResponse> {
-      const url = normalizeDiscoveryBaseUrl(opts.baseUrl);
-      url.pathname = createDocPath.startsWith('/') ? createDocPath : `/${createDocPath}`;
-      url.search = '';
-      return await requestJson<CreateDocResponse>(url, {
-        method: 'POST',
-        body: JSON.stringify(request),
-      });
-    },
-    async listAccessibleDocs(
-      request: ListAccessibleDocsRequest,
-    ): Promise<ListAccessibleDocsResponse> {
-      const url = normalizeDiscoveryBaseUrl(opts.baseUrl);
-      url.pathname = listDocsPath.startsWith('/') ? listDocsPath : `/${listDocsPath}`;
-      url.search = '';
-      return await requestJson<ListAccessibleDocsResponse>(url, {
-        method: 'POST',
-        body: JSON.stringify(request),
-      });
     },
   };
 }

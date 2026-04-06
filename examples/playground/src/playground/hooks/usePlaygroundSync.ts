@@ -17,7 +17,6 @@ import {
   type ResolveWebSocketAttachmentResult,
 } from '@treecrdt/discovery';
 import {
-  SERVER_INSTANCE_CAPABILITY_NAME,
   SyncPeer,
   deriveOpRefV0,
   type Filter,
@@ -125,19 +124,17 @@ function isTransientRemoteConnectError(message: string | null): boolean {
   );
 }
 
-function formatRemoteConnectedDetail(host: string, instanceId?: string): string {
-  if (!instanceId) return `Connected to ${host}`;
-  return `Connected to ${host} (${instanceId})`;
+function formatRemoteConnectedDetail(host: string): string {
+  return `Connected to ${host}`;
 }
 
 function formatRemoteRouteDetail(
   host: string,
   opts: {
     bootstrapHost?: string;
-    instanceId?: string;
   } = {},
 ): string {
-  const base = formatRemoteConnectedDetail(host, opts.instanceId);
+  const base = formatRemoteConnectedDetail(host);
   if (!opts.bootstrapHost || opts.bootstrapHost === host) return base;
   return `${base} via ${opts.bootstrapHost}`;
 }
@@ -1226,14 +1223,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             if (disposed || syncConnRef.current !== connections) return;
             if (!remotePeerId) return;
             remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
-            const conn = syncConnRef.current.get(remotePeerId);
-            const instanceId = conn
-              ? sharedPeer.getPeerCapabilityValue(conn.transport, SERVER_INSTANCE_CAPABILITY_NAME)
-              : undefined;
             setRemoteSyncStatus((prev) =>
               prev.state === 'connected'
                 ? {
-                    detail: formatRemoteRouteDetail(remoteUrl.host, { bootstrapHost, instanceId }),
+                    detail: formatRemoteRouteDetail(remoteUrl.host, { bootstrapHost }),
                     state: 'connected',
                   }
                 : prev,

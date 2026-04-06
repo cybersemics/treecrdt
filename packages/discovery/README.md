@@ -1,13 +1,11 @@
 # @treecrdt/discovery
 
-Control-plane contract for document creation, bootstrap routing, and access listing.
+Connect-time bootstrap contract for resolving a doc to an attachment plan.
 
 This package is intentionally separate from `@treecrdt/sync` and the CRDT core.
-It describes the metadata/bootstrap layer a product can use for:
+It describes the bootstrap layer a product can use for:
 
-- `createDoc`: create a doc and return an attachment plan
 - `resolveDoc`: return an attachment plan for a known doc
-- `listAccessibleDocs`: list docs a principal can discover in the product UI
 - cached bootstrap helpers for "resolve once, reconnect directly later"
 
 ## Why this exists
@@ -30,7 +28,7 @@ That keeps the discovery overhead mostly at connect time rather than per op.
 
 Concrete implementations can be layered later, for example:
 
-- DynamoDB global tables for `docs_directory` and access indexes
+- DynamoDB global tables for `docs_directory`
 - a Postgres-backed implementation
 - an in-memory dev implementation
 
@@ -38,7 +36,6 @@ Concrete implementations can be layered later, for example:
 
 - authoritative control plane:
   - `docId -> attachment plan`
-  - principal access index
   - migration state
 - data plane:
   - op log

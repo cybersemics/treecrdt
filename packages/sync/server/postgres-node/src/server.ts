@@ -60,7 +60,6 @@ export type SyncServerOptions = {
   gitSha?: string;
   gitDirty?: boolean;
   startedAt?: string;
-  instanceId?: string;
   discoveryResolvePath?: string;
   discoveryPublicHttpBaseUrl?: string;
   discoveryPublicWebSocketBaseUrl?: string;
@@ -702,7 +701,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const gitDirty = Boolean(opts.gitDirty);
   const startedAt = opts.startedAt?.trim() || new Date().toISOString();
   const startedAtMs = Date.parse(startedAt);
-  const instanceId = opts.instanceId?.trim() || process.env.HOSTNAME?.trim() || randomUUID();
   const metrics = {
     localDeltaPushes: 0,
     localInvalidationPushes: 0,
