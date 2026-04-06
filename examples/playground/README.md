@@ -39,15 +39,15 @@ Then in the playground:
 
 ## Public sync server
 
-If you want to test against the shared dev deployment instead of running Postgres locally:
+If you want to test against the configured public bootstrap endpoint instead of running Postgres locally:
 
 - Open the `Connections` panel
-- Click `Use public`, or paste `https://sync.emhub.net`
+- Click `Use public`, or paste the HTTPS bootstrap URL you want to test
 - Use `Hybrid` for browser-local tabs plus remote sync, or `Remote server` for remote-only behavior
 
-The public hostname is TLS-enabled. The playground will call `/resolve-doc` once,
-cache the returned websocket attachment, and then connect directly to the resolved
-`wss://.../sync` endpoint.
+The playground will call `/resolve-doc` once, cache the returned websocket
+attachment, and then connect directly to the resolved `wss://.../sync`
+endpoint.
 
 `pnpm sync-server:postgres:db:start` starts a disposable local Postgres at:
 

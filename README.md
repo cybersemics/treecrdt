@@ -11,7 +11,7 @@ Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared Typ
 - `packages/treecrdt-sqlite-node`: TreeCRDT bundled for Node.js use
 - `packages/treecrdt-wa-sqlite`: TreeCRDT bunlded for browser use
 - `packages/treecrdt-benchmark`: Benchmark utilities
-- `packages/discovery`: control-plane contract for doc routing and listing
+- `packages/discovery`: bootstrap contract for resolving docs to attachment plans
 - `packages/sync/protocol`: sync protocol/runtime core
 - `packages/sync/material/sqlite`: SQLite-backed sync adapters and proof-material stores
 - `packages/sync/material/postgres`: Postgres-backed sync proof-material stores
@@ -30,8 +30,6 @@ For benchmark commands, product-facing note/sync scenarios, and the sync target 
 
 ## Playground
 - Live demo (GitHub Pages): https://cybersemics.github.io/treecrdt/
-- Shared bootstrap endpoint: `https://sync.emhub.net`
-- Shared websocket endpoint: `wss://sync.emhub.net/sync`
 
 ### Local playground with a real sync server
 If you want the most useful local setup, start the sync server first and then point the playground at it:
@@ -71,18 +69,6 @@ For full sync-server configuration and environment variables, see:
 
 - `packages/sync/server/postgres-node/README.md`
 - `examples/playground/README.md`
-
-### Playground against the shared dev sync server
-If you just want to try the realtime path without running local Postgres, open the
-`Connections` panel and use:
-
-```
-https://sync.emhub.net
-```
-
-The playground will resolve that once via `/resolve-doc`, cache the returned websocket
-attachment, and reconnect directly on later opens until the route goes stale. The
-`Use public` shortcut fills this bootstrap URL automatically.
 
 ## Contribute
 Contributions are welcome!

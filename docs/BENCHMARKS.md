@@ -266,7 +266,7 @@ It measures:
 - `cachedConnectSamplesMs`: direct websocket reconnect using the already resolved attachment
 
 ```sh
-TREECRDT_DISCOVERY_URL=https://sync.emhub.net \
+TREECRDT_DISCOVERY_URL=https://bootstrap-host \
 pnpm benchmark:sync:bootstrap -- \
   --iterations=5
 ```
@@ -295,8 +295,8 @@ The benchmark can now run in two device modes:
 
 `--sync-server-url` may be either:
 
-- a direct websocket endpoint like `wss://sync.emhub.net/sync`
-- or an HTTPS bootstrap endpoint like `https://sync.emhub.net`
+- a direct websocket endpoint like `wss://sync-host/sync`
+- or an HTTPS bootstrap endpoint like `https://bootstrap-host`
 
 ```sh
 TREECRDT_SYNC_SERVER_URL=ws://host/sync \
