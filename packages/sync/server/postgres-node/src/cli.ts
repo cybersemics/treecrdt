@@ -120,7 +120,6 @@ async function main() {
   const discoveryCacheTtlMs = Number(
     process.env.TREECRDT_DISCOVERY_CACHE_TTL_MS ?? String(60 * 60 * 1000),
   );
-  const discoveryRouteVersion = process.env.TREECRDT_DISCOVERY_ROUTE_VERSION?.trim() || undefined;
   const startedAt = new Date().toISOString();
 
   const backendModule =
@@ -186,7 +185,6 @@ async function main() {
       discoveryPublicHttpBaseUrl,
       discoveryPublicWebSocketBaseUrl,
       discoveryCacheTtlMs,
-      discoveryRouteVersion,
       startedAt,
     });
     const clientHost = clientHostForBindHost(handle.host);

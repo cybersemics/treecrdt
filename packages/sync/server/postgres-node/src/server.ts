@@ -63,7 +63,6 @@ export type SyncServerOptions = {
   discoveryPublicHttpBaseUrl?: string;
   discoveryPublicWebSocketBaseUrl?: string;
   discoveryCacheTtlMs?: number;
-  discoveryRouteVersion?: string;
   hooks?: WebSocketSyncServerHooks;
 };
 
@@ -690,7 +689,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   );
   const discoveryCacheTtlMs =
     opts.discoveryCacheTtlMs == null ? 60 * 60 * 1000 : Number(opts.discoveryCacheTtlMs);
-  const discoveryRouteVersion = opts.discoveryRouteVersion?.trim() || undefined;
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
   if (maxCodewords != null && (!Number.isFinite(maxCodewords) || maxCodewords <= 0)) {
@@ -856,7 +854,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
                   },
                 ],
                 cacheTtlMs: discoveryCacheTtlMs,
-                ...(discoveryRouteVersion ? { routeVersion: discoveryRouteVersion } : {}),
               },
             },
           };
@@ -907,7 +904,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
             discoveryPublicHttpBaseUrl: discoveryPublicHttpBaseUrl ?? null,
             discoveryPublicWebSocketBaseUrl: discoveryPublicWebSocketBaseUrl ?? null,
             discoveryCacheTtlMs,
-            discoveryRouteVersion: discoveryRouteVersion ?? null,
           };
         },
       });

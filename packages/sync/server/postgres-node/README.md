@@ -64,7 +64,6 @@ Environment variables:
 - `TREECRDT_DISCOVERY_PUBLIC_HTTP_BASE_URL` (optional absolute base URL advertised to clients)
 - `TREECRDT_DISCOVERY_PUBLIC_WS_BASE_URL` (optional absolute websocket base URL advertised to clients)
 - `TREECRDT_DISCOVERY_CACHE_TTL_MS` (default: `3600000`)
-- `TREECRDT_DISCOVERY_ROUTE_VERSION` (optional opaque cache-busting string)
 
 Health check:
 

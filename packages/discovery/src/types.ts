@@ -1,26 +1,20 @@
-export type DiscoveryTopology = 'relay' | 'regional-relay' | 'peer-mesh' | 'hybrid';
+export type DiscoveryTopology = 'relay';
 
-export type DiscoveryAttachmentProtocol = 'websocket' | 'https' | 'webrtc-signal';
+export type DiscoveryAttachmentProtocol = 'websocket' | 'https';
 
 export type DiscoveryAttachment = {
   protocol: DiscoveryAttachmentProtocol;
   url: string;
-  role?: 'preferred' | 'durable' | 'relay' | 'bootstrap' | 'signal';
-  label?: string;
+  role?: 'preferred' | 'bootstrap';
 };
 
 /**
- * Attachment plan returned by the discovery/bootstrap control plane.
- *
- * The plan is intentionally provider-neutral. A simple hosted sync service can
- * return one websocket attachment, while more advanced providers may return a
- * hybrid or peer-mesh bootstrap plan later.
+ * Attachment plan returned by the bootstrap layer.
  */
 export type DocAttachmentPlan = {
   topology: DiscoveryTopology;
   attachments: DiscoveryAttachment[];
   cacheTtlMs?: number;
-  routeVersion?: string;
 };
 
 export type ResolveDocRequest = {
