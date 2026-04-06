@@ -217,42 +217,6 @@ pnpm benchmark:sync:remote -- \
   --max-ops-per-batch=500
 ```
 
-### Route Fanout Bench
-
-Use `benchmark:sync:route-fanout` when you want to isolate the relay path instead of the full browser UI path.
-
-This opens two independent websocket clients to the same sync doc, records the server `instanceId` each one lands on, then measures how long a direct `pushOps(...)` write takes to appear on the subscribed peer.
-
-- `--route=same` retries until both clients land on the same sync task
-- `--route=cross` retries until they land on different sync tasks
-- `--mode=all|children` chooses the subscribed filter on the receiving peer
-- `--source-sync-server-url` and `--target-sync-server-url` let you force the writer and subscriber onto different endpoints, which is useful for deterministic two-process tests
-
-```sh
-TREECRDT_SYNC_SERVER_URL=ws://host/sync \
-pnpm benchmark:sync:route-fanout -- \
-  --mode=all \
-  --route=cross \
-  --iterations=5
-```
-
-For a controlled local comparison, run two Postgres sync-server processes against the same database and point the writer/subscriber at different ports:
-
-```sh
-node scripts/bench-sync-route-fanout.mjs \
-  --source-sync-server-url=ws://127.0.0.1:8787/sync \
-  --target-sync-server-url=ws://127.0.0.1:8789/sync \
-  --mode=all \
-  --route=cross \
-  --iterations=5
-```
-
-This is the benchmark to use when you want a direct before/after comparison between:
-
-- same-task live fanout
-- cross-task fallback via `pg_notify`
-- doc-affinity routing that keeps same-doc peers on one task
-
 ### Bootstrap / Resolve Bench
 
 Use `benchmark:sync:bootstrap` when you want to isolate the one-time discovery
@@ -276,39 +240,6 @@ This is the benchmark to use when you want to answer:
 - how expensive the bootstrap lookup is on cold open
 - how much faster cached reconnects are
 - whether discovery is staying off the steady-state hot path
-
-### Browser Live-Write Bench
-
-Use `benchmark:playground:live-write` when you want the full browser path:
-
-- source tab local write
-- upload to the sync server
-- live fanout back to subscribed peers
-- target tab apply/render
-
-The benchmark can now run in two device modes:
-
-- `--contexts=shared`: reuse one Playwright browser context and open additional tabs with `New device`
-- `--contexts=isolated`: capture the `New device` invite URL, then reopen that device in a brand new Playwright context
-
-`shared` is useful for same-session regressions. `isolated` is the better approximation for real separate devices and is the mode to use when evaluating doc-affinity routing.
-
-`--sync-server-url` may be either:
-
-- a direct websocket endpoint like `wss://sync-host/sync`
-- or an HTTPS bootstrap endpoint like `https://bootstrap-host`
-
-```sh
-TREECRDT_SYNC_SERVER_URL=ws://host/sync \
-pnpm benchmark:playground:live-write -- \
-  --transport=remote \
-  --mode=all \
-  --contexts=isolated \
-  --tabs=3 \
-  --iterations=5
-```
-
-Compare `shared` vs `isolated` on the same endpoint when you want to see how much session stickiness is hiding cross-task fanout costs.
 
 ### Backend Call Profiling
 

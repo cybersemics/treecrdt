@@ -37,12 +37,12 @@ Then in the playground:
 - Paste `ws://localhost:8787` into `Remote sync server`
 - Leave mode as `Hybrid`, or switch to `Remote server` if you want to disable local tab sync
 
-## Public sync server
+## Bootstrap endpoint
 
-If you want to test against the configured public bootstrap endpoint instead of running Postgres locally:
+If you want to test against a bootstrap endpoint instead of running Postgres locally:
 
 - Open the `Connections` panel
-- Click `Use public`, or paste the HTTPS bootstrap URL you want to test
+- Paste the HTTPS bootstrap URL you want to test
 - Use `Hybrid` for browser-local tabs plus remote sync, or `Remote server` for remote-only behavior
 
 The playground will call `/resolve-doc` once, cache the returned websocket

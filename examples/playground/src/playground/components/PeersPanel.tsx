@@ -1,7 +1,6 @@
 import React from "react";
 import { MdCheckCircle, MdCloudOff, MdCloudQueue, MdErrorOutline, MdSync } from "react-icons/md";
 
-import { PLAYGROUND_PUBLIC_DISCOVERY_URL } from "../constants";
 import type { PeerInfo, RemoteSyncStatus, SyncTransportMode } from "../types";
 
 function formatPeerId(id: string): string {
@@ -155,22 +154,9 @@ export function PeersPanel({
                 setSyncTransportMode("hybrid");
               }
             }}
-            placeholder={`${PLAYGROUND_PUBLIC_DISCOVERY_URL} or ws://localhost:8787/sync`}
+            placeholder="https://bootstrap-host or ws://localhost:8787/sync"
             spellCheck={false}
           />
-          <button
-            type="button"
-            className="rounded-md border border-slate-700 px-2 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
-            onClick={() => {
-              setSyncServerUrl(PLAYGROUND_PUBLIC_DISCOVERY_URL);
-              if (syncTransportMode === "local") {
-                setSyncTransportMode("hybrid");
-              }
-            }}
-            title="Use the public emhub.net bootstrap endpoint"
-          >
-            Use public
-          </button>
           <button
             type="button"
             className="rounded-md border border-slate-700 px-2 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white disabled:opacity-50"

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   MdAdd,
@@ -45,14 +45,6 @@ type MembersMenuLayout = {
   maxHeight: number;
   listMaxHeight: number;
 };
-
-declare global {
-  interface Window {
-    __treecrdtPlaygroundBench?: {
-      nodes: Record<string, Record<string, number>>;
-    };
-  }
-}
 
 export function TreeRow({
   node,
@@ -339,15 +331,6 @@ export function TreeRow({
       window.removeEventListener("scroll", onScrollOrResize, true);
     };
   }, [showMembersMenu, updateMembersMenuLayout]);
-
-  useLayoutEffect(() => {
-    if (typeof window === "undefined") return;
-    const bench = window.__treecrdtPlaygroundBench;
-    if (!bench) return;
-    const entry = bench.nodes[node.id];
-    if (!entry || typeof entry.rowCommittedAtMs === "number") return;
-    entry.rowCommittedAtMs = Date.now();
-  }, [node.id]);
 
   return (
     <div

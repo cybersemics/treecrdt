@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from '@treecrdt/auth';
 import type { Operation } from '@treecrdt/interface';
 import { createReplayOnlySyncAuth, deriveOpRefV0 } from '@treecrdt/sync';
-import type { Capability, SyncAuth, SyncBackend, SyncPeer, SyncPeerOptions } from '@treecrdt/sync';
+import type { SyncBackend, SyncPeer, SyncPeerOptions } from '@treecrdt/sync';
 import { createCapabilityMaterialStore, createOpAuthStore } from '@treecrdt/sync-postgres';
 import type { PostgresCapabilityMaterialStore, PostgresOpAuthStore } from '@treecrdt/sync-postgres';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
@@ -44,7 +44,6 @@ export type SyncServerOptions = {
   backendModule?: string;
   maxCodewords?: number;
   directSendThreshold?: number;
-  fastForwardRelaySubscriptions?: boolean;
   idleCloseMs?: number;
   maxPayloadBytes?: number;
   authToken?: string;
@@ -200,30 +199,6 @@ function derivePublicBaseUrl(
   return `${protocol}://${host}`.replace(/\/$/, '');
 }
 
-function withExtraHelloCapabilities<Op>(
-  auth: SyncAuth<Op> | undefined,
-  extraCapabilities: readonly Capability[],
-): SyncAuth<Op> | undefined {
-  if (extraCapabilities.length === 0) return auth;
-  return {
-    ...auth,
-    onHello: async (hello, ctx) => {
-      const base = auth?.onHello ? await auth.onHello(hello, ctx) : [];
-      const merged = [...base];
-      for (const capability of extraCapabilities) {
-        if (
-          merged.some(
-            (existing) => existing.name === capability.name && existing.value === capability.value,
-          )
-        ) {
-          continue;
-        }
-        merged.push(capability);
-      }
-      return merged;
-    },
-  };
-}
 type DocUpdatePayload = {
   docId: string;
   source?: string;
@@ -677,7 +652,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const maxCodewords = opts.maxCodewords == null ? undefined : Number(opts.maxCodewords);
   const directSendThreshold =
     opts.directSendThreshold == null ? undefined : Number(opts.directSendThreshold);
-  const fastForwardRelaySubscriptions = opts.fastForwardRelaySubscriptions ?? false;
   const idleCloseMs = Number(opts.idleCloseMs ?? 30_000);
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
   const authToken =
@@ -701,12 +675,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const gitDirty = Boolean(opts.gitDirty);
   const startedAt = opts.startedAt?.trim() || new Date().toISOString();
   const startedAtMs = Date.parse(startedAt);
-  const metrics = {
-    localDeltaPushes: 0,
-    localInvalidationPushes: 0,
-    pgNotifyPublishes: 0,
-    pgNotifyReceives: 0,
-  };
   const discoveryResolvePath = normalizeOptionalPath(
     'discoveryResolvePath',
     opts.discoveryResolvePath,
@@ -780,7 +748,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
       requireAuthForFilters: false,
       ...(maxCodewords != null ? { maxCodewords } : {}),
       ...(directSendThreshold != null ? { directSendThreshold } : {}),
-      ...(fastForwardRelaySubscriptions ? { fastForwardRelaySubscriptions } : {}),
     }),
   });
   if (enablePgNotify || !allowDocCreate) {

@@ -9,10 +9,8 @@
   ],
   "scripts": {
     "lint": "echo \"TODO: add linting\"",
-    "fmt": "cargo fmt --all",
     "fmt:rust": "cargo fmt --all",
     "fmt:ts": "prettier --write \"packages/**/*.{ts,tsx,cts,mts}\"",
-    "fmt:check": "cargo fmt --check --all",
     "fmt:check:rust": "cargo fmt --check --all",
     "fmt:check:ts": "prettier --check \"packages/**/*.{ts,tsx,cts,mts}\"",
     "clippy": "cargo clippy --workspace --all-targets -- -D warnings -D clippy::panic -D clippy::todo -D clippy::unimplemented",
@@ -42,7 +40,6 @@
     "benchmark:sync:remote": "node scripts/run-sync-bench.mjs remote",
     "benchmark:playground:live-write": "node scripts/bench-playground-live-write.mjs",
     "benchmark:sync:bootstrap": "node scripts/bench-discovery-connect.mjs",
-    "benchmark:sync:route-fanout": "node scripts/bench-sync-route-fanout.mjs",
     "benchmark:wasm": "pnpm -C packages/treecrdt-wasm-js run benchmark",
     "benchmark:web": "pnpm -C packages/treecrdt-wa-sqlite/e2e run bench",
     "test": "pnpm run test:browser && pnpm run test:native-node",

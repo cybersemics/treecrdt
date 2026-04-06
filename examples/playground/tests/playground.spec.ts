@@ -8,7 +8,7 @@ import { startWebSocketSyncServer } from "../../../packages/sync/server/core/dis
 
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const REMOTE_PLACEHOLDER = "https://sync.emhub.net or ws://localhost:8787/sync";
+const REMOTE_PLACEHOLDER = "https://bootstrap-host or ws://localhost:8787/sync";
 
 type TestSyncServer = {
   host: string;
@@ -527,27 +527,6 @@ test("switching to remote transport does not auto-fill a default sync URL", asyn
       };
     })
     .toEqual({ sync: null, transport: "remote" });
-});
-
-test("public sync shortcut fills the shared dev sync endpoint", async ({ page }) => {
-  const doc = uniqueDocId("pw-playground-sync-public-shortcut");
-  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
-
-  await page.getByRole("button", { name: /Connections/ }).click();
-  const remoteInput = page.getByPlaceholder(REMOTE_PLACEHOLDER);
-  await expect(remoteInput).toHaveValue("");
-
-  await page.getByRole("button", { name: "Use public", exact: true }).click();
-  await expect(remoteInput).toHaveValue("https://sync.emhub.net");
-  await expect
-    .poll(async () => {
-      const url = new URL(page.url());
-      return {
-        sync: url.searchParams.get("sync"),
-        transport: url.searchParams.get("transport"),
-      };
-    })
-    .toEqual({ sync: "https://sync.emhub.net", transport: "hybrid" });
 });
 
 test("remote sync settings persist into a shareable URL", async ({ browser, page }) => {
