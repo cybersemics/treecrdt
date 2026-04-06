@@ -32,6 +32,7 @@ flowchart TD
   subgraph TS["TypeScript packages (pnpm workspace)"]
     iface["@treecrdt/interface"]
     discovery["@treecrdt/discovery"]
+    discovery_server["@treecrdt/discovery-server-node"]
     sync_core["@treecrdt/sync"]
     sync_sqlite["@treecrdt/sync-sqlite"]
     sync_postgres["@treecrdt/sync-postgres"]
@@ -50,6 +51,7 @@ flowchart TD
 
   %% Runtime dependencies
   sync_core --> iface
+  discovery_server --> discovery
   sync_core --> riblt_pkg
   sync_sqlite --> sync_core
   sync_sqlite --> iface
