@@ -4,9 +4,24 @@ import type { Operation, ReplicaId } from '@treecrdt/interface';
 import type { TreecrdtEngine } from '@treecrdt/interface/engine';
 
 import type { BenchmarkResult } from './index.js';
+import {
+  parseFlagValue,
+  parseNonNegativeIntFlag,
+  parsePositiveIntFlag,
+  payloadBytesFromSeed,
+  replicaFromLabel,
+} from './helpers.js';
 import { buildFanoutInsertTreeOps, nodeIdFromInt } from './sync.js';
 import { writeResult, type BenchmarkOutput } from './node.js';
 import { quantile, summarizeSamples } from './stats.js';
+
+export {
+  parseFlagValue,
+  parseNonNegativeIntFlag,
+  parsePositiveIntFlag,
+  payloadBytesFromSeed,
+  replicaFromLabel,
+} from './helpers.js';
 
 export type HotWriteBenchKind = 'payload-edit' | 'insert-sibling' | 'move-leaf' | 'move-subtree';
 export type HotWriteConfigEntry = [count: number, iterations: number];
@@ -48,36 +63,6 @@ export type HotWriteWorkload = {
     ctx: { writeIndex: number; totalWrites: number },
   ) => Promise<{ extra?: Record<string, unknown> } | void>;
 };
-
-export function parsePositiveIntFlag(
-  argv: string[],
-  flag: string,
-  envName: string,
-  fallback: number,
-): number {
-  const raw = parseFlagValue(argv, flag) ?? process.env[envName];
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`invalid ${flag} value "${raw}", expected a positive integer`);
-  }
-  return value;
-}
-
-export function parseNonNegativeIntFlag(
-  argv: string[],
-  flag: string,
-  envName: string,
-  fallback: number,
-): number {
-  const raw = parseFlagValue(argv, flag) ?? process.env[envName];
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`invalid ${flag} value "${raw}", expected a non-negative integer`);
-  }
-  return value;
-}
 
 export function parseHotWriteConfigFromArgv(argv: string[]): Array<HotWriteConfigEntry> | null {
   let customConfig: Array<HotWriteConfigEntry> | null = null;
@@ -130,24 +115,6 @@ export function parseHotWriteKinds(argv: string[]): HotWriteBenchKind[] {
     seen.add(value as HotWriteBenchKind);
   }
   return seen.size > 0 ? Array.from(seen) : Array.from(ALL_HOT_WRITE_BENCHES);
-}
-
-export function payloadBytesFromSeed(
-  seed: number,
-  size = DEFAULT_HOT_WRITE_PAYLOAD_BYTES,
-): Uint8Array {
-  if (!Number.isInteger(seed) || seed < 0) throw new Error(`invalid payload seed: ${seed}`);
-  const out = new Uint8Array(size);
-  for (let i = 0; i < out.length; i += 1) out[i] = (seed + i * 31) % 251;
-  return out;
-}
-
-export function replicaFromLabel(label: string): Uint8Array {
-  const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error('label must not be empty');
-  const out = new Uint8Array(32);
-  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
-  return out;
 }
 
 export function buildHotWriteSeedTargets(opts: {
@@ -563,10 +530,4 @@ function rootChildIndex(nodeIndex: number, fanout: number): number {
     cursor = parent;
   }
   return cursor;
-}
-
-function parseFlagValue(argv: string[], flag: string): string | undefined {
-  const prefix = `${flag}=`;
-  const raw = argv.find((arg) => arg.startsWith(prefix));
-  return raw ? raw.slice(prefix.length).trim() : undefined;
 }

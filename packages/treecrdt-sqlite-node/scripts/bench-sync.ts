@@ -32,6 +32,7 @@ import {
   quantile,
   type SyncBenchWorkload,
 } from '@treecrdt/benchmark';
+import { parseFlagValue, parsePositiveIntFlag } from '@treecrdt/benchmark/helpers';
 import type { BenchmarkFixtureHelpers } from '@treecrdt/benchmark/testing';
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { Operation } from '@treecrdt/interface';
@@ -328,27 +329,6 @@ function parseConfigFromArgv(
     }
   }
   return customConfig;
-}
-
-function parseFlagValue(argv: string[], flag: string): string | undefined {
-  const prefix = `${flag}=`;
-  const raw = argv.find((arg) => arg.startsWith(prefix));
-  return raw ? raw.slice(prefix.length).trim() : undefined;
-}
-
-function parsePositiveIntFlag(
-  argv: string[],
-  flag: string,
-  envName: string,
-  fallback: number,
-): number {
-  const raw = parseFlagValue(argv, flag) ?? process.env[envName];
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`invalid ${flag} value "${raw}", expected a positive integer`);
-  }
-  return value;
 }
 
 function parseOptionalPositiveIntFlag(

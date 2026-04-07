@@ -43,6 +43,20 @@ export function quantile(values: number[], q: number): number {
   return sorted[lo]! * (1 - w) + sorted[hi]! * w;
 }
 
+export function medianOrNull(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+export function percentileNearestRankOrNull(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[index]!;
+}
+
 export type SampleSummary = {
   count: number;
   min: number;

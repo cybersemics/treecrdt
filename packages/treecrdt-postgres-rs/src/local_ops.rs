@@ -101,6 +101,10 @@ fn begin_local_core_op(
     replica: &ReplicaId,
     kind: &'static str,
 ) -> Result<LocalOpSession> {
+    // Local ops take the opposite route from append_ops_in_tx: start from a clean materialized
+    // snapshot, then let TreeCrdt mint/store/apply the local op directly against Postgres stores.
+    // `kind` is only a human-readable label for profiling/debug output ("insert", "move", etc.),
+    // so later timing logs can tell which local-op path they came from.
     let mut profile = local_profile_enabled().then(|| PgLocalOpProfile {
         kind,
         ..PgLocalOpProfile::default()
