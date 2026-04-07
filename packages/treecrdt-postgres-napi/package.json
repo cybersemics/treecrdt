@@ -31,11 +31,11 @@
     "benchmark:hot-write": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench-hot-writes.ts"
   },
   "dependencies": {
+    "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync": "workspace:*"
   },
   "devDependencies": {
-    "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/engine-conformance": "workspace:*",
     "@types/node": "^20.19.25",
     "tsx": "^4.19.2",

@@ -32,6 +32,7 @@ import {
   quantile,
   type SyncBenchWorkload,
 } from '@treecrdt/benchmark';
+import type { BenchmarkFixtureHelpers } from '@treecrdt/benchmark/testing';
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
@@ -124,21 +125,19 @@ type SyncBenchConnection = {
   close: () => Promise<void>;
 };
 
+type SyncBenchFixtureHelpers = Pick<
+  BenchmarkFixtureHelpers,
+  'resetDocForTests' | 'primeBalancedFanoutDocForTests'
+>;
+
 type SyncBenchTargetRuntime = {
   id: Exclude<SyncBenchTargetId, 'direct'>;
   serverProcess: 'child-process' | 'in-process' | 'remote';
   fixtureCacheScope?: string;
   connect: (docId: string) => Promise<SyncBenchConnection>;
   seedOps?: (docId: string, ops: Operation[]) => Promise<void>;
-  primeBalancedFanoutDocForTests?: (
-    docId: string,
-    size: number,
-    fanout: number,
-    payloadBytes: number,
-    replicaLabel: string,
-  ) => Promise<void>;
   inspectDoc?: (docId: string) => Promise<{ allCount: number; maxLamport: number }>;
-  resetDoc?: (docId: string) => Promise<void>;
+  resetDoc?: SyncBenchFixtureHelpers['resetDocForTests'];
   waitForOpCount?: (
     docId: string,
     filter: Filter,
@@ -148,7 +147,7 @@ type SyncBenchTargetRuntime = {
   clearHelloTrace?: (docId: string) => void;
   takeHelloTrace?: (docId: string) => HelloTraceProfile | undefined;
   close: () => Promise<void>;
-};
+} & Partial<SyncBenchFixtureHelpers>;
 
 type TransportDirectionProfile = {
   messages: number;
@@ -1322,26 +1321,18 @@ async function loadPostgresSyncBackendFactory(
   backendModule: string,
   postgresUrl: string,
 ): Promise<{
-  resetDocForTests: (docId: string) => Promise<void>;
-  primeBalancedFanoutDocForTests: (
-    docId: string,
-    size: number,
-    fanout: number,
-    payloadBytes: number,
-    replicaLabel: string,
-  ) => Promise<void>;
+  resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
+  primeBalancedFanoutDocForTests: NonNullable<
+    SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
+  >;
   open: (docId: string) => Promise<SyncBackend<Operation>>;
 }> {
   const mod = (await import(pathToFileURL(backendModule).href)) as {
     createPostgresNapiSyncBackendFactory?: (url: string) => {
-      resetDocForTests: (docId: string) => Promise<void>;
-      primeBalancedFanoutDocForTests: (
-        docId: string,
-        size: number,
-        fanout: number,
-        payloadBytes: number,
-        replicaLabel: string,
-      ) => Promise<void>;
+      resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
+      primeBalancedFanoutDocForTests: NonNullable<
+        SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
+      >;
       open: (docId: string) => Promise<SyncBackend<Operation>>;
     };
   };

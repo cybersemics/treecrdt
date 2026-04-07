@@ -1,3 +1,4 @@
+import type { BenchmarkFixtureHelpers } from '@treecrdt/benchmark/testing';
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 
@@ -12,33 +13,26 @@ import { loadNative, type NativeTestingFactory } from './native.js';
 
 export { createTreecrdtPostgresClient } from './client.js';
 
-export type PostgresNapiTestAdapterFactory = PostgresNapiAdapterFactory & {
-  resetForTests: () => Promise<void>;
-  resetDocForTests: (docId: string) => Promise<void>;
-  cloneDocForTests: (sourceDocId: string, targetDocId: string) => Promise<void>;
-  cloneMaterializedDocForTests: (sourceDocId: string, targetDocId: string) => Promise<void>;
-  primeDocForTests: (docId: string, ops: Operation[]) => Promise<void>;
-  primeBalancedFanoutDocForTests: (
-    docId: string,
-    size: number,
-    fanout: number,
-    payloadBytes: number,
-    replicaLabel: string,
-  ) => Promise<void>;
-};
+type PostgresNapiFixtureHelpers = Pick<
+  BenchmarkFixtureHelpers,
+  | 'resetForTests'
+  | 'resetDocForTests'
+  | 'cloneDocForTests'
+  | 'cloneMaterializedDocForTests'
+  | 'primeDocForTests'
+  | 'primeBalancedFanoutDocForTests'
+>;
 
-export type PostgresNapiTestSyncBackendFactory = PostgresNapiSyncBackendFactory & {
-  resetForTests: () => Promise<void>;
-  resetDocForTests: (docId: string) => Promise<void>;
-  cloneDocForTests: (sourceDocId: string, targetDocId: string) => Promise<void>;
-  primeBalancedFanoutDocForTests: (
-    docId: string,
-    size: number,
-    fanout: number,
-    payloadBytes: number,
-    replicaLabel: string,
-  ) => Promise<void>;
-};
+type PostgresNapiSyncFixtureHelpers = Pick<
+  BenchmarkFixtureHelpers,
+  'resetForTests' | 'resetDocForTests' | 'cloneDocForTests' | 'primeBalancedFanoutDocForTests'
+>;
+
+export type PostgresNapiTestAdapterFactory = PostgresNapiAdapterFactory &
+  PostgresNapiFixtureHelpers;
+
+export type PostgresNapiTestSyncBackendFactory = PostgresNapiSyncBackendFactory &
+  PostgresNapiSyncFixtureHelpers;
 
 function ensureNonEmptyString(name: string, value: string): void {
   if (typeof value !== 'string' || value.length === 0) {

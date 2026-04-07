@@ -7,6 +7,7 @@ import type {
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import { envInt, quantile, summarizeSamples } from './stats.js';
 import type { WorkloadName } from './workloads.js';
+export type { BenchmarkFixtureFactory, BenchmarkFixtureHelpers } from './testing.js';
 
 export type BenchmarkResult = {
   name: string;
