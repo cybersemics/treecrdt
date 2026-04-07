@@ -171,6 +171,7 @@ Notes:
   - local sync benches default TREECRDT_POSTGRES_URL to ${LOCAL_POSTGRES_URL}
   - remote sync benches never hardcode a server URL; pass TREECRDT_SYNC_SERVER_URL or --sync-server-url=...
   - use wss:// for public HTTPS/TLS deployments and ws:// for local/plain HTTP servers
+  - add --postgres-url=postgres://... on a remote target when you have DB access to that same deployment and want direct large-fixture priming instead of websocket upload
   - use --fanout=20 to model broader trees; default fanout is 10
   - add --first-view to include the immediate local read after sync in the measured duration
   - add --iterations=N and --warmup=N to control sample count explicitly; custom --count/--counts runs now default to multiple samples instead of silently dropping to 1
