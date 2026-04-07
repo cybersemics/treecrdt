@@ -152,6 +152,33 @@ fn materialization_seq_advances_only_for_new_ops() {
 }
 
 #[test]
+fn apply_remote_with_materialization_reports_affected_node_ids() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut seq = 0;
+    let mut index = NoopParentOpIndex;
+    let replica = ReplicaId::new(b"remote");
+
+    let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), Vec::new());
+    let insert_delta = crdt
+        .apply_remote_with_materialization_seq(insert, &mut index, &mut seq)
+        .unwrap()
+        .unwrap();
+    assert_eq!(insert_delta.affected_node_ids, vec![NodeId::ROOT, NodeId(1)]);
+
+    let payload = Operation::set_payload(&replica, 2, 2, NodeId(1), b"hello".to_vec());
+    let payload_delta = crdt
+        .apply_remote_with_materialization_seq(payload, &mut index, &mut seq)
+        .unwrap()
+        .unwrap();
+    assert_eq!(payload_delta.affected_node_ids, vec![NodeId(1)]);
+}
+
+#[test]
 fn local_move_with_plan_tracks_hint_and_payload_reindex() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"a"),

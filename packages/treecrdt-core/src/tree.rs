@@ -52,6 +52,13 @@ pub struct NodeSnapshotExport {
 pub struct ApplyDelta {
     pub snapshot: NodeSnapshotExport,
     pub affected_parents: Vec<NodeId>,
+    /// Full set of nodes whose materialized state changed after this apply.
+    ///
+    /// This includes direct operation effects and any indirect tombstone flips
+    /// merged by higher-level apply helpers.
+    ///
+    /// Ordering is deterministic (`NodeId` ascending), with duplicates removed.
+    pub affected_node_ids: Vec<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,6 +107,52 @@ fn affected_parents(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Ve
     parents.sort();
     parents.dedup();
     parents
+}
+
+fn sorted_node_ids(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
+    let mut ids: Vec<NodeId> = nodes.into_iter().collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn direct_affected_node_ids(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
+    let mut nodes = Vec::new();
+    let node = kind.node();
+    if node != NodeId::TRASH {
+        nodes.push(node);
+    }
+    match kind {
+        OperationKind::Insert { parent, .. } => {
+            if let Some(old_parent) = snapshot_parent {
+                if old_parent != NodeId::TRASH {
+                    nodes.push(old_parent);
+                }
+            }
+            if *parent != NodeId::TRASH {
+                nodes.push(*parent);
+            }
+        }
+        OperationKind::Move { new_parent, .. } => {
+            if let Some(old_parent) = snapshot_parent {
+                if old_parent != NodeId::TRASH {
+                    nodes.push(old_parent);
+                }
+            }
+            if *new_parent != NodeId::TRASH {
+                nodes.push(*new_parent);
+            }
+        }
+        OperationKind::Delete { .. } | OperationKind::Tombstone { .. } => {
+            if let Some(parent) = snapshot_parent {
+                if parent != NodeId::TRASH {
+                    nodes.push(parent);
+                }
+            }
+        }
+        OperationKind::Payload { .. } => {}
+    }
+    sorted_node_ids(nodes)
 }
 
 impl<S, C> TreeCrdt<S, C, MemoryNodeStore>
@@ -410,6 +463,11 @@ where
         self.replay_from_storage()
     }
 
+    /// Apply one remote operation and return exact incremental delta when available.
+    ///
+    /// Returns:
+    /// - `Some(delta)` for in-order applies where an exact changed-node set is known,
+    /// - `None` for duplicate/not-applied ops or paths that require replay.
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
         self.clock.observe(op.meta.lamport);
         self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
@@ -427,12 +485,14 @@ where
             self.head = Some(op.clone());
 
             let parents = affected_parents(snapshot.parent, &op.kind);
+            let affected_node_ids = direct_affected_node_ids(snapshot.parent, &op.kind);
             return Ok(Some(ApplyDelta {
                 snapshot: NodeSnapshotExport {
                     parent: snapshot.parent,
                     order_key: snapshot.order_key,
                 },
                 affected_parents: parents,
+                affected_node_ids,
             }));
         }
 
@@ -461,7 +521,7 @@ where
         };
         let op_id = op.meta.id.clone();
 
-        let Some(delta) = self.apply_remote_with_delta(op)? else {
+        let Some(mut delta) = self.apply_remote_with_delta(op)? else {
             return Ok(None);
         };
 
@@ -484,7 +544,11 @@ where
 
         let mut starts = delta.affected_parents.clone();
         starts.push(op_node);
-        self.refresh_tombstones_upward(starts)?;
+        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
+        delta
+            .affected_node_ids
+            .extend(tombstone_changed.into_iter().filter(|node| *node != NodeId::TRASH));
+        delta.affected_node_ids = sorted_node_ids(delta.affected_node_ids);
 
         Ok(Some(delta))
     }
@@ -562,8 +626,20 @@ where
     where
         I: IntoIterator<Item = NodeId>,
     {
+        let _ = self.refresh_tombstones_upward_with_delta(starts)?;
+        Ok(())
+    }
+
+    /// Refresh tombstone cache for nodes on the upward closure of `starts`.
+    ///
+    /// Returns every node whose cached tombstone value actually changed.
+    pub fn refresh_tombstones_upward_with_delta<I>(&mut self, starts: I) -> Result<Vec<NodeId>>
+    where
+        I: IntoIterator<Item = NodeId>,
+    {
         let mut stack: Vec<NodeId> = starts.into_iter().collect();
         let mut visited: HashSet<NodeId> = HashSet::new();
+        let mut changed: Vec<NodeId> = Vec::new();
 
         while let Some(node) = stack.pop() {
             if node == NodeId::ROOT || node == NodeId::TRASH {
@@ -577,8 +653,12 @@ where
             };
 
             if has_deleted_at {
+                let previous = self.nodes.tombstone(node)?;
                 let tombstoned = self.is_tombstoned(node)?;
-                self.nodes.set_tombstone(node, tombstoned)?;
+                if previous != tombstoned {
+                    self.nodes.set_tombstone(node, tombstoned)?;
+                    changed.push(node);
+                }
             }
 
             if let Some(parent) = parent {
@@ -586,7 +666,7 @@ where
             }
         }
 
-        Ok(())
+        Ok(sorted_node_ids(changed))
     }
 
     pub fn refresh_all_tombstones(&mut self) -> Result<()> {
@@ -876,7 +956,10 @@ where
         if !self.storage.apply(op.clone())? {
             return Ok(op);
         }
-        let _ = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        let mut starts = affected_parents(snapshot.parent, &op.kind);
+        starts.push(op.kind.node());
+        self.refresh_tombstones_upward(starts)?;
         self.op_count += 1;
         self.head = Some(op.clone());
         Ok(op)

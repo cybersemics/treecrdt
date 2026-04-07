@@ -1,4 +1,4 @@
-use treecrdt_core::{LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
+use treecrdt_core::{LamportClock, MemoryStorage, NodeId, NoopParentOpIndex, ReplicaId, TreeCrdt};
 
 #[test]
 fn defensive_delete_parent_then_insert_child_restores_parent() {
@@ -759,5 +759,63 @@ fn delete_should_restore_when_earlier_child_op_from_same_replica_was_missing() {
     assert!(
         !crdt_b.is_tombstoned(parent).unwrap(),
         "converged state should keep parent restorable"
+    );
+}
+
+#[test]
+fn materialized_apply_delta_includes_parent_restored_by_unseen_payload_change() {
+    let mut crdt_a = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut crdt_b = TreeCrdt::new(
+        ReplicaId::new(b"b"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut seq_a = 0;
+    let mut seq_b = 0;
+    let mut index_a = NoopParentOpIndex;
+    let mut index_b = NoopParentOpIndex;
+
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    let parent_op = crdt_a.local_insert_after(NodeId::ROOT, parent, None).unwrap();
+    crdt_b
+        .apply_remote_with_materialization_seq(parent_op, &mut index_b, &mut seq_b)
+        .unwrap()
+        .unwrap();
+
+    let child_op = crdt_a.local_insert_after(parent, child, None).unwrap();
+    crdt_b
+        .apply_remote_with_materialization_seq(child_op, &mut index_b, &mut seq_b)
+        .unwrap()
+        .unwrap();
+
+    // Client B modifies child payload first. Client A deletes parent without seeing it.
+    let payload_op = crdt_b.local_set_payload(child, b"x".to_vec()).unwrap();
+    let delete_op = crdt_a.local_delete(parent).unwrap();
+    assert!(crdt_a.is_tombstoned(parent).unwrap());
+
+    let delta = crdt_a
+        .apply_remote_with_materialization_seq(payload_op, &mut index_a, &mut seq_a)
+        .unwrap()
+        .unwrap();
+    let _ = crdt_b
+        .apply_remote_with_materialization_seq(delete_op, &mut index_b, &mut seq_b)
+        .unwrap();
+
+    assert!(
+        !crdt_a.is_tombstoned(parent).unwrap(),
+        "parent should be restored by unseen payload change"
+    );
+    assert!(delta.affected_node_ids.contains(&child));
+    assert!(
+        delta.affected_node_ids.contains(&parent),
+        "delta should include ancestor tombstone flip"
     );
 }

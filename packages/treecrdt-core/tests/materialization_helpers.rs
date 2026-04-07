@@ -1,6 +1,7 @@
 use treecrdt_core::{
-    apply_incremental_ops, try_incremental_materialization, LamportClock, MaterializationCursor,
-    MemoryStorage, NodeId, Operation, OperationId, ParentOpIndex, ReplicaId, TreeCrdt,
+    apply_incremental_ops, apply_incremental_ops_with_delta, try_incremental_materialization,
+    LamportClock, MaterializationCursor, MemoryStorage, NodeId, Operation, OperationId,
+    ParentOpIndex, ReplicaId, TreeCrdt,
 };
 
 #[derive(Default)]
@@ -179,4 +180,37 @@ fn apply_incremental_ops_rejects_before_materialized_head() {
 
     let res = apply_incremental_ops(&mut crdt, &mut index, &cursor, vec![op]);
     assert!(res.is_err());
+}
+
+#[test]
+fn apply_incremental_ops_with_delta_returns_affected_union() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut index = RecordingIndex::default();
+    let cursor = Cursor::default();
+    let replica = ReplicaId::new(b"remote");
+
+    let parent = NodeId(10);
+    let child = NodeId(11);
+    let parent_insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, vec![0x10]);
+    let child_insert = Operation::insert(&replica, 2, 2, parent, child, vec![0x20]);
+
+    let res = apply_incremental_ops_with_delta(
+        &mut crdt,
+        &mut index,
+        &cursor,
+        vec![child_insert, parent_insert],
+    )
+    .unwrap();
+
+    let head = res.head.expect("expected materialization head");
+    assert_eq!(head.counter, 2);
+    assert_eq!(
+        res.affected_node_ids,
+        vec![NodeId::ROOT, parent, child],
+    );
 }
