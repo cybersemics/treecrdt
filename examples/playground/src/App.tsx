@@ -40,11 +40,11 @@ import {
   nodesAffectedByPayloadOps,
   parentsAffectedByOps,
 } from './playground/treeState';
+import { recordBenchNodeTiming, registerBenchBindings } from './playground/bench';
 import type {
   CollapseState,
   DisplayNode,
   PayloadRecord,
-  PlaygroundBenchWindow,
   Status,
   StorageMode,
   SyncTransportMode,
@@ -90,31 +90,6 @@ type BulkAddProgress = {
   phase: 'creating' | 'applying';
   startedAtMs: number;
 };
-
-type BenchNodeTiming = {
-  sourceLocalWriteStartedAtMs?: number;
-  sourceLocalPersistedAtMs?: number;
-  sourceLocalPreviewAppliedAtMs?: number;
-  remoteOpsAppliedStartedAtMs?: number;
-  payloadsRefreshedAtMs?: number;
-  remoteOpsAppliedFinishedAtMs?: number;
-  treeRefreshAppliedAtMs?: number;
-};
-
-declare global {
-  interface Window {
-    __treecrdtPlaygroundBench?: PlaygroundBenchWindow;
-  }
-}
-
-function recordBenchNodeTiming(nodeIds: Iterable<string>, patch: BenchNodeTiming) {
-  if (typeof window === 'undefined') return;
-  const bench = (window.__treecrdtPlaygroundBench ??= { nodes: {} });
-  for (const nodeId of nodeIds) {
-    if (!nodeId || nodeId === ROOT_ID) continue;
-    bench.nodes[nodeId] = { ...bench.nodes[nodeId], ...patch };
-  }
-}
 
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
@@ -1303,24 +1278,18 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const bench = (window.__treecrdtPlaygroundBench ??= { nodes: {} });
-    bench.seedBalancedTree = async ({ count, fanout }) => {
-      await handleAddNodes(ROOT_ID, count, { fanout });
-    };
-    bench.getState = () => ({
-      status,
-      totalNodes,
-      headLamport,
-      syncBusy,
-      liveBusy,
+    return registerBenchBindings({
+      seedBalancedTree: async ({ count, fanout }) => {
+        await handleAddNodes(ROOT_ID, count, { fanout });
+      },
+      getState: () => ({
+        status,
+        totalNodes,
+        headLamport,
+        syncBusy,
+        liveBusy,
+      }),
     });
-    return () => {
-      const current = window.__treecrdtPlaygroundBench;
-      if (!current) return;
-      delete current.seedBalancedTree;
-      delete current.getState;
-    };
   }, [handleAddNodes, headLamport, liveBusy, status, syncBusy, totalNodes]);
 
   const handleInsert = async (parentId: string) => {
