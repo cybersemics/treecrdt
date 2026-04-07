@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { bytesToHex } from '@treecrdt/interface/ids';
-import type { Operation } from '@treecrdt/interface';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { bytesToHex } from "@treecrdt/interface/ids";
+import type { Operation } from "@treecrdt/interface";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -12,14 +12,14 @@ import {
   deriveTokenIdV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
-} from '@treecrdt/auth';
+} from "@treecrdt/auth";
 import {
   createCapabilityMaterialStore,
   createOpAuthStore,
   createPendingOpsStore,
-} from '@treecrdt/sync-sqlite';
-import type { SyncAuth } from '@treecrdt/sync';
-import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+} from "@treecrdt/sync-sqlite";
+import type { SyncAuth } from "@treecrdt/sync";
+import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {
   clearAuthMaterial,
@@ -40,24 +40,22 @@ import {
   saveLocalTokens,
   saveDocPayloadKeyB64,
   type StoredAuthMaterial,
-} from '../../auth';
-import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';
-import { ROOT_ID } from '../constants';
-import { applySyncSettingsToUrl, loadPrivateRoots, persistPrivateRoots } from '../persist';
-import { prefixPlaygroundStorageKey } from '../storage';
-import type { InviteActions } from '../invite';
-import type { ToastState } from '../components/PlaygroundToast';
-import type { SyncTransportMode } from '../types';
+} from "../../auth";
+import { hexToBytes16, type AuthGrantMessageV1 } from "../../sync-v0";
+import { ROOT_ID } from "../constants";
+import { applySyncSettingsToUrl, loadPrivateRoots, persistPrivateRoots } from "../persist";
+import { prefixPlaygroundStorageKey } from "../storage";
+import type { InviteActions } from "../invite";
+import type { ToastState } from "../components/PlaygroundToast";
+import type { SyncTransportMode } from "../types";
 
 function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: string): string[] {
-  return Array.from(privateRoots).filter(
-    (id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id),
-  );
+  return Array.from(privateRoots).filter((id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id));
 }
 
 function hexToBytes32(hex: string): Uint8Array {
-  const clean = hex.trim().toLowerCase().replace(/^0x/, '');
-  if (!/^[0-9a-f]{64}$/.test(clean)) throw new Error('expected 64 hex chars');
+  const clean = hex.trim().toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{64}$/.test(clean)) throw new Error("expected 64 hex chars");
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) {
     out[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
@@ -67,19 +65,19 @@ function hexToBytes32(hex: string): Uint8Array {
 
 function parseReplicaPublicKeyInput(input: string): Uint8Array {
   const raw = input.trim();
-  if (!raw) throw new Error('replica public key is required');
+  if (!raw) throw new Error("replica public key is required");
   if (/^(0x)?[0-9a-f]{64}$/i.test(raw)) return hexToBytes32(raw);
   try {
     const bytes = base64urlDecode(raw);
-    if (bytes.length !== 32) throw new Error('replica public key must be 32 bytes');
+    if (bytes.length !== 32) throw new Error("replica public key must be 32 bytes");
     return bytes;
   } catch {
-    throw new Error('replica public key must be 64 hex chars (or base64url-encoded 32 bytes)');
+    throw new Error("replica public key must be 64 hex chars (or base64url-encoded 32 bytes)");
   }
 }
 
 function normalizeTokenIdHex(input: string): string | null {
-  const clean = input.trim().toLowerCase().replace(/^0x/, '');
+  const clean = input.trim().toLowerCase().replace(/^0x/, "");
   if (!/^[0-9a-f]{32}$/.test(clean)) return null;
   return clean;
 }
@@ -88,8 +86,8 @@ function extractInviteB64FromLink(link: string): string | null {
   if (!link) return null;
   try {
     const url = new URL(link);
-    const invite = new URLSearchParams(url.hash.slice(1)).get('invite');
-    return typeof invite === 'string' && invite.length > 0 ? invite : null;
+    const invite = new URLSearchParams(url.hash.slice(1)).get("invite");
+    return typeof invite === "string" && invite.length > 0 ? invite : null;
   } catch {
     return null;
   }
@@ -106,13 +104,13 @@ export type IssuedGrantRecord = {
 };
 
 const ALLOWED_GRANT_ACTIONS = new Set([
-  'write_structure',
-  'write_payload',
-  'delete',
-  'tombstone',
-  'grant',
-  'read_structure',
-  'read_payload',
+  "write_structure",
+  "write_payload",
+  "delete",
+  "tombstone",
+  "grant",
+  "read_structure",
+  "read_payload",
 ]);
 
 function normalizeGrantActions(input: string[]): string[] {
@@ -131,10 +129,10 @@ function expandInternalCompatActions(input: string[]): string[] {
   const hasAnyAction = out.length > 0;
   if (hasAnyAction) {
     // Playground permission model: read is always included whenever any capability is issued.
-    if (!out.includes('read_structure')) out.push('read_structure');
-    if (!out.includes('read_payload')) out.push('read_payload');
+    if (!out.includes("read_structure")) out.push("read_structure");
+    if (!out.includes("read_payload")) out.push("read_payload");
   }
-  if (out.includes('delete') && !out.includes('tombstone')) out.push('tombstone');
+  if (out.includes("delete") && !out.includes("tombstone")) out.push("tombstone");
   return out;
 }
 
@@ -143,7 +141,7 @@ function issuedGrantsStorageKey(docId: string): string {
 }
 
 function loadIssuedGrantRecords(docId: string): IssuedGrantRecord[] {
-  if (typeof window === 'undefined') return [];
+  if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(issuedGrantsStorageKey(docId));
     if (!raw) return [];
@@ -151,26 +149,19 @@ function loadIssuedGrantRecords(docId: string): IssuedGrantRecord[] {
     if (!Array.isArray(parsed)) return [];
     const out: IssuedGrantRecord[] = [];
     for (const item of parsed) {
-      if (!item || typeof item !== 'object') continue;
+      if (!item || typeof item !== "object") continue;
       const row = item as Partial<IssuedGrantRecord>;
-      const recipientPkHex =
-        typeof row.recipientPkHex === 'string' ? row.recipientPkHex.toLowerCase() : '';
-      const tokenIdHex = typeof row.tokenIdHex === 'string' ? row.tokenIdHex.toLowerCase() : '';
-      const rootNodeId = typeof row.rootNodeId === 'string' ? row.rootNodeId.toLowerCase() : '';
+      const recipientPkHex = typeof row.recipientPkHex === "string" ? row.recipientPkHex.toLowerCase() : "";
+      const tokenIdHex = typeof row.tokenIdHex === "string" ? row.tokenIdHex.toLowerCase() : "";
+      const rootNodeId = typeof row.rootNodeId === "string" ? row.rootNodeId.toLowerCase() : "";
       const actions = Array.isArray(row.actions)
-        ? Array.from(new Set(row.actions.filter((v): v is string => typeof v === 'string')))
+        ? Array.from(new Set(row.actions.filter((v): v is string => typeof v === "string")))
         : [];
       const maxDepth =
-        typeof row.maxDepth === 'number' && Number.isInteger(row.maxDepth) && row.maxDepth >= 0
-          ? row.maxDepth
-          : undefined;
+        typeof row.maxDepth === "number" && Number.isInteger(row.maxDepth) && row.maxDepth >= 0 ? row.maxDepth : undefined;
       const excludeCount =
-        typeof row.excludeCount === 'number' &&
-        Number.isInteger(row.excludeCount) &&
-        row.excludeCount >= 0
-          ? row.excludeCount
-          : 0;
-      const ts = typeof row.ts === 'number' && Number.isFinite(row.ts) ? row.ts : 0;
+        typeof row.excludeCount === "number" && Number.isInteger(row.excludeCount) && row.excludeCount >= 0 ? row.excludeCount : 0;
+      const ts = typeof row.ts === "number" && Number.isFinite(row.ts) ? row.ts : 0;
       if (!/^[0-9a-f]{64}$/.test(recipientPkHex)) continue;
       if (!/^[0-9a-f]{32}$/.test(tokenIdHex)) continue;
       if (!/^[0-9a-f]{32}$/.test(rootNodeId)) continue;
@@ -185,7 +176,7 @@ function loadIssuedGrantRecords(docId: string): IssuedGrantRecord[] {
 }
 
 function persistIssuedGrantRecords(docId: string, rows: IssuedGrantRecord[]) {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(issuedGrantsStorageKey(docId), JSON.stringify(rows.slice(0, 256)));
   } catch {
@@ -194,8 +185,8 @@ function persistIssuedGrantRecords(docId: string, rows: IssuedGrantRecord[]) {
 }
 
 async function copyToClipboard(text: string): Promise<void> {
-  if (typeof navigator === 'undefined' || typeof navigator.clipboard?.writeText !== 'function') {
-    throw new Error('clipboard API is not available');
+  if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
+    throw new Error("clipboard API is not available");
   }
   await navigator.clipboard.writeText(text);
 }
@@ -231,12 +222,10 @@ export type PlaygroundAuthApi = {
   authMaterial: StoredAuthMaterial;
   syncAuth: SyncAuth<Operation> | null;
   refreshAuthMaterial: () => Promise<StoredAuthMaterial>;
-  localIdentityChainPromiseRef: React.MutableRefObject<Promise<Awaited<
-    ReturnType<typeof createLocalIdentityChainV1>
-  > | null> | null>;
-  getLocalIdentityChain: () => Promise<Awaited<
-    ReturnType<typeof createLocalIdentityChainV1>
-  > | null>;
+  localIdentityChainPromiseRef: React.MutableRefObject<
+    Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
+  >;
+  getLocalIdentityChain: () => Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null>;
   authToken: TreecrdtCapabilityTokenV1 | null;
 
   replica: Uint8Array | null;
@@ -256,8 +245,8 @@ export type PlaygroundAuthApi = {
   authLocalKeyIdHex: string | null;
   authLocalTokenIdHex: string | null;
   authTokenCount: number;
-  authTokenScope: TreecrdtCapabilityTokenV1['caps'][number]['res'] | null;
-  authTokenActions: TreecrdtCapabilityTokenV1['caps'][number]['actions'] | null;
+  authTokenScope: TreecrdtCapabilityTokenV1["caps"][number]["res"] | null;
+  authTokenActions: TreecrdtCapabilityTokenV1["caps"][number]["actions"] | null;
   authNeedsInvite: boolean;
   revocationKnownTokenIds: string[];
   hardRevokedTokenIds: string[];
@@ -302,12 +291,7 @@ export type PlaygroundAuthApi = {
   issuedGrantRecords: IssuedGrantRecord[];
   grantSubtreeToReplicaPubkey: (
     sendGrant: (msg: AuthGrantMessageV1) => boolean,
-    opts?: {
-      recipientKey?: string;
-      rootNodeId?: string;
-      actions?: string[];
-      supersedesTokenIds?: string[];
-    },
+    opts?: { recipientKey?: string; rootNodeId?: string; actions?: string[]; supersedesTokenIds?: string[] }
   ) => Promise<boolean>;
 
   resetAuth: () => void;
@@ -339,22 +323,14 @@ export type UsePlaygroundAuthOptions = {
 };
 
 export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAuthApi {
-  const {
-    docId,
-    joinMode,
-    client,
-    syncServerUrl,
-    syncTransportMode,
-    onPeerIdentityChain,
-    refreshDocPayloadKey,
-  } = opts;
+  const { docId, joinMode, client, syncServerUrl, syncTransportMode, onPeerIdentityChain, refreshDocPayloadKey } = opts;
 
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
   const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
   const [showAuthPanel, setShowAuthPanel] = useState(() => {
-    if (typeof window === 'undefined') return false;
+    if (typeof window === "undefined") return false;
     if (!joinMode) return false;
-    return !new URLSearchParams(window.location.hash.slice(1)).has('invite');
+    return !new URLSearchParams(window.location.hash.slice(1)).has("invite");
   });
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showAuthAdvanced, setShowAuthAdvanced] = useState(false);
@@ -363,10 +339,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const [authBusy, setAuthBusy] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
 
-  const [wrapKeyImportText, setWrapKeyImportText] = useState('');
-  const [issuerKeyBlobImportText, setIssuerKeyBlobImportText] = useState('');
-  const [identityKeyBlobImportText, setIdentityKeyBlobImportText] = useState('');
-  const [deviceSigningKeyBlobImportText, setDeviceSigningKeyBlobImportText] = useState('');
+  const [wrapKeyImportText, setWrapKeyImportText] = useState("");
+  const [issuerKeyBlobImportText, setIssuerKeyBlobImportText] = useState("");
+  const [identityKeyBlobImportText, setIdentityKeyBlobImportText] = useState("");
+  const [deviceSigningKeyBlobImportText, setDeviceSigningKeyBlobImportText] = useState("");
 
   const [authMaterial, setAuthMaterial] = useState<StoredAuthMaterial>(() => ({
     issuerPkB64: null,
@@ -378,48 +354,44 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
   const [syncAuth, setSyncAuth] = useState<SyncAuth<Operation> | null>(null);
   const localAuthRef = useRef<SyncAuth<Operation> | null>(null);
-  const localIdentityChainPromiseRef = useRef<Promise<Awaited<
-    ReturnType<typeof createLocalIdentityChainV1>
-  > | null> | null>(null);
+  const localIdentityChainPromiseRef = useRef<
+    Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
+  >(null);
 
   const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
   const [hardRevokedTokenIds, setHardRevokedTokenIds] = useState<string[]>([]);
-  const [revocationTokenInput, setRevocationTokenInput] = useState('');
+  const [revocationTokenInput, setRevocationTokenInput] = useState("");
   const [revocationCutoverEnabled, setRevocationCutoverEnabled] = useState(false);
-  const [revocationCutoverTokenId, setRevocationCutoverTokenId] = useState('');
-  const [revocationCutoverCounter, setRevocationCutoverCounter] = useState('');
+  const [revocationCutoverTokenId, setRevocationCutoverTokenId] = useState("");
+  const [revocationCutoverCounter, setRevocationCutoverCounter] = useState("");
 
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
-  const [inviteMaxDepth, setInviteMaxDepth] = useState<string>('');
+  const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
   const [inviteActions, setInviteActions] = useState<InviteActions>({
     write_structure: true,
     write_payload: true,
     delete: false,
   });
   const [inviteAllowGrant, setInviteAllowGrant] = useState(true);
-  const [inviteLink, setInviteLink] = useState<string>('');
+  const [inviteLink, setInviteLink] = useState<string>("");
   const inviteLinkConfigKeyRef = useRef<string | null>(null);
-  const [inviteImportText, setInviteImportText] = useState<string>('');
-  const [issuedGrantRecords, setIssuedGrantRecords] = useState<IssuedGrantRecord[]>(() =>
-    loadIssuedGrantRecords(docId),
-  );
-  const [pendingOps, setPendingOps] = useState<
-    Array<{ id: string; kind: string; message?: string }>
-  >([]);
+  const [inviteImportText, setInviteImportText] = useState<string>("");
+  const [issuedGrantRecords, setIssuedGrantRecords] = useState<IssuedGrantRecord[]>(() => loadIssuedGrantRecords(docId));
+  const [pendingOps, setPendingOps] = useState<Array<{ id: string; kind: string; message?: string }>>([]);
 
   const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
   const [showPrivateRootsPanel, setShowPrivateRootsPanel] = useState(false);
   const privateRootsCount = useMemo(
     () => Array.from(privateRoots).filter((id) => id !== ROOT_ID).length,
-    [privateRoots],
+    [privateRoots]
   );
   const inviteExcludeNodeIds = useMemo(
     () => computeInviteExcludeNodeIds(privateRoots, inviteRoot),
-    [privateRoots, inviteRoot],
+    [privateRoots, inviteRoot]
   );
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     if (!toast) return;
     const id = window.setTimeout(() => setToast(null), toast.durationMs ?? 10_000);
     return () => window.clearTimeout(id);
@@ -462,7 +434,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         return next;
       });
     },
-    [docId],
+    [docId]
   );
 
   useEffect(() => {
@@ -494,11 +466,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       try {
         const issuerPk = base64urlDecode(issuerPkB64);
         const tokenBytes = base64urlDecode(tokenB64);
-        const described = await describeTreecrdtCapabilityTokenV1({
-          tokenBytes,
-          issuerPublicKeys: [issuerPk],
-          docId,
-        });
+        const described = await describeTreecrdtCapabilityTokenV1({ tokenBytes, issuerPublicKeys: [issuerPk], docId });
         const roots = new Set<string>();
         for (const cap of described.caps) {
           const root = cap.res.rootNodeId?.toLowerCase();
@@ -525,7 +493,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         // Best-effort: tokens may be invalid or unverifiable at this moment.
       }
     },
-    [docId],
+    [docId]
   );
 
   const refreshAuthMaterial = React.useCallback(async () => {
@@ -547,15 +515,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   }, [authEnabled]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
-    if (url.searchParams.get('fresh') !== '1') return;
-    url.searchParams.delete('fresh');
-    window.history.replaceState({}, '', url);
+    if (url.searchParams.get("fresh") !== "1") return;
+    url.searchParams.delete("fresh");
+    window.history.replaceState({}, "", url);
     clearAuthMaterial(docId);
-    void refreshAuthMaterial().catch((err) =>
-      setAuthError(err instanceof Error ? err.message : String(err)),
-    );
+    void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
   }, [docId, refreshAuthMaterial]);
 
   const getLocalIdentityChain = React.useCallback(async () => {
@@ -565,13 +531,12 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
     if (!localIdentityChainPromiseRef.current) {
       const replicaPk = base64urlDecode(pkB64);
-      localIdentityChainPromiseRef.current = createLocalIdentityChainV1({
-        docId,
-        replicaPublicKey: replicaPk,
-      }).catch((err) => {
-        console.error('Failed to create identity chain', err);
-        return null;
-      });
+      localIdentityChainPromiseRef.current = createLocalIdentityChainV1({ docId, replicaPublicKey: replicaPk }).catch(
+        (err) => {
+          console.error("Failed to create identity chain", err);
+          return null;
+        }
+      );
     }
 
     return await localIdentityChainPromiseRef.current;
@@ -695,8 +660,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authMaterial.issuerPkB64,
     authMaterial.localSkB64,
     authMaterial.localPkB64,
-    authMaterial.localTokensB64.join(','),
-    hardRevokedTokenIds.join(','),
+    authMaterial.localTokensB64.join(","),
+    hardRevokedTokenIds.join(","),
     getLocalIdentityChain,
     onPeerIdentityChain,
     revocationCutoverEnabled,
@@ -704,29 +669,26 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     revocationCutoverCounter,
   ]);
 
-  const replica = useMemo(
-    () => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null),
-    [authMaterial.localPkB64],
-  );
+  const replica = useMemo(() => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null), [
+    authMaterial.localPkB64,
+  ]);
   const selfPeerId = useMemo(() => (replica ? bytesToHex(replica) : null), [replica]);
 
   const verifyLocalOps = React.useCallback(
     async (ops: Operation[]) => {
       if (!authEnabled) return;
       const auth = localAuthRef.current;
-      if (!auth?.signOps || !auth.verifyOps) throw new Error('auth is enabled but not configured');
-      const ctx = { docId, purpose: 'reconcile' as const, filterId: '__local__' };
+      if (!auth?.signOps || !auth.verifyOps) throw new Error("auth is enabled but not configured");
+      const ctx = { docId, purpose: "reconcile" as const, filterId: "__local__" };
       const authEntries = await auth.signOps(ops, ctx);
       const res = await auth.verifyOps(ops, authEntries, ctx);
-      const dispositions = (res as any)?.dispositions as
-        | Array<{ status: string; message?: string }>
-        | undefined;
-      const rejected = dispositions?.find((d) => d.status !== 'allow');
-      if (rejected?.status === 'pending_context') {
-        throw new Error(rejected.message ?? 'missing subtree context to authorize op');
+      const dispositions = (res as any)?.dispositions as Array<{ status: string; message?: string }> | undefined;
+      const rejected = dispositions?.find((d) => d.status !== "allow");
+      if (rejected?.status === "pending_context") {
+        throw new Error(rejected.message ?? "missing subtree context to authorize op");
       }
     },
-    [authEnabled, docId],
+    [authEnabled, docId]
   );
 
   useEffect(() => {
@@ -758,11 +720,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     return () => {
       cancelled = true;
     };
-  }, [authEnabled, authMaterial.issuerPkB64, authMaterial.localTokensB64.join(','), docId]);
+  }, [authEnabled, authMaterial.issuerPkB64, authMaterial.localTokensB64.join(","), docId]);
 
   const viewRootId = useMemo(() => {
     const raw = authEnabled ? authToken?.caps?.[0]?.res.rootNodeId : null;
-    if (!raw || typeof raw !== 'string') return ROOT_ID;
+    if (!raw || typeof raw !== "string") return ROOT_ID;
     const clean = raw.toLowerCase();
     if (!/^[0-9a-f]{32}$/.test(clean)) return ROOT_ID;
     return clean;
@@ -789,9 +751,9 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     return set;
   }, [authEnabled, authToken]);
 
-  const canWriteStructure = !authEnabled || authActionSet.has('write_structure');
-  const canWritePayload = !authEnabled || authActionSet.has('write_payload');
-  const canDelete = !authEnabled || authActionSet.has('delete');
+  const canWriteStructure = !authEnabled || authActionSet.has("write_structure");
+  const canWritePayload = !authEnabled || authActionSet.has("write_payload");
+  const canDelete = !authEnabled || authActionSet.has("delete");
   const isScopedAccess = authEnabled && viewRootId !== ROOT_ID;
 
   const authCanIssue = Boolean(authMaterial.issuerSkB64);
@@ -800,10 +762,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     !authCanIssue &&
     Boolean(authMaterial.localSkB64) &&
     authMaterial.localTokensB64.length > 0 &&
-    authActionSet.has('grant');
-  const authIssuerPkHex = authMaterial.issuerPkB64
-    ? bytesToHex(base64urlDecode(authMaterial.issuerPkB64))
-    : null;
+    authActionSet.has("grant");
+  const authIssuerPkHex = authMaterial.issuerPkB64 ? bytesToHex(base64urlDecode(authMaterial.issuerPkB64)) : null;
   const authLocalKeyIdHex = authMaterial.localPkB64
     ? bytesToHex(deriveKeyIdV1(base64urlDecode(authMaterial.localPkB64)))
     : null;
@@ -826,14 +786,14 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       }
     }
     return Array.from(seen.values());
-  }, [authMaterial.localTokensB64.join(',')]);
+  }, [authMaterial.localTokensB64.join(",")]);
 
   useEffect(() => {
     setHardRevokedTokenIds([]);
-    setRevocationTokenInput('');
+    setRevocationTokenInput("");
     setRevocationCutoverEnabled(false);
-    setRevocationCutoverTokenId('');
-    setRevocationCutoverCounter('');
+    setRevocationCutoverTokenId("");
+    setRevocationCutoverCounter("");
   }, [docId]);
 
   useEffect(() => {
@@ -858,21 +818,18 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const addHardRevokedTokenId = React.useCallback(() => {
     const normalized = normalizeTokenIdHex(revocationTokenInput);
     if (!normalized) {
-      setAuthError('Token id must be exactly 32 hex chars (16 bytes).');
+      setAuthError("Token id must be exactly 32 hex chars (16 bytes).");
       return;
     }
     setHardRevokedTokenIds((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
-    setRevocationTokenInput('');
+    setRevocationTokenInput("");
     setAuthError(null);
   }, [revocationTokenInput]);
 
-  const hardRevokedTokenIdBytes = useMemo(
-    () => hardRevokedTokenIds.map((hex) => hexToBytes16(hex)),
-    [hardRevokedTokenIds],
-  );
+  const hardRevokedTokenIdBytes = useMemo(() => hardRevokedTokenIds.map((hex) => hexToBytes16(hex)), [hardRevokedTokenIds]);
   const revocationCutoverTokenIdNormalized = useMemo(
     () => normalizeTokenIdHex(revocationCutoverTokenId),
-    [revocationCutoverTokenId],
+    [revocationCutoverTokenId]
   );
   const revocationCutoverCounterValue = useMemo(() => {
     const text = revocationCutoverCounter.trim();
@@ -883,8 +840,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   }, [revocationCutoverCounter]);
 
   const runtimeCutoverRevocationChecker = React.useCallback(
-    (ctx: { stage: 'parse' | 'runtime'; tokenIdHex: string; op?: Operation }) => {
-      if (ctx.stage !== 'runtime') return false;
+    (ctx: { stage: "parse" | "runtime"; tokenIdHex: string; op?: Operation }) => {
+      if (ctx.stage !== "runtime") return false;
       if (!revocationCutoverEnabled) return false;
       if (!revocationCutoverTokenIdNormalized) return false;
       if (revocationCutoverCounterValue === null) return false;
@@ -892,7 +849,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       if (!ctx.op) return false;
       return ctx.op.meta.id.counter >= revocationCutoverCounterValue;
     },
-    [revocationCutoverCounterValue, revocationCutoverEnabled, revocationCutoverTokenIdNormalized],
+    [revocationCutoverCounterValue, revocationCutoverEnabled, revocationCutoverTokenIdNormalized]
   );
 
   const importInvitePayload = React.useCallback(
@@ -915,28 +872,28 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       await saveLocalTokens(docId, [payload.tokenB64]);
       await rememberScopedPrivateRootsFromToken(payload.issuerPkB64, payload.tokenB64);
 
-      if (opts2.clearHash && typeof window !== 'undefined') {
+      if (opts2.clearHash && typeof window !== "undefined") {
         const url = new URL(window.location.href);
-        url.hash = '';
-        window.history.replaceState({}, '', url);
+        url.hash = "";
+        window.history.replaceState({}, "", url);
       }
 
       setAuthEnabled(true);
       await refreshAuthMaterial();
     },
-    [docId, refreshAuthMaterial, refreshDocPayloadKey, rememberScopedPrivateRootsFromToken],
+    [docId, refreshAuthMaterial, refreshDocPayloadKey, rememberScopedPrivateRootsFromToken]
   );
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const inviteB64 = new URLSearchParams(window.location.hash.slice(1)).get('invite');
+    if (typeof window === "undefined") return;
+    const inviteB64 = new URLSearchParams(window.location.hash.slice(1)).get("invite");
     if (!inviteB64) return;
 
     void (async () => {
       try {
         await importInvitePayload(inviteB64, { clearHash: true });
       } catch (err) {
-        console.error('Failed to import invite', err);
+        console.error("Failed to import invite", err);
         setAuthError(err instanceof Error ? err.message : String(err));
       }
     })();
@@ -950,12 +907,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         const current = await loadAuthMaterial(docId);
         let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
 
-        const ensureIssuerKeys = async (): Promise<
-          Pick<StoredAuthMaterial, 'issuerPkB64' | 'issuerSkB64'>
-        > => {
-          const run = async (): Promise<
-            Pick<StoredAuthMaterial, 'issuerPkB64' | 'issuerSkB64'>
-          > => {
+        const ensureIssuerKeys = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
+          const run = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
             let { issuerPkB64, issuerSkB64 } = await loadAuthMaterial(docId);
 
             if (!issuerPkB64 && !issuerSkB64) {
@@ -980,30 +933,25 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
             return { issuerPkB64: final.issuerPkB64, issuerSkB64: final.issuerSkB64 };
           };
 
-          const locks = typeof navigator === 'undefined' ? null : (navigator as any).locks;
+          const locks = typeof navigator === "undefined" ? null : (navigator as any).locks;
           if (locks?.request) {
-            return await locks.request(
-              prefixPlaygroundStorageKey(`treecrdt-playground-issuer:${docId}`),
-              run,
-            );
+            return await locks.request(prefixPlaygroundStorageKey(`treecrdt-playground-issuer:${docId}`), run);
           }
 
           // Fallback for browsers without Web Locks API.
-          if (typeof window === 'undefined') return await run();
+          if (typeof window === "undefined") return await run();
           const lockKey = prefixPlaygroundStorageKey(`treecrdt-playground-issuer-lock:${docId}`);
           const lockId =
-            typeof crypto !== 'undefined' && 'randomUUID' in crypto
-              ? crypto.randomUUID()
-              : `${Math.random()}`;
+            typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
           const now = () => Date.now();
           const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
           const tryParseLock = (raw: string | null): { id: string; ts: number } | null => {
             if (!raw) return null;
             try {
               const parsed = JSON.parse(raw) as unknown;
-              if (!parsed || typeof parsed !== 'object') return null;
+              if (!parsed || typeof parsed !== "object") return null;
               const rec = parsed as Partial<{ id: unknown; ts: unknown }>;
-              if (typeof rec.id !== 'string' || typeof rec.ts !== 'number') return null;
+              if (typeof rec.id !== "string" || typeof rec.ts !== "number") return null;
               return { id: rec.id, ts: rec.ts };
             } catch {
               return null;
@@ -1042,9 +990,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
         if (!localPkB64 && !localSkB64) {
           if (authEnabled && localTokensB64.length > 0) {
-            throw new Error(
-              'auth enabled but local keys are missing; re-import an invite link or reset auth',
-            );
+            throw new Error("auth enabled but local keys are missing; re-import an invite link or reset auth");
           }
           const { sk, pk } = await generateEd25519KeyPair();
           localPkB64 = base64urlEncode(pk);
@@ -1057,9 +1003,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           await saveLocalKeys(docId, localSkB64);
         } else if (localPkB64 && !localSkB64) {
           if (authEnabled) {
-            throw new Error(
-              'auth enabled but local private key is missing; import an invite link or reset auth',
-            );
+            throw new Error("auth enabled but local private key is missing; import an invite link or reset auth");
           }
         }
 
@@ -1068,10 +1012,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
             // In join-only mode we intentionally start without any capability tokens.
             // The user must import an invite/grant from another peer before sync is enabled.
             if (!joinMode) {
-              throw new Error('auth enabled but no capability token; import an invite link');
+              throw new Error("auth enabled but no capability token; import an invite link");
             }
           } else {
-            if (!localPkB64) throw new Error('auth enabled but local public key is missing');
+            if (!localPkB64) throw new Error("auth enabled but local public key is missing");
 
             const issuerSk = base64urlDecode(issuerSkB64);
             const subjectPk = base64urlDecode(localPkB64);
@@ -1080,7 +1024,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
               subjectPublicKey: subjectPk,
               docId,
               rootNodeId: ROOT_ID,
-              actions: ['write_structure', 'write_payload', 'delete', 'tombstone'],
+              actions: ["write_structure", "write_payload", "delete", "tombstone"],
             });
             localTokensB64 = [base64urlEncode(tokenBytes)];
             await saveLocalTokens(docId, localTokensB64);
@@ -1105,42 +1049,39 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
   const resetAuth = () => {
     clearAuthMaterial(docId);
-    setInviteLink('');
+    setInviteLink("");
     inviteLinkConfigKeyRef.current = null;
-    setInviteImportText('');
+    setInviteImportText("");
     setAuthEnabled(false);
     setAuthError(null);
-    void refreshAuthMaterial().catch((err) =>
-      setAuthError(err instanceof Error ? err.message : String(err)),
-    );
+    void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
   };
 
   const openMintingPeerTab = () => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
-    url.searchParams.set('doc', docId);
+    url.searchParams.set("doc", docId);
     applySyncSettingsToUrl(url, syncServerUrl, syncTransportMode);
-    url.searchParams.delete('join');
-    url.searchParams.delete('fresh');
-    url.searchParams.set('auth', '1');
-    url.hash = '';
-    window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    url.searchParams.delete("join");
+    url.searchParams.delete("fresh");
+    url.searchParams.set("auth", "1");
+    url.hash = "";
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
   const readInviteConfig = (rootNodeId: string) => {
     let actions = Object.entries(inviteActions)
       .filter(([, enabled]) => enabled)
       .map(([name]) => name);
-    if (inviteAllowGrant && !actions.includes('grant')) actions.push('grant');
+    if (inviteAllowGrant && !actions.includes("grant")) actions.push("grant");
     actions = expandInternalCompatActions(actions);
-    if (actions.length === 0) actions = ['read_structure', 'read_payload'];
+    if (actions.length === 0) actions = ["read_structure", "read_payload"];
 
     const maxDepthText = inviteMaxDepth.trim();
     let maxDepth: number | undefined;
     if (maxDepthText.length > 0) {
       const parsed = Number(maxDepthText);
-      if (!Number.isFinite(parsed) || parsed < 0)
-        throw new Error('max depth must be a non-negative number');
+      if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
       maxDepth = parsed;
     }
 
@@ -1176,9 +1117,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     // Best-effort bootstrap so "New device" can mint an invite even if the background auth init hasn't completed yet.
     if (!issuerSkB64 && !issuerPkB64) {
       if (joinMode) {
-        throw new Error(
-          'This is an isolated device and can’t mint invites. Open a minting peer tab and share from there.',
-        );
+        throw new Error("This is an isolated device and can’t mint invites. Open a minting peer tab and share from there.");
       }
       const { sk, pk } = await generateEd25519KeyPair();
       await saveIssuerKeys(docId, base64urlEncode(pk), base64urlEncode(sk));
@@ -1192,16 +1131,12 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const localSkB64 = latest.localSkB64;
       const proofTokenB64 = latest.localTokensB64[0] ?? null;
       if (!localSkB64 || !proofTokenB64) {
-        throw new Error(
-          'This tab is verify-only and has no local keys/tokens yet; import an invite link first.',
-        );
+        throw new Error("This tab is verify-only and has no local keys/tokens yet; import an invite link first.");
       }
 
       const issuerPk = base64urlDecode(issuerPkB64);
       const proofTokenBytes = base64urlDecode(proofTokenB64);
-      const scopeEvaluator = client
-        ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner)
-        : undefined;
+      const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
       const proofDesc = await describeTreecrdtCapabilityTokenV1({
         tokenBytes: proofTokenBytes,
         issuerPublicKeys: [issuerPk],
@@ -1209,10 +1144,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         scopeEvaluator,
       });
       const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
-      if (!proofActions.has('grant')) {
-        throw new Error(
-          'This tab is verify-only and cannot mint invites (missing grant permission).',
-        );
+      if (!proofActions.has("grant")) {
+        throw new Error("This tab is verify-only and cannot mint invites (missing grant permission).");
       }
 
       const rootNodeId = opts2.rootNodeId ?? inviteRoot;
@@ -1221,19 +1154,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const proofScope = proofDesc.caps?.[0]?.res ?? null;
       const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
       const proofDocWide =
-        proofRootId === ROOT_ID &&
-        proofScope?.maxDepth === undefined &&
-        (proofScope?.excludeNodeIds?.length ?? 0) === 0;
+        proofRootId === ROOT_ID && proofScope?.maxDepth === undefined && (proofScope?.excludeNodeIds?.length ?? 0) === 0;
       if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
         if (proofScope?.maxDepth !== undefined) {
-          throw new Error(
-            'This tab can only mint delegated invites for its current subtree scope (maxDepth).',
-          );
+          throw new Error("This tab can only mint delegated invites for its current subtree scope (maxDepth).");
         }
         if (!scopeEvaluator) {
-          throw new Error(
-            'This tab can only mint delegated invites for its current subtree scope.',
-          );
+          throw new Error("This tab can only mint delegated invites for its current subtree scope.");
         }
         const tri = await scopeEvaluator({
           docId,
@@ -1245,12 +1172,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
               : {}),
           },
         });
-        if (tri === 'deny')
-          throw new Error(
-            'This tab can only mint delegated invites within its granted subtree scope.',
-          );
-        if (tri === 'unknown')
-          throw new Error('Missing subtree context to mint delegated invites for that node.');
+        if (tri === "deny") throw new Error("This tab can only mint delegated invites within its granted subtree scope.");
+        if (tri === "unknown") throw new Error("Missing subtree context to mint delegated invites for that node.");
       }
 
       const { sk: subjectSk, pk: subjectPk } = await generateEd25519KeyPair();
@@ -1276,7 +1199,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
       return encodeInvitePayload({
         v: 1,
-        t: 'treecrdt.playground.invite',
+        t: "treecrdt.playground.invite",
         docId,
         issuerPkB64,
         subjectSkB64: base64urlEncode(subjectSk),
@@ -1285,7 +1208,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       });
     }
     if (!issuerSkB64 || !issuerPkB64) {
-      throw new Error('issuer private key is not available in this tab (cannot mint invites)');
+      throw new Error("issuer private key is not available in this tab (cannot mint invites)");
     }
 
     const rootNodeId = opts2.rootNodeId ?? inviteRoot;
@@ -1314,7 +1237,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
     return encodeInvitePayload({
       v: 1,
-      t: 'treecrdt.playground.invite',
+      t: "treecrdt.playground.invite",
       docId,
       issuerPkB64,
       subjectSkB64: base64urlEncode(subjectSk),
@@ -1323,10 +1246,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     });
   };
 
-  const generateInviteLink = async (
-    opts2: { rootNodeId?: string; copyToClipboard?: boolean } = {},
-  ) => {
-    if (typeof window === 'undefined') return;
+  const generateInviteLink = async (opts2: { rootNodeId?: string; copyToClipboard?: boolean } = {}) => {
+    if (typeof window === "undefined") return;
     setAuthBusy(true);
     setAuthError(null);
     setAuthInfo(null);
@@ -1337,7 +1258,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       if (inviteLink && inviteLinkConfigKeyRef.current === configKey) {
         if (opts2.copyToClipboard) {
           await copyToClipboard(inviteLink);
-          setAuthInfo('Invite link copied to clipboard.');
+          setAuthInfo("Invite link copied to clipboard.");
         }
         return;
       }
@@ -1345,20 +1266,20 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const inviteB64 = await buildInviteB64({ rootNodeId });
 
       const url = new URL(window.location.href);
-      url.searchParams.set('doc', docId);
+      url.searchParams.set("doc", docId);
       applySyncSettingsToUrl(url, syncServerUrl, syncTransportMode);
-      url.searchParams.delete('replica');
-      url.searchParams.delete('fresh');
-      url.searchParams.set('join', '1');
-      url.searchParams.set('profile', makeNewProfileId());
-      url.searchParams.set('auth', '1');
+      url.searchParams.delete("replica");
+      url.searchParams.delete("fresh");
+      url.searchParams.set("join", "1");
+      url.searchParams.set("profile", makeNewProfileId());
+      url.searchParams.set("auth", "1");
       url.hash = `invite=${inviteB64}`;
       const link = url.toString();
       setInviteLink(link);
       inviteLinkConfigKeyRef.current = configKey;
       if (opts2.copyToClipboard) {
         await copyToClipboard(link);
-        setAuthInfo('Invite link copied to clipboard.');
+        setAuthInfo("Invite link copied to clipboard.");
       }
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
@@ -1368,7 +1289,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   };
 
   const importInviteLink = async () => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     const raw = inviteImportText.trim();
     if (!raw) return;
     setAuthBusy(true);
@@ -1377,17 +1298,17 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       let inviteB64: string | null = null;
       try {
         const url = new URL(raw, window.location.href);
-        inviteB64 = new URLSearchParams(url.hash.slice(1)).get('invite');
+        inviteB64 = new URLSearchParams(url.hash.slice(1)).get("invite");
       } catch {
         // not a URL; fall back to raw text parsing
       }
 
       if (!inviteB64) {
-        inviteB64 = raw.startsWith('invite=') ? raw.slice('invite='.length) : raw;
+        inviteB64 = raw.startsWith("invite=") ? raw.slice("invite=".length) : raw;
       }
 
       await importInvitePayload(inviteB64);
-      setInviteImportText('');
+      setInviteImportText("");
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1408,7 +1329,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           id: `${bytesToHex(p.op.meta.id.replica)}:${p.op.meta.id.counter}`,
           kind: p.op.kind.type,
           ...(p.message ? { message: p.message } : {}),
-        })),
+        }))
       );
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
@@ -1421,12 +1342,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     (grant: AuthGrantMessageV1) => {
       const issuerPkB64 = grant.issuer_pk_b64;
       const tokenB64 = grant.token_b64;
-      const payloadKeyB64 =
-        typeof grant.payload_key_b64 === 'string' ? grant.payload_key_b64 : null;
+      const payloadKeyB64 = typeof grant.payload_key_b64 === "string" ? grant.payload_key_b64 : null;
       const supersededTokenIds = Array.isArray(grant.supersedes_token_ids_hex)
         ? grant.supersedes_token_ids_hex
             .map((id) => normalizeTokenIdHex(id))
-            .filter((id): id is string => typeof id === 'string')
+            .filter((id): id is string => typeof id === "string")
         : [];
 
       void (async () => {
@@ -1443,9 +1363,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
           const current = await loadAuthMaterial(docId);
           if (!current.localPkB64 || !current.localSkB64) {
-            throw new Error(
-              'received grant but local keys are missing; import an invite link first',
-            );
+            throw new Error("received grant but local keys are missing; import an invite link first");
           }
 
           const merged = new Set<string>(current.localTokensB64);
@@ -1453,9 +1371,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
             const superseded = new Set(supersededTokenIds);
             for (const existingTokenB64 of Array.from(merged.values())) {
               try {
-                const existingTokenIdHex = bytesToHex(
-                  deriveTokenIdV1(base64urlDecode(existingTokenB64)),
-                );
+                const existingTokenIdHex = bytesToHex(deriveTokenIdV1(base64urlDecode(existingTokenB64)));
                 if (superseded.has(existingTokenIdHex)) merged.delete(existingTokenB64);
               } catch {
                 // ignore malformed token bytes
@@ -1468,17 +1384,17 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           await refreshAuthMaterial();
           setAuthInfo(
             supersededTokenIds.length > 0
-              ? 'Access updated. Click Sync to refresh with your latest capability.'
-              : 'Access grant received. Click Sync to fetch newly authorized ops.',
+              ? "Access updated. Click Sync to refresh with your latest capability."
+              : "Access grant received. Click Sync to fetch newly authorized ops."
           );
           setToast({
-            kind: 'success',
-            title: supersededTokenIds.length > 0 ? 'Access updated' : 'Access granted',
+            kind: "success",
+            title: supersededTokenIds.length > 0 ? "Access updated" : "Access granted",
             message:
               supersededTokenIds.length > 0
-                ? 'Sync to refresh using your latest capability.'
-                : 'Sync to fetch newly authorized ops.',
-            actions: ['sync', 'details'],
+                ? "Sync to refresh using your latest capability."
+                : "Sync to fetch newly authorized ops.",
+            actions: ["sync", "details"],
           });
         } catch (err) {
           setAuthError(err instanceof Error ? err.message : String(err));
@@ -1487,50 +1403,44 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         }
       })();
     },
-    [docId, refreshAuthMaterial, refreshDocPayloadKey, rememberScopedPrivateRootsFromToken],
+    [docId, refreshAuthMaterial, refreshDocPayloadKey, rememberScopedPrivateRootsFromToken]
   );
 
   const grantSubtreeToReplicaPubkey = async (
     sendGrant: (msg: AuthGrantMessageV1) => boolean,
-    opts2?: {
-      recipientKey?: string;
-      rootNodeId?: string;
-      actions?: string[];
-      supersedesTokenIds?: string[];
-    },
+    opts2?: { recipientKey?: string; rootNodeId?: string; actions?: string[]; supersedesTokenIds?: string[] }
   ) => {
     if (!authEnabled) return false;
-    if (typeof window === 'undefined') return false;
+    if (typeof window === "undefined") return false;
 
     setAuthBusy(true);
     setAuthError(null);
     setAuthInfo(null);
 
     try {
-      if (!selfPeerId) throw new Error('local replica public key is not ready yet');
+      if (!selfPeerId) throw new Error("local replica public key is not ready yet");
 
       const issuerPkB64 = authMaterial.issuerPkB64;
       const issuerSkB64 = authMaterial.issuerSkB64;
-      if (!issuerPkB64)
-        throw new Error('issuer public key is missing; import an invite link first');
+      if (!issuerPkB64) throw new Error("issuer public key is missing; import an invite link first");
 
       const recipientInput = opts2?.recipientKey;
       if (!recipientInput || recipientInput.trim().length === 0) {
-        throw new Error('recipient public key is required');
+        throw new Error("recipient public key is required");
       }
       const subjectPk = parseReplicaPublicKeyInput(recipientInput);
       const rootNodeId = opts2?.rootNodeId ?? inviteRoot;
       const supersedesTokenIds = Array.isArray(opts2?.supersedesTokenIds)
         ? opts2.supersedesTokenIds
             .map((id) => normalizeTokenIdHex(id))
-            .filter((id): id is string => typeof id === 'string')
+            .filter((id): id is string => typeof id === "string")
         : [];
       const inviteConfig = readInviteConfig(rootNodeId);
       const actions =
         Array.isArray(opts2?.actions) && opts2.actions.length > 0
           ? expandInternalCompatActions(opts2.actions)
           : inviteConfig.actions;
-      if (actions.length === 0) throw new Error('select at least one capability action');
+      if (actions.length === 0) throw new Error("select at least one capability action");
       const { maxDepth, excludeNodeIds } = inviteConfig;
 
       let tokenBytes: Uint8Array;
@@ -1549,16 +1459,12 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         const localSkB64 = authMaterial.localSkB64;
         const proofTokenB64 = authMaterial.localTokensB64[0] ?? null;
         if (!localSkB64 || !proofTokenB64) {
-          throw new Error(
-            'cannot delegate grants without local keys/tokens; import an invite link first',
-          );
+          throw new Error("cannot delegate grants without local keys/tokens; import an invite link first");
         }
 
         const issuerPk = base64urlDecode(issuerPkB64);
         const proofTokenBytes = base64urlDecode(proofTokenB64);
-        const scopeEvaluator = client
-          ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner)
-          : undefined;
+        const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
         const proofDesc = await describeTreecrdtCapabilityTokenV1({
           tokenBytes: proofTokenBytes,
           issuerPublicKeys: [issuerPk],
@@ -1566,24 +1472,20 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           scopeEvaluator,
         });
         const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
-        if (!proofActions.has('grant')) {
-          throw new Error('this tab cannot delegate grants (missing grant permission)');
+        if (!proofActions.has("grant")) {
+          throw new Error("this tab cannot delegate grants (missing grant permission)");
         }
 
         const proofScope = proofDesc.caps?.[0]?.res ?? null;
         const proofRootId = (proofScope?.rootNodeId ?? ROOT_ID).toLowerCase();
         const proofDocWide =
-          proofRootId === ROOT_ID &&
-          proofScope?.maxDepth === undefined &&
-          (proofScope?.excludeNodeIds?.length ?? 0) === 0;
+          proofRootId === ROOT_ID && proofScope?.maxDepth === undefined && (proofScope?.excludeNodeIds?.length ?? 0) === 0;
         if (!proofDocWide && rootNodeId.toLowerCase() !== proofRootId) {
           if (proofScope?.maxDepth !== undefined) {
-            throw new Error(
-              'this tab can only delegate grants for its current subtree scope (maxDepth)',
-            );
+            throw new Error("this tab can only delegate grants for its current subtree scope (maxDepth)");
           }
           if (!scopeEvaluator) {
-            throw new Error('this tab can only delegate grants for its current subtree scope');
+            throw new Error("this tab can only delegate grants for its current subtree scope");
           }
           const tri = await scopeEvaluator({
             docId,
@@ -1595,10 +1497,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
                 : {}),
             },
           });
-          if (tri === 'deny')
-            throw new Error('this tab can only delegate grants within its granted subtree scope');
-          if (tri === 'unknown')
-            throw new Error('missing subtree context to delegate grants for that node');
+          if (tri === "deny") throw new Error("this tab can only delegate grants within its granted subtree scope");
+          if (tri === "unknown") throw new Error("missing subtree context to delegate grants for that node");
         }
 
         tokenBytes = issueTreecrdtDelegatedCapabilityTokenV1({
@@ -1614,7 +1514,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       }
 
       const msg: AuthGrantMessageV1 = {
-        t: 'auth_grant_v1',
+        t: "auth_grant_v1",
         doc_id: docId,
         to_replica_pk_hex: bytesToHex(subjectPk),
         issuer_pk_b64: issuerPkB64,
@@ -1625,7 +1525,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         ts: Date.now(),
       };
 
-      if (!sendGrant(msg)) throw new Error('sync channel is not ready yet');
+      if (!sendGrant(msg)) throw new Error("sync channel is not ready yet");
       rememberIssuedGrantRecord({
         recipientPk: subjectPk,
         tokenBytes,
@@ -1634,7 +1534,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         ...(maxDepth !== undefined ? { maxDepth } : {}),
         excludeNodeIds,
       });
-      setAuthInfo('Grant sent. The recipient should sync again to receive newly authorized ops.');
+      setAuthInfo("Grant sent. The recipient should sync again to receive newly authorized ops.");
       return true;
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
@@ -1647,25 +1547,24 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const makeNewProfileId = () => `profile-${crypto.randomUUID().slice(0, 8)}`;
 
   const openNewIsolatedPeerTab = async (opts2: { autoInvite: boolean; rootNodeId?: string }) => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
 
     const url = new URL(window.location.href);
-    url.searchParams.set('doc', docId);
+    url.searchParams.set("doc", docId);
     applySyncSettingsToUrl(url, syncServerUrl, syncTransportMode);
-    url.searchParams.delete('replica');
-    url.searchParams.set('profile', makeNewProfileId());
-    url.searchParams.set('auth', authEnabled ? '1' : '0');
-    if (authEnabled) url.searchParams.set('join', '1');
-    else url.searchParams.delete('join');
-    url.searchParams.delete('autosync');
-    url.hash = '';
+    url.searchParams.delete("replica");
+    url.searchParams.set("profile", makeNewProfileId());
+    url.searchParams.set("join", "1");
+    url.searchParams.set("auth", "1");
+    url.searchParams.delete("autosync");
+    url.hash = "";
 
-    if (opts2.autoInvite && authEnabled) {
+    if (opts2.autoInvite) {
       try {
         // Auto-invite makes the common "simulate another device" flow 1 click.
         const rootNodeId = opts2.rootNodeId ?? ROOT_ID;
         const configKey = inviteConfigCacheKey(rootNodeId);
-        url.searchParams.set('autosync', '1');
+        url.searchParams.set("autosync", "1");
         let inviteB64: string | null = null;
         if (inviteLink && inviteLinkConfigKeyRef.current === configKey) {
           inviteB64 = extractInviteB64FromLink(inviteLink);
@@ -1681,7 +1580,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       }
     }
 
-    window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
   const openShareForNode = (nodeId: string) => {

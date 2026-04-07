@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   MdAdd,
   MdChevronRight,
@@ -14,7 +14,7 @@ import {
   MdLockOutline,
   MdOutlineRssFeed,
   MdShare,
-} from 'react-icons/md';
+} from "react-icons/md";
 
 import {
   CAPABILITY_ACTION_ORDER,
@@ -24,10 +24,10 @@ import {
   grantActionsFromCapabilityActions,
   toggleCapabilityAction,
   type CapabilityAction,
-} from '../capabilities';
-import { markBenchRowCommitted } from '../bench';
-import { ROOT_ID } from '../constants';
-import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from '../types';
+} from "../capabilities";
+import { markBenchRowCommitted } from "../bench";
+import { ROOT_ID } from "../constants";
+import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
 
 type IssuedGrantRecordRow = {
   recipientPkHex: string;
@@ -87,7 +87,7 @@ export function TreeRow({
   onSetValue: (id: string, value: string) => void | Promise<void>;
   onAddChild: (id: string) => void;
   onDelete: (id: string) => void;
-  onMove: (id: string, direction: 'up' | 'down') => void;
+  onMove: (id: string, direction: "up" | "down") => void;
   onMoveToRoot: (id: string) => void;
   onToggleLiveChildren: (id: string) => void;
   privateRoots: Set<string>;
@@ -116,9 +116,7 @@ export function TreeRow({
   childrenByParent: Record<string, string[]>;
 }) {
   const nodeIdLower = node.id.toLowerCase();
-  const isCollapsed = collapse.defaultCollapsed
-    ? !collapse.overrides.has(node.id)
-    : collapse.overrides.has(node.id);
+  const isCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(node.id) : collapse.overrides.has(node.id);
   const isRoot = node.id === ROOT_ID;
   const isScopeRoot = scopeRootId !== ROOT_ID && node.id === scopeRootId;
   const metaInfo = meta[node.id];
@@ -137,26 +135,19 @@ export function TreeRow({
     }
   }
   const isPrivate = !isRoot && (isPrivateRoot || isPrivateInherited);
-  const siblings = metaInfo?.parentId ? (childrenByParent[metaInfo.parentId] ?? []) : [];
+  const siblings = metaInfo?.parentId ? childrenByParent[metaInfo.parentId] ?? [] : [];
   const canMoveUp = !isRoot && metaInfo && siblings.indexOf(node.id) > 0;
   const canMoveDown =
-    !isRoot &&
-    metaInfo &&
-    siblings.indexOf(node.id) !== -1 &&
-    siblings.indexOf(node.id) < siblings.length - 1;
+    !isRoot && metaInfo && siblings.indexOf(node.id) !== -1 && siblings.indexOf(node.id) < siblings.length - 1;
   const childrenLoaded = Object.prototype.hasOwnProperty.call(childrenByParent, node.id);
   const childCount = childrenLoaded ? (childrenByParent[node.id]?.length ?? 0) : null;
   const toggleDisabled = childrenLoaded && childCount === 0 && isCollapsed;
   const [isEditing, setIsEditing] = useState(false);
   const [draftValue, setDraftValue] = useState(node.value);
   const [showMembersMenu, setShowMembersMenu] = useState(false);
-  const [manualRecipientKey, setManualRecipientKey] = useState('');
-  const [manualGrantActions, setManualGrantActions] = useState<CapabilityAction[]>(
-    DEFAULT_MEMBER_CAPABILITY_ACTIONS,
-  );
-  const [memberGrantActions, setMemberGrantActions] = useState<Record<string, CapabilityAction[]>>(
-    {},
-  );
+  const [manualRecipientKey, setManualRecipientKey] = useState("");
+  const [manualGrantActions, setManualGrantActions] = useState<CapabilityAction[]>(DEFAULT_MEMBER_CAPABILITY_ACTIONS);
+  const [memberGrantActions, setMemberGrantActions] = useState<Record<string, CapabilityAction[]>>({});
   const [membersMenuLayout, setMembersMenuLayout] = useState<MembersMenuLayout | null>(null);
   const membersButtonRef = useRef<HTMLButtonElement | null>(null);
   const membersMenuRef = useRef<HTMLDivElement | null>(null);
@@ -169,8 +160,8 @@ export function TreeRow({
     () =>
       peers
         .map((peer) => ({ id: peer.id.toLowerCase(), lastSeen: peer.lastSeen }))
-        .filter((peer) => peer.id !== (selfPeerId ?? '').toLowerCase()),
-    [peers, selfPeerId],
+        .filter((peer) => peer.id !== (selfPeerId ?? "").toLowerCase()),
+    [peers, selfPeerId]
   );
   const latestScopedGrantByPeer = useMemo(() => {
     const out = new Map<string, IssuedGrantRecordRow>();
@@ -204,12 +195,11 @@ export function TreeRow({
       if (fromLatest.length > 0) return fromLatest;
       return [...DEFAULT_MEMBER_CAPABILITY_ACTIONS];
     },
-    [latestScopedGrantByPeer],
+    [latestScopedGrantByPeer]
   );
   const getSelectedActionsForPeer = useCallback(
-    (peerId: string): CapabilityAction[] =>
-      memberGrantActions[peerId] ?? getDefaultActionsForPeer(peerId),
-    [getDefaultActionsForPeer, memberGrantActions],
+    (peerId: string): CapabilityAction[] => memberGrantActions[peerId] ?? getDefaultActionsForPeer(peerId),
+    [getDefaultActionsForPeer, memberGrantActions]
   );
 
   const replaceMemberAccess = useCallback(
@@ -225,10 +215,10 @@ export function TreeRow({
               (record) =>
                 record.recipientPkHex === peerId &&
                 record.rootNodeId === nodeIdLower &&
-                !hardRevokedTokenIds.includes(record.tokenIdHex),
+                !hardRevokedTokenIds.includes(record.tokenIdHex)
             )
-            .map((record) => record.tokenIdHex),
-        ),
+            .map((record) => record.tokenIdHex)
+        )
       );
 
       const granted = await onGrantToReplicaPubkey({
@@ -252,11 +242,11 @@ export function TreeRow({
       nodeIdLower,
       onGrantToReplicaPubkey,
       onToggleHardRevokedTokenId,
-    ],
+    ]
   );
 
   const updateMembersMenuLayout = useCallback(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     const button = membersButtonRef.current;
     if (!button) return;
 
@@ -267,7 +257,7 @@ export function TreeRow({
     const width = Math.max(260, Math.min(preferredWidth, window.innerWidth - viewportPadding * 2));
     const left = Math.max(
       viewportPadding,
-      Math.min(rect.right - width, window.innerWidth - width - viewportPadding),
+      Math.min(rect.right - width, window.innerWidth - width - viewportPadding)
     );
     const spaceBelow = window.innerHeight - rect.bottom - anchorGap - viewportPadding;
     const spaceAbove = rect.top - anchorGap - viewportPadding;
@@ -276,10 +266,7 @@ export function TreeRow({
     const chosenSpace = placeAbove ? spaceAbove : spaceBelow;
     const maxHeight = Math.max(180, Math.min(560, maxViewportHeight, Math.max(chosenSpace, 180)));
     const unclampedTop = placeAbove ? rect.top - anchorGap - maxHeight : rect.bottom + anchorGap;
-    const top = Math.max(
-      viewportPadding,
-      Math.min(unclampedTop, window.innerHeight - viewportPadding - maxHeight),
-    );
+    const top = Math.max(viewportPadding, Math.min(unclampedTop, window.innerHeight - viewportPadding - maxHeight));
     const listMaxHeight = Math.max(100, Math.min(320, maxHeight - 220));
     setMembersMenuLayout({ top, left, width, maxHeight, listMaxHeight });
   }, []);
@@ -321,13 +308,13 @@ export function TreeRow({
       setShowMembersMenu(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setShowMembersMenu(false);
+      if (event.key === "Escape") setShowMembersMenu(false);
     };
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
     };
   }, [showMembersMenu]);
 
@@ -338,11 +325,11 @@ export function TreeRow({
     }
     updateMembersMenuLayout();
     const onScrollOrResize = () => updateMembersMenuLayout();
-    window.addEventListener('resize', onScrollOrResize);
-    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    window.addEventListener("scroll", onScrollOrResize, true);
     return () => {
-      window.removeEventListener('resize', onScrollOrResize);
-      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+      window.removeEventListener("scroll", onScrollOrResize, true);
     };
   }, [showMembersMenu, updateMembersMenuLayout]);
 
@@ -363,14 +350,10 @@ export function TreeRow({
             className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
             onClick={() => onToggle(node.id)}
             disabled={toggleDisabled}
-            aria-label={isCollapsed ? 'Expand node' : 'Collapse node'}
-            title={isCollapsed ? 'Expand' : 'Collapse'}
+            aria-label={isCollapsed ? "Expand node" : "Collapse node"}
+            title={isCollapsed ? "Expand" : "Collapse"}
           >
-            {isCollapsed ? (
-              <MdChevronRight className="text-[22px]" />
-            ) : (
-              <MdExpandMore className="text-[22px]" />
-            )}
+            {isCollapsed ? <MdChevronRight className="text-[22px]" /> : <MdExpandMore className="text-[22px]" />}
           </button>
           <div className="min-w-0 flex items-center gap-2">
             <div className="min-w-0">
@@ -415,11 +398,9 @@ export function TreeRow({
                     if (canEditValue) setIsEditing(true);
                   }}
                   disabled={!canEditValue}
-                  title={canEditValue ? 'Click to edit' : 'Read-only (no write_payload permission)'}
+                  title={canEditValue ? "Click to edit" : "Read-only (no write_payload permission)"}
                 >
-                  <span className="block truncate text-sm font-semibold text-white">
-                    {node.label}
-                  </span>
+                  <span className="block truncate text-sm font-semibold text-white">{node.label}</span>
                 </button>
               )}
             </div>
@@ -465,8 +446,8 @@ export function TreeRow({
                 ref={membersButtonRef}
                 className={`flex h-9 items-center gap-1.5 rounded-lg border px-2 text-slate-100 transition ${
                   showMembersMenu
-                    ? 'border-accent bg-accent/20 shadow-sm shadow-accent/20'
-                    : 'border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white'
+                    ? "border-accent bg-accent/20 shadow-sm shadow-accent/20"
+                    : "border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white"
                 }`}
                 onClick={() =>
                   setShowMembersMenu((v) => {
@@ -485,7 +466,7 @@ export function TreeRow({
               </button>
               {showMembersMenu &&
                 membersMenuLayout &&
-                typeof document !== 'undefined' &&
+                typeof document !== "undefined" &&
                 createPortal(
                   <div
                     ref={membersMenuRef}
@@ -497,282 +478,238 @@ export function TreeRow({
                       maxHeight: `${membersMenuLayout.maxHeight}px`,
                     }}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                          Members
-                        </div>
-                        <div
-                          className="mt-0.5 truncate font-mono text-[11px] text-slate-200"
-                          title={node.label}
-                        >
-                          {node.label}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-slate-400">
-                          {memberRows.length} peer(s) · {scopedGrantCount} scoped grant(s)
-                        </div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Members</div>
+                      <div className="mt-0.5 truncate font-mono text-[11px] text-slate-200" title={node.label}>
+                        {node.label}
                       </div>
+                      <div className="mt-0.5 text-[11px] text-slate-400">
+                        {memberRows.length} peer(s) · {scopedGrantCount} scoped grant(s)
+                      </div>
+                    </div>
+                    <button
+                      className="h-8 shrink-0 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                      type="button"
+                      onClick={() => {
+                        setShowMembersMenu(false);
+                        onShare(node.id);
+                      }}
+                    >
+                      Share
+                    </button>
+                  </div>
+
+                  <div className="mt-3 rounded-lg border border-slate-800/70 bg-slate-900/30 p-2.5">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+                      <label className="space-y-1">
+                        <span className="text-[10px] uppercase tracking-wide text-slate-500">Grant to pubkey</span>
+                        <input
+                          value={manualRecipientKey}
+                          onChange={(e) => setManualRecipientKey(e.target.value)}
+                          placeholder="hex or base64url"
+                          className="h-9 w-full rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 text-[11px] text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/40"
+                          disabled={authBusy}
+                        />
+                      </label>
                       <button
-                        className="h-8 shrink-0 rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                        className="h-9 min-w-[84px] rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
                         type="button"
                         onClick={() => {
-                          setShowMembersMenu(false);
-                          onShare(node.id);
+                          const recipientKey = manualRecipientKey.trim();
+                          if (!recipientKey) return;
+                          const grantActions = grantActionsFromCapabilityActions(manualGrantActions);
+                          if (grantActions.length === 0) return;
+                          void onGrantToReplicaPubkey({
+                            recipientKey,
+                            rootNodeId: node.id,
+                            actions: grantActions,
+                          });
+                          setManualRecipientKey("");
                         }}
+                        disabled={
+                          authBusy ||
+                          !canManageCapabilities ||
+                          manualRecipientKey.trim().length === 0 ||
+                          manualGrantActions.length === 0
+                        }
+                        title={
+                          canManageCapabilities
+                            ? "Grant current subtree scope"
+                            : authEnabled
+                              ? "Verify-only tabs can’t mint grants"
+                              : "Enable Auth to mint grants"
+                        }
                       >
-                        Share
+                        + Grant
                       </button>
                     </div>
-
-                    <div className="mt-3 rounded-lg border border-slate-800/70 bg-slate-900/30 p-2.5">
-                      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
-                        <label className="space-y-1">
-                          <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                            Grant to pubkey
-                          </span>
-                          <input
-                            value={manualRecipientKey}
-                            onChange={(e) => setManualRecipientKey(e.target.value)}
-                            placeholder="hex or base64url"
-                            className="h-9 w-full rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 text-[11px] text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/40"
-                            disabled={authBusy}
-                          />
-                        </label>
-                        <button
-                          className="h-9 min-w-[84px] rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                          type="button"
-                          onClick={() => {
-                            const recipientKey = manualRecipientKey.trim();
-                            if (!recipientKey) return;
-                            const grantActions =
-                              grantActionsFromCapabilityActions(manualGrantActions);
-                            if (grantActions.length === 0) return;
-                            void onGrantToReplicaPubkey({
-                              recipientKey,
-                              rootNodeId: node.id,
-                              actions: grantActions,
-                            });
-                            setManualRecipientKey('');
-                          }}
-                          disabled={
-                            authBusy ||
-                            !canManageCapabilities ||
-                            manualRecipientKey.trim().length === 0 ||
-                            manualGrantActions.length === 0
-                          }
-                          title={
-                            canManageCapabilities
-                              ? 'Grant current subtree scope'
-                              : authEnabled
-                                ? 'Verify-only tabs can’t mint grants'
-                                : 'Enable Auth to mint grants'
-                          }
-                        >
-                          + Grant
-                        </button>
-                      </div>
-                      <div className="mt-2">
-                        <div className="text-[10px] uppercase tracking-wide text-slate-500">
-                          Capabilities
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {CAPABILITY_ACTION_ORDER.map((action) => {
-                            const enabled = manualGrantActions.includes(action);
-                            const Icon = CAPABILITY_META[action].icon;
-                            const readLocked = action === 'read';
-                            return (
-                              <button
-                                key={`manual-${action}`}
-                                type="button"
-                                className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-slate-100 transition ${
-                                  enabled
-                                    ? 'border-emerald-400/70 bg-emerald-500/10'
-                                    : 'border-slate-700 bg-slate-800/60 hover:border-accent'
-                                }`}
-                                title={
-                                  readLocked
-                                    ? 'Read (always included)'
-                                    : CAPABILITY_META[action].label
-                                }
-                                aria-label={CAPABILITY_META[action].label}
-                                aria-pressed={enabled}
-                                onClick={() =>
-                                  setManualGrantActions((prev) =>
-                                    toggleCapabilityAction(prev, action),
-                                  )
-                                }
-                                disabled={authBusy || readLocked}
-                              >
-                                <Icon className="text-[14px]" />
-                                {enabled && (
-                                  <MdCheck className="absolute -right-1 -top-1 text-[12px] text-emerald-300" />
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
+                    <div className="mt-2">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-500">Capabilities</div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {CAPABILITY_ACTION_ORDER.map((action) => {
+                          const enabled = manualGrantActions.includes(action);
+                          const Icon = CAPABILITY_META[action].icon;
+                          const readLocked = action === "read";
+                          return (
+                            <button
+                              key={`manual-${action}`}
+                              type="button"
+                              className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-slate-100 transition ${
+                                enabled
+                                  ? "border-emerald-400/70 bg-emerald-500/10"
+                                  : "border-slate-700 bg-slate-800/60 hover:border-accent"
+                              }`}
+                              title={readLocked ? "Read (always included)" : CAPABILITY_META[action].label}
+                              aria-label={CAPABILITY_META[action].label}
+                              aria-pressed={enabled}
+                              onClick={() =>
+                                setManualGrantActions((prev) => toggleCapabilityAction(prev, action))
+                              }
+                              disabled={authBusy || readLocked}
+                            >
+                              <Icon className="text-[14px]" />
+                              {enabled && <MdCheck className="absolute -right-1 -top-1 text-[12px] text-emerald-300" />}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
+                  </div>
 
-                    <div
-                      className="mt-2 space-y-1.5 overflow-auto pr-1"
-                      style={{ maxHeight: `${membersMenuLayout.listMaxHeight}px` }}
-                    >
-                      {memberRows.length === 0 ? (
-                        <div className="rounded-lg border border-slate-800/80 bg-slate-900/30 px-2.5 py-2 text-[11px] text-slate-500">
-                          No peers discovered for this scope yet.
-                        </div>
-                      ) : (
-                        memberRows.map((row) => {
-                          const latestTokenId = row.latest?.tokenIdHex ?? null;
-                          const revoked = latestTokenId
-                            ? hardRevokedTokenIds.includes(latestTokenId)
-                            : false;
-                          const seenAgoMs =
-                            row.lastSeen === null ? null : Math.max(0, Date.now() - row.lastSeen);
-                          const grantAgoMs = row.latest
-                            ? Math.max(0, Date.now() - row.latest.ts)
-                            : null;
-                          const selectedActions = getSelectedActionsForPeer(row.id);
-                          return (
-                            <div
-                              key={row.id}
-                              className="rounded-lg border border-slate-800/80 bg-slate-900/30 px-2.5 py-2"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="min-w-0">
-                                  <div className="truncate font-mono text-[11px] text-slate-200">
-                                    {row.id}
-                                  </div>
-                                  <div className="text-[10px] text-slate-500">
-                                    {seenAgoMs === null
-                                      ? 'not seen in this tab yet'
-                                      : `seen ${seenAgoMs}ms ago`}
-                                    {grantAgoMs !== null ? ` · grant ${grantAgoMs}ms ago` : ''}
-                                  </div>
-                                  {!row.latest && (
-                                    <div className="text-[10px] text-slate-500">
-                                      capability unknown (not issued for this scope)
-                                    </div>
-                                  )}
+                  <div className="mt-2 space-y-1.5 overflow-auto pr-1" style={{ maxHeight: `${membersMenuLayout.listMaxHeight}px` }}>
+                    {memberRows.length === 0 ? (
+                      <div className="rounded-lg border border-slate-800/80 bg-slate-900/30 px-2.5 py-2 text-[11px] text-slate-500">
+                        No peers discovered for this scope yet.
+                      </div>
+                    ) : (
+                      memberRows.map((row) => {
+                        const latestTokenId = row.latest?.tokenIdHex ?? null;
+                        const revoked = latestTokenId ? hardRevokedTokenIds.includes(latestTokenId) : false;
+                        const seenAgoMs = row.lastSeen === null ? null : Math.max(0, Date.now() - row.lastSeen);
+                        const grantAgoMs = row.latest ? Math.max(0, Date.now() - row.latest.ts) : null;
+                        const selectedActions = getSelectedActionsForPeer(row.id);
+                        return (
+                          <div key={row.id} className="rounded-lg border border-slate-800/80 bg-slate-900/30 px-2.5 py-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="truncate font-mono text-[11px] text-slate-200">{row.id}</div>
+                                <div className="text-[10px] text-slate-500">
+                                  {seenAgoMs === null ? "not seen in this tab yet" : `seen ${seenAgoMs}ms ago`}
+                                  {grantAgoMs !== null ? ` · grant ${grantAgoMs}ms ago` : ""}
                                 </div>
-                                {row.latest ? (
-                                  <span
-                                    className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
-                                      revoked
-                                        ? 'border-rose-400/60 bg-rose-500/10 text-rose-100'
-                                        : 'border-emerald-400/60 bg-emerald-500/10 text-emerald-100'
-                                    }`}
-                                  >
-                                    {revoked ? 'revoked' : 'active'}
-                                  </span>
-                                ) : null}
+                                {!row.latest && (
+                                  <div className="text-[10px] text-slate-500">capability unknown (not issued for this scope)</div>
+                                )}
                               </div>
-                              <div className="mt-1.5">
-                                <div className="text-[10px] uppercase tracking-wide text-slate-500">
-                                  Capabilities
-                                </div>
-                                <div className="mt-1 flex flex-wrap gap-1">
-                                  {CAPABILITY_ACTION_ORDER.map((action) => {
-                                    const enabled = selectedActions.includes(action);
-                                    const Icon = CAPABILITY_META[action].icon;
-                                    const readLocked = action === 'read';
-                                    return (
-                                      <button
-                                        key={`${row.id}-${action}`}
-                                        type="button"
-                                        className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-slate-100 transition ${
-                                          enabled
-                                            ? 'border-emerald-400/70 bg-emerald-500/10'
-                                            : 'border-slate-700 bg-slate-800/60 hover:border-accent'
-                                        }`}
-                                        title={
-                                          readLocked
-                                            ? 'Read (always included). Use Revoke to remove all access.'
-                                            : CAPABILITY_META[action].label
-                                        }
-                                        aria-label={CAPABILITY_META[action].label}
-                                        aria-pressed={enabled}
-                                        onClick={() =>
-                                          setMemberGrantActions((prev) => ({
-                                            ...prev,
-                                            [row.id]: toggleCapabilityAction(
-                                              getSelectedActionsForPeer(row.id),
-                                              action,
-                                            ),
-                                          }))
-                                        }
-                                        disabled={authBusy || readLocked}
-                                      >
-                                        <Icon className="text-[14px]" />
-                                        {enabled && (
-                                          <MdCheck className="absolute -right-1 -top-1 text-[12px] text-emerald-300" />
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                              <div className="mt-2 grid grid-cols-3 gap-1.5">
-                                <button
-                                  className="h-7 rounded-lg border border-slate-700 bg-slate-800/70 px-2 text-[10px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                                  type="button"
-                                  onClick={() => void replaceMemberAccess(row.id, selectedActions)}
-                                  disabled={
-                                    !canManageCapabilities ||
-                                    authBusy ||
-                                    selectedActions.length === 0
-                                  }
-                                  title="Replace access: issue new token and revoke prior active tokens for this member in this scope"
-                                >
-                                  Update
-                                </button>
-                                <button
-                                  className="h-7 rounded-lg border border-slate-700 bg-slate-800/70 px-2 text-[10px] font-semibold text-slate-200 transition hover:border-accent hover:text-white"
-                                  type="button"
-                                  onClick={() => {
-                                    setShowMembersMenu(false);
-                                    onShare(node.id);
-                                  }}
-                                >
-                                  Share…
-                                </button>
-                                <button
-                                  className={`h-7 rounded-lg border px-2 text-[10px] font-semibold transition disabled:opacity-50 ${
+                              {row.latest ? (
+                                <span
+                                  className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
                                     revoked
-                                      ? 'border-emerald-400/50 bg-emerald-500/10 text-emerald-100 hover:border-emerald-300'
-                                      : 'border-rose-400/50 bg-rose-500/10 text-rose-100 hover:border-rose-300'
+                                      ? "border-rose-400/60 bg-rose-500/10 text-rose-100"
+                                      : "border-emerald-400/60 bg-emerald-500/10 text-emerald-100"
                                   }`}
-                                  type="button"
-                                  onClick={() => {
-                                    if (!latestTokenId) return;
-                                    onToggleHardRevokedTokenId(latestTokenId);
-                                  }}
-                                  disabled={!canManageCapabilities || authBusy || !latestTokenId}
-                                  title={latestTokenId ?? 'No scoped token issued yet'}
                                 >
-                                  {revoked ? 'Unrevoke' : 'Revoke'}
-                                </button>
+                                  {revoked ? "revoked" : "active"}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-1.5">
+                              <div className="text-[10px] uppercase tracking-wide text-slate-500">Capabilities</div>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {CAPABILITY_ACTION_ORDER.map((action) => {
+                                  const enabled = selectedActions.includes(action);
+                                  const Icon = CAPABILITY_META[action].icon;
+                                  const readLocked = action === "read";
+                                  return (
+                                    <button
+                                      key={`${row.id}-${action}`}
+                                      type="button"
+                                      className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-slate-100 transition ${
+                                        enabled
+                                          ? "border-emerald-400/70 bg-emerald-500/10"
+                                          : "border-slate-700 bg-slate-800/60 hover:border-accent"
+                                      }`}
+                                      title={
+                                        readLocked
+                                          ? "Read (always included). Use Revoke to remove all access."
+                                          : CAPABILITY_META[action].label
+                                      }
+                                      aria-label={CAPABILITY_META[action].label}
+                                      aria-pressed={enabled}
+                                      onClick={() =>
+                                        setMemberGrantActions((prev) => ({
+                                          ...prev,
+                                          [row.id]: toggleCapabilityAction(getSelectedActionsForPeer(row.id), action),
+                                        }))
+                                      }
+                                      disabled={authBusy || readLocked}
+                                    >
+                                      <Icon className="text-[14px]" />
+                                      {enabled && (
+                                        <MdCheck className="absolute -right-1 -top-1 text-[12px] text-emerald-300" />
+                                      )}
+                                    </button>
+                                  );
+                                })}
                               </div>
                             </div>
-                          );
-                        })
-                      )}
-                    </div>
+                            <div className="mt-2 grid grid-cols-3 gap-1.5">
+                              <button
+                                className="h-7 rounded-lg border border-slate-700 bg-slate-800/70 px-2 text-[10px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                                type="button"
+                                onClick={() => void replaceMemberAccess(row.id, selectedActions)}
+                                disabled={!canManageCapabilities || authBusy || selectedActions.length === 0}
+                                title="Replace access: issue new token and revoke prior active tokens for this member in this scope"
+                              >
+                                Update
+                              </button>
+                              <button
+                                className="h-7 rounded-lg border border-slate-700 bg-slate-800/70 px-2 text-[10px] font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                                type="button"
+                                onClick={() => {
+                                  setShowMembersMenu(false);
+                                  onShare(node.id);
+                                }}
+                              >
+                                Share…
+                              </button>
+                              <button
+                                className={`h-7 rounded-lg border px-2 text-[10px] font-semibold transition disabled:opacity-50 ${
+                                  revoked
+                                    ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-100 hover:border-emerald-300"
+                                    : "border-rose-400/50 bg-rose-500/10 text-rose-100 hover:border-rose-300"
+                                }`}
+                                type="button"
+                                onClick={() => {
+                                  if (!latestTokenId) return;
+                                  onToggleHardRevokedTokenId(latestTokenId);
+                                }}
+                                disabled={!canManageCapabilities || authBusy || !latestTokenId}
+                                title={latestTokenId ?? "No scoped token issued yet"}
+                              >
+                                {revoked ? "Unrevoke" : "Revoke"}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                   </div>,
-                  document.body,
+                  document.body
                 )}
             </div>
           )}
           <button
             className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
               isRoot
-                ? 'border-slate-800/70 bg-slate-900/60 opacity-50'
+                ? "border-slate-800/70 bg-slate-900/60 opacity-50"
                 : isPrivateRoot
-                  ? 'border-amber-400/80 bg-amber-500/15 text-amber-100 shadow-sm shadow-amber-500/20'
+                  ? "border-amber-400/80 bg-amber-500/15 text-amber-100 shadow-sm shadow-amber-500/20"
                   : isPrivateInherited
-                    ? 'border-slate-700 bg-slate-900/60 text-slate-300'
-                    : 'border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white'
+                    ? "border-slate-700 bg-slate-900/60 text-slate-300"
+                    : "border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white"
             }`}
             onClick={() => onTogglePrivateRoot(node.id)}
             disabled={isRoot}
@@ -780,25 +717,21 @@ export function TreeRow({
             aria-pressed={isPrivate}
             title={
               isRoot
-                ? 'Root privacy is controlled by the invite scope'
+                ? "Root privacy is controlled by the invite scope"
                 : isPrivateRoot
-                  ? 'Make subtree public (affects new invites)'
+                  ? "Make subtree public (affects new invites)"
                   : isPrivateInherited
-                    ? 'Subtree is private via ancestor. Click to mark this node as a private root too'
-                    : 'Make subtree private (exclude from new invites)'
+                    ? "Subtree is private via ancestor. Click to mark this node as a private root too"
+                    : "Make subtree private (exclude from new invites)"
             }
           >
-            {isPrivate ? (
-              <MdLockOutline className="text-[20px]" />
-            ) : (
-              <MdLockOpen className="text-[20px]" />
-            )}
+            {isPrivate ? <MdLockOutline className="text-[20px]" /> : <MdLockOpen className="text-[20px]" />}
           </button>
           <button
             className={`flex h-9 w-9 items-center justify-center rounded-lg border text-slate-200 transition ${
               liveChildren
-                ? 'border-accent bg-accent/20 text-white shadow-sm shadow-accent/20'
-                : 'border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white'
+                ? "border-accent bg-accent/20 text-white shadow-sm shadow-accent/20"
+                : "border-slate-800/70 bg-slate-900/60 hover:border-accent hover:text-white"
             }`}
             onClick={() => onToggleLiveChildren(node.id)}
             aria-label="Live sync children"
@@ -811,7 +744,7 @@ export function TreeRow({
             className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
             onClick={() => onAddChild(node.id)}
             aria-label="Add child"
-            title={canInsertChild ? 'Add child' : 'Read-only (no write_structure permission)'}
+            title={canInsertChild ? "Add child" : "Read-only (no write_structure permission)"}
             disabled={!canInsertChild}
           >
             <MdAdd className="text-[22px]" />
@@ -820,19 +753,19 @@ export function TreeRow({
             <>
               <button
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                onClick={() => onMove(node.id, 'up')}
+                onClick={() => onMove(node.id, "up")}
                 disabled={!canMoveStructure || !canMoveUp}
                 aria-label="Move up"
-                title={canMoveStructure ? 'Move up' : 'Read-only (no write_structure permission)'}
+                title={canMoveStructure ? "Move up" : "Read-only (no write_structure permission)"}
               >
                 <MdKeyboardArrowUp className="text-[22px]" />
               </button>
               <button
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                onClick={() => onMove(node.id, 'down')}
+                onClick={() => onMove(node.id, "down")}
                 disabled={!canMoveStructure || !canMoveDown}
                 aria-label="Move down"
-                title={canMoveStructure ? 'Move down' : 'Read-only (no write_structure permission)'}
+                title={canMoveStructure ? "Move down" : "Read-only (no write_structure permission)"}
               >
                 <MdKeyboardArrowDown className="text-[22px]" />
               </button>
@@ -842,10 +775,10 @@ export function TreeRow({
                 aria-label="Move to root"
                 title={
                   canMoveToDocRoot
-                    ? 'Move to root'
+                    ? "Move to root"
                     : scopeRootId !== ROOT_ID
-                      ? 'Not available in scoped access (can’t move nodes outside your subtree)'
-                      : 'Read-only (no write_structure permission)'
+                      ? "Not available in scoped access (can’t move nodes outside your subtree)"
+                      : "Read-only (no write_structure permission)"
                 }
                 disabled={!canMoveToDocRoot}
               >
@@ -855,7 +788,7 @@ export function TreeRow({
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-rose-400/80 bg-rose-500/10 text-rose-100 transition hover:bg-rose-500/20 disabled:opacity-50"
                 onClick={() => onDelete(node.id)}
                 aria-label="Delete"
-                title={canDelete ? 'Delete' : 'Read-only (no delete permission)'}
+                title={canDelete ? "Delete" : "Read-only (no delete permission)"}
                 disabled={!canDelete}
               >
                 <MdDeleteOutline className="text-[20px]" />
