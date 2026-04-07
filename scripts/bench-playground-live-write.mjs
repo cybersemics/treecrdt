@@ -6,10 +6,7 @@ import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
 import { buildFanoutInsertTreeOps, replicaFromLabel } from '../packages/treecrdt-benchmark/dist/index.js';
-import {
-  medianOrNull,
-  percentileNearestRankOrNull,
-} from '../packages/treecrdt-benchmark/dist/stats.js';
+import { summarizeSamples } from '../packages/treecrdt-benchmark/dist/stats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -649,14 +646,14 @@ async function preseedPostgresPlaygroundDoc({ postgresUrl, docId, size, fanout }
 
 function summarize(values) {
   if (values.length === 0) return null;
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const summary = summarizeSamples(values);
   return {
-    count: values.length,
-    minMs: Math.min(...values),
-    medianMs: medianOrNull(values),
-    p95Ms: percentileNearestRankOrNull(values, 95),
-    maxMs: Math.max(...values),
-    meanMs: mean,
+    count: summary.count,
+    minMs: summary.min,
+    medianMs: summary.median,
+    p95Ms: summary.p95,
+    maxMs: summary.max,
+    meanMs: summary.mean,
   };
 }
 
