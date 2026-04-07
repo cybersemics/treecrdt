@@ -7,11 +7,39 @@ use uuid::Uuid;
 
 use treecrdt_core::{NodeId, Operation, ReplicaId, VersionVector};
 use treecrdt_postgres::{
-    append_ops, clone_materialized_doc_for_tests, ensure_materialized, ensure_schema,
-    get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
-    local_move, local_payload, max_lamport, prime_balanced_fanout_doc_for_tests,
+    append_ops, clone_doc_for_tests, clone_materialized_doc_for_tests, ensure_materialized,
+    ensure_schema, get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete,
+    local_insert, local_move, local_payload, max_lamport, prime_balanced_fanout_doc_for_tests,
     prime_doc_for_tests, replica_max_counter, reset_doc_for_tests, tree_children, tree_node_count,
 };
+
+type NodeRow = (
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+    bool,
+    Option<Vec<u8>>,
+);
+type PayloadRow = (Vec<u8>, Vec<u8>, i64, Vec<u8>, i64);
+type IndexRow = (Vec<u8>, Vec<u8>, i64);
+type MetaRow = (bool, i64, Vec<u8>, i64, i64);
+type ReplicaRow = (Vec<u8>, i64);
+
+#[derive(Debug, PartialEq, Eq)]
+struct MaterializedDocSnapshot {
+    nodes: Vec<NodeRow>,
+    payloads: Vec<PayloadRow>,
+    meta: MetaRow,
+    replicas: Vec<ReplicaRow>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FullDocSnapshot {
+    materialized: MaterializedDocSnapshot,
+    op_refs: Vec<Vec<u8>>,
+    ops: Vec<Operation>,
+    indexes: Vec<IndexRow>,
+}
 
 fn order_key_from_position(position: u16) -> Vec<u8> {
     let n = position.wrapping_add(1);
@@ -75,6 +103,92 @@ fn ensure_schema_once(client: &Rc<RefCell<Client>>) {
         let mut c = client.borrow_mut();
         ensure_schema(&mut c).unwrap();
     });
+}
+
+fn node_rows(client: &Rc<RefCell<Client>>, doc_id: &str) -> Vec<NodeRow> {
+    let mut c = client.borrow_mut();
+    c.query(
+        "SELECT node, parent, order_key, tombstone, last_change \
+         FROM treecrdt_nodes WHERE doc_id = $1 ORDER BY node",
+        &[&doc_id],
+    )
+    .unwrap()
+    .into_iter()
+    .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+    .collect()
+}
+
+fn payload_rows(client: &Rc<RefCell<Client>>, doc_id: &str) -> Vec<PayloadRow> {
+    let mut c = client.borrow_mut();
+    c.query(
+        "SELECT node, payload, last_lamport, last_replica, last_counter \
+         FROM treecrdt_payload WHERE doc_id = $1 ORDER BY node",
+        &[&doc_id],
+    )
+    .unwrap()
+    .into_iter()
+    .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+    .collect()
+}
+
+fn index_rows(client: &Rc<RefCell<Client>>, doc_id: &str) -> Vec<IndexRow> {
+    let mut c = client.borrow_mut();
+    c.query(
+        "SELECT parent, op_ref, seq \
+         FROM treecrdt_oprefs_children WHERE doc_id = $1 ORDER BY parent, seq, op_ref",
+        &[&doc_id],
+    )
+    .unwrap()
+    .into_iter()
+    .map(|row| (row.get(0), row.get(1), row.get(2)))
+    .collect()
+}
+
+fn meta_row(client: &Rc<RefCell<Client>>, doc_id: &str) -> MetaRow {
+    let mut c = client.borrow_mut();
+    let row = c
+        .query_one(
+            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+             FROM treecrdt_meta WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .unwrap();
+    (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
+}
+
+fn replica_rows(client: &Rc<RefCell<Client>>, doc_id: &str) -> Vec<ReplicaRow> {
+    let mut c = client.borrow_mut();
+    c.query(
+        "SELECT replica, max_counter \
+         FROM treecrdt_replica_meta WHERE doc_id = $1 ORDER BY replica",
+        &[&doc_id],
+    )
+    .unwrap()
+    .into_iter()
+    .map(|row| (row.get(0), row.get(1)))
+    .collect()
+}
+
+fn snapshot_materialized_doc(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> MaterializedDocSnapshot {
+    MaterializedDocSnapshot {
+        nodes: node_rows(client, doc_id),
+        payloads: payload_rows(client, doc_id),
+        meta: meta_row(client, doc_id),
+        replicas: replica_rows(client, doc_id),
+    }
+}
+
+fn snapshot_full_doc(client: &Rc<RefCell<Client>>, doc_id: &str) -> FullDocSnapshot {
+    let op_refs = list_op_refs_all(client, doc_id).unwrap();
+    FullDocSnapshot {
+        materialized: snapshot_materialized_doc(client, doc_id),
+        ops: get_ops_by_op_refs(client, doc_id, &op_refs).unwrap(),
+        op_refs: op_refs.into_iter().map(|op_ref| op_ref.to_vec()).collect(),
+        indexes: index_rows(client, doc_id),
+    }
 }
 
 #[test]
@@ -289,91 +403,57 @@ fn postgres_backend_prime_balanced_fanout_doc_for_tests_matches_replay_materiali
     )
     .unwrap();
 
-    type NodeRow = (
-        Vec<u8>,
-        Option<Vec<u8>>,
-        Option<Vec<u8>>,
-        bool,
-        Option<Vec<u8>>,
+    assert_eq!(
+        snapshot_full_doc(&client, &replay_doc_id),
+        snapshot_full_doc(&client, &direct_doc_id)
     );
+}
 
-    let mut c = client.borrow_mut();
-    let node_rows = |doc_id: &str, c: &mut Client| -> Vec<NodeRow> {
-        c.query(
-            "SELECT node, parent, order_key, tombstone, last_change \
-             FROM treecrdt_nodes WHERE doc_id = $1 ORDER BY node",
-            &[&doc_id],
-        )
-        .unwrap()
-        .into_iter()
-        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
-        .collect()
+#[test]
+fn postgres_backend_clone_doc_for_tests_matches_source_storage() {
+    let Some(client) = connect() else {
+        return;
     };
-    let payload_rows =
-        |doc_id: &str, c: &mut Client| -> Vec<(Vec<u8>, Vec<u8>, i64, Vec<u8>, i64)> {
-            c.query(
-                "SELECT node, payload, last_lamport, last_replica, last_counter \
-             FROM treecrdt_payload WHERE doc_id = $1 ORDER BY node",
-                &[&doc_id],
-            )
-            .unwrap()
-            .into_iter()
-            .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
-            .collect()
-        };
-    let index_rows = |doc_id: &str, c: &mut Client| -> Vec<(Vec<u8>, Vec<u8>, i64)> {
-        c.query(
-            "SELECT parent, op_ref, seq \
-             FROM treecrdt_oprefs_children WHERE doc_id = $1 ORDER BY parent, seq, op_ref",
-            &[&doc_id],
-        )
-        .unwrap()
-        .into_iter()
-        .map(|row| (row.get(0), row.get(1), row.get(2)))
-        .collect()
-    };
-    let meta_row = |doc_id: &str, c: &mut Client| -> (bool, i64, Vec<u8>, i64, i64) {
-        let row = c
-            .query_one(
-                "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
-                 FROM treecrdt_meta WHERE doc_id = $1",
-                &[&doc_id],
-            )
-            .unwrap();
-        (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
-    };
-    let replica_rows = |doc_id: &str, c: &mut Client| -> Vec<(Vec<u8>, i64)> {
-        c.query(
-            "SELECT replica, max_counter \
-             FROM treecrdt_replica_meta WHERE doc_id = $1 ORDER BY replica",
-            &[&doc_id],
-        )
-        .unwrap()
-        .into_iter()
-        .map(|row| (row.get(0), row.get(1)))
-        .collect()
-    };
+    ensure_schema_once(&client);
+
+    let source_doc_id = format!("test-source-{}", Uuid::new_v4());
+    let target_doc_id = format!("test-target-{}", Uuid::new_v4());
+    let ops = build_balanced_fixture_ops(25, 3, 8, b"clone-seed");
+
+    prime_doc_for_tests(&client, &source_doc_id, &ops).unwrap();
+    {
+        let mut c = client.borrow_mut();
+        clone_doc_for_tests(&mut c, &source_doc_id, &target_doc_id).unwrap();
+    }
 
     assert_eq!(
-        node_rows(&replay_doc_id, &mut c),
-        node_rows(&direct_doc_id, &mut c)
+        snapshot_full_doc(&client, &source_doc_id),
+        snapshot_full_doc(&client, &target_doc_id)
     );
+}
+
+#[test]
+fn postgres_backend_clone_materialized_doc_for_tests_matches_source_materialized_state() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let source_doc_id = format!("test-source-{}", Uuid::new_v4());
+    let target_doc_id = format!("test-target-{}", Uuid::new_v4());
+    let ops = build_balanced_fixture_ops(25, 3, 8, b"clone-seed");
+
+    prime_doc_for_tests(&client, &source_doc_id, &ops).unwrap();
+    {
+        let mut c = client.borrow_mut();
+        clone_materialized_doc_for_tests(&mut c, &source_doc_id, &target_doc_id).unwrap();
+    }
+
     assert_eq!(
-        payload_rows(&replay_doc_id, &mut c),
-        payload_rows(&direct_doc_id, &mut c)
+        snapshot_materialized_doc(&client, &source_doc_id),
+        snapshot_materialized_doc(&client, &target_doc_id)
     );
-    assert_eq!(
-        index_rows(&replay_doc_id, &mut c),
-        index_rows(&direct_doc_id, &mut c)
-    );
-    assert_eq!(
-        meta_row(&replay_doc_id, &mut c),
-        meta_row(&direct_doc_id, &mut c)
-    );
-    assert_eq!(
-        replica_rows(&replay_doc_id, &mut c),
-        replica_rows(&direct_doc_id, &mut c)
-    );
+    assert!(list_op_refs_all(&client, &target_doc_id).unwrap().is_empty());
 }
 
 #[test]
