@@ -1,10 +1,7 @@
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 
-import {
-  createPostgresNapiAdapterFactory,
-  type PostgresNapiAdapterFactory,
-} from './adapter.js';
+import { createPostgresNapiAdapterFactory, type PostgresNapiAdapterFactory } from './adapter.js';
 import { createTreecrdtPostgresClient } from './client.js';
 import { operationToNativeWithSerializers } from './codec.js';
 import {
