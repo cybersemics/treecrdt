@@ -1301,6 +1301,7 @@ async function loadPostgresSyncBackendFactory(
   backendModule: string,
   postgresUrl: string,
 ): Promise<{
+  ensureSchema: () => Promise<void>;
   resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
   primeBalancedFanoutDocForTests: NonNullable<
     SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
@@ -1309,6 +1310,15 @@ async function loadPostgresSyncBackendFactory(
 }> {
   const mod = (await import(pathToFileURL(backendModule).href)) as {
     createPostgresNapiSyncBackendFactory?: (url: string) => {
+      ensureSchema: () => Promise<void>;
+      resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
+      primeBalancedFanoutDocForTests: NonNullable<
+        SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
+      >;
+      open: (docId: string) => Promise<SyncBackend<Operation>>;
+    };
+    createPostgresNapiTestSyncBackendFactory?: (url: string) => {
+      ensureSchema: () => Promise<void>;
       resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
       primeBalancedFanoutDocForTests: NonNullable<
         SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
@@ -1316,12 +1326,15 @@ async function loadPostgresSyncBackendFactory(
       open: (docId: string) => Promise<SyncBackend<Operation>>;
     };
   };
-  if (typeof mod.createPostgresNapiSyncBackendFactory !== 'function') {
-    throw new Error(
-      `backend module "${backendModule}" does not export createPostgresNapiSyncBackendFactory(url)`,
-    );
+  if (typeof mod.createPostgresNapiTestSyncBackendFactory === 'function') {
+    return mod.createPostgresNapiTestSyncBackendFactory(postgresUrl);
   }
-  return mod.createPostgresNapiSyncBackendFactory(postgresUrl);
+  if (typeof mod.createPostgresNapiSyncBackendFactory === 'function') {
+    return mod.createPostgresNapiSyncBackendFactory(postgresUrl);
+  }
+  throw new Error(
+    `backend module "${backendModule}" does not export createPostgresNapiSyncBackendFactory(url) or createPostgresNapiTestSyncBackendFactory(url)`,
+  );
 }
 
 async function findFreePort(): Promise<number> {
@@ -1347,12 +1360,81 @@ async function findFreePort(): Promise<number> {
   });
 }
 
-function createRemoteSyncServerTarget(baseUrl: string): SyncBenchTargetRuntime {
+async function createDirectPostgresRemoteFixtureHelpers(
+  repoRoot: string,
+  postgresUrl: string,
+): Promise<Pick<
+  SyncBenchTargetRuntime,
+  'inspectDoc' | 'resetDoc' | 'seedOps' | 'primeBalancedFanoutDocForTests' | 'waitForOpCount'
+>> {
+  const backendModule = path.join(
+    repoRoot,
+    'packages',
+    'treecrdt-postgres-napi',
+    'dist',
+    'testing.js',
+  );
+  const waitForOpCount = await createDirectPostgresOpCountWaiter(backendModule, postgresUrl);
+  const backendFactory = await loadPostgresSyncBackendFactory(backendModule, postgresUrl);
+  await backendFactory.ensureSchema();
+  const inspectDoc = async (docId: string) => {
+    const backend = await backendFactory.open(docId);
+    const [allRefs, currentMaxLamport] = await Promise.all([
+      backend.listOpRefs({ all: {} }),
+      backend.maxLamport(),
+    ]);
+    return {
+      allCount: allRefs.length,
+      maxLamport: Number(currentMaxLamport),
+    };
+  };
+  const resetDoc = async (docId: string) => {
+    await backendFactory.resetDocForTests(docId);
+  };
+  const seedOps = async (docId: string, ops: Operation[]) => {
+    if (ops.length === 0) return;
+    const backend = await backendFactory.open(docId);
+    await backend.applyOps(ops);
+  };
+  const primeBalancedFanoutDocForTests = async (
+    docId: string,
+    size: number,
+    fanout: number,
+    payloadBytes: number,
+    replicaLabel: string,
+  ) => {
+    await backendFactory.primeBalancedFanoutDocForTests(
+      docId,
+      size,
+      fanout,
+      payloadBytes,
+      replicaLabel,
+    );
+  };
+  return {
+    inspectDoc,
+    resetDoc,
+    seedOps,
+    primeBalancedFanoutDocForTests,
+    waitForOpCount,
+  };
+}
+
+async function createRemoteSyncServerTarget(
+  repoRoot: string,
+  baseUrl: string,
+  postgresUrl?: string,
+): Promise<SyncBenchTargetRuntime> {
+  const directFixtureHelpers =
+    postgresUrl != null && postgresUrl.length > 0
+      ? await createDirectPostgresRemoteFixtureHelpers(repoRoot, postgresUrl)
+      : undefined;
   return {
     id: 'remote-sync-server',
     serverProcess: 'remote',
     connect: async (docId) => await connectToSyncServer(baseUrl, docId, { client: 'builtin' }),
     fixtureCacheScope: baseUrl,
+    ...directFixtureHelpers,
     close: async () => {},
   };
 }
@@ -1439,12 +1521,16 @@ async function prepareTargetRuntimes(
   if (targets.includes('remote-sync-server')) {
     const remoteUrl =
       parseFlagValue(argv, '--sync-server-url') ?? process.env.TREECRDT_SYNC_SERVER_URL;
+    const postgresUrl = parseFlagValue(argv, '--postgres-url') ?? process.env.TREECRDT_POSTGRES_URL;
     if (!remoteUrl) {
       throw new Error(
         'remote-sync-server target requires TREECRDT_SYNC_SERVER_URL or --sync-server-url=...',
       );
     }
-    runtimes.set('remote-sync-server', createRemoteSyncServerTarget(remoteUrl));
+    runtimes.set(
+      'remote-sync-server',
+      await createRemoteSyncServerTarget(repoRoot, remoteUrl, postgresUrl),
+    );
   }
 
   return runtimes;

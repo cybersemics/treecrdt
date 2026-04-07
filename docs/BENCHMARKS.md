@@ -188,6 +188,8 @@ pnpm benchmark:sync:remote -- \
 
 For remote targets, `prime` now records the exact fixture doc ID locally under `tmp/sqlite-node-sync-bench/server-fixtures/`. That means a fresh endpoint can be primed once with `--server-fixture-cache=rebuild`, and later `--server-fixture-cache=reuse` runs on the same machine can reopen that exact remote fixture doc instead of relying on historical deterministic fixture residue.
 
+If you also have direct Postgres access to that same deployment, add `--postgres-url=postgres://...` on the remote target. Then remote fixture priming can use the same direct balanced-fixture seed path as the local Postgres target instead of uploading the entire large tree over websocket. This is the practical path for `1m` remote/prod-like runs on dedicated environments.
+
 By default, the local sync target runs the Postgres sync server in a spawned child process so local and remote measurements are closer to each other. When you add `--profile-backend`, the local target intentionally switches to the in-process server so per-backend timings are visible inside the benchmark process.
 
 Local server benchmarks now seed the Postgres backend directly before the timer starts. That keeps the measured path honest, because the actual sync to the client still goes through the real websocket server, while avoiding huge protocol-seed setup costs that are not part of the benchmark question.
