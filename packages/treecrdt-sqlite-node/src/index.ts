@@ -188,7 +188,10 @@ export function createTreecrdtClient(
     docId,
     ops: {
       append: async (op) => adapter.appendOp(op, nodeIdToBytes16, encodeReplica),
-      appendMany: async (ops) => adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica),
+      appendMany: async (ops) => {
+        const affected = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
+        return affected.map((node) => nodeIdFromBytes16(node));
+      },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),

@@ -106,6 +106,7 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
         }
         tree.appendOp(JSON.stringify(jsOp));
       }
+      return [];
     },
     opsSince: async (lamport: number) => {
       const ops = tree.opsSince(BigInt(lamport));

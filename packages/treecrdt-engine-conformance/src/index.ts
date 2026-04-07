@@ -1114,7 +1114,9 @@ function createEngineSyncBackend(engine: TreecrdtEngine): SyncBackend<Operation>
       return engine.opRefs.children(bytesToHex(filter.children.parent));
     },
     getOpsByOpRefs: async (opRefs: OpRef[]) => engine.ops.get(opRefs),
-    applyOps: async (ops: Operation[]) => engine.ops.appendMany(ops),
+    applyOps: async (ops: Operation[]) => {
+      await engine.ops.appendMany(ops);
+    },
   };
 }
 

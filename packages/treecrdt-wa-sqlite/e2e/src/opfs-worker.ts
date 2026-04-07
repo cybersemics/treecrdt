@@ -99,7 +99,7 @@ async function createAdapter(
         },
       }),
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      await client.ops.appendMany(
+      const affected = await client.ops.appendMany(
         ops.map((op) => ({
           ...op,
           meta: {
@@ -108,6 +108,7 @@ async function createAdapter(
           },
         })),
       );
+      return affected.map((id) => serializeNodeId(id));
     },
     opsSince: async (lamport, root) => client.ops.since(lamport, root),
     close: async () => client.close(),

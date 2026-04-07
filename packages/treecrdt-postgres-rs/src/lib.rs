@@ -19,4 +19,4 @@ pub use reads::{
     tree_payload, TreeChildRow, TreeRow,
 };
 pub use schema::{ensure_schema, reset_doc_for_tests};
-pub use store::{append_ops, ensure_materialized};
+pub use store::{append_ops, append_ops_with_affected_node_ids, ensure_materialized};

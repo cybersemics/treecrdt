@@ -100,7 +100,7 @@ export interface TreecrdtAdapter {
     ops: Operation[],
     serializeNodeId: SerializeNodeId,
     serializeReplica: SerializeReplica,
-  ): Promise<void> | void;
+  ): Promise<Uint8Array[]> | Uint8Array[];
   opsSince(lamport: number, root?: string): Promise<unknown[]>;
   close?(): Promise<void> | void;
 }

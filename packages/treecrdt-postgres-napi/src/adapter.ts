@@ -97,8 +97,10 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
           backend.applyOps([opToNative(op, serializeNodeId, serializeReplica)]);
         },
         appendOps: async (ops, serializeNodeId, serializeReplica) => {
-          if (ops.length === 0) return;
-          backend.applyOps(ops.map((op) => opToNative(op, serializeNodeId, serializeReplica)));
+          if (ops.length === 0) return [];
+          return backend.applyOps(
+            ops.map((op) => opToNative(op, serializeNodeId, serializeReplica)),
+          );
         },
         opsSince: async (lamport, root) => {
           const rootBytes = root === undefined ? null : nodeIdToBytes16(root);

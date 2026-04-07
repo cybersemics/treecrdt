@@ -23,7 +23,7 @@ export type RpcSchema = {
   sqlExec: { params: [sql: string]; result: void };
   sqlGetText: { params: [sql: string, params?: RpcSqlParams]; result: string | null };
   append: { params: [op: Operation]; result: void };
-  appendMany: { params: [ops: Operation[]]; result: void };
+  appendMany: { params: [ops: Operation[]]; result: number[][] };
   opsSince: { params: [lamport: number, root?: string]; result: unknown[] };
   opRefsAll: { params: []; result: unknown[] };
   opRefsChildren: { params: [parent: string]; result: unknown[] };

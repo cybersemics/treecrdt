@@ -67,7 +67,9 @@ function makeBackend(
       return client.opRefs.children(bytesToHex(filter.children.parent));
     },
     getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
-    applyOps: async (ops) => client.ops.appendMany(ops),
+    applyOps: async (ops) => {
+      await client.ops.appendMany(ops);
+    },
   });
 }
 
