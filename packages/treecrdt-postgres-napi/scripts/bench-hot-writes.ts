@@ -14,7 +14,7 @@ import {
 } from '../../treecrdt-benchmark/dist/hot-write.js';
 import { repoRootFromImportMeta } from '@treecrdt/benchmark/node';
 
-import { createPostgresNapiAdapterFactory } from '../src/adapter.js';
+import { createPostgresNapiTestAdapterFactory } from '../src/testing.js';
 import { createTreecrdtPostgresClient } from '../src/client.js';
 
 const POSTGRES_URL = process.env.TREECRDT_POSTGRES_URL;
@@ -56,7 +56,7 @@ async function main() {
     0,
   );
 
-  const factory = createPostgresNapiAdapterFactory(POSTGRES_URL);
+  const factory = createPostgresNapiTestAdapterFactory(POSTGRES_URL);
   await factory.ensureSchema();
   const seededDocs = new Map<string, string>();
 
@@ -98,7 +98,7 @@ async function main() {
 
 async function openSeededClient(opts: {
   url: string;
-  factory: ReturnType<typeof createPostgresNapiAdapterFactory>;
+  factory: ReturnType<typeof createPostgresNapiTestAdapterFactory>;
   bench: string;
   size: number;
   seed: HotWriteSeedTargets;
@@ -123,7 +123,7 @@ async function openSeededClient(opts: {
 
 async function ensureSeededDocId(opts: {
   url: string;
-  factory: ReturnType<typeof createPostgresNapiAdapterFactory>;
+  factory: ReturnType<typeof createPostgresNapiTestAdapterFactory>;
   size: number;
   seed: HotWriteSeedTargets;
   getSeed: () => HotWriteSeed;
