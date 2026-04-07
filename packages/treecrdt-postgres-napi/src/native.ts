@@ -66,6 +66,10 @@ export type NativeBackend = {
 
 export type NativeFactory = {
   ensureSchema(): void;
+  open(docId: string): NativeBackend;
+};
+
+export type NativeTestingFactory = {
   resetForTests(): void;
   resetDocForTests(docId: string): void;
   cloneDocForTests(sourceDocId: string, targetDocId: string): void;
@@ -78,11 +82,11 @@ export type NativeFactory = {
     payloadBytes: number,
     replicaLabel: string,
   ): void;
-  open(docId: string): NativeBackend;
 };
 
 type NativeExports = {
   PgFactory: new (url: string) => NativeFactory;
+  PgTestingFactory: new (url: string) => NativeTestingFactory;
 };
 
 // NOTE: we vendor the built binary into `native/` during `pnpm run build:native`.
