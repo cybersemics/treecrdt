@@ -21,6 +21,10 @@ import { usePlaygroundAuth } from './playground/hooks/usePlaygroundAuth';
 import { usePlaygroundSync } from './playground/hooks/usePlaygroundSync';
 import { compareOps, mergeSortedOps, opKey } from './playground/ops';
 import {
+  applyLocalPayloadPreview as applyLocalPayloadPreviewToMap,
+  hydratePayloadsForOps as hydratePayloadsForOpsInMap,
+} from './playground/payloads';
+import {
   ensureOpfsKey,
   initialDocId,
   initialStorage,
@@ -365,96 +369,29 @@ export default function App() {
 
   const applyLocalPayloadPreview = React.useCallback(
     (entries: Iterable<{ nodeId: string; payload: Uint8Array | null }>) => {
-      const payloads = payloadByNodeRef.current;
-      let changed = false;
-      for (const { nodeId, payload } of entries) {
-        if (!nodeId || nodeId === ROOT_ID) continue;
-        payloads.set(nodeId, { payload, encrypted: false });
-        changed = true;
+      if (applyLocalPayloadPreviewToMap(payloadByNodeRef.current, entries)) {
+        setPayloadVersion((v) => v + 1);
       }
-      if (changed) setPayloadVersion((v) => v + 1);
     },
     [],
   );
 
-  const applyPayloadsFromOps = React.useCallback(
-    async (ops: Iterable<Operation>) => {
-      const payloads = payloadByNodeRef.current;
-      const handled = new Set<string>();
-      let changed = false;
-      let payloadKeyPromise: Promise<Uint8Array> | null = null;
-      const getPayloadKey = () => {
-        payloadKeyPromise ??= requireDocPayloadKey();
-        return payloadKeyPromise;
-      };
-
-      for (const op of ops) {
-        const kind = op.kind;
-        if (kind.type === 'insert') {
-          if (kind.payload === undefined) {
-            payloads.set(kind.node, { payload: null, encrypted: false });
-            handled.add(kind.node);
-            changed = true;
-            continue;
-          }
-          try {
-            const res = await maybeDecryptTreecrdtPayloadV1({
-              docId,
-              payloadKey: await getPayloadKey(),
-              bytes: kind.payload,
-            });
-            payloads.set(kind.node, { payload: res.plaintext, encrypted: res.encrypted });
-          } catch {
-            payloads.set(kind.node, { payload: null, encrypted: true });
-          }
-          handled.add(kind.node);
-          changed = true;
-          continue;
-        }
-
-        if (kind.type === 'payload') {
-          if (kind.payload === null) {
-            payloads.set(kind.node, { payload: null, encrypted: false });
-          } else {
-            try {
-              const res = await maybeDecryptTreecrdtPayloadV1({
-                docId,
-                payloadKey: await getPayloadKey(),
-                bytes: kind.payload,
-              });
-              payloads.set(kind.node, { payload: res.plaintext, encrypted: res.encrypted });
-            } catch {
-              payloads.set(kind.node, { payload: null, encrypted: true });
-            }
-          }
-          handled.add(kind.node);
-          changed = true;
-          continue;
-        }
-
-        if (kind.type === 'delete' || kind.type === 'tombstone') {
-          continue;
-        }
-      }
-
-      if (changed) setPayloadVersion((v) => v + 1);
-      return handled;
-    },
-    [docId, requireDocPayloadKey],
-  );
-
   const hydratePayloadsForOps = React.useCallback(
     async (active: TreecrdtClient, ops: Iterable<Operation>) => {
-      const materialized = Array.isArray(ops) ? ops : Array.from(ops);
-      const handled = await applyPayloadsFromOps(materialized);
-      const remaining = [...nodesAffectedByPayloadOps(materialized)].filter(
-        (nodeId) => !handled.has(nodeId),
-      );
-      if (remaining.length > 0) {
-        await refreshPayloadsForNodes(active, remaining);
+      if (
+        await hydratePayloadsForOpsInMap({
+          payloads: payloadByNodeRef.current,
+          active,
+          ops,
+          docId,
+          requireDocPayloadKey,
+          refreshPayloadsForNodes,
+        })
+      ) {
+        setPayloadVersion((v) => v + 1);
       }
     },
-    [applyPayloadsFromOps, refreshPayloadsForNodes],
+    [docId, refreshPayloadsForNodes, requireDocPayloadKey],
   );
 
   const encryptPayloadBytes = React.useCallback(
