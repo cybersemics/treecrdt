@@ -41,6 +41,11 @@ import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';
 import {
+  getBenchLastRemoteSocketMessageAtMs,
+  recordBenchNodeTiming,
+  setBenchLastRemoteSocketMessageAtNow,
+} from '../bench';
+import {
   PLAYGROUND_PEER_TIMEOUT_MS,
   PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS,
   PLAYGROUND_SYNC_MAX_CODEWORDS,
@@ -70,15 +75,6 @@ function affectedNodeIdsFromOps(ops: readonly Operation[]): string[] {
     }
   }
   return Array.from(nodeIds);
-}
-
-function recordBenchNodeTiming(nodeIds: readonly string[], patch: Record<string, number>): void {
-  if (typeof window === 'undefined' || nodeIds.length === 0) return;
-  const bench = (window.__treecrdtPlaygroundBench ??= { nodes: {} });
-  for (const nodeId of nodeIds) {
-    if (!nodeId) continue;
-    bench.nodes[nodeId] = { ...bench.nodes[nodeId], ...patch };
-  }
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -1073,13 +1069,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         const affectedNodeIds = affectedNodeIdsFromOps(ops);
         if (affectedNodeIds.length > 0) {
           const targetBackendApplyStartedAtMs = Date.now();
-          const bench =
-            typeof window === 'undefined' ? undefined : window.__treecrdtPlaygroundBench;
+          const targetSocketMessageAtMs = getBenchLastRemoteSocketMessageAtMs();
           recordBenchNodeTiming(affectedNodeIds, {
             targetBackendApplyStartedAtMs,
-            ...(typeof bench?.lastRemoteSocketMessageAtMs === 'number'
-              ? { targetSocketMessageAtMs: bench.lastRemoteSocketMessageAtMs }
-              : {}),
+            ...(typeof targetSocketMessageAtMs === 'number' ? { targetSocketMessageAtMs } : {}),
           });
         }
         await baseBackend.applyOps(ops);
@@ -1288,10 +1281,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           remoteSocket.addEventListener('message', () => {
             if (disposed || syncConnRef.current !== connections) return;
             if (!remotePeerId) return;
-            if (typeof window !== 'undefined') {
-              const bench = (window.__treecrdtPlaygroundBench ??= { nodes: {} });
-              bench.lastRemoteSocketMessageAtMs = Date.now();
-            }
+            setBenchLastRemoteSocketMessageAtNow();
             remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
             setRemoteSyncStatus((prev) =>
               prev.state === 'connected'

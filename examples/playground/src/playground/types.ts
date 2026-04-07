@@ -39,16 +39,3 @@ export type PayloadRecord = {
   payload: Uint8Array | null;
   encrypted?: boolean;
 };
-
-export type PlaygroundBenchWindow = {
-  nodes: Record<string, Record<string, number>>;
-  lastRemoteSocketMessageAtMs?: number;
-  seedBalancedTree?: (opts: { count: number; fanout: number }) => Promise<void>;
-  getState?: () => {
-    status: Status;
-    totalNodes: number | null;
-    headLamport: number;
-    syncBusy: boolean;
-    liveBusy: boolean;
-  };
-};

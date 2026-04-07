@@ -25,14 +25,9 @@ import {
   toggleCapabilityAction,
   type CapabilityAction,
 } from '../capabilities';
+import { markBenchRowCommitted } from '../bench';
 import { ROOT_ID } from '../constants';
-import type {
-  CollapseState,
-  DisplayNode,
-  NodeMeta,
-  PeerInfo,
-  PlaygroundBenchWindow,
-} from '../types';
+import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from '../types';
 
 type IssuedGrantRecordRow = {
   recipientPkHex: string;
@@ -51,12 +46,6 @@ type MembersMenuLayout = {
   maxHeight: number;
   listMaxHeight: number;
 };
-
-declare global {
-  interface Window {
-    __treecrdtPlaygroundBench?: PlaygroundBenchWindow;
-  }
-}
 
 export function TreeRow({
   node,
@@ -358,12 +347,7 @@ export function TreeRow({
   }, [showMembersMenu, updateMembersMenuLayout]);
 
   useLayoutEffect(() => {
-    if (typeof window === 'undefined') return;
-    const bench = window.__treecrdtPlaygroundBench;
-    if (!bench) return;
-    const entry = bench.nodes[node.id];
-    if (!entry || typeof entry.rowCommittedAtMs === 'number') return;
-    entry.rowCommittedAtMs = Date.now();
+    markBenchRowCommitted(node.id);
   }, [node.id]);
 
   return (
