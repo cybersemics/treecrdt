@@ -1,4 +1,4 @@
-import { test } from 'vitest';
+import { expect, test } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +24,13 @@ async function createNodeEngine(opts: { docId: string; path?: string }) {
   loadTreecrdtExtension(db, { extensionPath: defaultExtensionPath() });
   return await createTreecrdtClient(db, { docId: opts.docId });
 }
+
+test('conformance registry includes affected-id scenarios', () => {
+  const names = treecrdtEngineConformanceScenarios().map((s) => s.name);
+  expect(names).toContain('appendMany: returns affected ids for structural batch');
+  expect(names).toContain('appendMany: returns deduped deterministic affected ids');
+  expect(names).toContain('appendMany: returns indirect affected ids on defensive restore');
+});
 
 for (const scenario of treecrdtEngineConformanceScenarios()) {
   test(`sqlite engine conformance (node): ${scenario.name}`, async () => {
