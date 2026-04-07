@@ -9,16 +9,6 @@ export { createTreecrdtPostgresClient } from './client.js';
 
 export type PostgresNapiSyncBackendFactory = {
   ensureSchema: () => Promise<void>;
-  resetForTests: () => Promise<void>;
-  resetDocForTests: (docId: string) => Promise<void>;
-  cloneDocForTests: (sourceDocId: string, targetDocId: string) => Promise<void>;
-  primeBalancedFanoutDocForTests: (
-    docId: string,
-    size: number,
-    fanout: number,
-    payloadBytes: number,
-    replicaLabel: string,
-  ) => Promise<void>;
   open: (docId: string) => Promise<SyncBackend<Operation>>;
 };
 
@@ -35,27 +25,6 @@ export function createPostgresNapiSyncBackendFactory(url: string): PostgresNapiS
 
   return {
     ensureSchema: async () => factory.ensureSchema(),
-    resetForTests: async () => factory.resetForTests(),
-    resetDocForTests: async (docId: string) => {
-      ensureNonEmptyString('docId', docId);
-      factory.resetDocForTests(docId);
-    },
-    cloneDocForTests: async (sourceDocId: string, targetDocId: string) => {
-      ensureNonEmptyString('sourceDocId', sourceDocId);
-      ensureNonEmptyString('targetDocId', targetDocId);
-      factory.cloneDocForTests(sourceDocId, targetDocId);
-    },
-    primeBalancedFanoutDocForTests: async (
-      docId: string,
-      size: number,
-      fanout: number,
-      payloadBytes: number,
-      replicaLabel: string,
-    ) => {
-      ensureNonEmptyString('docId', docId);
-      ensureNonEmptyString('replicaLabel', replicaLabel);
-      factory.primeBalancedFanoutDocForTests(docId, size, fanout, payloadBytes, replicaLabel);
-    },
     open: async (docId: string) => {
       ensureNonEmptyString('docId', docId);
       const nativeBackend = factory.open(docId);

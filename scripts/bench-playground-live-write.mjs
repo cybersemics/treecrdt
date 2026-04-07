@@ -175,7 +175,7 @@ async function loadPostgresSeedApi() {
       'packages',
       'treecrdt-postgres-napi',
       'dist',
-      'index.js',
+      'testing.js',
     );
     postgresSeedApiPromise = import(pathToFileURL(modulePath).href).catch((error) => {
       throw new Error(
@@ -637,9 +637,9 @@ function buildSeedSyncBackend({ docId, ops, deriveOpRefV0, makeQueuedSyncBackend
 }
 
 async function preseedPostgresPlaygroundDoc({ postgresUrl, docId, size, fanout }) {
-  const { createPostgresNapiAdapterFactory, createTreecrdtPostgresClient } =
+  const { createPostgresNapiTestAdapterFactory, createTreecrdtPostgresClient } =
     await loadPostgresSeedApi();
-  const factory = createPostgresNapiAdapterFactory(postgresUrl);
+  const factory = createPostgresNapiTestAdapterFactory(postgresUrl);
   await factory.ensureSchema();
   const hotWriteFixtureDocId = [
     'hot-write-seed',

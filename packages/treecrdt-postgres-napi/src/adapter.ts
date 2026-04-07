@@ -11,18 +11,6 @@ import { loadNative } from './native.js';
 
 export type PostgresNapiAdapterFactory = {
   ensureSchema: () => Promise<void>;
-  resetForTests: () => Promise<void>;
-  resetDocForTests: (docId: string) => Promise<void>;
-  cloneDocForTests: (sourceDocId: string, targetDocId: string) => Promise<void>;
-  cloneMaterializedDocForTests: (sourceDocId: string, targetDocId: string) => Promise<void>;
-  primeDocForTests: (docId: string, ops: Operation[]) => Promise<void>;
-  primeBalancedFanoutDocForTests: (
-    docId: string,
-    size: number,
-    fanout: number,
-    payloadBytes: number,
-    replicaLabel: string,
-  ) => Promise<void>;
   open: (docId: string) => Promise<TreecrdtAdapter>;
 };
 
@@ -54,48 +42,6 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
 
   return {
     ensureSchema: async () => factory.ensureSchema(),
-    resetForTests: async () => factory.resetForTests(),
-    resetDocForTests: async (docId: string) => {
-      ensureNonEmptyString('docId', docId);
-      factory.resetDocForTests(docId);
-    },
-    cloneDocForTests: async (sourceDocId: string, targetDocId: string) => {
-      ensureNonEmptyString('sourceDocId', sourceDocId);
-      ensureNonEmptyString('targetDocId', targetDocId);
-      factory.cloneDocForTests(sourceDocId, targetDocId);
-    },
-    cloneMaterializedDocForTests: async (sourceDocId: string, targetDocId: string) => {
-      ensureNonEmptyString('sourceDocId', sourceDocId);
-      ensureNonEmptyString('targetDocId', targetDocId);
-      factory.cloneMaterializedDocForTests(sourceDocId, targetDocId);
-    },
-    primeDocForTests: async (docId: string, ops: Operation[]) => {
-      ensureNonEmptyString('docId', docId);
-      factory.primeDocForTests(
-        docId,
-        ops.map((op) => opToNative(op, nodeIdToBytes16, replicaIdToBytes)),
-      );
-    },
-    primeBalancedFanoutDocForTests: async (
-      docId: string,
-      size: number,
-      fanout: number,
-      payloadBytes: number,
-      replicaLabel: string,
-    ) => {
-      ensureNonEmptyString('docId', docId);
-      ensureNonEmptyString('replicaLabel', replicaLabel);
-      if (!Number.isInteger(size) || size <= 0) {
-        throw new Error(`size must be a positive integer, got ${String(size)}`);
-      }
-      if (!Number.isInteger(fanout) || fanout <= 0) {
-        throw new Error(`fanout must be a positive integer, got ${String(fanout)}`);
-      }
-      if (!Number.isInteger(payloadBytes) || payloadBytes < 0) {
-        throw new Error(`payloadBytes must be a non-negative integer, got ${String(payloadBytes)}`);
-      }
-      factory.primeBalancedFanoutDocForTests(docId, size, fanout, payloadBytes, replicaLabel);
-    },
     open: async (initialDocId: string) => {
       ensureNonEmptyString('docId', initialDocId);
       let docId = initialDocId;
