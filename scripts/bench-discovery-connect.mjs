@@ -6,6 +6,10 @@ import process from 'node:process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
+import {
+  medianOrNull,
+  percentileNearestRankOrNull,
+} from '../packages/treecrdt-benchmark/dist/stats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -53,20 +57,6 @@ function parseHostMap(raw) {
       return [host.toLowerCase(), ip];
     });
   return new Map(entries);
-}
-
-function median(values) {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-function percentile(values, p) {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
-  return sorted[index];
 }
 
 function normalizeBootstrapUrl(raw) {
@@ -286,12 +276,12 @@ async function main() {
     connectSamplesMs,
     totalSamplesMs,
     cachedConnectSamplesMs,
-    resolveMedianMs: median(resolveSamplesMs),
-    connectMedianMs: median(connectSamplesMs),
-    totalMedianMs: median(totalSamplesMs),
-    cachedConnectMedianMs: median(cachedConnectSamplesMs),
-    totalP95Ms: percentile(totalSamplesMs, 95),
-    cachedConnectP95Ms: percentile(cachedConnectSamplesMs, 95),
+    resolveMedianMs: medianOrNull(resolveSamplesMs),
+    connectMedianMs: medianOrNull(connectSamplesMs),
+    totalMedianMs: medianOrNull(totalSamplesMs),
+    cachedConnectMedianMs: medianOrNull(cachedConnectSamplesMs),
+    totalP95Ms: percentileNearestRankOrNull(totalSamplesMs, 95),
+    cachedConnectP95Ms: percentileNearestRankOrNull(cachedConnectSamplesMs, 95),
     generatedAt: new Date().toISOString(),
   };
 

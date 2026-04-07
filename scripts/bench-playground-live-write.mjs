@@ -5,6 +5,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
+import { buildFanoutInsertTreeOps, replicaFromLabel } from '../packages/treecrdt-benchmark/dist/index.js';
+import {
+  medianOrNull,
+  percentileNearestRankOrNull,
+} from '../packages/treecrdt-benchmark/dist/stats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -98,61 +103,6 @@ function buildHostResolverRules(hostMap) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function nodeIdFromInt(i) {
-  if (!Number.isInteger(i) || i < 0) throw new Error(`invalid node id: ${i}`);
-  return i.toString(16).padStart(32, '0');
-}
-
-function orderKeyFromPosition(position) {
-  if (!Number.isInteger(position) || position < 0) {
-    throw new Error(`invalid position: ${position}`);
-  }
-  const n = position + 1;
-  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
-  const bytes = new Uint8Array(2);
-  new DataView(bytes.buffer).setUint16(0, n, false);
-  return bytes;
-}
-
-function replicaFromLabel(label) {
-  const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error('label must not be empty');
-  const out = new Uint8Array(32);
-  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length];
-  return out;
-}
-
-function buildFanoutInsertTreeOps({ replica, size, fanout, root }) {
-  if (!Number.isInteger(size) || size <= 0) throw new Error(`invalid size: ${size}`);
-  if (!Number.isInteger(fanout) || fanout <= 0) throw new Error(`invalid fanout: ${fanout}`);
-  const ops = [];
-  const queue = [{ parent: root, nextChildPosition: 0 }];
-
-  for (let i = 1; i <= size; i += 1) {
-    const cursor = queue[0];
-    if (!cursor) throw new Error('fanout tree queue empty');
-
-    const parent = cursor.parent;
-    const position = cursor.nextChildPosition;
-    cursor.nextChildPosition += 1;
-    if (cursor.nextChildPosition >= fanout) queue.shift();
-
-    const node = nodeIdFromInt(i);
-    ops.push({
-      meta: { id: { replica, counter: i }, lamport: i },
-      kind: {
-        type: 'insert',
-        parent,
-        node,
-        orderKey: orderKeyFromPosition(position),
-      },
-    });
-    queue.push({ parent: node, nextChildPosition: 0 });
-  }
-
-  return ops;
 }
 
 function buildSeedOps({ size, fanout }) {
@@ -697,22 +647,15 @@ async function preseedPostgresPlaygroundDoc({ postgresUrl, docId, size, fanout }
   };
 }
 
-function percentile(sorted, p) {
-  if (sorted.length === 0) return null;
-  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
-  return sorted[index];
-}
-
 function summarize(values) {
   if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mean = sorted.reduce((sum, value) => sum + value, 0) / sorted.length;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   return {
-    count: sorted.length,
-    minMs: sorted[0],
-    medianMs: percentile(sorted, 50),
-    p95Ms: percentile(sorted, 95),
-    maxMs: sorted[sorted.length - 1],
+    count: values.length,
+    minMs: Math.min(...values),
+    medianMs: medianOrNull(values),
+    p95Ms: percentileNearestRankOrNull(values, 95),
+    maxMs: Math.max(...values),
     meanMs: mean,
   };
 }

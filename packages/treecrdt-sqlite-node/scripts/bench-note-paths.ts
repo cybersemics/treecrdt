@@ -10,6 +10,12 @@ import {
   runBenchmark,
   type BenchmarkWorkload,
 } from '@treecrdt/benchmark';
+import {
+  parseFlagValue,
+  parsePositiveIntFlag,
+  payloadBytesFromSeed,
+  replicaFromLabel,
+} from '@treecrdt/benchmark/helpers';
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
@@ -72,27 +78,6 @@ function parseConfigFromArgv(argv: string[]): Array<ConfigEntry> | null {
   return customConfig;
 }
 
-function parseFlagValue(argv: string[], flag: string): string | undefined {
-  const prefix = `${flag}=`;
-  const raw = argv.find((arg) => arg.startsWith(prefix));
-  return raw ? raw.slice(prefix.length).trim() : undefined;
-}
-
-function parsePositiveIntFlag(
-  argv: string[],
-  flag: string,
-  envName: string,
-  fallback: number,
-): number {
-  const raw = parseFlagValue(argv, flag) ?? process.env[envName];
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`invalid ${flag} value "${raw}", expected a positive integer`);
-  }
-  return value;
-}
-
 function parseKinds(argv: string[]): NotePathBenchKind[] {
   const raw =
     parseFlagValue(argv, '--benches') ??
@@ -114,23 +99,6 @@ function parseKinds(argv: string[]): NotePathBenchKind[] {
     seen.add(value as NotePathBenchKind);
   }
   return seen.size > 0 ? Array.from(seen) : Array.from(ALL_NOTE_PATH_BENCHES);
-}
-
-function payloadBytesFromSeed(seed: number, size = DEFAULT_PAYLOAD_BYTES): Uint8Array {
-  if (!Number.isInteger(seed) || seed < 0) throw new Error(`invalid payload seed: ${seed}`);
-  const out = new Uint8Array(size);
-  for (let i = 0; i < out.length; i += 1) {
-    out[i] = (seed + i * 31) % 251;
-  }
-  return out;
-}
-
-function replicaFromLabel(label: string): Uint8Array {
-  const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error('label must not be empty');
-  const out = new Uint8Array(32);
-  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
-  return out;
 }
 
 function makePayloadOp(

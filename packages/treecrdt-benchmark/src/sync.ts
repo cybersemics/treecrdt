@@ -1,5 +1,6 @@
 import type { Operation, OperationKind, ReplicaId } from '@treecrdt/interface';
 import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { orderKeyFromPosition, payloadBytesFromSeed, replicaFromLabel } from './helpers.js';
 import { envIntList } from './stats.js';
 import { benchTiming } from './timing.js';
 
@@ -109,23 +110,6 @@ export function nodeIdFromInt(i: number): string {
   return i.toString(16).padStart(32, '0');
 }
 
-function orderKeyFromPosition(position: number): Uint8Array {
-  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
-  const n = position + 1;
-  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
-  const bytes = new Uint8Array(2);
-  new DataView(bytes.buffer).setUint16(0, n, false);
-  return bytes;
-}
-
-function replicaFromLabel(label: string): Uint8Array {
-  const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error('label must not be empty');
-  const out = new Uint8Array(32);
-  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
-  return out;
-}
-
 export function makeOp(
   replica: ReplicaId,
   counter: number,
@@ -140,16 +124,6 @@ export function maxLamport(ops: Operation[]): number {
 }
 
 type ParentCursor = { parent: string; nextChildPosition: number };
-
-function payloadBytesFromSeed(seed: number, size = 512): Uint8Array {
-  if (!Number.isInteger(seed) || seed < 0) throw new Error(`invalid payload seed: ${seed}`);
-  if (!Number.isInteger(size) || size <= 0) throw new Error(`invalid payload size: ${size}`);
-  const out = new Uint8Array(size);
-  for (let i = 0; i < out.length; i += 1) {
-    out[i] = (seed + i * 31) % 251;
-  }
-  return out;
-}
 
 export function buildFanoutInsertTreeOps(opts: {
   replica: ReplicaId;
