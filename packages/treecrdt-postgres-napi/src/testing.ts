@@ -11,7 +11,7 @@ import {
   createPostgresNapiSyncBackendFactory,
   type PostgresNapiSyncBackendFactory,
 } from './index.js';
-import { loadNative } from './native.js';
+import { loadNative, type NativeTestingFactory } from './native.js';
 
 export { createTreecrdtPostgresClient } from './client.js';
 
@@ -65,11 +65,15 @@ function opToNative(op: Operation) {
   return operationToNativeWithSerializers(op, nodeIdToBytes16, replicaIdToBytes);
 }
 
+function createTestingFactory(url: string): NativeTestingFactory {
+  const native = loadNative();
+  return new native.PgTestingFactory(url);
+}
+
 export function createPostgresNapiTestAdapterFactory(url: string): PostgresNapiTestAdapterFactory {
   ensureNonEmptyString('url', url);
   const base = createPostgresNapiAdapterFactory(url);
-  const native = loadNative();
-  const factory = new native.PgFactory(url);
+  const factory = createTestingFactory(url);
 
   return {
     ...base,
@@ -114,8 +118,7 @@ export function createPostgresNapiTestSyncBackendFactory(
 ): PostgresNapiTestSyncBackendFactory {
   ensureNonEmptyString('url', url);
   const base = createPostgresNapiSyncBackendFactory(url);
-  const native = loadNative();
-  const factory = new native.PgFactory(url);
+  const factory = createTestingFactory(url);
 
   return {
     ...base,

@@ -245,6 +245,30 @@ impl PgFactory {
     }
 
     #[napi]
+    pub fn open(&self, doc_id: String) -> napi::Result<PgBackend> {
+        let client = connect(&self.url)?;
+        Ok(PgBackend {
+            client: std::cell::RefCell::new(Some(std::rc::Rc::new(std::cell::RefCell::new(
+                client,
+            )))),
+            doc_id,
+        })
+    }
+}
+
+#[napi]
+pub struct PgTestingFactory {
+    url: String,
+}
+
+#[napi]
+impl PgTestingFactory {
+    #[napi(constructor)]
+    pub fn new(url: String) -> Self {
+        Self { url }
+    }
+
+    #[napi]
     pub fn reset_for_tests(&self) -> napi::Result<()> {
         let mut client = connect(&self.url)?;
         // Test-only convenience: wipe all docs.
@@ -323,17 +347,6 @@ impl PgFactory {
         )
         .map_err(map_core_err)?;
         Ok(())
-    }
-
-    #[napi]
-    pub fn open(&self, doc_id: String) -> napi::Result<PgBackend> {
-        let client = connect(&self.url)?;
-        Ok(PgBackend {
-            client: std::cell::RefCell::new(Some(std::rc::Rc::new(std::cell::RefCell::new(
-                client,
-            )))),
-            doc_id,
-        })
     }
 }
 
