@@ -11,6 +11,7 @@ Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared Typ
 - `packages/treecrdt-sqlite-node`: TreeCRDT bundled for Node.js use
 - `packages/treecrdt-wa-sqlite`: TreeCRDT bunlded for browser use
 - `packages/treecrdt-benchmark`: Benchmark utilities
+- `packages/discovery`: bootstrap contract for resolving docs to attachment plans
 - `packages/sync/protocol`: sync protocol/runtime core
 - `packages/sync/material/sqlite`: SQLite-backed sync adapters and proof-material stores
 - `packages/sync/material/postgres`: Postgres-backed sync proof-material stores
