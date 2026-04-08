@@ -1363,10 +1363,12 @@ async function findFreePort(): Promise<number> {
 async function createDirectPostgresRemoteFixtureHelpers(
   repoRoot: string,
   postgresUrl: string,
-): Promise<Pick<
-  SyncBenchTargetRuntime,
-  'inspectDoc' | 'resetDoc' | 'seedOps' | 'primeBalancedFanoutDocForTests' | 'waitForOpCount'
->> {
+): Promise<
+  Pick<
+    SyncBenchTargetRuntime,
+    'inspectDoc' | 'resetDoc' | 'seedOps' | 'primeBalancedFanoutDocForTests' | 'waitForOpCount'
+  >
+> {
   const backendModule = path.join(
     repoRoot,
     'packages',
