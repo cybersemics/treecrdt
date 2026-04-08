@@ -1892,23 +1892,38 @@ function serverPrimeMode(bench: BuiltSyncBench): ServerPrimeMode | undefined {
   return bench.serverPrime?.kind;
 }
 
-function shouldMaterializeServerOps(
+function canPrimeBalancedColdStartDirectly(
+  runtime: SyncBenchTargetRuntime | null | undefined,
   target: SyncBenchTargetId,
   workload: SyncBenchWorkload,
 ): boolean {
-  return !(
-    target === 'local-postgres-sync-server' &&
-    (workload === 'sync-balanced-children-cold-start' ||
-      workload === 'sync-balanced-children-payloads-cold-start')
-  );
+  // When the target can materialize the balanced fixture from benchmark metadata,
+  // avoid constructing the full server-side op list in Node up front.
+  const isBalancedColdStart =
+    workload === 'sync-balanced-children-cold-start' ||
+    workload === 'sync-balanced-children-payloads-cold-start';
+  if (!isBalancedColdStart) return false;
+  if (target === 'local-postgres-sync-server') return true;
+  return runtime?.primeBalancedFanoutDocForTests != null;
 }
 
-function buildBenchForCase(benchCase: Pick<BenchCase, 'target' | 'workload' | 'size' | 'fanout'>) {
+function shouldMaterializeServerOps(
+  runtime: SyncBenchTargetRuntime | null | undefined,
+  target: SyncBenchTargetId,
+  workload: SyncBenchWorkload,
+): boolean {
+  return !canPrimeBalancedColdStartDirectly(runtime, target, workload);
+}
+
+function buildBenchForCase(
+  benchCase: Pick<BenchCase, 'target' | 'workload' | 'size' | 'fanout'>,
+  runtime?: SyncBenchTargetRuntime | null,
+) {
   return buildSyncBenchCase({
     workload: benchCase.workload,
     size: benchCase.size,
     fanout: benchCase.fanout,
-    materializeServerOps: shouldMaterializeServerOps(benchCase.target, benchCase.workload),
+    materializeServerOps: shouldMaterializeServerOps(runtime, benchCase.target, benchCase.workload),
   });
 }
 
@@ -2466,13 +2481,12 @@ async function runBenchCase(
   postSeedWaitMs: number,
   maxOpsPerBatch?: number,
 ): Promise<SyncBenchResult> {
-  const bench = buildBenchForCase(benchCase);
-  const { iterations, warmupIterations } = benchCase;
-
   const runtime = benchCase.target === 'direct' ? null : runtimes.get(benchCase.target);
   if (benchCase.target !== 'direct' && !runtime) {
     throw new Error(`missing runtime for sync bench target ${benchCase.target}`);
   }
+  const bench = buildBenchForCase(benchCase, runtime);
+  const { iterations, warmupIterations } = benchCase;
 
   if (includeFirstView && !bench.firstView) {
     throw new Error(`sync bench workload ${bench.name} does not support --first-view`);
@@ -2573,7 +2587,6 @@ async function primeServerFixtureCase(
   serverFixtureCacheMode: ServerFixtureCacheMode,
   maxOpsPerBatch?: number,
 ): Promise<PrimedServerFixtureResult> {
-  const bench = buildBenchForCase(benchCase);
   const runtime = benchCase.target === 'direct' ? null : runtimes.get(benchCase.target);
   if (benchCase.target !== 'direct' && !runtime) {
     throw new Error(`missing runtime for sync bench target ${benchCase.target}`);
@@ -2581,6 +2594,7 @@ async function primeServerFixtureCase(
   if (!runtime) {
     throw new Error('server fixture priming requires a sync-server target');
   }
+  const bench = buildBenchForCase(benchCase, runtime);
   if (!canReuseServerFixture(runtime, bench)) {
     throw new Error(
       `sync bench workload ${bench.name} does not support reusable sync-server fixtures`,
