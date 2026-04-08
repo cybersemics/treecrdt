@@ -39,10 +39,13 @@
     "benchmark:sync:upload:remote": "node scripts/run-sync-bench.mjs remote prime",
     "benchmark:sync:remote": "node scripts/run-sync-bench.mjs remote",
     "benchmark:playground:live-write": "node scripts/bench-playground-live-write.mjs",
+    "benchmark:sync:bootstrap": "node scripts/bench-discovery-connect.mjs",
     "benchmark:wasm": "pnpm -C packages/treecrdt-wasm-js run benchmark",
     "benchmark:web": "pnpm -C packages/treecrdt-wa-sqlite/e2e run bench",
     "test": "pnpm run test:browser && pnpm run test:native-node",
     "playground": "pnpm --filter @treecrdt/playground dev",
+    "discovery-server": "pnpm --filter @treecrdt/discovery-server-node dev",
+    "discovery-server:local": "TREECRDT_DISCOVERY_PUBLIC_HTTP_BASE_URL=http://localhost:8788 TREECRDT_DISCOVERY_PUBLIC_WS_BASE_URL=ws://localhost:8787 pnpm --filter @treecrdt/discovery-server-node dev",
     "sync-server:postgres:setup": "pnpm --filter @treecrdt/postgres-napi... --filter @treecrdt/sync-server-postgres-node... run build",
     "sync-server:postgres": "pnpm --filter @treecrdt/sync-server-postgres-node dev",
     "sync-server:postgres:local": "node scripts/run-sync-server-postgres-local.mjs",
@@ -52,6 +55,7 @@
   "devDependencies": {
     "@bufbuild/buf": "^1.61.0",
     "@bufbuild/protoc-gen-es": "^2.10.2",
-    "prettier": "^3.8.1"
+    "prettier": "^3.8.1",
+    "ws": "^8.18.3"
   }
 }
