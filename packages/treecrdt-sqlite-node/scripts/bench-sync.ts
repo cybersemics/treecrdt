@@ -1016,7 +1016,6 @@ async function makeBackend(opts: {
     maxLamportFromOps: maxLamport,
     listOpRefs: backend.listOpRefs,
     getOpsByOpRefs: backend.getOpsByOpRefs,
-    streamOps: backend.streamOps,
     applyOps: backend.applyOps,
   });
   if (!opts.profileLabel) return queued;

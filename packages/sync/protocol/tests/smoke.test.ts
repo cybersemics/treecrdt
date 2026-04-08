@@ -334,23 +334,6 @@ class CountingListBackend extends MemoryBackend {
   }
 }
 
-class StreamOpsBackend extends MemoryBackend {
-  streamOpsCalls = 0;
-  getOpsByOpRefsCalls = 0;
-
-  override async getOpsByOpRefs(opRefs: OpRef[]): Promise<Operation[]> {
-    this.getOpsByOpRefsCalls += 1;
-    return super.getOpsByOpRefs(opRefs);
-  }
-
-  async *streamOps(filter: Filter): AsyncIterable<Operation> {
-    this.streamOpsCalls += 1;
-    const opRefs = await super.listOpRefs(filter);
-    const ops = await super.getOpsByOpRefs(opRefs);
-    for (const op of ops) yield op;
-  }
-}
-
 test('syncOnce does not starve macrotask transports', async () => {
   const docId = 'doc-sync-macrotask';
   const root = '0'.repeat(32);
@@ -593,14 +576,6 @@ test('syncOnce waits for ribltStatus.more before sending another codeword batch'
 
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
-  await b.applyOps([
-    makeOp(replicas.b, 1, 1, {
-      type: 'insert',
-      parent: root,
-      node: nodeIdFromInt(1000),
-      orderKey: orderKeyFromPosition(0),
-    }),
-  ]);
 
   const ops: Operation[] = [];
   for (let i = 1; i <= 12; i += 1) {
@@ -740,44 +715,6 @@ test('syncOnce can direct-send a clean-slate upload to an empty receiver without
   expect(wire).toContain('bToA:opsBatch');
   expect(wire).not.toContain('aToB:ribltCodewords');
   expect(wire).not.toContain('bToA:ribltStatus');
-});
-
-test('syncOnce uses streamOps for empty-receiver uploads when available', async () => {
-  const docId = 'doc-sync-direct-send-empty-receiver-stream-ops';
-  const root = '0'.repeat(32);
-
-  const a = new StreamOpsBackend(docId);
-  const b = new MemoryBackend(docId);
-
-  await a.applyOps([
-    makeOp(replicas.a, 1, 1, {
-      type: 'insert',
-      parent: root,
-      node: nodeIdFromInt(1),
-      orderKey: orderKeyFromPosition(0),
-    }),
-    makeOp(replicas.a, 2, 2, {
-      type: 'insert',
-      parent: root,
-      node: nodeIdFromInt(2),
-      orderKey: orderKeyFromPosition(1),
-    }),
-  ]);
-
-  const [ta, tb] = createLoggedTimedDuplex<SyncMessage<Operation>>();
-  const pa = new SyncPeer(a);
-  const pb = new SyncPeer(b);
-  pa.attach(ta);
-  pb.attach(tb);
-
-  await pa.syncOnce(ta, { all: {} }, { maxCodewords: 4_096, codewordsPerMessage: 16, maxOpsPerBatch: 1 });
-
-  await waitUntil(() => b.hasOp(replicaHex.a, 2), {
-    message: 'expected empty receiver to receive direct-sent upload via streamOps',
-  });
-
-  expect(a.streamOpsCalls).toBe(1);
-  expect(a.getOpsByOpRefsCalls).toBe(0);
 });
 
 test('syncOnce rejects when local message handler throws during apply', async () => {

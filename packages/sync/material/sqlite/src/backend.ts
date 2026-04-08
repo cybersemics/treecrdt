@@ -127,62 +127,45 @@ export function createTreecrdtSyncBackendFromClient(
     throw new Error('maxLamport: missing client.meta.headLamport and client.ops.all');
   };
 
-  const listOpRefsImpl = async (filter: Filter): Promise<OpRef[]> => {
-    if ('all' in filter) {
-      const refs = await client.opRefs.all();
-      if (!pending) return refs;
-      await ensurePendingReady();
-      const pendingRefs = await pending.listPendingOpRefs();
-      if (pendingRefs.length === 0) return refs;
-
-      const byHex = new Map(refs.map((r) => [bytesToHex(r), r]));
-      for (const r of pendingRefs) byHex.set(bytesToHex(r), r);
-      return Array.from(byHex.values());
-    }
-
-    const parentHex = bytesToHex(filter.children.parent);
-    const refs = await client.opRefs.children(parentHex);
-
-    // Scoped sync often starts at a subtree root where the node's own payload opRef is not
-    // discoverable via its parent (which may be outside scope). Include the node's latest
-    // payload-writer opRef so `children(node)` can render the scope root label/value.
-    if (!client.runner) return refs;
-    const payloadWriter = await maybeLoadNodePayloadWriterOpRef({
-      runner: client.runner,
-      docId,
-      nodeBytes: filter.children.parent,
-    });
-    if (!payloadWriter) return refs;
-
-    const seen = new Set(refs.map((r) => bytesToHex(r)));
-    const hex = bytesToHex(payloadWriter);
-    if (seen.has(hex)) return refs;
-    return [...refs, payloadWriter];
-  };
-
-  const streamOpsImpl = async function* (filter: Filter): AsyncIterable<Operation> {
-    if ('all' in filter && client.ops.all) {
-      const ops = await client.ops.all();
-      for (const op of ops) yield op;
-      return;
-    }
-
-    const opRefs = await listOpRefsImpl(filter);
-    if (opRefs.length === 0) return;
-    const ops = await client.ops.get(opRefs);
-    for (const op of ops) yield op;
-  };
-
   return {
     docId,
 
     maxLamport: async () => (opts.maxLamport ? await opts.maxLamport() : await defaultMaxLamport()),
 
-    listOpRefs: listOpRefsImpl,
+    listOpRefs: async (filter: Filter) => {
+      if ('all' in filter) {
+        const refs = await client.opRefs.all();
+        if (!pending) return refs;
+        await ensurePendingReady();
+        const pendingRefs = await pending.listPendingOpRefs();
+        if (pendingRefs.length === 0) return refs;
+
+        const byHex = new Map(refs.map((r) => [bytesToHex(r), r]));
+        for (const r of pendingRefs) byHex.set(bytesToHex(r), r);
+        return Array.from(byHex.values());
+      }
+
+      const parentHex = bytesToHex(filter.children.parent);
+      const refs = await client.opRefs.children(parentHex);
+
+      // Scoped sync often starts at a subtree root where the node's own payload opRef is not
+      // discoverable via its parent (which may be outside scope). Include the node's latest
+      // payload-writer opRef so `children(node)` can render the scope root label/value.
+      if (!client.runner) return refs;
+      const payloadWriter = await maybeLoadNodePayloadWriterOpRef({
+        runner: client.runner,
+        docId,
+        nodeBytes: filter.children.parent,
+      });
+      if (!payloadWriter) return refs;
+
+      const seen = new Set(refs.map((r) => bytesToHex(r)));
+      const hex = bytesToHex(payloadWriter);
+      if (seen.has(hex)) return refs;
+      return [...refs, payloadWriter];
+    },
 
     getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
-
-    streamOps: streamOpsImpl,
 
     applyOps: async (ops) => {
       if (ops.length === 0) return;
