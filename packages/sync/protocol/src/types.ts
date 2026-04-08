@@ -132,6 +132,14 @@ export interface SyncBackend<Op> {
   maxLamport(): Promise<bigint>;
   listOpRefs(filter: Filter): Promise<OpRef[]>;
   getOpsByOpRefs(opRefs: OpRef[]): Promise<Op[]>;
+  /**
+   * Optional: stream ops for a filter in send order.
+   *
+   * This is mainly a fast path for empty-receiver uploads, where the sender
+   * already knows it will send the full matching result and can avoid the
+   * generic listOpRefs -> getOpsByOpRefs roundtrip.
+   */
+  streamOps?: (filter: Filter) => AsyncIterable<Op>;
   applyOps(ops: Op[]): Promise<void>;
 
   /**

@@ -426,6 +426,92 @@ export class SyncPeer<Op> {
     });
   }
 
+  private async sendStreamedOpsBatches(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    filterId: string,
+    stream: AsyncIterable<Op>,
+    opts: { maxOpsPerBatch?: number; filter?: Filter } = {},
+  ): Promise<void> {
+    const batchSize = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
+    const filter =
+      opts.filter ??
+      this.responderSessions.get(filterId)?.filter ??
+      this.initiatorSessions.get(filterId)?.filter ??
+      undefined;
+    const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
+    const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
+
+    let sentAny = false;
+    let chunk: Op[] = [];
+
+    const flushChunk = async (done: boolean): Promise<void> => {
+      if (chunk.length === 0) {
+        if (done) await this.sendDoneOpsBatch(transport, filterId);
+        return;
+      }
+
+      let ops = chunk;
+      chunk = [];
+
+      if (filter && this.auth?.filterOutgoingOps && ops.length > 0) {
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: 'reconcile',
+          filter,
+          capabilities: peerCaps,
+        });
+        if (allowed.length !== ops.length) {
+          throw new Error(
+            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
+          );
+        }
+        ops = ops.filter((_op, idx) => allowed[idx] === true);
+      }
+
+      if (ops.length === 0) {
+        if (done) await this.sendDoneOpsBatch(transport, filterId);
+        return;
+      }
+
+      const auth =
+        shouldAttachAuth && this.auth?.signOps
+          ? await this.auth.signOps(ops, {
+              docId: this.backend.docId,
+              purpose: 'reconcile',
+              filterId,
+            })
+          : undefined;
+      if (auth && auth.length !== ops.length) {
+        throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
+      }
+
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: 'opsBatch',
+          value: { filterId, ops, ...(auth ? { auth } : {}), done },
+        },
+      });
+      sentAny = true;
+      await yieldToMacrotask();
+    };
+
+    for await (const op of stream) {
+      chunk.push(op);
+      if (chunk.length >= batchSize) {
+        await flushChunk(false);
+      }
+    }
+
+    await flushChunk(true);
+    if (!sentAny && chunk.length === 0) {
+      // flushChunk(true) already sent the empty done marker; this branch just
+      // makes the intent explicit for the "no matching ops" case.
+      return;
+    }
+  }
+
   private async pushSubscription(
     sub: ResponderSubscription<Op>,
     opts: { deltaOps?: readonly PendingPushOp<Op>[]; forceFullScan?: boolean } = {},
@@ -688,7 +774,12 @@ export class SyncPeer<Op> {
         session.awaitingUploadAck = true;
         const uploadMaxOpsPerBatch =
           opts.maxOpsPerBatch ?? DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH;
-        if (opRefs.length > 0) {
+        if (this.backend.streamOps) {
+          await this.sendStreamedOpsBatches(transport, filterId, this.backend.streamOps(filter), {
+            maxOpsPerBatch: uploadMaxOpsPerBatch,
+            filter,
+          });
+        } else if (opRefs.length > 0) {
           await this.sendOpsBatches(transport, filterId, opRefs, {
             maxOpsPerBatch: uploadMaxOpsPerBatch,
             filter,

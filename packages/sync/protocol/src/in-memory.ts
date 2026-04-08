@@ -12,6 +12,7 @@ export function makeQueuedSyncBackend<Op>(opts: {
   maxLamportFromOps: (ops: Op[]) => number;
   listOpRefs: (filter: Filter) => Promise<OpRef[]>;
   getOpsByOpRefs: (opRefs: OpRef[]) => Promise<Op[]>;
+  streamOps?: (filter: Filter) => AsyncIterable<Op>;
   applyOps: (ops: Op[]) => Promise<void>;
 }): FlushableSyncBackend<Op> {
   let maxLamportValue = opts.initialMaxLamport;
@@ -22,6 +23,7 @@ export function makeQueuedSyncBackend<Op>(opts: {
     maxLamport: async () => BigInt(maxLamportValue),
     listOpRefs: opts.listOpRefs,
     getOpsByOpRefs: opts.getOpsByOpRefs,
+    streamOps: opts.streamOps,
     applyOps: async (ops: Op[]) => {
       if (ops.length === 0) return;
       const nextMax = opts.maxLamportFromOps(ops);
