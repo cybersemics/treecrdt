@@ -295,9 +295,7 @@ function assertAffectedIdsContain(ids: string[], expected: string[], message: st
   const set = new Set(ids);
   for (const id of expected) {
     if (!set.has(id)) {
-      throw new Error(
-        `${message}: expected ${JSON.stringify(id)} in ${JSON.stringify(ids)}`,
-      );
+      throw new Error(`${message}: expected ${JSON.stringify(id)} in ${JSON.stringify(ids)}`);
     }
   }
 }
