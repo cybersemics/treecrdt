@@ -532,7 +532,7 @@ export default function App() {
   const getMaxLamport = React.useCallback(() => BigInt(lamportRef.current), []);
 
   const onRemoteOpsApplied = React.useCallback(
-    async (appliedOps: Operation[]) => {
+    async (appliedOps: Operation[], affectedNodeIds: string[]) => {
       const active = clientRef.current ?? client;
       if (active && appliedOps.length > 0) {
         await refreshPayloadsForNodes(active, nodesAffectedByPayloadOps(appliedOps));
@@ -544,7 +544,22 @@ export default function App() {
         lamportRef.current = Math.max(lamportRef.current, max);
         setHeadLamport(lamportRef.current);
       }
-      scheduleRefreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      const parentsToRefresh = new Set<string>();
+      const loadedChildren = treeStateRef.current.childrenByParent;
+      const index = treeStateRef.current.index;
+      for (const nodeId of affectedNodeIds) {
+        const parentId = index[nodeId]?.parentId;
+        if (parentId && Object.prototype.hasOwnProperty.call(loadedChildren, parentId)) {
+          parentsToRefresh.add(parentId);
+        }
+        if (Object.prototype.hasOwnProperty.call(loadedChildren, nodeId)) {
+          parentsToRefresh.add(nodeId);
+        }
+      }
+      for (const id of parentsAffectedByOps(treeStateRef.current, appliedOps)) {
+        parentsToRefresh.add(id);
+      }
+      scheduleRefreshParents(parentsToRefresh);
       scheduleRefreshNodeCount();
     },
     [client, ingestOps, refreshPayloadsForNodes, scheduleRefreshNodeCount, scheduleRefreshParents]
