@@ -209,8 +209,5 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
 
     let head = res.head.expect("expected materialization head");
     assert_eq!(head.counter, 2);
-    assert_eq!(
-        res.affected_node_ids,
-        vec![NodeId::ROOT, parent, child],
-    );
+    assert_eq!(res.affected_node_ids, vec![NodeId::ROOT, parent, child],);
 }

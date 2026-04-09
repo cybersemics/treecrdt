@@ -168,7 +168,10 @@ fn apply_remote_with_materialization_reports_affected_node_ids() {
         .apply_remote_with_materialization_seq(insert, &mut index, &mut seq)
         .unwrap()
         .unwrap();
-    assert_eq!(insert_delta.affected_node_ids, vec![NodeId::ROOT, NodeId(1)]);
+    assert_eq!(
+        insert_delta.affected_node_ids,
+        vec![NodeId::ROOT, NodeId(1)]
+    );
 
     let payload = Operation::set_payload(&replica, 2, 2, NodeId(1), b"hello".to_vec());
     let payload_delta = crdt

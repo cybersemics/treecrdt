@@ -95,5 +95,8 @@ fn apply_remote_with_delta_returns_none_when_replay_is_required() {
 
     let replay = crdt.apply_remote_with_delta(low).unwrap();
     assert!(replay.is_none());
-    assert_eq!(crdt.children(NodeId::ROOT).unwrap(), &[NodeId(10), NodeId(20)]);
+    assert_eq!(
+        crdt.children(NodeId::ROOT).unwrap(),
+        &[NodeId(10), NodeId(20)]
+    );
 }

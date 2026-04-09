@@ -302,7 +302,8 @@ pub(super) fn append_ops_impl(
         let materialized = treecrdt_core::try_incremental_materialization(
             meta.dirty,
             || {
-                affected_node_ids = materialize_ops_in_order(db, doc_id, &meta, &materialize_ops[..])?;
+                affected_node_ids =
+                    materialize_ops_in_order(db, doc_id, &meta, &materialize_ops[..])?;
                 Ok::<(), c_int>(())
             },
             || {

@@ -483,12 +483,9 @@ impl PgBackend {
             core_ops.push(native_to_core_op(op).map_err(map_core_err)?);
         }
 
-        let affected = treecrdt_postgres::append_ops_with_affected_node_ids(
-            &client,
-            &self.doc_id,
-            &core_ops,
-        )
-        .map_err(map_core_err)?;
+        let affected =
+            treecrdt_postgres::append_ops_with_affected_node_ids(&client, &self.doc_id, &core_ops)
+                .map_err(map_core_err)?;
         Ok(affected
             .into_iter()
             .map(|node| Buffer::from(node_to_bytes16(node).to_vec()))

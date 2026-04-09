@@ -1478,7 +1478,11 @@ fn select_inserted_ops(
     inserted_ops
 }
 
-fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) -> Result<Vec<NodeId>> {
+fn materialize_ops_in_order(
+    ctx: PgCtx,
+    meta: &TreeMeta,
+    ops: Vec<Operation>,
+) -> Result<Vec<NodeId>> {
     if ops.is_empty() {
         return Ok(Vec::new());
     }

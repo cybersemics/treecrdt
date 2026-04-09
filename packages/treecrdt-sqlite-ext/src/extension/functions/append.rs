@@ -1,5 +1,5 @@
-use super::*;
 use super::util::sqlite_result_json;
+use super::*;
 
 /// Append an operation row to the `ops` table. Args:
 /// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, order_key BLOB|null, known_state_or_payload BLOB|null
