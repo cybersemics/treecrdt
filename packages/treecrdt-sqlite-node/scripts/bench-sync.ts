@@ -109,6 +109,7 @@ type PreparedServerFixture = {
   docId: string;
   cacheKey?: string;
   cacheStatus: 'disabled' | 'hit' | 'miss' | 'rebuild' | 'assumed';
+  cacheStatus: 'disabled' | 'hit' | 'miss' | 'rebuild' | 'assumed' | 'manifest';
   seedUploadMs?: number;
   seedAllReadyMs?: number;
   filterReadyMs?: number;
@@ -123,6 +124,7 @@ type SyncBenchConnection = {
 type SyncBenchTargetRuntime = {
   id: Exclude<SyncBenchTargetId, 'direct'>;
   serverProcess: 'child-process' | 'in-process' | 'remote';
+  fixtureCacheScope?: string;
   connect: (docId: string) => Promise<SyncBenchConnection>;
   seedOps?: (docId: string, ops: Operation[]) => Promise<void>;
   inspectDoc?: (docId: string) => Promise<{ allCount: number; maxLamport: number }>;
@@ -240,6 +242,14 @@ const SYNC_BENCH_POST_SEED_WAIT_MS = Math.max(0, envInt('SYNC_BENCH_POST_SEED_WA
 const DEFAULT_SERVER_FIXTURE_CACHE_MODE: ServerFixtureCacheMode = 'reuse';
 const SYNC_BENCH_SERVER_FIXTURE_CACHE_VERSION = '2026-03-21-v1';
 const SERVER_READY_POLL_MS = 100;
+const BENCH_REPO_ROOT = repoRootFromImportMeta(import.meta.url, 3);
+const SERVER_FIXTURE_MANIFEST_VERSION = 1;
+const SERVER_FIXTURE_MANIFEST_DIR = path.join(
+  BENCH_REPO_ROOT,
+  'tmp',
+  'sqlite-node-sync-bench',
+  'server-fixtures',
+);
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name];
@@ -1162,6 +1172,7 @@ async function createLocalPostgresSyncServerTarget(
       id: 'local-postgres-sync-server',
       serverProcess: 'in-process',
       connect: async (docId) => await connectToSyncServer(`ws://127.0.0.1:${server.port}`, docId),
+      fixtureCacheScope: 'local-postgres-sync-server',
       seedOps,
       inspectDoc,
       resetDoc,
@@ -1220,6 +1231,7 @@ async function createLocalPostgresSyncServerTarget(
     id: 'local-postgres-sync-server',
     serverProcess: 'child-process',
     connect: async (docId) => await connectToSyncServer(`ws://127.0.0.1:${port}`, docId),
+    fixtureCacheScope: 'local-postgres-sync-server',
     seedOps,
     inspectDoc,
     resetDoc,
@@ -1328,6 +1340,7 @@ function createRemoteSyncServerTarget(baseUrl: string): SyncBenchTargetRuntime {
     id: 'remote-sync-server',
     serverProcess: 'remote',
     connect: async (docId) => await connectToSyncServer(baseUrl, docId, { client: 'builtin' }),
+    fixtureCacheScope: baseUrl,
     close: async () => {},
   };
 }
@@ -1655,6 +1668,71 @@ function createServerFixtureCacheKey(bench: ReturnType<typeof buildSyncBenchCase
   return hash.digest('hex').slice(0, 24);
 }
 
+function fixtureCacheScopeForRuntime(runtime: SyncBenchTargetRuntime): string {
+  return runtime.fixtureCacheScope ?? runtime.id;
+}
+
+function fixtureManifestPath(runtime: SyncBenchTargetRuntime, cacheKey: string): string {
+  const hash = createHash('sha256');
+  updateFixtureHashWithString(hash, fixtureCacheScopeForRuntime(runtime));
+  updateFixtureHashWithString(hash, cacheKey);
+  return path.join(
+    SERVER_FIXTURE_MANIFEST_DIR,
+    `${runtime.id}-${hash.digest('hex').slice(0, 24)}.json`,
+  );
+}
+
+async function readServerFixtureManifest(
+  runtime: SyncBenchTargetRuntime,
+  cacheKey: string,
+): Promise<string | undefined> {
+  try {
+    const raw = JSON.parse(await fs.readFile(fixtureManifestPath(runtime, cacheKey), 'utf8')) as {
+      version?: number;
+      runtimeId?: string;
+      scope?: string;
+      cacheKey?: string;
+      docId?: string;
+    };
+    if (
+      raw.version !== SERVER_FIXTURE_MANIFEST_VERSION ||
+      raw.runtimeId !== runtime.id ||
+      raw.scope !== fixtureCacheScopeForRuntime(runtime) ||
+      raw.cacheKey !== cacheKey ||
+      typeof raw.docId !== 'string' ||
+      raw.docId.length === 0
+    ) {
+      return undefined;
+    }
+    return raw.docId;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeServerFixtureManifest(
+  runtime: SyncBenchTargetRuntime,
+  cacheKey: string,
+  docId: string,
+): Promise<void> {
+  await fs.mkdir(SERVER_FIXTURE_MANIFEST_DIR, { recursive: true });
+  await fs.writeFile(
+    fixtureManifestPath(runtime, cacheKey),
+    JSON.stringify(
+      {
+        version: SERVER_FIXTURE_MANIFEST_VERSION,
+        runtimeId: runtime.id,
+        scope: fixtureCacheScopeForRuntime(runtime),
+        cacheKey,
+        docId,
+        writtenAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 async function prepareServerFixture(
   runtime: SyncBenchTargetRuntime,
   bench: ReturnType<typeof buildSyncBenchCase>,
@@ -1665,12 +1743,18 @@ async function prepareServerFixture(
   const prepareStartedAt = performance.now();
   const cacheKey = cacheMode === 'off' ? undefined : createServerFixtureCacheKey(bench);
   const hasResettableFixture = runtime.resetDoc != null;
+  const manifestDocId =
+    cacheMode === 'reuse' && cacheKey != null && !runtime.inspectDoc
+      ? await readServerFixtureManifest(runtime, cacheKey)
+      : undefined;
   const docId =
     cacheMode === 'off'
       ? `sqlite-node-sync-bench-${runtime.id}-fixture-${crypto.randomUUID()}`
-      : cacheMode === 'rebuild' && !hasResettableFixture
-        ? `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}-${crypto.randomUUID()}`
-        : `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}`;
+      : cacheMode === 'reuse' && manifestDocId != null
+        ? manifestDocId
+        : cacheMode === 'rebuild' && !hasResettableFixture
+          ? `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}-${crypto.randomUUID()}`
+          : `sqlite-node-sync-bench-${runtime.id}-fixture-${cacheKey}`;
   if (cacheMode === 'reuse' && runtime.inspectDoc) {
     try {
       const current = await runtime.inspectDoc(docId);
@@ -1689,7 +1773,7 @@ async function prepareServerFixture(
     return {
       docId,
       cacheKey,
-      cacheStatus: 'assumed',
+      cacheStatus: manifestDocId != null ? 'manifest' : 'assumed',
     };
   }
   if (cacheMode !== 'off') {
@@ -1719,6 +1803,9 @@ async function prepareServerFixture(
     );
   }
   const filterReadyMs = performance.now() - filterReadyStartedAt;
+  if (cacheKey != null && !runtime.inspectDoc) {
+    await writeServerFixtureManifest(runtime, cacheKey, docId);
+  }
   return {
     docId,
     cacheKey,
@@ -2276,7 +2363,7 @@ async function primeServerFixtureCase(
 
 async function main() {
   const argv = process.argv.slice(2);
-  const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
+  const repoRoot = BENCH_REPO_ROOT;
 
   const iterationsOverride = parseIterationsOverride(argv);
   const warmupIterationsOverride = parseWarmupIterationsOverride(argv);

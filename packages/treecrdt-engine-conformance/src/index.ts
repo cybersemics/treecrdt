@@ -13,6 +13,7 @@ import {
   type TreecrdtScopeEvaluator,
 } from '@treecrdt/auth';
 import { createInMemoryConnectedPeers } from '@treecrdt/sync/in-memory';
+import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync/in-memory';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
 import { createOpAuthStore, createPendingOpsStore } from '@treecrdt/sync-sqlite';
 
@@ -51,6 +52,24 @@ export type TreecrdtEngineConformanceRunner = {
 
 export function conformanceDocId(prefix: string, scenarioName: string): string {
   return `${prefix}-${conformanceSlugify(scenarioName) || 'scenario'}`;
+}
+
+async function waitUntil(
+  predicate: () => Promise<boolean> | boolean,
+  opts: { timeoutMs?: number; intervalMs?: number; message?: string } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 2_000;
+  const intervalMs = opts.intervalMs ?? 10;
+  const start = Date.now();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const ok = await predicate();
+    if (ok) return;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(opts.message ?? `waitUntil timeout after ${timeoutMs}ms`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
 }
 
 function trackConformanceEngine(engine: TreecrdtEngine, engines: TreecrdtEngine[]): TreecrdtEngine {
@@ -1258,10 +1277,15 @@ function makeCapabilityTokenV1(opts: {
   });
 }
 
-function createEngineSyncBackend(engine: TreecrdtEngine): SyncBackend<Operation> {
-  return {
+function maxLamportFromOps(ops: Operation[]): number {
+  return ops.reduce((max, op) => Math.max(max, op.meta.lamport), 0);
+}
+
+function createEngineSyncBackend(engine: TreecrdtEngine): FlushableSyncBackend<Operation> {
+  return makeQueuedSyncBackend<Operation>({
     docId: engine.docId,
-    maxLamport: async () => BigInt(await engine.meta.headLamport()),
+    initialMaxLamport: 0,
+    maxLamportFromOps,
     listOpRefs: async (filter: Filter) => {
       if ('all' in filter) return engine.opRefs.all();
       return engine.opRefs.children(bytesToHex(filter.children.parent));
@@ -1270,7 +1294,7 @@ function createEngineSyncBackend(engine: TreecrdtEngine): SyncBackend<Operation>
     applyOps: async (ops: Operation[]) => {
       await engine.ops.appendMany(ops);
     },
-  };
+  });
 }
 
 async function findDepthBfs(opts: {
@@ -1402,18 +1426,22 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
       { all: {} },
       { maxCodewords: 10_000, codewordsPerMessage: 256 },
     );
+    await Promise.all([backendA.flush(), backendB.flush()]);
+    await waitUntil(
+      async () => {
+        const [aRefs, bRefs] = await Promise.all([a.opRefs.all(), b.opRefs.all()]);
+        const aSet = new Set(aRefs.map((r) => bytesToHex(r)));
+        const bSet = new Set(bRefs.map((r) => bytesToHex(r)));
+        if (aSet.size !== bSet.size) return false;
+        return Array.from(aSet).every((r) => bSet.has(r));
+      },
+      {
+        timeoutMs: 15_000,
+        message: 'sync auth conformance: expected peers to converge',
+      },
+    );
   } finally {
     detach();
-  }
-
-  const deadline = Date.now() + 5_000;
-  while (true) {
-    const [aRefs, bRefs] = await Promise.all([a.opRefs.all(), b.opRefs.all()]);
-    const aSet = new Set(aRefs.map((r) => bytesToHex(r)));
-    const bSet = new Set(bRefs.map((r) => bytesToHex(r)));
-    if (aSet.size === bSet.size && Array.from(aSet).every((r) => bSet.has(r))) return;
-    if (Date.now() > deadline) throw new Error('sync auth conformance: expected peers to converge');
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
 }
 

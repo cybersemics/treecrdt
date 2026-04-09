@@ -80,3 +80,4 @@ WebSocket endpoint:
 - One `docId` per WebSocket connection.
 - The backend module must export `createPostgresNapiSyncBackendFactory(url)`.
 - Multi-instance fanout uses Postgres LISTEN/NOTIFY on the configured channel.
+- Run `pnpm discovery-server:local` when you want a separate local bootstrap endpoint for `resolveDoc`.

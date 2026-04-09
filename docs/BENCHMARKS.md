@@ -23,6 +23,7 @@ pnpm benchmark:sync:direct
 pnpm benchmark:sync:local
 pnpm benchmark:sync:prime
 pnpm benchmark:sync:remote
+pnpm benchmark:sync:bootstrap
 pnpm benchmark:web
 pnpm benchmark:wasm
 pnpm benchmark:postgres
@@ -36,6 +37,7 @@ pnpm benchmark:postgres
 - First view on a new device, with payloads: `benchmark:sync:*` with `sync-balanced-children-payloads-cold-start`
 - Re-sync the same subtree on a restarted client that already has that scope locally: `benchmark:sync:*` with `sync-balanced-children-resync` or `sync-balanced-children-payloads-resync`
 - Single end-to-end time-to-first-visible-page number: `benchmark:sync:*` with the same balanced workloads plus `--first-view`
+- One-time bootstrap/discovery tax before opening the regional websocket: `benchmark:sync:bootstrap`
 - Local render cost after the data is already present: `benchmark:sqlite-node:note-paths -- --benches=read-children-payloads`
 - Local mutation cost inside a large existing tree: `benchmark:sqlite-node:note-paths -- --benches=insert-into-large-tree`
 - Protocol/storage baselines and worst-case stress: `sync-one-missing`, `sync-all`, `sync-children*`, `sync-root-children-fanout10`
@@ -136,6 +138,8 @@ pnpm benchmark:sync:remote -- \
   --server-fixture-cache=reuse
 ```
 
+For remote targets, `prime` now records the exact fixture doc ID locally under `tmp/sqlite-node-sync-bench/server-fixtures/`. That means a fresh endpoint can be primed once with `--server-fixture-cache=rebuild`, and later `--server-fixture-cache=reuse` runs on the same machine can reopen that exact remote fixture doc instead of relying on historical deterministic fixture residue.
+
 By default, the local sync target runs the Postgres sync server in a spawned child process so local and remote measurements are closer to each other. When you add `--profile-backend`, the local target intentionally switches to the in-process server so per-backend timings are visible inside the benchmark process.
 
 Local server benchmarks now seed the Postgres backend directly before the timer starts. That keeps the measured path honest, because the actual sync to the client still goes through the real websocket server, while avoiding huge protocol-seed setup costs that are not part of the benchmark question.
@@ -212,6 +216,33 @@ pnpm benchmark:sync:remote -- \
   --direct-send-threshold=64 \
   --max-ops-per-batch=500
 ```
+
+### Bootstrap / Resolve Bench
+
+Use `benchmark:sync:bootstrap` when you want to isolate the one-time discovery
+layer from the steady-state sync path.
+
+The benchmark target can be a standalone bootstrap server such as
+`@treecrdt/discovery-server-node`, not just a colocated sync-server route.
+
+It measures:
+
+- `resolveSamplesMs`: `GET /resolve-doc?docId=...`
+- `connectSamplesMs`: first websocket open after resolve
+- `totalSamplesMs`: resolve + first websocket open
+- `cachedConnectSamplesMs`: direct websocket reconnect using the already resolved attachment
+
+```sh
+TREECRDT_DISCOVERY_URL=https://bootstrap-host \
+pnpm benchmark:sync:bootstrap -- \
+  --iterations=5
+```
+
+This is the benchmark to use when you want to answer:
+
+- how expensive the bootstrap lookup is on cold open
+- how much faster cached reconnects are
+- whether discovery is staying off the steady-state hot path
 
 ### Backend Call Profiling
 
