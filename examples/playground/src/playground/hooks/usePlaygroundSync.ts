@@ -41,6 +41,11 @@ import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';
 import {
+  getBenchLastRemoteSocketMessageAtMs,
+  recordBenchNodeTiming,
+  setBenchLastRemoteSocketMessageAtNow,
+} from '../bench';
+import {
   PLAYGROUND_PEER_TIMEOUT_MS,
   PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS,
   PLAYGROUND_SYNC_MAX_CODEWORDS,
@@ -51,6 +56,26 @@ import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from '.
 import type { StoredAuthMaterial } from '../../auth';
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
+
+function affectedNodeIdsFromOps(ops: readonly Operation[]): string[] {
+  const nodeIds = new Set<string>();
+  for (const op of ops) {
+    switch (op.kind.type) {
+      case 'insert':
+      case 'payload':
+      case 'delete':
+      case 'move':
+      case 'tombstone':
+        nodeIds.add(op.kind.node);
+        break;
+      default: {
+        const _exhaustive: never = op.kind;
+        throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
+      }
+    }
+  }
+  return Array.from(nodeIds);
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -474,8 +499,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const notifyLocalUpdate = (ops?: Operation[]) => {
+    const affectedNodeIds = ops ? affectedNodeIdsFromOps(ops) : [];
     void syncPeerRef.current?.notifyLocalUpdate(ops);
     queueRemoteUploadHints(ops);
+    if (affectedNodeIds.length > 0) {
+      recordBenchNodeTiming(affectedNodeIds, { sourceRemoteQueuedAtMs: Date.now() });
+    }
     if (remoteLivePushRunningRef.current) {
       remoteLivePushScheduledRef.current = true;
       return;
@@ -515,6 +544,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             const conn = connections.get(peerId);
             if (!conn) continue;
             try {
+              if (affectedNodeIds.length > 0) {
+                recordBenchNodeTiming(affectedNodeIds, { sourceRemotePushStartedAtMs: Date.now() });
+              }
               if (pendingOps.length > 0) {
                 await withTimeout(
                   peer.pushOps(conn.transport, pendingOps, {
@@ -523,6 +555,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
                   syncTimeoutMsForPeer(peerId, { autoSync: true }),
                   `live push with ${peerId.slice(0, 8)}… timed out`,
                 );
+                if (affectedNodeIds.length > 0) {
+                  recordBenchNodeTiming(affectedNodeIds, {
+                    sourceRemotePushFinishedAtMs: Date.now(),
+                  });
+                }
                 continue;
               }
 
@@ -532,6 +569,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
                   syncTimeoutMsForPeer(peerId, { autoSync: true }),
                   `live sync with ${peerId.slice(0, 8)}… timed out`,
                 );
+                if (affectedNodeIds.length > 0) {
+                  recordBenchNodeTiming(affectedNodeIds, {
+                    sourceRemotePushFinishedAtMs: Date.now(),
+                  });
+                }
                 continue;
               }
 
@@ -545,6 +587,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
                   syncTimeoutMsForPeer(peerId, { autoSync: true }),
                   `live sync(children ${parentId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`,
                 );
+              }
+              if (affectedNodeIds.length > 0) {
+                recordBenchNodeTiming(affectedNodeIds, {
+                  sourceRemotePushFinishedAtMs: Date.now(),
+                });
               }
             } catch (err) {
               console.error('Remote live sync push failed', err);
@@ -1019,7 +1066,19 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (debugSync && ops.length > 0) {
           console.debug(`[sync:${selfPeerId}] applyOps(${ops.length})`);
         }
+        const affectedNodeIds = affectedNodeIdsFromOps(ops);
+        if (affectedNodeIds.length > 0) {
+          const targetBackendApplyStartedAtMs = Date.now();
+          const targetSocketMessageAtMs = getBenchLastRemoteSocketMessageAtMs();
+          recordBenchNodeTiming(affectedNodeIds, {
+            targetBackendApplyStartedAtMs,
+            ...(typeof targetSocketMessageAtMs === 'number' ? { targetSocketMessageAtMs } : {}),
+          });
+        }
         await baseBackend.applyOps(ops);
+        if (affectedNodeIds.length > 0) {
+          recordBenchNodeTiming(affectedNodeIds, { targetBackendApplyFinishedAtMs: Date.now() });
+        }
         await onRemoteOpsApplied(ops);
       },
     };
@@ -1222,6 +1281,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           remoteSocket.addEventListener('message', () => {
             if (disposed || syncConnRef.current !== connections) return;
             if (!remotePeerId) return;
+            setBenchLastRemoteSocketMessageAtNow();
             remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
             setRemoteSyncStatus((prev) =>
               prev.state === 'connected'

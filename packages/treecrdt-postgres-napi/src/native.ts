@@ -19,6 +19,7 @@ export type NativeOp = {
 };
 
 export type NativeBackend = {
+  close(): void;
   maxLamport(): bigint;
   listOpRefsAll(): Uint8Array[];
   listOpRefsChildren(parent: Uint8Array): Uint8Array[];
@@ -65,13 +66,27 @@ export type NativeBackend = {
 
 export type NativeFactory = {
   ensureSchema(): void;
+  open(docId: string): NativeBackend;
+};
+
+export type NativeTestingFactory = {
   resetForTests(): void;
   resetDocForTests(docId: string): void;
-  open(docId: string): NativeBackend;
+  cloneDocForTests(sourceDocId: string, targetDocId: string): void;
+  cloneMaterializedDocForTests(sourceDocId: string, targetDocId: string): void;
+  primeDocForTests(docId: string, ops: NativeOp[]): void;
+  primeBalancedFanoutDocForTests(
+    docId: string,
+    size: number,
+    fanout: number,
+    payloadBytes: number,
+    replicaLabel: string,
+  ): void;
 };
 
 type NativeExports = {
   PgFactory: new (url: string) => NativeFactory;
+  PgTestingFactory: new (url: string) => NativeTestingFactory;
 };
 
 // NOTE: we vendor the built binary into `native/` during `pnpm run build:native`.

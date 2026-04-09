@@ -9,6 +9,11 @@ on:
         description: Pull request number
         required: true
         type: number
+      suite:
+        description: Benchmark suite (default, sync, hot-write, full)
+        required: false
+        default: default
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +29,20 @@ jobs:
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
       ) || (github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     concurrency:
       group: bench-${{ github.event.issue.number || inputs.pr }}
       cancel-in-progress: true
@@ -31,6 +50,8 @@ jobs:
       EM_VERSION: 4.0.21
       EM_CACHE_FOLDER: emsdk-cache
       PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
+      BENCH_BASE_DB: treecrdt_bench_base
+      BENCH_HEAD_DB: treecrdt_bench_head
 
     steps:
       - name: Resolve PR details
@@ -39,7 +60,7 @@ jobs:
         with:
           script: |
             const prNumber = context.eventName === 'workflow_dispatch'
-              ? Number(core.getInput('pr'))
+              ? Number(context.payload.inputs?.pr ?? '')
               : context.payload.issue?.number;
 
             if (!prNumber) {
@@ -100,6 +121,63 @@ jobs:
               });
             }
 
+      - name: Parse benchmark request
+        if: steps.pr.outputs.same_repo == 'true'
+        id: request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const rawRequest = context.eventName === 'workflow_dispatch'
+              ? String(context.payload.inputs?.suite ?? 'default')
+              : String(context.payload.comment?.body ?? '/bench');
+
+            const requestedToken = (() => {
+              if (context.eventName === 'workflow_dispatch') {
+                return rawRequest.trim().toLowerCase() || 'default';
+              }
+              const match = rawRequest.trim().match(/^\/bench(?:\s+([A-Za-z0-9_-]+))?/i);
+              return match?.[1]?.trim().toLowerCase() ?? 'default';
+            })();
+
+            const aliases = new Map([
+              ['default', 'default'],
+              ['smoke', 'default'],
+              ['sync', 'sync'],
+              ['local-sync', 'sync'],
+              ['hot', 'hot-write'],
+              ['write', 'hot-write'],
+              ['hot-write', 'hot-write'],
+              ['full', 'full'],
+              ['all', 'full'],
+            ]);
+
+            const suite = aliases.get(requestedToken);
+            if (!suite) {
+              throw new Error(
+                `Unknown benchmark suite "${requestedToken}". Supported suites: default, sync, hot-write, full.`
+              );
+            }
+
+            const suiteLabels = {
+              default: 'high-value default',
+              sync: 'scoped sync focus',
+              'hot-write': 'hot-write focus',
+              full: 'full legacy suite',
+            };
+
+            const triggerLabel =
+              context.eventName === 'workflow_dispatch'
+                ? `workflow_dispatch (${suite})`
+                : requestedToken === 'default'
+                  ? '/bench'
+                  : `/bench ${requestedToken}`;
+
+            core.setOutput('suite', suite);
+            core.setOutput('suite_label', suiteLabels[suite]);
+            core.setOutput('trigger_label', triggerLabel);
+            core.setOutput('needs_emscripten', suite === 'full' ? 'true' : 'false');
+            core.setOutput('needs_playwright', suite === 'full' ? 'true' : 'false');
+
       - name: Checkout base
         if: steps.pr.outputs.same_repo == 'true'
         uses: actions/checkout@v4
@@ -139,29 +217,31 @@ jobs:
       - name: Add wasm targets
         if: steps.pr.outputs.same_repo == 'true'
         run: |
-          rustup target add wasm32-unknown-emscripten
           rustup target add wasm32-unknown-unknown
+          if [ '${{ steps.request.outputs.needs_emscripten }}' = 'true' ]; then
+            rustup target add wasm32-unknown-emscripten
+          fi
 
       - name: Install wasm-pack
         if: steps.pr.outputs.same_repo == 'true'
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Cache Emscripten
-        if: steps.pr.outputs.same_repo == 'true'
+        if: steps.pr.outputs.same_repo == 'true' && steps.request.outputs.needs_emscripten == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.EM_CACHE_FOLDER }}
           key: ${{ env.EM_VERSION }}-${{ runner.os }}-bench
 
       - name: Setup Emscripten
-        if: steps.pr.outputs.same_repo == 'true'
+        if: steps.pr.outputs.same_repo == 'true' && steps.request.outputs.needs_emscripten == 'true'
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: ${{ env.EM_VERSION }}
           actions-cache-folder: ${{ env.EM_CACHE_FOLDER }}
 
       - name: Verify emcc
-        if: steps.pr.outputs.same_repo == 'true'
+        if: steps.pr.outputs.same_repo == 'true' && steps.request.outputs.needs_emscripten == 'true'
         run: emcc -v
 
       - name: Install dependencies (base)
@@ -169,36 +249,257 @@ jobs:
         working-directory: bench-base
         run: pnpm install --frozen-lockfile=false
 
+      - name: Build benchmark TypeScript deps (base)
+        if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-base
+        env:
+          BENCH_SUITE: ${{ steps.request.outputs.suite }}
+        run: |
+          pnpm -C packages/treecrdt-ts run build
+          pnpm -C packages/treecrdt-riblt-wasm-js run build
+          pnpm -C packages/sync/protocol run build
+          pnpm -C packages/sync/material/sqlite run build
+          pnpm -C packages/sync/material/postgres run build
+          pnpm -C packages/sync/server/core run build
+          pnpm -C packages/treecrdt-auth run build
+          pnpm -C packages/treecrdt-crypto run build
+          if [ "$BENCH_SUITE" = "full" ]; then
+            pnpm -C packages/treecrdt-sqlite-conformance run build
+            pnpm -C packages/treecrdt-wa-sqlite run build:ts
+            pnpm -C packages/treecrdt-wa-sqlite/e2e run build:wa-sqlite
+          fi
+
       - name: Install dependencies (head)
         if: steps.pr.outputs.same_repo == 'true'
         working-directory: bench-head
         run: pnpm install --frozen-lockfile=false
 
-      - name: Install Playwright browsers
+      - name: Build benchmark TypeScript deps (head)
         if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-head
+        env:
+          BENCH_SUITE: ${{ steps.request.outputs.suite }}
+        run: |
+          pnpm -C packages/treecrdt-ts run build
+          pnpm -C packages/treecrdt-riblt-wasm-js run build
+          pnpm -C packages/sync/protocol run build
+          pnpm -C packages/sync/material/sqlite run build
+          pnpm -C packages/sync/material/postgres run build
+          pnpm -C packages/sync/server/core run build
+          pnpm -C packages/treecrdt-auth run build
+          pnpm -C packages/treecrdt-crypto run build
+          if [ "$BENCH_SUITE" = "full" ]; then
+            pnpm -C packages/treecrdt-sqlite-conformance run build
+            pnpm -C packages/treecrdt-wa-sqlite run build:ts
+            pnpm -C packages/treecrdt-wa-sqlite/e2e run build:wa-sqlite
+          fi
+
+      - name: Install Playwright browsers
+        if: steps.pr.outputs.same_repo == 'true' && steps.request.outputs.needs_playwright == 'true'
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
         run: pnpm -C bench-head/packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
+
+      - name: Prepare benchmark Postgres databases
+        if: steps.pr.outputs.same_repo == 'true'
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          BENCH_BASE_DB: ${{ env.BENCH_BASE_DB }}
+          BENCH_HEAD_DB: ${{ env.BENCH_HEAD_DB }}
+        run: |
+          pnpm -C bench-head/packages/sync/server/postgres-node exec node <<'EOF'
+          const { Client } = require('pg');
+
+          async function recreateDatabase(name) {
+            const client = new Client({ database: 'postgres' });
+            await client.connect();
+            try {
+              await client.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+              await client.query(`CREATE DATABASE "${name}"`);
+            } finally {
+              await client.end();
+            }
+          }
+
+          (async () => {
+            await recreateDatabase(process.env.BENCH_BASE_DB);
+            await recreateDatabase(process.env.BENCH_HEAD_DB);
+          })().catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
 
       - name: Run benchmarks (base)
         if: steps.pr.outputs.same_repo == 'true'
         working-directory: bench-base
         env:
+          BENCH_SUITE: ${{ steps.request.outputs.suite }}
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-        run: pnpm run benchmark
+          TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/${{ env.BENCH_BASE_DB }}
+        run: |
+          has_hot_write_suite() {
+            node -e "const p=require('./package.json'); process.exit(p.scripts?.['benchmark:hot-write'] ? 0 : 1)"
+          }
+
+          run_hot_write_suite() {
+            if ! has_hot_write_suite; then
+              echo "Skipping hot-write benchmarks (scripts not present on this branch)"
+              return 0
+            fi
+
+            pnpm -C packages/treecrdt-sqlite-node run benchmark:hot-write -- "$@"
+
+            if [ -n "$TREECRDT_POSTGRES_URL" ]; then
+              pnpm -C packages/treecrdt-postgres-napi run benchmark:hot-write -- "$@"
+            else
+              echo "Skipping postgres hot-write benchmark (TREECRDT_POSTGRES_URL not set)"
+            fi
+          }
+
+          case "$BENCH_SUITE" in
+            default)
+              pnpm run benchmark:sync:local -- \
+                --workloads=sync-balanced-children-payloads-cold-start \
+                --counts=100000 \
+                --first-view \
+                --iterations=3 \
+                --warmup=1 \
+                --server-fixture-cache=rebuild
+              run_hot_write_suite \
+                --benches=payload-edit,insert-sibling \
+                --counts=100000 \
+                --writes-per-sample=10 \
+                --warmup-writes=2
+              ;;
+            sync)
+              pnpm run benchmark:sync:local -- \
+                --workloads=sync-balanced-children-cold-start,sync-balanced-children-payloads-cold-start \
+                --counts=10000,100000 \
+                --first-view \
+                --iterations=3 \
+                --warmup=1 \
+                --server-fixture-cache=rebuild
+              ;;
+            hot-write)
+              run_hot_write_suite \
+                --benches=payload-edit,insert-sibling \
+                --counts=10000,100000 \
+                --writes-per-sample=10 \
+                --warmup-writes=2
+              ;;
+            full)
+              pnpm run benchmark
+              pnpm run benchmark:sync:local -- \
+                --workloads=sync-balanced-children-payloads-cold-start \
+                --counts=100000 \
+                --first-view \
+                --iterations=3 \
+                --warmup=1 \
+                --server-fixture-cache=rebuild
+              run_hot_write_suite \
+                --benches=payload-edit,insert-sibling \
+                --counts=100000 \
+                --writes-per-sample=10 \
+                --warmup-writes=2
+              ;;
+            *)
+              echo "Unknown BENCH_SUITE=$BENCH_SUITE" >&2
+              exit 1
+              ;;
+          esac
+
+          pnpm run benchmark:aggregate
 
       - name: Run benchmarks (head)
         if: steps.pr.outputs.same_repo == 'true'
         working-directory: bench-head
         env:
+          BENCH_SUITE: ${{ steps.request.outputs.suite }}
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-        run: pnpm run benchmark
+          TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/${{ env.BENCH_HEAD_DB }}
+        run: |
+          has_hot_write_suite() {
+            node -e "const p=require('./package.json'); process.exit(p.scripts?.['benchmark:hot-write'] ? 0 : 1)"
+          }
+
+          run_hot_write_suite() {
+            if ! has_hot_write_suite; then
+              echo "Skipping hot-write benchmarks (scripts not present on this branch)"
+              return 0
+            fi
+
+            pnpm -C packages/treecrdt-sqlite-node run benchmark:hot-write -- "$@"
+
+            if [ -n "$TREECRDT_POSTGRES_URL" ]; then
+              pnpm -C packages/treecrdt-postgres-napi run benchmark:hot-write -- "$@"
+            else
+              echo "Skipping postgres hot-write benchmark (TREECRDT_POSTGRES_URL not set)"
+            fi
+          }
+
+          case "$BENCH_SUITE" in
+            default)
+              pnpm run benchmark:sync:local -- \
+                --workloads=sync-balanced-children-payloads-cold-start \
+                --counts=100000 \
+                --first-view \
+                --iterations=3 \
+                --warmup=1 \
+                --server-fixture-cache=rebuild
+              run_hot_write_suite \
+                --benches=payload-edit,insert-sibling \
+                --counts=100000 \
+                --writes-per-sample=10 \
+                --warmup-writes=2
+              ;;
+            sync)
+              pnpm run benchmark:sync:local -- \
+                --workloads=sync-balanced-children-cold-start,sync-balanced-children-payloads-cold-start \
+                --counts=10000,100000 \
+                --first-view \
+                --iterations=3 \
+                --warmup=1 \
+                --server-fixture-cache=rebuild
+              ;;
+            hot-write)
+              run_hot_write_suite \
+                --benches=payload-edit,insert-sibling \
+                --counts=10000,100000 \
+                --writes-per-sample=10 \
+                --warmup-writes=2
+              ;;
+            full)
+              pnpm run benchmark
+              pnpm run benchmark:sync:local -- \
+                --workloads=sync-balanced-children-payloads-cold-start \
+                --counts=100000 \
+                --first-view \
+                --iterations=3 \
+                --warmup=1 \
+                --server-fixture-cache=rebuild
+              run_hot_write_suite \
+                --benches=payload-edit,insert-sibling \
+                --counts=100000 \
+                --writes-per-sample=10 \
+                --warmup-writes=2
+              ;;
+            *)
+              echo "Unknown BENCH_SUITE=$BENCH_SUITE" >&2
+              exit 1
+              ;;
+          esac
+
+          pnpm run benchmark:aggregate
 
       - name: Upload benchmark artifacts
         if: steps.pr.outputs.same_repo == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: benchmarks-${{ steps.pr.outputs.number }}
+          name: benchmarks-${{ steps.pr.outputs.number }}-${{ steps.request.outputs.suite }}
           if-no-files-found: warn
           path: |
             bench-base/benchmarks/**
@@ -290,14 +591,16 @@ jobs:
             const headSha = '${{ steps.pr.outputs.head_sha }}'.slice(0, 7);
             const baseRef = '${{ steps.pr.outputs.base_ref }}';
             const headRef = '${{ steps.pr.outputs.head_ref }}';
-            const triggerLabel =
-              context.eventName === 'workflow_dispatch' ? '`workflow_dispatch`' : '`/bench`';
+            const triggerLabel = '`' + '${{ steps.request.outputs.trigger_label }}' + '`';
+            const suiteLabel = '${{ steps.request.outputs.suite_label }}';
+            const suite = '${{ steps.request.outputs.suite }}';
 
             const parts = [
               marker,
               '## Benchmarks',
               '',
               `Triggered by ${triggerLabel} - Run: ${runUrl}`,
+              `Suite: ${suiteLabel} (\`${suite}\`)`,
               `Base: ${baseRef} (${baseSha}) - Head: ${headRef} (${headSha})`,
               `Compared entries: ${keys.length} - Improved: ${improved} - Regressed: ${regressed}`,
               '',

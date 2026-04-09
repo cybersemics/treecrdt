@@ -32,6 +32,8 @@ import {
   quantile,
   type SyncBenchWorkload,
 } from '@treecrdt/benchmark';
+import { parseFlagValue, parsePositiveIntFlag } from '@treecrdt/benchmark/helpers';
+import type { BenchmarkFixtureHelpers } from '@treecrdt/benchmark/testing';
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
@@ -74,6 +76,9 @@ type BenchCase = {
   fanout: number;
 };
 
+type BuiltSyncBench = ReturnType<typeof buildSyncBenchCase>;
+type ServerPrimeMode = NonNullable<BuiltSyncBench['serverPrime']>['kind'];
+
 type SyncBenchResult = {
   name: string;
   totalOps: number;
@@ -108,8 +113,8 @@ type SyncBenchSample = {
 type PreparedServerFixture = {
   docId: string;
   cacheKey?: string;
-  cacheStatus: 'disabled' | 'hit' | 'miss' | 'rebuild' | 'assumed';
   cacheStatus: 'disabled' | 'hit' | 'miss' | 'rebuild' | 'assumed' | 'manifest';
+  primeMode?: ServerPrimeMode;
   seedUploadMs?: number;
   seedAllReadyMs?: number;
   filterReadyMs?: number;
@@ -121,6 +126,11 @@ type SyncBenchConnection = {
   close: () => Promise<void>;
 };
 
+type SyncBenchFixtureHelpers = Pick<
+  BenchmarkFixtureHelpers,
+  'resetDocForTests' | 'primeBalancedFanoutDocForTests'
+>;
+
 type SyncBenchTargetRuntime = {
   id: Exclude<SyncBenchTargetId, 'direct'>;
   serverProcess: 'child-process' | 'in-process' | 'remote';
@@ -128,7 +138,7 @@ type SyncBenchTargetRuntime = {
   connect: (docId: string) => Promise<SyncBenchConnection>;
   seedOps?: (docId: string, ops: Operation[]) => Promise<void>;
   inspectDoc?: (docId: string) => Promise<{ allCount: number; maxLamport: number }>;
-  resetDoc?: (docId: string) => Promise<void>;
+  resetDoc?: SyncBenchFixtureHelpers['resetDocForTests'];
   waitForOpCount?: (
     docId: string,
     filter: Filter,
@@ -138,7 +148,7 @@ type SyncBenchTargetRuntime = {
   clearHelloTrace?: (docId: string) => void;
   takeHelloTrace?: (docId: string) => HelloTraceProfile | undefined;
   close: () => Promise<void>;
-};
+} & Partial<SyncBenchFixtureHelpers>;
 
 type TransportDirectionProfile = {
   messages: number;
@@ -319,27 +329,6 @@ function parseConfigFromArgv(
     }
   }
   return customConfig;
-}
-
-function parseFlagValue(argv: string[], flag: string): string | undefined {
-  const prefix = `${flag}=`;
-  const raw = argv.find((arg) => arg.startsWith(prefix));
-  return raw ? raw.slice(prefix.length).trim() : undefined;
-}
-
-function parsePositiveIntFlag(
-  argv: string[],
-  flag: string,
-  envName: string,
-  fallback: number,
-): number {
-  const raw = parseFlagValue(argv, flag) ?? process.env[envName];
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`invalid ${flag} value "${raw}", expected a positive integer`);
-  }
-  return value;
 }
 
 function parseOptionalPositiveIntFlag(
@@ -1155,6 +1144,21 @@ async function createLocalPostgresSyncServerTarget(
     const backend = await backendFactory.open(docId);
     await backend.applyOps(ops);
   };
+  const primeBalancedFanoutDocForTests = async (
+    docId: string,
+    size: number,
+    fanout: number,
+    payloadBytes: number,
+    replicaLabel: string,
+  ) => {
+    await backendFactory.primeBalancedFanoutDocForTests(
+      docId,
+      size,
+      fanout,
+      payloadBytes,
+      replicaLabel,
+    );
+  };
 
   if (profileBackend) {
     const server = await startSyncServer({
@@ -1174,6 +1178,7 @@ async function createLocalPostgresSyncServerTarget(
       connect: async (docId) => await connectToSyncServer(`ws://127.0.0.1:${server.port}`, docId),
       fixtureCacheScope: 'local-postgres-sync-server',
       seedOps,
+      primeBalancedFanoutDocForTests,
       inspectDoc,
       resetDoc,
       waitForOpCount,
@@ -1233,6 +1238,7 @@ async function createLocalPostgresSyncServerTarget(
     connect: async (docId) => await connectToSyncServer(`ws://127.0.0.1:${port}`, docId),
     fixtureCacheScope: 'local-postgres-sync-server',
     seedOps,
+    primeBalancedFanoutDocForTests,
     inspectDoc,
     resetDoc,
     waitForOpCount,
@@ -1295,21 +1301,40 @@ async function loadPostgresSyncBackendFactory(
   backendModule: string,
   postgresUrl: string,
 ): Promise<{
-  resetDocForTests: (docId: string) => Promise<void>;
+  ensureSchema: () => Promise<void>;
+  resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
+  primeBalancedFanoutDocForTests: NonNullable<
+    SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
+  >;
   open: (docId: string) => Promise<SyncBackend<Operation>>;
 }> {
   const mod = (await import(pathToFileURL(backendModule).href)) as {
     createPostgresNapiSyncBackendFactory?: (url: string) => {
-      resetDocForTests: (docId: string) => Promise<void>;
+      ensureSchema: () => Promise<void>;
+      resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
+      primeBalancedFanoutDocForTests: NonNullable<
+        SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
+      >;
+      open: (docId: string) => Promise<SyncBackend<Operation>>;
+    };
+    createPostgresNapiTestSyncBackendFactory?: (url: string) => {
+      ensureSchema: () => Promise<void>;
+      resetDocForTests: NonNullable<SyncBenchFixtureHelpers['resetDocForTests']>;
+      primeBalancedFanoutDocForTests: NonNullable<
+        SyncBenchFixtureHelpers['primeBalancedFanoutDocForTests']
+      >;
       open: (docId: string) => Promise<SyncBackend<Operation>>;
     };
   };
-  if (typeof mod.createPostgresNapiSyncBackendFactory !== 'function') {
-    throw new Error(
-      `backend module "${backendModule}" does not export createPostgresNapiSyncBackendFactory(url)`,
-    );
+  if (typeof mod.createPostgresNapiTestSyncBackendFactory === 'function') {
+    return mod.createPostgresNapiTestSyncBackendFactory(postgresUrl);
   }
-  return mod.createPostgresNapiSyncBackendFactory(postgresUrl);
+  if (typeof mod.createPostgresNapiSyncBackendFactory === 'function') {
+    return mod.createPostgresNapiSyncBackendFactory(postgresUrl);
+  }
+  throw new Error(
+    `backend module "${backendModule}" does not export createPostgresNapiSyncBackendFactory(url) or createPostgresNapiTestSyncBackendFactory(url)`,
+  );
 }
 
 async function findFreePort(): Promise<number> {
@@ -1335,12 +1360,83 @@ async function findFreePort(): Promise<number> {
   });
 }
 
-function createRemoteSyncServerTarget(baseUrl: string): SyncBenchTargetRuntime {
+async function createDirectPostgresRemoteFixtureHelpers(
+  repoRoot: string,
+  postgresUrl: string,
+): Promise<
+  Pick<
+    SyncBenchTargetRuntime,
+    'inspectDoc' | 'resetDoc' | 'seedOps' | 'primeBalancedFanoutDocForTests' | 'waitForOpCount'
+  >
+> {
+  const backendModule = path.join(
+    repoRoot,
+    'packages',
+    'treecrdt-postgres-napi',
+    'dist',
+    'testing.js',
+  );
+  const waitForOpCount = await createDirectPostgresOpCountWaiter(backendModule, postgresUrl);
+  const backendFactory = await loadPostgresSyncBackendFactory(backendModule, postgresUrl);
+  await backendFactory.ensureSchema();
+  const inspectDoc = async (docId: string) => {
+    const backend = await backendFactory.open(docId);
+    const [allRefs, currentMaxLamport] = await Promise.all([
+      backend.listOpRefs({ all: {} }),
+      backend.maxLamport(),
+    ]);
+    return {
+      allCount: allRefs.length,
+      maxLamport: Number(currentMaxLamport),
+    };
+  };
+  const resetDoc = async (docId: string) => {
+    await backendFactory.resetDocForTests(docId);
+  };
+  const seedOps = async (docId: string, ops: Operation[]) => {
+    if (ops.length === 0) return;
+    const backend = await backendFactory.open(docId);
+    await backend.applyOps(ops);
+  };
+  const primeBalancedFanoutDocForTests = async (
+    docId: string,
+    size: number,
+    fanout: number,
+    payloadBytes: number,
+    replicaLabel: string,
+  ) => {
+    await backendFactory.primeBalancedFanoutDocForTests(
+      docId,
+      size,
+      fanout,
+      payloadBytes,
+      replicaLabel,
+    );
+  };
+  return {
+    inspectDoc,
+    resetDoc,
+    seedOps,
+    primeBalancedFanoutDocForTests,
+    waitForOpCount,
+  };
+}
+
+async function createRemoteSyncServerTarget(
+  repoRoot: string,
+  baseUrl: string,
+  postgresUrl?: string,
+): Promise<SyncBenchTargetRuntime> {
+  const directFixtureHelpers =
+    postgresUrl != null && postgresUrl.length > 0
+      ? await createDirectPostgresRemoteFixtureHelpers(repoRoot, postgresUrl)
+      : undefined;
   return {
     id: 'remote-sync-server',
     serverProcess: 'remote',
     connect: async (docId) => await connectToSyncServer(baseUrl, docId, { client: 'builtin' }),
     fixtureCacheScope: baseUrl,
+    ...directFixtureHelpers,
     close: async () => {},
   };
 }
@@ -1427,12 +1523,16 @@ async function prepareTargetRuntimes(
   if (targets.includes('remote-sync-server')) {
     const remoteUrl =
       parseFlagValue(argv, '--sync-server-url') ?? process.env.TREECRDT_SYNC_SERVER_URL;
+    const postgresUrl = parseFlagValue(argv, '--postgres-url') ?? process.env.TREECRDT_POSTGRES_URL;
     if (!remoteUrl) {
       throw new Error(
         'remote-sync-server target requires TREECRDT_SYNC_SERVER_URL or --sync-server-url=...',
       );
     }
-    runtimes.set('remote-sync-server', createRemoteSyncServerTarget(remoteUrl));
+    runtimes.set(
+      'remote-sync-server',
+      await createRemoteSyncServerTarget(repoRoot, remoteUrl, postgresUrl),
+    );
   }
 
   return runtimes;
@@ -1494,21 +1594,48 @@ async function syncBackendThroughServer(
   }
 }
 
-async function seedServerState(
+async function seedPrimedBalancedServerState(
   runtime: SyncBenchTargetRuntime,
+  bench: BuiltSyncBench,
+  docId: string,
+): Promise<SeedServerStateResult> {
+  const prime = bench.serverPrime;
+  if (!runtime.primeBalancedFanoutDocForTests || prime?.kind !== 'balanced-fanout') {
+    throw new Error(`runtime ${runtime.id} does not support optimized balanced fixture priming`);
+  }
+
+  const uploadStartedAt = performance.now();
+  await runtime.primeBalancedFanoutDocForTests(
+    docId,
+    prime.size,
+    prime.fanout,
+    0,
+    prime.treeReplicaLabel,
+  );
+  if (prime.overlayOps.length > 0) {
+    if (!runtime.seedOps) {
+      throw new Error(
+        `runtime ${runtime.id} does not support overlay ops for optimized balanced fixture priming`,
+      );
+    }
+    await runtime.seedOps(docId, prime.overlayOps);
+  }
+  return {
+    expectedFilterCount: bench.totalOps,
+    uploadMs: performance.now() - uploadStartedAt,
+    allReadyMs: 0,
+  };
+}
+
+async function createSeedBackendForServerState(
   docId: string,
   ops: Operation[],
   filter: Filter,
-  maxOpsPerBatch?: number,
-): Promise<SeedServerStateResult> {
-  if (ops.length === 0) {
-    return {
-      expectedFilterCount: 0,
-      uploadMs: 0,
-      allReadyMs: 0,
-    };
-  }
-
+): Promise<{
+  seedDb: Database.Database;
+  seedBackend: FlushableSyncBackend<Operation>;
+  expectedFilterCount: number;
+}> {
   const seedDb = await openDb({ storage: 'memory', docId });
   try {
     await appendInitialOps(seedDb, ops);
@@ -1518,80 +1645,143 @@ async function seedServerState(
       initialMaxLamport: maxLamport(ops),
     });
     const expectedFilterCount = (await seedBackend.listOpRefs(filter)).length;
-    if (runtime.seedOps) {
+    return { seedDb, seedBackend, expectedFilterCount };
+  } catch (error) {
+    seedDb.close();
+    throw error;
+  }
+}
+
+async function waitForSeededServerAllReady(
+  runtime: SyncBenchTargetRuntime,
+  docId: string,
+  opCount: number,
+): Promise<number> {
+  const allReadyStartedAt = performance.now();
+  if (runtime.waitForOpCount) {
+    await runtime.waitForOpCount(docId, { all: {} }, opCount, {
+      timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
+    });
+  }
+  return performance.now() - allReadyStartedAt;
+}
+
+async function seedServerStateViaDirectOps(
+  runtime: SyncBenchTargetRuntime,
+  docId: string,
+  ops: Operation[],
+  expectedFilterCount: number,
+): Promise<SeedServerStateResult> {
+  if (!runtime.seedOps) {
+    throw new Error(`runtime ${runtime.id} does not support direct server seeding`);
+  }
+
+  const uploadStartedAt = performance.now();
+  await runtime.seedOps(docId, ops);
+  return {
+    expectedFilterCount,
+    uploadMs: performance.now() - uploadStartedAt,
+    allReadyMs: await waitForSeededServerAllReady(runtime, docId, ops.length),
+  };
+}
+
+async function seedServerStateViaSyncPeerUpload(
+  runtime: SyncBenchTargetRuntime,
+  docId: string,
+  seedBackend: FlushableSyncBackend<Operation>,
+  opCount: number,
+  expectedFilterCount: number,
+  maxOpsPerBatch?: number,
+): Promise<SeedServerStateResult> {
+  const peer = new SyncPeer<Operation>(seedBackend, {
+    maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
+    directSendThreshold: 0,
+    ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
+  });
+  const deadline = Date.now() + SERVER_SEED_READY_TIMEOUT_MS;
+  let lastError: unknown;
+  while (true) {
+    const connection = await runtime.connect(docId);
+    const detach = peer.attach(connection.transport);
+    try {
       const uploadStartedAt = performance.now();
-      await runtime.seedOps(docId, ops);
-      const uploadMs = performance.now() - uploadStartedAt;
-      const allReadyStartedAt = performance.now();
-      if (runtime.waitForOpCount) {
-        await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
-          timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
-        });
-      }
+      await peer.syncOnce(
+        connection.transport,
+        { all: {} },
+        {
+          maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
+          codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
+          ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
+        },
+      );
+      await seedBackend.flush();
       return {
         expectedFilterCount,
-        uploadMs,
-        allReadyMs: performance.now() - allReadyStartedAt,
+        uploadMs: performance.now() - uploadStartedAt,
+        allReadyMs: await waitForSeededServerAllReady(runtime, docId, opCount),
       };
-    }
-    const peer = new SyncPeer<Operation>(seedBackend, {
-      maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
-      directSendThreshold: 0,
-      ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
-    });
-    const deadline = Date.now() + SERVER_SEED_READY_TIMEOUT_MS;
-    let lastError: unknown;
-    while (true) {
-      const connection = await runtime.connect(docId);
-      const detach = peer.attach(connection.transport);
-      try {
-        const uploadStartedAt = performance.now();
-        await peer.syncOnce(
-          connection.transport,
-          { all: {} },
-          {
-            maxCodewords: SYNC_BENCH_SEED_MAX_CODEWORDS,
-            codewordsPerMessage: SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
-            ...(maxOpsPerBatch != null ? { maxOpsPerBatch } : {}),
-          },
+    } catch (error) {
+      lastError = error;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `timed out seeding server doc ${docId} within ${SERVER_SEED_READY_TIMEOUT_MS}ms` +
+            (lastError ? `: ${String(lastError)}` : ''),
         );
-        await seedBackend.flush();
-        const uploadMs = performance.now() - uploadStartedAt;
-        const allReadyStartedAt = performance.now();
-        if (runtime.waitForOpCount) {
-          await runtime.waitForOpCount(docId, { all: {} }, ops.length, {
-            timeoutMs: SERVER_SEED_READY_TIMEOUT_MS,
-          });
-        }
-        return {
-          expectedFilterCount,
-          uploadMs,
-          allReadyMs: performance.now() - allReadyStartedAt,
-        };
-      } catch (error) {
-        lastError = error;
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `timed out seeding server doc ${docId} within ${SERVER_SEED_READY_TIMEOUT_MS}ms` +
-              (lastError ? `: ${String(lastError)}` : ''),
-          );
-        }
-        await sleep(SERVER_READY_POLL_MS);
-      } finally {
-        detach();
-        await connection.close();
       }
+      await sleep(SERVER_READY_POLL_MS);
+    } finally {
+      detach();
+      await connection.close();
     }
-    throw new Error(`failed to seed server doc ${docId}: unexpected retry loop exit`);
+  }
+}
+
+async function seedServerState(
+  runtime: SyncBenchTargetRuntime,
+  bench: BuiltSyncBench,
+  docId: string,
+  ops: Operation[],
+  filter: Filter,
+  maxOpsPerBatch?: number,
+): Promise<SeedServerStateResult> {
+  if (runtime.primeBalancedFanoutDocForTests && bench.serverPrime?.kind === 'balanced-fanout') {
+    return await seedPrimedBalancedServerState(runtime, bench, docId);
+  }
+
+  if (ops.length === 0) {
+    return {
+      expectedFilterCount: 0,
+      uploadMs: 0,
+      allReadyMs: 0,
+    };
+  }
+
+  const { seedDb, seedBackend, expectedFilterCount } = await createSeedBackendForServerState(
+    docId,
+    ops,
+    filter,
+  );
+  try {
+    if (runtime.seedOps) {
+      return await seedServerStateViaDirectOps(runtime, docId, ops, expectedFilterCount);
+    }
+    return await seedServerStateViaSyncPeerUpload(
+      runtime,
+      docId,
+      seedBackend,
+      ops.length,
+      expectedFilterCount,
+      maxOpsPerBatch,
+    );
   } finally {
     seedDb.close();
   }
 }
 
-function canReuseServerFixture(
-  runtime: SyncBenchTargetRuntime,
-  bench: ReturnType<typeof buildSyncBenchCase>,
-): boolean {
+function canReuseServerFixture(runtime: SyncBenchTargetRuntime, bench: BuiltSyncBench): boolean {
+  if (runtime.primeBalancedFanoutDocForTests && bench.serverPrime) {
+    return true;
+  }
   // Reuse is safe when every client-side starting op is already present on the
   // server fixture, so samples only read from the shared doc and never mutate it.
   const serverOpIds = new Set(
@@ -1602,6 +1792,22 @@ function canReuseServerFixture(
   return bench.opsA.every((op) =>
     serverOpIds.has(`${Buffer.from(op.meta.id.replica).toString('base64')}:${op.meta.id.counter}`),
   );
+}
+
+function expectedServerStateForBench(bench: BuiltSyncBench): {
+  opCount: number;
+  maxLamport: number;
+} {
+  if (bench.serverPrime) {
+    return {
+      opCount: bench.serverPrime.expectedServerOpCount,
+      maxLamport: bench.serverPrime.expectedServerMaxLamport,
+    };
+  }
+  return {
+    opCount: bench.opsB.length,
+    maxLamport: maxLamport(bench.opsB),
+  };
 }
 
 function updateFixtureHashWithBytes(
@@ -1627,7 +1833,36 @@ function updateFixtureHashWithNumber(hash: ReturnType<typeof createHash>, value:
   hash.update(`${value};`);
 }
 
-function createServerFixtureCacheKey(bench: ReturnType<typeof buildSyncBenchCase>): string {
+function updateFixtureHashWithOperation(hash: ReturnType<typeof createHash>, op: Operation): void {
+  updateFixtureHashWithBytes(hash, op.meta.id.replica);
+  updateFixtureHashWithNumber(hash, op.meta.id.counter);
+  updateFixtureHashWithNumber(hash, op.meta.lamport);
+  updateFixtureHashWithBytes(hash, op.meta.knownState);
+  updateFixtureHashWithString(hash, op.kind.type);
+  switch (op.kind.type) {
+    case 'insert':
+      updateFixtureHashWithString(hash, op.kind.parent);
+      updateFixtureHashWithString(hash, op.kind.node);
+      updateFixtureHashWithBytes(hash, op.kind.orderKey);
+      updateFixtureHashWithBytes(hash, op.kind.payload);
+      break;
+    case 'move':
+      updateFixtureHashWithString(hash, op.kind.node);
+      updateFixtureHashWithString(hash, op.kind.newParent);
+      updateFixtureHashWithBytes(hash, op.kind.orderKey);
+      break;
+    case 'delete':
+    case 'tombstone':
+      updateFixtureHashWithString(hash, op.kind.node);
+      break;
+    case 'payload':
+      updateFixtureHashWithString(hash, op.kind.node);
+      updateFixtureHashWithBytes(hash, op.kind.payload);
+      break;
+  }
+}
+
+function createServerFixtureCacheKey(bench: BuiltSyncBench): string {
   const hash = createHash('sha256');
   updateFixtureHashWithString(hash, SYNC_BENCH_SERVER_FIXTURE_CACHE_VERSION);
   updateFixtureHashWithString(hash, bench.name);
@@ -1637,35 +1872,105 @@ function createServerFixtureCacheKey(bench: ReturnType<typeof buildSyncBenchCase
     updateFixtureHashWithString(hash, 'filter:children');
     updateFixtureHashWithBytes(hash, bench.filter.children.parent);
   }
-  for (const op of bench.opsB) {
-    updateFixtureHashWithBytes(hash, op.meta.id.replica);
-    updateFixtureHashWithNumber(hash, op.meta.id.counter);
-    updateFixtureHashWithNumber(hash, op.meta.lamport);
-    updateFixtureHashWithBytes(hash, op.meta.knownState);
-    updateFixtureHashWithString(hash, op.kind.type);
-    switch (op.kind.type) {
-      case 'insert':
-        updateFixtureHashWithString(hash, op.kind.parent);
-        updateFixtureHashWithString(hash, op.kind.node);
-        updateFixtureHashWithBytes(hash, op.kind.orderKey);
-        updateFixtureHashWithBytes(hash, op.kind.payload);
-        break;
-      case 'move':
-        updateFixtureHashWithString(hash, op.kind.node);
-        updateFixtureHashWithString(hash, op.kind.newParent);
-        updateFixtureHashWithBytes(hash, op.kind.orderKey);
-        break;
-      case 'delete':
-      case 'tombstone':
-        updateFixtureHashWithString(hash, op.kind.node);
-        break;
-      case 'payload':
-        updateFixtureHashWithString(hash, op.kind.node);
-        updateFixtureHashWithBytes(hash, op.kind.payload);
-        break;
+  if (bench.serverPrime) {
+    updateFixtureHashWithString(hash, 'server-prime:balanced-fanout');
+    updateFixtureHashWithNumber(hash, bench.serverPrime.size);
+    updateFixtureHashWithNumber(hash, bench.serverPrime.fanout);
+    updateFixtureHashWithString(hash, bench.serverPrime.treeReplicaLabel);
+    updateFixtureHashWithNumber(hash, bench.serverPrime.expectedServerOpCount);
+    updateFixtureHashWithNumber(hash, bench.serverPrime.expectedServerMaxLamport);
+    for (const op of bench.serverPrime.overlayOps) {
+      updateFixtureHashWithOperation(hash, op);
     }
+    return hash.digest('hex').slice(0, 24);
+  }
+  for (const op of bench.opsB) {
+    updateFixtureHashWithOperation(hash, op);
   }
   return hash.digest('hex').slice(0, 24);
+}
+
+function serverPrimeMode(bench: BuiltSyncBench): ServerPrimeMode | undefined {
+  return bench.serverPrime?.kind;
+}
+
+function canPrimeBalancedColdStartDirectly(
+  runtime: SyncBenchTargetRuntime | null | undefined,
+  target: SyncBenchTargetId,
+  workload: SyncBenchWorkload,
+): boolean {
+  // When the target can materialize the balanced fixture from benchmark metadata,
+  // avoid constructing the full server-side op list in Node up front.
+  const isBalancedColdStart =
+    workload === 'sync-balanced-children-cold-start' ||
+    workload === 'sync-balanced-children-payloads-cold-start';
+  if (!isBalancedColdStart) return false;
+  if (target === 'local-postgres-sync-server') return true;
+  return runtime?.primeBalancedFanoutDocForTests != null;
+}
+
+function shouldMaterializeServerOps(
+  runtime: SyncBenchTargetRuntime | null | undefined,
+  target: SyncBenchTargetId,
+  workload: SyncBenchWorkload,
+): boolean {
+  return !canPrimeBalancedColdStartDirectly(runtime, target, workload);
+}
+
+function buildBenchForCase(
+  benchCase: Pick<BenchCase, 'target' | 'workload' | 'size' | 'fanout'>,
+  runtime?: SyncBenchTargetRuntime | null,
+) {
+  return buildSyncBenchCase({
+    workload: benchCase.workload,
+    size: benchCase.size,
+    fanout: benchCase.fanout,
+    materializeServerOps: shouldMaterializeServerOps(runtime, benchCase.target, benchCase.workload),
+  });
+}
+
+function serverLabelForTarget(target: SyncBenchTargetId): 'postgres-local' | 'remote' | 'none' {
+  if (target === 'local-postgres-sync-server') return 'postgres-local';
+  if (target === 'remote-sync-server') return 'remote';
+  return 'none';
+}
+
+function serverProcessLabelForTarget(
+  target: SyncBenchTargetId,
+  runtime?: SyncBenchTargetRuntime | null,
+): SyncBenchTargetRuntime['serverProcess'] | 'none' | 'unknown' {
+  return runtime?.serverProcess ?? (target === 'direct' ? 'none' : 'unknown');
+}
+
+function buildBenchTargetExtra(
+  benchCase: Pick<BenchCase, 'size' | 'fanout' | 'target'>,
+  runtime?: SyncBenchTargetRuntime | null,
+): Record<string, unknown> {
+  return {
+    count: benchCase.size,
+    fanout: benchCase.fanout,
+    mode: benchCase.target,
+    target: benchCase.target,
+    server: serverLabelForTarget(benchCase.target),
+    serverProcess: serverProcessLabelForTarget(benchCase.target, runtime),
+  };
+}
+
+function buildPreparedFixtureExtra(
+  preparedFixture: PreparedServerFixture | undefined,
+  cacheMode: ServerFixtureCacheMode,
+): Record<string, unknown> {
+  return {
+    serverFixtureReuse: preparedFixture ? 'per-case' : undefined,
+    serverFixtureCacheMode:
+      preparedFixture && cacheMode !== DEFAULT_SERVER_FIXTURE_CACHE_MODE ? cacheMode : undefined,
+    serverFixtureCacheStatus:
+      preparedFixture && preparedFixture.cacheStatus !== 'disabled'
+        ? preparedFixture.cacheStatus
+        : undefined,
+    serverFixtureCacheKey: preparedFixture?.cacheKey,
+    serverFixturePrimeMode: preparedFixture?.primeMode,
+  };
 }
 
 function fixtureCacheScopeForRuntime(runtime: SyncBenchTargetRuntime): string {
@@ -1735,12 +2040,13 @@ async function writeServerFixtureManifest(
 
 async function prepareServerFixture(
   runtime: SyncBenchTargetRuntime,
-  bench: ReturnType<typeof buildSyncBenchCase>,
+  bench: BuiltSyncBench,
   directSendThreshold: number,
   cacheMode: ServerFixtureCacheMode,
   maxOpsPerBatch?: number,
 ): Promise<PreparedServerFixture> {
   const prepareStartedAt = performance.now();
+  const expectedServerState = expectedServerStateForBench(bench);
   const cacheKey = cacheMode === 'off' ? undefined : createServerFixtureCacheKey(bench);
   const hasResettableFixture = runtime.resetDoc != null;
   const manifestDocId =
@@ -1758,11 +2064,15 @@ async function prepareServerFixture(
   if (cacheMode === 'reuse' && runtime.inspectDoc) {
     try {
       const current = await runtime.inspectDoc(docId);
-      if (current.allCount === bench.opsB.length && current.maxLamport === maxLamport(bench.opsB)) {
+      if (
+        current.allCount === expectedServerState.opCount &&
+        current.maxLamport === expectedServerState.maxLamport
+      ) {
         return {
           docId,
           cacheKey,
           cacheStatus: 'hit',
+          primeMode: serverPrimeMode(bench),
         };
       }
     } catch {
@@ -1774,6 +2084,7 @@ async function prepareServerFixture(
       docId,
       cacheKey,
       cacheStatus: manifestDocId != null ? 'manifest' : 'assumed',
+      primeMode: serverPrimeMode(bench),
     };
   }
   if (cacheMode !== 'off') {
@@ -1781,6 +2092,7 @@ async function prepareServerFixture(
   }
   const seedState = await seedServerState(
     runtime,
+    bench,
     docId,
     bench.opsB,
     bench.filter as Filter,
@@ -1810,6 +2122,7 @@ async function prepareServerFixture(
     docId,
     cacheKey,
     cacheStatus: cacheMode === 'rebuild' ? 'rebuild' : cacheMode === 'reuse' ? 'miss' : 'disabled',
+    primeMode: serverPrimeMode(bench),
     seedUploadMs: seedState.uploadMs,
     seedAllReadyMs: seedState.allReadyMs,
     filterReadyMs,
@@ -2017,15 +2330,16 @@ async function runBenchOnceViaServer(
   try {
     await appendInitialOps(client.db, bench.opsA);
     if (!preparedFixture) {
-      const expectedFilterCount = await seedServerState(
+      const seedState = await seedServerState(
         runtime,
+        bench,
         docId,
         bench.opsB,
         bench.filter as Filter,
         maxOpsPerBatch,
       );
       if (runtime.waitForOpCount) {
-        await runtime.waitForOpCount(docId, bench.filter as Filter, expectedFilterCount, {
+        await runtime.waitForOpCount(docId, bench.filter as Filter, seedState.expectedFilterCount, {
           timeoutMs: SERVER_READY_TIMEOUT_MS,
         });
       } else {
@@ -2033,7 +2347,7 @@ async function runBenchOnceViaServer(
           runtime,
           docId,
           bench.filter as Filter,
-          expectedFilterCount,
+          seedState.expectedFilterCount,
           directSendThreshold,
           maxOpsPerBatch,
           SERVER_SEED_READY_TIMEOUT_MS,
@@ -2110,6 +2424,52 @@ async function runBenchOnceViaServer(
   }
 }
 
+async function runBenchSample(
+  repoRoot: string,
+  benchCase: BenchCase,
+  bench: BuiltSyncBench,
+  opts: {
+    runtime?: SyncBenchTargetRuntime;
+    includeFirstView: boolean;
+    profileBackend: boolean;
+    profileTransport: boolean;
+    profileHello: boolean;
+    directSendThreshold: number;
+    maxOpsPerBatch?: number;
+    postSeedWaitMs: number;
+    preparedFixture?: PreparedServerFixture;
+  },
+): Promise<SyncBenchSample> {
+  if (opts.runtime) {
+    return await runBenchOnceViaServer(
+      repoRoot,
+      opts.runtime,
+      benchCase,
+      bench,
+      opts.includeFirstView,
+      opts.profileBackend,
+      opts.profileTransport,
+      opts.profileHello,
+      opts.directSendThreshold,
+      opts.maxOpsPerBatch,
+      opts.postSeedWaitMs,
+      opts.preparedFixture,
+    );
+  }
+
+  return await runBenchOnceDirect(
+    repoRoot,
+    benchCase,
+    bench,
+    opts.includeFirstView,
+    opts.profileBackend,
+    opts.profileTransport,
+    opts.profileHello,
+    opts.directSendThreshold,
+    opts.maxOpsPerBatch,
+  );
+}
+
 async function runBenchCase(
   repoRoot: string,
   benchCase: BenchCase,
@@ -2123,17 +2483,12 @@ async function runBenchCase(
   postSeedWaitMs: number,
   maxOpsPerBatch?: number,
 ): Promise<SyncBenchResult> {
-  const bench = buildSyncBenchCase({
-    workload: benchCase.workload,
-    size: benchCase.size,
-    fanout: benchCase.fanout,
-  });
-  const { iterations, warmupIterations } = benchCase;
-
   const runtime = benchCase.target === 'direct' ? null : runtimes.get(benchCase.target);
   if (benchCase.target !== 'direct' && !runtime) {
     throw new Error(`missing runtime for sync bench target ${benchCase.target}`);
   }
+  const bench = buildBenchForCase(benchCase, runtime);
+  const { iterations, warmupIterations } = benchCase;
 
   if (includeFirstView && !bench.firstView) {
     throw new Error(`sync bench workload ${bench.name} does not support --first-view`);
@@ -2148,68 +2503,25 @@ async function runBenchCase(
           maxOpsPerBatch,
         )
       : undefined;
+  const sampleOpts = {
+    runtime: runtime ?? undefined,
+    includeFirstView,
+    profileBackend,
+    profileTransport,
+    profileHello,
+    directSendThreshold,
+    maxOpsPerBatch,
+    postSeedWaitMs,
+    preparedFixture,
+  };
 
   for (let i = 0; i < warmupIterations; i += 1) {
-    if (runtime) {
-      await runBenchOnceViaServer(
-        repoRoot,
-        runtime,
-        benchCase,
-        bench,
-        includeFirstView,
-        profileBackend,
-        profileTransport,
-        profileHello,
-        directSendThreshold,
-        maxOpsPerBatch,
-        postSeedWaitMs,
-        preparedFixture,
-      );
-    } else {
-      await runBenchOnceDirect(
-        repoRoot,
-        benchCase,
-        bench,
-        includeFirstView,
-        profileBackend,
-        profileTransport,
-        profileHello,
-        directSendThreshold,
-        maxOpsPerBatch,
-      );
-    }
+    await runBenchSample(repoRoot, benchCase, bench, sampleOpts);
   }
 
   const samples: SyncBenchSample[] = [];
   for (let i = 0; i < iterations; i += 1) {
-    samples.push(
-      runtime
-        ? await runBenchOnceViaServer(
-            repoRoot,
-            runtime,
-            benchCase,
-            bench,
-            includeFirstView,
-            profileBackend,
-            profileTransport,
-            profileHello,
-            directSendThreshold,
-            maxOpsPerBatch,
-            postSeedWaitMs,
-            preparedFixture,
-          )
-        : await runBenchOnceDirect(
-            repoRoot,
-            benchCase,
-            bench,
-            includeFirstView,
-            profileBackend,
-            profileTransport,
-            profileHello,
-            directSendThreshold,
-            maxOpsPerBatch,
-          ),
-    );
+    samples.push(await runBenchSample(repoRoot, benchCase, bench, sampleOpts));
   }
 
   const totalSamplesMs = samples.map((sample) => sample.totalMs);
@@ -2234,18 +2546,8 @@ async function runBenchCase(
     opsPerSec,
     extra: {
       ...bench.extra,
-      count: benchCase.size,
-      fanout: benchCase.fanout,
-      mode: benchCase.target,
-      target: benchCase.target,
+      ...buildBenchTargetExtra(benchCase, runtime),
       transport: benchCase.target === 'direct' ? 'in-memory' : 'websocket',
-      server:
-        benchCase.target === 'local-postgres-sync-server'
-          ? 'postgres-local'
-          : benchCase.target === 'remote-sync-server'
-            ? 'remote'
-            : 'none',
-      serverProcess: runtime?.serverProcess ?? (benchCase.target === 'direct' ? 'none' : 'unknown'),
       measurement: includeFirstView ? 'time-to-first-view' : 'sync-only',
       backendProfile: profileBackend ? backendProfiles.at(-1) : undefined,
       backendProfileSamples:
@@ -2264,16 +2566,7 @@ async function runBenchCase(
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
       maxOpsPerBatch,
       postSeedWaitMs: postSeedWaitMs > 0 ? postSeedWaitMs : undefined,
-      serverFixtureReuse: preparedFixture ? 'per-case' : undefined,
-      serverFixtureCacheMode:
-        preparedFixture && serverFixtureCacheMode !== DEFAULT_SERVER_FIXTURE_CACHE_MODE
-          ? serverFixtureCacheMode
-          : undefined,
-      serverFixtureCacheStatus:
-        preparedFixture && preparedFixture.cacheStatus !== 'disabled'
-          ? preparedFixture.cacheStatus
-          : undefined,
-      serverFixtureCacheKey: preparedFixture?.cacheKey,
+      ...buildPreparedFixtureExtra(preparedFixture, serverFixtureCacheMode),
       iterations: iterations > 1 ? iterations : undefined,
       warmupIterations: warmupIterations > 0 ? warmupIterations : undefined,
       avgDurationMs: iterations > 1 ? durationMs : undefined,
@@ -2296,11 +2589,6 @@ async function primeServerFixtureCase(
   serverFixtureCacheMode: ServerFixtureCacheMode,
   maxOpsPerBatch?: number,
 ): Promise<PrimedServerFixtureResult> {
-  const bench = buildSyncBenchCase({
-    workload: benchCase.workload,
-    size: benchCase.size,
-    fanout: benchCase.fanout,
-  });
   const runtime = benchCase.target === 'direct' ? null : runtimes.get(benchCase.target);
   if (benchCase.target !== 'direct' && !runtime) {
     throw new Error(`missing runtime for sync bench target ${benchCase.target}`);
@@ -2308,6 +2596,7 @@ async function primeServerFixtureCase(
   if (!runtime) {
     throw new Error('server fixture priming requires a sync-server target');
   }
+  const bench = buildBenchForCase(benchCase, runtime);
   if (!canReuseServerFixture(runtime, bench)) {
     throw new Error(
       `sync bench workload ${bench.name} does not support reusable sync-server fixtures`,
@@ -2323,7 +2612,8 @@ async function primeServerFixtureCase(
     maxOpsPerBatch,
   );
   const durationMs = performance.now() - startedAt;
-  const totalOps = bench.opsB.length;
+  const expectedServerState = expectedServerStateForBench(bench);
+  const totalOps = expectedServerState.opCount;
   const opsPerSec = durationMs > 0 ? (totalOps / durationMs) * 1000 : Infinity;
   return {
     name: `${bench.name}-server-fixture`,
@@ -2332,31 +2622,18 @@ async function primeServerFixtureCase(
     opsPerSec,
     extra: {
       ...bench.extra,
-      count: benchCase.size,
-      fanout: benchCase.fanout,
-      mode: benchCase.target,
-      target: benchCase.target,
-      server:
-        benchCase.target === 'local-postgres-sync-server'
-          ? 'postgres-local'
-          : benchCase.target === 'remote-sync-server'
-            ? 'remote'
-            : 'none',
-      serverProcess: runtime.serverProcess,
+      ...buildBenchTargetExtra(benchCase, runtime),
       measurement: 'server-fixture-prime',
       directSendThreshold: directSendThreshold > 0 ? directSendThreshold : undefined,
       maxOpsPerBatch,
-      serverFixtureReuse: 'per-case',
-      serverFixtureCacheMode,
-      serverFixtureCacheStatus: preparedFixture.cacheStatus,
-      serverFixtureCacheKey: preparedFixture.cacheKey,
+      ...buildPreparedFixtureExtra(preparedFixture, serverFixtureCacheMode),
       docId: preparedFixture.docId,
       seedUploadMs: preparedFixture.seedUploadMs,
       seedAllReadyMs: preparedFixture.seedAllReadyMs,
       filterReadyMs: preparedFixture.filterReadyMs,
       totalPrepareMs: preparedFixture.totalPrepareMs,
       fixtureOpCount: totalOps,
-      fixtureMaxLamport: maxLamport(bench.opsB),
+      fixtureMaxLamport: expectedServerState.maxLamport,
     },
   };
 }

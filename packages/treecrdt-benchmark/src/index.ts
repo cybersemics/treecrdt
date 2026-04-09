@@ -5,8 +5,10 @@ import type {
   Operation,
 } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import { envInt, quantile } from './stats.js';
+import { orderKeyFromPosition, replicaFromLabel } from './helpers.js';
+import { envInt, quantile, summarizeSamples } from './stats.js';
 import type { WorkloadName } from './workloads.js';
+export type { BenchmarkFixtureFactory, BenchmarkFixtureHelpers } from './testing.js';
 
 export type BenchmarkResult = {
   name: string;
@@ -28,23 +30,6 @@ export type BenchmarkWorkload = {
 
 const defaultSerializeNodeId: SerializeNodeId = nodeIdToBytes16;
 const defaultSerializeReplica: SerializeReplica = replicaIdToBytes;
-
-function orderKeyFromPosition(position: number): Uint8Array {
-  if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
-  const n = position + 1;
-  if (n > 0xffff) throw new Error(`position too large for u16 order key: ${position}`);
-  const bytes = new Uint8Array(2);
-  new DataView(bytes.buffer).setUint16(0, n, false);
-  return bytes;
-}
-
-function replicaFromLabel(label: string): Uint8Array {
-  const encoded = new TextEncoder().encode(label);
-  if (encoded.length === 0) throw new Error('label must not be empty');
-  const out = new Uint8Array(32);
-  for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
-  return out;
-}
 
 export async function runBenchmark(
   adapterFactory: () => Promise<TreecrdtAdapter> | TreecrdtAdapter,
@@ -82,6 +67,7 @@ export async function runBenchmark(
   }
 
   const durationMs = quantile(samplesMs, 0.5);
+  const sampleSummary = summarizeSamples(samplesMs);
   const opsPerSec =
     totalOps > 0 && durationMs > 0
       ? (totalOps / durationMs) * 1000
@@ -100,9 +86,11 @@ export async function runBenchmark(
             iterations,
             warmupIterations,
             samplesMs,
-            p95Ms: quantile(samplesMs, 0.95),
-            minMs: Math.min(...samplesMs),
-            maxMs: Math.max(...samplesMs),
+            minMs: sampleSummary.min,
+            meanMs: sampleSummary.mean,
+            p95Ms: sampleSummary.p95,
+            p99Ms: sampleSummary.p99,
+            maxMs: sampleSummary.max,
           }
         : undefined,
   };
@@ -286,6 +274,7 @@ export async function runWorkloads(
 }
 
 export { DEFAULT_BENCH_SIZES, WORKLOAD_NAMES, type WorkloadName } from './workloads.js';
+export * from './helpers.js';
 export { benchTiming } from './timing.js';
 export * from './sync.js';
 export * from './stats.js';
