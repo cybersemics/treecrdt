@@ -109,7 +109,7 @@ fn sorted_node_ids(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
     ids
 }
 
-fn direct_affected_node_ids(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
+fn direct_affected_nodes(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
     let mut nodes = Vec::new();
     let node = kind.node();
     if node != NodeId::TRASH {
@@ -477,13 +477,13 @@ where
             self.op_count += 1;
             self.head = Some(op.clone());
 
-            let affected_node_ids = direct_affected_node_ids(snapshot.parent, &op.kind);
+            let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
             return Ok(Some(ApplyDelta {
                 snapshot: NodeSnapshotExport {
                     parent: snapshot.parent,
                     order_key: snapshot.order_key,
                 },
-                affected_nodes: affected_node_ids,
+                affected_nodes,
             }));
         }
 

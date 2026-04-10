@@ -263,7 +263,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
     match append_ops_impl(db, &doc_id, "treecrdt_append_ops", &ops) {
         Ok(result) => {
             let out: Vec<Vec<u8>> = result
-                .affected_node_ids
+                .affected_nodes
                 .into_iter()
                 .map(|id| id.0.to_be_bytes().to_vec())
                 .collect();

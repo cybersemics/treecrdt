@@ -23,7 +23,7 @@ pub struct MaterializationHead {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IncrementalApplyResult {
     pub head: Option<MaterializationHead>,
-    pub affected_node_ids: Vec<NodeId>,
+    pub affected_nodes: Vec<NodeId>,
 }
 
 impl IncrementalApplyResult {
@@ -55,7 +55,7 @@ where
 
 /// Apply an incremental batch and return both head metadata and full affected-node delta.
 ///
-/// `affected_node_ids` is deduplicated and sorted (`NodeId` ascending) for stable consumers.
+/// `affected_nodes` is deduplicated and sorted (`NodeId` ascending) for stable consumers.
 pub fn apply_incremental_ops_with_delta<S, C, N, P, I, M>(
     crdt: &mut TreeCrdt<S, C, N, P>,
     index: &mut I,
@@ -73,7 +73,7 @@ where
     if ops.is_empty() {
         return Ok(IncrementalApplyResult {
             head: None,
-            affected_node_ids: Vec::new(),
+            affected_nodes: Vec::new(),
         });
     }
     if meta.dirty() {
@@ -110,8 +110,8 @@ where
         .head_op()
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
 
-    let mut affected_node_ids: Vec<NodeId> = affected.into_iter().collect();
-    affected_node_ids.sort();
+    let mut affected_nodes: Vec<NodeId> = affected.into_iter().collect();
+    affected_nodes.sort();
 
     Ok(IncrementalApplyResult {
         head: Some(MaterializationHead {
@@ -120,7 +120,7 @@ where
             counter: last.meta.id.counter,
             seq,
         }),
-        affected_node_ids,
+        affected_nodes,
     })
 }
 

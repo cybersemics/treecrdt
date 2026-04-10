@@ -1534,7 +1534,7 @@ fn materialize_ops_in_order(
         profile.borrow_mut().update_head_ms +=
             update_head_started_at.elapsed().as_secs_f64() * 1000.0;
     }
-    Ok(apply_result.affected_node_ids)
+    Ok(apply_result.affected_nodes)
 }
 
 pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
@@ -1559,7 +1559,7 @@ pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation])
     }
 }
 
-pub fn append_ops_with_affected_node_ids(
+pub fn append_ops_with_affected_nodes(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
     ops: &[Operation],
@@ -1575,7 +1575,7 @@ pub fn append_ops_with_affected_node_ids(
         Ok(v) => {
             let mut c = client.borrow_mut();
             c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v.affected_node_ids)
+            Ok(v.affected_nodes)
         }
         Err(e) => {
             let mut c = client.borrow_mut();
@@ -1588,7 +1588,7 @@ pub fn append_ops_with_affected_node_ids(
 #[derive(Default)]
 struct AppendOpsResult {
     inserted_count: u64,
-    affected_node_ids: Vec<NodeId>,
+    affected_nodes: Vec<NodeId>,
 }
 
 fn append_ops_in_tx(
@@ -1638,7 +1638,7 @@ fn append_ops_in_tx(
         }
         return Ok(AppendOpsResult {
             inserted_count,
-            affected_node_ids: Vec::new(),
+            affected_nodes: Vec::new(),
         });
     }
 
@@ -1677,13 +1677,13 @@ fn append_ops_in_tx(
     }
 
     let inserted = inserted_ops.len();
-    let mut affected_node_ids: Vec<NodeId> = Vec::new();
+    let mut affected_nodes: Vec<NodeId> = Vec::new();
     // If incremental materialization fails, keep the op-log append and mark the doc dirty so the
     // next rebuild replays the full log through the same core semantics.
     let materialized = try_incremental_materialization(
         false,
         || {
-            affected_node_ids = materialize_ops_in_order(ctx, &meta, inserted_ops)?;
+            affected_nodes = materialize_ops_in_order(ctx, &meta, inserted_ops)?;
             Ok::<(), Error>(())
         },
         || {
@@ -1694,7 +1694,7 @@ fn append_ops_in_tx(
         },
     );
     if !materialized {
-        affected_node_ids.clear();
+        affected_nodes.clear();
     }
 
     if let Some(profile) = &append_profile {
@@ -1703,7 +1703,7 @@ fn append_ops_in_tx(
 
     Ok(AppendOpsResult {
         inserted_count: inserted.min(u64::MAX as usize) as u64,
-        affected_node_ids,
+        affected_nodes,
     })
 }
 

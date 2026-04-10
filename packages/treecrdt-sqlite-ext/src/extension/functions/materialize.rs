@@ -130,7 +130,7 @@ fn materialize_ops_in_order(
         .map_err(|_| SQLITE_ERROR as c_int)?;
     let head = next.head.ok_or(SQLITE_ERROR as c_int)?;
     update_tree_meta_head(db, head.lamport, &head.replica, head.counter, head.seq)?;
-    Ok(next.affected_node_ids)
+    Ok(next.affected_nodes)
 }
 
 pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
@@ -243,7 +243,7 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
 #[derive(Clone, Debug, Default)]
 pub(super) struct AppendOpsResult {
     pub(super) inserted: i64,
-    pub(super) affected_node_ids: Vec<NodeId>,
+    pub(super) affected_nodes: Vec<NodeId>,
 }
 
 pub(super) fn append_ops_impl(
@@ -272,7 +272,7 @@ pub(super) fn append_ops_impl(
     let mut storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
     let mut inserted: i64 = 0;
     let mut materialize_ops: Vec<treecrdt_core::Operation> = Vec::with_capacity(ops.len());
-    let mut affected_node_ids: Vec<NodeId> = Vec::new();
+    let mut affected_nodes: Vec<NodeId> = Vec::new();
 
     for op in ops {
         let operation = match json_append_op_to_operation(op) {
@@ -302,8 +302,7 @@ pub(super) fn append_ops_impl(
         let materialized = treecrdt_core::try_incremental_materialization(
             meta.dirty,
             || {
-                affected_node_ids =
-                    materialize_ops_in_order(db, doc_id, &meta, &materialize_ops[..])?;
+                affected_nodes = materialize_ops_in_order(db, doc_id, &meta, &materialize_ops[..])?;
                 Ok::<(), c_int>(())
             },
             || {
@@ -312,7 +311,7 @@ pub(super) fn append_ops_impl(
         );
         if !materialized {
             // Exact incremental delta is unavailable when materialization was skipped/failed.
-            affected_node_ids.clear();
+            affected_nodes.clear();
         }
     }
 
@@ -324,6 +323,6 @@ pub(super) fn append_ops_impl(
 
     Ok(AppendOpsResult {
         inserted,
-        affected_node_ids,
+        affected_nodes,
     })
 }

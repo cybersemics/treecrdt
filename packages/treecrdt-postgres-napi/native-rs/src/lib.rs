@@ -484,7 +484,7 @@ impl PgBackend {
         }
 
         let affected =
-            treecrdt_postgres::append_ops_with_affected_node_ids(&client, &self.doc_id, &core_ops)
+            treecrdt_postgres::append_ops_with_affected_nodes(&client, &self.doc_id, &core_ops)
                 .map_err(map_core_err)?;
         Ok(affected
             .into_iter()
