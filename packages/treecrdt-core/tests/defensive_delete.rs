@@ -813,9 +813,9 @@ fn materialized_apply_delta_includes_parent_restored_by_unseen_payload_change() 
         !crdt_a.is_tombstoned(parent).unwrap(),
         "parent should be restored by unseen payload change"
     );
-    assert!(delta.affected_node_ids.contains(&child));
+    assert!(delta.affected_nodes.contains(&child));
     assert!(
-        delta.affected_node_ids.contains(&parent),
+        delta.affected_nodes.contains(&parent),
         "delta should include ancestor tombstone flip"
     );
 }

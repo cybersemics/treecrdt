@@ -169,7 +169,7 @@ fn apply_remote_with_materialization_reports_affected_node_ids() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        insert_delta.affected_node_ids,
+        insert_delta.affected_nodes,
         vec![NodeId::ROOT, NodeId(1)]
     );
 
@@ -178,7 +178,7 @@ fn apply_remote_with_materialization_reports_affected_node_ids() {
         .apply_remote_with_materialization_seq(payload, &mut index, &mut seq)
         .unwrap()
         .unwrap();
-    assert_eq!(payload_delta.affected_node_ids, vec![NodeId(1)]);
+    assert_eq!(payload_delta.affected_nodes, vec![NodeId(1)]);
 }
 
 #[test]

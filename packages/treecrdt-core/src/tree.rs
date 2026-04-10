@@ -51,14 +51,7 @@ pub struct NodeSnapshotExport {
 #[derive(Clone, Debug)]
 pub struct ApplyDelta {
     pub snapshot: NodeSnapshotExport,
-    pub affected_parents: Vec<NodeId>,
-    /// Full set of nodes whose materialized state changed after this apply.
-    ///
-    /// This includes direct operation effects and any indirect tombstone flips
-    /// merged by higher-level apply helpers.
-    ///
-    /// Ordering is deterministic (`NodeId` ascending), with duplicates removed.
-    pub affected_node_ids: Vec<NodeId>,
+    pub affected_nodes: Vec<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -484,15 +477,13 @@ where
             self.op_count += 1;
             self.head = Some(op.clone());
 
-            let parents = affected_parents(snapshot.parent, &op.kind);
             let affected_node_ids = direct_affected_node_ids(snapshot.parent, &op.kind);
             return Ok(Some(ApplyDelta {
                 snapshot: NodeSnapshotExport {
                     parent: snapshot.parent,
                     order_key: snapshot.order_key,
                 },
-                affected_parents: parents,
-                affected_node_ids,
+                affected_nodes: affected_node_ids,
             }));
         }
 
@@ -520,12 +511,14 @@ where
             _ => None,
         };
         let op_id = op.meta.id.clone();
+        let op_kind = op.kind.clone();
 
         let Some(mut delta) = self.apply_remote_with_delta(op)? else {
             return Ok(None);
         };
 
-        for parent in &delta.affected_parents {
+        let parents = affected_parents(delta.snapshot.parent, &op_kind);
+        for parent in &parents {
             if *parent == NodeId::TRASH {
                 continue;
             }
@@ -542,13 +535,13 @@ where
             }
         }
 
-        let mut starts = delta.affected_parents.clone();
+        let mut starts = parents;
         starts.push(op_node);
         let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
         delta
-            .affected_node_ids
+            .affected_nodes
             .extend(tombstone_changed.into_iter().filter(|node| *node != NodeId::TRASH));
-        delta.affected_node_ids = sorted_node_ids(delta.affected_node_ids);
+        delta.affected_nodes = sorted_node_ids(delta.affected_nodes);
 
         Ok(Some(delta))
     }

@@ -102,7 +102,7 @@ where
     let mut affected = std::collections::HashSet::new();
     for op in ops {
         if let Some(delta) = crdt.apply_remote_with_materialization_seq(op, index, &mut seq)? {
-            affected.extend(delta.affected_node_ids);
+            affected.extend(delta.affected_nodes);
         }
     }
 
