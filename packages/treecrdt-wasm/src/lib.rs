@@ -188,6 +188,21 @@ impl WasmTree {
         self.inner.apply_remote(op).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
     }
 
+    #[wasm_bindgen(js_name = appendOpWithDelta)]
+    pub fn append_op_with_delta(&mut self, op_json: String) -> Result<JsValue, JsValue> {
+        let js_op: JsOp =
+            serde_json::from_str(&op_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
+        let delta = self
+            .inner
+            .apply_remote_with_delta(op)
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        let affected: Vec<String> = delta
+            .map(|d| d.affected_nodes.into_iter().map(node_to_hex).collect())
+            .unwrap_or_default();
+        to_value(&affected).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = opsSince)]
     pub fn ops_since(&self, lamport: u64) -> Result<JsValue, JsValue> {
         let ops = self
