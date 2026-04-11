@@ -115,8 +115,8 @@ async function append(op: Operation) {
 
 async function appendMany(ops: Operation[]) {
   const api = ensureApi();
-  await api.appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
-  return null;
+  const affected = await api.appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
+  return affected.map((node) => Array.from(node));
 }
 
 async function opsSince(lamport: number, root: string | undefined) {

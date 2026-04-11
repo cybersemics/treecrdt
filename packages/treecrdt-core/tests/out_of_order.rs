@@ -76,3 +76,27 @@ fn replay_rebuilds_state_and_advanced_clock() {
     crdt.apply_remote(move_first).unwrap();
     assert_eq!(crdt.children(parent).unwrap(), &[node]);
 }
+
+#[test]
+fn apply_remote_with_delta_returns_none_when_replay_is_required() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let replica = ReplicaId::new(b"r1");
+
+    let high = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(20), Vec::new());
+    let low = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(10), Vec::new());
+
+    let first = crdt.apply_remote_with_delta(high).unwrap();
+    assert!(first.is_some());
+
+    let replay = crdt.apply_remote_with_delta(low).unwrap();
+    assert!(replay.is_none());
+    assert_eq!(
+        crdt.children(NodeId::ROOT).unwrap(),
+        &[NodeId(10), NodeId(20)]
+    );
+}

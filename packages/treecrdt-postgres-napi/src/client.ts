@@ -162,10 +162,11 @@ export async function createTreecrdtPostgresClient(
         backend.applyOps([operationToNativeWithSerializers(op, nodeIdToBytes16, encodeReplica)]);
       },
       appendMany: async (ops) => {
-        if (ops.length === 0) return;
-        backend.applyOps(
+        if (ops.length === 0) return [];
+        const affected = backend.applyOps(
           ops.map((op) => operationToNativeWithSerializers(op, nodeIdToBytes16, encodeReplica)),
         );
+        return affected.map((node) => nodeIdFromBytes16(node));
       },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,

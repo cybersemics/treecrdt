@@ -1,5 +1,6 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
 import {
+  bytesToHex,
   decodeNodeId,
   decodeReplicaId,
   hexToBytes,
@@ -224,8 +225,8 @@ async function treecrdtAppendOps(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
   opts: { maxBulkOps?: number } = {},
-): Promise<void> {
-  if (ops.length === 0) return;
+): Promise<Uint8Array[]> {
+  if (ops.length === 0) return [];
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = 'SELECT treecrdt_append_ops(?1)';
@@ -238,31 +239,43 @@ async function treecrdtAppendOps(
     throw new Error('treecrdt: delete operations require meta.knownState');
   }
 
+  const mergeAffected = (into: Map<string, Uint8Array>, values: Uint8Array[]) => {
+    for (const node of values) {
+      const key = bytesToHex(node);
+      if (!into.has(key)) into.set(key, node);
+    }
+  };
+
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
   let bulkFailedAt: number | null = null;
+  const affectedByHex = new Map<string, Uint8Array>();
   for (let start = 0; start < ops.length; start += maxBulkOps) {
     const chunk = ops.slice(start, start + maxBulkOps);
     const payload = buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica);
     try {
-      await runner.getText(bulkSql, [JSON.stringify(payload)]);
+      const raw = await sqliteGetJsonOrEmpty<unknown[]>(runner, bulkSql, [JSON.stringify(payload)]);
+      mergeAffected(affectedByHex, decodeSqliteOpRefs(raw));
     } catch {
       bulkFailedAt = start;
       break;
     }
   }
-  if (bulkFailedAt === null) return;
+  if (bulkFailedAt === null) return Array.from(affectedByHex.values());
 
   const remaining = ops.slice(bulkFailedAt);
   await runner.exec('BEGIN');
   try {
     for (const op of remaining) {
-      await treecrdtAppendOp(runner, op, serializeNodeId, serializeReplica);
+      const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
+      const raw = await sqliteGetJsonOrEmpty<unknown[]>(runner, bulkSql, [JSON.stringify(payload)]);
+      mergeAffected(affectedByHex, decodeSqliteOpRefs(raw));
     }
     await runner.exec('COMMIT');
   } catch (err) {
     await runner.exec('ROLLBACK');
     throw err;
   }
+  return Array.from(affectedByHex.values());
 }
 
 async function treecrdtOpsSince(
@@ -328,6 +341,7 @@ async function treecrdtEnsureMaterialized(runner: SqliteRunner): Promise<void> {
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
 async function treecrdtOpRefsAll(runner: SqliteRunner): Promise<unknown[]> {
+  await treecrdtEnsureMaterialized(runner);
   return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_all()');
 }
 
@@ -339,6 +353,7 @@ async function treecrdtOpRefsChildren(
   runner: SqliteRunner,
   parent: Uint8Array,
 ): Promise<unknown[]> {
+  await treecrdtEnsureMaterialized(runner);
   return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_children(?1)', [parent]);
 }
 

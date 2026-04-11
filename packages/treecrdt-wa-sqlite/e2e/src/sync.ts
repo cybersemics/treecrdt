@@ -67,7 +67,9 @@ function makeBackend(
       return client.opRefs.children(bytesToHex(filter.children.parent));
     },
     getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
-    applyOps: async (ops) => client.ops.appendMany(ops),
+    applyOps: async (ops) => {
+      await client.ops.appendMany(ops);
+    },
   });
 }
 
@@ -260,6 +262,40 @@ export async function runTreecrdtSyncE2E(): Promise<{ ok: true }> {
   await runAllE2e();
   await runChildrenE2e();
   return { ok: true };
+}
+
+export async function runTreecrdtAppendManyAffectedIdsE2E(): Promise<{
+  ok: true;
+  affectedIds: string[];
+  children: string[];
+}> {
+  const docId = `e2e-affected-ids-${crypto.randomUUID()}`;
+  const client = await createTreecrdtClient({ storage: 'memory', docId });
+  try {
+    const root = '0'.repeat(32);
+    const parent = nodeIdFromInt(101);
+    const child = nodeIdFromInt(102);
+    const ops = [
+      makeOp(replicas.a, 1, 1, {
+        type: 'insert',
+        parent: root,
+        node: parent,
+        orderKey: orderKeyFromPosition(0),
+      }),
+      makeOp(replicas.a, 2, 2, {
+        type: 'insert',
+        parent,
+        node: child,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    ];
+
+    const affectedIds = await client.ops.appendMany(ops);
+    const children = await client.tree.children(root);
+    return { ok: true, affectedIds, children };
+  } finally {
+    await client.close();
+  }
 }
 
 export async function runTreecrdtSyncLargeFanoutE2E(): Promise<{ ok: true }> {
@@ -574,6 +610,7 @@ export async function runTreecrdtSyncBench(
 declare global {
   interface Window {
     runTreecrdtSyncE2E?: typeof runTreecrdtSyncE2E;
+    runTreecrdtAppendManyAffectedIdsE2E?: typeof runTreecrdtAppendManyAffectedIdsE2E;
     runTreecrdtSyncLargeFanoutE2E?: typeof runTreecrdtSyncLargeFanoutE2E;
     runTreecrdtSyncSubscribeE2E?: typeof runTreecrdtSyncSubscribeE2E;
     runTreecrdtSyncBench?: typeof runTreecrdtSyncBench;
@@ -582,6 +619,7 @@ declare global {
 
 if (typeof window !== 'undefined') {
   window.runTreecrdtSyncE2E = runTreecrdtSyncE2E;
+  window.runTreecrdtAppendManyAffectedIdsE2E = runTreecrdtAppendManyAffectedIdsE2E;
   window.runTreecrdtSyncLargeFanoutE2E = runTreecrdtSyncLargeFanoutE2E;
   window.runTreecrdtSyncSubscribeE2E = runTreecrdtSyncSubscribeE2E;
   window.runTreecrdtSyncBench = runTreecrdtSyncBench;

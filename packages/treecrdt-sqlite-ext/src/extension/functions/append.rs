@@ -1,3 +1,4 @@
+use super::util::sqlite_result_json;
 use super::*;
 
 /// Append an operation row to the `ops` table. Args:
@@ -171,6 +172,7 @@ pub(super) struct JsonAppendOp {
 }
 
 /// Batch append: accepts a single JSON array argument with fields matching the ops table.
+/// Returns JSON array of affected 16-byte node IDs.
 pub(super) unsafe extern "C" fn treecrdt_append_ops(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -217,7 +219,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
         }
     };
     if ops.is_empty() {
-        sqlite_result_int(ctx, 0);
+        sqlite_result_json(ctx, &Vec::<Vec<u8>>::new());
         return;
     }
 
@@ -259,7 +261,14 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
     }
 
     match append_ops_impl(db, &doc_id, "treecrdt_append_ops", &ops) {
-        Ok(inserted) => sqlite_result_int(ctx, inserted as c_int),
+        Ok(result) => {
+            let out: Vec<Vec<u8>> = result
+                .affected_nodes
+                .into_iter()
+                .map(|id| id.0.to_be_bytes().to_vec())
+                .collect();
+            sqlite_result_json(ctx, &out);
+        }
         Err(rc) => sqlite_result_error_code(ctx, rc),
     }
 }

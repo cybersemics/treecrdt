@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { describe, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtEngine } from '@treecrdt/interface/engine';
@@ -64,6 +64,13 @@ function wrapDocId(inner: TreecrdtEngine, publicDocId: string): TreecrdtEngine {
 function internalDocId(publicDocId: string, key: string): string {
   return `${publicDocId}::${key}::${randomUUID()}`;
 }
+
+test('conformance registry includes affected-id scenarios', () => {
+  const names = treecrdtEngineConformanceScenarios().map((s) => s.name);
+  expect(names).toContain('appendMany: returns affected ids for structural batch');
+  expect(names).toContain('appendMany: returns deduped deterministic affected ids');
+  expect(names).toContain('appendMany: returns indirect affected ids on defensive restore');
+});
 
 maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {
   for (const scenario of treecrdtEngineConformanceScenarios()) {

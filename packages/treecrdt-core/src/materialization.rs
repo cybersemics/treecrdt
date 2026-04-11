@@ -1,7 +1,7 @@
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
 use crate::traits::{Clock, NodeStore, ParentOpIndex, PayloadStore, Storage};
 use crate::tree::TreeCrdt;
-use crate::{Error, Lamport, Result};
+use crate::{Error, Lamport, NodeId, Result};
 
 /// Snapshot of adapter-maintained materialization metadata.
 pub trait MaterializationCursor {
@@ -20,6 +20,18 @@ pub struct MaterializationHead {
     pub seq: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IncrementalApplyResult {
+    pub head: Option<MaterializationHead>,
+    pub affected_nodes: Vec<NodeId>,
+}
+
+impl IncrementalApplyResult {
+    pub fn head(self) -> Option<MaterializationHead> {
+        self.head
+    }
+}
+
 /// Apply an incremental batch through core materialization semantics.
 ///
 /// The batch is sorted in canonical op-key order, validated against the materialized head,
@@ -28,7 +40,7 @@ pub fn apply_incremental_ops<S, C, N, P, I, M>(
     crdt: &mut TreeCrdt<S, C, N, P>,
     index: &mut I,
     meta: &M,
-    mut ops: Vec<Operation>,
+    ops: Vec<Operation>,
 ) -> Result<Option<MaterializationHead>>
 where
     S: Storage,
@@ -38,8 +50,31 @@ where
     I: ParentOpIndex,
     M: MaterializationCursor,
 {
+    Ok(apply_incremental_ops_with_delta(crdt, index, meta, ops)?.head())
+}
+
+/// Apply an incremental batch and return both head metadata and full affected-node delta.
+///
+/// `affected_nodes` is deduplicated and sorted (`NodeId` ascending) for stable consumers.
+pub fn apply_incremental_ops_with_delta<S, C, N, P, I, M>(
+    crdt: &mut TreeCrdt<S, C, N, P>,
+    index: &mut I,
+    meta: &M,
+    mut ops: Vec<Operation>,
+) -> Result<IncrementalApplyResult>
+where
+    S: Storage,
+    C: Clock,
+    N: NodeStore,
+    P: PayloadStore,
+    I: ParentOpIndex,
+    M: MaterializationCursor,
+{
     if ops.is_empty() {
-        return Ok(None);
+        return Ok(IncrementalApplyResult {
+            head: None,
+            affected_nodes: Vec::new(),
+        });
     }
     if meta.dirty() {
         return Err(Error::Storage("materialize called while dirty".into()));
@@ -64,20 +99,29 @@ where
     }
 
     let mut seq = meta.head_seq();
+    let mut affected = std::collections::HashSet::new();
     for op in ops {
-        let _ = crdt.apply_remote_with_materialization_seq(op, index, &mut seq)?;
+        if let Some(delta) = crdt.apply_remote_with_materialization_seq(op, index, &mut seq)? {
+            affected.extend(delta.affected_nodes);
+        }
     }
 
     let last = crdt
         .head_op()
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
 
-    Ok(Some(MaterializationHead {
-        lamport: last.meta.lamport,
-        replica: last.meta.id.replica.as_bytes().to_vec(),
-        counter: last.meta.id.counter,
-        seq,
-    }))
+    let mut affected_nodes: Vec<NodeId> = affected.into_iter().collect();
+    affected_nodes.sort();
+
+    Ok(IncrementalApplyResult {
+        head: Some(MaterializationHead {
+            lamport: last.meta.lamport,
+            replica: last.meta.id.replica.as_bytes().to_vec(),
+            counter: last.meta.id.counter,
+            seq,
+        }),
+        affected_nodes,
+    })
 }
 
 /// Run incremental materialization when possible; otherwise mark the document as dirty.
