@@ -232,19 +232,14 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct AppendOpsResult {
-    pub(super) affected_nodes: Vec<NodeId>,
-}
-
 pub(super) fn append_ops_impl(
     db: *mut sqlite3,
     doc_id: &[u8],
     savepoint_name: &str,
     ops: &[JsonAppendOp],
-) -> Result<AppendOpsResult, c_int> {
+) -> Result<Vec<NodeId>, c_int> {
     if ops.is_empty() {
-        return Ok(AppendOpsResult::default());
+        return Ok(Vec::new());
     }
 
     let meta = load_tree_meta(db)?;
@@ -261,7 +256,7 @@ pub(super) fn append_ops_impl(
     }
 
     let mut storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
-    let mut persisted_ops: Vec<treecrdt_core::PersistedRemoteOp> = Vec::with_capacity(ops.len());
+    let mut inserted_ops: Vec<treecrdt_core::Operation> = Vec::with_capacity(ops.len());
 
     for op in ops {
         let operation = match json_append_op_to_operation(op) {
@@ -279,23 +274,18 @@ pub(super) fn append_ops_impl(
                 return Err(sqlite_err_from_core(err));
             }
         };
-        persisted_ops.push(treecrdt_core::PersistedRemoteOp {
-            op: operation,
-            inserted: inserted_now,
-        });
+        if inserted_now {
+            inserted_ops.push(operation);
+        }
     }
 
-    let mut apply_result =
-        treecrdt_core::apply_persisted_remote_ops_with_delta(&meta, persisted_ops, |inserted| {
-            materialize_inserted_ops(db, doc_id, &meta, &inserted)
-        });
-    let _ = treecrdt_core::commit_persisted_remote_result(
-        &mut apply_result,
+    let apply_result = treecrdt_core::apply_persisted_remote_ops_with_delta(
+        &meta,
+        inserted_ops,
+        |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
         |head| update_tree_meta_head(db, head.lamport, &head.replica, head.counter, head.seq),
         || set_tree_meta_dirty(db, true),
     );
-
-    let affected_nodes = apply_result.affected_nodes;
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
     if commit_rc != SQLITE_OK as c_int {
@@ -303,5 +293,5 @@ pub(super) fn append_ops_impl(
         return Err(commit_rc);
     }
 
-    Ok(AppendOpsResult { affected_nodes })
+    Ok(apply_result.affected_nodes)
 }

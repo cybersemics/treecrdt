@@ -6,11 +6,10 @@ use std::time::Instant;
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    apply_persisted_remote_ops_with_delta, commit_persisted_remote_result,
-    materialize_persisted_remote_ops_with_delta, Error, Lamport, LamportClock,
-    MaterializationCursor, NodeId, NodeStore, Operation, OperationId, OperationKind, ParentOpIndex,
-    PayloadStore, PersistedRemoteCommitStatus, PersistedRemoteOp, ReplicaId, Result, Storage,
-    TreeCrdt, VersionVector,
+    apply_persisted_remote_ops_with_delta, materialize_persisted_remote_ops_with_delta, Error,
+    Lamport, LamportClock, MaterializationCursor, NodeId, NodeStore, Operation, OperationId,
+    OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
+    VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -1441,23 +1440,16 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
     Ok(inserted)
 }
 
-fn mark_persisted_remote_ops(
+fn select_inserted_ops(
     ctx: &PgCtx,
     ops: &[Operation],
     inserted_op_refs: Vec<Vec<u8>>,
-) -> Vec<PersistedRemoteOp> {
+) -> Vec<Operation> {
     if inserted_op_refs.is_empty() {
-        return ops
-            .iter()
-            .cloned()
-            .map(|op| PersistedRemoteOp {
-                op,
-                inserted: false,
-            })
-            .collect();
+        return Vec::new();
     }
     if inserted_op_refs.len() == ops.len() {
-        return ops.iter().cloned().map(|op| PersistedRemoteOp { op, inserted: true }).collect();
+        return ops.to_vec();
     }
 
     // bulk_insert_ops_in_tx returns exactly the op_refs Postgres accepted.
@@ -1468,25 +1460,22 @@ fn mark_persisted_remote_ops(
         *remaining_by_ref.entry(op_ref).or_insert(0) += 1;
     }
 
-    let mut persisted_ops = Vec::with_capacity(ops.len());
+    let mut inserted_ops = Vec::new();
     for op in ops {
         let replica = op.meta.id.replica.as_bytes();
         let counter = op.meta.id.counter;
         let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);
-        let inserted = match remaining_by_ref.get_mut(op_ref.as_slice()) {
-            Some(remaining) if *remaining > 0 => {
-                *remaining -= 1;
-                true
-            }
-            _ => false,
+        let Some(remaining) = remaining_by_ref.get_mut(op_ref.as_slice()) else {
+            continue;
         };
-        persisted_ops.push(PersistedRemoteOp {
-            op: op.clone(),
-            inserted,
-        });
+        if *remaining == 0 {
+            continue;
+        }
+        *remaining -= 1;
+        inserted_ops.push(op.clone());
     }
 
-    persisted_ops
+    inserted_ops
 }
 
 fn materialize_inserted_ops(
@@ -1603,41 +1592,41 @@ fn append_ops_in_tx(
     let dedupe_filter_started_at = Instant::now();
     // Only materialize the ops Postgres actually inserted. This keeps duplicate opRefs in the
     // input batch from being replayed twice through core materialization.
-    let persisted_ops = mark_persisted_remote_ops(&ctx, ops, inserted_op_refs);
+    let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
     if let Some(profile) = &append_profile {
         profile.borrow_mut().dedupe_filter_ms +=
             dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
     }
 
     let materialize_started_at = Instant::now();
-    let mut apply_result =
-        apply_persisted_remote_ops_with_delta(&meta, persisted_ops, |inserted| {
-            materialize_inserted_ops(ctx.clone(), &meta, inserted)
-        });
-    if let Some(profile) = &append_profile {
-        profile.borrow_mut().materialize_ms +=
-            materialize_started_at.elapsed().as_secs_f64() * 1000.0;
-    }
-
-    let update_head_started_at = Instant::now();
-    let commit_status = commit_persisted_remote_result(
-        &mut apply_result,
+    let mut update_head_ms = 0.0;
+    let apply_result = apply_persisted_remote_ops_with_delta(
+        &meta,
+        inserted_ops,
+        |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
         |head| {
-            update_tree_meta_head(
+            let started_at = Instant::now();
+            let result = update_tree_meta_head(
                 &ctx.client,
                 &ctx.doc_id,
                 head.lamport,
                 &head.replica,
                 head.counter,
                 head.seq,
-            )
+            );
+            update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
+            result
         },
         || set_tree_meta_dirty(client, doc_id, true),
     );
     if let Some(profile) = &append_profile {
-        profile.borrow_mut().update_head_ms +=
-            update_head_started_at.elapsed().as_secs_f64() * 1000.0;
-        if commit_status == PersistedRemoteCommitStatus::DirtyFallback {
+        profile.borrow_mut().materialize_ms +=
+            materialize_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    if let Some(profile) = &append_profile {
+        profile.borrow_mut().update_head_ms += update_head_ms;
+        if apply_result.dirty_fallback {
             profile.borrow_mut().fallback_mark_dirty = true;
         }
         profile.borrow().log(doc_id, apply_result.inserted_count as usize);
