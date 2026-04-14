@@ -9,7 +9,7 @@ import {
   createPostgresNapiSyncBackendFactory,
   type PostgresNapiSyncBackendFactory,
 } from './index.js';
-import { loadNative, type NativeTestingFactory } from './native.js';
+import { loadTestingNative, type NativeTestingFactory } from './native-testing.js';
 
 export { createTreecrdtPostgresClient } from './client.js';
 
@@ -57,7 +57,7 @@ function opToNative(op: Operation) {
 }
 
 function createTestingFactory(url: string): NativeTestingFactory {
-  const native = loadNative();
+  const native = loadTestingNative();
   return new native.PgTestingFactory(url);
 }
 

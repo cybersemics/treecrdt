@@ -69,24 +69,8 @@ export type NativeFactory = {
   open(docId: string): NativeBackend;
 };
 
-export type NativeTestingFactory = {
-  resetForTests(): void;
-  resetDocForTests(docId: string): void;
-  cloneDocForTests(sourceDocId: string, targetDocId: string): void;
-  cloneMaterializedDocForTests(sourceDocId: string, targetDocId: string): void;
-  primeDocForTests(docId: string, ops: NativeOp[]): void;
-  primeBalancedFanoutDocForTests(
-    docId: string,
-    size: number,
-    fanout: number,
-    payloadBytes: number,
-    replicaLabel: string,
-  ): void;
-};
-
 type NativeExports = {
   PgFactory: new (url: string) => NativeFactory;
-  PgTestingFactory: new (url: string) => NativeTestingFactory;
 };
 
 // NOTE: we vendor the built binary into `native/` during `pnpm run build:native`.
