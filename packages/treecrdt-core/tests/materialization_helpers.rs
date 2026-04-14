@@ -1,7 +1,10 @@
 use treecrdt_core::{
-    apply_incremental_ops, apply_incremental_ops_with_delta, try_incremental_materialization,
-    LamportClock, MaterializationCursor, MemoryStorage, NodeId, Operation, OperationId,
-    ParentOpIndex, ReplicaId, TreeCrdt,
+    apply_incremental_ops, apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
+    commit_persisted_remote_result, materialize_persisted_remote_ops_with_delta,
+    try_incremental_materialization, LamportClock, MaterializationCursor, MaterializationHead,
+    MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation,
+    OperationId, ParentOpIndex, PersistedRemoteCommitPlan, PersistedRemoteCommitStatus,
+    PersistedRemoteOp, ReplicaId, TreeCrdt,
 };
 
 #[derive(Default)]
@@ -210,4 +213,158 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
     let head = res.head.expect("expected materialization head");
     assert_eq!(head.counter, 2);
     assert_eq!(res.affected_nodes, vec![NodeId::ROOT, parent, child],);
+}
+
+#[test]
+fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
+    let cursor = Cursor::default();
+    let replica = ReplicaId::new(b"remote");
+    let op1 = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let op2 = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
+    let op3 = Operation::set_payload(&replica, 3, 3, NodeId(2), vec![9]);
+
+    let mut seen_counters = Vec::new();
+    let result = apply_persisted_remote_ops_with_delta(
+        &cursor,
+        vec![
+            PersistedRemoteOp {
+                op: op1.clone(),
+                inserted: false,
+            },
+            PersistedRemoteOp {
+                op: op2.clone(),
+                inserted: true,
+            },
+            PersistedRemoteOp {
+                op: op3.clone(),
+                inserted: true,
+            },
+        ],
+        |ops| {
+            seen_counters = ops.iter().map(|op| op.meta.id.counter).collect();
+            Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
+                head: Some(MaterializationHead {
+                    lamport: op3.meta.lamport,
+                    replica: op3.meta.id.replica.as_bytes().to_vec(),
+                    counter: op3.meta.id.counter,
+                    seq: 2,
+                }),
+                affected_nodes: vec![NodeId(2)],
+            })
+        },
+    );
+
+    assert_eq!(seen_counters, vec![2, 3]);
+    assert_eq!(result.inserted_count, 2);
+    assert_eq!(result.affected_nodes, vec![NodeId(2)]);
+    assert_eq!(
+        result.commit,
+        PersistedRemoteCommitPlan::UpdateHead(MaterializationHead {
+            lamport: 3,
+            replica: replica.as_bytes().to_vec(),
+            counter: 3,
+            seq: 2,
+        })
+    );
+}
+
+#[test]
+fn apply_persisted_remote_ops_short_circuits_to_dirty_when_cursor_dirty() {
+    let cursor = Cursor {
+        dirty: true,
+        ..Cursor::default()
+    };
+    let replica = ReplicaId::new(b"remote");
+    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let mut runs = 0u64;
+
+    let result = apply_persisted_remote_ops_with_delta(
+        &cursor,
+        vec![PersistedRemoteOp { op, inserted: true }],
+        |_| {
+            runs += 1;
+            Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
+                head: None,
+                affected_nodes: Vec::new(),
+            })
+        },
+    );
+
+    assert_eq!(runs, 0);
+    assert_eq!(result.inserted_count, 1);
+    assert_eq!(result.affected_nodes, Vec::<NodeId>::new());
+    assert_eq!(result.commit, PersistedRemoteCommitPlan::MarkDirty);
+}
+
+#[test]
+fn commit_persisted_remote_result_clears_affected_nodes_on_dirty_fallback() {
+    let mut result = treecrdt_core::PersistedRemoteApplyResult {
+        inserted_count: 2,
+        affected_nodes: vec![NodeId(1), NodeId(2)],
+        commit: PersistedRemoteCommitPlan::UpdateHead(MaterializationHead {
+            lamport: 7,
+            replica: b"r".to_vec(),
+            counter: 4,
+            seq: 9,
+        }),
+    };
+    let mut marked_dirty = 0u64;
+
+    let status = commit_persisted_remote_result(
+        &mut result,
+        |_| Err::<(), ()>(()),
+        || {
+            marked_dirty += 1;
+            Ok::<(), ()>(())
+        },
+    );
+
+    assert_eq!(status, PersistedRemoteCommitStatus::DirtyFallback);
+    assert_eq!(marked_dirty, 1);
+    assert!(result.affected_nodes.is_empty());
+}
+
+#[test]
+fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
+    let cursor = Cursor::default();
+    let replica = ReplicaId::new(b"remote");
+    let parent = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(10), vec![0x10]);
+    let child = Operation::insert(&replica, 2, 2, NodeId(10), NodeId(11), vec![0x20]);
+
+    let mut prepared = 0u64;
+    let mut flushed_nodes = 0u64;
+    let mut flushed_index = 0u64;
+
+    let result = materialize_persisted_remote_ops_with_delta(
+        ReplicaId::new(b"adapter"),
+        LamportClock::default(),
+        MemoryNodeStore::default(),
+        MemoryPayloadStore::default(),
+        NoopParentOpIndex,
+        &cursor,
+        vec![child, parent],
+        |_, ops| {
+            prepared += ops.len() as u64;
+            Ok(())
+        },
+        |_| {
+            flushed_nodes += 1;
+            Ok(())
+        },
+        |_| {
+            flushed_index += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let head = result.head.expect("expected head");
+    assert_eq!(prepared, 2);
+    assert_eq!(flushed_nodes, 1);
+    assert_eq!(flushed_index, 1);
+    assert_eq!(head.counter, 2);
+    assert_eq!(
+        result.affected_nodes,
+        vec![NodeId::ROOT, NodeId(10), NodeId(11)]
+    );
 }

@@ -901,6 +901,10 @@ where
         self.head.as_ref()
     }
 
+    pub(crate) fn node_store_mut(&mut self) -> &mut N {
+        &mut self.nodes
+    }
+
     pub fn validate_invariants(&self) -> Result<()> {
         for pid in self.nodes.all_nodes()? {
             let pchildren = self.nodes.children(pid)?;

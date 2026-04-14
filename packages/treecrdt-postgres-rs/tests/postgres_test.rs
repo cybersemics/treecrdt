@@ -7,9 +7,10 @@ use uuid::Uuid;
 
 use treecrdt_core::{NodeId, Operation, ReplicaId, VersionVector};
 use treecrdt_postgres::{
-    append_ops, ensure_materialized, ensure_schema, get_ops_by_op_refs, list_op_refs_all,
-    list_op_refs_children, local_delete, local_insert, local_move, local_payload, max_lamport,
-    replica_max_counter, reset_doc_for_tests, tree_children,
+    append_ops, append_ops_with_affected_nodes, ensure_materialized, ensure_schema,
+    get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
+    local_move, local_payload, max_lamport, replica_max_counter, reset_doc_for_tests,
+    tree_children, tree_payload,
 };
 
 fn order_key_from_position(position: u16) -> Vec<u8> {
@@ -19,6 +20,25 @@ fn order_key_from_position(position: u16) -> Vec<u8> {
 
 fn node(n: u128) -> NodeId {
     NodeId(n)
+}
+
+fn representative_remote_batch(replica: &ReplicaId) -> (NodeId, NodeId, NodeId, Vec<Operation>) {
+    let p1 = node(1);
+    let p2 = node(2);
+    let child = node(3);
+    (
+        p1,
+        p2,
+        child,
+        vec![
+            Operation::insert(replica, 1, 1, NodeId::ROOT, p1, order_key_from_position(0)),
+            Operation::insert(replica, 2, 2, NodeId::ROOT, p2, order_key_from_position(1)),
+            Operation::insert(replica, 3, 3, p1, child, order_key_from_position(0)),
+            Operation::set_payload(replica, 4, 4, child, vec![7]),
+            Operation::move_node(replica, 5, 5, child, p2, order_key_from_position(0)),
+            Operation::set_payload(replica, 6, 6, child, vec![8]),
+        ],
+    )
 }
 
 fn connect() -> Option<Rc<RefCell<Client>>> {
@@ -104,6 +124,119 @@ fn postgres_backend_append_batch_materializes_only_inserted_ops() {
         row.get::<_, i64>(0).max(0) as u64
     };
     assert_eq!(head_seq, 2);
+}
+
+#[test]
+fn postgres_backend_append_with_affected_nodes_matches_representative_remote_batch() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"rep");
+    let (p1, p2, child, ops) = representative_remote_batch(&replica);
+
+    let affected = append_ops_with_affected_nodes(&client, &doc_id, &ops).unwrap();
+    assert_eq!(affected, vec![NodeId::ROOT, p1, p2, child]);
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
+        vec![p1, p2]
+    );
+    assert_eq!(tree_children(&client, &doc_id, p2).unwrap(), vec![child]);
+    assert_eq!(
+        tree_payload(&client, &doc_id, child).unwrap(),
+        Some(vec![8])
+    );
+
+    let refs_p2 = list_op_refs_children(&client, &doc_id, p2).unwrap();
+    let ops_p2 = get_ops_by_op_refs(&client, &doc_id, &refs_p2).unwrap();
+    assert!(ops_p2
+        .iter()
+        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
+    assert!(ops_p2
+        .iter()
+        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Payload { .. })));
+}
+
+#[test]
+fn postgres_backend_dirty_append_falls_back_to_rebuild_on_read() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"dirty");
+    let first = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node(1),
+        order_key_from_position(0),
+    );
+    let second = Operation::insert(
+        &replica,
+        2,
+        2,
+        NodeId::ROOT,
+        node(2),
+        order_key_from_position(1),
+    );
+
+    append_ops(&client, &doc_id, &[first]).unwrap();
+    {
+        let mut c = client.borrow_mut();
+        c.execute(
+            "UPDATE treecrdt_meta SET dirty = TRUE WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .unwrap();
+    }
+
+    let affected = append_ops_with_affected_nodes(&client, &doc_id, &[second]).unwrap();
+    assert!(affected.is_empty());
+
+    let dirty_before_read = {
+        let mut c = client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT dirty FROM treecrdt_meta WHERE doc_id = $1",
+                &[&doc_id],
+            )
+            .unwrap();
+        row.get::<_, bool>(0)
+    };
+    assert!(dirty_before_read);
+
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
+        vec![node(1), node(2)]
+    );
+
+    let dirty_after_read = {
+        let mut c = client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT dirty, head_seq FROM treecrdt_meta WHERE doc_id = $1",
+                &[&doc_id],
+            )
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(1).max(0) as u64, 2);
+        row.get::<_, bool>(0)
+    };
+    assert!(!dirty_after_read);
 }
 
 #[test]

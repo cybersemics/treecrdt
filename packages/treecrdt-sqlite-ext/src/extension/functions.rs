@@ -36,7 +36,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::null_mut;
 use std::slice;
 
-pub(super) use treecrdt_core::{Lamport, NodeId, NoopStorage, VersionVector};
+pub(super) use treecrdt_core::{Lamport, NodeId, VersionVector};
 
 #[cfg(any(feature = "ext-sqlite", feature = "static-link"))]
 use serde_json;

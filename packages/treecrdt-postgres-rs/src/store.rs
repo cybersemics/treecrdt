@@ -6,10 +6,11 @@ use std::time::Instant;
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    apply_incremental_ops_with_delta, try_incremental_materialization, Error, Lamport,
-    LamportClock, MaterializationCursor, NodeId, NodeStore, NoopStorage, Operation, OperationId,
-    OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
-    VersionVector,
+    apply_persisted_remote_ops_with_delta, commit_persisted_remote_result,
+    materialize_persisted_remote_ops_with_delta, Error, Lamport, LamportClock,
+    MaterializationCursor, NodeId, NodeStore, Operation, OperationId, OperationKind, ParentOpIndex,
+    PayloadStore, PersistedRemoteCommitStatus, PersistedRemoteOp, ReplicaId, Result, Storage,
+    TreeCrdt, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -1440,16 +1441,23 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
     Ok(inserted)
 }
 
-fn select_inserted_ops(
+fn mark_persisted_remote_ops(
     ctx: &PgCtx,
     ops: &[Operation],
     inserted_op_refs: Vec<Vec<u8>>,
-) -> Vec<Operation> {
+) -> Vec<PersistedRemoteOp> {
     if inserted_op_refs.is_empty() {
-        return Vec::new();
+        return ops
+            .iter()
+            .cloned()
+            .map(|op| PersistedRemoteOp {
+                op,
+                inserted: false,
+            })
+            .collect();
     }
     if inserted_op_refs.len() == ops.len() {
-        return ops.to_vec();
+        return ops.iter().cloned().map(|op| PersistedRemoteOp { op, inserted: true }).collect();
     }
 
     // bulk_insert_ops_in_tx returns exactly the op_refs Postgres accepted.
@@ -1460,81 +1468,52 @@ fn select_inserted_ops(
         *remaining_by_ref.entry(op_ref).or_insert(0) += 1;
     }
 
-    let mut inserted_ops = Vec::new();
+    let mut persisted_ops = Vec::with_capacity(ops.len());
     for op in ops {
         let replica = op.meta.id.replica.as_bytes();
         let counter = op.meta.id.counter;
         let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);
-        let Some(remaining) = remaining_by_ref.get_mut(op_ref.as_slice()) else {
-            continue;
+        let inserted = match remaining_by_ref.get_mut(op_ref.as_slice()) {
+            Some(remaining) if *remaining > 0 => {
+                *remaining -= 1;
+                true
+            }
+            _ => false,
         };
-        if *remaining == 0 {
-            continue;
-        }
-        *remaining -= 1;
-        inserted_ops.push(op.clone());
+        persisted_ops.push(PersistedRemoteOp {
+            op: op.clone(),
+            inserted,
+        });
     }
 
-    inserted_ops
+    persisted_ops
 }
 
-fn materialize_ops_in_order(
+fn materialize_inserted_ops(
     ctx: PgCtx,
     meta: &TreeMeta,
     ops: Vec<Operation>,
-) -> Result<Vec<NodeId>> {
-    if ops.is_empty() {
-        return Ok(Vec::new());
-    }
-
+) -> Result<treecrdt_core::IncrementalApplyResult> {
     // At this point treecrdt_ops already contains the inserted operations. This temporary
     // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
-    let nodes = PgNodeStore::new(ctx.clone());
-    if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
-        // Payload ops can depend on the current node row, so front-load the reads here.
-        nodes.preload_for_ops(&ops)?;
-    }
-    let node_flush = nodes.clone();
-    let payloads = PgPayloadStore::new(ctx.clone());
-    let mut index = PgParentOpIndex::new(ctx.clone());
-
-    // NoopStorage is intentional: append_ops_in_tx already persisted the op log, and this pass is
-    // only responsible for materialized state (nodes/payload/index/head) through treecrdt-core.
-    let mut crdt = TreeCrdt::with_stores(
+    materialize_persisted_remote_ops_with_delta(
         ReplicaId::new(b"postgres"),
-        NoopStorage,
         LamportClock::default(),
-        nodes,
-        payloads,
-    )?;
-
-    let materialize_started_at = Instant::now();
-    // This is the main handoff into treecrdt-core for remote/bulk append batches:
-    // defensive delete + revival, payload LWW, tombstone refresh, and oprefs_children updates.
-    let apply_result = apply_incremental_ops_with_delta(&mut crdt, &mut index, meta, ops)?;
-    let next = apply_result
-        .head
-        .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
-    node_flush.flush_last_change()?;
-    index.flush()?;
-    if let Some(profile) = &ctx.append_profile {
-        profile.borrow_mut().materialize_ms +=
-            materialize_started_at.elapsed().as_secs_f64() * 1000.0;
-    }
-    let update_head_started_at = Instant::now();
-    update_tree_meta_head(
-        &ctx.client,
-        &ctx.doc_id,
-        next.lamport,
-        &next.replica,
-        next.counter,
-        next.seq,
-    )?;
-    if let Some(profile) = &ctx.append_profile {
-        profile.borrow_mut().update_head_ms +=
-            update_head_started_at.elapsed().as_secs_f64() * 1000.0;
-    }
-    Ok(apply_result.affected_nodes)
+        PgNodeStore::new(ctx.clone()),
+        PgPayloadStore::new(ctx.clone()),
+        PgParentOpIndex::new(ctx.clone()),
+        meta,
+        ops,
+        |nodes, ops| {
+            if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
+                // Payload ops can depend on the current node row, so front-load the reads here.
+                nodes.preload_for_ops(ops)?;
+            }
+            Ok(())
+        },
+        |nodes| nodes.flush_last_change(),
+        |index| index.flush(),
+    )
 }
 
 pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
@@ -1610,38 +1589,6 @@ fn append_ops_in_tx(
     });
     let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
 
-    // treecrdt_ops is the source of truth. This function first appends/dedupes the op log in SQL
-    // and only then decides whether it can replay the inserted subset through core materialization.
-    //
-    // If the doc is already dirty, derived tables are stale, so we only append to the op log and
-    // leave full reconstruction to ensure_materialized_in_tx on a later read.
-    if meta.dirty {
-        let bulk_insert_started_at = Instant::now();
-        let inserted = {
-            let mut c = client.borrow_mut();
-            bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
-        };
-        if let Some(profile) = &append_profile {
-            let mut profile = profile.borrow_mut();
-            profile.bulk_insert_ms += bulk_insert_started_at.elapsed().as_secs_f64() * 1000.0;
-            profile.bulk_inserted_ops += inserted.len();
-        }
-        if !inserted.is_empty() {
-            set_tree_meta_dirty(client, doc_id, true)?;
-            if let Some(profile) = &append_profile {
-                profile.borrow_mut().fallback_mark_dirty = true;
-            }
-        }
-        let inserted_count = inserted.len().min(u64::MAX as usize) as u64;
-        if let Some(profile) = &append_profile {
-            profile.borrow().log(doc_id, inserted_count as usize);
-        }
-        return Ok(AppendOpsResult {
-            inserted_count,
-            affected_nodes: Vec::new(),
-        });
-    }
-
     let bulk_insert_started_at = Instant::now();
     let inserted_op_refs = {
         let mut c = client.borrow_mut();
@@ -1653,57 +1600,52 @@ fn append_ops_in_tx(
         profile.bulk_inserted_ops += inserted_op_refs.len();
     }
 
-    if inserted_op_refs.is_empty() {
-        if let Some(profile) = &append_profile {
-            profile.borrow().log(doc_id, 0);
-        }
-        return Ok(AppendOpsResult::default());
-    }
-
     let dedupe_filter_started_at = Instant::now();
     // Only materialize the ops Postgres actually inserted. This keeps duplicate opRefs in the
     // input batch from being replayed twice through core materialization.
-    let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
+    let persisted_ops = mark_persisted_remote_ops(&ctx, ops, inserted_op_refs);
     if let Some(profile) = &append_profile {
         profile.borrow_mut().dedupe_filter_ms +=
             dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
     }
 
-    if inserted_ops.is_empty() {
-        if let Some(profile) = &append_profile {
-            profile.borrow().log(doc_id, 0);
-        }
-        return Ok(AppendOpsResult::default());
-    }
-
-    let inserted = inserted_ops.len();
-    let mut affected_nodes: Vec<NodeId> = Vec::new();
-    // If incremental materialization fails, keep the op-log append and mark the doc dirty so the
-    // next rebuild replays the full log through the same core semantics.
-    let materialized = try_incremental_materialization(
-        false,
-        || {
-            affected_nodes = materialize_ops_in_order(ctx, &meta, inserted_ops)?;
-            Ok::<(), Error>(())
-        },
-        || {
-            let _ = set_tree_meta_dirty(client, doc_id, true);
-            if let Some(profile) = &append_profile {
-                profile.borrow_mut().fallback_mark_dirty = true;
-            }
-        },
-    );
-    if !materialized {
-        affected_nodes.clear();
-    }
-
+    let materialize_started_at = Instant::now();
+    let mut apply_result =
+        apply_persisted_remote_ops_with_delta(&meta, persisted_ops, |inserted| {
+            materialize_inserted_ops(ctx.clone(), &meta, inserted)
+        });
     if let Some(profile) = &append_profile {
-        profile.borrow().log(doc_id, inserted);
+        profile.borrow_mut().materialize_ms +=
+            materialize_started_at.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    let update_head_started_at = Instant::now();
+    let commit_status = commit_persisted_remote_result(
+        &mut apply_result,
+        |head| {
+            update_tree_meta_head(
+                &ctx.client,
+                &ctx.doc_id,
+                head.lamport,
+                &head.replica,
+                head.counter,
+                head.seq,
+            )
+        },
+        || set_tree_meta_dirty(client, doc_id, true),
+    );
+    if let Some(profile) = &append_profile {
+        profile.borrow_mut().update_head_ms +=
+            update_head_started_at.elapsed().as_secs_f64() * 1000.0;
+        if commit_status == PersistedRemoteCommitStatus::DirtyFallback {
+            profile.borrow_mut().fallback_mark_dirty = true;
+        }
+        profile.borrow().log(doc_id, apply_result.inserted_count as usize);
     }
 
     Ok(AppendOpsResult {
-        inserted_count: inserted.min(u64::MAX as usize) as u64,
-        affected_nodes,
+        inserted_count: apply_result.inserted_count,
+        affected_nodes: apply_result.affected_nodes,
     })
 }
 
