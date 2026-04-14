@@ -6,9 +6,10 @@ use std::time::Instant;
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    apply_incremental_ops, try_incremental_materialization, Error, Lamport, LamportClock,
-    MaterializationCursor, NodeId, NodeStore, NoopStorage, Operation, OperationId, OperationKind,
-    ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt, VersionVector,
+    apply_incremental_ops_with_delta, try_incremental_materialization, Error, Lamport,
+    LamportClock, MaterializationCursor, NodeId, NodeStore, NoopStorage, Operation, OperationId,
+    OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
+    VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -1477,9 +1478,13 @@ fn select_inserted_ops(
     inserted_ops
 }
 
-fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) -> Result<()> {
+fn materialize_ops_in_order(
+    ctx: PgCtx,
+    meta: &TreeMeta,
+    ops: Vec<Operation>,
+) -> Result<Vec<NodeId>> {
     if ops.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // At this point treecrdt_ops already contains the inserted operations. This temporary
@@ -1506,7 +1511,9 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
     let materialize_started_at = Instant::now();
     // This is the main handoff into treecrdt-core for remote/bulk append batches:
     // defensive delete + revival, payload LWW, tombstone refresh, and oprefs_children updates.
-    let next = apply_incremental_ops(&mut crdt, &mut index, meta, ops)?
+    let apply_result = apply_incremental_ops_with_delta(&mut crdt, &mut index, meta, ops)?;
+    let next = apply_result
+        .head
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
     node_flush.flush_last_change()?;
     index.flush()?;
@@ -1527,7 +1534,7 @@ fn materialize_ops_in_order(ctx: PgCtx, meta: &TreeMeta, ops: Vec<Operation>) ->
         profile.borrow_mut().update_head_ms +=
             update_head_started_at.elapsed().as_secs_f64() * 1000.0;
     }
-    Ok(())
+    Ok(apply_result.affected_nodes)
 }
 
 pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
@@ -1542,7 +1549,7 @@ pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation])
         Ok(v) => {
             let mut c = client.borrow_mut();
             c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v)
+            Ok(v.inserted_count)
         }
         Err(e) => {
             let mut c = client.borrow_mut();
@@ -1552,7 +1559,43 @@ pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation])
     }
 }
 
-fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
+pub fn append_ops_with_affected_nodes(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    ops: &[Operation],
+) -> Result<Vec<NodeId>> {
+    {
+        let mut c = client.borrow_mut();
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
+    }
+
+    let res = append_ops_in_tx(client, doc_id, ops);
+
+    match res {
+        Ok(v) => {
+            let mut c = client.borrow_mut();
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
+            Ok(v.affected_nodes)
+        }
+        Err(e) => {
+            let mut c = client.borrow_mut();
+            let _ = c.batch_execute("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+#[derive(Default)]
+struct AppendOpsResult {
+    inserted_count: u64,
+    affected_nodes: Vec<NodeId>,
+}
+
+fn append_ops_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    ops: &[Operation],
+) -> Result<AppendOpsResult> {
     // Serialize per-doc writers across all server instances (incremental materialization updates
     // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
     let meta = load_tree_meta_for_update(client, doc_id)?;
@@ -1593,7 +1636,10 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
         if let Some(profile) = &append_profile {
             profile.borrow().log(doc_id, inserted_count as usize);
         }
-        return Ok(inserted_count);
+        return Ok(AppendOpsResult {
+            inserted_count,
+            affected_nodes: Vec::new(),
+        });
     }
 
     let bulk_insert_started_at = Instant::now();
@@ -1611,7 +1657,7 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
         if let Some(profile) = &append_profile {
             profile.borrow().log(doc_id, 0);
         }
-        return Ok(0);
+        return Ok(AppendOpsResult::default());
     }
 
     let dedupe_filter_started_at = Instant::now();
@@ -1627,15 +1673,19 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
         if let Some(profile) = &append_profile {
             profile.borrow().log(doc_id, 0);
         }
-        return Ok(0);
+        return Ok(AppendOpsResult::default());
     }
 
     let inserted = inserted_ops.len();
+    let mut affected_nodes: Vec<NodeId> = Vec::new();
     // If incremental materialization fails, keep the op-log append and mark the doc dirty so the
     // next rebuild replays the full log through the same core semantics.
-    let _ = try_incremental_materialization(
+    let materialized = try_incremental_materialization(
         false,
-        || materialize_ops_in_order(ctx, &meta, inserted_ops),
+        || {
+            affected_nodes = materialize_ops_in_order(ctx, &meta, inserted_ops)?;
+            Ok::<(), Error>(())
+        },
         || {
             let _ = set_tree_meta_dirty(client, doc_id, true);
             if let Some(profile) = &append_profile {
@@ -1643,12 +1693,18 @@ fn append_ops_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation
             }
         },
     );
+    if !materialized {
+        affected_nodes.clear();
+    }
 
     if let Some(profile) = &append_profile {
         profile.borrow().log(doc_id, inserted);
     }
 
-    Ok(inserted.min(u64::MAX as usize) as u64)
+    Ok(AppendOpsResult {
+        inserted_count: inserted.min(u64::MAX as usize) as u64,
+        affected_nodes,
+    })
 }
 
 fn clear_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {

@@ -18,7 +18,7 @@ export type TreecrdtSyncBackendClient = {
   ops: {
     all?: () => Promise<Operation[]>;
     get: (opRefs: OpRef[]) => Promise<Operation[]>;
-    appendMany: (ops: Operation[]) => Promise<void>;
+    appendMany: (ops: Operation[]) => Promise<unknown>;
   };
 };
 

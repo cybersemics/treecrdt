@@ -138,6 +138,18 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
     {
+      name: 'appendMany: returns affected ids for structural batch',
+      run: scenarioAppendManyReturnsAffectedIdsStructuralBatch,
+    },
+    {
+      name: 'appendMany: returns deduped deterministic affected ids',
+      run: scenarioAppendManyReturnsDedupedDeterministicIds,
+    },
+    {
+      name: 'appendMany: returns indirect affected ids on defensive restore',
+      run: scenarioAppendManyReturnsIndirectAffectedIdsOnDefensiveRestore,
+    },
+    {
       name: 'tree: childrenPage uses keyset cursor',
       run: scenarioChildrenPagination,
     },
@@ -254,6 +266,36 @@ function assertArrayEqual(actual: string[], expected: string[], message: string)
       throw new Error(
         `${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
       );
+    }
+  }
+}
+
+function assertAffectedIdsShape(ids: string[], message: string): void {
+  for (const id of ids) {
+    if (!/^[0-9a-f]{32}$/.test(id)) {
+      throw new Error(`${message}: expected canonical NodeId hex, got ${JSON.stringify(id)}`);
+    }
+  }
+}
+
+function assertAffectedIdsSortedUnique(ids: string[], message: string): void {
+  assertAffectedIdsShape(ids, message);
+  const sorted = ids.slice().sort();
+  for (let i = 0; i < ids.length; i += 1) {
+    if (ids[i] !== sorted[i]) {
+      throw new Error(`${message}: expected sorted ids, got ${JSON.stringify(ids)}`);
+    }
+    if (i > 0 && ids[i] === ids[i - 1]) {
+      throw new Error(`${message}: expected unique ids, got duplicate ${ids[i]}`);
+    }
+  }
+}
+
+function assertAffectedIdsContain(ids: string[], expected: string[], message: string): void {
+  const set = new Set(ids);
+  for (const id of expected) {
+    if (!set.has(id)) {
+      throw new Error(`${message}: expected ${JSON.stringify(id)} in ${JSON.stringify(ids)}`);
     }
   }
 }
@@ -489,6 +531,114 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
   const refs = await engine.opRefs.all();
   assertEqual(refs.length, 2, 'opRefs.all length after duplicate append');
   assertEqual(await engine.meta.headLamport(), 7, 'meta.headLamport after duplicate append');
+}
+
+async function scenarioAppendManyReturnsAffectedIdsStructuralBatch(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(11);
+  const child = nodeIdFromInt(12);
+
+  const affected = await engine.ops.appendMany([
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: parent,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      parent,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+  assertAffectedIdsSortedUnique(affected, 'appendMany structural affected ids');
+  assertAffectedIdsContain(
+    affected,
+    [root, parent, child],
+    'appendMany structural should include root+parent+child',
+  );
+}
+
+async function scenarioAppendManyReturnsDedupedDeterministicIds(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(21);
+
+  const affected = await engine.ops.appendMany([
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makePayloadOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      node,
+      payload: new Uint8Array([1]),
+    }),
+    makePayloadOp({
+      replica,
+      counter: 3,
+      lamport: 3,
+      node,
+      payload: new Uint8Array([2]),
+    }),
+  ]);
+  assertAffectedIdsSortedUnique(affected, 'appendMany dedupe affected ids');
+  assertAffectedIdsContain(affected, [root, node], 'appendMany dedupe should include root+node');
+}
+
+async function scenarioAppendManyReturnsIndirectAffectedIdsOnDefensiveRestore(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(31);
+  const child = nodeIdFromInt(32);
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+
+  const parentInsert = makeInsertOp({
+    replica: rA,
+    counter: 1,
+    lamport: 1,
+    parent: root,
+    node: parent,
+    orderKey: orderKeyFromPosition(0),
+  });
+  await a.ops.append(parentInsert);
+  await b.ops.appendMany([parentInsert]);
+
+  const childInsert = await b.local.insert(rB, parent, child, { type: 'last' }, null);
+  await a.local.delete(rA, parent);
+  const affected = await a.ops.appendMany([childInsert]);
+
+  assertAffectedIdsSortedUnique(affected, 'appendMany defensive restore affected ids');
+  assertAffectedIdsContain(
+    affected,
+    [parent, child],
+    'appendMany defensive restore should include restored parent+child',
+  );
+  assertArrayEqual(await a.tree.children(root), [parent], 'restored parent should be visible');
+  assertArrayEqual(await a.tree.children(parent), [child], 'child should remain visible');
 }
 
 async function scenarioChildrenPagination(ctx: TreecrdtEngineConformanceContext): Promise<void> {
@@ -1052,7 +1202,8 @@ async function scenarioSyncKnownStatePropagation(
   );
 
   // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
-  await b.ops.appendMany(await a.ops.all());
+  const affectedOnB = await b.ops.appendMany(await a.ops.all());
+  assertAffectedIdsSortedUnique(affectedOnB, 'sync known_state: appendMany affected ids shape');
 
   assertArrayEqual(await b.tree.children(root), [parent], 'parent restored after sync delete');
   assertArrayEqual(await b.tree.children(parent), [child], 'child still present after sync delete');
@@ -1138,7 +1289,9 @@ function createEngineSyncBackend(engine: TreecrdtEngine): FlushableSyncBackend<O
       return engine.opRefs.children(bytesToHex(filter.children.parent));
     },
     getOpsByOpRefs: async (opRefs: OpRef[]) => engine.ops.get(opRefs),
-    applyOps: async (ops: Operation[]) => engine.ops.appendMany(ops),
+    applyOps: async (ops: Operation[]) => {
+      await engine.ops.appendMany(ops);
+    },
   });
 }
 

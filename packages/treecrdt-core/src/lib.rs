@@ -15,8 +15,8 @@ pub mod version_vector;
 pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use materialization::{
-    apply_incremental_ops, try_incremental_materialization, MaterializationCursor,
-    MaterializationHead,
+    apply_incremental_ops, apply_incremental_ops_with_delta, try_incremental_materialization,
+    IncrementalApplyResult, MaterializationCursor, MaterializationHead,
 };
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{

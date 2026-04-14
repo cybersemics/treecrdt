@@ -96,6 +96,7 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
       tree.appendOp(JSON.stringify(jsOp));
     },
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
+      const affected: Uint8Array[] = [];
       for (const op of ops) {
         const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
         if (op.kind.type === 'delete') {
@@ -104,8 +105,12 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
           }
           jsOp.known_state = Array.from(op.meta.knownState);
         }
-        tree.appendOp(JSON.stringify(jsOp));
+        const nodes: string[] = tree.appendOpWithDelta(JSON.stringify(jsOp));
+        for (const hex of nodes) {
+          affected.push(hexToBytes(hex));
+        }
       }
+      return affected;
     },
     opsSince: async (lamport: number) => {
       const ops = tree.opsSince(BigInt(lamport));

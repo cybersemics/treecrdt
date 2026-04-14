@@ -299,8 +299,8 @@ async function createDirectClient(opts: {
         }
         case 'appendMany': {
           const [ops] = params as RpcParams<'appendMany'>;
-          await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
-          return undefined as any;
+          const affected = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
+          return affected.map((node) => Array.from(node)) as any;
         }
         case 'opsSince': {
           const [lamport, root] = params as RpcParams<'opsSince'>;
@@ -531,7 +531,11 @@ function makeTreecrdtClientFromCall(opts: {
     runner,
     ops: {
       append: (op) => call('append', [op]).then(() => undefined),
-      appendMany: (ops) => call('appendMany', [ops]).then(() => undefined),
+      appendMany: async (ops) => {
+        const affected = await call('appendMany', [ops]);
+        if (!Array.isArray(affected)) return [];
+        return affected.map((node) => nodeIdFromBytes16(Uint8Array.from(node)));
+      },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),

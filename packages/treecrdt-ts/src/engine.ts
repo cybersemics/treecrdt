@@ -3,7 +3,7 @@ import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from 
 
 export type TreecrdtEngineOps = {
   append: (op: Operation) => Promise<void>;
-  appendMany: (ops: Operation[]) => Promise<void>;
+  appendMany: (ops: Operation[]) => Promise<string[]>;
   all: () => Promise<Operation[]>;
   since: (lamport: number, root?: string) => Promise<Operation[]>;
   children: (parent: string) => Promise<Operation[]>;

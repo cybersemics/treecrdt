@@ -43,7 +43,7 @@ export type NativeBackend = {
   treeExists(node: Uint8Array): boolean;
   treePayload(node: Uint8Array): Uint8Array | null;
   replicaMaxCounter(replica: Uint8Array): bigint;
-  applyOps(ops: NativeOp[]): void;
+  applyOps(ops: NativeOp[]): Uint8Array[];
   localInsert(
     replica: Uint8Array,
     parent: Uint8Array,

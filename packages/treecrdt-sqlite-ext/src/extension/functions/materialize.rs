@@ -107,12 +107,12 @@ fn materialize_ops_in_order(
     doc_id: &[u8],
     meta: &TreeMeta,
     ops: &[treecrdt_core::Operation],
-) -> Result<(), c_int> {
+) -> Result<Vec<NodeId>, c_int> {
     if ops.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
-    use treecrdt_core::{apply_incremental_ops, LamportClock, ReplicaId, TreeCrdt};
+    use treecrdt_core::{apply_incremental_ops_with_delta, LamportClock, ReplicaId, TreeCrdt};
     let node_store = SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
     let payload_store = SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
     let mut op_index =
@@ -126,11 +126,11 @@ fn materialize_ops_in_order(
     )
     .map_err(|_| SQLITE_ERROR as c_int)?;
 
-    let next = apply_incremental_ops(&mut crdt, &mut op_index, meta, ops.to_vec())
-        .map_err(|_| SQLITE_ERROR as c_int)?
-        .ok_or(SQLITE_ERROR as c_int)?;
-    update_tree_meta_head(db, next.lamport, &next.replica, next.counter, next.seq)?;
-    Ok(())
+    let next = apply_incremental_ops_with_delta(&mut crdt, &mut op_index, meta, ops.to_vec())
+        .map_err(|_| SQLITE_ERROR as c_int)?;
+    let head = next.head.ok_or(SQLITE_ERROR as c_int)?;
+    update_tree_meta_head(db, head.lamport, &head.replica, head.counter, head.seq)?;
+    Ok(next.affected_nodes)
 }
 
 pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
@@ -240,14 +240,20 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Default)]
+pub(super) struct AppendOpsResult {
+    pub(super) inserted: i64,
+    pub(super) affected_nodes: Vec<NodeId>,
+}
+
 pub(super) fn append_ops_impl(
     db: *mut sqlite3,
     doc_id: &[u8],
     savepoint_name: &str,
     ops: &[JsonAppendOp],
-) -> Result<i64, c_int> {
+) -> Result<AppendOpsResult, c_int> {
     if ops.is_empty() {
-        return Ok(0);
+        return Ok(AppendOpsResult::default());
     }
 
     let meta = load_tree_meta(db)?;
@@ -266,6 +272,7 @@ pub(super) fn append_ops_impl(
     let mut storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
     let mut inserted: i64 = 0;
     let mut materialize_ops: Vec<treecrdt_core::Operation> = Vec::with_capacity(ops.len());
+    let mut affected_nodes: Vec<NodeId> = Vec::new();
 
     for op in ops {
         let operation = match json_append_op_to_operation(op) {
@@ -292,13 +299,20 @@ pub(super) fn append_ops_impl(
     }
 
     if inserted > 0 {
-        let _ = treecrdt_core::try_incremental_materialization(
+        let materialized = treecrdt_core::try_incremental_materialization(
             meta.dirty,
-            || materialize_ops_in_order(db, doc_id, &meta, &materialize_ops[..]),
+            || {
+                affected_nodes = materialize_ops_in_order(db, doc_id, &meta, &materialize_ops[..])?;
+                Ok::<(), c_int>(())
+            },
             || {
                 let _ = set_tree_meta_dirty(db, true);
             },
         );
+        if !materialized {
+            // Exact incremental delta is unavailable when materialization was skipped/failed.
+            affected_nodes.clear();
+        }
     }
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
@@ -307,5 +321,8 @@ pub(super) fn append_ops_impl(
         return Err(commit_rc);
     }
 
-    Ok(inserted)
+    Ok(AppendOpsResult {
+        inserted,
+        affected_nodes,
+    })
 }

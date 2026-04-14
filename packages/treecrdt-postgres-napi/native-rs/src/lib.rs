@@ -474,7 +474,7 @@ impl PgBackend {
     }
 
     #[napi]
-    pub fn apply_ops(&self, ops: Vec<NativeOp>) -> napi::Result<()> {
+    pub fn apply_ops(&self, ops: Vec<NativeOp>) -> napi::Result<Vec<Buffer>> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
@@ -483,8 +483,13 @@ impl PgBackend {
             core_ops.push(native_to_core_op(op).map_err(map_core_err)?);
         }
 
-        treecrdt_postgres::append_ops(&client, &self.doc_id, &core_ops).map_err(map_core_err)?;
-        Ok(())
+        let affected =
+            treecrdt_postgres::append_ops_with_affected_nodes(&client, &self.doc_id, &core_ops)
+                .map_err(map_core_err)?;
+        Ok(affected
+            .into_iter()
+            .map(|node| Buffer::from(node_to_bytes16(node).to_vec()))
+            .collect())
     }
 
     #[napi]
