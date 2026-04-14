@@ -9,7 +9,7 @@ import {
   createPostgresNapiSyncBackendFactory,
   type PostgresNapiSyncBackendFactory,
 } from './index.js';
-import { loadTestingNative, type NativeTestingFactory } from './native-testing.js';
+import { loadNative, type NativeOp } from './native.js';
 
 export { createTreecrdtPostgresClient } from './client.js';
 
@@ -34,6 +34,21 @@ export type PostgresNapiTestAdapterFactory = PostgresNapiAdapterFactory &
 export type PostgresNapiTestSyncBackendFactory = PostgresNapiSyncBackendFactory &
   PostgresNapiSyncFixtureHelpers;
 
+type NativeTestingFactory = {
+  resetForTests(): void;
+  resetDocForTests(docId: string): void;
+  cloneDocForTests(sourceDocId: string, targetDocId: string): void;
+  cloneMaterializedDocForTests(sourceDocId: string, targetDocId: string): void;
+  primeDocForTests(docId: string, ops: NativeOp[]): void;
+  primeBalancedFanoutDocForTests(
+    docId: string,
+    size: number,
+    fanout: number,
+    payloadBytes: number,
+    replicaLabel: string,
+  ): void;
+};
+
 function ensureNonEmptyString(name: string, value: string): void {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`${name} must be a non-empty string`);
@@ -57,7 +72,9 @@ function opToNative(op: Operation) {
 }
 
 function createTestingFactory(url: string): NativeTestingFactory {
-  const native = loadTestingNative();
+  const native = loadNative() as unknown as {
+    PgTestingFactory: new (url: string) => NativeTestingFactory;
+  };
   return new native.PgTestingFactory(url);
 }
 
