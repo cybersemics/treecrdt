@@ -8,8 +8,8 @@ use postgres::{Client, Row, Statement};
 use treecrdt_core::{
     apply_persisted_remote_ops_with_delta, materialize_persisted_remote_ops_with_delta, Error,
     Lamport, LamportClock, MaterializationCursor, NodeId, NodeStore, Operation, OperationId,
-    OperationKind, ParentOpIndex, PayloadStore, ReplicaId, Result, Storage, TreeCrdt,
-    VersionVector,
+    OperationKind, ParentOpIndex, PayloadStore, PersistedRemoteStores, ReplicaId, Result, Storage,
+    TreeCrdt, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -1486,11 +1486,13 @@ fn materialize_inserted_ops(
     // At this point treecrdt_ops already contains the inserted operations. This temporary
     // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
     materialize_persisted_remote_ops_with_delta(
-        ReplicaId::new(b"postgres"),
-        LamportClock::default(),
-        PgNodeStore::new(ctx.clone()),
-        PgPayloadStore::new(ctx.clone()),
-        PgParentOpIndex::new(ctx.clone()),
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"postgres"),
+            clock: LamportClock::default(),
+            nodes: PgNodeStore::new(ctx.clone()),
+            payloads: PgPayloadStore::new(ctx.clone()),
+            index: PgParentOpIndex::new(ctx.clone()),
+        },
         meta,
         ops,
         |nodes, ops| {

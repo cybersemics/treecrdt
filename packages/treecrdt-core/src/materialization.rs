@@ -39,6 +39,15 @@ pub struct PersistedRemoteApplyResult {
     pub dirty_fallback: bool,
 }
 
+/// Backend-owned stores used to replay already-persisted remote ops through core semantics.
+pub struct PersistedRemoteStores<C, N, P, I> {
+    pub replica_id: ReplicaId,
+    pub clock: C,
+    pub nodes: N,
+    pub payloads: P,
+    pub index: I,
+}
+
 /// Apply an incremental batch through core materialization semantics.
 ///
 /// The batch is sorted in canonical op-key order, validated against the materialized head,
@@ -136,11 +145,7 @@ where
 /// Adapters provide backend-specific stores plus lightweight prepare/flush hooks, while core owns
 /// the canonical op ordering, replay semantics, and affected-node accumulation.
 pub fn materialize_persisted_remote_ops_with_delta<C, N, P, I, M, Prepare, FlushNodes, FlushIndex>(
-    replica_id: ReplicaId,
-    clock: C,
-    mut nodes: N,
-    payloads: P,
-    mut index: I,
+    stores: PersistedRemoteStores<C, N, P, I>,
     meta: &M,
     ops: Vec<Operation>,
     mut prepare_nodes: Prepare,
@@ -163,6 +168,14 @@ where
             affected_nodes: Vec::new(),
         });
     }
+
+    let PersistedRemoteStores {
+        replica_id,
+        clock,
+        mut nodes,
+        payloads,
+        mut index,
+    } = stores;
 
     prepare_nodes(&mut nodes, &ops)?;
 

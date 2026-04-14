@@ -108,14 +108,19 @@ fn materialize_inserted_ops(
     meta: &TreeMeta,
     ops: &[treecrdt_core::Operation],
 ) -> Result<treecrdt_core::IncrementalApplyResult, c_int> {
-    use treecrdt_core::{materialize_persisted_remote_ops_with_delta, LamportClock, ReplicaId};
+    use treecrdt_core::{
+        materialize_persisted_remote_ops_with_delta, LamportClock, PersistedRemoteStores, ReplicaId,
+    };
 
     materialize_persisted_remote_ops_with_delta(
-        ReplicaId::new(b"sqlite-ext"),
-        LamportClock::default(),
-        SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-        SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-        SqliteParentOpIndex::prepare(db, doc_id.to_vec()).map_err(|_| SQLITE_ERROR as c_int)?,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"sqlite-ext"),
+            clock: LamportClock::default(),
+            nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+            payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+            index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+                .map_err(|_| SQLITE_ERROR as c_int)?,
+        },
         meta,
         ops.to_vec(),
         |_, _| Ok(()),

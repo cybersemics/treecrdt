@@ -2,7 +2,8 @@ use treecrdt_core::{
     apply_incremental_ops, apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     materialize_persisted_remote_ops_with_delta, try_incremental_materialization, LamportClock,
     MaterializationCursor, MaterializationHead, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,
-    NodeId, NoopParentOpIndex, Operation, OperationId, ParentOpIndex, ReplicaId, TreeCrdt,
+    NodeId, NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PersistedRemoteStores,
+    ReplicaId, TreeCrdt,
 };
 
 #[derive(Default)]
@@ -340,11 +341,13 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
     let mut flushed_index = 0u64;
 
     let result = materialize_persisted_remote_ops_with_delta(
-        ReplicaId::new(b"adapter"),
-        LamportClock::default(),
-        MemoryNodeStore::default(),
-        MemoryPayloadStore::default(),
-        NoopParentOpIndex,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes: MemoryNodeStore::default(),
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
         &cursor,
         vec![child, parent],
         |_, ops| {
