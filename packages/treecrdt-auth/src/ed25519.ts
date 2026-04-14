@@ -8,10 +8,13 @@ import {
 import { sha512 } from '@noble/hashes/sha512';
 
 let ed25519Ready = false;
+function sha512ForEd25519(message: Uint8Array): Uint8Array {
+  return new Uint8Array(sha512(message));
+}
 
 export function ensureEd25519(): void {
   if (ed25519Ready) return;
-  ed25519Hashes.sha512 = sha512;
+  ed25519Hashes.sha512 = sha512ForEd25519;
   ed25519Ready = true;
 }
 

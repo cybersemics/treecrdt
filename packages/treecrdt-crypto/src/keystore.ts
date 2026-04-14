@@ -39,9 +39,13 @@ const SEALED_LOCAL_IDENTITY_V1_AAD_DOMAIN = utf8ToBytes('treecrdt/local-identity
 const SEALED_LOCAL_IDENTITY_V1_AAD_SEP = new Uint8Array([0]);
 
 let ed25519Ready = false;
+function sha512ForEd25519(message: Uint8Array): Uint8Array {
+  return new Uint8Array(sha512(message));
+}
+
 function ensureEd25519(): void {
   if (ed25519Ready) return;
-  ed25519Hashes.sha512 = sha512;
+  ed25519Hashes.sha512 = sha512ForEd25519;
   ed25519Ready = true;
 }
 
