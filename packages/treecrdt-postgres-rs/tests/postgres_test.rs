@@ -196,7 +196,8 @@ fn postgres_backend_out_of_order_append_uses_replay_frontier() {
     );
 
     append_ops(&client, &doc_id, &[second]).unwrap();
-    let affected = append_ops_with_affected_nodes(&client, &doc_id, &[first.clone()]).unwrap();
+    let affected =
+        append_ops_with_affected_nodes(&client, &doc_id, std::slice::from_ref(&first)).unwrap();
     assert!(affected.is_empty());
 
     let (replay_lamport, replay_replica, replay_counter, head_seq_before) = {

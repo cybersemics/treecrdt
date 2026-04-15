@@ -183,7 +183,6 @@ fn apply_incremental_ops_with_delta_rejects_pending_replay_frontier() {
         replay_lamport: Some(4),
         replay_replica: Some(b"r".to_vec()),
         replay_counter: Some(2),
-        ..Cursor::default()
     };
     let op = Operation::insert(
         &ReplicaId::new(b"r"),
@@ -400,7 +399,6 @@ fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
         replay_lamport: Some(2),
         replay_replica: Some(b"r".to_vec()),
         replay_counter: Some(2),
-        ..Cursor::default()
     };
     let replica = ReplicaId::new(b"r");
     let later = Operation::insert(&replica, 4, 4, NodeId::ROOT, NodeId(4), vec![0x40]);
