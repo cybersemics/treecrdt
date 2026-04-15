@@ -26,12 +26,6 @@ pub struct IncrementalApplyResult {
     pub affected_nodes: Vec<NodeId>,
 }
 
-impl IncrementalApplyResult {
-    pub fn head(self) -> Option<MaterializationHead> {
-        self.head
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PersistedRemoteApplyResult {
     /// Number of ops from the input batch that were actually inserted by adapter-side dedupe.
@@ -56,27 +50,6 @@ pub struct PersistedRemoteStores<C, N, P, I> {
     pub nodes: N,
     pub payloads: P,
     pub index: I,
-}
-
-/// Apply an incremental batch through core materialization semantics.
-///
-/// The batch is sorted in canonical op-key order, validated against the materialized head,
-/// and applied with parent-op index + tombstone maintenance.
-pub fn apply_incremental_ops<S, C, N, P, I, M>(
-    crdt: &mut TreeCrdt<S, C, N, P>,
-    index: &mut I,
-    meta: &M,
-    ops: Vec<Operation>,
-) -> Result<Option<MaterializationHead>>
-where
-    S: Storage,
-    C: Clock,
-    N: NodeStore,
-    P: PayloadStore,
-    I: ParentOpIndex,
-    M: MaterializationCursor,
-{
-    Ok(apply_incremental_ops_with_delta(crdt, index, meta, ops)?.head())
 }
 
 /// Apply an incremental batch and return both head metadata and full affected-node delta.
@@ -267,26 +240,4 @@ where
             }
         }
     }
-}
-
-/// Run incremental materialization when possible; otherwise mark the document as dirty.
-///
-/// Returns `true` when incremental materialization succeeded, `false` when the caller
-/// should rely on a full rebuild path later.
-pub fn try_incremental_materialization<E>(
-    already_dirty: bool,
-    incremental: impl FnOnce() -> std::result::Result<(), E>,
-    mut mark_dirty: impl FnMut(),
-) -> bool {
-    if already_dirty {
-        mark_dirty();
-        return false;
-    }
-
-    if incremental().is_err() {
-        mark_dirty();
-        return false;
-    }
-
-    true
 }
