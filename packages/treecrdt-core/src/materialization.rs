@@ -34,8 +34,14 @@ impl IncrementalApplyResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PersistedRemoteApplyResult {
+    /// Number of ops from the input batch that were actually inserted by adapter-side dedupe.
     pub inserted_count: u64,
+    /// Nodes changed by core materialization when incremental replay succeeded.
+    ///
+    /// This is empty when nothing was inserted or when the helper had to fall back to marking the
+    /// document dirty instead of trusting incremental materialization.
     pub affected_nodes: Vec<NodeId>,
+    /// True when adapters should rely on rebuild-on-read instead of the incremental replay result.
     pub dirty_fallback: bool,
 }
 
