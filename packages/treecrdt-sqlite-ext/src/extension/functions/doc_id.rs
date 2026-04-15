@@ -77,8 +77,7 @@ pub(super) unsafe extern "C" fn treecrdt_set_doc_id(
         return;
     }
 
-    // No backfill/migration: callers must set `doc_id` before appending ops so `op_ref`
-    // is always computed at write time.
+    // Callers must set `doc_id` before appending ops so `op_ref` is always computed at write time.
     sqlite_result_int(ctx, 1);
 }
 

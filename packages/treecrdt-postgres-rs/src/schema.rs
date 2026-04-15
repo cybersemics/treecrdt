@@ -35,11 +35,6 @@ CREATE TABLE IF NOT EXISTS treecrdt_meta (
   replay_counter BIGINT
 );
 
-ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_lamport BIGINT;
-ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_replica BYTEA;
-ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_counter BIGINT;
-ALTER TABLE treecrdt_meta DROP COLUMN IF EXISTS dirty;
-
 CREATE TABLE IF NOT EXISTS treecrdt_nodes (
   doc_id TEXT NOT NULL,
   node BYTEA NOT NULL,

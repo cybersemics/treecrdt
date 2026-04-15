@@ -220,115 +220,6 @@ pub(super) fn update_tree_meta_head(
     Ok(())
 }
 
-fn tree_meta_has_column(db: *mut sqlite3, column: &str) -> Result<bool, c_int> {
-    let sql = CString::new("PRAGMA table_info(tree_meta)").expect("tree_meta pragma sql");
-    let mut stmt: *mut sqlite3_stmt = null_mut();
-    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
-    if rc != SQLITE_OK as c_int {
-        return Err(rc);
-    }
-
-    let mut found = false;
-    loop {
-        let step_rc = unsafe { sqlite_step(stmt) };
-        if step_rc == SQLITE_ROW as c_int {
-            let ptr = unsafe { sqlite_column_text(stmt, 1) } as *const u8;
-            let len = unsafe { sqlite_column_bytes(stmt, 1) } as usize;
-            if ptr.is_null() {
-                continue;
-            }
-            let name =
-                std::str::from_utf8(unsafe { slice::from_raw_parts(ptr, len) }).unwrap_or("");
-            if name == column {
-                found = true;
-                break;
-            }
-        } else if step_rc == SQLITE_DONE as c_int {
-            break;
-        } else {
-            unsafe { sqlite_finalize(stmt) };
-            return Err(step_rc);
-        }
-    }
-
-    let finalize_rc = unsafe { sqlite_finalize(stmt) };
-    if finalize_rc != SQLITE_OK as c_int {
-        return Err(finalize_rc);
-    }
-    Ok(found)
-}
-
-fn ensure_tree_meta_replay_columns(db: *mut sqlite3) -> Result<(), c_int> {
-    for (column, sql_type) in [
-        ("replay_lamport", "INTEGER"),
-        ("replay_replica", "BLOB"),
-        ("replay_counter", "INTEGER"),
-    ] {
-        if tree_meta_has_column(db, column)? {
-            continue;
-        }
-        let sql = CString::new(format!(
-            "ALTER TABLE tree_meta ADD COLUMN {column} {sql_type}"
-        ))
-        .expect("tree_meta alter sql");
-        let rc = sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut());
-        if rc != SQLITE_OK as c_int {
-            return Err(rc);
-        }
-    }
-    Ok(())
-}
-
-fn drop_tree_meta_dirty_column(db: *mut sqlite3) -> Result<(), c_int> {
-    if !tree_meta_has_column(db, "dirty")? {
-        return Ok(());
-    }
-
-    let sql = CString::new(
-        r#"
-CREATE TABLE tree_meta_new (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  head_lamport INTEGER NOT NULL DEFAULT 0,
-  head_replica BLOB NOT NULL DEFAULT X'',
-  head_counter INTEGER NOT NULL DEFAULT 0,
-  head_seq INTEGER NOT NULL DEFAULT 0,
-  replay_lamport INTEGER,
-  replay_replica BLOB,
-  replay_counter INTEGER
-);
-INSERT INTO tree_meta_new(
-  id,
-  head_lamport,
-  head_replica,
-  head_counter,
-  head_seq,
-  replay_lamport,
-  replay_replica,
-  replay_counter
-)
-SELECT
-  id,
-  head_lamport,
-  head_replica,
-  head_counter,
-  head_seq,
-  replay_lamport,
-  replay_replica,
-  replay_counter
-FROM tree_meta;
-DROP TABLE tree_meta;
-ALTER TABLE tree_meta_new RENAME TO tree_meta;
-INSERT OR IGNORE INTO tree_meta(id) VALUES (1);
-"#,
-    )
-    .expect("tree_meta drop dirty sql");
-    let rc = sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut());
-    if rc != SQLITE_OK as c_int {
-        return Err(rc);
-    }
-    Ok(())
-}
-
 pub(super) fn ensure_schema(db: *mut sqlite3) -> Result<(), c_int> {
     ensure_api_initialized()?;
 
@@ -355,7 +246,7 @@ CREATE TABLE IF NOT EXISTS ops (
   PRIMARY KEY (replica, counter)
 );
 "#;
-    // Materialized tree state + indexes (v1).
+    // Materialized tree state + indexes.
     const TREE_META: &str = r#"
 CREATE TABLE IF NOT EXISTS tree_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -418,8 +309,6 @@ CREATE TABLE IF NOT EXISTS tree_payload (
     if rc_tree_meta != SQLITE_OK as c_int {
         return Err(rc_tree_meta);
     }
-    ensure_tree_meta_replay_columns(db)?;
-    drop_tree_meta_dirty_column(db)?;
     let rc_nodes = {
         let sql = CString::new(TREE_NODES).expect("tree_nodes schema");
         sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
