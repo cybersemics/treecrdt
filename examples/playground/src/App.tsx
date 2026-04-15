@@ -613,6 +613,8 @@ export default function App() {
     getMaxLamport,
     authEnabled,
     authMaterial,
+    // Pass the prepared auth object through so sync does not rebuild auth state from raw material.
+    syncAuth,
     authError,
     joinMode,
     authCanSyncAll,

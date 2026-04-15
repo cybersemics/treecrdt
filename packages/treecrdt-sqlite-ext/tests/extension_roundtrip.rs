@@ -3,10 +3,10 @@ use std::env;
 use std::path::PathBuf;
 
 use rusqlite::Connection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use treecrdt_core::{order_key::allocate_between, ReplicaId, VersionVector};
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct JsonOp {
     replica: Vec<u8>,
     counter: u64,
@@ -27,6 +27,157 @@ fn read_tree_meta(conn: &Connection) -> (i64, i64, Vec<u8>, i64, i64) {
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )
     .unwrap()
+}
+
+fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (Vec<Vec<u8>>, i64) {
+    let json = serde_json::to_string(ops).unwrap();
+    let affected_json: String = conn
+        .query_row(
+            "SELECT treecrdt_append_ops(?1)",
+            rusqlite::params![json],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let affected: Vec<Vec<u8>> = serde_json::from_str(&affected_json).unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    (affected, count)
+}
+
+fn visible_children(conn: &Connection, parent: &[u8]) -> Vec<Vec<u8>> {
+    let parent_arr = <[u8; 16]>::try_from(parent).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT node FROM tree_nodes \
+             WHERE parent = ?1 AND tombstone = 0 \
+             ORDER BY order_key, node",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map(rusqlite::params![parent_arr], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
+        .unwrap();
+    rows.map(|row| row.unwrap()).collect()
+}
+
+fn payload_bytes(conn: &Connection, node: &[u8]) -> Option<Vec<u8>> {
+    let node_arr = <[u8; 16]>::try_from(node).unwrap();
+    conn.query_row(
+        "SELECT payload FROM tree_payload WHERE node = ?1 LIMIT 1",
+        rusqlite::params![node_arr],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn oprefs_children(conn: &Connection, parent: &[u8]) -> Vec<Vec<u8>> {
+    let parent_arr = <[u8; 16]>::try_from(parent).unwrap();
+    let refs_json: String = conn
+        .query_row(
+            "SELECT treecrdt_oprefs_children(?1)",
+            rusqlite::params![parent_arr],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&refs_json).unwrap()
+}
+
+fn ops_by_oprefs(conn: &Connection, refs: &[Vec<u8>]) -> Vec<JsonOp> {
+    let refs_json = serde_json::to_string(refs).unwrap();
+    let ops_json: String = conn
+        .query_row(
+            "SELECT treecrdt_ops_by_oprefs(?1)",
+            rusqlite::params![refs_json],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&ops_json).unwrap()
+}
+
+fn representative_remote_batch(replica: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<JsonOp>) {
+    let root = node_bytes(0);
+    let p1 = node_bytes(1);
+    let p2 = node_bytes(2);
+    let child = node_bytes(3);
+    (
+        p1.clone(),
+        p2.clone(),
+        child.clone(),
+        vec![
+            JsonOp {
+                replica: replica.to_vec(),
+                counter: 1,
+                lamport: 1,
+                kind: "insert".into(),
+                parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+                node: <[u8; 16]>::try_from(p1.as_slice()).unwrap(),
+                new_parent: None,
+                order_key: Some((1u16).to_be_bytes().to_vec()),
+                known_state: None,
+                payload: None,
+            },
+            JsonOp {
+                replica: replica.to_vec(),
+                counter: 2,
+                lamport: 2,
+                kind: "insert".into(),
+                parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+                node: <[u8; 16]>::try_from(p2.as_slice()).unwrap(),
+                new_parent: None,
+                order_key: Some((2u16).to_be_bytes().to_vec()),
+                known_state: None,
+                payload: None,
+            },
+            JsonOp {
+                replica: replica.to_vec(),
+                counter: 3,
+                lamport: 3,
+                kind: "insert".into(),
+                parent: Some(<[u8; 16]>::try_from(p1.as_slice()).unwrap()),
+                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
+                new_parent: None,
+                order_key: Some((1u16).to_be_bytes().to_vec()),
+                known_state: None,
+                payload: None,
+            },
+            JsonOp {
+                replica: replica.to_vec(),
+                counter: 4,
+                lamport: 4,
+                kind: "payload".into(),
+                parent: None,
+                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
+                new_parent: None,
+                order_key: None,
+                known_state: None,
+                payload: Some(vec![7]),
+            },
+            JsonOp {
+                replica: replica.to_vec(),
+                counter: 5,
+                lamport: 5,
+                kind: "move".into(),
+                parent: None,
+                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
+                new_parent: Some(<[u8; 16]>::try_from(p2.as_slice()).unwrap()),
+                order_key: Some((1u16).to_be_bytes().to_vec()),
+                known_state: None,
+                payload: None,
+            },
+            JsonOp {
+                replica: replica.to_vec(),
+                counter: 6,
+                lamport: 6,
+                kind: "payload".into(),
+                parent: None,
+                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
+                new_parent: None,
+                order_key: None,
+                known_state: None,
+                payload: Some(vec![8]),
+            },
+        ],
+    )
 }
 
 #[test]
@@ -150,6 +301,120 @@ fn local_insert_returns_appended_insert_op() {
     assert_eq!(head_replica, b"r1".to_vec());
     assert_eq!(head_counter, 1);
     assert_eq!(head_seq, 1);
+}
+
+#[test]
+fn remote_append_materializes_only_inserted_ops() {
+    let conn = setup_conn();
+
+    let replica = b"dup".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+    let insert = JsonOp {
+        replica: replica.clone(),
+        counter: 1,
+        lamport: 1,
+        kind: "insert".into(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node.as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some((1u16).to_be_bytes().to_vec()),
+        known_state: None,
+        payload: None,
+    };
+    let payload = JsonOp {
+        replica,
+        counter: 2,
+        lamport: 2,
+        kind: "payload".into(),
+        parent: None,
+        node: <[u8; 16]>::try_from(node.as_slice()).unwrap(),
+        new_parent: None,
+        order_key: None,
+        known_state: None,
+        payload: Some(vec![9]),
+    };
+
+    let (affected, op_count) = append_ops_json(&conn, &[insert.clone(), insert, payload]);
+    assert_eq!(affected, vec![root.clone(), node.clone()]);
+    assert_eq!(op_count, 2);
+    assert_eq!(visible_children(&conn, &root), vec![node]);
+
+    let (_, _, _, _, head_seq) = read_tree_meta(&conn);
+    assert_eq!(head_seq, 2);
+}
+
+#[test]
+fn remote_append_representative_batch_matches_postgres_shape() {
+    let conn = setup_conn();
+
+    let root = node_bytes(0);
+    let (p1, p2, child, ops) = representative_remote_batch(b"rep");
+    let (affected, _) = append_ops_json(&conn, &ops);
+
+    assert_eq!(
+        affected,
+        vec![root.clone(), p1.clone(), p2.clone(), child.clone()]
+    );
+    assert_eq!(visible_children(&conn, &root), vec![p1.clone(), p2.clone()]);
+    assert_eq!(visible_children(&conn, &p2), vec![child.clone()]);
+    assert_eq!(payload_bytes(&conn, &child), Some(vec![8]));
+
+    let ops_p2 = ops_by_oprefs(&conn, &oprefs_children(&conn, &p2));
+    assert!(ops_p2.iter().any(|op| op.kind == "move"));
+    assert!(ops_p2.iter().any(|op| op.kind == "payload"));
+}
+
+#[test]
+fn remote_append_dirty_fallback_rebuilds_on_ensure_materialized() {
+    let conn = setup_conn();
+
+    let root = node_bytes(0);
+    let first = JsonOp {
+        replica: b"dirty".to_vec(),
+        counter: 1,
+        lamport: 1,
+        kind: "insert".into(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node_bytes(1).as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some((1u16).to_be_bytes().to_vec()),
+        known_state: None,
+        payload: None,
+    };
+    let second = JsonOp {
+        replica: b"dirty".to_vec(),
+        counter: 2,
+        lamport: 2,
+        kind: "insert".into(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node_bytes(2).as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some((2u16).to_be_bytes().to_vec()),
+        known_state: None,
+        payload: None,
+    };
+
+    append_ops_json(&conn, &[first]);
+    conn.execute("UPDATE tree_meta SET dirty = 1 WHERE id = 1", []).unwrap();
+
+    let (affected, _) = append_ops_json(&conn, &[second]);
+    assert!(affected.is_empty());
+    assert_eq!(read_tree_meta(&conn).0, 1);
+
+    let _: i64 = conn
+        .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert_eq!(
+        visible_children(&conn, &root),
+        vec![node_bytes(1), node_bytes(2)]
+    );
+    let (dirty, _, _, _, head_seq) = read_tree_meta(&conn);
+    assert_eq!(dirty, 0);
+    assert_eq!(head_seq, 2);
 }
 
 #[test]

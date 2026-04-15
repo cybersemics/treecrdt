@@ -1,7 +1,7 @@
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
-use crate::traits::{Clock, NodeStore, ParentOpIndex, PayloadStore, Storage};
+use crate::traits::{Clock, NodeStore, NoopStorage, ParentOpIndex, PayloadStore, Storage};
 use crate::tree::TreeCrdt;
-use crate::{Error, Lamport, NodeId, Result};
+use crate::{Error, Lamport, NodeId, ReplicaId, Result};
 
 /// Snapshot of adapter-maintained materialization metadata.
 pub trait MaterializationCursor {
@@ -26,31 +26,30 @@ pub struct IncrementalApplyResult {
     pub affected_nodes: Vec<NodeId>,
 }
 
-impl IncrementalApplyResult {
-    pub fn head(self) -> Option<MaterializationHead> {
-        self.head
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistedRemoteApplyResult {
+    /// Number of ops from the input batch that were actually inserted by adapter-side dedupe.
+    pub inserted_count: u64,
+    /// Nodes changed by core materialization when incremental replay succeeded.
+    ///
+    /// This is empty when nothing was inserted or when the helper had to fall back to marking the
+    /// document dirty instead of trusting incremental materialization.
+    pub affected_nodes: Vec<NodeId>,
+    /// True when adapters should rely on rebuild-on-read instead of the incremental replay result.
+    pub dirty_fallback: bool,
 }
 
-/// Apply an incremental batch through core materialization semantics.
-///
-/// The batch is sorted in canonical op-key order, validated against the materialized head,
-/// and applied with parent-op index + tombstone maintenance.
-pub fn apply_incremental_ops<S, C, N, P, I, M>(
-    crdt: &mut TreeCrdt<S, C, N, P>,
-    index: &mut I,
-    meta: &M,
-    ops: Vec<Operation>,
-) -> Result<Option<MaterializationHead>>
-where
-    S: Storage,
-    C: Clock,
-    N: NodeStore,
-    P: PayloadStore,
-    I: ParentOpIndex,
-    M: MaterializationCursor,
-{
-    Ok(apply_incremental_ops_with_delta(crdt, index, meta, ops)?.head())
+/// Backend-owned stores used to replay already-persisted remote ops through core semantics.
+pub struct PersistedRemoteStores<C, N, P, I> {
+    /// Scratch replica id for the temporary `TreeCrdt` used during replay.
+    ///
+    /// The replayed operations keep their original replica ids; this is only the identity of the
+    /// in-memory materializer instance.
+    pub replica_id: ReplicaId,
+    pub clock: C,
+    pub nodes: N,
+    pub payloads: P,
+    pub index: I,
 }
 
 /// Apply an incremental batch and return both head metadata and full affected-node delta.
@@ -124,24 +123,121 @@ where
     })
 }
 
-/// Run incremental materialization when possible; otherwise mark the document as dirty.
+/// Materialize an already-persisted remote-op batch through a temporary [`TreeCrdt`].
 ///
-/// Returns `true` when incremental materialization succeeded, `false` when the caller
-/// should rely on a full rebuild path later.
-pub fn try_incremental_materialization<E>(
-    already_dirty: bool,
-    incremental: impl FnOnce() -> std::result::Result<(), E>,
-    mut mark_dirty: impl FnMut(),
-) -> bool {
-    if already_dirty {
-        mark_dirty();
-        return false;
+/// Adapters provide backend-specific stores plus lightweight prepare/flush hooks, while core owns
+/// the canonical op ordering, replay semantics, and affected-node accumulation.
+pub fn materialize_persisted_remote_ops_with_delta<C, N, P, I, M, Prepare, FlushNodes, FlushIndex>(
+    stores: PersistedRemoteStores<C, N, P, I>,
+    meta: &M,
+    ops: Vec<Operation>,
+    mut prepare_nodes: Prepare,
+    mut flush_nodes: FlushNodes,
+    mut flush_index: FlushIndex,
+) -> Result<IncrementalApplyResult>
+where
+    C: Clock,
+    N: NodeStore,
+    P: PayloadStore,
+    I: ParentOpIndex,
+    M: MaterializationCursor,
+    Prepare: FnMut(&mut N, &[Operation]) -> Result<()>,
+    FlushNodes: FnMut(&mut N) -> Result<()>,
+    FlushIndex: FnMut(&mut I) -> Result<()>,
+{
+    if ops.is_empty() {
+        return Ok(IncrementalApplyResult {
+            head: None,
+            affected_nodes: Vec::new(),
+        });
     }
 
-    if incremental().is_err() {
-        mark_dirty();
-        return false;
+    let PersistedRemoteStores {
+        replica_id,
+        clock,
+        mut nodes,
+        payloads,
+        mut index,
+    } = stores;
+
+    prepare_nodes(&mut nodes, &ops)?;
+
+    // This temporary TreeCrdt replays ops that the adapter already persisted and filtered to the
+    // inserted subset, so it needs core apply semantics but not a live op-log backend.
+    let mut crdt = TreeCrdt::with_stores(replica_id, NoopStorage, clock, nodes, payloads)?;
+    let result = apply_incremental_ops_with_delta(&mut crdt, &mut index, meta, ops)?;
+    flush_nodes(crdt.node_store_mut())?;
+    flush_index(&mut index)?;
+    Ok(result)
+}
+
+/// Apply already-persisted inserted remote ops and commit adapter-owned metadata writes.
+///
+/// Adapters own persistence + dedupe and pass only the inserted subset here. If the materialized
+/// doc is already dirty, or if incremental materialization / head update fails, this marks the
+/// document dirty so rebuild-on-read can replay the full log later.
+pub fn apply_persisted_remote_ops_with_delta<M, E>(
+    meta: &M,
+    inserted_ops: Vec<Operation>,
+    materialize_inserted: impl FnOnce(Vec<Operation>) -> std::result::Result<IncrementalApplyResult, E>,
+    update_head: impl FnOnce(&MaterializationHead) -> std::result::Result<(), E>,
+    mut mark_dirty: impl FnMut() -> std::result::Result<(), E>,
+) -> PersistedRemoteApplyResult
+where
+    M: MaterializationCursor,
+{
+    let inserted_count = inserted_ops.len().min(u64::MAX as usize) as u64;
+
+    if inserted_count == 0 {
+        return PersistedRemoteApplyResult {
+            inserted_count: 0,
+            affected_nodes: Vec::new(),
+            dirty_fallback: false,
+        };
     }
 
-    true
+    if meta.dirty() {
+        let _ = mark_dirty();
+        return PersistedRemoteApplyResult {
+            inserted_count,
+            affected_nodes: Vec::new(),
+            dirty_fallback: true,
+        };
+    }
+
+    match materialize_inserted(inserted_ops) {
+        Ok(result) => {
+            let Some(head) = result.head else {
+                let _ = mark_dirty();
+                return PersistedRemoteApplyResult {
+                    inserted_count,
+                    affected_nodes: Vec::new(),
+                    dirty_fallback: true,
+                };
+            };
+
+            if update_head(&head).is_ok() {
+                PersistedRemoteApplyResult {
+                    inserted_count,
+                    affected_nodes: result.affected_nodes,
+                    dirty_fallback: false,
+                }
+            } else {
+                let _ = mark_dirty();
+                PersistedRemoteApplyResult {
+                    inserted_count,
+                    affected_nodes: Vec::new(),
+                    dirty_fallback: true,
+                }
+            }
+        }
+        Err(_) => {
+            let _ = mark_dirty();
+            PersistedRemoteApplyResult {
+                inserted_count,
+                affected_nodes: Vec::new(),
+                dirty_fallback: true,
+            }
+        }
+    }
 }

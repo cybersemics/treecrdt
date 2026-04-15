@@ -261,12 +261,9 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
     }
 
     match append_ops_impl(db, &doc_id, "treecrdt_append_ops", &ops) {
-        Ok(result) => {
-            let out: Vec<Vec<u8>> = result
-                .affected_nodes
-                .into_iter()
-                .map(|id| id.0.to_be_bytes().to_vec())
-                .collect();
+        Ok(affected_nodes) => {
+            let out: Vec<Vec<u8>> =
+                affected_nodes.into_iter().map(|id| id.0.to_be_bytes().to_vec()).collect();
             sqlite_result_json(ctx, &out);
         }
         Err(rc) => sqlite_result_error_code(ctx, rc),
