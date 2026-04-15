@@ -613,6 +613,7 @@ export default function App() {
     getMaxLamport,
     authEnabled,
     authMaterial,
+    syncAuth,
     authError,
     joinMode,
     authCanSyncAll,
