@@ -114,6 +114,7 @@ fn materialize_inserted_ops(
 
     materialize_persisted_remote_ops_with_delta(
         PersistedRemoteStores {
+            // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
             replica_id: ReplicaId::new(b"sqlite-ext"),
             clock: LamportClock::default(),
             nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,

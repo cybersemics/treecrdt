@@ -1487,6 +1487,7 @@ fn materialize_inserted_ops(
     // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
     materialize_persisted_remote_ops_with_delta(
         PersistedRemoteStores {
+            // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
             replica_id: ReplicaId::new(b"postgres"),
             clock: LamportClock::default(),
             nodes: PgNodeStore::new(ctx.clone()),

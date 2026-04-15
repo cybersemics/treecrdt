@@ -41,6 +41,10 @@ pub struct PersistedRemoteApplyResult {
 
 /// Backend-owned stores used to replay already-persisted remote ops through core semantics.
 pub struct PersistedRemoteStores<C, N, P, I> {
+    /// Scratch replica id for the temporary `TreeCrdt` used during replay.
+    ///
+    /// The replayed operations keep their original replica ids; this is only the identity of the
+    /// in-memory materializer instance.
     pub replica_id: ReplicaId,
     pub clock: C,
     pub nodes: N,
@@ -179,6 +183,8 @@ where
 
     prepare_nodes(&mut nodes, &ops)?;
 
+    // This temporary TreeCrdt replays ops that the adapter already persisted and filtered to the
+    // inserted subset, so it needs core apply semantics but not a live op-log backend.
     let mut crdt = TreeCrdt::with_stores(replica_id, NoopStorage, clock, nodes, payloads)?;
     let result = apply_incremental_ops_with_delta(&mut crdt, &mut index, meta, ops)?;
     flush_nodes(crdt.node_store_mut())?;
