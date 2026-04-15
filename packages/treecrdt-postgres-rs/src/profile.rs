@@ -15,14 +15,14 @@ pub(crate) fn append_profile_enabled() -> bool {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PgAppendProfile {
     pub(crate) batch_ops: usize,
-    pub(crate) doc_dirty_before: bool,
+    pub(crate) replay_pending_before: bool,
     pub(crate) head_seq_before: u64,
     pub(crate) bulk_insert_ms: f64,
     pub(crate) bulk_inserted_ops: usize,
     pub(crate) dedupe_filter_ms: f64,
     pub(crate) materialize_ms: f64,
     pub(crate) update_head_ms: f64,
-    pub(crate) fallback_mark_dirty: bool,
+    pub(crate) replay_deferred: bool,
     pub(crate) node_load_count: u64,
     pub(crate) node_load_ms: f64,
     pub(crate) node_ensure_count: u64,
@@ -46,10 +46,10 @@ pub(crate) struct PgAppendProfile {
 }
 
 impl PgAppendProfile {
-    pub(crate) fn new(batch_ops: usize, doc_dirty_before: bool, head_seq_before: u64) -> Self {
+    pub(crate) fn new(batch_ops: usize, replay_pending_before: bool, head_seq_before: u64) -> Self {
         Self {
             batch_ops,
-            doc_dirty_before,
+            replay_pending_before,
             head_seq_before,
             ..Self::default()
         }
@@ -63,14 +63,14 @@ impl PgAppendProfile {
                 "docId": doc_id,
                 "batchOps": self.batch_ops,
                 "insertedOps": inserted,
-                "docDirtyBefore": self.doc_dirty_before,
+                "replayPendingBefore": self.replay_pending_before,
                 "headSeqBefore": self.head_seq_before,
                 "bulkInsertMs": self.bulk_insert_ms,
                 "bulkInsertedOps": self.bulk_inserted_ops,
                 "dedupeFilterMs": self.dedupe_filter_ms,
                 "materializeMs": self.materialize_ms,
                 "updateHeadMs": self.update_head_ms,
-                "fallbackMarkDirty": self.fallback_mark_dirty,
+                "replayDeferred": self.replay_deferred,
                 "nodeLoadCount": self.node_load_count,
                 "nodeLoadMs": self.node_load_ms,
                 "nodeEnsureCount": self.node_ensure_count,

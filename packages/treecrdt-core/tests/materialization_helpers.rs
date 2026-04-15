@@ -13,7 +13,6 @@ struct RecordingIndex {
 
 #[derive(Default)]
 struct Cursor {
-    dirty: bool,
     head_lamport: u64,
     head_replica: Vec<u8>,
     head_counter: u64,
@@ -24,10 +23,6 @@ struct Cursor {
 }
 
 impl MaterializationCursor for Cursor {
-    fn dirty(&self) -> bool {
-        self.dirty
-    }
-
     fn head_lamport(&self) -> u64 {
         self.head_lamport
     }
@@ -151,7 +146,6 @@ fn apply_incremental_ops_with_delta_rejects_before_materialized_head() {
     .unwrap();
     let mut index = RecordingIndex::default();
     let cursor = Cursor {
-        dirty: false,
         head_lamport: 5,
         head_replica: b"r".to_vec(),
         head_counter: 3,
@@ -263,13 +257,13 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
             Ok::<_, ()>(())
         },
         |_| Ok::<_, ()>(()),
-        || Ok::<_, ()>(()),
-    );
+    )
+    .unwrap();
 
     assert_eq!(seen_counters, vec![2, 3]);
     assert_eq!(result.inserted_count, 2);
     assert_eq!(result.affected_nodes, vec![NodeId(2)]);
-    assert!(!result.dirty_fallback);
+    assert!(!result.replay_deferred);
     assert_eq!(
         updated_head,
         Some(MaterializationHead {
@@ -282,16 +276,12 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
 }
 
 #[test]
-fn apply_persisted_remote_ops_turns_legacy_dirty_into_replay_from_start() {
-    let cursor = Cursor {
-        dirty: true,
-        ..Cursor::default()
-    };
+fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing() {
+    let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
     let mut runs = 0u64;
     let mut scheduled_replay = 0u64;
-    let mut marked_dirty = 0u64;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -308,18 +298,14 @@ fn apply_persisted_remote_ops_turns_legacy_dirty_into_replay_from_start() {
             scheduled_replay += 1;
             Ok::<_, ()>(())
         },
-        || {
-            marked_dirty += 1;
-            Ok::<_, ()>(())
-        },
-    );
+    )
+    .unwrap();
 
-    assert_eq!(runs, 0);
+    assert_eq!(runs, 1);
     assert_eq!(scheduled_replay, 1);
-    assert_eq!(marked_dirty, 0);
     assert_eq!(result.inserted_count, 1);
     assert_eq!(result.affected_nodes, Vec::<NodeId>::new());
-    assert!(!result.dirty_fallback);
+    assert!(result.replay_deferred);
 }
 
 #[test]
@@ -328,7 +314,6 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
     let mut scheduled_replay = 0u64;
-    let mut marked_dirty = 0u64;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -349,17 +334,13 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
             scheduled_replay += 1;
             Ok::<(), ()>(())
         },
-        || {
-            marked_dirty += 1;
-            Ok::<(), ()>(())
-        },
-    );
+    )
+    .unwrap();
 
     assert_eq!(scheduled_replay, 1);
-    assert_eq!(marked_dirty, 0);
     assert_eq!(result.inserted_count, 1);
     assert!(result.affected_nodes.is_empty());
-    assert!(!result.dirty_fallback);
+    assert!(result.replay_deferred);
 }
 
 #[test]
@@ -392,13 +373,13 @@ fn apply_persisted_remote_ops_schedules_replay_frontier_for_out_of_order_ops() {
             replay_frontier = Some(frontier.clone());
             Ok::<_, ()>(())
         },
-        || Ok::<_, ()>(()),
-    );
+    )
+    .unwrap();
 
     assert_eq!(materialize_runs, 0);
     assert_eq!(result.inserted_count, 2);
     assert!(result.affected_nodes.is_empty());
-    assert!(!result.dirty_fallback);
+    assert!(result.replay_deferred);
     assert_eq!(
         replay_frontier,
         Some(treecrdt_core::MaterializationFrontier {
@@ -434,12 +415,12 @@ fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
             replay_frontier = Some(frontier.clone());
             Ok::<_, ()>(())
         },
-        || Ok::<_, ()>(()),
-    );
+    )
+    .unwrap();
 
     assert_eq!(result.inserted_count, 1);
     assert!(result.affected_nodes.is_empty());
-    assert!(!result.dirty_fallback);
+    assert!(result.replay_deferred);
     assert_eq!(
         replay_frontier,
         Some(treecrdt_core::MaterializationFrontier {

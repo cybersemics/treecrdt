@@ -26,7 +26,6 @@ CREATE INDEX IF NOT EXISTS idx_treecrdt_ops_doc_order
 
 CREATE TABLE IF NOT EXISTS treecrdt_meta (
   doc_id TEXT PRIMARY KEY,
-  dirty BOOLEAN NOT NULL DEFAULT FALSE,
   head_lamport BIGINT NOT NULL DEFAULT 0,
   head_replica BYTEA NOT NULL DEFAULT ''::bytea,
   head_counter BIGINT NOT NULL DEFAULT 0,
@@ -39,6 +38,7 @@ CREATE TABLE IF NOT EXISTS treecrdt_meta (
 ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_lamport BIGINT;
 ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_replica BYTEA;
 ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_counter BIGINT;
+ALTER TABLE treecrdt_meta DROP COLUMN IF EXISTS dirty;
 
 CREATE TABLE IF NOT EXISTS treecrdt_nodes (
   doc_id TEXT NOT NULL,

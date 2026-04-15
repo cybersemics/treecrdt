@@ -17,11 +17,6 @@ pub struct MaterializationFrontier {
 
 /// Snapshot of adapter-maintained materialization metadata.
 pub trait MaterializationCursor {
-    /// Exceptional recovery/corruption fallback.
-    ///
-    /// This no longer means the normal out-of-order remote path; adapters should reserve it for
-    /// states that require a full rebuild from the beginning.
-    fn dirty(&self) -> bool;
     fn head_lamport(&self) -> Lamport;
     fn head_replica(&self) -> &[u8];
     fn head_counter(&self) -> u64;
@@ -57,12 +52,12 @@ pub struct PersistedRemoteApplyResult {
     pub inserted_count: u64,
     /// Nodes changed by core materialization when incremental replay succeeded.
     ///
-    /// This is empty when nothing was inserted or when the helper had to fall back to marking the
-    /// document for replay/recovery instead of trusting incremental materialization.
+    /// This is empty when nothing was inserted or when the helper had to defer catch-up by
+    /// recording a replay frontier instead of trusting incremental materialization.
     pub affected_nodes: Vec<NodeId>,
-    /// True when adapters should rely on the exceptional recovery path instead of the replay
-    /// frontier / incremental materialization result.
-    pub dirty_fallback: bool,
+    /// True when the helper recorded a replay frontier instead of advancing materialization head
+    /// immediately.
+    pub replay_deferred: bool,
 }
 
 /// Backend-owned stores used to replay already-persisted remote ops through core semantics.
@@ -205,9 +200,6 @@ where
             head: None,
             affected_nodes: Vec::new(),
         });
-    }
-    if meta.dirty() {
-        return Err(Error::Storage("materialize called while dirty".into()));
     }
     if cursor_replay_frontier(meta).is_some() {
         return Err(Error::Storage(
@@ -400,7 +392,7 @@ fn restore_prefix_snapshot<N: NodeStore, P: PayloadStore, I: ParentOpIndex>(
 }
 
 /// Catch backend materialized state up to the persisted op log using the replay frontier when
-/// available, or a full rebuild when `meta.dirty()` is set.
+/// available.
 pub fn catch_up_materialized_state<S, C, N, P, I, M, FlushNodes, FlushIndex>(
     storage: S,
     stores: PersistedRemoteStores<C, N, P, I>,
@@ -418,11 +410,7 @@ where
     FlushNodes: FnMut(&mut N) -> Result<()>,
     FlushIndex: FnMut(&mut I) -> Result<()>,
 {
-    let replay_frontier = if meta.dirty() {
-        None
-    } else {
-        cursor_replay_frontier(meta)
-    };
+    let replay_frontier = cursor_replay_frontier(meta);
 
     let PersistedRemoteStores {
         replica_id,
@@ -479,116 +467,70 @@ where
 /// Apply already-persisted inserted remote ops and commit adapter-owned metadata writes.
 ///
 /// Adapters own persistence + dedupe and pass only the inserted subset here. If the materialized
-/// doc is already in exceptional recovery, or if incremental materialization / metadata updates
-/// fail, this marks the document dirty so rebuild-on-read can replay the full log later.
+/// doc is already behind a replay frontier, or if incremental materialization / metadata updates
+/// fail, this records a replay frontier so catch-up can repair materialized state later.
 pub fn apply_persisted_remote_ops_with_delta<M, E>(
     meta: &M,
     inserted_ops: Vec<Operation>,
     materialize_inserted: impl FnOnce(Vec<Operation>) -> std::result::Result<IncrementalApplyResult, E>,
     update_head: impl FnOnce(&MaterializationHead) -> std::result::Result<(), E>,
     mut schedule_replay: impl FnMut(&MaterializationFrontier) -> std::result::Result<(), E>,
-    mut mark_dirty: impl FnMut() -> std::result::Result<(), E>,
-) -> PersistedRemoteApplyResult
+) -> std::result::Result<PersistedRemoteApplyResult, E>
 where
     M: MaterializationCursor,
 {
     let inserted_count = inserted_ops.len().min(u64::MAX as usize) as u64;
 
     if inserted_count == 0 {
-        return PersistedRemoteApplyResult {
+        return Ok(PersistedRemoteApplyResult {
             inserted_count: 0,
             affected_nodes: Vec::new(),
-            dirty_fallback: false,
-        };
-    }
-
-    if meta.dirty() {
-        if schedule_replay(&start_replay_frontier()).is_ok() {
-            return PersistedRemoteApplyResult {
-                inserted_count,
-                affected_nodes: Vec::new(),
-                dirty_fallback: false,
-            };
-        }
-        let _ = mark_dirty();
-        return PersistedRemoteApplyResult {
-            inserted_count,
-            affected_nodes: Vec::new(),
-            dirty_fallback: true,
-        };
+            replay_deferred: false,
+        });
     }
 
     if let Some(frontier) = next_replay_frontier(meta, &inserted_ops) {
-        if schedule_replay(&frontier).is_ok() {
-            return PersistedRemoteApplyResult {
-                inserted_count,
-                affected_nodes: Vec::new(),
-                dirty_fallback: false,
-            };
-        }
-
-        let _ = mark_dirty();
-        return PersistedRemoteApplyResult {
+        schedule_replay(&frontier)?;
+        return Ok(PersistedRemoteApplyResult {
             inserted_count,
             affected_nodes: Vec::new(),
-            dirty_fallback: true,
-        };
+            replay_deferred: true,
+        });
     }
 
     match materialize_inserted(inserted_ops) {
         Ok(result) => {
             let Some(head) = result.head else {
-                if schedule_replay(&start_replay_frontier()).is_ok() {
-                    return PersistedRemoteApplyResult {
-                        inserted_count,
-                        affected_nodes: Vec::new(),
-                        dirty_fallback: false,
-                    };
-                }
-                let _ = mark_dirty();
-                return PersistedRemoteApplyResult {
+                schedule_replay(&start_replay_frontier())?;
+                return Ok(PersistedRemoteApplyResult {
                     inserted_count,
                     affected_nodes: Vec::new(),
-                    dirty_fallback: true,
-                };
+                    replay_deferred: true,
+                });
             };
 
             if update_head(&head).is_ok() {
-                PersistedRemoteApplyResult {
+                Ok(PersistedRemoteApplyResult {
                     inserted_count,
                     affected_nodes: result.affected_nodes,
-                    dirty_fallback: false,
-                }
+                    replay_deferred: false,
+                })
             } else {
-                if schedule_replay(&start_replay_frontier()).is_ok() {
-                    return PersistedRemoteApplyResult {
-                        inserted_count,
-                        affected_nodes: Vec::new(),
-                        dirty_fallback: false,
-                    };
-                }
-                let _ = mark_dirty();
-                PersistedRemoteApplyResult {
+                schedule_replay(&start_replay_frontier())?;
+                Ok(PersistedRemoteApplyResult {
                     inserted_count,
                     affected_nodes: Vec::new(),
-                    dirty_fallback: true,
-                }
+                    replay_deferred: true,
+                })
             }
         }
         Err(_) => {
-            if schedule_replay(&start_replay_frontier()).is_ok() {
-                return PersistedRemoteApplyResult {
-                    inserted_count,
-                    affected_nodes: Vec::new(),
-                    dirty_fallback: false,
-                };
-            }
-            let _ = mark_dirty();
-            PersistedRemoteApplyResult {
+            schedule_replay(&start_replay_frontier())?;
+            Ok(PersistedRemoteApplyResult {
                 inserted_count,
                 affected_nodes: Vec::new(),
-                dirty_fallback: true,
-            }
+                replay_deferred: true,
+            })
         }
     }
 }

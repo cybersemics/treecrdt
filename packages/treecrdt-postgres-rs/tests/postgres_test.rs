@@ -199,24 +199,22 @@ fn postgres_backend_out_of_order_append_uses_replay_frontier() {
     let affected = append_ops_with_affected_nodes(&client, &doc_id, &[first.clone()]).unwrap();
     assert!(affected.is_empty());
 
-    let (dirty_before_read, replay_lamport, replay_replica, replay_counter, head_seq_before) = {
+    let (replay_lamport, replay_replica, replay_counter, head_seq_before) = {
         let mut c = client.borrow_mut();
         let row = c
             .query_one(
-                "SELECT dirty, replay_lamport, replay_replica, replay_counter, head_seq \
+                "SELECT replay_lamport, replay_replica, replay_counter, head_seq \
                  FROM treecrdt_meta WHERE doc_id = $1",
                 &[&doc_id],
             )
             .unwrap();
         (
-            row.get::<_, bool>(0),
-            row.get::<_, Option<i64>>(1).map(|v| v.max(0) as u64),
-            row.get::<_, Option<Vec<u8>>>(2),
-            row.get::<_, Option<i64>>(3).map(|v| v.max(0) as u64),
-            row.get::<_, i64>(4).max(0) as u64,
+            row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
+            row.get::<_, Option<Vec<u8>>>(1),
+            row.get::<_, Option<i64>>(2).map(|v| v.max(0) as u64),
+            row.get::<_, i64>(3).max(0) as u64,
         )
     };
-    assert!(!dirty_before_read);
     assert_eq!(replay_lamport, Some(first.meta.lamport));
     assert_eq!(
         replay_replica,
@@ -230,18 +228,17 @@ fn postgres_backend_out_of_order_append_uses_replay_frontier() {
         vec![node(1), node(2)]
     );
 
-    let (dirty_after_read, replay_after_read) = {
+    let replay_after_read = {
         let mut c = client.borrow_mut();
         let row = c
             .query_one(
-                "SELECT dirty, replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
+                "SELECT replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
                 &[&doc_id],
             )
             .unwrap();
-        assert_eq!(row.get::<_, i64>(2).max(0) as u64, 2);
-        (row.get::<_, bool>(0), row.get::<_, Option<i64>>(1))
+        assert_eq!(row.get::<_, i64>(1).max(0) as u64, 2);
+        row.get::<_, Option<i64>>(0)
     };
-    assert!(!dirty_after_read);
     assert_eq!(replay_after_read, None);
 
     let refs = list_op_refs_children(&client, &doc_id, NodeId::ROOT).unwrap();
@@ -253,7 +250,7 @@ fn postgres_backend_out_of_order_append_uses_replay_frontier() {
 }
 
 #[test]
-fn postgres_backend_legacy_dirty_recovery_is_converted_to_replay_from_start() {
+fn postgres_backend_replay_from_start_frontier_recovers_materialized_state() {
     let Some(client) = connect() else {
         return;
     };
@@ -265,7 +262,7 @@ fn postgres_backend_legacy_dirty_recovery_is_converted_to_replay_from_start() {
         reset_doc_for_tests(&mut c, &doc_id).unwrap();
     }
 
-    let replica = ReplicaId::new(b"dirty");
+    let replica = ReplicaId::new(b"restart");
     let first = Operation::insert(
         &replica,
         1,
@@ -287,7 +284,9 @@ fn postgres_backend_legacy_dirty_recovery_is_converted_to_replay_from_start() {
     {
         let mut c = client.borrow_mut();
         c.execute(
-            "UPDATE treecrdt_meta SET dirty = TRUE WHERE doc_id = $1",
+            "UPDATE treecrdt_meta \
+             SET replay_lamport = 0, replay_replica = ''::bytea, replay_counter = 0 \
+             WHERE doc_id = $1",
             &[&doc_id],
         )
         .unwrap();
@@ -296,23 +295,21 @@ fn postgres_backend_legacy_dirty_recovery_is_converted_to_replay_from_start() {
     let affected = append_ops_with_affected_nodes(&client, &doc_id, &[second]).unwrap();
     assert!(affected.is_empty());
 
-    let (dirty_before_read, replay_lamport, replay_replica, replay_counter) = {
+    let (replay_lamport, replay_replica, replay_counter) = {
         let mut c = client.borrow_mut();
         let row = c
             .query_one(
-                "SELECT dirty, replay_lamport, replay_replica, replay_counter \
+                "SELECT replay_lamport, replay_replica, replay_counter \
                  FROM treecrdt_meta WHERE doc_id = $1",
                 &[&doc_id],
             )
             .unwrap();
         (
-            row.get::<_, bool>(0),
-            row.get::<_, Option<i64>>(1).map(|v| v.max(0) as u64),
-            row.get::<_, Option<Vec<u8>>>(2),
-            row.get::<_, Option<i64>>(3).map(|v| v.max(0) as u64),
+            row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
+            row.get::<_, Option<Vec<u8>>>(1),
+            row.get::<_, Option<i64>>(2).map(|v| v.max(0) as u64),
         )
     };
-    assert!(!dirty_before_read);
     assert_eq!(replay_lamport, Some(0));
     assert_eq!(replay_replica, Some(Vec::new()));
     assert_eq!(replay_counter, Some(0));
@@ -322,19 +319,18 @@ fn postgres_backend_legacy_dirty_recovery_is_converted_to_replay_from_start() {
         vec![node(1), node(2)]
     );
 
-    let dirty_after_read = {
+    let replay_after_read = {
         let mut c = client.borrow_mut();
         let row = c
             .query_one(
-                "SELECT dirty, replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
+                "SELECT replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
                 &[&doc_id],
             )
             .unwrap();
-        assert_eq!(row.get::<_, i64>(2).max(0) as u64, 2);
-        assert!(row.get::<_, Option<i64>>(1).is_none());
-        row.get::<_, bool>(0)
+        assert_eq!(row.get::<_, i64>(1).max(0) as u64, 2);
+        row.get::<_, Option<i64>>(0)
     };
-    assert!(!dirty_after_read);
+    assert_eq!(replay_after_read, None);
 }
 
 #[test]

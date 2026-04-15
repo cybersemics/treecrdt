@@ -51,7 +51,6 @@ pub(crate) fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct TreeMeta {
-    dirty: bool,
     head_lamport: Lamport,
     head_replica: Vec<u8>,
     head_counter: u64,
@@ -62,10 +61,6 @@ pub(crate) struct TreeMeta {
 }
 
 impl MaterializationCursor for TreeMeta {
-    fn dirty(&self) -> bool {
-        self.dirty
-    }
-
     fn head_lamport(&self) -> Lamport {
         self.head_lamport
     }
@@ -98,8 +93,7 @@ impl MaterializationCursor for TreeMeta {
 pub(crate) fn ensure_doc_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let mut c = client.borrow_mut();
     c.execute(
-        // Default new docs to "clean" so we can incrementally maintain materialized state.
-        "INSERT INTO treecrdt_meta(doc_id, dirty) VALUES ($1, FALSE) ON CONFLICT (doc_id) DO NOTHING",
+        "INSERT INTO treecrdt_meta(doc_id) VALUES ($1) ON CONFLICT (doc_id) DO NOTHING",
         &[&doc_id],
     )
     .map_err(storage_debug)?;
@@ -116,14 +110,14 @@ fn load_tree_meta_row(
     let stmt = if for_update {
         ctx.stmt(
             &mut c,
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq, \
+            "SELECT head_lamport, head_replica, head_counter, head_seq, \
                     replay_lamport, replay_replica, replay_counter \
              FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
         )?
     } else {
         ctx.stmt(
             &mut c,
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq, \
+            "SELECT head_lamport, head_replica, head_counter, head_seq, \
                     replay_lamport, replay_replica, replay_counter \
              FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1",
         )?
@@ -133,14 +127,13 @@ fn load_tree_meta_row(
     let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
 
     Ok(TreeMeta {
-        dirty: row.get::<_, bool>(0),
-        head_lamport: row.get::<_, i64>(1).max(0) as Lamport,
-        head_replica: row.get::<_, Vec<u8>>(2),
-        head_counter: row.get::<_, i64>(3).max(0) as u64,
-        head_seq: row.get::<_, i64>(4).max(0) as u64,
-        replay_lamport: row.get::<_, Option<i64>>(5).map(|v| v.max(0) as Lamport),
-        replay_replica: row.get::<_, Option<Vec<u8>>>(6),
-        replay_counter: row.get::<_, Option<i64>>(7).map(|v| v.max(0) as u64),
+        head_lamport: row.get::<_, i64>(0).max(0) as Lamport,
+        head_replica: row.get::<_, Vec<u8>>(1),
+        head_counter: row.get::<_, i64>(2).max(0) as u64,
+        head_seq: row.get::<_, i64>(3).max(0) as u64,
+        replay_lamport: row.get::<_, Option<i64>>(4).map(|v| v.max(0) as Lamport),
+        replay_replica: row.get::<_, Option<Vec<u8>>>(5),
+        replay_counter: row.get::<_, Option<i64>>(6).map(|v| v.max(0) as u64),
     })
 }
 
@@ -155,23 +148,6 @@ pub(crate) fn load_tree_meta_for_update(
     load_tree_meta_row(client, doc_id, true)
 }
 
-pub(crate) fn set_tree_meta_dirty(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    dirty: bool,
-) -> Result<()> {
-    ensure_doc_meta(client, doc_id)?;
-    let mut c = client.borrow_mut();
-    c.execute(
-        "UPDATE treecrdt_meta \
-         SET dirty = $2, replay_lamport = NULL, replay_replica = NULL, replay_counter = NULL \
-         WHERE doc_id = $1",
-        &[&doc_id, &dirty],
-    )
-    .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(())
-}
-
 pub(crate) fn set_tree_meta_replay_frontier(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
@@ -181,7 +157,7 @@ pub(crate) fn set_tree_meta_replay_frontier(
     let mut c = client.borrow_mut();
     c.execute(
         "UPDATE treecrdt_meta \
-         SET dirty = FALSE, replay_lamport = $2, replay_replica = $3, replay_counter = $4 \
+         SET replay_lamport = $2, replay_replica = $3, replay_counter = $4 \
          WHERE doc_id = $1",
         &[
             &doc_id,
@@ -206,8 +182,7 @@ pub(crate) fn update_tree_meta_head(
     let mut c = client.borrow_mut();
     c.execute(
         "UPDATE treecrdt_meta \
-         SET dirty = FALSE, \
-             head_lamport = $2, \
+         SET head_lamport = $2, \
              head_replica = $3, \
              head_counter = $4, \
              head_seq = $5, \
@@ -1634,7 +1609,7 @@ fn append_ops_in_tx(
     let append_profile = append_profile_enabled().then(|| {
         Rc::new(RefCell::new(PgAppendProfile::new(
             ops.len(),
-            meta.dirty,
+            meta.replay_lamport.is_some(),
             meta.head_seq(),
         )))
     });
@@ -1680,8 +1655,7 @@ fn append_ops_in_tx(
             result
         },
         |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
-        || set_tree_meta_dirty(client, doc_id, true),
-    );
+    )?;
     if let Some(profile) = &append_profile {
         profile.borrow_mut().materialize_ms +=
             materialize_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1689,8 +1663,8 @@ fn append_ops_in_tx(
 
     if let Some(profile) = &append_profile {
         profile.borrow_mut().update_head_ms += update_head_ms;
-        if apply_result.dirty_fallback {
-            profile.borrow_mut().fallback_mark_dirty = true;
+        if apply_result.replay_deferred {
+            profile.borrow_mut().replay_deferred = true;
         }
         profile.borrow().log(doc_id, apply_result.inserted_count as usize);
     }
@@ -1725,13 +1699,13 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
 
 pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let meta = load_tree_meta(client, doc_id)?;
-    if !meta.dirty && meta.replay_lamport.is_none() {
+    if meta.replay_lamport.is_none() {
         return Ok(());
     }
 
     // Take a per-doc lock so rebuild can't race with concurrent append/materialization.
     let meta = load_tree_meta_for_update(client, doc_id)?;
-    if !meta.dirty && meta.replay_lamport.is_none() {
+    if meta.replay_lamport.is_none() {
         return Ok(());
     }
 

@@ -82,10 +82,6 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
 }
 
 impl treecrdt_core::MaterializationCursor for TreeMeta {
-    fn dirty(&self) -> bool {
-        self.dirty
-    }
-
     fn head_lamport(&self) -> Lamport {
         self.head_lamport
     }
@@ -146,7 +142,7 @@ fn materialize_inserted_ops(
 
 pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     let meta = load_tree_meta(db)?;
-    if !meta.dirty && meta.replay_lamport.is_none() {
+    if meta.replay_lamport.is_none() {
         return Ok(());
     }
     rebuild_materialized(db)
@@ -311,8 +307,7 @@ pub(super) fn append_ops_impl(
         |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
         |head| update_tree_meta_head(db, head.lamport, &head.replica, head.counter, head.seq),
         |frontier| set_tree_meta_replay_frontier(db, frontier),
-        || set_tree_meta_dirty(db, true),
-    );
+    )?;
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
     if commit_rc != SQLITE_OK as c_int {

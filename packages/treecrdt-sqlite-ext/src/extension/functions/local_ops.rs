@@ -229,15 +229,14 @@ fn finish_local_core_op(
         post_materialization_ok = false;
     }
     if !post_materialization_ok {
-        let _ = set_tree_meta_replay_frontier(
+        set_tree_meta_replay_frontier(
             session.db,
             &treecrdt_core::MaterializationFrontier {
                 lamport: 0,
                 replica: Vec::new(),
                 counter: 0,
             },
-        )
-        .or_else(|_| set_tree_meta_dirty(session.db, true));
+        )?;
     }
 
     let out = match json_op_from_operation(op) {

@@ -20,11 +20,11 @@ struct JsonOp {
     payload: Option<Vec<u8>>,
 }
 
-fn read_tree_meta(conn: &Connection) -> (i64, i64, Vec<u8>, i64, i64) {
+fn read_tree_meta(conn: &Connection) -> (i64, Vec<u8>, i64, i64) {
     conn.query_row(
-        "SELECT dirty, head_lamport, head_replica, head_counter, head_seq FROM tree_meta WHERE id = 1",
+        "SELECT head_lamport, head_replica, head_counter, head_seq FROM tree_meta WHERE id = 1",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )
     .unwrap()
 }
@@ -304,8 +304,7 @@ fn local_insert_returns_appended_insert_op() {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 1);
 
-    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
-    assert_eq!(dirty, 0);
+    let (head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
     assert_eq!(head_lamport, 1);
     assert_eq!(head_replica, b"r1".to_vec());
     assert_eq!(head_counter, 1);
@@ -349,7 +348,7 @@ fn remote_append_materializes_only_inserted_ops() {
     assert_eq!(op_count, 2);
     assert_eq!(visible_children(&conn, &root), vec![node]);
 
-    let (_, _, _, _, head_seq) = read_tree_meta(&conn);
+    let (_, _, _, head_seq) = read_tree_meta(&conn);
     assert_eq!(head_seq, 2);
 }
 
@@ -408,9 +407,8 @@ fn remote_append_out_of_order_uses_replay_frontier() {
     let (affected, _) = append_ops_json(&conn, &[first.clone()]);
     assert!(affected.is_empty());
 
-    let (dirty, _, _, _, head_seq_before) = read_tree_meta(&conn);
+    let (_, _, _, head_seq_before) = read_tree_meta(&conn);
     let (replay_lamport, replay_replica, replay_counter) = read_replay_frontier(&conn);
-    assert_eq!(dirty, 0);
     assert_eq!(head_seq_before, 1);
     assert_eq!(replay_lamport, Some(first.lamport as i64));
     assert_eq!(replay_replica, Some(first.replica.clone()));
@@ -426,8 +424,7 @@ fn remote_append_out_of_order_uses_replay_frontier() {
         visible_children(&conn, &root),
         vec![node_bytes(1), node_bytes(2)]
     );
-    let (dirty_after, _, _, _, head_seq_after) = read_tree_meta(&conn);
-    assert_eq!(dirty_after, 0);
+    let (_, _, _, head_seq_after) = read_tree_meta(&conn);
     assert_eq!(head_seq_after, 2);
     assert_eq!(read_replay_frontier(&conn), (None, None, None));
 
@@ -439,12 +436,12 @@ fn remote_append_out_of_order_uses_replay_frontier() {
 }
 
 #[test]
-fn remote_append_legacy_dirty_recovery_converts_to_replay_from_start() {
+fn remote_append_replay_from_start_frontier_recovers_materialized_state() {
     let conn = setup_conn();
 
     let root = node_bytes(0);
     let first = JsonOp {
-        replica: b"dirty".to_vec(),
+        replica: b"restart".to_vec(),
         counter: 1,
         lamport: 1,
         kind: "insert".into(),
@@ -456,7 +453,7 @@ fn remote_append_legacy_dirty_recovery_converts_to_replay_from_start() {
         payload: None,
     };
     let second = JsonOp {
-        replica: b"dirty".to_vec(),
+        replica: b"restart".to_vec(),
         counter: 2,
         lamport: 2,
         kind: "insert".into(),
@@ -469,11 +466,16 @@ fn remote_append_legacy_dirty_recovery_converts_to_replay_from_start() {
     };
 
     append_ops_json(&conn, &[first]);
-    conn.execute("UPDATE tree_meta SET dirty = 1 WHERE id = 1", []).unwrap();
+    conn.execute(
+        "UPDATE tree_meta \
+         SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
+         WHERE id = 1",
+        [],
+    )
+    .unwrap();
 
     let (affected, _) = append_ops_json(&conn, &[second]);
     assert!(affected.is_empty());
-    assert_eq!(read_tree_meta(&conn).0, 0);
     assert_eq!(
         read_replay_frontier(&conn),
         (Some(0), Some(Vec::new()), Some(0))
@@ -489,8 +491,7 @@ fn remote_append_legacy_dirty_recovery_converts_to_replay_from_start() {
         visible_children(&conn, &root),
         vec![node_bytes(1), node_bytes(2)]
     );
-    let (dirty, _, _, _, head_seq) = read_tree_meta(&conn);
-    assert_eq!(dirty, 0);
+    let (_, _, _, head_seq) = read_tree_meta(&conn);
     assert_eq!(head_seq, 2);
     assert_eq!(read_replay_frontier(&conn), (None, None, None));
 }
@@ -670,8 +671,7 @@ fn local_move_allocates_key_excluding_self() {
     let expected = allocate_between(Some(&key_a), Some(&key_c), &seed).expect("allocate_between");
     assert_eq!(op.order_key.as_ref().unwrap(), &expected);
 
-    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
-    assert_eq!(dirty, 0);
+    let (head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
     assert_eq!(head_lamport, 4);
     assert_eq!(head_replica, replica);
     assert_eq!(head_counter, 4);
@@ -742,8 +742,7 @@ fn local_delete_includes_known_state_bytes() {
     let vv: VersionVector = serde_json::from_slice(bytes).unwrap();
     assert!(vv.get(&ReplicaId::new(replica)) >= 1);
 
-    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
-    assert_eq!(dirty, 0);
+    let (head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
     assert_eq!(head_lamport, 2);
     assert_eq!(head_replica, b"r1".to_vec());
     assert_eq!(head_counter, 2);
@@ -850,8 +849,7 @@ fn local_payload_set_and_clear_updates_meta() {
     assert_eq!(clear_ops[0].counter, 3);
     assert_eq!(clear_ops[0].lamport, 3);
 
-    let (dirty, head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
-    assert_eq!(dirty, 0);
+    let (head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
     assert_eq!(head_lamport, 3);
     assert_eq!(head_replica, replica);
     assert_eq!(head_counter, 3);
