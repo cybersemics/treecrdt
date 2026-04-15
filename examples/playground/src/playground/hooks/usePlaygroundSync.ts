@@ -927,9 +927,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       );
     }
 
-    // `syncAuth` is only published after the auth hook has preflighted hello capabilities against
-    // the capability store. Gating sync on that ready object avoids starting live/scoped sync in
-    // the brief window where tokens exist in UI state but are not yet recorded for auth replay.
+    // Reuse the auth hook's prepared sync auth instead of rebuilding auth from raw material here.
+    // `syncAuth` is only published after hello-capability preflight has touched the capability
+    // store, which avoids the open-device race where UI tokens exist before auth replay is ready.
     if (authEnabled && !syncAuth) {
       const waitingForInvite = joinMode && authMaterial.localTokensB64.length === 0;
       setSyncError(
