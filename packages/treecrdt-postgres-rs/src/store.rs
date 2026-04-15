@@ -6,10 +6,10 @@ use std::time::Instant;
 use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
-    apply_persisted_remote_ops_with_delta, materialize_persisted_remote_ops_with_delta, Error,
-    Lamport, LamportClock, MaterializationCursor, NodeId, NodeStore, Operation, OperationId,
-    OperationKind, ParentOpIndex, PayloadStore, PersistedRemoteStores, ReplicaId, Result, Storage,
-    TreeCrdt, VersionVector,
+    apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
+    materialize_persisted_remote_ops_with_delta, Error, Lamport, LamportClock,
+    MaterializationCursor, MaterializationFrontier, NodeId, Operation, OperationId, OperationKind,
+    PersistedRemoteStores, ReplicaId, Result, Storage, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -56,6 +56,9 @@ pub(crate) struct TreeMeta {
     head_replica: Vec<u8>,
     head_counter: u64,
     head_seq: u64,
+    replay_lamport: Option<Lamport>,
+    replay_replica: Option<Vec<u8>>,
+    replay_counter: Option<u64>,
 }
 
 impl MaterializationCursor for TreeMeta {
@@ -77,6 +80,18 @@ impl MaterializationCursor for TreeMeta {
 
     fn head_seq(&self) -> u64 {
         self.head_seq
+    }
+
+    fn replay_lamport(&self) -> Option<Lamport> {
+        self.replay_lamport
+    }
+
+    fn replay_replica(&self) -> Option<&[u8]> {
+        self.replay_replica.as_deref()
+    }
+
+    fn replay_counter(&self) -> Option<u64> {
+        self.replay_counter
     }
 }
 
@@ -101,13 +116,15 @@ fn load_tree_meta_row(
     let stmt = if for_update {
         ctx.stmt(
             &mut c,
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq, \
+                    replay_lamport, replay_replica, replay_counter \
              FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
         )?
     } else {
         ctx.stmt(
             &mut c,
-            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+            "SELECT dirty, head_lamport, head_replica, head_counter, head_seq, \
+                    replay_lamport, replay_replica, replay_counter \
              FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1",
         )?
     };
@@ -121,6 +138,9 @@ fn load_tree_meta_row(
         head_replica: row.get::<_, Vec<u8>>(2),
         head_counter: row.get::<_, i64>(3).max(0) as u64,
         head_seq: row.get::<_, i64>(4).max(0) as u64,
+        replay_lamport: row.get::<_, Option<i64>>(5).map(|v| v.max(0) as Lamport),
+        replay_replica: row.get::<_, Option<Vec<u8>>>(6),
+        replay_counter: row.get::<_, Option<i64>>(7).map(|v| v.max(0) as u64),
     })
 }
 
@@ -143,8 +163,32 @@ pub(crate) fn set_tree_meta_dirty(
     ensure_doc_meta(client, doc_id)?;
     let mut c = client.borrow_mut();
     c.execute(
-        "UPDATE treecrdt_meta SET dirty = $2 WHERE doc_id = $1",
+        "UPDATE treecrdt_meta \
+         SET dirty = $2, replay_lamport = NULL, replay_replica = NULL, replay_counter = NULL \
+         WHERE doc_id = $1",
         &[&doc_id, &dirty],
+    )
+    .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(())
+}
+
+pub(crate) fn set_tree_meta_replay_frontier(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    frontier: &MaterializationFrontier,
+) -> Result<()> {
+    ensure_doc_meta(client, doc_id)?;
+    let mut c = client.borrow_mut();
+    c.execute(
+        "UPDATE treecrdt_meta \
+         SET dirty = FALSE, replay_lamport = $2, replay_replica = $3, replay_counter = $4 \
+         WHERE doc_id = $1",
+        &[
+            &doc_id,
+            &(frontier.lamport as i64),
+            &frontier.replica,
+            &(frontier.counter as i64),
+        ],
     )
     .map_err(|e| Error::Storage(e.to_string()))?;
     Ok(())
@@ -161,8 +205,23 @@ pub(crate) fn update_tree_meta_head(
     ensure_doc_meta(client, doc_id)?;
     let mut c = client.borrow_mut();
     c.execute(
-        "UPDATE treecrdt_meta SET dirty = FALSE, head_lamport = $2, head_replica = $3, head_counter = $4, head_seq = $5 WHERE doc_id = $1",
-        &[&doc_id, &(lamport as i64), &replica, &(counter as i64), &(seq as i64)],
+        "UPDATE treecrdt_meta \
+         SET dirty = FALSE, \
+             head_lamport = $2, \
+             head_replica = $3, \
+             head_counter = $4, \
+             head_seq = $5, \
+             replay_lamport = NULL, \
+             replay_replica = NULL, \
+             replay_counter = NULL \
+         WHERE doc_id = $1",
+        &[
+            &doc_id,
+            &(lamport as i64),
+            &replica,
+            &(counter as i64),
+            &(seq as i64),
+        ],
     )
     .map_err(|e| Error::Storage(e.to_string()))?;
     Ok(())
@@ -1620,6 +1679,7 @@ fn append_ops_in_tx(
             update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
             result
         },
+        |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
         || set_tree_meta_dirty(client, doc_id, true),
     );
     if let Some(profile) = &append_profile {
@@ -1639,20 +1699,6 @@ fn append_ops_in_tx(
         inserted_count: apply_result.inserted_count,
         affected_nodes: apply_result.affected_nodes,
     })
-}
-
-fn clear_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
-    let mut c = client.borrow_mut();
-    c.execute(
-        "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",
-        &[&doc_id],
-    )
-    .map_err(|e| Error::Storage(e.to_string()))?;
-    c.execute("DELETE FROM treecrdt_payload WHERE doc_id = $1", &[&doc_id])
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    c.execute("DELETE FROM treecrdt_nodes WHERE doc_id = $1", &[&doc_id])
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(())
 }
 
 pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
@@ -1679,51 +1725,40 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
 
 pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let meta = load_tree_meta(client, doc_id)?;
-    if !meta.dirty {
+    if !meta.dirty && meta.replay_lamport.is_none() {
         return Ok(());
     }
 
     // Take a per-doc lock so rebuild can't race with concurrent append/materialization.
     let meta = load_tree_meta_for_update(client, doc_id)?;
-    if !meta.dirty {
+    if !meta.dirty && meta.replay_lamport.is_none() {
         return Ok(());
     }
 
-    clear_materialized(client, doc_id)?;
-
     let ctx = PgCtx::new(client.clone(), doc_id)?;
     let storage = PgOpStorage::new(ctx.clone());
-    let mut nodes = PgNodeStore::new(ctx.clone());
-    let node_flush = nodes.clone();
-    let mut payloads = PgPayloadStore::new(ctx.clone());
-    let mut index = PgParentOpIndex::new(ctx.clone());
-
-    nodes.reset()?;
-    payloads.reset()?;
-    index.reset()?;
-
-    let mut crdt = TreeCrdt::with_stores(
-        ReplicaId::new(b"postgres"),
+    let head = catch_up_materialized_state(
         storage,
-        LamportClock::default(),
-        nodes,
-        payloads,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"postgres"),
+            clock: LamportClock::default(),
+            nodes: PgNodeStore::new(ctx.clone()),
+            payloads: PgPayloadStore::new(ctx.clone()),
+            index: PgParentOpIndex::new(ctx.clone()),
+        },
+        &meta,
+        |nodes| nodes.flush_last_change(),
+        |index| index.flush(),
     )?;
-    // Full rebuild path: replay the persisted op log through treecrdt-core to reconstruct
-    // nodes, payloads, subtree opRef index rows, and cached tombstone state from scratch.
-    crdt.replay_from_storage_with_materialization(&mut index)?;
-    node_flush.flush_last_change()?;
-    index.flush()?;
 
-    let seq = crdt.log_len().min(u64::MAX as usize) as u64;
-    if let Some(last) = crdt.head_op() {
+    if let Some(last) = head {
         update_tree_meta_head(
             client,
             doc_id,
-            last.meta.lamport,
-            last.meta.id.replica.as_bytes(),
-            last.meta.id.counter,
-            seq,
+            last.lamport,
+            &last.replica,
+            last.counter,
+            last.seq,
         )?;
     } else {
         update_tree_meta_head(client, doc_id, 0, &[], 0, 0)?;

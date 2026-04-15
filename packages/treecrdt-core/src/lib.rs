@@ -16,8 +16,9 @@ pub use error::{Error, Result};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use materialization::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
-    materialize_persisted_remote_ops_with_delta, IncrementalApplyResult, MaterializationCursor,
-    MaterializationHead, PersistedRemoteApplyResult, PersistedRemoteStores,
+    catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
+    IncrementalApplyResult, MaterializationCursor, MaterializationFrontier, MaterializationHead,
+    PersistedRemoteApplyResult, PersistedRemoteStores,
 };
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{

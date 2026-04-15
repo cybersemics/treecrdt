@@ -16,6 +16,9 @@ pub(super) struct TreeMeta {
     pub(super) head_replica: Vec<u8>,
     pub(super) head_counter: u64,
     pub(super) head_seq: u64,
+    pub(super) replay_lamport: Option<Lamport>,
+    pub(super) replay_replica: Option<Vec<u8>>,
+    pub(super) replay_counter: Option<u64>,
 }
 
 pub(super) fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {
@@ -55,7 +58,8 @@ pub(super) fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {
 
 pub(super) fn load_tree_meta(db: *mut sqlite3) -> Result<TreeMeta, c_int> {
     let sql = CString::new(
-        "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+        "SELECT dirty, head_lamport, head_replica, head_counter, head_seq, \
+                replay_lamport, replay_replica, replay_counter \
          FROM tree_meta WHERE id = 1 LIMIT 1",
     )
     .expect("tree meta sql");
@@ -82,6 +86,27 @@ pub(super) fn load_tree_meta(db: *mut sqlite3) -> Result<TreeMeta, c_int> {
     };
     let head_counter = unsafe { sqlite_column_int64(stmt, 3) } as u64;
     let head_seq = unsafe { sqlite_column_int64(stmt, 4) } as u64;
+    let replay_lamport = if unsafe { sqlite_column_type(stmt, 5) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        Some(unsafe { sqlite_column_int64(stmt, 5).max(0) as Lamport })
+    };
+    let replay_replica = if unsafe { sqlite_column_type(stmt, 6) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        let ptr = unsafe { sqlite_column_blob(stmt, 6) } as *const u8;
+        let len = unsafe { sqlite_column_bytes(stmt, 6) } as usize;
+        Some(if ptr.is_null() || len == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
+        })
+    };
+    let replay_counter = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        Some(unsafe { sqlite_column_int64(stmt, 7).max(0) as u64 })
+    };
 
     let finalize_rc = unsafe { sqlite_finalize(stmt) };
     if finalize_rc != SQLITE_OK as c_int {
@@ -94,12 +119,19 @@ pub(super) fn load_tree_meta(db: *mut sqlite3) -> Result<TreeMeta, c_int> {
         head_replica,
         head_counter,
         head_seq,
+        replay_lamport,
+        replay_replica,
+        replay_counter,
     })
 }
 
 pub(super) fn set_tree_meta_dirty(db: *mut sqlite3, dirty: bool) -> Result<(), c_int> {
-    let sql =
-        CString::new("UPDATE tree_meta SET dirty = ?1 WHERE id = 1").expect("tree meta dirty sql");
+    let sql = CString::new(
+        "UPDATE tree_meta \
+         SET dirty = ?1, replay_lamport = NULL, replay_replica = NULL, replay_counter = NULL \
+         WHERE id = 1",
+    )
+    .expect("tree meta dirty sql");
     let mut stmt: *mut sqlite3_stmt = null_mut();
     let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
     if rc != SQLITE_OK as c_int {
@@ -123,6 +155,50 @@ pub(super) fn set_tree_meta_dirty(db: *mut sqlite3, dirty: bool) -> Result<(), c
     Ok(())
 }
 
+pub(super) fn set_tree_meta_replay_frontier(
+    db: *mut sqlite3,
+    frontier: &treecrdt_core::MaterializationFrontier,
+) -> Result<(), c_int> {
+    let sql = CString::new(
+        "UPDATE tree_meta \
+         SET dirty = 0, replay_lamport = ?1, replay_replica = ?2, replay_counter = ?3 \
+         WHERE id = 1",
+    )
+    .expect("tree meta replay sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(rc);
+    }
+
+    let mut bind_err = false;
+    unsafe {
+        bind_err |= sqlite_bind_int64(stmt, 1, frontier.lamport as i64) != SQLITE_OK as c_int;
+        bind_err |= sqlite_bind_blob(
+            stmt,
+            2,
+            frontier.replica.as_ptr() as *const c_void,
+            frontier.replica.len() as c_int,
+            None,
+        ) != SQLITE_OK as c_int;
+        bind_err |= sqlite_bind_int64(stmt, 3, frontier.counter as i64) != SQLITE_OK as c_int;
+    }
+    if bind_err {
+        unsafe { sqlite_finalize(stmt) };
+        return Err(SQLITE_ERROR as c_int);
+    }
+
+    let step_rc = unsafe { sqlite_step(stmt) };
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    if step_rc != SQLITE_DONE as c_int {
+        return Err(step_rc);
+    }
+    if finalize_rc != SQLITE_OK as c_int {
+        return Err(finalize_rc);
+    }
+    Ok(())
+}
+
 pub(super) fn update_tree_meta_head(
     db: *mut sqlite3,
     lamport: Lamport,
@@ -132,7 +208,14 @@ pub(super) fn update_tree_meta_head(
 ) -> Result<(), c_int> {
     let sql = CString::new(
         "UPDATE tree_meta \
-         SET dirty = 0, head_lamport = ?1, head_replica = ?2, head_counter = ?3, head_seq = ?4 \
+         SET dirty = 0, \
+             head_lamport = ?1, \
+             head_replica = ?2, \
+             head_counter = ?3, \
+             head_seq = ?4, \
+             replay_lamport = NULL, \
+             replay_replica = NULL, \
+             replay_counter = NULL \
          WHERE id = 1",
     )
     .expect("tree meta head sql");
@@ -171,6 +254,65 @@ pub(super) fn update_tree_meta_head(
     Ok(())
 }
 
+fn tree_meta_has_column(db: *mut sqlite3, column: &str) -> Result<bool, c_int> {
+    let sql = CString::new("PRAGMA table_info(tree_meta)").expect("tree_meta pragma sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(rc);
+    }
+
+    let mut found = false;
+    loop {
+        let step_rc = unsafe { sqlite_step(stmt) };
+        if step_rc == SQLITE_ROW as c_int {
+            let ptr = unsafe { sqlite_column_text(stmt, 1) } as *const u8;
+            let len = unsafe { sqlite_column_bytes(stmt, 1) } as usize;
+            if ptr.is_null() {
+                continue;
+            }
+            let name =
+                std::str::from_utf8(unsafe { slice::from_raw_parts(ptr, len) }).unwrap_or("");
+            if name == column {
+                found = true;
+                break;
+            }
+        } else if step_rc == SQLITE_DONE as c_int {
+            break;
+        } else {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(step_rc);
+        }
+    }
+
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    if finalize_rc != SQLITE_OK as c_int {
+        return Err(finalize_rc);
+    }
+    Ok(found)
+}
+
+fn ensure_tree_meta_replay_columns(db: *mut sqlite3) -> Result<(), c_int> {
+    for (column, sql_type) in [
+        ("replay_lamport", "INTEGER"),
+        ("replay_replica", "BLOB"),
+        ("replay_counter", "INTEGER"),
+    ] {
+        if tree_meta_has_column(db, column)? {
+            continue;
+        }
+        let sql = CString::new(format!(
+            "ALTER TABLE tree_meta ADD COLUMN {column} {sql_type}"
+        ))
+        .expect("tree_meta alter sql");
+        let rc = sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(rc);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn ensure_schema(db: *mut sqlite3) -> Result<(), c_int> {
     ensure_api_initialized()?;
 
@@ -205,7 +347,10 @@ CREATE TABLE IF NOT EXISTS tree_meta (
   head_lamport INTEGER NOT NULL DEFAULT 0,
   head_replica BLOB NOT NULL DEFAULT X'',
   head_counter INTEGER NOT NULL DEFAULT 0,
-  head_seq INTEGER NOT NULL DEFAULT 0
+  head_seq INTEGER NOT NULL DEFAULT 0,
+  replay_lamport INTEGER,
+  replay_replica BLOB,
+  replay_counter INTEGER
 );
 INSERT OR IGNORE INTO tree_meta(id) VALUES (1);
 "#;
@@ -258,6 +403,7 @@ CREATE TABLE IF NOT EXISTS tree_payload (
     if rc_tree_meta != SQLITE_OK as c_int {
         return Err(rc_tree_meta);
     }
+    ensure_tree_meta_replay_columns(db)?;
     let rc_nodes = {
         let sql = CString::new(TREE_NODES).expect("tree_nodes schema");
         sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())

@@ -29,6 +29,15 @@ fn read_tree_meta(conn: &Connection) -> (i64, i64, Vec<u8>, i64, i64) {
     .unwrap()
 }
 
+fn read_replay_frontier(conn: &Connection) -> (Option<i64>, Option<Vec<u8>>, Option<i64>) {
+    conn.query_row(
+        "SELECT replay_lamport, replay_replica, replay_counter FROM tree_meta WHERE id = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .unwrap()
+}
+
 fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (Vec<Vec<u8>>, i64) {
     let json = serde_json::to_string(ops).unwrap();
     let affected_json: String = conn
@@ -366,7 +375,71 @@ fn remote_append_representative_batch_matches_postgres_shape() {
 }
 
 #[test]
-fn remote_append_dirty_fallback_rebuilds_on_ensure_materialized() {
+fn remote_append_out_of_order_uses_replay_frontier() {
+    let conn = setup_conn();
+
+    let root = node_bytes(0);
+    let second = JsonOp {
+        replica: b"ooo".to_vec(),
+        counter: 2,
+        lamport: 2,
+        kind: "insert".into(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node_bytes(2).as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some((2u16).to_be_bytes().to_vec()),
+        known_state: None,
+        payload: None,
+    };
+    let first = JsonOp {
+        replica: b"ooo".to_vec(),
+        counter: 1,
+        lamport: 1,
+        kind: "insert".into(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node_bytes(1).as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some((1u16).to_be_bytes().to_vec()),
+        known_state: None,
+        payload: None,
+    };
+
+    append_ops_json(&conn, &[second]);
+    let (affected, _) = append_ops_json(&conn, &[first.clone()]);
+    assert!(affected.is_empty());
+
+    let (dirty, _, _, _, head_seq_before) = read_tree_meta(&conn);
+    let (replay_lamport, replay_replica, replay_counter) = read_replay_frontier(&conn);
+    assert_eq!(dirty, 0);
+    assert_eq!(head_seq_before, 1);
+    assert_eq!(replay_lamport, Some(first.lamport as i64));
+    assert_eq!(replay_replica, Some(first.replica.clone()));
+    assert_eq!(replay_counter, Some(first.counter as i64));
+
+    let _: i64 = conn
+        .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    assert_eq!(
+        visible_children(&conn, &root),
+        vec![node_bytes(1), node_bytes(2)]
+    );
+    let (dirty_after, _, _, _, head_seq_after) = read_tree_meta(&conn);
+    assert_eq!(dirty_after, 0);
+    assert_eq!(head_seq_after, 2);
+    assert_eq!(read_replay_frontier(&conn), (None, None, None));
+
+    let ops = ops_by_oprefs(&conn, &oprefs_children(&conn, &root));
+    assert_eq!(
+        ops.iter().map(|op| op.counter).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+#[test]
+fn remote_append_legacy_dirty_recovery_converts_to_replay_from_start() {
     let conn = setup_conn();
 
     let root = node_bytes(0);
@@ -400,7 +473,11 @@ fn remote_append_dirty_fallback_rebuilds_on_ensure_materialized() {
 
     let (affected, _) = append_ops_json(&conn, &[second]);
     assert!(affected.is_empty());
-    assert_eq!(read_tree_meta(&conn).0, 1);
+    assert_eq!(read_tree_meta(&conn).0, 0);
+    assert_eq!(
+        read_replay_frontier(&conn),
+        (Some(0), Some(Vec::new()), Some(0))
+    );
 
     let _: i64 = conn
         .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
@@ -415,6 +492,7 @@ fn remote_append_dirty_fallback_rebuilds_on_ensure_materialized() {
     let (dirty, _, _, _, head_seq) = read_tree_meta(&conn);
     assert_eq!(dirty, 0);
     assert_eq!(head_seq, 2);
+    assert_eq!(read_replay_frontier(&conn), (None, None, None));
 }
 
 #[test]

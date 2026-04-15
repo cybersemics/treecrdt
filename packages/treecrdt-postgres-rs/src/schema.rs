@@ -30,8 +30,15 @@ CREATE TABLE IF NOT EXISTS treecrdt_meta (
   head_lamport BIGINT NOT NULL DEFAULT 0,
   head_replica BYTEA NOT NULL DEFAULT ''::bytea,
   head_counter BIGINT NOT NULL DEFAULT 0,
-  head_seq BIGINT NOT NULL DEFAULT 0
+  head_seq BIGINT NOT NULL DEFAULT 0,
+  replay_lamport BIGINT,
+  replay_replica BYTEA,
+  replay_counter BIGINT
 );
+
+ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_lamport BIGINT;
+ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_replica BYTEA;
+ALTER TABLE treecrdt_meta ADD COLUMN IF NOT EXISTS replay_counter BIGINT;
 
 CREATE TABLE IF NOT EXISTS treecrdt_nodes (
   doc_id TEXT NOT NULL,

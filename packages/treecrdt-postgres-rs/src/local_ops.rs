@@ -10,8 +10,8 @@ use treecrdt_core::{
 
 use crate::store::{
     ensure_materialized_in_tx, load_tree_meta_for_update, set_tree_meta_dirty,
-    update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage, PgParentOpIndex, PgPayloadStore,
-    TreeMeta,
+    set_tree_meta_replay_frontier, update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage,
+    PgParentOpIndex, PgPayloadStore, TreeMeta,
 };
 
 type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
@@ -110,7 +110,16 @@ fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: Loca
     }
 
     if !post_materialization_ok {
-        let _ = set_tree_meta_dirty(&session.ctx.client, &session.ctx.doc_id, true);
+        let _ = set_tree_meta_replay_frontier(
+            &session.ctx.client,
+            &session.ctx.doc_id,
+            &treecrdt_core::MaterializationFrontier {
+                lamport: 0,
+                replica: Vec::new(),
+                counter: 0,
+            },
+        )
+        .or_else(|_| set_tree_meta_dirty(&session.ctx.client, &session.ctx.doc_id, true));
     }
 }
 
