@@ -9,35 +9,40 @@ use crate::tree::TreeCrdt;
 use crate::{Error, Lamport, NodeId, OperationId, ReplicaId, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MaterializationFrontier {
+pub struct MaterializationKey<R = Vec<u8>> {
     pub lamport: Lamport,
-    pub replica: Vec<u8>,
+    pub replica: R,
     pub counter: u64,
+}
+
+pub type MaterializationFrontier = MaterializationKey<Vec<u8>>;
+pub type MaterializationFrontierRef<'a> = MaterializationKey<&'a [u8]>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializationHead<R = Vec<u8>> {
+    pub at: MaterializationKey<R>,
+    pub seq: u64,
+}
+
+pub type MaterializationHeadRef<'a> = MaterializationHead<&'a [u8]>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializationState<R = Vec<u8>> {
+    pub head: Option<MaterializationHead<R>>,
+    pub replay_from: Option<MaterializationKey<R>>,
+}
+
+pub type MaterializationStateRef<'a> = MaterializationState<&'a [u8]>;
+
+impl<R> MaterializationState<R> {
+    pub fn head_seq(&self) -> u64 {
+        self.head.as_ref().map_or(0, |head| head.seq)
+    }
 }
 
 /// Snapshot of adapter-maintained materialization metadata.
 pub trait MaterializationCursor {
-    fn head_lamport(&self) -> Lamport;
-    fn head_replica(&self) -> &[u8];
-    fn head_counter(&self) -> u64;
-    fn head_seq(&self) -> u64;
-    fn replay_lamport(&self) -> Option<Lamport> {
-        None
-    }
-    fn replay_replica(&self) -> Option<&[u8]> {
-        None
-    }
-    fn replay_counter(&self) -> Option<u64> {
-        None
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MaterializationHead {
-    pub lamport: Lamport,
-    pub replica: Vec<u8>,
-    pub counter: u64,
-    pub seq: u64,
+    fn state(&self) -> MaterializationStateRef<'_>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,39 +110,26 @@ fn frontier_from_op(op: &Operation) -> MaterializationFrontier {
     }
 }
 
-fn cmp_frontiers(a: &MaterializationFrontier, b: &MaterializationFrontier) -> Ordering {
+fn owned_frontier<R: AsRef<[u8]>>(frontier: &MaterializationKey<R>) -> MaterializationFrontier {
+    MaterializationFrontier {
+        lamport: frontier.lamport,
+        replica: frontier.replica.as_ref().to_vec(),
+        counter: frontier.counter,
+    }
+}
+
+fn cmp_frontiers<R1: AsRef<[u8]>, R2: AsRef<[u8]>>(
+    a: &MaterializationKey<R1>,
+    b: &MaterializationKey<R2>,
+) -> Ordering {
     cmp_op_key(
         a.lamport,
-        a.replica.as_slice(),
+        a.replica.as_ref(),
         a.counter,
         b.lamport,
-        b.replica.as_slice(),
+        b.replica.as_ref(),
         b.counter,
     )
-}
-
-fn cursor_head<M: MaterializationCursor>(meta: &M) -> Option<MaterializationFrontier> {
-    if meta.head_seq() == 0
-        && meta.head_lamport() == 0
-        && meta.head_replica().is_empty()
-        && meta.head_counter() == 0
-    {
-        return None;
-    }
-
-    Some(MaterializationFrontier {
-        lamport: meta.head_lamport(),
-        replica: meta.head_replica().to_vec(),
-        counter: meta.head_counter(),
-    })
-}
-
-fn cursor_replay_frontier<M: MaterializationCursor>(meta: &M) -> Option<MaterializationFrontier> {
-    Some(MaterializationFrontier {
-        lamport: meta.replay_lamport()?,
-        replica: meta.replay_replica()?.to_vec(),
-        counter: meta.replay_counter()?,
-    })
 }
 
 fn earlier_frontier(
@@ -164,14 +156,17 @@ fn next_replay_frontier<M: MaterializationCursor>(
     inserted_ops: &[Operation],
 ) -> Option<MaterializationFrontier> {
     let earliest_inserted = inserted_ops.iter().map(frontier_from_op).min_by(cmp_frontiers)?;
-    let existing = cursor_replay_frontier(meta);
+    let state = meta.state();
 
-    if let Some(existing) = existing {
-        return Some(earlier_frontier(existing, earliest_inserted));
+    if let Some(existing) = state.replay_from.as_ref() {
+        return Some(earlier_frontier(
+            owned_frontier(existing),
+            earliest_inserted,
+        ));
     }
 
-    let head = cursor_head(meta)?;
-    if cmp_frontiers(&earliest_inserted, &head) == Ordering::Less {
+    let head = state.head.as_ref()?;
+    if cmp_frontiers(&earliest_inserted, &head.at) == Ordering::Less {
         Some(earliest_inserted)
     } else {
         None
@@ -195,13 +190,15 @@ where
     I: ParentOpIndex,
     M: MaterializationCursor,
 {
+    let state = meta.state();
+
     if ops.is_empty() {
         return Ok(IncrementalApplyResult {
             head: None,
             affected_nodes: Vec::new(),
         });
     }
-    if cursor_replay_frontier(meta).is_some() {
+    if state.replay_from.is_some() {
         return Err(Error::Storage(
             "materialize called while replay frontier pending".into(),
         ));
@@ -210,22 +207,24 @@ where
     ops.sort_by(cmp_ops);
 
     if let Some(first) = ops.first() {
-        if cmp_op_key(
-            first.meta.lamport,
-            first.meta.id.replica.as_bytes(),
-            first.meta.id.counter,
-            meta.head_lamport(),
-            meta.head_replica(),
-            meta.head_counter(),
-        ) == std::cmp::Ordering::Less
-        {
-            return Err(Error::Storage(
-                "out-of-order op before materialized head".into(),
-            ));
+        if let Some(head) = state.head.as_ref() {
+            if cmp_op_key(
+                first.meta.lamport,
+                first.meta.id.replica.as_bytes(),
+                first.meta.id.counter,
+                head.at.lamport,
+                head.at.replica,
+                head.at.counter,
+            ) == std::cmp::Ordering::Less
+            {
+                return Err(Error::Storage(
+                    "out-of-order op before materialized head".into(),
+                ));
+            }
         }
     }
 
-    let mut seq = meta.head_seq();
+    let mut seq = state.head_seq();
     let mut affected = std::collections::HashSet::new();
     for op in ops {
         if let Some(delta) = crdt.apply_remote_with_materialization_seq(op, index, &mut seq)? {
@@ -242,9 +241,11 @@ where
 
     Ok(IncrementalApplyResult {
         head: Some(MaterializationHead {
-            lamport: last.meta.lamport,
-            replica: last.meta.id.replica.as_bytes().to_vec(),
-            counter: last.meta.id.counter,
+            at: MaterializationKey {
+                lamport: last.meta.lamport,
+                replica: last.meta.id.replica.as_bytes().to_vec(),
+                counter: last.meta.id.counter,
+            },
             seq,
         }),
         affected_nodes,
@@ -410,7 +411,10 @@ where
     FlushNodes: FnMut(&mut N) -> Result<()>,
     FlushIndex: FnMut(&mut I) -> Result<()>,
 {
-    let replay_frontier = cursor_replay_frontier(meta);
+    let replay_frontier = {
+        let state = meta.state();
+        state.replay_from.as_ref().map(owned_frontier)
+    };
 
     let PersistedRemoteStores {
         replica_id,
@@ -457,9 +461,11 @@ where
     flush_index(&mut index)?;
 
     Ok(head.map(|head| MaterializationHead {
-        lamport: head.meta.lamport,
-        replica: head.meta.id.replica.as_bytes().to_vec(),
-        counter: head.meta.id.counter,
+        at: MaterializationKey {
+            lamport: head.meta.lamport,
+            replica: head.meta.id.replica.as_bytes().to_vec(),
+            counter: head.meta.id.counter,
+        },
         seq,
     }))
 }

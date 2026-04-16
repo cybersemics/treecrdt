@@ -1,9 +1,9 @@
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     materialize_persisted_remote_ops_with_delta, LamportClock, MaterializationCursor,
-    MaterializationHead, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId,
-    NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId,
-    TreeCrdt,
+    MaterializationHead, MaterializationKey, MaterializationState, MemoryNodeStore,
+    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
+    ParentOpIndex, PersistedRemoteStores, ReplicaId, TreeCrdt,
 };
 
 #[derive(Default)]
@@ -23,32 +23,37 @@ struct Cursor {
 }
 
 impl MaterializationCursor for Cursor {
-    fn head_lamport(&self) -> u64 {
-        self.head_lamport
-    }
+    fn state(&self) -> MaterializationState<&[u8]> {
+        let head = if self.head_seq == 0
+            && self.head_lamport == 0
+            && self.head_replica.is_empty()
+            && self.head_counter == 0
+        {
+            None
+        } else {
+            Some(MaterializationHead {
+                at: MaterializationKey {
+                    lamport: self.head_lamport,
+                    replica: self.head_replica.as_slice(),
+                    counter: self.head_counter,
+                },
+                seq: self.head_seq,
+            })
+        };
+        let replay_from = match (
+            self.replay_lamport,
+            self.replay_replica.as_deref(),
+            self.replay_counter,
+        ) {
+            (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
+                lamport,
+                replica,
+                counter,
+            }),
+            _ => None,
+        };
 
-    fn head_replica(&self) -> &[u8] {
-        &self.head_replica
-    }
-
-    fn head_counter(&self) -> u64 {
-        self.head_counter
-    }
-
-    fn head_seq(&self) -> u64 {
-        self.head_seq
-    }
-
-    fn replay_lamport(&self) -> Option<u64> {
-        self.replay_lamport
-    }
-
-    fn replay_replica(&self) -> Option<&[u8]> {
-        self.replay_replica.as_deref()
-    }
-
-    fn replay_counter(&self) -> Option<u64> {
-        self.replay_counter
+        MaterializationState { head, replay_from }
     }
 }
 
@@ -127,9 +132,9 @@ fn apply_incremental_ops_with_delta_sorts_and_returns_head() {
             .head
             .expect("expected materialization head");
 
-    assert_eq!(next.lamport, 2);
-    assert_eq!(next.replica, replica.as_bytes());
-    assert_eq!(next.counter, 2);
+    assert_eq!(next.at.lamport, 2);
+    assert_eq!(next.at.replica, replica.as_bytes());
+    assert_eq!(next.at.counter, 2);
     assert_eq!(next.seq, 2);
     assert_eq!(index.records.len(), 2);
     assert_eq!(index.records[0].2, 1);
@@ -223,7 +228,7 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
     .unwrap();
 
     let head = res.head.expect("expected materialization head");
-    assert_eq!(head.counter, 2);
+    assert_eq!(head.at.counter, 2);
     assert_eq!(res.affected_nodes, vec![NodeId::ROOT, parent, child],);
 }
 
@@ -243,9 +248,11 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
             seen_counters = ops.iter().map(|op| op.meta.id.counter).collect();
             Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
                 head: Some(MaterializationHead {
-                    lamport: op3.meta.lamport,
-                    replica: op3.meta.id.replica.as_bytes().to_vec(),
-                    counter: op3.meta.id.counter,
+                    at: MaterializationKey {
+                        lamport: op3.meta.lamport,
+                        replica: op3.meta.id.replica.as_bytes().to_vec(),
+                        counter: op3.meta.id.counter,
+                    },
                     seq: 2,
                 }),
                 affected_nodes: vec![NodeId(2)],
@@ -266,9 +273,11 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
     assert_eq!(
         updated_head,
         Some(MaterializationHead {
-            lamport: 3,
-            replica: replica.as_bytes().to_vec(),
-            counter: 3,
+            at: MaterializationKey {
+                lamport: 3,
+                replica: replica.as_bytes().to_vec(),
+                counter: 3,
+            },
             seq: 2,
         })
     );
@@ -320,9 +329,11 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
         |_| {
             Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
                 head: Some(MaterializationHead {
-                    lamport: 7,
-                    replica: b"r".to_vec(),
-                    counter: 4,
+                    at: MaterializationKey {
+                        lamport: 7,
+                        replica: b"r".to_vec(),
+                        counter: 4,
+                    },
                     seq: 9,
                 }),
                 affected_nodes: vec![NodeId(1), NodeId(2)],
@@ -469,7 +480,7 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
     assert_eq!(prepared, 2);
     assert_eq!(flushed_nodes, 1);
     assert_eq!(flushed_index, 1);
-    assert_eq!(head.counter, 2);
+    assert_eq!(head.at.counter, 2);
     assert_eq!(
         result.affected_nodes,
         vec![NodeId::ROOT, NodeId(10), NodeId(11)]

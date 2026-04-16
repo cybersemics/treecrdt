@@ -18,7 +18,7 @@ pub use materialization::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
     IncrementalApplyResult, MaterializationCursor, MaterializationFrontier, MaterializationHead,
-    PersistedRemoteApplyResult, PersistedRemoteStores,
+    MaterializationKey, MaterializationState, PersistedRemoteApplyResult, PersistedRemoteStores,
 };
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{

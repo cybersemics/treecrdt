@@ -8,8 +8,9 @@ use postgres::{Client, Row, Statement};
 use treecrdt_core::{
     apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
     materialize_persisted_remote_ops_with_delta, Error, Lamport, LamportClock,
-    MaterializationCursor, MaterializationFrontier, NodeId, Operation, OperationId, OperationKind,
-    PersistedRemoteStores, ReplicaId, Result, Storage, VersionVector,
+    MaterializationCursor, MaterializationFrontier, MaterializationHead, MaterializationKey,
+    MaterializationState, NodeId, Operation, OperationId, OperationKind, PersistedRemoteStores,
+    ReplicaId, Result, Storage, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -61,32 +62,37 @@ pub(crate) struct TreeMeta {
 }
 
 impl MaterializationCursor for TreeMeta {
-    fn head_lamport(&self) -> Lamport {
-        self.head_lamport
-    }
+    fn state(&self) -> MaterializationState<&[u8]> {
+        let head = if self.head_seq == 0
+            && self.head_lamport == 0
+            && self.head_replica.is_empty()
+            && self.head_counter == 0
+        {
+            None
+        } else {
+            Some(MaterializationHead {
+                at: MaterializationKey {
+                    lamport: self.head_lamport,
+                    replica: self.head_replica.as_slice(),
+                    counter: self.head_counter,
+                },
+                seq: self.head_seq,
+            })
+        };
+        let replay_from = match (
+            self.replay_lamport,
+            self.replay_replica.as_deref(),
+            self.replay_counter,
+        ) {
+            (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
+                lamport,
+                replica,
+                counter,
+            }),
+            _ => None,
+        };
 
-    fn head_replica(&self) -> &[u8] {
-        &self.head_replica
-    }
-
-    fn head_counter(&self) -> u64 {
-        self.head_counter
-    }
-
-    fn head_seq(&self) -> u64 {
-        self.head_seq
-    }
-
-    fn replay_lamport(&self) -> Option<Lamport> {
-        self.replay_lamport
-    }
-
-    fn replay_replica(&self) -> Option<&[u8]> {
-        self.replay_replica.as_deref()
-    }
-
-    fn replay_counter(&self) -> Option<u64> {
-        self.replay_counter
+        MaterializationState { head, replay_from }
     }
 }
 
@@ -1609,8 +1615,8 @@ fn append_ops_in_tx(
     let append_profile = append_profile_enabled().then(|| {
         Rc::new(RefCell::new(PgAppendProfile::new(
             ops.len(),
-            meta.replay_lamport.is_some(),
-            meta.head_seq(),
+            meta.state().replay_from.is_some(),
+            meta.state().head_seq(),
         )))
     });
     let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
@@ -1646,9 +1652,9 @@ fn append_ops_in_tx(
             let result = update_tree_meta_head(
                 &ctx.client,
                 &ctx.doc_id,
-                head.lamport,
-                &head.replica,
-                head.counter,
+                head.at.lamport,
+                &head.at.replica,
+                head.at.counter,
                 head.seq,
             );
             update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1699,13 +1705,13 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
 
 pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
     let meta = load_tree_meta(client, doc_id)?;
-    if meta.replay_lamport.is_none() {
+    if meta.state().replay_from.is_none() {
         return Ok(());
     }
 
     // Take a per-doc lock so rebuild can't race with concurrent append/materialization.
     let meta = load_tree_meta_for_update(client, doc_id)?;
-    if meta.replay_lamport.is_none() {
+    if meta.state().replay_from.is_none() {
         return Ok(());
     }
 
@@ -1729,9 +1735,9 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
         update_tree_meta_head(
             client,
             doc_id,
-            last.lamport,
-            &last.replica,
-            last.counter,
+            last.at.lamport,
+            &last.at.replica,
+            last.at.counter,
             last.seq,
         )?;
     } else {

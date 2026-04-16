@@ -5,6 +5,7 @@ use super::payload_store::SqlitePayloadStore;
 use super::schema::set_tree_meta_replay_frontier;
 use super::util::sqlite_err_from_core;
 use super::*;
+use treecrdt_core::MaterializationCursor;
 use treecrdt_core::Storage;
 
 fn parse_node_id(bytes: &[u8]) -> Result<NodeId, c_int> {
@@ -82,32 +83,39 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
 }
 
 impl treecrdt_core::MaterializationCursor for TreeMeta {
-    fn head_lamport(&self) -> Lamport {
-        self.head_lamport
-    }
+    fn state(&self) -> treecrdt_core::MaterializationState<&[u8]> {
+        let head = if self.head_seq == 0
+            && self.head_lamport == 0
+            && self.head_replica.is_empty()
+            && self.head_counter == 0
+        {
+            None
+        } else {
+            Some(treecrdt_core::MaterializationHead {
+                at: treecrdt_core::MaterializationKey {
+                    lamport: self.head_lamport,
+                    replica: self.head_replica.as_slice(),
+                    counter: self.head_counter,
+                },
+                seq: self.head_seq,
+            })
+        };
+        let replay_from = match (
+            self.replay_lamport,
+            self.replay_replica.as_deref(),
+            self.replay_counter,
+        ) {
+            (Some(lamport), Some(replica), Some(counter)) => {
+                Some(treecrdt_core::MaterializationKey {
+                    lamport,
+                    replica,
+                    counter,
+                })
+            }
+            _ => None,
+        };
 
-    fn head_replica(&self) -> &[u8] {
-        &self.head_replica
-    }
-
-    fn head_counter(&self) -> u64 {
-        self.head_counter
-    }
-
-    fn head_seq(&self) -> u64 {
-        self.head_seq
-    }
-
-    fn replay_lamport(&self) -> Option<Lamport> {
-        self.replay_lamport
-    }
-
-    fn replay_replica(&self) -> Option<&[u8]> {
-        self.replay_replica.as_deref()
-    }
-
-    fn replay_counter(&self) -> Option<u64> {
-        self.replay_counter
+        treecrdt_core::MaterializationState { head, replay_from }
     }
 }
 
@@ -142,7 +150,7 @@ fn materialize_inserted_ops(
 
 pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     let meta = load_tree_meta(db)?;
-    if meta.replay_lamport.is_none() {
+    if meta.state().replay_from.is_none() {
         return Ok(());
     }
     rebuild_materialized(db)
@@ -232,8 +240,13 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     };
 
     if let Some(last) = head {
-        let head_rc =
-            update_tree_meta_head(db, last.lamport, &last.replica, last.counter, last.seq);
+        let head_rc = update_tree_meta_head(
+            db,
+            last.at.lamport,
+            &last.at.replica,
+            last.at.counter,
+            last.seq,
+        );
         if head_rc.is_err() {
             sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
             return head_rc;
@@ -305,7 +318,15 @@ pub(super) fn append_ops_impl(
         &meta,
         inserted_ops,
         |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
-        |head| update_tree_meta_head(db, head.lamport, &head.replica, head.counter, head.seq),
+        |head| {
+            update_tree_meta_head(
+                db,
+                head.at.lamport,
+                &head.at.replica,
+                head.at.counter,
+                head.seq,
+            )
+        },
         |frontier| set_tree_meta_replay_frontier(db, frontier),
     )?;
 
