@@ -199,6 +199,15 @@ pub(crate) fn update_tree_meta_head<R: AsRef<[u8]>>(
     Ok(())
 }
 
+pub(crate) fn persist_materialized_head<R: AsRef<[u8]>>(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    head: Option<&MaterializationHead<R>>,
+) -> Result<()> {
+    update_tree_meta_head(client, doc_id, head)?;
+    maybe_save_materialization_checkpoint(client, doc_id, head)
+}
+
 pub(crate) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
@@ -207,14 +216,7 @@ pub(crate) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
     let Some(head) = head else {
         return Ok(());
     };
-    if !should_checkpoint_materialization(&MaterializationHead {
-        at: MaterializationKey {
-            lamport: head.at.lamport,
-            replica: head.at.replica.as_ref().to_vec(),
-            counter: head.at.counter,
-        },
-        seq: head.seq,
-    }) {
+    if !should_checkpoint_materialization(head) {
         return Ok(());
     }
 
@@ -1854,10 +1856,7 @@ fn append_ops_in_tx(
         |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
         |head| {
             let started_at = Instant::now();
-            let result =
-                update_tree_meta_head(&ctx.client, &ctx.doc_id, Some(head)).and_then(|_| {
-                    maybe_save_materialization_checkpoint(&ctx.client, &ctx.doc_id, Some(head))
-                });
+            let result = persist_materialized_head(&ctx.client, &ctx.doc_id, Some(head));
             update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
             result
         },
@@ -1934,8 +1933,7 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
         |index| index.flush(),
     )?;
 
-    update_tree_meta_head(client, doc_id, head.as_ref())?;
-    maybe_save_materialization_checkpoint(client, doc_id, head.as_ref())?;
+    persist_materialized_head(client, doc_id, head.as_ref())?;
 
     Ok(())
 }

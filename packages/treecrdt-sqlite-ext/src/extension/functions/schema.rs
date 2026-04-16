@@ -241,6 +241,14 @@ pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
     Ok(())
 }
 
+pub(super) fn persist_materialized_head<R: AsRef<[u8]>>(
+    db: *mut sqlite3,
+    head: Option<&MaterializationHead<R>>,
+) -> Result<(), c_int> {
+    update_tree_meta_head(db, head)?;
+    maybe_save_materialization_checkpoint(db, head)
+}
+
 pub(super) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
     db: *mut sqlite3,
     head: Option<&MaterializationHead<R>>,
@@ -248,14 +256,7 @@ pub(super) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
     let Some(head) = head else {
         return Ok(());
     };
-    if !should_checkpoint_materialization(&MaterializationHead {
-        at: MaterializationKey {
-            lamport: head.at.lamport,
-            replica: head.at.replica.as_ref().to_vec(),
-            counter: head.at.counter,
-        },
-        seq: head.seq,
-    }) {
+    if !should_checkpoint_materialization(head) {
         return Ok(());
     }
 

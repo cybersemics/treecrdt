@@ -3,7 +3,7 @@ use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::payload_store::SqlitePayloadStore;
 use super::schema::{
-    load_materialization_checkpoint_before, maybe_save_materialization_checkpoint,
+    load_materialization_checkpoint_before, persist_materialized_head,
     restore_materialization_checkpoint, set_tree_meta_replay_frontier,
 };
 use super::util::sqlite_err_from_core;
@@ -218,8 +218,7 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
         }
     };
 
-    let head_rc = update_tree_meta_head(db, head.as_ref())
-        .and_then(|_| maybe_save_materialization_checkpoint(db, head.as_ref()));
+    let head_rc = persist_materialized_head(db, head.as_ref());
     if head_rc.is_err() {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
         return head_rc;
@@ -284,10 +283,7 @@ pub(super) fn append_ops_impl(
         &meta,
         inserted_ops,
         |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
-        |head| {
-            update_tree_meta_head(db, Some(head))
-                .and_then(|_| maybe_save_materialization_checkpoint(db, Some(head)))
-        },
+        |head| persist_materialized_head(db, Some(head)),
         |frontier| set_tree_meta_replay_frontier(db, frontier),
     )?;
 

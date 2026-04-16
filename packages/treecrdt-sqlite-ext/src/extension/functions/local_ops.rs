@@ -2,7 +2,7 @@ use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::op_storage::SqliteOpStorage;
 use super::payload_store::SqlitePayloadStore;
-use super::schema::maybe_save_materialization_checkpoint;
+use super::schema::persist_materialized_head;
 use super::util::{
     read_blob, read_blob16, read_optional_blob16, read_required_blob, read_text,
     sqlite_err_from_core, sqlite_result_json,
@@ -226,11 +226,7 @@ fn finish_local_core_op(
         },
         seq: next_seq,
     };
-    if post_materialization_ok
-        && update_tree_meta_head(session.db, Some(&head))
-            .and_then(|_| maybe_save_materialization_checkpoint(session.db, Some(&head)))
-            .is_err()
-    {
+    if post_materialization_ok && persist_materialized_head(session.db, Some(&head)).is_err() {
         post_materialization_ok = false;
     }
     if !post_materialization_ok {

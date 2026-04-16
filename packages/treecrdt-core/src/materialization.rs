@@ -72,8 +72,8 @@ pub trait MaterializationCursor {
     fn state(&self) -> MaterializationStateRef<'_>;
 }
 
-pub fn should_checkpoint_materialization(head: &MaterializationHead) -> bool {
-    head.seq == 1 || head.seq % MATERIALIZATION_CHECKPOINT_INTERVAL == 0
+pub fn should_checkpoint_materialization<R>(head: &MaterializationHead<R>) -> bool {
+    head.seq == 1 || head.seq.is_multiple_of(MATERIALIZATION_CHECKPOINT_INTERVAL)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
