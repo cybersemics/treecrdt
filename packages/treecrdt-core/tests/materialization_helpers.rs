@@ -620,3 +620,65 @@ fn catch_up_materialized_state_restores_checkpoint_and_replays_suffix() {
     assert_eq!(head.at.counter, 3);
     assert_eq!(head.seq, 3);
 }
+
+#[test]
+fn catch_up_materialized_state_is_noop_without_replay_frontier() {
+    let load_called = std::cell::Cell::new(false);
+    let restore_called = std::cell::Cell::new(false);
+    let flush_nodes_called = std::cell::Cell::new(false);
+    let flush_index_called = std::cell::Cell::new(false);
+    let replica = ReplicaId::new(b"remote");
+    let cursor = Cursor {
+        head_lamport: 7,
+        head_replica: replica.as_bytes().to_vec(),
+        head_counter: 4,
+        head_seq: 9,
+        ..Cursor::default()
+    };
+
+    let head = catch_up_materialized_state(
+        ScanAfterStorage::default(),
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes: MemoryNodeStore::default(),
+            payloads: MemoryPayloadStore::default(),
+            index: RecordingIndex::default(),
+        },
+        &cursor,
+        |_| {
+            load_called.set(true);
+            Ok(None)
+        },
+        |_, _, _, _| {
+            restore_called.set(true);
+            Ok(())
+        },
+        |_| {
+            flush_nodes_called.set(true);
+            Ok(())
+        },
+        |_| {
+            flush_index_called.set(true);
+            Ok(())
+        },
+    )
+    .unwrap()
+    .expect("current head");
+
+    assert!(!load_called.get());
+    assert!(!restore_called.get());
+    assert!(!flush_nodes_called.get());
+    assert!(!flush_index_called.get());
+    assert_eq!(
+        head,
+        MaterializationHead {
+            at: MaterializationKey {
+                lamport: 7,
+                replica: replica.as_bytes().to_vec(),
+                counter: 4,
+            },
+            seq: 9,
+        }
+    );
+}

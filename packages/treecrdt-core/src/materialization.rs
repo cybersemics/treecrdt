@@ -20,6 +20,14 @@ impl<R: AsRef<[u8]>> MaterializationKey<R> {
             counter: self.counter,
         }
     }
+
+    fn to_owned(&self) -> MaterializationKey {
+        MaterializationKey {
+            lamport: self.lamport,
+            replica: self.replica.as_ref().to_vec(),
+            counter: self.counter,
+        }
+    }
 }
 
 pub type MaterializationFrontier = MaterializationKey<Vec<u8>>;
@@ -35,6 +43,13 @@ impl<R: AsRef<[u8]>> MaterializationHead<R> {
     pub fn as_borrowed(&self) -> MaterializationHead<&[u8]> {
         MaterializationHead {
             at: self.at.as_borrowed(),
+            seq: self.seq,
+        }
+    }
+
+    fn to_owned(&self) -> MaterializationHead {
+        MaterializationHead {
+            at: self.at.to_owned(),
             seq: self.seq,
         }
     }
@@ -117,14 +132,6 @@ fn frontier_from_op(op: &Operation) -> MaterializationFrontier {
     }
 }
 
-fn owned_frontier<R: AsRef<[u8]>>(frontier: &MaterializationKey<R>) -> MaterializationFrontier {
-    MaterializationFrontier {
-        lamport: frontier.lamport,
-        replica: frontier.replica.as_ref().to_vec(),
-        counter: frontier.counter,
-    }
-}
-
 fn cmp_frontiers<R1: AsRef<[u8]>, R2: AsRef<[u8]>>(
     a: &MaterializationKey<R1>,
     b: &MaterializationKey<R2>,
@@ -166,10 +173,7 @@ fn next_replay_frontier<M: MaterializationCursor>(
     let state = meta.state();
 
     if let Some(existing) = state.replay_from.as_ref() {
-        return Some(earlier_frontier(
-            owned_frontier(existing),
-            earliest_inserted,
-        ));
+        return Some(earlier_frontier(existing.to_owned(), earliest_inserted));
     }
 
     let head = state.head.as_ref()?;
@@ -341,9 +345,15 @@ where
     FlushNodes: FnMut(&mut N) -> Result<()>,
     FlushIndex: FnMut(&mut I) -> Result<()>,
 {
-    let replay_frontier = {
+    let (current_head, replay_frontier) = {
         let state = meta.state();
-        state.replay_from.as_ref().map(owned_frontier)
+        (
+            state.head.as_ref().map(MaterializationHead::to_owned),
+            state.replay_from.as_ref().map(MaterializationKey::to_owned),
+        )
+    };
+    let Some(replay_frontier) = replay_frontier else {
+        return Ok(current_head);
     };
 
     let PersistedRemoteStores {
@@ -354,10 +364,7 @@ where
         mut index,
     } = stores;
 
-    let checkpoint = match replay_frontier.as_ref() {
-        Some(frontier) => load_checkpoint(frontier)?,
-        None => None,
-    };
+    let checkpoint = load_checkpoint(&replay_frontier)?;
     restore_checkpoint(checkpoint.as_ref(), &mut nodes, &mut payloads, &mut index)?;
 
     let mut seq = checkpoint.as_ref().map_or(0, |head| head.seq);
@@ -368,25 +375,20 @@ where
         checkpoint
             .as_ref()
             .map(|head| (head.at.lamport, head.at.replica.as_slice(), head.at.counter)),
-        &mut |op| match crdt.apply_remote_with_materialization_seq(
-            op.clone(),
-            &mut index,
-            &mut seq,
-        )? {
-            Some(_) => {
-                result_head = Some(MaterializationHead {
-                    at: MaterializationKey {
-                        lamport: op.meta.lamport,
-                        replica: op.meta.id.replica.as_bytes().to_vec(),
-                        counter: op.meta.id.counter,
-                    },
-                    seq,
-                });
-                Ok(())
+        &mut |op| {
+            let next_frontier = frontier_from_op(&op);
+            match crdt.apply_remote_with_materialization_seq(op, &mut index, &mut seq)? {
+                Some(_) => {
+                    result_head = Some(MaterializationHead {
+                        at: next_frontier,
+                        seq,
+                    });
+                    Ok(())
+                }
+                None => Err(Error::Storage(
+                    "catch-up replay unexpectedly required nested catch-up".into(),
+                )),
             }
-            None => Err(Error::Storage(
-                "catch-up replay unexpectedly required nested catch-up".into(),
-            )),
         },
     )?;
 
