@@ -195,9 +195,6 @@ export type UsePlaygroundSyncOptions = {
   revocationCutoverTokenId: string;
   revocationCutoverCounter: string;
   treeStateRef: React.MutableRefObject<TreeState>;
-  refreshMeta: () => Promise<void>;
-  refreshParents: (parentIds: string[]) => Promise<void>;
-  refreshNodeCount: () => Promise<void>;
   getLocalIdentityChain: () => Promise<TreecrdtIdentityChainV1 | null>;
   onPeerIdentityChain: (chain: {
     identityPublicKey: Uint8Array;
@@ -227,9 +224,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     authCanSyncAll,
     viewRootId,
     treeStateRef,
-    refreshMeta,
-    refreshParents,
-    refreshNodeCount,
     onAuthGrantMessage,
     onRemoteOpsApplied,
   } = opts;
@@ -629,9 +623,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
-      await refreshMeta();
-      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
-      await refreshNodeCount();
     } catch (err) {
       console.error('Sync failed', err);
       setSyncError(formatSyncError(err));
@@ -702,9 +693,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
-      await refreshMeta();
-      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
-      await refreshNodeCount();
     } catch (err) {
       console.error('Scoped sync failed', err);
       setSyncError(formatSyncError(err));
@@ -787,12 +775,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           );
         }
 
-        await refreshMeta();
-        const parentIds = new Set(Object.keys(treeStateRef.current.childrenByParent));
-        parentIds.add(viewRootId);
-        await refreshParents(Array.from(parentIds));
-        await refreshNodeCount();
-
         autoSyncDoneRef.current = true;
         if (typeof window !== 'undefined') {
           const url = new URL(window.location.href);
@@ -819,9 +801,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     authMaterial.localTokensB64.length,
     autoSyncJoinTick,
     joinMode,
-    refreshMeta,
-    refreshNodeCount,
-    refreshParents,
     syncBusy,
     viewRootId,
   ]);
@@ -981,8 +960,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (debugSync && ops.length > 0) {
           console.debug(`[sync:${selfPeerId}] applyOps(${ops.length})`);
         }
-        const affected =
-          ops.length > 0 ? ((await client.ops.appendMany(ops)) as unknown as string[]) : [];
+        const affected = ops.length > 0 ? await client.ops.appendMany(ops) : [];
         await onRemoteOpsApplied(ops, affected);
       },
     };

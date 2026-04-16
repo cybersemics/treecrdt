@@ -162,7 +162,6 @@ export default function App() {
     persistSyncSettings(syncServerUrl, syncTransportMode);
   }, [syncServerUrl, syncTransportMode]);
 
-  const counterRef = useRef(0);
   const lamportRef = useRef(0);
   const initEpochRef = useRef(0);
   const disposedRef = useRef(false);
@@ -483,18 +482,14 @@ export default function App() {
       const active = nextClient ?? clientRef.current ?? client;
       if (!active) return;
       try {
-        const [lamport, counter] = await Promise.all([
-          active.meta.headLamport(),
-          replica ? active.meta.replicaMaxCounter(replica) : Promise.resolve(0),
-        ]);
+        const lamport = await active.meta.headLamport();
         lamportRef.current = Math.max(lamportRef.current, lamport);
         setHeadLamport(lamportRef.current);
-        counterRef.current = Math.max(counterRef.current, counter);
       } catch (err) {
         console.error("Failed to refresh meta", err);
       }
     },
-    [client, replica]
+    [client]
   );
 
   const refreshParentsScheduledRef = useRef(false);
@@ -624,9 +619,6 @@ export default function App() {
     revocationCutoverTokenId,
     revocationCutoverCounter,
     treeStateRef,
-    refreshMeta,
-    refreshParents,
-    refreshNodeCount,
     getLocalIdentityChain,
     onPeerIdentityChain,
     onAuthGrantMessage,
@@ -831,7 +823,6 @@ export default function App() {
     setPayloadVersion((v) => v + 1);
     knownOpsRef.current = new Set();
     setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
-    counterRef.current = 0;
     lamportRef.current = 0;
     setHeadLamport(0);
     setTotalNodes(null);
@@ -887,7 +878,6 @@ export default function App() {
       await verifyLocalOps([op]);
 
       lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
 
       notifyLocalUpdate([op]);
@@ -916,7 +906,6 @@ export default function App() {
       scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
       scheduleRefreshNodeCount();
       lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
     } catch (err) {
       console.error("Failed to append move op", err);
@@ -1014,7 +1003,6 @@ export default function App() {
 
       for (const op of ops) {
         lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-        counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       }
       setHeadLamport(lamportRef.current);
 
@@ -1067,7 +1055,6 @@ export default function App() {
         await ensureChildrenLoaded(parentId, { force: true });
       }
       lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      counterRef.current = Math.max(counterRef.current, op.meta.id.counter);
       setHeadLamport(lamportRef.current);
       setCollapse((prev) => {
         const overrides = new Set(prev.overrides);
