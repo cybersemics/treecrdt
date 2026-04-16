@@ -1312,41 +1312,46 @@ impl Storage for PgOpStorage {
         after: Option<(Lamport, &[u8], u64)>,
         visit: &mut dyn FnMut(Operation) -> Result<()>,
     ) -> Result<()> {
-        let mut c = self.ctx.client.borrow_mut();
-        let rows = if let Some((lamport, replica, counter)) = after {
-            let stmt = self.ctx.stmt(
-                &mut c,
-                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-                 FROM treecrdt_ops \
-                 WHERE doc_id = $1 \
-                   AND (lamport > $2 \
-                     OR (lamport = $2 AND replica > $3) \
-                     OR (lamport = $2 AND replica = $3 AND counter > $4)) \
-                 ORDER BY lamport, replica, counter",
-            )?;
-            c.query(
-                &stmt,
-                &[
-                    &self.ctx.doc_id,
-                    &(lamport as i64),
-                    &replica,
-                    &(counter as i64),
-                ],
-            )
-            .map_err(storage_debug)?
-        } else {
-            let stmt = self.ctx.stmt(
-                &mut c,
-                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-                 FROM treecrdt_ops \
-                 WHERE doc_id = $1 \
-                 ORDER BY lamport, replica, counter",
-            )?;
-            c.query(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?
+        let ops = {
+            let mut c = self.ctx.client.borrow_mut();
+            let rows = if let Some((lamport, replica, counter)) = after {
+                let stmt = self.ctx.stmt(
+                    &mut c,
+                    "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+                     FROM treecrdt_ops \
+                     WHERE doc_id = $1 \
+                       AND (lamport > $2 \
+                         OR (lamport = $2 AND replica > $3) \
+                         OR (lamport = $2 AND replica = $3 AND counter > $4)) \
+                     ORDER BY lamport, replica, counter",
+                )?;
+                c.query(
+                    &stmt,
+                    &[
+                        &self.ctx.doc_id,
+                        &(lamport as i64),
+                        &replica,
+                        &(counter as i64),
+                    ],
+                )
+                .map_err(storage_debug)?
+            } else {
+                let stmt = self.ctx.stmt(
+                    &mut c,
+                    "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+                     FROM treecrdt_ops \
+                     WHERE doc_id = $1 \
+                     ORDER BY lamport, replica, counter",
+                )?;
+                c.query(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?
+            };
+            // Catch-up replays feed these ops back through the node/payload/index stores, so we
+            // must drop the Postgres client borrow before invoking the callback.
+            rows.into_iter().map(row_to_op).collect::<Result<Vec<_>>>()?
         };
 
-        for row in rows {
-            visit(row_to_op(row)?)?;
+        for op in ops {
+            visit(op)?;
         }
         Ok(())
     }
