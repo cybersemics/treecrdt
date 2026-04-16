@@ -116,7 +116,7 @@ pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     if meta.state().replay_from.is_none() {
         return Ok(());
     }
-    rebuild_materialized(db)
+    catch_up_materialized_from_frontier(db)
 }
 
 pub(super) unsafe extern "C" fn treecrdt_ensure_materialized(
@@ -139,7 +139,7 @@ pub(super) unsafe extern "C" fn treecrdt_ensure_materialized(
     }
 }
 
-fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
+fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
     let begin = CString::new("SAVEPOINT treecrdt_materialize").expect("static");
     let commit = CString::new("RELEASE treecrdt_materialize").expect("static");
     let rollback = CString::new("ROLLBACK TO treecrdt_materialize; RELEASE treecrdt_materialize")
@@ -151,7 +151,8 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
 
     let doc_id = load_doc_id(db).unwrap_or(None).unwrap_or_default();
 
-    // Rebuild materialized state by replaying the op-log through core semantics.
+    // Catch materialized state up from the pending frontier by replaying the op-log through core
+    // semantics.
     use treecrdt_core::{catch_up_materialized_state, LamportClock, ReplicaId};
     let storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.clone());
     let meta = match load_tree_meta(db) {

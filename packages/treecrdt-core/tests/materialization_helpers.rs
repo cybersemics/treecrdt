@@ -269,7 +269,7 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
     assert_eq!(seen_counters, vec![2, 3]);
     assert_eq!(result.inserted_count, 2);
     assert_eq!(result.affected_nodes, vec![NodeId(2)]);
-    assert!(!result.replay_deferred);
+    assert!(!result.frontier_recorded);
     assert_eq!(
         updated_head,
         Some(MaterializationHead {
@@ -313,7 +313,7 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
     assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
     assert_eq!(result.affected_nodes, Vec::<NodeId>::new());
-    assert!(result.replay_deferred);
+    assert!(result.frontier_recorded);
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
     assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
     assert!(result.affected_nodes.is_empty());
-    assert!(result.replay_deferred);
+    assert!(result.frontier_recorded);
 }
 
 #[test]
@@ -389,7 +389,7 @@ fn apply_persisted_remote_ops_schedules_replay_frontier_for_out_of_order_ops() {
     assert_eq!(materialize_runs, 0);
     assert_eq!(result.inserted_count, 2);
     assert!(result.affected_nodes.is_empty());
-    assert!(result.replay_deferred);
+    assert!(result.frontier_recorded);
     assert_eq!(
         replay_frontier,
         Some(treecrdt_core::MaterializationFrontier {
@@ -429,7 +429,7 @@ fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
 
     assert_eq!(result.inserted_count, 1);
     assert!(result.affected_nodes.is_empty());
-    assert!(result.replay_deferred);
+    assert!(result.frontier_recorded);
     assert_eq!(
         replay_frontier,
         Some(treecrdt_core::MaterializationFrontier {

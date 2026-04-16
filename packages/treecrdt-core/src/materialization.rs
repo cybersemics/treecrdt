@@ -90,7 +90,7 @@ pub struct PersistedRemoteApplyResult {
     pub affected_nodes: Vec<NodeId>,
     /// True when the helper recorded a replay frontier instead of advancing materialization head
     /// immediately.
-    pub replay_deferred: bool,
+    pub frontier_recorded: bool,
 }
 
 /// Backend-owned stores used to replay already-persisted remote ops through core semantics.
@@ -355,7 +355,7 @@ fn build_prefix_snapshot<S: Storage>(
                 Ok(())
             }
             None => Err(Error::Storage(
-                "prefix replay unexpectedly required nested rebuild".into(),
+                "prefix replay unexpectedly required nested catch-up".into(),
             )),
         }
     })?;
@@ -480,7 +480,7 @@ where
                 Ok(())
             }
             None => Err(Error::Storage(
-                "catch-up replay unexpectedly required nested rebuild".into(),
+                "catch-up replay unexpectedly required nested catch-up".into(),
             )),
         }
     })?;
@@ -519,7 +519,7 @@ where
         return Ok(PersistedRemoteApplyResult {
             inserted_count: 0,
             affected_nodes: Vec::new(),
-            replay_deferred: false,
+            frontier_recorded: false,
         });
     }
 
@@ -528,7 +528,7 @@ where
         return Ok(PersistedRemoteApplyResult {
             inserted_count,
             affected_nodes: Vec::new(),
-            replay_deferred: true,
+            frontier_recorded: true,
         });
     }
 
@@ -539,7 +539,7 @@ where
                 return Ok(PersistedRemoteApplyResult {
                     inserted_count,
                     affected_nodes: Vec::new(),
-                    replay_deferred: true,
+                    frontier_recorded: true,
                 });
             };
 
@@ -547,14 +547,14 @@ where
                 Ok(PersistedRemoteApplyResult {
                     inserted_count,
                     affected_nodes: result.affected_nodes,
-                    replay_deferred: false,
+                    frontier_recorded: false,
                 })
             } else {
                 schedule_replay(&start_replay_frontier())?;
                 Ok(PersistedRemoteApplyResult {
                     inserted_count,
                     affected_nodes: Vec::new(),
-                    replay_deferred: true,
+                    frontier_recorded: true,
                 })
             }
         }
@@ -563,7 +563,7 @@ where
             Ok(PersistedRemoteApplyResult {
                 inserted_count,
                 affected_nodes: Vec::new(),
-                replay_deferred: true,
+                frontier_recorded: true,
             })
         }
     }

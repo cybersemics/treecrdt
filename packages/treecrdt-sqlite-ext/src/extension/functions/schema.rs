@@ -368,7 +368,7 @@ CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(par
     }
 
     // If this is a fresh database with no ops yet, seed the materialized root so appends can
-    // maintain state incrementally without a full rebuild.
+    // maintain state incrementally without a full catch-up pass.
     let mut ops_count: i64 = 0;
     {
         let sql = CString::new("SELECT COUNT(*) FROM ops").expect("count ops sql");
@@ -383,7 +383,7 @@ CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(par
         }
     }
     if ops_count == 0 {
-        // Ensure ROOT exists even before first rebuild.
+        // Ensure ROOT exists even before first catch-up.
         let _ = {
             let sql = CString::new(
                 "INSERT OR IGNORE INTO tree_nodes(node,parent,order_key,tombstone) VALUES (?1,NULL,X'',0)",

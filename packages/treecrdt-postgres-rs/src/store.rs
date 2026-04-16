@@ -1653,8 +1653,8 @@ fn append_ops_in_tx(
 
     if let Some(profile) = &append_profile {
         profile.borrow_mut().update_head_ms += update_head_ms;
-        if apply_result.replay_deferred {
-            profile.borrow_mut().replay_deferred = true;
+        if apply_result.frontier_recorded {
+            profile.borrow_mut().frontier_recorded = true;
         }
         profile.borrow().log(doc_id, apply_result.inserted_count as usize);
     }
@@ -1693,7 +1693,7 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
         return Ok(());
     }
 
-    // Take a per-doc lock so rebuild can't race with concurrent append/materialization.
+    // Take a per-doc lock so catch-up can't race with concurrent append/materialization.
     let meta = load_tree_meta_for_update(client, doc_id)?;
     if meta.state().replay_from.is_none() {
         return Ok(());

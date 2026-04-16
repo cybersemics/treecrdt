@@ -335,7 +335,7 @@ fn postgres_backend_replay_from_start_frontier_recovers_materialized_state() {
 }
 
 #[test]
-fn postgres_backend_large_append_rebuilds_materialized_views_on_demand() {
+fn postgres_backend_large_append_catches_up_materialized_views_on_demand() {
     let Some(client) = connect() else {
         return;
     };
