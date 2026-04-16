@@ -7,10 +7,10 @@ use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
     apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
-    materialize_persisted_remote_ops_with_delta, Error, Lamport, LamportClock,
-    MaterializationCursor, MaterializationFrontier, MaterializationHead, MaterializationKey,
-    MaterializationState, NodeId, Operation, OperationId, OperationKind, PersistedRemoteStores,
-    ReplicaId, Result, Storage, VersionVector,
+    materialize_persisted_remote_ops_with_delta, should_checkpoint_materialization, Error, Lamport,
+    LamportClock, MaterializationCursor, MaterializationFrontier, MaterializationHead,
+    MaterializationKey, MaterializationState, NodeId, Operation, OperationId, OperationKind,
+    PersistedRemoteStores, ReplicaId, Result, Storage, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -196,6 +196,176 @@ pub(crate) fn update_tree_meta_head<R: AsRef<[u8]>>(
         ],
     )
     .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(())
+}
+
+pub(crate) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    head: Option<&MaterializationHead<R>>,
+) -> Result<()> {
+    let Some(head) = head else {
+        return Ok(());
+    };
+    if !should_checkpoint_materialization(&MaterializationHead {
+        at: MaterializationKey {
+            lamport: head.at.lamport,
+            replica: head.at.replica.as_ref().to_vec(),
+            counter: head.at.counter,
+        },
+        seq: head.seq,
+    }) {
+        return Ok(());
+    }
+
+    let checkpoint_seq = head.seq as i64;
+    let mut c = client.borrow_mut();
+    c.execute(
+        "DELETE FROM treecrdt_checkpoint_oprefs_children WHERE doc_id = $1 AND checkpoint_seq = $2",
+        &[&doc_id, &checkpoint_seq],
+    )
+    .map_err(storage_debug)?;
+    c.execute(
+        "DELETE FROM treecrdt_checkpoint_payload WHERE doc_id = $1 AND checkpoint_seq = $2",
+        &[&doc_id, &checkpoint_seq],
+    )
+    .map_err(storage_debug)?;
+    c.execute(
+        "DELETE FROM treecrdt_checkpoint_nodes WHERE doc_id = $1 AND checkpoint_seq = $2",
+        &[&doc_id, &checkpoint_seq],
+    )
+    .map_err(storage_debug)?;
+    c.execute(
+        "DELETE FROM treecrdt_checkpoints WHERE doc_id = $1 AND checkpoint_seq = $2",
+        &[&doc_id, &checkpoint_seq],
+    )
+    .map_err(storage_debug)?;
+
+    c.execute(
+        "INSERT INTO treecrdt_checkpoints(doc_id, checkpoint_seq, head_lamport, head_replica, head_counter) \
+         VALUES ($1, $2, $3, $4, $5)",
+        &[
+            &doc_id,
+            &checkpoint_seq,
+            &(head.at.lamport as i64),
+            &head.at.replica.as_ref(),
+            &(head.at.counter as i64),
+        ],
+    )
+    .map_err(storage_debug)?;
+    c.execute(
+        "INSERT INTO treecrdt_checkpoint_nodes(doc_id, checkpoint_seq, node, parent, order_key, tombstone, last_change, deleted_at) \
+         SELECT doc_id, $2, node, parent, order_key, tombstone, last_change, deleted_at \
+         FROM treecrdt_nodes WHERE doc_id = $1",
+        &[&doc_id, &checkpoint_seq],
+    )
+    .map_err(storage_debug)?;
+    c.execute(
+        "INSERT INTO treecrdt_checkpoint_payload(doc_id, checkpoint_seq, node, payload, last_lamport, last_replica, last_counter) \
+         SELECT doc_id, $2, node, payload, last_lamport, last_replica, last_counter \
+         FROM treecrdt_payload WHERE doc_id = $1",
+        &[&doc_id, &checkpoint_seq],
+    )
+    .map_err(storage_debug)?;
+    c.execute(
+        "INSERT INTO treecrdt_checkpoint_oprefs_children(doc_id, checkpoint_seq, parent, op_ref, seq) \
+         SELECT doc_id, $2, parent, op_ref, seq \
+         FROM treecrdt_oprefs_children WHERE doc_id = $1",
+        &[&doc_id, &checkpoint_seq],
+    )
+    .map_err(storage_debug)?;
+    Ok(())
+}
+
+pub(crate) fn load_materialization_checkpoint_before(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    frontier: &MaterializationFrontier,
+) -> Result<Option<MaterializationHead>> {
+    let mut c = client.borrow_mut();
+    let rows = c
+        .query(
+            "SELECT checkpoint_seq, head_lamport, head_replica, head_counter \
+             FROM treecrdt_checkpoints \
+             WHERE doc_id = $1 \
+               AND (head_lamport < $2 \
+                 OR (head_lamport = $2 AND head_replica < $3) \
+                 OR (head_lamport = $2 AND head_replica = $3 AND head_counter < $4)) \
+             ORDER BY head_lamport DESC, head_replica DESC, head_counter DESC \
+             LIMIT 1",
+            &[
+                &doc_id,
+                &(frontier.lamport as i64),
+                &frontier.replica,
+                &(frontier.counter as i64),
+            ],
+        )
+        .map_err(storage_debug)?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+
+    Ok(Some(MaterializationHead {
+        at: MaterializationKey {
+            lamport: row.get::<_, i64>(1).max(0) as Lamport,
+            replica: row.get::<_, Vec<u8>>(2),
+            counter: row.get::<_, i64>(3).max(0) as u64,
+        },
+        seq: row.get::<_, i64>(0).max(0) as u64,
+    }))
+}
+
+pub(crate) fn restore_materialization_checkpoint<R: AsRef<[u8]>>(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    checkpoint: Option<&MaterializationHead<R>>,
+) -> Result<()> {
+    let mut c = client.borrow_mut();
+    c.execute(
+        "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",
+        &[&doc_id],
+    )
+    .map_err(storage_debug)?;
+    c.execute("DELETE FROM treecrdt_payload WHERE doc_id = $1", &[&doc_id])
+        .map_err(storage_debug)?;
+    c.execute("DELETE FROM treecrdt_nodes WHERE doc_id = $1", &[&doc_id])
+        .map_err(storage_debug)?;
+
+    if let Some(checkpoint) = checkpoint {
+        let checkpoint_seq = checkpoint.seq as i64;
+        c.execute(
+            "INSERT INTO treecrdt_nodes(doc_id, node, parent, order_key, tombstone, last_change, deleted_at) \
+             SELECT doc_id, node, parent, order_key, tombstone, last_change, deleted_at \
+             FROM treecrdt_checkpoint_nodes \
+             WHERE doc_id = $1 AND checkpoint_seq = $2",
+            &[&doc_id, &checkpoint_seq],
+        )
+        .map_err(storage_debug)?;
+        c.execute(
+            "INSERT INTO treecrdt_payload(doc_id, node, payload, last_lamport, last_replica, last_counter) \
+             SELECT doc_id, node, payload, last_lamport, last_replica, last_counter \
+             FROM treecrdt_checkpoint_payload \
+             WHERE doc_id = $1 AND checkpoint_seq = $2",
+            &[&doc_id, &checkpoint_seq],
+        )
+        .map_err(storage_debug)?;
+        c.execute(
+            "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) \
+             SELECT doc_id, parent, op_ref, seq \
+             FROM treecrdt_checkpoint_oprefs_children \
+             WHERE doc_id = $1 AND checkpoint_seq = $2",
+            &[&doc_id, &checkpoint_seq],
+        )
+        .map_err(storage_debug)?;
+    } else {
+        let root_bytes = node_to_bytes(NodeId::ROOT);
+        let empty: &[u8] = &[];
+        c.execute(
+            "INSERT INTO treecrdt_nodes(doc_id, node, parent, order_key, tombstone) VALUES ($1, $2, NULL, $3, FALSE)",
+            &[&doc_id, &root_bytes.as_slice(), &empty],
+        )
+        .map_err(storage_debug)?;
+    }
     Ok(())
 }
 
@@ -1134,6 +1304,50 @@ impl Storage for PgOpStorage {
         }
         Ok(())
     }
+
+    fn scan_after(
+        &self,
+        after: Option<(Lamport, &[u8], u64)>,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
+        let mut c = self.ctx.client.borrow_mut();
+        let rows = if let Some((lamport, replica, counter)) = after {
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+                 FROM treecrdt_ops \
+                 WHERE doc_id = $1 \
+                   AND (lamport > $2 \
+                     OR (lamport = $2 AND replica > $3) \
+                     OR (lamport = $2 AND replica = $3 AND counter > $4)) \
+                 ORDER BY lamport, replica, counter",
+            )?;
+            c.query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &(lamport as i64),
+                    &replica,
+                    &(counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?
+        } else {
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+                 FROM treecrdt_ops \
+                 WHERE doc_id = $1 \
+                 ORDER BY lamport, replica, counter",
+            )?;
+            c.query(&stmt, &[&self.ctx.doc_id]).map_err(storage_debug)?
+        };
+
+        for row in rows {
+            visit(row_to_op(row)?)?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn row_to_op(row: Row) -> Result<Operation> {
@@ -1640,7 +1854,10 @@ fn append_ops_in_tx(
         |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
         |head| {
             let started_at = Instant::now();
-            let result = update_tree_meta_head(&ctx.client, &ctx.doc_id, Some(head));
+            let result =
+                update_tree_meta_head(&ctx.client, &ctx.doc_id, Some(head)).and_then(|_| {
+                    maybe_save_materialization_checkpoint(&ctx.client, &ctx.doc_id, Some(head))
+                });
             update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
             result
         },
@@ -1711,11 +1928,14 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
             index: PgParentOpIndex::new(ctx.clone()),
         },
         &meta,
+        |frontier| load_materialization_checkpoint_before(client, doc_id, frontier),
+        |checkpoint, _, _, _| restore_materialization_checkpoint(client, doc_id, checkpoint),
         |nodes| nodes.flush_last_change(),
         |index| index.flush(),
     )?;
 
     update_tree_meta_head(client, doc_id, head.as_ref())?;
+    maybe_save_materialization_checkpoint(client, doc_id, head.as_ref())?;
 
     Ok(())
 }

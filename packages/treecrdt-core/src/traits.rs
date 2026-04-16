@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
-use crate::ops::{cmp_ops, Operation};
+use crate::ops::{cmp_op_key, cmp_ops, Operation};
 use crate::version_vector::VersionVector;
 
 /// Pluggable clock to allow Lamport, Hybrid Logical Clock, or custom time strategies.
@@ -52,6 +52,36 @@ pub trait Storage {
         let mut ops = self.load_since(lamport)?;
         ops.sort_by(cmp_ops);
         for op in ops {
+            visit(op)?;
+        }
+        Ok(())
+    }
+
+    /// Iterate operations strictly after the given canonical op-key.
+    ///
+    /// Default implementation loads into memory and filters in sorted order; storage backends can
+    /// override this with an efficient key-range query.
+    fn scan_after(
+        &self,
+        after: Option<(Lamport, &[u8], u64)>,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
+        let mut ops = self.load_since(0)?;
+        ops.sort_by(cmp_ops);
+        for op in ops {
+            if let Some((lamport, replica, counter)) = after {
+                if cmp_op_key(
+                    op.meta.lamport,
+                    op.meta.id.replica.as_bytes(),
+                    op.meta.id.counter,
+                    lamport,
+                    replica,
+                    counter,
+                ) != Ordering::Greater
+                {
+                    continue;
+                }
+            }
             visit(op)?;
         }
         Ok(())

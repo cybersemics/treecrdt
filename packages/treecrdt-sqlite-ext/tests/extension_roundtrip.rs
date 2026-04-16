@@ -38,6 +38,14 @@ fn read_replay_frontier(conn: &Connection) -> (Option<i64>, Option<Vec<u8>>, Opt
     .unwrap()
 }
 
+fn read_checkpoint_seqs(conn: &Connection) -> Vec<i64> {
+    let mut stmt = conn
+        .prepare("SELECT checkpoint_seq FROM materialization_checkpoints ORDER BY checkpoint_seq")
+        .unwrap();
+    let rows = stmt.query_map([], |row| row.get::<_, i64>(0)).unwrap();
+    rows.map(|row| row.unwrap()).collect()
+}
+
 fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (Vec<Vec<u8>>, i64) {
     let json = serde_json::to_string(ops).unwrap();
     let affected_json: String = conn
@@ -350,6 +358,56 @@ fn remote_append_materializes_only_inserted_ops() {
 
     let (_, _, _, head_seq) = read_tree_meta(&conn);
     assert_eq!(head_seq, 2);
+}
+
+#[test]
+fn remote_append_persists_periodic_materialization_checkpoints() {
+    let conn = setup_conn();
+
+    let replica = b"ckpt";
+    let root = node_bytes(0);
+    let first = JsonOp {
+        replica: replica.to_vec(),
+        counter: 1,
+        lamport: 1,
+        kind: "insert".into(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node_bytes(1).as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some((1u16).to_be_bytes().to_vec()),
+        known_state: None,
+        payload: None,
+    };
+    let (_affected, count) = append_ops_json(&conn, std::slice::from_ref(&first));
+    assert_eq!(count, 1);
+
+    let ops: Vec<JsonOp> = (1..64u16)
+        .map(|i| JsonOp {
+            replica: replica.to_vec(),
+            counter: (i as u64) + 1,
+            lamport: (i as u64) + 1,
+            kind: "insert".into(),
+            parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+            node: <[u8; 16]>::try_from(node_bytes((i as u128) + 1).as_slice()).unwrap(),
+            new_parent: None,
+            order_key: Some(((i + 1).to_be_bytes()).to_vec()),
+            known_state: None,
+            payload: None,
+        })
+        .collect();
+
+    let (_affected, count) = append_ops_json(&conn, &ops);
+    assert_eq!(count, 64);
+    assert_eq!(read_checkpoint_seqs(&conn), vec![1, 64]);
+
+    let checkpoint_node_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM checkpoint_nodes WHERE checkpoint_seq = 64",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(checkpoint_node_count, 65);
 }
 
 #[test]

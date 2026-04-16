@@ -1,9 +1,10 @@
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
-    materialize_persisted_remote_ops_with_delta, LamportClock, MaterializationCursor,
-    MaterializationHead, MaterializationKey, MaterializationState, MemoryNodeStore,
-    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, TreeCrdt,
+    catch_up_materialized_state, cmp_op_key, materialize_persisted_remote_ops_with_delta,
+    LamportClock, MaterializationCursor, MaterializationFrontier, MaterializationHead,
+    MaterializationKey, MaterializationState, MemoryNodeStore, MemoryPayloadStore, MemoryStorage,
+    NodeId, NodeStore, NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PayloadStore,
+    PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
 };
 
 #[derive(Default)]
@@ -70,6 +71,52 @@ impl ParentOpIndex for RecordingIndex {
         seq: u64,
     ) -> treecrdt_core::Result<()> {
         self.records.push((parent, op_id.clone(), seq));
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ScanAfterStorage {
+    ops: Vec<Operation>,
+}
+
+impl Storage for ScanAfterStorage {
+    fn apply(&mut self, op: Operation) -> treecrdt_core::Result<bool> {
+        self.ops.push(op);
+        Ok(true)
+    }
+
+    fn load_since(&self, lamport: u64) -> treecrdt_core::Result<Vec<Operation>> {
+        Ok(self.ops.iter().filter(|op| op.meta.lamport > lamport).cloned().collect())
+    }
+
+    fn latest_lamport(&self) -> u64 {
+        self.ops.iter().map(|op| op.meta.lamport).max().unwrap_or_default()
+    }
+
+    fn scan_after(
+        &self,
+        after: Option<(u64, &[u8], u64)>,
+        visit: &mut dyn FnMut(Operation) -> treecrdt_core::Result<()>,
+    ) -> treecrdt_core::Result<()> {
+        let mut ops = self.ops.clone();
+        ops.sort_by(treecrdt_core::cmp_ops);
+        for op in ops {
+            if let Some((lamport, replica, counter)) = after {
+                if cmp_op_key(
+                    op.meta.lamport,
+                    op.meta.id.replica.as_bytes(),
+                    op.meta.id.counter,
+                    lamport,
+                    replica,
+                    counter,
+                ) != std::cmp::Ordering::Greater
+                {
+                    continue;
+                }
+            }
+            visit(op)?;
+        }
         Ok(())
     }
 }
@@ -485,4 +532,91 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
         result.affected_nodes,
         vec![NodeId::ROOT, NodeId(10), NodeId(11)]
     );
+}
+
+#[test]
+fn catch_up_materialized_state_restores_checkpoint_and_replays_suffix() {
+    let replica = ReplicaId::new(b"remote");
+    let op1 = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(10), vec![0x10]);
+    let op2 = Operation::insert(&replica, 2, 2, NodeId(10), NodeId(11), vec![0x20]);
+    let op3 = Operation::insert(&replica, 3, 3, NodeId::ROOT, NodeId(12), vec![0x30]);
+
+    let mut storage = ScanAfterStorage::default();
+    storage.apply(op1.clone()).unwrap();
+    storage.apply(op2.clone()).unwrap();
+    storage.apply(op3.clone()).unwrap();
+
+    let cursor = Cursor {
+        head_lamport: 3,
+        head_replica: replica.as_bytes().to_vec(),
+        head_counter: 3,
+        head_seq: 3,
+        replay_lamport: Some(2),
+        replay_replica: Some(replica.as_bytes().to_vec()),
+        replay_counter: Some(2),
+    };
+    let checkpoint = MaterializationHead {
+        at: MaterializationKey {
+            lamport: 1,
+            replica: replica.as_bytes().to_vec(),
+            counter: 1,
+        },
+        seq: 1,
+    };
+
+    let mut restored = false;
+    let mut flushed_children_root = Vec::new();
+    let mut flushed_child_parent = None;
+    let head = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes: MemoryNodeStore::default(),
+            payloads: MemoryPayloadStore::default(),
+            index: RecordingIndex::default(),
+        },
+        &cursor,
+        |frontier| {
+            assert_eq!(
+                frontier,
+                &MaterializationFrontier {
+                    lamport: 2,
+                    replica: replica.as_bytes().to_vec(),
+                    counter: 2,
+                }
+            );
+            Ok(Some(checkpoint.clone()))
+        },
+        |checkpoint, nodes, payloads, index| {
+            nodes.reset()?;
+            payloads.reset()?;
+            index.reset()?;
+            if checkpoint.is_some() {
+                restored = true;
+                nodes.ensure_node(NodeId(10))?;
+                nodes.attach(NodeId(10), NodeId::ROOT, vec![0x10])?;
+                let mut vv = VersionVector::new();
+                vv.observe(&replica, 1);
+                nodes.merge_last_change(NodeId(10), &vv)?;
+                nodes.merge_last_change(NodeId::ROOT, &vv)?;
+                index.record(NodeId::ROOT, &op1.meta.id, 1)?;
+            }
+            Ok(())
+        },
+        |nodes| {
+            flushed_children_root = nodes.children(NodeId::ROOT)?;
+            flushed_child_parent = nodes.parent(NodeId(11))?;
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .unwrap()
+    .expect("head after checkpoint catch-up");
+
+    assert!(restored);
+    assert_eq!(flushed_children_root, vec![NodeId(10), NodeId(12)]);
+    assert_eq!(flushed_child_parent, Some(NodeId(10)));
+    assert_eq!(head.at.counter, 3);
+    assert_eq!(head.seq, 3);
 }

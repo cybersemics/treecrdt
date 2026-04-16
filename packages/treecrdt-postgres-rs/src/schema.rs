@@ -69,6 +69,53 @@ CREATE TABLE IF NOT EXISTS treecrdt_oprefs_children (
 
 CREATE INDEX IF NOT EXISTS idx_treecrdt_oprefs_children_doc_parent_seq
   ON treecrdt_oprefs_children (doc_id, parent, seq);
+
+CREATE TABLE IF NOT EXISTS treecrdt_checkpoints (
+  doc_id TEXT NOT NULL,
+  checkpoint_seq BIGINT NOT NULL,
+  head_lamport BIGINT NOT NULL,
+  head_replica BYTEA NOT NULL,
+  head_counter BIGINT NOT NULL,
+  PRIMARY KEY (doc_id, checkpoint_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_treecrdt_checkpoints_doc_head
+  ON treecrdt_checkpoints (doc_id, head_lamport, head_replica, head_counter);
+
+CREATE TABLE IF NOT EXISTS treecrdt_checkpoint_nodes (
+  doc_id TEXT NOT NULL,
+  checkpoint_seq BIGINT NOT NULL,
+  node BYTEA NOT NULL,
+  parent BYTEA,
+  order_key BYTEA,
+  tombstone BOOLEAN NOT NULL DEFAULT FALSE,
+  last_change BYTEA,
+  deleted_at BYTEA,
+  PRIMARY KEY (doc_id, checkpoint_seq, node)
+);
+
+CREATE TABLE IF NOT EXISTS treecrdt_checkpoint_payload (
+  doc_id TEXT NOT NULL,
+  checkpoint_seq BIGINT NOT NULL,
+  node BYTEA NOT NULL,
+  payload BYTEA,
+  last_lamport BIGINT NOT NULL,
+  last_replica BYTEA NOT NULL,
+  last_counter BIGINT NOT NULL,
+  PRIMARY KEY (doc_id, checkpoint_seq, node)
+);
+
+CREATE TABLE IF NOT EXISTS treecrdt_checkpoint_oprefs_children (
+  doc_id TEXT NOT NULL,
+  checkpoint_seq BIGINT NOT NULL,
+  parent BYTEA NOT NULL,
+  op_ref BYTEA NOT NULL,
+  seq BIGINT NOT NULL,
+  PRIMARY KEY (doc_id, checkpoint_seq, parent, op_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_treecrdt_checkpoint_oprefs_children_doc_parent_seq
+  ON treecrdt_checkpoint_oprefs_children (doc_id, checkpoint_seq, parent, seq);
 "#;
 
 pub fn ensure_schema(client: &mut Client) -> Result<()> {
@@ -98,6 +145,30 @@ pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
     client
         .execute("DELETE FROM treecrdt_nodes WHERE doc_id = $1", &[&doc_id])
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    client
+        .execute(
+            "DELETE FROM treecrdt_checkpoint_oprefs_children WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    client
+        .execute(
+            "DELETE FROM treecrdt_checkpoint_payload WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    client
+        .execute(
+            "DELETE FROM treecrdt_checkpoint_nodes WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    client
+        .execute(
+            "DELETE FROM treecrdt_checkpoints WHERE doc_id = $1",
+            &[&doc_id],
+        )
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
     client
         .execute("DELETE FROM treecrdt_ops WHERE doc_id = $1", &[&doc_id])

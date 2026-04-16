@@ -2,7 +2,10 @@ use super::append::JsonAppendOp;
 use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::payload_store::SqlitePayloadStore;
-use super::schema::set_tree_meta_replay_frontier;
+use super::schema::{
+    load_materialization_checkpoint_before, maybe_save_materialization_checkpoint,
+    restore_materialization_checkpoint, set_tree_meta_replay_frontier,
+};
 use super::util::sqlite_err_from_core;
 use super::*;
 use treecrdt_core::MaterializationCursor;
@@ -22,6 +25,10 @@ fn parse_optional_node_id(bytes: &Option<Vec<u8>>) -> Result<Option<NodeId>, c_i
         Some(v) => Ok(Some(parse_node_id(v)?)),
         None => Ok(None),
     }
+}
+
+fn sqlite_checkpoint_err(rc: c_int, context: &str) -> treecrdt_core::Error {
+    treecrdt_core::Error::Storage(format!("{context} (rc={rc})"))
 }
 
 fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Operation, c_int> {
@@ -193,6 +200,14 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
             index,
         },
         &meta,
+        |frontier| {
+            load_materialization_checkpoint_before(db, frontier)
+                .map_err(|rc| sqlite_checkpoint_err(rc, "load checkpoint failed"))
+        },
+        |checkpoint, _, _, _| {
+            restore_materialization_checkpoint(db, checkpoint)
+                .map_err(|rc| sqlite_checkpoint_err(rc, "restore checkpoint failed"))
+        },
         |_| Ok(()),
         |_| Ok(()),
     ) {
@@ -203,7 +218,8 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
         }
     };
 
-    let head_rc = update_tree_meta_head(db, head.as_ref());
+    let head_rc = update_tree_meta_head(db, head.as_ref())
+        .and_then(|_| maybe_save_materialization_checkpoint(db, head.as_ref()));
     if head_rc.is_err() {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
         return head_rc;
@@ -268,7 +284,10 @@ pub(super) fn append_ops_impl(
         &meta,
         inserted_ops,
         |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
-        |head| update_tree_meta_head(db, Some(head)),
+        |head| {
+            update_tree_meta_head(db, Some(head))
+                .and_then(|_| maybe_save_materialization_checkpoint(db, Some(head)))
+        },
         |frontier| set_tree_meta_replay_frontier(db, frontier),
     )?;
 

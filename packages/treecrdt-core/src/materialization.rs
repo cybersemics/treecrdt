@@ -1,12 +1,9 @@
 use std::cmp::Ordering;
 
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
-use crate::traits::{
-    Clock, LamportClock, MemoryNodeStore, MemoryPayloadStore, NodeStore, NoopStorage,
-    ParentOpIndex, PayloadStore, Storage,
-};
+use crate::traits::{Clock, NodeStore, NoopStorage, ParentOpIndex, PayloadStore, Storage};
 use crate::tree::TreeCrdt;
-use crate::{Error, Lamport, NodeId, OperationId, ReplicaId, Result};
+use crate::{Error, Lamport, NodeId, ReplicaId, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MaterializationKey<R = Vec<u8>> {
@@ -53,6 +50,8 @@ pub struct MaterializationState<R = Vec<u8>> {
 
 pub type MaterializationStateRef<'a> = MaterializationState<&'a [u8]>;
 
+pub const MATERIALIZATION_CHECKPOINT_INTERVAL: u64 = 64;
+
 impl<R> MaterializationState<R> {
     pub fn head_seq(&self) -> u64 {
         self.head.as_ref().map_or(0, |head| head.seq)
@@ -71,6 +70,10 @@ impl<R: AsRef<[u8]>> MaterializationState<R> {
 /// Snapshot of adapter-maintained materialization metadata.
 pub trait MaterializationCursor {
     fn state(&self) -> MaterializationStateRef<'_>;
+}
+
+pub fn should_checkpoint_materialization(head: &MaterializationHead) -> bool {
+    head.seq == 1 || head.seq % MATERIALIZATION_CHECKPOINT_INTERVAL == 0
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,30 +107,6 @@ pub struct PersistedRemoteStores<C, N, P, I> {
     pub nodes: N,
     pub payloads: P,
     pub index: I,
-}
-
-#[derive(Default)]
-struct RecordingIndex {
-    records: Vec<(NodeId, OperationId, u64)>,
-}
-
-impl ParentOpIndex for RecordingIndex {
-    fn reset(&mut self) -> Result<()> {
-        self.records.clear();
-        Ok(())
-    }
-
-    fn record(&mut self, parent: NodeId, op_id: &OperationId, seq: u64) -> Result<()> {
-        self.records.push((parent, op_id.clone(), seq));
-        Ok(())
-    }
-}
-
-struct PrefixSnapshot {
-    crdt: TreeCrdt<NoopStorage, LamportClock, MemoryNodeStore, MemoryPayloadStore>,
-    index: RecordingIndex,
-    head: Option<Operation>,
-    seq: u64,
 }
 
 fn frontier_from_op(op: &Operation) -> MaterializationFrontier {
@@ -328,104 +307,25 @@ where
     Ok(result)
 }
 
-fn build_prefix_snapshot<S: Storage>(
-    storage: &S,
-    frontier: &MaterializationFrontier,
-    replica_id: &ReplicaId,
-) -> Result<PrefixSnapshot> {
-    let mut crdt = TreeCrdt::with_stores(
-        replica_id.clone(),
-        NoopStorage,
-        LamportClock::default(),
-        MemoryNodeStore::default(),
-        MemoryPayloadStore::default(),
-    )?;
-    let mut index = RecordingIndex::default();
-    let mut seq = 0u64;
-    let mut head: Option<Operation> = None;
-
-    storage.scan_since(0, &mut |op| {
-        if cmp_frontiers(&frontier_from_op(&op), frontier) != Ordering::Less {
-            return Ok(());
-        }
-
-        match crdt.apply_remote_with_materialization_seq(op.clone(), &mut index, &mut seq)? {
-            Some(_) => {
-                head = Some(op);
-                Ok(())
-            }
-            None => Err(Error::Storage(
-                "prefix replay unexpectedly required nested catch-up".into(),
-            )),
-        }
-    })?;
-
-    Ok(PrefixSnapshot {
-        crdt,
-        index,
-        head,
-        seq,
-    })
-}
-
-fn restore_prefix_snapshot<N: NodeStore, P: PayloadStore, I: ParentOpIndex>(
-    prefix: &mut PrefixSnapshot,
-    nodes: &mut N,
-    payloads: &mut P,
-    index: &mut I,
-) -> Result<()> {
-    let mut all_nodes = prefix.crdt.node_store_mut().all_nodes()?;
-    all_nodes.sort();
-
-    for node in &all_nodes {
-        nodes.ensure_node(*node)?;
-    }
-
-    for node in &all_nodes {
-        if *node == NodeId::ROOT {
-            continue;
-        }
-        let parent = prefix.crdt.node_store_mut().parent(*node)?;
-        let order_key = prefix.crdt.node_store_mut().order_key(*node)?;
-        if let Some(parent) = parent {
-            nodes.attach(*node, parent, order_key.unwrap_or_default())?;
-        } else {
-            nodes.detach(*node)?;
-        }
-    }
-
-    for node in &all_nodes {
-        nodes.set_tombstone(*node, prefix.crdt.node_store_mut().tombstone(*node)?)?;
-
-        let last_change = prefix.crdt.node_store_mut().last_change(*node)?;
-        if !last_change.is_empty() {
-            nodes.merge_last_change(*node, &last_change)?;
-        }
-
-        if let Some(deleted_at) = prefix.crdt.node_store_mut().deleted_at(*node)? {
-            nodes.merge_deleted_at(*node, &deleted_at)?;
-        }
-
-        if let Some(writer) = prefix.crdt.payload_last_writer(*node)? {
-            payloads.set_payload(*node, prefix.crdt.payload(*node)?, writer)?;
-        }
-    }
-
-    let mut records = prefix.index.records.clone();
-    records.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)).then_with(|| a.1.cmp(&b.1)));
-    for (parent, op_id, seq) in records {
-        index.record(parent, &op_id, seq)?;
-    }
-
-    Ok(())
-}
-
 /// Catch backend materialized state up to the persisted op log using the replay frontier when
 /// available.
-pub fn catch_up_materialized_state<S, C, N, P, I, M, FlushNodes, FlushIndex>(
+pub fn catch_up_materialized_state<
+    S,
+    C,
+    N,
+    P,
+    I,
+    M,
+    LoadCheckpoint,
+    RestoreCheckpoint,
+    FlushNodes,
+    FlushIndex,
+>(
     storage: S,
     stores: PersistedRemoteStores<C, N, P, I>,
     meta: &M,
+    mut load_checkpoint: LoadCheckpoint,
+    mut restore_checkpoint: RestoreCheckpoint,
     mut flush_nodes: FlushNodes,
     mut flush_index: FlushIndex,
 ) -> Result<Option<MaterializationHead>>
@@ -436,6 +336,8 @@ where
     P: PayloadStore,
     I: ParentOpIndex,
     M: MaterializationCursor,
+    LoadCheckpoint: FnMut(&MaterializationFrontier) -> Result<Option<MaterializationHead>>,
+    RestoreCheckpoint: FnMut(Option<&MaterializationHead>, &mut N, &mut P, &mut I) -> Result<()>,
     FlushNodes: FnMut(&mut N) -> Result<()>,
     FlushIndex: FnMut(&mut I) -> Result<()>,
 {
@@ -452,50 +354,46 @@ where
         mut index,
     } = stores;
 
-    nodes.reset()?;
-    payloads.reset()?;
-    index.reset()?;
+    let checkpoint = match replay_frontier.as_ref() {
+        Some(frontier) => load_checkpoint(frontier)?,
+        None => None,
+    };
+    restore_checkpoint(checkpoint.as_ref(), &mut nodes, &mut payloads, &mut index)?;
 
-    let mut head: Option<Operation> = None;
-    let mut seq = 0u64;
-
-    if let Some(frontier) = replay_frontier.as_ref() {
-        let mut prefix = build_prefix_snapshot(&storage, frontier, &replica_id)?;
-        restore_prefix_snapshot(&mut prefix, &mut nodes, &mut payloads, &mut index)?;
-        head = prefix.head;
-        seq = prefix.seq;
-    }
+    let mut seq = checkpoint.as_ref().map_or(0, |head| head.seq);
+    let mut result_head = checkpoint.clone();
 
     let mut crdt = TreeCrdt::with_stores(replica_id, NoopStorage, clock, nodes, payloads)?;
-    storage.scan_since(0, &mut |op| {
-        if let Some(frontier) = replay_frontier.as_ref() {
-            if cmp_frontiers(&frontier_from_op(&op), frontier) == Ordering::Less {
-                return Ok(());
-            }
-        }
-
-        match crdt.apply_remote_with_materialization_seq(op.clone(), &mut index, &mut seq)? {
+    storage.scan_after(
+        checkpoint
+            .as_ref()
+            .map(|head| (head.at.lamport, head.at.replica.as_slice(), head.at.counter)),
+        &mut |op| match crdt.apply_remote_with_materialization_seq(
+            op.clone(),
+            &mut index,
+            &mut seq,
+        )? {
             Some(_) => {
-                head = Some(op);
+                result_head = Some(MaterializationHead {
+                    at: MaterializationKey {
+                        lamport: op.meta.lamport,
+                        replica: op.meta.id.replica.as_bytes().to_vec(),
+                        counter: op.meta.id.counter,
+                    },
+                    seq,
+                });
                 Ok(())
             }
             None => Err(Error::Storage(
                 "catch-up replay unexpectedly required nested catch-up".into(),
             )),
-        }
-    })?;
+        },
+    )?;
 
     flush_nodes(crdt.node_store_mut())?;
     flush_index(&mut index)?;
 
-    Ok(head.map(|head| MaterializationHead {
-        at: MaterializationKey {
-            lamport: head.meta.lamport,
-            replica: head.meta.id.replica.as_bytes().to_vec(),
-            counter: head.meta.id.counter,
-        },
-        seq,
-    }))
+    Ok(result_head)
 }
 
 /// Apply already-persisted inserted remote ops and commit adapter-owned metadata writes.

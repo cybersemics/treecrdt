@@ -9,9 +9,9 @@ use treecrdt_core::{
 };
 
 use crate::store::{
-    ensure_materialized_in_tx, load_tree_meta_for_update, set_tree_meta_replay_frontier,
-    update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage, PgParentOpIndex, PgPayloadStore,
-    TreeMeta,
+    ensure_materialized_in_tx, load_tree_meta_for_update, maybe_save_materialization_checkpoint,
+    set_tree_meta_replay_frontier, update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage,
+    PgParentOpIndex, PgPayloadStore, TreeMeta,
 };
 
 type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
@@ -110,7 +110,15 @@ fn finish_local_core_op(
         seq,
     };
     if post_materialization_ok
-        && update_tree_meta_head(&session.ctx.client, &session.ctx.doc_id, Some(&head)).is_err()
+        && update_tree_meta_head(&session.ctx.client, &session.ctx.doc_id, Some(&head))
+            .and_then(|_| {
+                maybe_save_materialization_checkpoint(
+                    &session.ctx.client,
+                    &session.ctx.doc_id,
+                    Some(&head),
+                )
+            })
+            .is_err()
     {
         post_materialization_ok = false;
     }

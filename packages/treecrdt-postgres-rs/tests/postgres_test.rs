@@ -127,6 +127,71 @@ fn postgres_backend_append_batch_materializes_only_inserted_ops() {
 }
 
 #[test]
+fn postgres_backend_persists_periodic_materialization_checkpoints() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"ckpt");
+    let first = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node(1),
+        order_key_from_position(0),
+    );
+    let inserted = append_ops(&client, &doc_id, std::slice::from_ref(&first)).unwrap();
+    assert_eq!(inserted, 1);
+
+    let ops: Vec<Operation> = (1..64u16)
+        .map(|i| {
+            Operation::insert(
+                &replica,
+                (i as u64) + 1,
+                (i as u64) + 1,
+                NodeId::ROOT,
+                node((i as u128) + 1),
+                order_key_from_position(i),
+            )
+        })
+        .collect();
+
+    let inserted = append_ops(&client, &doc_id, &ops).unwrap();
+    assert_eq!(inserted, 63);
+
+    let mut c = client.borrow_mut();
+    let checkpoint_rows = c
+        .query(
+            "SELECT checkpoint_seq FROM treecrdt_checkpoints WHERE doc_id = $1 ORDER BY checkpoint_seq",
+            &[&doc_id],
+        )
+        .unwrap();
+    let checkpoints: Vec<u64> = checkpoint_rows
+        .into_iter()
+        .map(|row| row.get::<_, i64>(0).max(0) as u64)
+        .collect();
+    assert_eq!(checkpoints, vec![1, 64]);
+
+    let checkpoint_node_count = c
+        .query_one(
+            "SELECT COUNT(*) FROM treecrdt_checkpoint_nodes WHERE doc_id = $1 AND checkpoint_seq = 64",
+            &[&doc_id],
+        )
+        .unwrap()
+        .get::<_, i64>(0)
+        .max(0) as u64;
+    assert_eq!(checkpoint_node_count, 65);
+}
+
+#[test]
 fn postgres_backend_append_with_affected_nodes_matches_representative_remote_batch() {
     let Some(client) = connect() else {
         return;
