@@ -1,4 +1,4 @@
-use super::util::sqlite_result_json;
+use super::util::{column_blob_vec, column_nonnegative_i64, sqlite_result_json};
 use super::*;
 
 pub(super) unsafe extern "C" fn treecrdt_ops_by_oprefs(
@@ -219,15 +219,12 @@ pub(super) unsafe extern "C" fn treecrdt_ops_since(
 
 fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
     unsafe {
-        let replica_ptr = sqlite_column_blob(stmt, 0);
-        let replica_len = sqlite_column_bytes(stmt, 0);
-        let counter = sqlite_column_int64(stmt, 1) as u64;
-        let lamport = sqlite_column_int64(stmt, 2) as Lamport;
+        let counter = column_nonnegative_i64(stmt, 1) as u64;
+        let lamport = column_nonnegative_i64(stmt, 2) as Lamport;
         let kind_ptr = sqlite_column_text(stmt, 3);
         let kind_len = sqlite_column_bytes(stmt, 3);
 
-        let replica =
-            std::slice::from_raw_parts(replica_ptr as *const u8, replica_len as usize).to_vec();
+        let replica = column_blob_vec(stmt, 0).unwrap_or_default();
         let kind = std::str::from_utf8(std::slice::from_raw_parts(
             kind_ptr as *const u8,
             kind_len as usize,

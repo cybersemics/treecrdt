@@ -1,4 +1,4 @@
-use super::util::sqlite_result_json;
+use super::util::{column_blob_vec, sqlite_result_json};
 use super::*;
 
 pub(super) unsafe extern "C" fn treecrdt_oprefs_all(
@@ -30,9 +30,16 @@ pub(super) unsafe extern "C" fn treecrdt_oprefs_all(
     loop {
         let step_rc = unsafe { sqlite_step(stmt) };
         if step_rc == SQLITE_ROW as c_int {
-            let ptr = unsafe { sqlite_column_blob(stmt, 0) } as *const u8;
-            let len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
-            if ptr.is_null() || len != OPREF_V0_WIDTH {
+            let Some(op_ref) = column_blob_vec(stmt, 0) else {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error(
+                    ctx,
+                    b"treecrdt_oprefs_all: invalid op_ref (call treecrdt_set_doc_id)\0".as_ptr()
+                        as *const c_char,
+                );
+                return;
+            };
+            if op_ref.len() != OPREF_V0_WIDTH {
                 unsafe { sqlite_finalize(stmt) };
                 sqlite_result_error(
                     ctx,
@@ -41,7 +48,7 @@ pub(super) unsafe extern "C" fn treecrdt_oprefs_all(
                 );
                 return;
             }
-            refs.push(unsafe { slice::from_raw_parts(ptr, len) }.to_vec());
+            refs.push(op_ref);
         } else if step_rc == SQLITE_DONE as c_int {
             break;
         } else {
@@ -120,14 +127,17 @@ pub(super) unsafe extern "C" fn treecrdt_oprefs_children(
     loop {
         let step_rc = unsafe { sqlite_step(stmt) };
         if step_rc == SQLITE_ROW as c_int {
-            let ptr = unsafe { sqlite_column_blob(stmt, 0) } as *const u8;
-            let len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
-            if ptr.is_null() || len != OPREF_V0_WIDTH {
+            let Some(op_ref) = column_blob_vec(stmt, 0) else {
+                unsafe { sqlite_finalize(stmt) };
+                sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
+                return;
+            };
+            if op_ref.len() != OPREF_V0_WIDTH {
                 unsafe { sqlite_finalize(stmt) };
                 sqlite_result_error_code(ctx, SQLITE_ERROR as c_int);
                 return;
             }
-            refs.push(unsafe { slice::from_raw_parts(ptr, len) }.to_vec());
+            refs.push(op_ref);
         } else if step_rc == SQLITE_DONE as c_int {
             break;
         } else {

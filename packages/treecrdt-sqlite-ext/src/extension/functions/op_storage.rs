@@ -1,3 +1,4 @@
+use super::util::{column_blob_vec, column_nonnegative_i64};
 use super::*;
 
 fn sqlite_rc_error(rc: c_int, context: &str) -> treecrdt_core::Error {
@@ -168,23 +169,10 @@ impl SqliteOpStorage {
     }
 }
 
-fn column_blob_vec(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<Vec<u8>> {
-    if unsafe { sqlite_column_type(stmt, idx) } == SQLITE_NULL as c_int {
-        return None;
-    }
-    let ptr = unsafe { sqlite_column_blob(stmt, idx) } as *const u8;
-    let len = unsafe { sqlite_column_bytes(stmt, idx) } as usize;
-    Some(if ptr.is_null() || len == 0 {
-        Vec::new()
-    } else {
-        unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
-    })
-}
-
 fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt_core::Operation> {
     let replica = column_blob_vec(stmt, 0).unwrap_or_default();
-    let counter = unsafe { sqlite_column_int64(stmt, 1).max(0) as u64 };
-    let lamport_val = unsafe { sqlite_column_int64(stmt, 2).max(0) as Lamport };
+    let counter = column_nonnegative_i64(stmt, 1) as u64;
+    let lamport_val = column_nonnegative_i64(stmt, 2) as Lamport;
 
     let kind_ptr = unsafe { sqlite_column_text(stmt, 3) } as *const u8;
     let kind_len = unsafe { sqlite_column_bytes(stmt, 3) } as usize;
@@ -480,7 +468,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         }
         let step_rc = unsafe { sqlite_step(stmt) };
         let val = if step_rc == SQLITE_ROW as c_int {
-            unsafe { sqlite_column_int64(stmt, 0).max(0) as Lamport }
+            column_nonnegative_i64(stmt, 0) as Lamport
         } else {
             0
         };
@@ -516,7 +504,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
             unsafe { sqlite_finalize(stmt) };
             return Err(sqlite_rc_error(step_rc, "max counter step failed"));
         }
-        let val = unsafe { sqlite_column_int64(stmt, 0).max(0) as u64 };
+        let val = column_nonnegative_i64(stmt, 0) as u64;
 
         let finalize_rc = unsafe { sqlite_finalize(stmt) };
         if finalize_rc != SQLITE_OK as c_int {

@@ -1,4 +1,5 @@
 use super::sqlite_api::*;
+use super::util::{column_blob_vec, column_nonnegative_i64};
 
 use std::ffi::CString;
 use std::os::raw::{c_int, c_void};
@@ -93,17 +94,73 @@ fn exec_stmt_i64(db: *mut sqlite3, sql: &str, value: i64) -> Result<(), c_int> {
     exec_stmt_done(db, sql, |stmt| bind_i64_param(stmt, 1, value))
 }
 
-fn column_blob_vec(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<Vec<u8>> {
+fn column_optional_nonnegative_i64(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<i64> {
     if unsafe { sqlite_column_type(stmt, idx) } == SQLITE_NULL as c_int {
-        return None;
-    }
-    let ptr = unsafe { sqlite_column_blob(stmt, idx) } as *const u8;
-    let len = unsafe { sqlite_column_bytes(stmt, idx) } as usize;
-    Some(if ptr.is_null() || len == 0 {
-        Vec::new()
+        None
     } else {
-        unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
-    })
+        Some(column_nonnegative_i64(stmt, idx))
+    }
+}
+
+fn column_materialization_key(stmt: *mut sqlite3_stmt, idx: c_int) -> MaterializationKey {
+    MaterializationKey {
+        lamport: column_nonnegative_i64(stmt, idx) as Lamport,
+        replica: column_blob_vec(stmt, idx + 1).unwrap_or_default(),
+        counter: column_nonnegative_i64(stmt, idx + 2) as u64,
+    }
+}
+
+fn column_optional_materialization_key(
+    stmt: *mut sqlite3_stmt,
+    idx: c_int,
+) -> Option<MaterializationKey> {
+    match (
+        column_optional_nonnegative_i64(stmt, idx),
+        column_blob_vec(stmt, idx + 1),
+        column_optional_nonnegative_i64(stmt, idx + 2),
+    ) {
+        (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
+            lamport: lamport as Lamport,
+            replica,
+            counter: counter as u64,
+        }),
+        _ => None,
+    }
+}
+
+fn bind_materialization_key<R: AsRef<[u8]>>(
+    stmt: *mut sqlite3_stmt,
+    idx: c_int,
+    key: &MaterializationKey<R>,
+) -> Result<(), c_int> {
+    bind_i64_param(stmt, idx, key.lamport as i64)?;
+    bind_blob_param(stmt, idx + 1, key.replica.as_ref())?;
+    bind_i64_param(stmt, idx + 2, key.counter as i64)
+}
+
+fn bind_materialization_head<R: AsRef<[u8]>>(
+    stmt: *mut sqlite3_stmt,
+    idx: c_int,
+    head: &MaterializationHead<R>,
+) -> Result<(), c_int> {
+    bind_materialization_key(stmt, idx, &head.at)?;
+    bind_i64_param(stmt, idx + 3, head.seq as i64)
+}
+
+fn bind_optional_materialization_head<R: AsRef<[u8]>>(
+    stmt: *mut sqlite3_stmt,
+    idx: c_int,
+    head: Option<&MaterializationHead<R>>,
+) -> Result<(), c_int> {
+    match head {
+        Some(head) => bind_materialization_head(stmt, idx, head),
+        None => {
+            bind_i64_param(stmt, idx, 0)?;
+            bind_blob_param(stmt, idx + 1, &[])?;
+            bind_i64_param(stmt, idx + 2, 0)?;
+            bind_i64_param(stmt, idx + 3, 0)
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -151,46 +208,21 @@ pub(super) fn load_tree_meta(db: *mut sqlite3) -> Result<TreeMeta, c_int> {
                 return Err(SQLITE_ERROR as c_int);
             }
 
-            let head_lamport = unsafe { sqlite_column_int64(stmt, 0) } as Lamport;
-            let head_replica = column_blob_vec(stmt, 1).unwrap_or_default();
-            let head_counter = unsafe { sqlite_column_int64(stmt, 2) } as u64;
-            let head_seq = unsafe { sqlite_column_int64(stmt, 3) } as u64;
-            let replay_lamport = if unsafe { sqlite_column_type(stmt, 4) } == SQLITE_NULL as c_int {
-                None
-            } else {
-                Some(unsafe { sqlite_column_int64(stmt, 4).max(0) as Lamport })
-            };
-            let replay_replica = column_blob_vec(stmt, 5);
-            let replay_counter = if unsafe { sqlite_column_type(stmt, 6) } == SQLITE_NULL as c_int {
-                None
-            } else {
-                Some(unsafe { sqlite_column_int64(stmt, 6).max(0) as u64 })
-            };
-
+            let head_seq = column_nonnegative_i64(stmt, 3) as u64;
+            let head_at = column_materialization_key(stmt, 0);
             let head = if head_seq == 0
-                && head_lamport == 0
-                && head_replica.is_empty()
-                && head_counter == 0
+                && head_at.lamport == 0
+                && head_at.replica.is_empty()
+                && head_at.counter == 0
             {
                 None
             } else {
                 Some(MaterializationHead {
-                    at: MaterializationKey {
-                        lamport: head_lamport,
-                        replica: head_replica,
-                        counter: head_counter,
-                    },
+                    at: head_at,
                     seq: head_seq,
                 })
             };
-            let replay_from = match (replay_lamport, replay_replica, replay_counter) {
-                (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
-                    lamport,
-                    replica,
-                    counter,
-                }),
-                _ => None,
-            };
+            let replay_from = column_optional_materialization_key(stmt, 4);
 
             Ok(TreeMeta(MaterializationState { head, replay_from }))
         },
@@ -206,11 +238,7 @@ pub(super) fn set_tree_meta_replay_frontier(
         "UPDATE tree_meta \
          SET replay_lamport = ?1, replay_replica = ?2, replay_counter = ?3 \
          WHERE id = 1",
-        |stmt| {
-            bind_i64_param(stmt, 1, frontier.lamport as i64)?;
-            bind_blob_param(stmt, 2, &frontier.replica)?;
-            bind_i64_param(stmt, 3, frontier.counter as i64)
-        },
+        |stmt| bind_materialization_key(stmt, 1, frontier),
     )
 }
 
@@ -218,15 +246,6 @@ pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
     db: *mut sqlite3,
     head: Option<&MaterializationHead<R>>,
 ) -> Result<(), c_int> {
-    let (lamport, replica, counter, seq): (Lamport, &[u8], u64, u64) = match head {
-        Some(head) => (
-            head.at.lamport,
-            head.at.replica.as_ref(),
-            head.at.counter,
-            head.seq,
-        ),
-        None => (0, &[], 0, 0),
-    };
     exec_stmt_done(
         db,
         "UPDATE tree_meta \
@@ -238,12 +257,7 @@ pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
              replay_replica = NULL, \
              replay_counter = NULL \
          WHERE id = 1",
-        |stmt| {
-            bind_i64_param(stmt, 1, lamport as i64)?;
-            bind_blob_param(stmt, 2, replica)?;
-            bind_i64_param(stmt, 3, counter as i64)?;
-            bind_i64_param(stmt, 4, seq as i64)
-        },
+        |stmt| bind_optional_materialization_head(stmt, 1, head),
     )
 }
 
@@ -282,9 +296,7 @@ pub(super) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
          VALUES (?1, ?2, ?3, ?4)",
         |stmt| {
             bind_i64_param(stmt, 1, checkpoint_seq)?;
-            bind_i64_param(stmt, 2, head.at.lamport as i64)?;
-            bind_blob_param(stmt, 3, head.at.replica.as_ref())?;
-            bind_i64_param(stmt, 4, head.at.counter as i64)
+            bind_materialization_key(stmt, 2, &head.at)
         },
     )?;
 
@@ -316,9 +328,7 @@ pub(super) fn load_materialization_checkpoint_before(
          ORDER BY head_lamport DESC, head_replica DESC, head_counter DESC \
          LIMIT 1",
         |stmt| {
-            bind_i64_param(stmt, 1, frontier.lamport as i64)?;
-            bind_blob_param(stmt, 2, &frontier.replica)?;
-            bind_i64_param(stmt, 3, frontier.counter as i64)?;
+            bind_materialization_key(stmt, 1, frontier)?;
 
             let step_rc = unsafe { sqlite_step(stmt) };
             if step_rc == SQLITE_DONE as c_int {
@@ -328,17 +338,11 @@ pub(super) fn load_materialization_checkpoint_before(
                 return Err(step_rc);
             }
 
-            let checkpoint_seq = unsafe { sqlite_column_int64(stmt, 0).max(0) as u64 };
-            let head_lamport = unsafe { sqlite_column_int64(stmt, 1).max(0) as Lamport };
-            let head_replica = column_blob_vec(stmt, 2).unwrap_or_default();
-            let head_counter = unsafe { sqlite_column_int64(stmt, 3).max(0) as u64 };
+            let checkpoint_seq = column_nonnegative_i64(stmt, 0) as u64;
+            let head_at = column_materialization_key(stmt, 1);
 
             Ok(Some(treecrdt_core::MaterializationHead {
-                at: treecrdt_core::MaterializationKey {
-                    lamport: head_lamport,
-                    replica: head_replica,
-                    counter: head_counter,
-                },
+                at: head_at,
                 seq: checkpoint_seq,
             }))
         },
@@ -513,19 +517,16 @@ CREATE INDEX IF NOT EXISTS idx_checkpoint_oprefs_children_parent_seq
 
     // If this is a fresh database with no ops yet, seed the materialized root so appends can
     // maintain state incrementally without a full catch-up pass.
-    let mut ops_count: i64 = 0;
-    {
-        let sql = CString::new("SELECT COUNT(*) FROM ops").expect("count ops sql");
-        let mut stmt: *mut sqlite3_stmt = null_mut();
-        let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
-        if rc == SQLITE_OK as c_int {
-            let step_rc = unsafe { sqlite_step(stmt) };
-            if step_rc == SQLITE_ROW as c_int {
-                ops_count = unsafe { sqlite_column_int64(stmt, 0) };
-            }
-            unsafe { sqlite_finalize(stmt) };
+    let ops_count = with_stmt(db, "SELECT COUNT(*) FROM ops", |stmt| {
+        let step_rc = unsafe { sqlite_step(stmt) };
+        if step_rc == SQLITE_ROW as c_int {
+            Ok(column_nonnegative_i64(stmt, 0))
+        } else if step_rc == SQLITE_DONE as c_int {
+            Ok(0)
+        } else {
+            Err(step_rc)
         }
-    }
+    })?;
     if ops_count == 0 {
         // Ensure ROOT exists even before first catch-up.
         let _ = exec_stmt_done(

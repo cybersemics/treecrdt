@@ -87,6 +87,25 @@ pub(super) fn read_text(val: *mut sqlite3_value) -> String {
     }
 }
 
+pub(super) fn column_blob_vec(stmt: *mut sqlite3_stmt, idx: c_int) -> Option<Vec<u8>> {
+    unsafe {
+        if sqlite_column_type(stmt, idx) == SQLITE_NULL as c_int {
+            return None;
+        }
+        let ptr = sqlite_column_blob(stmt, idx) as *const u8;
+        let len = sqlite_column_bytes(stmt, idx) as usize;
+        Some(if ptr.is_null() || len == 0 {
+            Vec::new()
+        } else {
+            slice::from_raw_parts(ptr, len).to_vec()
+        })
+    }
+}
+
+pub(super) fn column_nonnegative_i64(stmt: *mut sqlite3_stmt, idx: c_int) -> i64 {
+    unsafe { sqlite_column_int64(stmt, idx).max(0) }
+}
+
 pub(super) fn sqlite_err_from_core(_: treecrdt_core::Error) -> c_int {
     SQLITE_ERROR as c_int
 }

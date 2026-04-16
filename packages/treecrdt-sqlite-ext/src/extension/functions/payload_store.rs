@@ -1,3 +1,4 @@
+use super::util::{column_blob_vec, column_nonnegative_i64};
 use super::*;
 
 fn sqlite_node_id_bytes(node: NodeId) -> [u8; 16] {
@@ -134,15 +135,9 @@ impl treecrdt_core::PayloadStore for SqlitePayloadStore {
 
             let step_rc = sqlite_step(self.select);
             let writer = if step_rc == SQLITE_ROW as c_int {
-                let lamport = sqlite_column_int64(self.select, 1).max(0) as Lamport;
-                let rep_ptr = sqlite_column_blob(self.select, 2) as *const u8;
-                let rep_len = sqlite_column_bytes(self.select, 2) as usize;
-                let replica = if rep_ptr.is_null() || rep_len == 0 {
-                    Vec::new()
-                } else {
-                    slice::from_raw_parts(rep_ptr, rep_len).to_vec()
-                };
-                let counter = sqlite_column_int64(self.select, 3).max(0) as u64;
+                let lamport = column_nonnegative_i64(self.select, 1) as Lamport;
+                let replica = column_blob_vec(self.select, 2).unwrap_or_default();
+                let counter = column_nonnegative_i64(self.select, 3) as u64;
                 Some((
                     lamport,
                     treecrdt_core::OperationId {
