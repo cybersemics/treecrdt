@@ -364,17 +364,19 @@ where
         mut index,
     } = stores;
 
-    let checkpoint = load_checkpoint(&replay_frontier)?;
-    restore_checkpoint(checkpoint.as_ref(), &mut nodes, &mut payloads, &mut index)?;
+    let mut result_head = load_checkpoint(&replay_frontier)?;
+    restore_checkpoint(result_head.as_ref(), &mut nodes, &mut payloads, &mut index)?;
 
-    let mut seq = checkpoint.as_ref().map_or(0, |head| head.seq);
-    let mut result_head = checkpoint.clone();
+    let mut seq = result_head.as_ref().map_or(0, |head| head.seq);
+    let scan_after = result_head
+        .as_ref()
+        .map(|head| (head.at.lamport, head.at.replica.clone(), head.at.counter));
 
     let mut crdt = TreeCrdt::with_stores(replica_id, NoopStorage, clock, nodes, payloads)?;
     storage.scan_after(
-        checkpoint
+        scan_after
             .as_ref()
-            .map(|head| (head.at.lamport, head.at.replica.as_slice(), head.at.counter)),
+            .map(|(lamport, replica, counter)| (*lamport, replica.as_slice(), *counter)),
         &mut |op| {
             let next_frontier = frontier_from_op(&op);
             match crdt.apply_remote_with_materialization_seq(op, &mut index, &mut seq)? {
@@ -414,6 +416,11 @@ where
     M: MaterializationCursor,
 {
     let inserted_count = inserted_ops.len().min(u64::MAX as usize) as u64;
+    let frontier_recorded = || PersistedRemoteApplyResult {
+        inserted_count,
+        affected_nodes: Vec::new(),
+        frontier_recorded: true,
+    };
 
     if inserted_count == 0 {
         return Ok(PersistedRemoteApplyResult {
@@ -425,22 +432,14 @@ where
 
     if let Some(frontier) = next_replay_frontier(meta, &inserted_ops) {
         schedule_replay(&frontier)?;
-        return Ok(PersistedRemoteApplyResult {
-            inserted_count,
-            affected_nodes: Vec::new(),
-            frontier_recorded: true,
-        });
+        return Ok(frontier_recorded());
     }
 
     match materialize_inserted(inserted_ops) {
         Ok(result) => {
             let Some(head) = result.head else {
                 schedule_replay(&start_replay_frontier())?;
-                return Ok(PersistedRemoteApplyResult {
-                    inserted_count,
-                    affected_nodes: Vec::new(),
-                    frontier_recorded: true,
-                });
+                return Ok(frontier_recorded());
             };
 
             if update_head(&head).is_ok() {
@@ -451,20 +450,12 @@ where
                 })
             } else {
                 schedule_replay(&start_replay_frontier())?;
-                Ok(PersistedRemoteApplyResult {
-                    inserted_count,
-                    affected_nodes: Vec::new(),
-                    frontier_recorded: true,
-                })
+                Ok(frontier_recorded())
             }
         }
         Err(_) => {
             schedule_replay(&start_replay_frontier())?;
-            Ok(PersistedRemoteApplyResult {
-                inserted_count,
-                affected_nodes: Vec::new(),
-                frontier_recorded: true,
-            })
+            Ok(frontier_recorded())
         }
     }
 }
