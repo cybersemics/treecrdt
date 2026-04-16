@@ -15,6 +15,16 @@ pub struct MaterializationKey<R = Vec<u8>> {
     pub counter: u64,
 }
 
+impl<R: AsRef<[u8]>> MaterializationKey<R> {
+    pub fn as_borrowed(&self) -> MaterializationKey<&[u8]> {
+        MaterializationKey {
+            lamport: self.lamport,
+            replica: self.replica.as_ref(),
+            counter: self.counter,
+        }
+    }
+}
+
 pub type MaterializationFrontier = MaterializationKey<Vec<u8>>;
 pub type MaterializationFrontierRef<'a> = MaterializationKey<&'a [u8]>;
 
@@ -22,6 +32,15 @@ pub type MaterializationFrontierRef<'a> = MaterializationKey<&'a [u8]>;
 pub struct MaterializationHead<R = Vec<u8>> {
     pub at: MaterializationKey<R>,
     pub seq: u64,
+}
+
+impl<R: AsRef<[u8]>> MaterializationHead<R> {
+    pub fn as_borrowed(&self) -> MaterializationHead<&[u8]> {
+        MaterializationHead {
+            at: self.at.as_borrowed(),
+            seq: self.seq,
+        }
+    }
 }
 
 pub type MaterializationHeadRef<'a> = MaterializationHead<&'a [u8]>;
@@ -37,6 +56,15 @@ pub type MaterializationStateRef<'a> = MaterializationState<&'a [u8]>;
 impl<R> MaterializationState<R> {
     pub fn head_seq(&self) -> u64 {
         self.head.as_ref().map_or(0, |head| head.seq)
+    }
+}
+
+impl<R: AsRef<[u8]>> MaterializationState<R> {
+    pub fn as_borrowed(&self) -> MaterializationState<&[u8]> {
+        MaterializationState {
+            head: self.head.as_ref().map(MaterializationHead::as_borrowed),
+            replay_from: self.replay_from.as_ref().map(MaterializationKey::as_borrowed),
+        }
     }
 }
 

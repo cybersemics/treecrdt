@@ -51,48 +51,11 @@ pub(crate) fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TreeMeta {
-    head_lamport: Lamport,
-    head_replica: Vec<u8>,
-    head_counter: u64,
-    head_seq: u64,
-    replay_lamport: Option<Lamport>,
-    replay_replica: Option<Vec<u8>>,
-    replay_counter: Option<u64>,
-}
+pub(crate) struct TreeMeta(MaterializationState);
 
 impl MaterializationCursor for TreeMeta {
     fn state(&self) -> MaterializationState<&[u8]> {
-        let head = if self.head_seq == 0
-            && self.head_lamport == 0
-            && self.head_replica.is_empty()
-            && self.head_counter == 0
-        {
-            None
-        } else {
-            Some(MaterializationHead {
-                at: MaterializationKey {
-                    lamport: self.head_lamport,
-                    replica: self.head_replica.as_slice(),
-                    counter: self.head_counter,
-                },
-                seq: self.head_seq,
-            })
-        };
-        let replay_from = match (
-            self.replay_lamport,
-            self.replay_replica.as_deref(),
-            self.replay_counter,
-        ) {
-            (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
-                lamport,
-                replica,
-                counter,
-            }),
-            _ => None,
-        };
-
-        MaterializationState { head, replay_from }
+        self.0.as_borrowed()
     }
 }
 
@@ -132,15 +95,37 @@ fn load_tree_meta_row(
 
     let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
 
-    Ok(TreeMeta {
-        head_lamport: row.get::<_, i64>(0).max(0) as Lamport,
-        head_replica: row.get::<_, Vec<u8>>(1),
-        head_counter: row.get::<_, i64>(2).max(0) as u64,
-        head_seq: row.get::<_, i64>(3).max(0) as u64,
-        replay_lamport: row.get::<_, Option<i64>>(4).map(|v| v.max(0) as Lamport),
-        replay_replica: row.get::<_, Option<Vec<u8>>>(5),
-        replay_counter: row.get::<_, Option<i64>>(6).map(|v| v.max(0) as u64),
-    })
+    let head_lamport = row.get::<_, i64>(0).max(0) as Lamport;
+    let head_replica = row.get::<_, Vec<u8>>(1);
+    let head_counter = row.get::<_, i64>(2).max(0) as u64;
+    let head_seq = row.get::<_, i64>(3).max(0) as u64;
+    let replay_lamport = row.get::<_, Option<i64>>(4).map(|v| v.max(0) as Lamport);
+    let replay_replica = row.get::<_, Option<Vec<u8>>>(5);
+    let replay_counter = row.get::<_, Option<i64>>(6).map(|v| v.max(0) as u64);
+
+    let head = if head_seq == 0 && head_lamport == 0 && head_replica.is_empty() && head_counter == 0
+    {
+        None
+    } else {
+        Some(MaterializationHead {
+            at: MaterializationKey {
+                lamport: head_lamport,
+                replica: head_replica,
+                counter: head_counter,
+            },
+            seq: head_seq,
+        })
+    };
+    let replay_from = match (replay_lamport, replay_replica, replay_counter) {
+        (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
+            lamport,
+            replica,
+            counter,
+        }),
+        _ => None,
+    };
+
+    Ok(TreeMeta(MaterializationState { head, replay_from }))
 }
 
 fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
@@ -176,15 +161,21 @@ pub(crate) fn set_tree_meta_replay_frontier(
     Ok(())
 }
 
-pub(crate) fn update_tree_meta_head(
+pub(crate) fn update_tree_meta_head<R: AsRef<[u8]>>(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
-    lamport: Lamport,
-    replica: &[u8],
-    counter: u64,
-    seq: u64,
+    head: Option<&MaterializationHead<R>>,
 ) -> Result<()> {
     ensure_doc_meta(client, doc_id)?;
+    let (lamport, replica, counter, seq): (Lamport, &[u8], u64, u64) = match head {
+        Some(head) => (
+            head.at.lamport,
+            head.at.replica.as_ref(),
+            head.at.counter,
+            head.seq,
+        ),
+        None => (0, &[], 0, 0),
+    };
     let mut c = client.borrow_mut();
     c.execute(
         "UPDATE treecrdt_meta \
@@ -1649,14 +1640,7 @@ fn append_ops_in_tx(
         |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
         |head| {
             let started_at = Instant::now();
-            let result = update_tree_meta_head(
-                &ctx.client,
-                &ctx.doc_id,
-                head.at.lamport,
-                &head.at.replica,
-                head.at.counter,
-                head.seq,
-            );
+            let result = update_tree_meta_head(&ctx.client, &ctx.doc_id, Some(head));
             update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
             result
         },
@@ -1731,18 +1715,7 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
         |index| index.flush(),
     )?;
 
-    if let Some(last) = head {
-        update_tree_meta_head(
-            client,
-            doc_id,
-            last.at.lamport,
-            &last.at.replica,
-            last.at.counter,
-            last.seq,
-        )?;
-    } else {
-        update_tree_meta_head(client, doc_id, 0, &[], 0, 0)?;
-    }
+    update_tree_meta_head(client, doc_id, head.as_ref())?;
 
     Ok(())
 }

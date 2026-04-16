@@ -8,7 +8,8 @@ use super::util::{
 };
 use super::*;
 use treecrdt_core::{
-    LamportClock, LocalFinalizePlan, LocalPlacement, Operation, OperationKind, ReplicaId, TreeCrdt,
+    LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationCursor, Operation,
+    OperationKind, ReplicaId, TreeCrdt,
 };
 
 #[derive(serde::Serialize)]
@@ -200,7 +201,7 @@ fn finish_local_core_op(
     let mut next_seq = 0u64;
     let mut head_seq = 0u64;
     match load_tree_meta(session.db) {
-        Ok(meta) => head_seq = meta.head_seq,
+        Ok(meta) => head_seq = meta.state().head_seq(),
         Err(_) => post_materialization_ok = false,
     }
     if post_materialization_ok {
@@ -216,16 +217,15 @@ fn finish_local_core_op(
             Err(_) => post_materialization_ok = false,
         }
     }
-    if post_materialization_ok
-        && update_tree_meta_head(
-            session.db,
-            op.meta.lamport,
-            op.meta.id.replica.as_bytes(),
-            op.meta.id.counter,
-            next_seq,
-        )
-        .is_err()
-    {
+    let head = treecrdt_core::MaterializationHead {
+        at: treecrdt_core::MaterializationKey {
+            lamport: op.meta.lamport,
+            replica: op.meta.id.replica.as_bytes(),
+            counter: op.meta.id.counter,
+        },
+        seq: next_seq,
+    };
+    if post_materialization_ok && update_tree_meta_head(session.db, Some(&head)).is_err() {
         post_materialization_ok = false;
     }
     if !post_materialization_ok {

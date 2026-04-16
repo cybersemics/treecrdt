@@ -5,19 +5,19 @@ use std::os::raw::{c_int, c_void};
 use std::ptr::null_mut;
 use std::slice;
 
-use treecrdt_core::Lamport;
+use treecrdt_core::{
+    Lamport, MaterializationCursor, MaterializationHead, MaterializationKey, MaterializationState,
+};
 
 pub(super) const ROOT_NODE_ID: [u8; 16] = [0u8; 16];
 
 #[derive(Clone, Debug)]
-pub(super) struct TreeMeta {
-    pub(super) head_lamport: Lamport,
-    pub(super) head_replica: Vec<u8>,
-    pub(super) head_counter: u64,
-    pub(super) head_seq: u64,
-    pub(super) replay_lamport: Option<Lamport>,
-    pub(super) replay_replica: Option<Vec<u8>>,
-    pub(super) replay_counter: Option<u64>,
+pub(super) struct TreeMeta(MaterializationState);
+
+impl MaterializationCursor for TreeMeta {
+    fn state(&self) -> MaterializationState<&[u8]> {
+        self.0.as_borrowed()
+    }
 }
 
 pub(super) fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {
@@ -111,15 +111,29 @@ pub(super) fn load_tree_meta(db: *mut sqlite3) -> Result<TreeMeta, c_int> {
         return Err(finalize_rc);
     }
 
-    Ok(TreeMeta {
-        head_lamport,
-        head_replica,
-        head_counter,
-        head_seq,
-        replay_lamport,
-        replay_replica,
-        replay_counter,
-    })
+    let head = if head_seq == 0 && head_lamport == 0 && head_replica.is_empty() && head_counter == 0
+    {
+        None
+    } else {
+        Some(MaterializationHead {
+            at: MaterializationKey {
+                lamport: head_lamport,
+                replica: head_replica,
+                counter: head_counter,
+            },
+            seq: head_seq,
+        })
+    };
+    let replay_from = match (replay_lamport, replay_replica, replay_counter) {
+        (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
+            lamport,
+            replica,
+            counter,
+        }),
+        _ => None,
+    };
+
+    Ok(TreeMeta(MaterializationState { head, replay_from }))
 }
 
 pub(super) fn set_tree_meta_replay_frontier(
@@ -166,13 +180,19 @@ pub(super) fn set_tree_meta_replay_frontier(
     Ok(())
 }
 
-pub(super) fn update_tree_meta_head(
+pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
     db: *mut sqlite3,
-    lamport: Lamport,
-    replica: &[u8],
-    counter: u64,
-    seq: u64,
+    head: Option<&MaterializationHead<R>>,
 ) -> Result<(), c_int> {
+    let (lamport, replica, counter, seq): (Lamport, &[u8], u64, u64) = match head {
+        Some(head) => (
+            head.at.lamport,
+            head.at.replica.as_ref(),
+            head.at.counter,
+            head.seq,
+        ),
+        None => (0, &[], 0, 0),
+    };
     let sql = CString::new(
         "UPDATE tree_meta \
          SET head_lamport = ?1, \

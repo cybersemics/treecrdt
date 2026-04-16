@@ -82,43 +82,6 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
     })
 }
 
-impl treecrdt_core::MaterializationCursor for TreeMeta {
-    fn state(&self) -> treecrdt_core::MaterializationState<&[u8]> {
-        let head = if self.head_seq == 0
-            && self.head_lamport == 0
-            && self.head_replica.is_empty()
-            && self.head_counter == 0
-        {
-            None
-        } else {
-            Some(treecrdt_core::MaterializationHead {
-                at: treecrdt_core::MaterializationKey {
-                    lamport: self.head_lamport,
-                    replica: self.head_replica.as_slice(),
-                    counter: self.head_counter,
-                },
-                seq: self.head_seq,
-            })
-        };
-        let replay_from = match (
-            self.replay_lamport,
-            self.replay_replica.as_deref(),
-            self.replay_counter,
-        ) {
-            (Some(lamport), Some(replica), Some(counter)) => {
-                Some(treecrdt_core::MaterializationKey {
-                    lamport,
-                    replica,
-                    counter,
-                })
-            }
-            _ => None,
-        };
-
-        treecrdt_core::MaterializationState { head, replay_from }
-    }
-}
-
 fn materialize_inserted_ops(
     db: *mut sqlite3,
     doc_id: &[u8],
@@ -239,24 +202,10 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
         }
     };
 
-    if let Some(last) = head {
-        let head_rc = update_tree_meta_head(
-            db,
-            last.at.lamport,
-            &last.at.replica,
-            last.at.counter,
-            last.seq,
-        );
-        if head_rc.is_err() {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return head_rc;
-        }
-    } else {
-        let head_rc = update_tree_meta_head(db, 0, &[], 0, 0);
-        if head_rc.is_err() {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return head_rc;
-        }
+    let head_rc = update_tree_meta_head(db, head.as_ref());
+    if head_rc.is_err() {
+        sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+        return head_rc;
     }
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
@@ -318,15 +267,7 @@ pub(super) fn append_ops_impl(
         &meta,
         inserted_ops,
         |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
-        |head| {
-            update_tree_meta_head(
-                db,
-                head.at.lamport,
-                &head.at.replica,
-                head.at.counter,
-                head.seq,
-            )
-        },
+        |head| update_tree_meta_head(db, Some(head)),
         |frontier| set_tree_meta_replay_frontier(db, frontier),
     )?;
 

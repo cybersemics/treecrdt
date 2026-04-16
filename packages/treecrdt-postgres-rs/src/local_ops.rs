@@ -101,16 +101,16 @@ fn finish_local_core_op(
         Err(_) => post_materialization_ok = false,
     }
 
+    let head = treecrdt_core::MaterializationHead {
+        at: treecrdt_core::MaterializationKey {
+            lamport: op.meta.lamport,
+            replica: op.meta.id.replica.as_bytes(),
+            counter: op.meta.id.counter,
+        },
+        seq,
+    };
     if post_materialization_ok
-        && update_tree_meta_head(
-            &session.ctx.client,
-            &session.ctx.doc_id,
-            op.meta.lamport,
-            op.meta.id.replica.as_bytes(),
-            op.meta.id.counter,
-            seq,
-        )
-        .is_err()
+        && update_tree_meta_head(&session.ctx.client, &session.ctx.doc_id, Some(&head)).is_err()
     {
         post_materialization_ok = false;
     }
