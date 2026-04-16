@@ -113,6 +113,38 @@ const ALLOWED_GRANT_ACTIONS = new Set([
   "read_payload",
 ]);
 
+const SYNC_AUTH_PREFLIGHT_RETRIES = 12;
+const SYNC_AUTH_PREFLIGHT_RETRY_DELAY_MS = 250;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForSyncAuthPreflight(
+  auth: SyncAuth<Operation>,
+  docId: string,
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<void> {
+  const attempts = Math.max(1, opts.attempts ?? SYNC_AUTH_PREFLIGHT_RETRIES);
+  const delayMs = Math.max(0, opts.delayMs ?? SYNC_AUTH_PREFLIGHT_RETRY_DELAY_MS);
+  let lastErr: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await auth.helloCapabilities?.({ docId });
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === attempts) break;
+      await delay(delayMs);
+    }
+  }
+
+  throw lastErr ?? new Error("sync auth preflight failed");
+}
+
 function normalizeGrantActions(input: string[]): string[] {
   const out: string[] = [];
   for (const raw of input) {
@@ -633,8 +665,9 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
       void (async () => {
         try {
-          await preparedAuth.helloCapabilities?.({ docId });
+          await waitForSyncAuthPreflight(preparedAuth, docId);
           if (cancelled) return;
+          setAuthError(null);
           setSyncAuth(preparedAuth);
         } catch (err) {
           if (cancelled) return;

@@ -582,6 +582,7 @@ export default function App() {
 
   const {
     peers,
+    syncTargetCount,
     remoteSyncStatus,
     syncBusy,
     liveBusy,
@@ -619,6 +620,8 @@ export default function App() {
     revocationCutoverTokenId,
     revocationCutoverCounter,
     treeStateRef,
+    refreshParents,
+    refreshNodeCount,
     getLocalIdentityChain,
     onPeerIdentityChain,
     onAuthGrantMessage,
@@ -1281,7 +1284,7 @@ export default function App() {
             busy={busy}
             syncBusy={syncBusy}
             liveBusy={liveBusy}
-            peerCount={peers.length}
+            peerCount={syncTargetCount}
             authCanSyncAll={authCanSyncAll}
             onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
             liveAllEnabled={liveAllEnabled}
@@ -1404,7 +1407,7 @@ export default function App() {
         onSync={() => {
           void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
         }}
-        canSync={status === "ready" && !busy && !syncBusy && peers.length > 0 && online}
+        canSync={status === "ready" && !busy && !syncBusy && syncTargetCount > 0 && online}
         onDetails={() => setShowAuthPanel(true)}
       />
     </div>

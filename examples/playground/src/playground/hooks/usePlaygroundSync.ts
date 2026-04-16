@@ -155,6 +155,7 @@ function formatRemoteErrorDetail(
 }
 export type PlaygroundSyncApi = {
   peers: PeerInfo[];
+  syncTargetCount: number;
   remoteSyncStatus: RemoteSyncStatus;
   syncBusy: boolean;
   liveBusy: boolean;
@@ -195,6 +196,8 @@ export type UsePlaygroundSyncOptions = {
   revocationCutoverTokenId: string;
   revocationCutoverCounter: string;
   treeStateRef: React.MutableRefObject<TreeState>;
+  refreshParents: (parentIds: Iterable<string>) => Promise<void> | void;
+  refreshNodeCount: () => Promise<void> | void;
   getLocalIdentityChain: () => Promise<TreecrdtIdentityChainV1 | null>;
   onPeerIdentityChain: (chain: {
     identityPublicKey: Uint8Array;
@@ -224,6 +227,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     authCanSyncAll,
     viewRootId,
     treeStateRef,
+    refreshParents,
+    refreshNodeCount,
     onAuthGrantMessage,
     onRemoteOpsApplied,
   } = opts;
@@ -232,6 +237,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const [liveBusy, setLiveBusy] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
+  const [syncTargetCount, setSyncTargetCount] = useState(0);
   const [remoteSyncStatus, setRemoteSyncStatus] = useState<RemoteSyncStatus>({
     state: 'disabled',
     detail: 'Remote server transport is disabled in local tabs mode.',
@@ -271,6 +277,12 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const autoSyncPeerIdRef = useRef<string | null>(null);
   const meshPeersRef = useRef<PeerInfo[]>([]);
   const remotePeerRef = useRef<PeerInfo | null>(null);
+
+  const publishSyncTargetCount = (
+    connections: Map<string, { transport: DuplexTransport<any>; detach: () => void }> = syncConnRef.current,
+  ) => {
+    setSyncTargetCount(connections.size);
+  };
 
   const publishPeers = () => {
     const merged: PeerInfo[] = [...meshPeersRef.current];
@@ -562,6 +574,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       // ignore
     }
     connections.delete(peerId);
+    publishSyncTargetCount(connections);
     stopLiveAllForPeer(peerId);
     stopLiveChildrenForPeer(peerId);
 
@@ -623,6 +636,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
+      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      await refreshNodeCount();
     } catch (err) {
       console.error('Sync failed', err);
       setSyncError(formatSyncError(err));
@@ -693,6 +708,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
+      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
+      await refreshNodeCount();
     } catch (err) {
       console.error('Scoped sync failed', err);
       setSyncError(formatSyncError(err));
@@ -980,6 +997,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     const connections = new Map<string, { transport: DuplexTransport<any>; detach: () => void }>();
     syncConnRef.current = connections;
+    publishSyncTargetCount(connections);
 
     const maybeStartLiveForPeer = (peerId: string) => {
       if (!isRemotePeerId(peerId)) {
@@ -1012,6 +1030,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           onPeerTransport: (peerId, transport) => {
             const detach = sharedPeer.attach(transport);
             connections.set(peerId, { transport, detach });
+            publishSyncTargetCount(connections);
             maybeStartLiveForPeer(peerId);
             if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
               autoSyncPeerIdRef.current = peerId;
@@ -1021,6 +1040,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           },
           onPeerDisconnected: (peerId) => {
             connections.delete(peerId);
+            publishSyncTargetCount(connections);
             stopLiveAllForPeer(peerId);
             stopLiveChildrenForPeer(peerId);
             meshPeersRef.current = meshPeersRef.current.filter((p) => p.id !== peerId);
@@ -1105,6 +1125,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             );
             const detach = sharedPeer.attach(transport);
             syncConnRef.current.set(remotePeerId, { transport, detach });
+            publishSyncTargetCount();
             remotePeerRef.current = { id: remotePeerId, lastSeen: Date.now() };
             publishPeers();
             maybeStartLiveForPeer(remotePeerId);
@@ -1198,6 +1219,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       liveBusyCountRef.current = 0;
       setLiveBusy(false);
       connections.clear();
+      publishSyncTargetCount(connections);
       meshPeersRef.current = [];
       remotePeerRef.current = null;
       publishPeers();
@@ -1221,6 +1243,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   return {
     peers,
+    syncTargetCount,
     remoteSyncStatus,
     syncBusy,
     liveBusy,
