@@ -208,6 +208,21 @@ pub(crate) fn persist_materialized_head<R: AsRef<[u8]>>(
     maybe_save_materialization_checkpoint(client, doc_id, head)
 }
 
+fn exec_doc_sql(c: &mut Client, doc_id: &str, sql: &'static str) -> Result<()> {
+    c.execute(sql, &[&doc_id]).map_err(storage_debug)?;
+    Ok(())
+}
+
+fn exec_doc_checkpoint_sql(
+    c: &mut Client,
+    doc_id: &str,
+    checkpoint_seq: i64,
+    sql: &'static str,
+) -> Result<()> {
+    c.execute(sql, &[&doc_id, &checkpoint_seq]).map_err(storage_debug)?;
+    Ok(())
+}
+
 pub(crate) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
@@ -222,26 +237,14 @@ pub(crate) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
 
     let checkpoint_seq = head.seq as i64;
     let mut c = client.borrow_mut();
-    c.execute(
+    for sql in [
         "DELETE FROM treecrdt_checkpoint_oprefs_children WHERE doc_id = $1 AND checkpoint_seq = $2",
-        &[&doc_id, &checkpoint_seq],
-    )
-    .map_err(storage_debug)?;
-    c.execute(
         "DELETE FROM treecrdt_checkpoint_payload WHERE doc_id = $1 AND checkpoint_seq = $2",
-        &[&doc_id, &checkpoint_seq],
-    )
-    .map_err(storage_debug)?;
-    c.execute(
         "DELETE FROM treecrdt_checkpoint_nodes WHERE doc_id = $1 AND checkpoint_seq = $2",
-        &[&doc_id, &checkpoint_seq],
-    )
-    .map_err(storage_debug)?;
-    c.execute(
         "DELETE FROM treecrdt_checkpoints WHERE doc_id = $1 AND checkpoint_seq = $2",
-        &[&doc_id, &checkpoint_seq],
-    )
-    .map_err(storage_debug)?;
+    ] {
+        exec_doc_checkpoint_sql(&mut c, doc_id, checkpoint_seq, sql)?;
+    }
 
     c.execute(
         "INSERT INTO treecrdt_checkpoints(doc_id, checkpoint_seq, head_lamport, head_replica, head_counter) \
@@ -255,27 +258,19 @@ pub(crate) fn maybe_save_materialization_checkpoint<R: AsRef<[u8]>>(
         ],
     )
     .map_err(storage_debug)?;
-    c.execute(
+    for sql in [
         "INSERT INTO treecrdt_checkpoint_nodes(doc_id, checkpoint_seq, node, parent, order_key, tombstone, last_change, deleted_at) \
          SELECT doc_id, $2, node, parent, order_key, tombstone, last_change, deleted_at \
          FROM treecrdt_nodes WHERE doc_id = $1",
-        &[&doc_id, &checkpoint_seq],
-    )
-    .map_err(storage_debug)?;
-    c.execute(
         "INSERT INTO treecrdt_checkpoint_payload(doc_id, checkpoint_seq, node, payload, last_lamport, last_replica, last_counter) \
          SELECT doc_id, $2, node, payload, last_lamport, last_replica, last_counter \
          FROM treecrdt_payload WHERE doc_id = $1",
-        &[&doc_id, &checkpoint_seq],
-    )
-    .map_err(storage_debug)?;
-    c.execute(
         "INSERT INTO treecrdt_checkpoint_oprefs_children(doc_id, checkpoint_seq, parent, op_ref, seq) \
          SELECT doc_id, $2, parent, op_ref, seq \
          FROM treecrdt_oprefs_children WHERE doc_id = $1",
-        &[&doc_id, &checkpoint_seq],
-    )
-    .map_err(storage_debug)?;
+    ] {
+        exec_doc_checkpoint_sql(&mut c, doc_id, checkpoint_seq, sql)?;
+    }
     Ok(())
 }
 
@@ -323,42 +318,32 @@ pub(crate) fn restore_materialization_checkpoint<R: AsRef<[u8]>>(
     checkpoint: Option<&MaterializationHead<R>>,
 ) -> Result<()> {
     let mut c = client.borrow_mut();
-    c.execute(
+    for sql in [
         "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",
-        &[&doc_id],
-    )
-    .map_err(storage_debug)?;
-    c.execute("DELETE FROM treecrdt_payload WHERE doc_id = $1", &[&doc_id])
-        .map_err(storage_debug)?;
-    c.execute("DELETE FROM treecrdt_nodes WHERE doc_id = $1", &[&doc_id])
-        .map_err(storage_debug)?;
+        "DELETE FROM treecrdt_payload WHERE doc_id = $1",
+        "DELETE FROM treecrdt_nodes WHERE doc_id = $1",
+    ] {
+        exec_doc_sql(&mut c, doc_id, sql)?;
+    }
 
     if let Some(checkpoint) = checkpoint {
         let checkpoint_seq = checkpoint.seq as i64;
-        c.execute(
+        for sql in [
             "INSERT INTO treecrdt_nodes(doc_id, node, parent, order_key, tombstone, last_change, deleted_at) \
              SELECT doc_id, node, parent, order_key, tombstone, last_change, deleted_at \
              FROM treecrdt_checkpoint_nodes \
              WHERE doc_id = $1 AND checkpoint_seq = $2",
-            &[&doc_id, &checkpoint_seq],
-        )
-        .map_err(storage_debug)?;
-        c.execute(
             "INSERT INTO treecrdt_payload(doc_id, node, payload, last_lamport, last_replica, last_counter) \
              SELECT doc_id, node, payload, last_lamport, last_replica, last_counter \
              FROM treecrdt_checkpoint_payload \
              WHERE doc_id = $1 AND checkpoint_seq = $2",
-            &[&doc_id, &checkpoint_seq],
-        )
-        .map_err(storage_debug)?;
-        c.execute(
             "INSERT INTO treecrdt_oprefs_children(doc_id, parent, op_ref, seq) \
              SELECT doc_id, parent, op_ref, seq \
              FROM treecrdt_checkpoint_oprefs_children \
              WHERE doc_id = $1 AND checkpoint_seq = $2",
-            &[&doc_id, &checkpoint_seq],
-        )
-        .map_err(storage_debug)?;
+        ] {
+            exec_doc_checkpoint_sql(&mut c, doc_id, checkpoint_seq, sql)?;
+        }
     } else {
         let root_bytes = node_to_bytes(NodeId::ROOT);
         let empty: &[u8] = &[];
