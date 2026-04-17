@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
@@ -109,39 +109,36 @@ fn sorted_node_ids(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
     ids
 }
 
+fn parent_hints_from(parent: Option<NodeId>) -> Vec<NodeId> {
+    parent.into_iter().collect()
+}
+
+fn push_if_live(nodes: &mut Vec<NodeId>, id: NodeId) {
+    if id != NodeId::TRASH {
+        nodes.push(id);
+    }
+}
+
+fn push_snapshot_parent(nodes: &mut Vec<NodeId>, snapshot_parent: Option<NodeId>) {
+    if let Some(p) = snapshot_parent {
+        push_if_live(nodes, p);
+    }
+}
+
 fn direct_affected_nodes(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
     let mut nodes = Vec::new();
-    let node = kind.node();
-    if node != NodeId::TRASH {
-        nodes.push(node);
-    }
+    push_if_live(&mut nodes, kind.node());
     match kind {
         OperationKind::Insert { parent, .. } => {
-            if let Some(old_parent) = snapshot_parent {
-                if old_parent != NodeId::TRASH {
-                    nodes.push(old_parent);
-                }
-            }
-            if *parent != NodeId::TRASH {
-                nodes.push(*parent);
-            }
+            push_snapshot_parent(&mut nodes, snapshot_parent);
+            push_if_live(&mut nodes, *parent);
         }
         OperationKind::Move { new_parent, .. } => {
-            if let Some(old_parent) = snapshot_parent {
-                if old_parent != NodeId::TRASH {
-                    nodes.push(old_parent);
-                }
-            }
-            if *new_parent != NodeId::TRASH {
-                nodes.push(*new_parent);
-            }
+            push_snapshot_parent(&mut nodes, snapshot_parent);
+            push_if_live(&mut nodes, *new_parent);
         }
         OperationKind::Delete { .. } | OperationKind::Tombstone { .. } => {
-            if let Some(parent) = snapshot_parent {
-                if parent != NodeId::TRASH {
-                    nodes.push(parent);
-                }
-            }
+            push_snapshot_parent(&mut nodes, snapshot_parent);
         }
         OperationKind::Payload { .. } => {}
     }
@@ -154,44 +151,13 @@ where
     C: Clock,
 {
     pub fn new(replica_id: ReplicaId, storage: S, clock: C) -> Result<Self> {
-        let counter = storage.latest_counter(&replica_id)?;
-        let mut clock = clock;
-        clock.observe(storage.latest_lamport());
-        Ok(Self {
+        Self::with_stores(
             replica_id,
             storage,
             clock,
-            counter,
-            nodes: MemoryNodeStore::default(),
-            version_vector: VersionVector::new(),
-            payloads: MemoryPayloadStore::default(),
-            head: None,
-            op_count: 0,
-        })
-    }
-}
-
-impl<S, C, N> TreeCrdt<S, C, N, MemoryPayloadStore>
-where
-    S: Storage,
-    C: Clock,
-    N: NodeStore,
-{
-    pub fn with_node_store(replica_id: ReplicaId, storage: S, clock: C, nodes: N) -> Result<Self> {
-        let counter = storage.latest_counter(&replica_id)?;
-        let mut clock = clock;
-        clock.observe(storage.latest_lamport());
-        Ok(Self {
-            replica_id,
-            storage,
-            clock,
-            counter,
-            nodes,
-            version_vector: VersionVector::new(),
-            payloads: MemoryPayloadStore::default(),
-            head: None,
-            op_count: 0,
-        })
+            MemoryNodeStore::default(),
+            MemoryPayloadStore::default(),
+        )
     }
 }
 
@@ -240,19 +206,21 @@ where
         ) == std::cmp::Ordering::Greater
     }
 
+    fn next_op_meta(&mut self) -> (ReplicaId, u64, Lamport, Vec<u8>) {
+        let replica = self.replica_id.clone();
+        let counter = self.next_counter();
+        let lamport = self.clock.tick();
+        let seed = Self::seed(&replica, counter);
+        (replica, counter, lamport, seed)
+    }
+
     pub fn local_insert_after(
         &mut self,
         parent: NodeId,
         node: NodeId,
         after: Option<NodeId>,
     ) -> Result<Operation> {
-        let replica = self.replica_id.clone();
-        let counter = self.next_counter();
-        let lamport = self.clock.tick();
-        let seed = Self::seed(&replica, counter);
-        let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
-        let op = Operation::insert(&replica, counter, lamport, parent, node, order_key);
-        self.commit_local(op)
+        self.local_insert_after_opt(parent, node, after, None)
     }
 
     pub fn resolve_after_for_placement(
@@ -289,11 +257,7 @@ where
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let after = self.resolve_after_for_placement(parent, placement, None)?;
-        let op = if let Some(payload) = payload {
-            self.local_insert_after_with_payload(parent, node, after, payload)?
-        } else {
-            self.local_insert_after(parent, node, after)?
-        };
+        let op = self.local_insert_after_opt(parent, node, after, payload)?;
         Ok((
             op,
             LocalFinalizePlan {
@@ -310,12 +274,19 @@ where
         after: Option<NodeId>,
         payload: impl Into<Vec<u8>>,
     ) -> Result<Operation> {
-        let replica = self.replica_id.clone();
-        let counter = self.next_counter();
-        let lamport = self.clock.tick();
-        let seed = Self::seed(&replica, counter);
+        self.local_insert_after_opt(parent, node, after, Some(payload.into()))
+    }
+
+    fn local_insert_after_opt(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        after: Option<NodeId>,
+        payload: Option<Vec<u8>>,
+    ) -> Result<Operation> {
+        let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
-        let op = Operation::insert_with_payload(
+        let op = Operation::insert_with_optional_payload(
             &replica, counter, lamport, parent, node, order_key, payload,
         );
         self.commit_local(op)
@@ -327,10 +298,7 @@ where
         new_parent: NodeId,
         after: Option<NodeId>,
     ) -> Result<Operation> {
-        let replica = self.replica_id.clone();
-        let counter = self.next_counter();
-        let lamport = self.clock.tick();
-        let seed = Self::seed(&replica, counter);
+        let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
         let op = Operation::move_node(&replica, counter, lamport, node, new_parent, order_key);
         self.commit_local(op)
@@ -368,9 +336,7 @@ where
     }
 
     pub fn local_delete(&mut self, node: NodeId) -> Result<Operation> {
-        let replica = self.replica_id.clone();
-        let counter = self.next_counter();
-        let lamport = self.clock.tick();
+        let (replica, counter, lamport, _seed) = self.next_op_meta();
         let known_state = Some(self.nodes.subtree_version_vector(node)?);
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
         self.commit_local(op)
@@ -382,14 +348,10 @@ where
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let old_parent = self.parent(node)?;
         let op = self.local_delete(node)?;
-        let mut parent_hints = Vec::new();
-        if let Some(parent) = old_parent {
-            parent_hints.push(parent);
-        }
         Ok((
             op,
             LocalFinalizePlan {
-                parent_hints,
+                parent_hints: parent_hints_from(old_parent),
                 extra_index_records: Vec::new(),
             },
         ))
@@ -400,17 +362,13 @@ where
         node: NodeId,
         payload: impl Into<Vec<u8>>,
     ) -> Result<Operation> {
-        let replica = self.replica_id.clone();
-        let counter = self.next_counter();
-        let lamport = self.clock.tick();
+        let (replica, counter, lamport, _seed) = self.next_op_meta();
         let op = Operation::set_payload(&replica, counter, lamport, node, payload);
         self.commit_local(op)
     }
 
     pub fn local_clear_payload(&mut self, node: NodeId) -> Result<Operation> {
-        let replica = self.replica_id.clone();
-        let counter = self.next_counter();
-        let lamport = self.clock.tick();
+        let (replica, counter, lamport, _seed) = self.next_op_meta();
         let op = Operation::clear_payload(&replica, counter, lamport, node);
         self.commit_local(op)
     }
@@ -426,34 +384,18 @@ where
         } else {
             self.local_clear_payload(node)?
         };
-        let mut parent_hints = Vec::new();
-        if let Some(parent) = parent {
-            parent_hints.push(parent);
-        }
         Ok((
             op,
             LocalFinalizePlan {
-                parent_hints,
+                parent_hints: parent_hints_from(parent),
                 extra_index_records: Vec::new(),
             },
         ))
     }
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
-        self.clock.observe(op.meta.lamport);
-        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-        if !self.storage.apply(op.clone())? {
-            return Ok(());
-        }
-
-        if self.is_in_order(&op) {
-            let _ = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
-            self.op_count += 1;
-            self.head = Some(op);
-            return Ok(());
-        }
-
-        self.replay_from_storage()
+        self.apply_remote_with_delta(op)?;
+        Ok(())
     }
 
     /// Apply one remote operation and return exact incremental delta when available.
@@ -498,7 +440,7 @@ where
     /// - core CRDT semantics (`apply_remote_with_delta`)
     /// - a parent→op index (`ParentOpIndex`) for partial sync
     /// - cached tombstone flags in the [`NodeStore`] (via `set_tombstone`)
-    pub fn apply_remote_with_materialization<I: ParentOpIndex>(
+    fn apply_remote_with_materialization<I: ParentOpIndex>(
         &mut self,
         op: Operation,
         index: &mut I,
@@ -663,7 +605,7 @@ where
         Ok(seq)
     }
 
-    pub fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
+    fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
     where
         I: IntoIterator<Item = NodeId>,
     {
@@ -674,7 +616,7 @@ where
     /// Refresh tombstone cache for nodes on the upward closure of `starts`.
     ///
     /// Returns every node whose cached tombstone value actually changed.
-    pub fn refresh_tombstones_upward_with_delta<I>(&mut self, starts: I) -> Result<Vec<NodeId>>
+    fn refresh_tombstones_upward_with_delta<I>(&mut self, starts: I) -> Result<Vec<NodeId>>
     where
         I: IntoIterator<Item = NodeId>,
     {
@@ -708,126 +650,6 @@ where
         }
 
         Ok(sorted_node_ids(changed))
-    }
-
-    pub fn refresh_all_tombstones(&mut self) -> Result<()> {
-        fn subtree_vv<N: NodeStore>(
-            nodes: &N,
-            node: NodeId,
-            cache: &mut HashMap<NodeId, VersionVector>,
-            visiting: &mut HashSet<NodeId>,
-        ) -> Result<VersionVector> {
-            if let Some(vv) = cache.get(&node) {
-                return Ok(vv.clone());
-            }
-            if !visiting.insert(node) {
-                return Err(Error::InconsistentState(
-                    "cycle detected while computing subtree version vector".into(),
-                ));
-            }
-
-            let mut vv = nodes.last_change(node)?;
-            for child in nodes.children(node)? {
-                let child_vv = subtree_vv(nodes, child, cache, visiting)?;
-                vv.merge(&child_vv);
-            }
-
-            visiting.remove(&node);
-            cache.insert(node, vv.clone());
-            Ok(vv)
-        }
-
-        let nodes = self.nodes.all_nodes()?;
-        let nodes_ro = &self.nodes;
-
-        let mut cache: HashMap<NodeId, VersionVector> = HashMap::new();
-        let mut visiting: HashSet<NodeId> = HashSet::new();
-        let mut updates: Vec<(NodeId, bool)> = Vec::new();
-
-        for node in nodes {
-            if node == NodeId::ROOT || node == NodeId::TRASH {
-                continue;
-            }
-            let Some(deleted_vv) = nodes_ro.deleted_at(node)? else {
-                continue;
-            };
-            let subtree = subtree_vv(nodes_ro, node, &mut cache, &mut visiting)?;
-            updates.push((node, deleted_vv.is_aware_of(&subtree)));
-        }
-
-        for (node, tombstoned) in updates {
-            self.nodes.set_tombstone(node, tombstoned)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn replay_from_storage_with_materialization<I: ParentOpIndex>(
-        &mut self,
-        index: &mut I,
-    ) -> Result<()> {
-        index.reset()?;
-
-        self.version_vector = VersionVector::new();
-        self.nodes.reset()?;
-        self.payloads.reset()?;
-        self.head = None;
-        self.op_count = 0;
-
-        let storage = &self.storage;
-        let nodes = &mut self.nodes;
-        let payloads = &mut self.payloads;
-        let clock = &mut self.clock;
-        let version_vector = &mut self.version_vector;
-
-        let mut seq: u64 = 0;
-        let mut head: Option<Operation> = None;
-
-        storage.scan_since(0, &mut |op| {
-            clock.observe(op.meta.lamport);
-            version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-
-            let snapshot = Self::apply_forward(nodes, payloads, &op)?;
-            seq += 1;
-
-            let parents = affected_parents(snapshot.parent, &op.kind);
-            for parent in &parents {
-                if *parent == NodeId::TRASH {
-                    continue;
-                }
-                index.record(*parent, &op.meta.id, seq)?;
-            }
-
-            head = Some(op);
-            Ok(())
-        })?;
-
-        self.head = head;
-        self.op_count = seq;
-        self.counter = self.counter.max(self.version_vector.get(&self.replica_id));
-
-        // Refresh cached tombstone flags and then ensure the latest payload op for each node is
-        // discoverable under its current parent.
-        self.refresh_all_tombstones()?;
-
-        let payload_seq = seq.max(1);
-        for node in self.nodes.all_nodes()? {
-            if node == NodeId::ROOT || node == NodeId::TRASH {
-                continue;
-            }
-            let Some(parent) = self.nodes.parent(node)? else {
-                continue;
-            };
-            if parent == NodeId::TRASH {
-                continue;
-            }
-            let Some((_lamport, payload_id)) = self.payload_last_writer(node)? else {
-                continue;
-            };
-            index.record(parent, &payload_id, payload_seq)?;
-        }
-
-        Ok(())
     }
 
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
@@ -939,10 +761,6 @@ where
             });
         }
         Ok(nodes)
-    }
-
-    pub fn log_len(&self) -> usize {
-        self.op_count.min(usize::MAX as u64) as usize
     }
 
     pub fn head_op(&self) -> Option<&Operation> {
