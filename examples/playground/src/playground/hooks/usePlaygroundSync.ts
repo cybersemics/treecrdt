@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import { type TreecrdtIdentityChainV1 } from '@treecrdt/auth';
@@ -284,6 +284,17 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     merged.sort((a, b) => a.id.localeCompare(b.id));
     setPeers(merged);
   };
+
+  const refreshLoadedSyncState = useCallback(
+    async (extraParentIds: Iterable<string> = []) => {
+      await refreshMeta();
+      const parentIds = new Set(Object.keys(treeStateRef.current.childrenByParent));
+      for (const parentId of extraParentIds) parentIds.add(parentId);
+      await refreshParents(Array.from(parentIds));
+      await refreshNodeCount();
+    },
+    [refreshMeta, refreshNodeCount, refreshParents, treeStateRef]
+  );
 
   const isRemotePeerId = (peerId: string) => peerId.startsWith('remote:');
   const syncOnceOptionsForPeer = (peerId: string, localCodewordsPerMessage: number) => ({
@@ -629,9 +640,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
-      await refreshMeta();
-      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
-      await refreshNodeCount();
+      await refreshLoadedSyncState();
     } catch (err) {
       console.error('Sync failed', err);
       setSyncError(formatSyncError(err));
@@ -702,9 +711,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
-      await refreshMeta();
-      await refreshParents(Object.keys(treeStateRef.current.childrenByParent));
-      await refreshNodeCount();
+      await refreshLoadedSyncState();
     } catch (err) {
       console.error('Scoped sync failed', err);
       setSyncError(formatSyncError(err));
@@ -787,11 +794,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           );
         }
 
-        await refreshMeta();
-        const parentIds = new Set(Object.keys(treeStateRef.current.childrenByParent));
-        parentIds.add(viewRootId);
-        await refreshParents(Array.from(parentIds));
-        await refreshNodeCount();
+        await refreshLoadedSyncState([viewRootId]);
 
         autoSyncDoneRef.current = true;
         if (typeof window !== 'undefined') {
@@ -819,9 +822,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     authMaterial.localTokensB64.length,
     autoSyncJoinTick,
     joinMode,
-    refreshMeta,
-    refreshNodeCount,
-    refreshParents,
+    refreshLoadedSyncState,
     syncBusy,
     viewRootId,
   ]);
@@ -981,8 +982,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (debugSync && ops.length > 0) {
           console.debug(`[sync:${selfPeerId}] applyOps(${ops.length})`);
         }
-        const affected =
-          ops.length > 0 ? ((await client.ops.appendMany(ops)) as unknown as string[]) : [];
+        const affected = ops.length > 0 ? await client.ops.appendMany(ops) : [];
         await onRemoteOpsApplied(ops, affected);
       },
     };
