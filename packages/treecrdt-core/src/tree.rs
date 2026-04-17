@@ -563,6 +563,68 @@ where
         Ok(applied)
     }
 
+    /// Apply a canonically sorted remote op directly against the current materialized state.
+    ///
+    /// This skips storage persistence and out-of-order detection, and is intended for callers
+    /// that already reconstructed/rewound state to the correct prefix and now need to replay a
+    /// suffix in canonical op-key order.
+    pub fn apply_sorted_remote_with_materialization<I: ParentOpIndex>(
+        &mut self,
+        op: Operation,
+        index: &mut I,
+        seq: u64,
+    ) -> Result<ApplyDelta> {
+        self.clock.observe(op.meta.lamport);
+        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
+        if op.meta.id.replica == self.replica_id {
+            self.counter = self.counter.max(op.meta.id.counter);
+        }
+
+        let op_node = op.kind.node();
+        let parent_after = match &op.kind {
+            OperationKind::Insert { parent, .. } => Some(*parent),
+            OperationKind::Move { new_parent, .. } => Some(*new_parent),
+            _ => None,
+        };
+        let op_id = op.meta.id.clone();
+        let op_kind = op.kind.clone();
+
+        let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        self.op_count = seq;
+        self.head = Some(op.clone());
+
+        let parents = affected_parents(snapshot.parent, &op_kind);
+        for parent in &parents {
+            if *parent == NodeId::TRASH {
+                continue;
+            }
+            index.record(*parent, &op_id, seq)?;
+        }
+
+        if let Some(parent_after) = parent_after {
+            if parent_after != NodeId::TRASH && snapshot.parent != Some(parent_after) {
+                if let Some((_lamport, payload_id)) = self.payload_last_writer(op_node)? {
+                    index.record(parent_after, &payload_id, seq)?;
+                }
+            }
+        }
+
+        let mut affected_nodes = direct_affected_nodes(snapshot.parent, &op_kind);
+        let mut starts = parents;
+        starts.push(op_node);
+        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
+        affected_nodes.extend(tombstone_changed.into_iter().filter(|node| *node != NodeId::TRASH));
+        affected_nodes = sorted_node_ids(affected_nodes);
+
+        Ok(ApplyDelta {
+            snapshot: NodeSnapshotExport {
+                parent: snapshot.parent,
+                order_key: snapshot.order_key,
+            },
+            affected_nodes,
+        })
+    }
+
     /// Finalize adapter-owned local ops by refreshing tombstones and recording parent-op index rows.
     ///
     /// This is intended for adapters that execute local operations directly against core and then
@@ -903,6 +965,10 @@ where
 
     pub(crate) fn node_store_mut(&mut self) -> &mut N {
         &mut self.nodes
+    }
+
+    pub(crate) fn payload_store_mut(&mut self) -> &mut P {
+        &mut self.payloads
     }
 
     pub fn validate_invariants(&self) -> Result<()> {

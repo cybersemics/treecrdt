@@ -7,8 +7,9 @@ use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
     apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
-    materialize_persisted_remote_ops_with_delta, try_shortcut_out_of_order_payload_noops, Error,
-    ExactNodeStore, ExactPayloadStore, Lamport, LamportClock, MaterializationCursor,
+    materialize_persisted_remote_ops_with_delta, try_partial_rewind_catch_up_materialized_state,
+    try_shortcut_out_of_order_payload_noops, Error, ExactNodeStore, ExactPayloadStore,
+    FrontierRewindStorage, Lamport, LamportClock, MaterializationCursor,
     MaterializationFrontier, MaterializationHead, MaterializationKey, MaterializationState, NodeId,
     NodeStore, Operation, OperationId, OperationKind, PayloadStore, PersistedRemoteStores,
     ReplicaId, Result, Storage, TruncatingParentOpIndex, VersionVector,
@@ -1215,6 +1216,130 @@ impl Storage for PgOpStorage {
     }
 }
 
+impl FrontierRewindStorage for PgOpStorage {
+    fn scan_frontier_range(
+        &self,
+        start: &treecrdt_core::MaterializationFrontierRef<'_>,
+        end: Option<&treecrdt_core::MaterializationKey<&[u8]>>,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
+        let mut c = self.ctx.client.borrow_mut();
+        let rows = if let Some(end) = end {
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+                 FROM treecrdt_ops \
+                 WHERE doc_id = $1 \
+                   AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
+                   AND (lamport < $5 OR (lamport = $5 AND (replica < $6 OR (replica = $6 AND counter <= $7)))) \
+                 ORDER BY lamport, replica, counter",
+            )?;
+            c.query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &(start.lamport as i64),
+                    &start.replica,
+                    &(start.counter as i64),
+                    &(end.lamport as i64),
+                    &end.replica,
+                    &(end.counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?
+        } else {
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+                 FROM treecrdt_ops \
+                 WHERE doc_id = $1 \
+                   AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
+                 ORDER BY lamport, replica, counter",
+            )?;
+            c.query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &(start.lamport as i64),
+                    &start.replica,
+                    &(start.counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?
+        };
+
+        drop(c);
+        for row in rows {
+            visit(row_to_op(row)?)?;
+        }
+        Ok(())
+    }
+
+    fn latest_structural_before(
+        &self,
+        node: NodeId,
+        before: &treecrdt_core::MaterializationFrontierRef<'_>,
+    ) -> Result<Option<Operation>> {
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 \
+               AND node = $2 \
+               AND kind IN ('insert', 'move') \
+               AND (lamport < $3 OR (lamport = $3 AND (replica < $4 OR (replica = $4 AND counter < $5)))) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+        )?;
+        let rows = c
+            .query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &node_to_bytes(node).to_vec(),
+                    &(before.lamport as i64),
+                    &before.replica,
+                    &(before.counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?;
+        rows.first().cloned().map(row_to_op).transpose()
+    }
+
+    fn latest_payload_before(
+        &self,
+        node: NodeId,
+        before: &treecrdt_core::MaterializationFrontierRef<'_>,
+    ) -> Result<Option<Operation>> {
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 \
+               AND node = $2 \
+               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+               AND (lamport < $3 OR (lamport = $3 AND (replica < $4 OR (replica = $4 AND counter < $5)))) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+        )?;
+        let rows = c
+            .query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &node_to_bytes(node).to_vec(),
+                    &(before.lamport as i64),
+                    &before.replica,
+                    &(before.counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?;
+        rows.first().cloned().map(row_to_op).transpose()
+    }
+}
+
 pub(crate) fn row_to_op(row: Row) -> Result<Operation> {
     let lamport = row.get::<_, i64>(0).max(0) as Lamport;
     let replica: Vec<u8> = row.get(1);
@@ -1713,6 +1838,8 @@ fn append_ops_in_tx(
     // Only materialize the ops Postgres actually inserted. This keeps duplicate opRefs in the
     // input batch from being replayed twice through core materialization.
     let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
+    let inserted_op_ids: HashSet<OperationId> =
+        inserted_ops.iter().map(|op| op.meta.id.clone()).collect();
     if let Some(profile) = &append_profile {
         profile.borrow_mut().dedupe_filter_ms +=
             dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1770,19 +1897,51 @@ fn append_ops_in_tx(
     };
     let apply_result = if apply_result.catch_up_needed {
         let refreshed_meta = load_tree_meta_for_update(client, doc_id)?;
-        let catch_up = catch_up_materialized_state(
-            PgOpStorage::new(ctx.clone()),
-            PersistedRemoteStores {
-                replica_id: ReplicaId::new(b"postgres"),
-                clock: LamportClock::default(),
-                nodes: PgNodeStore::new(ctx.clone()),
-                payloads: PgPayloadStore::new(ctx.clone()),
-                index: PgParentOpIndex::new(ctx.clone()),
-            },
-            &refreshed_meta,
-            |nodes| nodes.flush_last_change(),
-            |index| index.flush(),
-        )?;
+        let catch_up = if meta.state().replay_from.is_none() {
+            try_partial_rewind_catch_up_materialized_state(
+                &PgOpStorage::new(ctx.clone()),
+                &inserted_op_ids,
+                PersistedRemoteStores {
+                    replica_id: ReplicaId::new(b"postgres"),
+                    clock: LamportClock::default(),
+                    nodes: PgNodeStore::new(ctx.clone()),
+                    payloads: PgPayloadStore::new(ctx.clone()),
+                    index: PgParentOpIndex::new(ctx.clone()),
+                },
+                &refreshed_meta,
+                |nodes| nodes.flush_last_change(),
+                |index| index.flush(),
+            )?
+            .unwrap_or(
+                catch_up_materialized_state(
+                    PgOpStorage::new(ctx.clone()),
+                    PersistedRemoteStores {
+                        replica_id: ReplicaId::new(b"postgres"),
+                        clock: LamportClock::default(),
+                        nodes: PgNodeStore::new(ctx.clone()),
+                        payloads: PgPayloadStore::new(ctx.clone()),
+                        index: PgParentOpIndex::new(ctx.clone()),
+                    },
+                    &refreshed_meta,
+                    |nodes| nodes.flush_last_change(),
+                    |index| index.flush(),
+                )?,
+            )
+        } else {
+            catch_up_materialized_state(
+                PgOpStorage::new(ctx.clone()),
+                PersistedRemoteStores {
+                    replica_id: ReplicaId::new(b"postgres"),
+                    clock: LamportClock::default(),
+                    nodes: PgNodeStore::new(ctx.clone()),
+                    payloads: PgPayloadStore::new(ctx.clone()),
+                    index: PgParentOpIndex::new(ctx.clone()),
+                },
+                &refreshed_meta,
+                |nodes| nodes.flush_last_change(),
+                |index| index.flush(),
+            )?
+        };
         update_head(
             catch_up
                 .head

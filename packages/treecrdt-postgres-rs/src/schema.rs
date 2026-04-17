@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS treecrdt_ops (
 CREATE INDEX IF NOT EXISTS idx_treecrdt_ops_doc_order
   ON treecrdt_ops (doc_id, lamport, replica, counter);
 
+CREATE INDEX IF NOT EXISTS idx_treecrdt_ops_doc_node_kind_order
+  ON treecrdt_ops (doc_id, node, kind, lamport, replica, counter);
+
 CREATE TABLE IF NOT EXISTS treecrdt_meta (
   doc_id TEXT PRIMARY KEY,
   head_lamport BIGINT NOT NULL DEFAULT 0,
