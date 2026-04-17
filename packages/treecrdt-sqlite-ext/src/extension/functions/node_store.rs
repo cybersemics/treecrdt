@@ -1,5 +1,6 @@
 use super::*;
 use std::slice;
+use treecrdt_core::NodeStore;
 
 fn sqlite_node_id_bytes(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
@@ -771,5 +772,83 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
             sqlite_reset(self.all_nodes);
         }
         Ok(out)
+    }
+}
+
+impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
+    fn set_last_change_exact(
+        &mut self,
+        node: NodeId,
+        vv: &VersionVector,
+    ) -> treecrdt_core::Result<()> {
+        self.ensure_node(node)?;
+        let node_bytes = sqlite_node_id_bytes(node);
+        unsafe {
+            sqlite_clear_bindings(self.update_last_change);
+            sqlite_reset(self.update_last_change);
+            sqlite_bind_blob(
+                self.update_last_change,
+                1,
+                node_bytes.as_ptr() as *const c_void,
+                node_bytes.len() as c_int,
+                None,
+            );
+            if vv.is_empty() {
+                sqlite_bind_null(self.update_last_change, 2);
+            } else {
+                let bytes = vv_to_bytes(vv)?;
+                sqlite_bind_blob(
+                    self.update_last_change,
+                    2,
+                    bytes.as_ptr() as *const c_void,
+                    bytes.len() as c_int,
+                    None,
+                );
+            }
+            let step_rc = sqlite_step(self.update_last_change);
+            sqlite_reset(self.update_last_change);
+            if step_rc != SQLITE_DONE as c_int {
+                return Err(sqlite_rc_error(step_rc, "set exact last_change failed"));
+            }
+        }
+        Ok(())
+    }
+
+    fn set_deleted_at_exact(
+        &mut self,
+        node: NodeId,
+        vv: Option<&VersionVector>,
+    ) -> treecrdt_core::Result<()> {
+        self.ensure_node(node)?;
+        let node_bytes = sqlite_node_id_bytes(node);
+        unsafe {
+            sqlite_clear_bindings(self.update_deleted_at);
+            sqlite_reset(self.update_deleted_at);
+            sqlite_bind_blob(
+                self.update_deleted_at,
+                1,
+                node_bytes.as_ptr() as *const c_void,
+                node_bytes.len() as c_int,
+                None,
+            );
+            if let Some(vv) = vv.filter(|vv| !vv.is_empty()) {
+                let bytes = vv_to_bytes(vv)?;
+                sqlite_bind_blob(
+                    self.update_deleted_at,
+                    2,
+                    bytes.as_ptr() as *const c_void,
+                    bytes.len() as c_int,
+                    None,
+                );
+            } else {
+                sqlite_bind_null(self.update_deleted_at, 2);
+            }
+            let step_rc = sqlite_step(self.update_deleted_at);
+            sqlite_reset(self.update_deleted_at);
+            if step_rc != SQLITE_DONE as c_int {
+                return Err(sqlite_rc_error(step_rc, "set exact deleted_at failed"));
+            }
+        }
+        Ok(())
     }
 }

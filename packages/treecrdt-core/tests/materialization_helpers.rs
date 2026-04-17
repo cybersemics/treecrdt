@@ -1,9 +1,12 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
-    materialize_persisted_remote_ops_with_delta, LamportClock, MaterializationCursor,
+    catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
+    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, MaterializationCursor,
     MaterializationHead, MaterializationKey, MaterializationState, MemoryNodeStore,
     MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, TreeCrdt,
+    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt,
 };
 
 #[derive(Default)]
@@ -71,6 +74,38 @@ impl ParentOpIndex for RecordingIndex {
     ) -> treecrdt_core::Result<()> {
         self.records.push((parent, op_id.clone(), seq));
         Ok(())
+    }
+}
+
+struct CountingStorage {
+    inner: MemoryStorage,
+    scan_count: Rc<Cell<u64>>,
+}
+
+impl Storage for CountingStorage {
+    fn apply(&mut self, op: Operation) -> treecrdt_core::Result<bool> {
+        self.inner.apply(op)
+    }
+
+    fn load_since(&self, lamport: Lamport) -> treecrdt_core::Result<Vec<Operation>> {
+        self.inner.load_since(lamport)
+    }
+
+    fn latest_lamport(&self) -> Lamport {
+        self.inner.latest_lamport()
+    }
+
+    fn latest_counter(&self, replica: &ReplicaId) -> treecrdt_core::Result<u64> {
+        self.inner.latest_counter(replica)
+    }
+
+    fn scan_since(
+        &self,
+        lamport: Lamport,
+        visit: &mut dyn FnMut(Operation) -> treecrdt_core::Result<()>,
+    ) -> treecrdt_core::Result<()> {
+        self.scan_count.set(self.scan_count.get() + 1);
+        self.inner.scan_since(lamport, visit)
     }
 }
 
@@ -269,7 +304,7 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
     assert_eq!(seen_counters, vec![2, 3]);
     assert_eq!(result.inserted_count, 2);
     assert_eq!(result.affected_nodes, vec![NodeId(2)]);
-    assert!(!result.frontier_recorded);
+    assert!(!result.catch_up_needed);
     assert_eq!(
         updated_head,
         Some(MaterializationHead {
@@ -313,7 +348,7 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
     assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
     assert_eq!(result.affected_nodes, Vec::<NodeId>::new());
-    assert!(result.frontier_recorded);
+    assert!(result.catch_up_needed);
 }
 
 #[test]
@@ -350,7 +385,7 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
     assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
     assert!(result.affected_nodes.is_empty());
-    assert!(result.frontier_recorded);
+    assert!(result.catch_up_needed);
 }
 
 #[test]
@@ -389,7 +424,7 @@ fn apply_persisted_remote_ops_schedules_replay_frontier_for_out_of_order_ops() {
     assert_eq!(materialize_runs, 0);
     assert_eq!(result.inserted_count, 2);
     assert!(result.affected_nodes.is_empty());
-    assert!(result.frontier_recorded);
+    assert!(result.catch_up_needed);
     assert_eq!(
         replay_frontier,
         Some(treecrdt_core::MaterializationFrontier {
@@ -429,7 +464,7 @@ fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
 
     assert_eq!(result.inserted_count, 1);
     assert!(result.affected_nodes.is_empty());
-    assert!(result.frontier_recorded);
+    assert!(result.catch_up_needed);
     assert_eq!(
         replay_frontier,
         Some(treecrdt_core::MaterializationFrontier {
@@ -484,5 +519,162 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
     assert_eq!(
         result.affected_nodes,
         vec![NodeId::ROOT, NodeId(10), NodeId(11)]
+    );
+}
+
+#[test]
+fn payload_noop_shortcut_skips_out_of_order_payload_dominated_by_current_winner() {
+    let cursor = Cursor {
+        head_lamport: 10,
+        head_replica: b"r".to_vec(),
+        head_counter: 10,
+        head_seq: 5,
+        ..Cursor::default()
+    };
+    let replica = ReplicaId::new(b"r");
+    let node = NodeId(7);
+    let op = Operation::set_payload(&replica, 4, 4, node, vec![1]);
+
+    let shortcut = try_shortcut_out_of_order_payload_noops(&cursor, vec![op.clone()], |lookup| {
+        assert_eq!(lookup, node);
+        Ok::<_, ()>(Some((
+            9,
+            OperationId {
+                replica: replica.clone(),
+                counter: 9,
+            },
+        )))
+    })
+    .unwrap()
+    .expect("expected payload noop shortcut");
+
+    assert_eq!(shortcut.resumed_head.at.counter, 10);
+    assert_eq!(shortcut.resumed_head.seq, 6);
+    assert!(shortcut.remaining_ops.is_empty());
+    assert_eq!(shortcut.affected_nodes, vec![node]);
+}
+
+#[test]
+fn payload_noop_shortcut_keeps_later_in_order_payload_for_incremental_materialization() {
+    let cursor = Cursor {
+        head_lamport: 10,
+        head_replica: b"r".to_vec(),
+        head_counter: 10,
+        head_seq: 5,
+        ..Cursor::default()
+    };
+    let replica = ReplicaId::new(b"r");
+    let node = NodeId(8);
+    let older = Operation::set_payload(&replica, 4, 4, node, vec![1]);
+    let newer = Operation::set_payload(&replica, 12, 12, node, vec![2]);
+
+    let shortcut = try_shortcut_out_of_order_payload_noops(
+        &cursor,
+        vec![newer.clone(), older.clone()],
+        |_| Ok::<_, ()>(None),
+    )
+    .unwrap()
+    .expect("expected payload noop shortcut");
+
+    assert_eq!(shortcut.resumed_head.seq, 6);
+    assert_eq!(shortcut.remaining_ops, vec![newer]);
+    assert_eq!(shortcut.affected_nodes, vec![node]);
+}
+
+#[test]
+fn payload_noop_shortcut_rejects_out_of_order_payload_that_becomes_final_winner() {
+    let cursor = Cursor {
+        head_lamport: 10,
+        head_replica: b"r".to_vec(),
+        head_counter: 10,
+        head_seq: 5,
+        ..Cursor::default()
+    };
+    let replica = ReplicaId::new(b"r");
+    let node = NodeId(9);
+    let op = Operation::set_payload(&replica, 4, 4, node, vec![1]);
+
+    let shortcut = try_shortcut_out_of_order_payload_noops(&cursor, vec![op], |_| {
+        Ok::<_, ()>(Some((
+            2,
+            OperationId {
+                replica: ReplicaId::new(b"old"),
+                counter: 2,
+            },
+        )))
+    })
+    .unwrap();
+
+    assert!(shortcut.is_none());
+}
+
+#[test]
+fn payload_noop_shortcut_rejects_out_of_order_move() {
+    let cursor = Cursor {
+        head_lamport: 10,
+        head_replica: b"r".to_vec(),
+        head_counter: 10,
+        head_seq: 5,
+        ..Cursor::default()
+    };
+    let replica = ReplicaId::new(b"r");
+    let move_op = Operation::move_node(&replica, 4, 4, NodeId(3), NodeId::ROOT, vec![0x10]);
+    let called = Cell::new(false);
+
+    let shortcut = try_shortcut_out_of_order_payload_noops(
+        &cursor,
+        vec![move_op],
+        |_| -> Result<Option<(u64, OperationId)>, ()> {
+            called.set(true);
+            Ok(None)
+        },
+    )
+    .unwrap();
+
+    assert!(shortcut.is_none());
+    assert!(!called.get());
+}
+
+#[test]
+fn catch_up_materialized_state_scans_storage_once() {
+    let replica = ReplicaId::new(b"scan-once");
+    let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
+
+    let mut inner = MemoryStorage::default();
+    inner.apply(first.clone()).unwrap();
+    inner.apply(second.clone()).unwrap();
+    let scan_count = Rc::new(Cell::new(0));
+    let storage = CountingStorage {
+        inner,
+        scan_count: scan_count.clone(),
+    };
+    let meta = Cursor {
+        replay_lamport: Some(first.meta.lamport),
+        replay_replica: Some(first.meta.id.replica.as_bytes().to_vec()),
+        replay_counter: Some(first.meta.id.counter),
+        ..Cursor::default()
+    };
+
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes: MemoryNodeStore::default(),
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    assert_eq!(scan_count.get(), 1);
+    assert_eq!(result.head.expect("expected head").seq, 2);
+    assert_eq!(
+        result.affected_nodes,
+        vec![NodeId::ROOT, NodeId(1), NodeId(2)]
     );
 }

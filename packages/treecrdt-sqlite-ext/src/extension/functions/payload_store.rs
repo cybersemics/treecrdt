@@ -12,6 +12,7 @@ pub(super) struct SqlitePayloadStore {
     db: *mut sqlite3,
     select: *mut sqlite3_stmt,
     upsert: *mut sqlite3_stmt,
+    delete: *mut sqlite3_stmt,
 }
 
 impl SqlitePayloadStore {
@@ -31,9 +32,12 @@ impl SqlitePayloadStore {
                last_counter = excluded.last_counter",
         )
         .expect("upsert payload sql");
+        let delete_sql =
+            CString::new("DELETE FROM tree_payload WHERE node = ?1").expect("delete payload sql");
 
         let mut select: *mut sqlite3_stmt = null_mut();
         let mut upsert: *mut sqlite3_stmt = null_mut();
+        let mut delete: *mut sqlite3_stmt = null_mut();
 
         let prep = |sql: &CString, stmt: &mut *mut sqlite3_stmt| -> treecrdt_core::Result<()> {
             let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, stmt, null_mut());
@@ -44,8 +48,14 @@ impl SqlitePayloadStore {
         };
         prep(&select_sql, &mut select)?;
         prep(&upsert_sql, &mut upsert)?;
+        prep(&delete_sql, &mut delete)?;
 
-        Ok(Self { db, select, upsert })
+        Ok(Self {
+            db,
+            select,
+            upsert,
+            delete,
+        })
     }
 }
 
@@ -54,6 +64,7 @@ impl Drop for SqlitePayloadStore {
         unsafe {
             sqlite_finalize(self.select);
             sqlite_finalize(self.upsert);
+            sqlite_finalize(self.delete);
         }
     }
 }
@@ -219,6 +230,33 @@ impl treecrdt_core::PayloadStore for SqlitePayloadStore {
         unsafe { sqlite_reset(self.upsert) };
         if step_rc != SQLITE_DONE as c_int {
             return Err(sqlite_rc_error(step_rc, "upsert payload step failed"));
+        }
+        Ok(())
+    }
+}
+
+impl treecrdt_core::ExactPayloadStore for SqlitePayloadStore {
+    fn clear_payload(&mut self, node: NodeId) -> treecrdt_core::Result<()> {
+        let node_bytes = sqlite_node_id_bytes(node);
+        unsafe {
+            sqlite_clear_bindings(self.delete);
+            sqlite_reset(self.delete);
+            let bind_rc = sqlite_bind_blob(
+                self.delete,
+                1,
+                node_bytes.as_ptr() as *const c_void,
+                node_bytes.len() as c_int,
+                None,
+            );
+            if bind_rc != SQLITE_OK as c_int {
+                sqlite_reset(self.delete);
+                return Err(sqlite_rc_error(bind_rc, "bind delete payload failed"));
+            }
+            let step_rc = sqlite_step(self.delete);
+            sqlite_reset(self.delete);
+            if step_rc != SQLITE_DONE as c_int {
+                return Err(sqlite_rc_error(step_rc, "delete payload step failed"));
+            }
         }
         Ok(())
     }

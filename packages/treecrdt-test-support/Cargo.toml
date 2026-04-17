@@ -1,0 +1,10 @@
+[package]
+name = "treecrdt-test-support"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Shared test support for TreeCRDT backend conformance suites."
+
+[dependencies]
+treecrdt-core = { path = "../treecrdt-core" }

@@ -20,6 +20,10 @@ impl MaterializationCursor for TreeMeta {
     }
 }
 
+pub(super) fn tree_meta_from_state(state: MaterializationState) -> TreeMeta {
+    TreeMeta(state)
+}
+
 pub(super) fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {
     let sql =
         CString::new("SELECT value FROM meta WHERE key = 'doc_id' LIMIT 1").expect("doc id sql");
