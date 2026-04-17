@@ -20,6 +20,122 @@ fn sqlite_node_id_bytes(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
 }
 
+fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt_core::Operation> {
+    let replica_ptr = unsafe { sqlite_column_blob(stmt, 0) } as *const u8;
+    let replica_len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
+    if replica_ptr.is_null() {
+        return Err(sqlite_rc_error(
+            SQLITE_ERROR as c_int,
+            "replica missing from op row",
+        ));
+    }
+    let replica = unsafe { slice::from_raw_parts(replica_ptr, replica_len) }.to_vec();
+    let counter = unsafe { sqlite_column_int64(stmt, 1).max(0) as u64 };
+    let lamport_val = unsafe { sqlite_column_int64(stmt, 2).max(0) as Lamport };
+
+    let kind_ptr = unsafe { sqlite_column_text(stmt, 3) } as *const u8;
+    let kind_len = unsafe { sqlite_column_bytes(stmt, 3) } as usize;
+    let kind = if kind_ptr.is_null() {
+        ""
+    } else {
+        std::str::from_utf8(unsafe { slice::from_raw_parts(kind_ptr, kind_len) }).unwrap_or("")
+    };
+
+    let parent =
+        unsafe { column_blob16(stmt, 4) }.map_err(|rc| sqlite_rc_error(rc, "read parent failed"))?;
+    let node = unsafe { column_blob16(stmt, 5) }
+        .map_err(|rc| sqlite_rc_error(rc, "read node failed"))?
+        .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
+    let new_parent = unsafe { column_blob16(stmt, 6) }
+        .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
+    let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int {
+        Vec::new()
+    } else {
+        let ptr = unsafe { sqlite_column_blob(stmt, 7) } as *const u8;
+        let len = unsafe { sqlite_column_bytes(stmt, 7) } as usize;
+        if ptr.is_null() {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
+        }
+    };
+
+    let known_state = if unsafe { sqlite_column_type(stmt, 8) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        let ptr = unsafe { sqlite_column_blob(stmt, 8) } as *const u8;
+        let len = unsafe { sqlite_column_bytes(stmt, 8) } as usize;
+        if ptr.is_null() || len == 0 {
+            None
+        } else {
+            Some(vv_from_bytes(unsafe { slice::from_raw_parts(ptr, len) })?)
+        }
+    };
+
+    let payload = if unsafe { sqlite_column_type(stmt, 9) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        let ptr = unsafe { sqlite_column_blob(stmt, 9) } as *const u8;
+        let len = unsafe { sqlite_column_bytes(stmt, 9) } as usize;
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
+        }
+    };
+
+    let op_kind = match kind {
+        "insert" => {
+            let parent = parent
+                .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "insert missing parent"))?;
+            treecrdt_core::OperationKind::Insert {
+                parent: sqlite_bytes_to_node_id(parent),
+                node: sqlite_bytes_to_node_id(node),
+                order_key,
+                payload,
+            }
+        }
+        "move" => {
+            let new_parent = new_parent.ok_or_else(|| {
+                sqlite_rc_error(SQLITE_ERROR as c_int, "move missing new_parent")
+            })?;
+            treecrdt_core::OperationKind::Move {
+                node: sqlite_bytes_to_node_id(node),
+                new_parent: sqlite_bytes_to_node_id(new_parent),
+                order_key,
+            }
+        }
+        "delete" => treecrdt_core::OperationKind::Delete {
+            node: sqlite_bytes_to_node_id(node),
+        },
+        "tombstone" => treecrdt_core::OperationKind::Tombstone {
+            node: sqlite_bytes_to_node_id(node),
+        },
+        "payload" => treecrdt_core::OperationKind::Payload {
+            node: sqlite_bytes_to_node_id(node),
+            payload,
+        },
+        _ => {
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                "unknown op kind in row",
+            ));
+        }
+    };
+
+    Ok(treecrdt_core::Operation {
+        meta: treecrdt_core::OperationMetadata {
+            id: treecrdt_core::OperationId {
+                replica: treecrdt_core::ReplicaId(replica),
+                counter,
+            },
+            lamport: lamport_val,
+            known_state,
+        },
+        kind: op_kind,
+    })
+}
+
 pub(super) struct SqliteOpStorage {
     db: *mut sqlite3,
     doc_id: Option<Vec<u8>>,
@@ -256,117 +372,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         loop {
             let step_rc = unsafe { sqlite_step(stmt) };
             if step_rc == SQLITE_ROW as c_int {
-                let replica_ptr = unsafe { sqlite_column_blob(stmt, 0) } as *const u8;
-                let replica_len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
-                if replica_ptr.is_null() {
-                    continue;
-                }
-                let replica = unsafe { slice::from_raw_parts(replica_ptr, replica_len) }.to_vec();
-                let counter = unsafe { sqlite_column_int64(stmt, 1).max(0) as u64 };
-                let lamport_val = unsafe { sqlite_column_int64(stmt, 2).max(0) as Lamport };
-
-                let kind_ptr = unsafe { sqlite_column_text(stmt, 3) } as *const u8;
-                let kind_len = unsafe { sqlite_column_bytes(stmt, 3) } as usize;
-                let kind = if kind_ptr.is_null() {
-                    ""
-                } else {
-                    std::str::from_utf8(unsafe { slice::from_raw_parts(kind_ptr, kind_len) })
-                        .unwrap_or("")
-                };
-
-                let parent = unsafe { column_blob16(stmt, 4) }
-                    .map_err(|rc| sqlite_rc_error(rc, "read parent failed"))?;
-                let node = unsafe { column_blob16(stmt, 5) }
-                    .map_err(|rc| sqlite_rc_error(rc, "read node failed"))?
-                    .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
-                let new_parent = unsafe { column_blob16(stmt, 6) }
-                    .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
-                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int {
-                    Vec::new()
-                } else {
-                    let ptr = unsafe { sqlite_column_blob(stmt, 7) } as *const u8;
-                    let len = unsafe { sqlite_column_bytes(stmt, 7) } as usize;
-                    if ptr.is_null() {
-                        Vec::new()
-                    } else {
-                        unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
-                    }
-                };
-
-                let known_state = if unsafe { sqlite_column_type(stmt, 8) } == SQLITE_NULL as c_int
-                {
-                    None
-                } else {
-                    let ptr = unsafe { sqlite_column_blob(stmt, 8) } as *const u8;
-                    let len = unsafe { sqlite_column_bytes(stmt, 8) } as usize;
-                    if ptr.is_null() || len == 0 {
-                        None
-                    } else {
-                        Some(vv_from_bytes(unsafe { slice::from_raw_parts(ptr, len) })?)
-                    }
-                };
-
-                let payload = if unsafe { sqlite_column_type(stmt, 9) } == SQLITE_NULL as c_int {
-                    None
-                } else {
-                    let ptr = unsafe { sqlite_column_blob(stmt, 9) } as *const u8;
-                    let len = unsafe { sqlite_column_bytes(stmt, 9) } as usize;
-                    if ptr.is_null() {
-                        None
-                    } else {
-                        Some(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
-                    }
-                };
-
-                let op_kind = match kind {
-                    "insert" => {
-                        let parent = parent.ok_or_else(|| {
-                            sqlite_rc_error(SQLITE_ERROR as c_int, "insert missing parent")
-                        })?;
-                        treecrdt_core::OperationKind::Insert {
-                            parent: sqlite_bytes_to_node_id(parent),
-                            node: sqlite_bytes_to_node_id(node),
-                            order_key,
-                            payload,
-                        }
-                    }
-                    "move" => {
-                        let new_parent = new_parent.ok_or_else(|| {
-                            sqlite_rc_error(SQLITE_ERROR as c_int, "move missing new_parent")
-                        })?;
-                        treecrdt_core::OperationKind::Move {
-                            node: sqlite_bytes_to_node_id(node),
-                            new_parent: sqlite_bytes_to_node_id(new_parent),
-                            order_key,
-                        }
-                    }
-                    "delete" => treecrdt_core::OperationKind::Delete {
-                        node: sqlite_bytes_to_node_id(node),
-                    },
-                    "tombstone" => treecrdt_core::OperationKind::Tombstone {
-                        node: sqlite_bytes_to_node_id(node),
-                    },
-                    "payload" => treecrdt_core::OperationKind::Payload {
-                        node: sqlite_bytes_to_node_id(node),
-                        payload,
-                    },
-                    _ => {
-                        unsafe { sqlite_finalize(stmt) };
-                        return Err(sqlite_rc_error(SQLITE_ERROR as c_int, "unknown op kind"));
-                    }
-                };
-
-                out.push(treecrdt_core::Operation {
-                    meta: treecrdt_core::OperationMetadata {
-                        id: treecrdt_core::OperationId {
-                            replica: treecrdt_core::ReplicaId(replica),
-                            counter,
-                        },
-                        lamport: lamport_val,
-                        known_state,
-                    },
-                    kind: op_kind,
-                });
+                out.push(read_operation_row(stmt)?);
             } else if step_rc == SQLITE_DONE as c_int {
                 break;
             } else {
@@ -408,119 +414,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         loop {
             let step_rc = unsafe { sqlite_step(stmt) };
             if step_rc == SQLITE_ROW as c_int {
-                let replica_ptr = unsafe { sqlite_column_blob(stmt, 0) } as *const u8;
-                let replica_len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
-                if replica_ptr.is_null() {
-                    continue;
-                }
-                let replica = unsafe { slice::from_raw_parts(replica_ptr, replica_len) }.to_vec();
-                let counter = unsafe { sqlite_column_int64(stmt, 1).max(0) as u64 };
-                let lamport_val = unsafe { sqlite_column_int64(stmt, 2).max(0) as Lamport };
-
-                let kind_ptr = unsafe { sqlite_column_text(stmt, 3) } as *const u8;
-                let kind_len = unsafe { sqlite_column_bytes(stmt, 3) } as usize;
-                let kind = if kind_ptr.is_null() {
-                    ""
-                } else {
-                    std::str::from_utf8(unsafe { slice::from_raw_parts(kind_ptr, kind_len) })
-                        .unwrap_or("")
-                };
-
-                let parent = unsafe { column_blob16(stmt, 4) }
-                    .map_err(|rc| sqlite_rc_error(rc, "read parent failed"))?;
-                let node = unsafe { column_blob16(stmt, 5) }
-                    .map_err(|rc| sqlite_rc_error(rc, "read node failed"))?
-                    .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
-                let new_parent = unsafe { column_blob16(stmt, 6) }
-                    .map_err(|rc| sqlite_rc_error(rc, "read new_parent failed"))?;
-                let order_key = if unsafe { sqlite_column_type(stmt, 7) } == SQLITE_NULL as c_int {
-                    Vec::new()
-                } else {
-                    let ptr = unsafe { sqlite_column_blob(stmt, 7) } as *const u8;
-                    let len = unsafe { sqlite_column_bytes(stmt, 7) } as usize;
-                    if ptr.is_null() {
-                        Vec::new()
-                    } else {
-                        unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
-                    }
-                };
-
-                let known_state = if unsafe { sqlite_column_type(stmt, 8) } == SQLITE_NULL as c_int
-                {
-                    None
-                } else {
-                    let ptr = unsafe { sqlite_column_blob(stmt, 8) } as *const u8;
-                    let len = unsafe { sqlite_column_bytes(stmt, 8) } as usize;
-                    if ptr.is_null() || len == 0 {
-                        None
-                    } else {
-                        Some(vv_from_bytes(unsafe { slice::from_raw_parts(ptr, len) })?)
-                    }
-                };
-
-                let payload = if unsafe { sqlite_column_type(stmt, 9) } == SQLITE_NULL as c_int {
-                    None
-                } else {
-                    let ptr = unsafe { sqlite_column_blob(stmt, 9) } as *const u8;
-                    let len = unsafe { sqlite_column_bytes(stmt, 9) } as usize;
-                    if ptr.is_null() {
-                        None
-                    } else {
-                        Some(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
-                    }
-                };
-
-                let op_kind = match kind {
-                    "insert" => {
-                        let parent = parent.ok_or_else(|| {
-                            sqlite_rc_error(SQLITE_ERROR as c_int, "insert missing parent")
-                        })?;
-                        treecrdt_core::OperationKind::Insert {
-                            parent: sqlite_bytes_to_node_id(parent),
-                            node: sqlite_bytes_to_node_id(node),
-                            order_key,
-                            payload,
-                        }
-                    }
-                    "move" => {
-                        let new_parent = new_parent.ok_or_else(|| {
-                            sqlite_rc_error(SQLITE_ERROR as c_int, "move missing new_parent")
-                        })?;
-                        treecrdt_core::OperationKind::Move {
-                            node: sqlite_bytes_to_node_id(node),
-                            new_parent: sqlite_bytes_to_node_id(new_parent),
-                            order_key,
-                        }
-                    }
-                    "delete" => treecrdt_core::OperationKind::Delete {
-                        node: sqlite_bytes_to_node_id(node),
-                    },
-                    "tombstone" => treecrdt_core::OperationKind::Tombstone {
-                        node: sqlite_bytes_to_node_id(node),
-                    },
-                    "payload" => treecrdt_core::OperationKind::Payload {
-                        node: sqlite_bytes_to_node_id(node),
-                        payload,
-                    },
-                    _ => {
-                        unsafe { sqlite_finalize(stmt) };
-                        return Err(sqlite_rc_error(SQLITE_ERROR as c_int, "unknown op kind"));
-                    }
-                };
-
-                let op = treecrdt_core::Operation {
-                    meta: treecrdt_core::OperationMetadata {
-                        id: treecrdt_core::OperationId {
-                            replica: treecrdt_core::ReplicaId(replica),
-                            counter,
-                        },
-                        lamport: lamport_val,
-                        known_state,
-                    },
-                    kind: op_kind,
-                };
-
-                if let Err(err) = visit(op) {
+                if let Err(err) = visit(read_operation_row(stmt)?) {
                     unsafe { sqlite_finalize(stmt) };
                     return Err(err);
                 }
@@ -593,5 +487,224 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         }
 
         Ok(val)
+    }
+}
+
+impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
+    fn scan_frontier_range(
+        &self,
+        start: &treecrdt_core::MaterializationFrontierRef<'_>,
+        end: Option<&treecrdt_core::MaterializationKey<&[u8]>>,
+        visit: &mut dyn FnMut(treecrdt_core::Operation) -> treecrdt_core::Result<()>,
+    ) -> treecrdt_core::Result<()> {
+        let sql = if end.is_some() {
+            CString::new(
+                "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+                 FROM ops \
+                 WHERE (lamport > ?1 OR (lamport = ?1 AND (replica > ?2 OR (replica = ?2 AND counter >= ?3)))) \
+                   AND (lamport < ?4 OR (lamport = ?4 AND (replica < ?5 OR (replica = ?5 AND counter <= ?6)))) \
+                 ORDER BY lamport, replica, counter",
+            )
+            .expect("scan frontier range bounded sql")
+        } else {
+            CString::new(
+                "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+                 FROM ops \
+                 WHERE (lamport > ?1 OR (lamport = ?1 AND (replica > ?2 OR (replica = ?2 AND counter >= ?3)))) \
+                 ORDER BY lamport, replica, counter",
+            )
+            .expect("scan frontier range sql")
+        };
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(rc, "prepare frontier range failed"));
+        }
+
+        let mut bind_err = false;
+        unsafe {
+            bind_err |= sqlite_bind_int64(stmt, 1, start.lamport as i64) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                2,
+                start.replica.as_ptr() as *const c_void,
+                start.replica.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 3, start.counter as i64) != SQLITE_OK as c_int;
+        }
+        if let Some(end) = end {
+            unsafe {
+                bind_err |= sqlite_bind_int64(stmt, 4, end.lamport as i64) != SQLITE_OK as c_int;
+                bind_err |= sqlite_bind_blob(
+                    stmt,
+                    5,
+                    end.replica.as_ptr() as *const c_void,
+                    end.replica.len() as c_int,
+                    None,
+                ) != SQLITE_OK as c_int;
+                bind_err |= sqlite_bind_int64(stmt, 6, end.counter as i64) != SQLITE_OK as c_int;
+            }
+        }
+        if bind_err {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(SQLITE_ERROR as c_int, "bind frontier range failed"));
+        }
+
+        loop {
+            let step_rc = unsafe { sqlite_step(stmt) };
+            if step_rc == SQLITE_ROW as c_int {
+                if let Err(err) = visit(read_operation_row(stmt)?) {
+                    unsafe { sqlite_finalize(stmt) };
+                    return Err(err);
+                }
+            } else if step_rc == SQLITE_DONE as c_int {
+                break;
+            } else {
+                unsafe { sqlite_finalize(stmt) };
+                return Err(sqlite_rc_error(step_rc, "frontier range step failed"));
+            }
+        }
+
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(finalize_rc, "finalize frontier range failed"));
+        }
+        Ok(())
+    }
+
+    fn latest_structural_before(
+        &self,
+        node: NodeId,
+        before: &treecrdt_core::MaterializationFrontierRef<'_>,
+    ) -> treecrdt_core::Result<Option<treecrdt_core::Operation>> {
+        let sql = CString::new(
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+             FROM ops \
+             WHERE node = ?1 \
+               AND kind IN ('insert', 'move') \
+               AND (lamport < ?2 OR (lamport = ?2 AND (replica < ?3 OR (replica = ?3 AND counter < ?4)))) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+        )
+        .expect("latest structural before sql");
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(rc, "prepare latest structural failed"));
+        }
+
+        let node_bytes = sqlite_node_id_bytes(node);
+        let mut bind_err = false;
+        unsafe {
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                1,
+                node_bytes.as_ptr() as *const c_void,
+                node_bytes.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 2, before.lamport as i64) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                3,
+                before.replica.as_ptr() as *const c_void,
+                before.replica.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 4, before.counter as i64) != SQLITE_OK as c_int;
+        }
+        if bind_err {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                "bind latest structural failed",
+            ));
+        }
+
+        let step_rc = unsafe { sqlite_step(stmt) };
+        let op = if step_rc == SQLITE_ROW as c_int {
+            Some(read_operation_row(stmt)?)
+        } else if step_rc == SQLITE_DONE as c_int {
+            None
+        } else {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(step_rc, "latest structural step failed"));
+        };
+
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(
+                finalize_rc,
+                "finalize latest structural failed",
+            ));
+        }
+        Ok(op)
+    }
+
+    fn latest_payload_before(
+        &self,
+        node: NodeId,
+        before: &treecrdt_core::MaterializationFrontierRef<'_>,
+    ) -> treecrdt_core::Result<Option<treecrdt_core::Operation>> {
+        let sql = CString::new(
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+             FROM ops \
+             WHERE node = ?1 \
+               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+               AND (lamport < ?2 OR (lamport = ?2 AND (replica < ?3 OR (replica = ?3 AND counter < ?4)))) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+        )
+        .expect("latest payload before sql");
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(rc, "prepare latest payload failed"));
+        }
+
+        let node_bytes = sqlite_node_id_bytes(node);
+        let mut bind_err = false;
+        unsafe {
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                1,
+                node_bytes.as_ptr() as *const c_void,
+                node_bytes.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 2, before.lamport as i64) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                3,
+                before.replica.as_ptr() as *const c_void,
+                before.replica.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 4, before.counter as i64) != SQLITE_OK as c_int;
+        }
+        if bind_err {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                "bind latest payload failed",
+            ));
+        }
+
+        let step_rc = unsafe { sqlite_step(stmt) };
+        let op = if step_rc == SQLITE_ROW as c_int {
+            Some(read_operation_row(stmt)?)
+        } else if step_rc == SQLITE_DONE as c_int {
+            None
+        } else {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(step_rc, "latest payload step failed"));
+        };
+
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(finalize_rc, "finalize latest payload failed"));
+        }
+        Ok(op)
     }
 }

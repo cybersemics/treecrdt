@@ -5,9 +5,12 @@ use super::payload_store::SqlitePayloadStore;
 use super::schema::{set_tree_meta_replay_frontier, tree_meta_from_state};
 use super::util::sqlite_err_from_core;
 use super::*;
+use std::collections::HashSet;
 use treecrdt_core::PayloadStore;
 use treecrdt_core::Storage;
-use treecrdt_core::{LamportClock, MaterializationCursor, ReplicaId};
+use treecrdt_core::{
+    try_partial_rewind_catch_up_materialized_state, LamportClock, MaterializationCursor, ReplicaId,
+};
 
 fn merge_affected_nodes(mut left: Vec<NodeId>, right: Vec<NodeId>) -> Vec<NodeId> {
     left.extend(right);
@@ -271,6 +274,8 @@ pub(super) fn append_ops_impl(
             inserted_ops.push(operation);
         }
     }
+    let inserted_op_ids: HashSet<treecrdt_core::OperationId> =
+        inserted_ops.iter().map(|op| op.meta.id.clone()).collect();
 
     let apply_result = if let Some(shortcut) = {
         let payloads = SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
@@ -316,21 +321,59 @@ pub(super) fn append_ops_impl(
     };
     let apply_result = if apply_result.catch_up_needed {
         let refreshed_meta = load_tree_meta(db)?;
-        let catch_up = treecrdt_core::catch_up_materialized_state(
-            super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
-            treecrdt_core::PersistedRemoteStores {
-                replica_id: ReplicaId::new(b"sqlite-ext"),
-                clock: LamportClock::default(),
-                nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                    .map_err(|_| SQLITE_ERROR as c_int)?,
-            },
-            &refreshed_meta,
-            |_| Ok(()),
-            |_| Ok(()),
-        )
-        .map_err(|_| SQLITE_ERROR as c_int)?;
+        let catch_up = if meta.state().replay_from.is_none() {
+            try_partial_rewind_catch_up_materialized_state(
+                &super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
+                &inserted_op_ids,
+                treecrdt_core::PersistedRemoteStores {
+                    replica_id: ReplicaId::new(b"sqlite-ext"),
+                    clock: LamportClock::default(),
+                    nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                    payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                    index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+                        .map_err(|_| SQLITE_ERROR as c_int)?,
+                },
+                &refreshed_meta,
+                |_| Ok(()),
+                |_| Ok(()),
+            )
+            .map_err(|_| SQLITE_ERROR as c_int)?
+            .unwrap_or(
+                treecrdt_core::catch_up_materialized_state(
+                    super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
+                    treecrdt_core::PersistedRemoteStores {
+                        replica_id: ReplicaId::new(b"sqlite-ext"),
+                        clock: LamportClock::default(),
+                        nodes: SqliteNodeStore::prepare(db)
+                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                        payloads: SqlitePayloadStore::prepare(db)
+                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                        index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                    },
+                    &refreshed_meta,
+                    |_| Ok(()),
+                    |_| Ok(()),
+                )
+                .map_err(|_| SQLITE_ERROR as c_int)?,
+            )
+        } else {
+            treecrdt_core::catch_up_materialized_state(
+                super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
+                treecrdt_core::PersistedRemoteStores {
+                    replica_id: ReplicaId::new(b"sqlite-ext"),
+                    clock: LamportClock::default(),
+                    nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                    payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                    index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+                        .map_err(|_| SQLITE_ERROR as c_int)?,
+                },
+                &refreshed_meta,
+                |_| Ok(()),
+                |_| Ok(()),
+            )
+            .map_err(|_| SQLITE_ERROR as c_int)?
+        };
         update_tree_meta_head(
             db,
             Some(catch_up.head.as_ref().ok_or(SQLITE_ERROR as c_int)?),
