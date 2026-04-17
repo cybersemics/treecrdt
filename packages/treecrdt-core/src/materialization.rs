@@ -103,9 +103,7 @@ pub trait FrontierRewindStorage: Storage {
     ) -> Result<Option<Operation>> {
         let mut ops = self.load_since(0)?;
         ops.sort_by(cmp_ops);
-        Ok(ops
-            .into_iter()
-            .filter(|op| {
+        Ok(ops.into_iter().rfind(|op| {
                 let frontier = frontier_from_op(op);
                 cmp_frontiers(&frontier, before) == Ordering::Less
                     && matches!(
@@ -114,8 +112,7 @@ pub trait FrontierRewindStorage: Storage {
                             | crate::ops::OperationKind::Move { node: n, .. }
                             if n == node
                     )
-            })
-            .next_back())
+            }))
     }
 
     fn latest_payload_before(
@@ -125,9 +122,7 @@ pub trait FrontierRewindStorage: Storage {
     ) -> Result<Option<Operation>> {
         let mut ops = self.load_since(0)?;
         ops.sort_by(cmp_ops);
-        Ok(ops
-            .into_iter()
-            .filter(|op| {
+        Ok(ops.into_iter().rfind(|op| {
                 let frontier = frontier_from_op(op);
                 cmp_frontiers(&frontier, before) == Ordering::Less
                     && match &op.kind {
@@ -137,8 +132,7 @@ pub trait FrontierRewindStorage: Storage {
                         crate::ops::OperationKind::Payload { node: n, .. } => *n == node,
                         _ => false,
                     }
-            })
-            .next_back())
+            }))
     }
 }
 
