@@ -104,15 +104,15 @@ pub trait FrontierRewindStorage: Storage {
         let mut ops = self.load_since(0)?;
         ops.sort_by(cmp_ops);
         Ok(ops.into_iter().rfind(|op| {
-                let frontier = frontier_from_op(op);
-                cmp_frontiers(&frontier, before) == Ordering::Less
-                    && matches!(
-                        op.kind,
-                        crate::ops::OperationKind::Insert { node: n, .. }
-                            | crate::ops::OperationKind::Move { node: n, .. }
-                            if n == node
-                    )
-            }))
+            let frontier = frontier_from_op(op);
+            cmp_frontiers(&frontier, before) == Ordering::Less
+                && matches!(
+                    op.kind,
+                    crate::ops::OperationKind::Insert { node: n, .. }
+                        | crate::ops::OperationKind::Move { node: n, .. }
+                        if n == node
+                )
+        }))
     }
 
     fn latest_payload_before(
@@ -123,16 +123,16 @@ pub trait FrontierRewindStorage: Storage {
         let mut ops = self.load_since(0)?;
         ops.sort_by(cmp_ops);
         Ok(ops.into_iter().rfind(|op| {
-                let frontier = frontier_from_op(op);
-                cmp_frontiers(&frontier, before) == Ordering::Less
-                    && match &op.kind {
-                        crate::ops::OperationKind::Insert {
-                            node: n, payload, ..
-                        } => *n == node && payload.is_some(),
-                        crate::ops::OperationKind::Payload { node: n, .. } => *n == node,
-                        _ => false,
-                    }
-            }))
+            let frontier = frontier_from_op(op);
+            cmp_frontiers(&frontier, before) == Ordering::Less
+                && match &op.kind {
+                    crate::ops::OperationKind::Insert {
+                        node: n, payload, ..
+                    } => *n == node && payload.is_some(),
+                    crate::ops::OperationKind::Payload { node: n, .. } => *n == node,
+                    _ => false,
+                }
+        }))
     }
 }
 
