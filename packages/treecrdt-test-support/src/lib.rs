@@ -51,7 +51,14 @@ pub fn append_batch_materializes_only_inserted_ops<H: MaterializationConformance
 ) {
     let replica = ReplicaId::new(b"dup");
     let node = node(1);
-    let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, node, order_key_from_position(0));
+    let insert = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node,
+        order_key_from_position(0),
+    );
     let payload = Operation::set_payload(&replica, 2, 2, node, vec![9]);
 
     let before = harness.op_count();
@@ -276,8 +283,14 @@ pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
     let parent = node(1);
     let child = node(2);
 
-    let insert_parent =
-        Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, order_key_from_position(0));
+    let insert_parent = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        parent,
+        order_key_from_position(0),
+    );
     let insert_child = Operation::insert(&replica, 2, 2, parent, child, order_key_from_position(0));
 
     let mut vv = treecrdt_core::VersionVector::new();

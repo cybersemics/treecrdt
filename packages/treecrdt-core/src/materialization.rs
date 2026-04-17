@@ -140,9 +140,7 @@ pub trait FrontierRewindStorage: Storage {
                 cmp_frontiers(&frontier, before) == Ordering::Less
                     && match &op.kind {
                         crate::ops::OperationKind::Insert {
-                            node: n,
-                            payload,
-                            ..
+                            node: n, payload, ..
                         } => *n == node && payload.is_some(),
                         crate::ops::OperationKind::Payload { node: n, .. } => *n == node,
                         _ => false,
@@ -324,9 +322,7 @@ fn rewind_structure_op_in_place<S: FrontierRewindStorage, N: NodeStore>(
 
     match previous.as_ref().map(|prev| &prev.kind) {
         Some(crate::ops::OperationKind::Insert {
-            parent,
-            order_key,
-            ..
+            parent, order_key, ..
         }) => nodes.attach(node, *parent, order_key.clone())?,
         Some(crate::ops::OperationKind::Move {
             new_parent,
@@ -774,9 +770,8 @@ where
         return Ok(None);
     }
 
-    let prefix_seq = head
-        .seq
-        .saturating_sub(existing_suffix_ops.len().min(u64::MAX as usize) as u64);
+    let prefix_seq =
+        head.seq.saturating_sub(existing_suffix_ops.len().min(u64::MAX as usize) as u64);
     let truncate_from = prefix_seq.saturating_add(1);
 
     let PersistedRemoteStores {

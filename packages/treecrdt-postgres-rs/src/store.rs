@@ -9,10 +9,10 @@ use treecrdt_core::{
     apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
     materialize_persisted_remote_ops_with_delta, try_direct_rewind_catch_up_materialized_state,
     try_shortcut_out_of_order_payload_noops, Error, ExactNodeStore, ExactPayloadStore,
-    FrontierRewindStorage, Lamport, LamportClock, MaterializationCursor,
-    MaterializationFrontier, MaterializationHead, MaterializationKey, MaterializationState, NodeId,
-    NodeStore, Operation, OperationId, OperationKind, PayloadStore, PersistedRemoteStores,
-    ReplicaId, Result, Storage, TruncatingParentOpIndex, VersionVector,
+    FrontierRewindStorage, Lamport, LamportClock, MaterializationCursor, MaterializationFrontier,
+    MaterializationHead, MaterializationKey, MaterializationState, NodeId, NodeStore, Operation,
+    OperationId, OperationKind, PayloadStore, PersistedRemoteStores, ReplicaId, Result, Storage,
+    TruncatingParentOpIndex, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -1912,21 +1912,19 @@ fn append_ops_in_tx(
                 |nodes| nodes.flush_last_change(),
                 |index| index.flush(),
             )?
-            .unwrap_or(
-                catch_up_materialized_state(
-                    PgOpStorage::new(ctx.clone()),
-                    PersistedRemoteStores {
-                        replica_id: ReplicaId::new(b"postgres"),
-                        clock: LamportClock::default(),
-                        nodes: PgNodeStore::new(ctx.clone()),
-                        payloads: PgPayloadStore::new(ctx.clone()),
-                        index: PgParentOpIndex::new(ctx.clone()),
-                    },
-                    &refreshed_meta,
-                    |nodes| nodes.flush_last_change(),
-                    |index| index.flush(),
-                )?,
-            )
+            .unwrap_or(catch_up_materialized_state(
+                PgOpStorage::new(ctx.clone()),
+                PersistedRemoteStores {
+                    replica_id: ReplicaId::new(b"postgres"),
+                    clock: LamportClock::default(),
+                    nodes: PgNodeStore::new(ctx.clone()),
+                    payloads: PgPayloadStore::new(ctx.clone()),
+                    index: PgParentOpIndex::new(ctx.clone()),
+                },
+                &refreshed_meta,
+                |nodes| nodes.flush_last_change(),
+                |index| index.flush(),
+            )?)
         } else {
             catch_up_materialized_state(
                 PgOpStorage::new(ctx.clone()),

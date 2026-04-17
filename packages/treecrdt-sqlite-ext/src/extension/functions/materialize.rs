@@ -344,8 +344,7 @@ pub(super) fn append_ops_impl(
                     treecrdt_core::PersistedRemoteStores {
                         replica_id: ReplicaId::new(b"sqlite-ext"),
                         clock: LamportClock::default(),
-                        nodes: SqliteNodeStore::prepare(db)
-                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                        nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
                         payloads: SqlitePayloadStore::prepare(db)
                             .map_err(|_| SQLITE_ERROR as c_int)?,
                         index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())

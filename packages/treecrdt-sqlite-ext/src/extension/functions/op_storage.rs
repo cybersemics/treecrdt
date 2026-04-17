@@ -41,8 +41,8 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
         std::str::from_utf8(unsafe { slice::from_raw_parts(kind_ptr, kind_len) }).unwrap_or("")
     };
 
-    let parent =
-        unsafe { column_blob16(stmt, 4) }.map_err(|rc| sqlite_rc_error(rc, "read parent failed"))?;
+    let parent = unsafe { column_blob16(stmt, 4) }
+        .map_err(|rc| sqlite_rc_error(rc, "read parent failed"))?;
     let node = unsafe { column_blob16(stmt, 5) }
         .map_err(|rc| sqlite_rc_error(rc, "read node failed"))?
         .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "node missing"))?;
@@ -96,9 +96,8 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
             }
         }
         "move" => {
-            let new_parent = new_parent.ok_or_else(|| {
-                sqlite_rc_error(SQLITE_ERROR as c_int, "move missing new_parent")
-            })?;
+            let new_parent = new_parent
+                .ok_or_else(|| sqlite_rc_error(SQLITE_ERROR as c_int, "move missing new_parent"))?;
             treecrdt_core::OperationKind::Move {
                 node: sqlite_bytes_to_node_id(node),
                 new_parent: sqlite_bytes_to_node_id(new_parent),
@@ -548,7 +547,10 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
         }
         if bind_err {
             unsafe { sqlite_finalize(stmt) };
-            return Err(sqlite_rc_error(SQLITE_ERROR as c_int, "bind frontier range failed"));
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                "bind frontier range failed",
+            ));
         }
 
         loop {
@@ -568,7 +570,10 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
 
         let finalize_rc = unsafe { sqlite_finalize(stmt) };
         if finalize_rc != SQLITE_OK as c_int {
-            return Err(sqlite_rc_error(finalize_rc, "finalize frontier range failed"));
+            return Err(sqlite_rc_error(
+                finalize_rc,
+                "finalize frontier range failed",
+            ));
         }
         Ok(())
     }
@@ -703,7 +708,10 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
 
         let finalize_rc = unsafe { sqlite_finalize(stmt) };
         if finalize_rc != SQLITE_OK as c_int {
-            return Err(sqlite_rc_error(finalize_rc, "finalize latest payload failed"));
+            return Err(sqlite_rc_error(
+                finalize_rc,
+                "finalize latest payload failed",
+            ));
         }
         Ok(op)
     }
