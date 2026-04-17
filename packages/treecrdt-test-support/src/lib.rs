@@ -7,11 +7,13 @@ pub trait MaterializationConformanceHarness {
     fn append_ops_with_affected_nodes(&self, ops: &[Operation]) -> Vec<NodeId>;
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId>;
     fn payload(&self, node: NodeId) -> Option<Vec<u8>>;
+    fn op_count(&self) -> u64;
     fn replay_frontier(&self) -> Option<MaterializationFrontier>;
     fn head_seq(&self) -> u64;
     fn force_replay_from_start(&self);
     fn ensure_materialized(&self);
     fn op_ref_counters_for_parent(&self, parent: NodeId) -> Vec<u64>;
+    fn op_kinds_for_parent(&self, parent: NodeId) -> Vec<String>;
 }
 
 pub fn order_key_from_position(position: u16) -> Vec<u8> {
@@ -42,6 +44,39 @@ pub fn representative_remote_batch(
             Operation::set_payload(replica, 6, 6, child, vec![8]),
         ],
     )
+}
+
+pub fn append_batch_materializes_only_inserted_ops<H: MaterializationConformanceHarness>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"dup");
+    let node = node(1);
+    let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, node, order_key_from_position(0));
+    let payload = Operation::set_payload(&replica, 2, 2, node, vec![9]);
+
+    let before = harness.op_count();
+    harness.append_ops(&[insert.clone(), insert, payload]);
+
+    assert_eq!(harness.op_count().saturating_sub(before), 2);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![node]);
+    assert_eq!(harness.head_seq(), 2);
+}
+
+pub fn representative_remote_batch_matches_shape<H: MaterializationConformanceHarness>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"rep");
+    let (p1, p2, child, ops) = representative_remote_batch(&replica);
+
+    let affected = harness.append_ops_with_affected_nodes(&ops);
+    assert_eq!(affected, vec![NodeId::ROOT, p1, p2, child]);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![p1, p2]);
+    assert_eq!(harness.visible_children(p2), vec![child]);
+    assert_eq!(harness.payload(child), Some(vec![8]));
+
+    let kinds = harness.op_kinds_for_parent(p2);
+    assert!(kinds.iter().any(|kind| kind == "move"));
+    assert!(kinds.iter().any(|kind| kind == "payload"));
 }
 
 fn assert_replay_cleared<H: MaterializationConformanceHarness>(harness: &H) {

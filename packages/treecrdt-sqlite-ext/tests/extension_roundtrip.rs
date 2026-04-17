@@ -8,8 +8,7 @@ use treecrdt_core::{
     order_key::allocate_between, NodeId, Operation, OperationKind, ReplicaId, VersionVector,
 };
 use treecrdt_test_support::{
-    self as materialization_conformance, representative_remote_batch,
-    MaterializationConformanceHarness,
+    self as materialization_conformance, MaterializationConformanceHarness,
 };
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -205,6 +204,13 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
         payload_bytes(&self.conn, &node_bytes_from_id(node))
     }
 
+    fn op_count(&self) -> u64 {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM ops", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .max(0) as u64
+    }
+
     fn replay_frontier(&self) -> Option<treecrdt_core::MaterializationFrontier> {
         match read_replay_frontier(&self.conn) {
             (Some(lamport), Some(replica), Some(counter)) => {
@@ -250,6 +256,16 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
         )
         .iter()
         .map(|op| op.counter)
+        .collect()
+    }
+
+    fn op_kinds_for_parent(&self, parent: NodeId) -> Vec<String> {
+        ops_by_oprefs(
+            &self.conn,
+            &oprefs_children(&self.conn, &node_bytes_from_id(parent)),
+        )
+        .iter()
+        .map(|op| op.kind.clone())
         .collect()
     }
 }
@@ -382,79 +398,14 @@ fn local_insert_returns_appended_insert_op() {
 
 #[test]
 fn remote_append_materializes_only_inserted_ops() {
-    let conn = setup_conn();
-
-    let replica = b"dup".to_vec();
-    let root = node_bytes(0);
-    let node = node_bytes(1);
-    let insert = JsonOp {
-        replica: replica.clone(),
-        counter: 1,
-        lamport: 1,
-        kind: "insert".into(),
-        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
-        node: <[u8; 16]>::try_from(node.as_slice()).unwrap(),
-        new_parent: None,
-        order_key: Some((1u16).to_be_bytes().to_vec()),
-        known_state: None,
-        payload: None,
-    };
-    let payload = JsonOp {
-        replica,
-        counter: 2,
-        lamport: 2,
-        kind: "payload".into(),
-        parent: None,
-        node: <[u8; 16]>::try_from(node.as_slice()).unwrap(),
-        new_parent: None,
-        order_key: None,
-        known_state: None,
-        payload: Some(vec![9]),
-    };
-
-    let (affected, op_count) = append_ops_json(&conn, &[insert.clone(), insert, payload]);
-    assert_eq!(affected, vec![root.clone(), node.clone()]);
-    assert_eq!(op_count, 2);
-    assert_eq!(visible_children(&conn, &root), vec![node]);
-
-    let (_, _, _, head_seq) = read_tree_meta(&conn);
-    assert_eq!(head_seq, 2);
+    let harness = setup_conformance_harness();
+    materialization_conformance::append_batch_materializes_only_inserted_ops(&harness);
 }
 
 #[test]
 fn remote_append_representative_batch_matches_postgres_shape() {
-    let conn = setup_conn();
-
-    let root = node_bytes(0);
-    let replica = ReplicaId::new(b"rep");
-    let (p1, p2, child, ops) = representative_remote_batch(&replica);
-    let (affected, _) = append_ops_json(&conn, &json_ops(&ops));
-
-    assert_eq!(
-        affected,
-        vec![
-            root.clone(),
-            node_bytes_from_id(p1),
-            node_bytes_from_id(p2),
-            node_bytes_from_id(child)
-        ]
-    );
-    assert_eq!(
-        visible_children(&conn, &root),
-        vec![node_bytes_from_id(p1), node_bytes_from_id(p2)]
-    );
-    assert_eq!(
-        visible_children(&conn, &node_bytes_from_id(p2)),
-        vec![node_bytes_from_id(child)]
-    );
-    assert_eq!(
-        payload_bytes(&conn, &node_bytes_from_id(child)),
-        Some(vec![8])
-    );
-
-    let ops_p2 = ops_by_oprefs(&conn, &oprefs_children(&conn, &node_bytes_from_id(p2)));
-    assert!(ops_p2.iter().any(|op| op.kind == "move"));
-    assert!(ops_p2.iter().any(|op| op.kind == "payload"));
+    let harness = setup_conformance_harness();
+    materialization_conformance::representative_remote_batch_matches_shape(&harness);
 }
 
 #[test]

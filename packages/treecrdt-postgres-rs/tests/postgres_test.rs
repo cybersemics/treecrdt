@@ -14,7 +14,7 @@ use treecrdt_postgres::{
 };
 use treecrdt_test_support::{
     self as materialization_conformance, node, order_key_from_position,
-    representative_remote_batch, MaterializationConformanceHarness,
+    MaterializationConformanceHarness,
 };
 
 fn connect() -> Option<Rc<RefCell<Client>>> {
@@ -51,6 +51,17 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
 
     fn payload(&self, node: NodeId) -> Option<Vec<u8>> {
         tree_payload(&self.client, &self.doc_id, node).unwrap()
+    }
+
+    fn op_count(&self) -> u64 {
+        let mut c = self.client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT COUNT(*) FROM treecrdt_ops WHERE doc_id = $1",
+                &[&self.doc_id],
+            )
+            .unwrap();
+        row.get::<_, i64>(0).max(0) as u64
     }
 
     fn replay_frontier(&self) -> Option<treecrdt_core::MaterializationFrontier> {
@@ -109,6 +120,21 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
         let ops = get_ops_by_op_refs(&self.client, &self.doc_id, &refs).unwrap();
         ops.iter().map(|op| op.meta.id.counter).collect()
     }
+
+    fn op_kinds_for_parent(&self, parent: NodeId) -> Vec<String> {
+        let refs = list_op_refs_children(&self.client, &self.doc_id, parent).unwrap();
+        let ops = get_ops_by_op_refs(&self.client, &self.doc_id, &refs).unwrap();
+        ops.iter()
+            .map(|op| match op.kind {
+                treecrdt_core::OperationKind::Insert { .. } => "insert",
+                treecrdt_core::OperationKind::Move { .. } => "move",
+                treecrdt_core::OperationKind::Delete { .. } => "delete",
+                treecrdt_core::OperationKind::Tombstone { .. } => "tombstone",
+                treecrdt_core::OperationKind::Payload { .. } => "payload",
+            })
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 fn setup_conformance_harness() -> Option<PgConformanceHarness> {
@@ -156,79 +182,18 @@ fn postgres_backend_apply_is_idempotent_and_max_lamport_monotonic() {
 
 #[test]
 fn postgres_backend_append_batch_materializes_only_inserted_ops() {
-    let Some(client) = connect() else {
+    let Some(harness) = setup_conformance_harness() else {
         return;
     };
-    ensure_schema_once(&client);
-
-    let doc_id = format!("test-{}", Uuid::new_v4());
-    {
-        let mut c = client.borrow_mut();
-        reset_doc_for_tests(&mut c, &doc_id).unwrap();
-    }
-
-    let replica = ReplicaId::new(b"dup");
-    let n1 = node(1);
-    let op1 = Operation::insert(&replica, 1, 1, NodeId::ROOT, n1, order_key_from_position(0));
-    let op2 = Operation::set_payload(&replica, 2, 2, n1, vec![9]);
-
-    let inserted = append_ops(&client, &doc_id, &[op1.clone(), op1.clone(), op2.clone()]).unwrap();
-    assert_eq!(inserted, 2);
-    assert_eq!(list_op_refs_all(&client, &doc_id).unwrap().len(), 2);
-    assert_eq!(
-        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
-        vec![n1]
-    );
-
-    let head_seq = {
-        let mut c = client.borrow_mut();
-        let row = c
-            .query_one(
-                "SELECT head_seq FROM treecrdt_meta WHERE doc_id = $1",
-                &[&doc_id],
-            )
-            .unwrap();
-        row.get::<_, i64>(0).max(0) as u64
-    };
-    assert_eq!(head_seq, 2);
+    materialization_conformance::append_batch_materializes_only_inserted_ops(&harness);
 }
 
 #[test]
 fn postgres_backend_append_with_affected_nodes_matches_representative_remote_batch() {
-    let Some(client) = connect() else {
+    let Some(harness) = setup_conformance_harness() else {
         return;
     };
-    ensure_schema_once(&client);
-
-    let doc_id = format!("test-{}", Uuid::new_v4());
-    {
-        let mut c = client.borrow_mut();
-        reset_doc_for_tests(&mut c, &doc_id).unwrap();
-    }
-
-    let replica = ReplicaId::new(b"rep");
-    let (p1, p2, child, ops) = representative_remote_batch(&replica);
-
-    let affected = append_ops_with_affected_nodes(&client, &doc_id, &ops).unwrap();
-    assert_eq!(affected, vec![NodeId::ROOT, p1, p2, child]);
-    assert_eq!(
-        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
-        vec![p1, p2]
-    );
-    assert_eq!(tree_children(&client, &doc_id, p2).unwrap(), vec![child]);
-    assert_eq!(
-        tree_payload(&client, &doc_id, child).unwrap(),
-        Some(vec![8])
-    );
-
-    let refs_p2 = list_op_refs_children(&client, &doc_id, p2).unwrap();
-    let ops_p2 = get_ops_by_op_refs(&client, &doc_id, &refs_p2).unwrap();
-    assert!(ops_p2
-        .iter()
-        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
-    assert!(ops_p2
-        .iter()
-        .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Payload { .. })));
+    materialization_conformance::representative_remote_batch_matches_shape(&harness);
 }
 
 #[test]
