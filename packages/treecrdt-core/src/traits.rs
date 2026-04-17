@@ -160,6 +160,11 @@ pub trait PayloadStore {
 }
 
 pub trait ExactPayloadStore: PayloadStore {
+    /// Remove any current payload winner for `node`.
+    ///
+    /// `PayloadStore::set_payload(...)` is a forward-materialization API: callers provide the new
+    /// winner tuple explicitly. Direct rewind/catch-up also needs an exact "no winner exists"
+    /// operation when rolling a payload-bearing suffix back to the pre-suffix state.
     fn clear_payload(&mut self, node: NodeId) -> Result<()>;
 }
 
@@ -173,6 +178,10 @@ pub trait ParentOpIndex {
 }
 
 pub trait TruncatingParentOpIndex: ParentOpIndex {
+    /// Delete derived index rows for the invalidated materialized suffix starting at `seq`.
+    ///
+    /// This does not truncate the op log. It only removes stale `children(parent)` index entries
+    /// so the corrected suffix can be re-recorded in canonical order.
     fn truncate_from(&mut self, seq: u64) -> Result<()>;
 }
 
@@ -196,7 +205,13 @@ impl TruncatingParentOpIndex for NoopParentOpIndex {
 }
 
 pub trait ExactNodeStore: NodeStore {
+    /// Overwrite `last_change` with the exact value from a rebuilt/rewound materialized state.
+    ///
+    /// `NodeStore::merge_last_change(...)` is sufficient for forward incremental application, but
+    /// rewind/catch-up needs to restore the precise post-replay value rather than merge with the
+    /// stale value currently persisted in the backend.
     fn set_last_change_exact(&mut self, node: NodeId, vv: &VersionVector) -> Result<()>;
+    /// Overwrite `deleted_at` with the exact rebuilt value, including clearing it to `None`.
     fn set_deleted_at_exact(&mut self, node: NodeId, vv: Option<&VersionVector>) -> Result<()>;
 }
 

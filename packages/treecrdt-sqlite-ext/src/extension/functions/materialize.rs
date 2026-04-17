@@ -322,6 +322,9 @@ pub(super) fn append_ops_impl(
     let apply_result = if apply_result.catch_up_needed {
         let refreshed_meta = load_tree_meta(db)?;
         let catch_up = if meta.state().replay_from.is_none() {
+            // Mirror the Postgres path: only try direct rewind when this append introduced the
+            // frontier. If the document was already behind before the append, stay on the
+            // conservative replay-from-frontier catch-up path.
             try_direct_rewind_catch_up_materialized_state(
                 &super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
                 &inserted_op_ids,

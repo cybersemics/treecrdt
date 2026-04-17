@@ -302,6 +302,10 @@ fn rewind_structure_op_in_place<S: FrontierRewindStorage, N: NodeStore>(
     op: &Operation,
 ) -> Result<()> {
     let node = op.kind.node();
+    // Direct rewind is deliberately local: ask storage for the previous structural winner for this
+    // node, clear the currently materialized attachment, then restore that predecessor if one
+    // exists. Anything more complicated (delete/tombstone/revival) stays on the conservative
+    // replay-from-frontier path.
     let previous = storage.latest_structural_before(node, &frontier_from_op(op).as_borrowed())?;
     nodes.ensure_node(node)?;
     nodes.detach(node)?;
@@ -327,6 +331,8 @@ fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
     op: &Operation,
 ) -> Result<()> {
     let node = op.kind.node();
+    // Payload rewind needs the previous winning payload-bearing op, not just the current bytes.
+    // If no predecessor exists, direct rewind must clear the payload row entirely.
     let previous = storage.latest_payload_before(node, &frontier_from_op(op).as_borrowed())?;
 
     if let Some(previous) = previous {
@@ -740,6 +746,10 @@ where
     let mut existing_suffix_ops = Vec::new();
     let mut requires_full_replay = false;
     storage.scan_frontier_range(frontier, &mut |op| {
+        // One pass does double duty:
+        // - `full_suffix_ops` is the corrected suffix we will replay forward.
+        // - `existing_suffix_ops` is the subset that was already materialized before this append,
+        //   which is exactly what must be unwound first.
         let op_frontier = frontier_from_op(&op);
         if cmp_frontiers(&op_frontier, &head.at) != Ordering::Greater
             && !inserted_op_ids.contains(&op.meta.id)
@@ -754,6 +764,8 @@ where
         return Ok(None);
     }
 
+    // `head.seq` reflects the fully materialized suffix. Removing the already-materialized suffix
+    // yields the trusted prefix length and the first seq that must be rewritten in the index.
     let prefix_seq =
         head.seq.saturating_sub(existing_suffix_ops.len().min(u64::MAX as usize) as u64);
     let truncate_from = prefix_seq.saturating_add(1);
@@ -769,6 +781,8 @@ where
     index.truncate_from(truncate_from)?;
     rewind_existing_suffix_in_place(&mut nodes, &mut payloads, storage, &existing_suffix_ops)?;
 
+    // After rewinding, the backend stores now represent the prefix immediately before the
+    // invalidated suffix. Replaying `full_suffix_ops` forward rebuilds only the corrected suffix.
     let mut crdt = TreeCrdt::with_stores(replica_id, NoopStorage, clock, nodes, payloads)?;
 
     let mut affected = HashSet::new();
@@ -814,6 +828,8 @@ where
     I: TruncatingParentOpIndex,
 {
     let truncate_from = prefix_seq.saturating_add(1);
+    // The in-memory fallback rebuild computes a fresh suffix index. Drop the stale persisted
+    // suffix first, then repopulate only the rebuilt suffix records below.
     index.truncate_from(truncate_from)?;
 
     for node in affected_nodes {
@@ -827,6 +843,9 @@ where
 
         nodes.set_tombstone(*node, prefix.crdt.node_store_mut().tombstone(*node)?)?;
 
+        // These are exact setters on purpose: the backend may already contain newer-looking merged
+        // values from the stale suffix, so fallback catch-up must overwrite them with the rebuilt
+        // post-replay state rather than merge again.
         let last_change = prefix.crdt.node_store_mut().last_change(*node)?;
         nodes.set_last_change_exact(*node, &last_change)?;
 

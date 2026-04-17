@@ -1874,6 +1874,9 @@ fn append_ops_in_tx(
     let apply_result = if catch_up_performed {
         let refreshed_meta = load_tree_meta_for_update(client, doc_id)?;
         let catch_up = if meta.state().replay_from.is_none() {
+            // No replay frontier existed before this append, so if one was just scheduled it came
+            // from the current batch. That is the narrow case where the direct rewind fast path is
+            // safe to try before falling back to conservative replay-from-frontier catch-up.
             try_direct_rewind_catch_up_materialized_state(
                 &PgOpStorage::new(ctx.clone()),
                 &inserted_op_ids,
