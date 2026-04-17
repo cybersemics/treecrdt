@@ -1220,43 +1220,19 @@ impl FrontierRewindStorage for PgOpStorage {
     fn scan_frontier_range(
         &self,
         start: &treecrdt_core::MaterializationFrontierRef<'_>,
-        end: Option<&treecrdt_core::MaterializationKey<&[u8]>>,
         visit: &mut dyn FnMut(Operation) -> Result<()>,
     ) -> Result<()> {
         let mut c = self.ctx.client.borrow_mut();
-        let rows = if let Some(end) = end {
-            let stmt = self.ctx.stmt(
-                &mut c,
-                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-                 FROM treecrdt_ops \
-                 WHERE doc_id = $1 \
-                   AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
-                   AND (lamport < $5 OR (lamport = $5 AND (replica < $6 OR (replica = $6 AND counter <= $7)))) \
-                 ORDER BY lamport, replica, counter",
-            )?;
-            c.query(
-                &stmt,
-                &[
-                    &self.ctx.doc_id,
-                    &(start.lamport as i64),
-                    &start.replica,
-                    &(start.counter as i64),
-                    &(end.lamport as i64),
-                    &end.replica,
-                    &(end.counter as i64),
-                ],
-            )
-            .map_err(storage_debug)?
-        } else {
-            let stmt = self.ctx.stmt(
-                &mut c,
-                "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-                 FROM treecrdt_ops \
-                 WHERE doc_id = $1 \
-                   AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
-                 ORDER BY lamport, replica, counter",
-            )?;
-            c.query(
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 \
+               AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
+             ORDER BY lamport, replica, counter",
+        )?;
+        let rows = c
+            .query(
                 &stmt,
                 &[
                     &self.ctx.doc_id,
@@ -1265,8 +1241,7 @@ impl FrontierRewindStorage for PgOpStorage {
                     &(start.counter as i64),
                 ],
             )
-            .map_err(storage_debug)?
-        };
+            .map_err(storage_debug)?;
 
         drop(c);
         for row in rows {
@@ -1895,7 +1870,8 @@ fn append_ops_in_tx(
             |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
         )?
     };
-    let apply_result = if apply_result.catch_up_needed {
+    let catch_up_performed = apply_result.catch_up_needed;
+    let apply_result = if catch_up_performed {
         let refreshed_meta = load_tree_meta_for_update(client, doc_id)?;
         let catch_up = if meta.state().replay_from.is_none() {
             try_direct_rewind_catch_up_materialized_state(
@@ -1961,8 +1937,8 @@ fn append_ops_in_tx(
 
     if let Some(profile) = &append_profile {
         profile.borrow_mut().update_head_ms += update_head_ms;
-        if apply_result.catch_up_needed {
-            profile.borrow_mut().catch_up_needed = true;
+        if catch_up_performed {
+            profile.borrow_mut().catch_up_performed = true;
         }
         profile.borrow().log(doc_id, apply_result.inserted_count as usize);
     }

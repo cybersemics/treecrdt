@@ -45,8 +45,6 @@ impl<R: AsRef<[u8]>> MaterializationHead<R> {
     }
 }
 
-pub type MaterializationHeadRef<'a> = MaterializationHead<&'a [u8]>;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MaterializationState<R = Vec<u8>> {
     pub head: Option<MaterializationHead<R>>,
@@ -84,7 +82,6 @@ pub trait FrontierRewindStorage: Storage {
     fn scan_frontier_range(
         &self,
         start: &MaterializationFrontierRef<'_>,
-        end: Option<&MaterializationKey<&[u8]>>,
         visit: &mut dyn FnMut(Operation) -> Result<()>,
     ) -> Result<()> {
         let mut ops = self.load_since(0)?;
@@ -93,11 +90,6 @@ pub trait FrontierRewindStorage: Storage {
             let frontier = frontier_from_op(&op);
             if cmp_frontiers(&frontier, start) == Ordering::Less {
                 continue;
-            }
-            if let Some(end) = end {
-                if cmp_frontiers(&frontier, end) == Ordering::Greater {
-                    continue;
-                }
             }
             visit(op)?;
         }
@@ -750,23 +742,21 @@ where
         return Ok(None);
     }
 
-    let mut existing_suffix_ops = Vec::new();
-    storage.scan_frontier_range(frontier, Some(&head.at), &mut |op| {
-        if !inserted_op_ids.contains(&op.meta.id) {
-            existing_suffix_ops.push(op);
-        }
-        Ok(())
-    })?;
-    if existing_suffix_ops.is_empty() {
-        return Ok(None);
-    }
-
     let mut full_suffix_ops = Vec::new();
-    storage.scan_frontier_range(frontier, None, &mut |op| {
+    let mut existing_suffix_ops = Vec::new();
+    let mut requires_full_replay = false;
+    storage.scan_frontier_range(frontier, &mut |op| {
+        let op_frontier = frontier_from_op(&op);
+        if cmp_frontiers(&op_frontier, &head.at) != Ordering::Greater
+            && !inserted_op_ids.contains(&op.meta.id)
+        {
+            existing_suffix_ops.push(op.clone());
+        }
+        requires_full_replay |= op_requires_full_replay(&op);
         full_suffix_ops.push(op);
         Ok(())
     })?;
-    if full_suffix_ops.is_empty() || full_suffix_ops.iter().any(op_requires_full_replay) {
+    if full_suffix_ops.is_empty() || existing_suffix_ops.is_empty() || requires_full_replay {
         return Ok(None);
     }
 

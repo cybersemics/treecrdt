@@ -493,27 +493,15 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
     fn scan_frontier_range(
         &self,
         start: &treecrdt_core::MaterializationFrontierRef<'_>,
-        end: Option<&treecrdt_core::MaterializationKey<&[u8]>>,
         visit: &mut dyn FnMut(treecrdt_core::Operation) -> treecrdt_core::Result<()>,
     ) -> treecrdt_core::Result<()> {
-        let sql = if end.is_some() {
-            CString::new(
-                "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
-                 FROM ops \
-                 WHERE (lamport > ?1 OR (lamport = ?1 AND (replica > ?2 OR (replica = ?2 AND counter >= ?3)))) \
-                   AND (lamport < ?4 OR (lamport = ?4 AND (replica < ?5 OR (replica = ?5 AND counter <= ?6)))) \
-                 ORDER BY lamport, replica, counter",
-            )
-            .expect("scan frontier range bounded sql")
-        } else {
-            CString::new(
-                "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
-                 FROM ops \
-                 WHERE (lamport > ?1 OR (lamport = ?1 AND (replica > ?2 OR (replica = ?2 AND counter >= ?3)))) \
-                 ORDER BY lamport, replica, counter",
-            )
-            .expect("scan frontier range sql")
-        };
+        let sql = CString::new(
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+             FROM ops \
+             WHERE (lamport > ?1 OR (lamport = ?1 AND (replica > ?2 OR (replica = ?2 AND counter >= ?3)))) \
+             ORDER BY lamport, replica, counter",
+        )
+        .expect("scan frontier range sql");
         let mut stmt: *mut sqlite3_stmt = null_mut();
         let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
         if rc != SQLITE_OK as c_int {
@@ -531,19 +519,6 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
                 None,
             ) != SQLITE_OK as c_int;
             bind_err |= sqlite_bind_int64(stmt, 3, start.counter as i64) != SQLITE_OK as c_int;
-        }
-        if let Some(end) = end {
-            unsafe {
-                bind_err |= sqlite_bind_int64(stmt, 4, end.lamport as i64) != SQLITE_OK as c_int;
-                bind_err |= sqlite_bind_blob(
-                    stmt,
-                    5,
-                    end.replica.as_ptr() as *const c_void,
-                    end.replica.len() as c_int,
-                    None,
-                ) != SQLITE_OK as c_int;
-                bind_err |= sqlite_bind_int64(stmt, 6, end.counter as i64) != SQLITE_OK as c_int;
-            }
         }
         if bind_err {
             unsafe { sqlite_finalize(stmt) };
