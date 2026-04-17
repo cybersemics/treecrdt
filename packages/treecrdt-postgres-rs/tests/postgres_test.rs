@@ -12,34 +12,10 @@ use treecrdt_postgres::{
     local_move, local_payload, max_lamport, replica_max_counter, reset_doc_for_tests,
     tree_children, tree_payload,
 };
-
-fn order_key_from_position(position: u16) -> Vec<u8> {
-    let n = position.wrapping_add(1);
-    n.to_be_bytes().to_vec()
-}
-
-fn node(n: u128) -> NodeId {
-    NodeId(n)
-}
-
-fn representative_remote_batch(replica: &ReplicaId) -> (NodeId, NodeId, NodeId, Vec<Operation>) {
-    let p1 = node(1);
-    let p2 = node(2);
-    let child = node(3);
-    (
-        p1,
-        p2,
-        child,
-        vec![
-            Operation::insert(replica, 1, 1, NodeId::ROOT, p1, order_key_from_position(0)),
-            Operation::insert(replica, 2, 2, NodeId::ROOT, p2, order_key_from_position(1)),
-            Operation::insert(replica, 3, 3, p1, child, order_key_from_position(0)),
-            Operation::set_payload(replica, 4, 4, child, vec![7]),
-            Operation::move_node(replica, 5, 5, child, p2, order_key_from_position(0)),
-            Operation::set_payload(replica, 6, 6, child, vec![8]),
-        ],
-    )
-}
+use treecrdt_test_support::{
+    self as materialization_conformance, node, order_key_from_position,
+    representative_remote_batch, MaterializationConformanceHarness,
+};
 
 fn connect() -> Option<Rc<RefCell<Client>>> {
     let url = std::env::var("TREECRDT_POSTGRES_URL").ok()?;
@@ -53,6 +29,97 @@ fn ensure_schema_once(client: &Rc<RefCell<Client>>) {
         let mut c = client.borrow_mut();
         ensure_schema(&mut c).unwrap();
     });
+}
+
+struct PgConformanceHarness {
+    client: Rc<RefCell<Client>>,
+    doc_id: String,
+}
+
+impl MaterializationConformanceHarness for PgConformanceHarness {
+    fn append_ops(&self, ops: &[Operation]) {
+        append_ops(&self.client, &self.doc_id, ops).unwrap();
+    }
+
+    fn append_ops_with_affected_nodes(&self, ops: &[Operation]) -> Vec<NodeId> {
+        append_ops_with_affected_nodes(&self.client, &self.doc_id, ops).unwrap()
+    }
+
+    fn visible_children(&self, parent: NodeId) -> Vec<NodeId> {
+        tree_children(&self.client, &self.doc_id, parent).unwrap()
+    }
+
+    fn payload(&self, node: NodeId) -> Option<Vec<u8>> {
+        tree_payload(&self.client, &self.doc_id, node).unwrap()
+    }
+
+    fn replay_frontier(&self) -> Option<treecrdt_core::MaterializationFrontier> {
+        let mut c = self.client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT replay_lamport, replay_replica, replay_counter \
+                 FROM treecrdt_meta WHERE doc_id = $1",
+                &[&self.doc_id],
+            )
+            .unwrap();
+        match (
+            row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
+            row.get::<_, Option<Vec<u8>>>(1),
+            row.get::<_, Option<i64>>(2).map(|v| v.max(0) as u64),
+        ) {
+            (Some(lamport), Some(replica), Some(counter)) => {
+                Some(treecrdt_core::MaterializationFrontier {
+                    lamport,
+                    replica,
+                    counter,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn head_seq(&self) -> u64 {
+        let mut c = self.client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT head_seq FROM treecrdt_meta WHERE doc_id = $1",
+                &[&self.doc_id],
+            )
+            .unwrap();
+        row.get::<_, i64>(0).max(0) as u64
+    }
+
+    fn force_replay_from_start(&self) {
+        let mut c = self.client.borrow_mut();
+        c.execute(
+            "UPDATE treecrdt_meta \
+             SET replay_lamport = 0, replay_replica = ''::bytea, replay_counter = 0 \
+             WHERE doc_id = $1",
+            &[&self.doc_id],
+        )
+        .unwrap();
+    }
+
+    fn ensure_materialized(&self) {
+        ensure_materialized(&self.client, &self.doc_id).unwrap();
+    }
+
+    fn op_ref_counters_for_parent(&self, parent: NodeId) -> Vec<u64> {
+        let refs = list_op_refs_children(&self.client, &self.doc_id, parent).unwrap();
+        let ops = get_ops_by_op_refs(&self.client, &self.doc_id, &refs).unwrap();
+        ops.iter().map(|op| op.meta.id.counter).collect()
+    }
+}
+
+fn setup_conformance_harness() -> Option<PgConformanceHarness> {
+    let client = connect()?;
+    ensure_schema_once(&client);
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+    Some(PgConformanceHarness { client, doc_id })
 }
 
 #[test]
@@ -165,7 +232,61 @@ fn postgres_backend_append_with_affected_nodes_matches_representative_remote_bat
 }
 
 #[test]
-fn postgres_backend_out_of_order_append_uses_replay_frontier() {
+fn postgres_backend_out_of_order_append_catches_up_immediately_from_frontier() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_append_catches_up_immediately_from_frontier(&harness);
+}
+
+#[test]
+fn postgres_backend_out_of_order_losing_payload_skips_replay_frontier() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_losing_payload_skips_replay_frontier(&harness);
+}
+
+#[test]
+fn postgres_backend_out_of_order_move_with_later_payload_catches_up_immediately() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_move_with_later_payload_catches_up_immediately(
+        &harness,
+    );
+}
+
+#[test]
+fn postgres_backend_out_of_order_insert_and_move_before_head_catches_up_immediately() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_insert_and_move_before_head_catches_up_immediately(
+        &harness,
+    );
+}
+
+#[test]
+fn postgres_backend_replay_from_start_frontier_catches_up_immediately() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::replay_from_start_frontier_catches_up_immediately(&harness);
+}
+
+#[test]
+fn postgres_backend_deferred_recovery_from_replay_frontier_catches_up_on_ensure() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::deferred_recovery_from_replay_frontier_catches_up_on_ensure(
+        &harness,
+    );
+}
+
+#[test]
+fn postgres_backend_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
     let Some(client) = connect() else {
         return;
     };
@@ -177,7 +298,7 @@ fn postgres_backend_out_of_order_append_uses_replay_frontier() {
         reset_doc_for_tests(&mut c, &doc_id).unwrap();
     }
 
-    let replica = ReplicaId::new(b"ooo");
+    let replica = ReplicaId::new(b"rollback");
     let second = Operation::insert(
         &replica,
         2,
@@ -196,142 +317,82 @@ fn postgres_backend_out_of_order_append_uses_replay_frontier() {
     );
 
     append_ops(&client, &doc_id, &[second]).unwrap();
-    let affected =
-        append_ops_with_affected_nodes(&client, &doc_id, std::slice::from_ref(&first)).unwrap();
-    assert!(affected.is_empty());
 
-    let (replay_lamport, replay_replica, replay_counter, head_seq_before) = {
-        let mut c = client.borrow_mut();
-        let row = c
-            .query_one(
-                "SELECT replay_lamport, replay_replica, replay_counter, head_seq \
-                 FROM treecrdt_meta WHERE doc_id = $1",
-                &[&doc_id],
-            )
-            .unwrap();
-        (
-            row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
-            row.get::<_, Option<Vec<u8>>>(1),
-            row.get::<_, Option<i64>>(2).map(|v| v.max(0) as u64),
-            row.get::<_, i64>(3).max(0) as u64,
-        )
-    };
-    assert_eq!(replay_lamport, Some(first.meta.lamport));
-    assert_eq!(
-        replay_replica,
-        Some(first.meta.id.replica.as_bytes().to_vec())
-    );
-    assert_eq!(replay_counter, Some(first.meta.id.counter));
-    assert_eq!(head_seq_before, 1);
-
-    assert_eq!(
-        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
-        vec![node(1), node(2)]
-    );
-
-    let replay_after_read = {
-        let mut c = client.borrow_mut();
-        let row = c
-            .query_one(
-                "SELECT replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
-                &[&doc_id],
-            )
-            .unwrap();
-        assert_eq!(row.get::<_, i64>(1).max(0) as u64, 2);
-        row.get::<_, Option<i64>>(0)
-    };
-    assert_eq!(replay_after_read, None);
-
-    let refs = list_op_refs_children(&client, &doc_id, NodeId::ROOT).unwrap();
-    let ops = get_ops_by_op_refs(&client, &doc_id, &refs).unwrap();
-    assert_eq!(
-        ops.iter().map(|op| op.meta.id.counter).collect::<Vec<_>>(),
-        vec![1, 2]
-    );
-}
-
-#[test]
-fn postgres_backend_replay_from_start_frontier_recovers_materialized_state() {
-    let Some(client) = connect() else {
-        return;
-    };
-    ensure_schema_once(&client);
-
-    let doc_id = format!("test-{}", Uuid::new_v4());
+    let trigger_name = format!("fail_treecrdt_nodes_trigger_{}", Uuid::new_v4().simple());
+    let function_name = format!("fail_treecrdt_nodes_fn_{}", Uuid::new_v4().simple());
     {
         let mut c = client.borrow_mut();
-        reset_doc_for_tests(&mut c, &doc_id).unwrap();
-    }
-
-    let replica = ReplicaId::new(b"restart");
-    let first = Operation::insert(
-        &replica,
-        1,
-        1,
-        NodeId::ROOT,
-        node(1),
-        order_key_from_position(0),
-    );
-    let second = Operation::insert(
-        &replica,
-        2,
-        2,
-        NodeId::ROOT,
-        node(2),
-        order_key_from_position(1),
-    );
-
-    append_ops(&client, &doc_id, &[first]).unwrap();
-    {
-        let mut c = client.borrow_mut();
-        c.execute(
-            "UPDATE treecrdt_meta \
-             SET replay_lamport = 0, replay_replica = ''::bytea, replay_counter = 0 \
-             WHERE doc_id = $1",
-            &[&doc_id],
-        )
+        c.batch_execute(&format!(
+            "CREATE FUNCTION {function_name}() RETURNS trigger LANGUAGE plpgsql AS $$ \
+               BEGIN \
+                 RAISE EXCEPTION 'forced catch-up failure'; \
+               END; \
+             $$; \
+             CREATE TRIGGER {trigger_name} \
+             BEFORE INSERT OR UPDATE ON treecrdt_nodes \
+             FOR EACH ROW \
+             WHEN (NEW.doc_id = '{doc_id}') \
+             EXECUTE FUNCTION {function_name}();"
+        ))
         .unwrap();
     }
 
-    let affected = append_ops_with_affected_nodes(&client, &doc_id, &[second]).unwrap();
-    assert!(affected.is_empty());
+    let append_err =
+        append_ops_with_affected_nodes(&client, &doc_id, std::slice::from_ref(&first)).unwrap_err();
+    assert!(append_err.to_string().contains("forced catch-up failure"));
 
-    let (replay_lamport, replay_replica, replay_counter) = {
+    let (op_count, replay_lamport, replay_replica, replay_counter, head_seq, children) = {
+        let root_bytes = NodeId::ROOT.0.to_be_bytes();
         let mut c = client.borrow_mut();
-        let row = c
+        let meta_row = c
             .query_one(
-                "SELECT replay_lamport, replay_replica, replay_counter \
+                "SELECT \
+                   (SELECT COUNT(*) FROM treecrdt_ops WHERE doc_id = $1), \
+                   replay_lamport, replay_replica, replay_counter, head_seq \
                  FROM treecrdt_meta WHERE doc_id = $1",
                 &[&doc_id],
             )
             .unwrap();
-        (
-            row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
-            row.get::<_, Option<Vec<u8>>>(1),
-            row.get::<_, Option<i64>>(2).map(|v| v.max(0) as u64),
-        )
-    };
-    assert_eq!(replay_lamport, Some(0));
-    assert_eq!(replay_replica, Some(Vec::new()));
-    assert_eq!(replay_counter, Some(0));
-
-    assert_eq!(
-        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
-        vec![node(1), node(2)]
-    );
-
-    let replay_after_read = {
-        let mut c = client.borrow_mut();
-        let row = c
-            .query_one(
-                "SELECT replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
-                &[&doc_id],
+        let child_rows = c
+            .query(
+                "SELECT node FROM treecrdt_nodes \
+                 WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
+                 ORDER BY order_key, node",
+                &[&doc_id, &root_bytes.as_slice()],
             )
             .unwrap();
-        assert_eq!(row.get::<_, i64>(1).max(0) as u64, 2);
-        row.get::<_, Option<i64>>(0)
+        let children = child_rows
+            .iter()
+            .map(|row| {
+                let bytes: Vec<u8> = row.get(0);
+                NodeId(u128::from_be_bytes(bytes.try_into().unwrap()))
+            })
+            .collect::<Vec<_>>();
+        (
+            meta_row.get::<_, i64>(0).max(0) as u64,
+            meta_row.get::<_, Option<i64>>(1).map(|v| v.max(0) as u64),
+            meta_row.get::<_, Option<Vec<u8>>>(2),
+            meta_row.get::<_, Option<i64>>(3).map(|v| v.max(0) as u64),
+            meta_row.get::<_, i64>(4).max(0) as u64,
+            children,
+        )
     };
-    assert_eq!(replay_after_read, None);
+
+    assert_eq!(op_count, 1);
+    assert_eq!(replay_lamport, None);
+    assert_eq!(replay_replica, None);
+    assert_eq!(replay_counter, None);
+    assert_eq!(head_seq, 1);
+    assert_eq!(children, vec![node(2)]);
+
+    {
+        let mut c = client.borrow_mut();
+        c.batch_execute(&format!(
+            "DROP TRIGGER IF EXISTS {trigger_name} ON treecrdt_nodes; \
+             DROP FUNCTION IF EXISTS {function_name}();"
+        ))
+        .unwrap();
+    }
 }
 
 #[test]

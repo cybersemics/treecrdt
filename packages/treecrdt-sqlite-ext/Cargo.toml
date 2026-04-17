@@ -27,3 +27,4 @@ wasm-ext = ["static-link"]
 
 [dev-dependencies]
 tempfile = "3.10"
+treecrdt-test-support = { path = "../treecrdt-test-support" }

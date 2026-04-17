@@ -1439,6 +1439,7 @@ dependencies = [
  "serde",
  "serde_json",
  "treecrdt-core",
+ "treecrdt-test-support",
  "uuid",
 ]
 
@@ -1475,6 +1476,14 @@ dependencies = [
  "serde_json",
  "sqlite3ext-sys",
  "tempfile",
+ "treecrdt-core",
+ "treecrdt-test-support",
+]
+
+[[package]]
+name = "treecrdt-test-support"
+version = "0.0.1"
+dependencies = [
  "treecrdt-core",
 ]
 

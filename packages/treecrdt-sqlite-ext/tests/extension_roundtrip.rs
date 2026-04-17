@@ -4,7 +4,13 @@ use std::path::PathBuf;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use treecrdt_core::{order_key::allocate_between, ReplicaId, VersionVector};
+use treecrdt_core::{
+    order_key::allocate_between, NodeId, Operation, OperationKind, ReplicaId, VersionVector,
+};
+use treecrdt_test_support::{
+    self as materialization_conformance, representative_remote_batch,
+    MaterializationConformanceHarness,
+};
 
 #[derive(Clone, Deserialize, Serialize)]
 struct JsonOp {
@@ -18,6 +24,77 @@ struct JsonOp {
     order_key: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
+}
+
+fn node_bytes_from_id(node: NodeId) -> Vec<u8> {
+    node.0.to_be_bytes().to_vec()
+}
+
+fn bytes_to_node_id(bytes: &[u8]) -> NodeId {
+    NodeId(u128::from_be_bytes(bytes.try_into().unwrap()))
+}
+
+fn vv_to_bytes(vv: &VersionVector) -> Vec<u8> {
+    serde_json::to_vec(vv).unwrap()
+}
+
+fn json_op(op: &Operation) -> JsonOp {
+    let (kind, parent, node, new_parent, order_key, payload) = match &op.kind {
+        OperationKind::Insert {
+            parent,
+            node,
+            order_key,
+            payload,
+        } => (
+            "insert",
+            Some(parent.0.to_be_bytes()),
+            node.0.to_be_bytes(),
+            None,
+            Some(order_key.clone()),
+            payload.clone(),
+        ),
+        OperationKind::Move {
+            node,
+            new_parent,
+            order_key,
+        } => (
+            "move",
+            None,
+            node.0.to_be_bytes(),
+            Some(new_parent.0.to_be_bytes()),
+            Some(order_key.clone()),
+            None,
+        ),
+        OperationKind::Delete { node } => ("delete", None, node.0.to_be_bytes(), None, None, None),
+        OperationKind::Tombstone { node } => {
+            ("tombstone", None, node.0.to_be_bytes(), None, None, None)
+        }
+        OperationKind::Payload { node, payload } => (
+            "payload",
+            None,
+            node.0.to_be_bytes(),
+            None,
+            None,
+            payload.clone(),
+        ),
+    };
+
+    JsonOp {
+        replica: op.meta.id.replica.as_bytes().to_vec(),
+        counter: op.meta.id.counter,
+        lamport: op.meta.lamport,
+        kind: kind.into(),
+        parent,
+        node,
+        new_parent,
+        order_key,
+        known_state: op.meta.known_state.as_ref().map(vv_to_bytes),
+        payload,
+    }
+}
+
+fn json_ops(ops: &[Operation]) -> Vec<JsonOp> {
+    ops.iter().map(json_op).collect()
 }
 
 fn read_tree_meta(conn: &Connection) -> (i64, Vec<u8>, i64, i64) {
@@ -103,90 +180,82 @@ fn ops_by_oprefs(conn: &Connection, refs: &[Vec<u8>]) -> Vec<JsonOp> {
     serde_json::from_str(&ops_json).unwrap()
 }
 
-fn representative_remote_batch(replica: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<JsonOp>) {
-    let root = node_bytes(0);
-    let p1 = node_bytes(1);
-    let p2 = node_bytes(2);
-    let child = node_bytes(3);
-    (
-        p1.clone(),
-        p2.clone(),
-        child.clone(),
-        vec![
-            JsonOp {
-                replica: replica.to_vec(),
-                counter: 1,
-                lamport: 1,
-                kind: "insert".into(),
-                parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
-                node: <[u8; 16]>::try_from(p1.as_slice()).unwrap(),
-                new_parent: None,
-                order_key: Some((1u16).to_be_bytes().to_vec()),
-                known_state: None,
-                payload: None,
-            },
-            JsonOp {
-                replica: replica.to_vec(),
-                counter: 2,
-                lamport: 2,
-                kind: "insert".into(),
-                parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
-                node: <[u8; 16]>::try_from(p2.as_slice()).unwrap(),
-                new_parent: None,
-                order_key: Some((2u16).to_be_bytes().to_vec()),
-                known_state: None,
-                payload: None,
-            },
-            JsonOp {
-                replica: replica.to_vec(),
-                counter: 3,
-                lamport: 3,
-                kind: "insert".into(),
-                parent: Some(<[u8; 16]>::try_from(p1.as_slice()).unwrap()),
-                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
-                new_parent: None,
-                order_key: Some((1u16).to_be_bytes().to_vec()),
-                known_state: None,
-                payload: None,
-            },
-            JsonOp {
-                replica: replica.to_vec(),
-                counter: 4,
-                lamport: 4,
-                kind: "payload".into(),
-                parent: None,
-                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
-                new_parent: None,
-                order_key: None,
-                known_state: None,
-                payload: Some(vec![7]),
-            },
-            JsonOp {
-                replica: replica.to_vec(),
-                counter: 5,
-                lamport: 5,
-                kind: "move".into(),
-                parent: None,
-                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
-                new_parent: Some(<[u8; 16]>::try_from(p2.as_slice()).unwrap()),
-                order_key: Some((1u16).to_be_bytes().to_vec()),
-                known_state: None,
-                payload: None,
-            },
-            JsonOp {
-                replica: replica.to_vec(),
-                counter: 6,
-                lamport: 6,
-                kind: "payload".into(),
-                parent: None,
-                node: <[u8; 16]>::try_from(child.as_slice()).unwrap(),
-                new_parent: None,
-                order_key: None,
-                known_state: None,
-                payload: Some(vec![8]),
-            },
-        ],
-    )
+struct SqliteConformanceHarness {
+    conn: Connection,
+}
+
+impl MaterializationConformanceHarness for SqliteConformanceHarness {
+    fn append_ops(&self, ops: &[Operation]) {
+        append_ops_json(&self.conn, &json_ops(ops));
+    }
+
+    fn append_ops_with_affected_nodes(&self, ops: &[Operation]) -> Vec<NodeId> {
+        let (affected, _) = append_ops_json(&self.conn, &json_ops(ops));
+        affected.iter().map(|bytes| bytes_to_node_id(bytes)).collect()
+    }
+
+    fn visible_children(&self, parent: NodeId) -> Vec<NodeId> {
+        visible_children(&self.conn, &node_bytes_from_id(parent))
+            .iter()
+            .map(|bytes| bytes_to_node_id(bytes))
+            .collect()
+    }
+
+    fn payload(&self, node: NodeId) -> Option<Vec<u8>> {
+        payload_bytes(&self.conn, &node_bytes_from_id(node))
+    }
+
+    fn replay_frontier(&self) -> Option<treecrdt_core::MaterializationFrontier> {
+        match read_replay_frontier(&self.conn) {
+            (Some(lamport), Some(replica), Some(counter)) => {
+                Some(treecrdt_core::MaterializationFrontier {
+                    lamport: lamport.max(0) as u64,
+                    replica,
+                    counter: counter.max(0) as u64,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn head_seq(&self) -> u64 {
+        let (_, _, _, head_seq) = read_tree_meta(&self.conn);
+        head_seq.max(0) as u64
+    }
+
+    fn force_replay_from_start(&self) {
+        self.conn
+            .execute(
+                "UPDATE tree_meta \
+                 SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
+                 WHERE id = 1",
+                [],
+            )
+            .unwrap();
+    }
+
+    fn ensure_materialized(&self) {
+        let _: i64 = self
+            .conn
+            .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+    }
+
+    fn op_ref_counters_for_parent(&self, parent: NodeId) -> Vec<u64> {
+        ops_by_oprefs(
+            &self.conn,
+            &oprefs_children(&self.conn, &node_bytes_from_id(parent)),
+        )
+        .iter()
+        .map(|op| op.counter)
+        .collect()
+    }
+}
+
+fn setup_conformance_harness() -> SqliteConformanceHarness {
+    SqliteConformanceHarness { conn: setup_conn() }
 }
 
 #[test]
@@ -357,143 +426,129 @@ fn remote_append_representative_batch_matches_postgres_shape() {
     let conn = setup_conn();
 
     let root = node_bytes(0);
-    let (p1, p2, child, ops) = representative_remote_batch(b"rep");
-    let (affected, _) = append_ops_json(&conn, &ops);
+    let replica = ReplicaId::new(b"rep");
+    let (p1, p2, child, ops) = representative_remote_batch(&replica);
+    let (affected, _) = append_ops_json(&conn, &json_ops(&ops));
 
     assert_eq!(
         affected,
-        vec![root.clone(), p1.clone(), p2.clone(), child.clone()]
+        vec![
+            root.clone(),
+            node_bytes_from_id(p1),
+            node_bytes_from_id(p2),
+            node_bytes_from_id(child)
+        ]
     );
-    assert_eq!(visible_children(&conn, &root), vec![p1.clone(), p2.clone()]);
-    assert_eq!(visible_children(&conn, &p2), vec![child.clone()]);
-    assert_eq!(payload_bytes(&conn, &child), Some(vec![8]));
+    assert_eq!(
+        visible_children(&conn, &root),
+        vec![node_bytes_from_id(p1), node_bytes_from_id(p2)]
+    );
+    assert_eq!(
+        visible_children(&conn, &node_bytes_from_id(p2)),
+        vec![node_bytes_from_id(child)]
+    );
+    assert_eq!(
+        payload_bytes(&conn, &node_bytes_from_id(child)),
+        Some(vec![8])
+    );
 
-    let ops_p2 = ops_by_oprefs(&conn, &oprefs_children(&conn, &p2));
+    let ops_p2 = ops_by_oprefs(&conn, &oprefs_children(&conn, &node_bytes_from_id(p2)));
     assert!(ops_p2.iter().any(|op| op.kind == "move"));
     assert!(ops_p2.iter().any(|op| op.kind == "payload"));
 }
 
 #[test]
-fn remote_append_out_of_order_uses_replay_frontier() {
-    let conn = setup_conn();
+fn remote_append_out_of_order_catches_up_immediately_from_frontier() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::out_of_order_append_catches_up_immediately_from_frontier(&harness);
+}
 
-    let root = node_bytes(0);
-    let second = JsonOp {
-        replica: b"ooo".to_vec(),
-        counter: 2,
-        lamport: 2,
-        kind: "insert".into(),
-        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
-        node: <[u8; 16]>::try_from(node_bytes(2).as_slice()).unwrap(),
-        new_parent: None,
-        order_key: Some((2u16).to_be_bytes().to_vec()),
-        known_state: None,
-        payload: None,
-    };
-    let first = JsonOp {
-        replica: b"ooo".to_vec(),
-        counter: 1,
-        lamport: 1,
-        kind: "insert".into(),
-        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
-        node: <[u8; 16]>::try_from(node_bytes(1).as_slice()).unwrap(),
-        new_parent: None,
-        order_key: Some((1u16).to_be_bytes().to_vec()),
-        known_state: None,
-        payload: None,
-    };
+#[test]
+fn remote_append_out_of_order_losing_payload_skips_replay_frontier() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::out_of_order_losing_payload_skips_replay_frontier(&harness);
+}
 
-    append_ops_json(&conn, &[second]);
-    let (affected, _) = append_ops_json(&conn, &[first.clone()]);
-    assert!(affected.is_empty());
-
-    let (_, _, _, head_seq_before) = read_tree_meta(&conn);
-    let (replay_lamport, replay_replica, replay_counter) = read_replay_frontier(&conn);
-    assert_eq!(head_seq_before, 1);
-    assert_eq!(replay_lamport, Some(first.lamport as i64));
-    assert_eq!(replay_replica, Some(first.replica.clone()));
-    assert_eq!(replay_counter, Some(first.counter as i64));
-
-    let _: i64 = conn
-        .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-
-    assert_eq!(
-        visible_children(&conn, &root),
-        vec![node_bytes(1), node_bytes(2)]
-    );
-    let (_, _, _, head_seq_after) = read_tree_meta(&conn);
-    assert_eq!(head_seq_after, 2);
-    assert_eq!(read_replay_frontier(&conn), (None, None, None));
-
-    let ops = ops_by_oprefs(&conn, &oprefs_children(&conn, &root));
-    assert_eq!(
-        ops.iter().map(|op| op.counter).collect::<Vec<_>>(),
-        vec![1, 2]
+#[test]
+fn remote_append_out_of_order_move_with_later_payload_catches_up_immediately() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::out_of_order_move_with_later_payload_catches_up_immediately(
+        &harness,
     );
 }
 
 #[test]
-fn remote_append_replay_from_start_frontier_recovers_materialized_state() {
+fn remote_append_out_of_order_insert_and_move_before_head_catches_up_immediately() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::out_of_order_insert_and_move_before_head_catches_up_immediately(
+        &harness,
+    );
+}
+
+#[test]
+fn remote_append_replay_from_start_frontier_catches_up_immediately() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::replay_from_start_frontier_catches_up_immediately(&harness);
+}
+
+#[test]
+fn remote_deferred_recovery_from_replay_frontier_catches_up_on_ensure() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::deferred_recovery_from_replay_frontier_catches_up_on_ensure(
+        &harness,
+    );
+}
+
+#[test]
+fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
     let conn = setup_conn();
 
-    let root = node_bytes(0);
-    let first = JsonOp {
-        replica: b"restart".to_vec(),
-        counter: 1,
-        lamport: 1,
-        kind: "insert".into(),
-        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
-        node: <[u8; 16]>::try_from(node_bytes(1).as_slice()).unwrap(),
-        new_parent: None,
-        order_key: Some((1u16).to_be_bytes().to_vec()),
-        known_state: None,
-        payload: None,
-    };
-    let second = JsonOp {
-        replica: b"restart".to_vec(),
-        counter: 2,
-        lamport: 2,
-        kind: "insert".into(),
-        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
-        node: <[u8; 16]>::try_from(node_bytes(2).as_slice()).unwrap(),
-        new_parent: None,
-        order_key: Some((2u16).to_be_bytes().to_vec()),
-        known_state: None,
-        payload: None,
-    };
+    let replica = ReplicaId::new(b"rollback");
+    let second = Operation::insert(
+        &replica,
+        2,
+        2,
+        NodeId::ROOT,
+        materialization_conformance::node(2),
+        materialization_conformance::order_key_from_position(1),
+    );
+    let first = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        materialization_conformance::node(1),
+        materialization_conformance::order_key_from_position(0),
+    );
 
-    append_ops_json(&conn, &[first]);
-    conn.execute(
-        "UPDATE tree_meta \
-         SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
-         WHERE id = 1",
-        [],
+    append_ops_json(&conn, &json_ops(&[second]));
+    conn.execute_batch(
+        "CREATE TRIGGER fail_tree_nodes_insert \
+         BEFORE INSERT ON tree_nodes \
+         BEGIN \
+           SELECT RAISE(ROLLBACK, 'forced catch-up failure'); \
+         END;",
     )
     .unwrap();
 
-    let (affected, _) = append_ops_json(&conn, &[second]);
-    assert!(affected.is_empty());
-    assert_eq!(
-        read_replay_frontier(&conn),
-        (Some(0), Some(Vec::new()), Some(0))
+    let append_json = serde_json::to_string(&json_ops(&[first])).unwrap();
+    let append_result: rusqlite::Result<String> = conn.query_row(
+        "SELECT treecrdt_append_ops(?1)",
+        rusqlite::params![append_json],
+        |row| row.get(0),
     );
+    assert!(append_result.is_err());
 
-    let _: i64 = conn
-        .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-
-    assert_eq!(
-        visible_children(&conn, &root),
-        vec![node_bytes(1), node_bytes(2)]
-    );
     let (_, _, _, head_seq) = read_tree_meta(&conn);
-    assert_eq!(head_seq, 2);
+    let op_count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+
+    assert_eq!(op_count, 1);
     assert_eq!(read_replay_frontier(&conn), (None, None, None));
+    assert_eq!(head_seq, 1);
+    assert_eq!(
+        visible_children(&conn, &node_bytes(0)),
+        vec![node_bytes_from_id(materialization_conformance::node(2))]
+    );
 }
 
 #[test]

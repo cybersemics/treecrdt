@@ -7,10 +7,11 @@ use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
     apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
-    materialize_persisted_remote_ops_with_delta, Error, Lamport, LamportClock,
-    MaterializationCursor, MaterializationFrontier, MaterializationHead, MaterializationKey,
-    MaterializationState, NodeId, Operation, OperationId, OperationKind, PersistedRemoteStores,
-    ReplicaId, Result, Storage, VersionVector,
+    materialize_persisted_remote_ops_with_delta, try_shortcut_out_of_order_payload_noops, Error,
+    ExactNodeStore, ExactPayloadStore, Lamport, LamportClock, MaterializationCursor,
+    MaterializationFrontier, MaterializationHead, MaterializationKey, MaterializationState, NodeId,
+    NodeStore, Operation, OperationId, OperationKind, PayloadStore, PersistedRemoteStores,
+    ReplicaId, Result, Storage, TruncatingParentOpIndex, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -841,6 +842,56 @@ impl treecrdt_core::NodeStore for PgNodeStore {
     }
 }
 
+impl ExactNodeStore for PgNodeStore {
+    fn set_last_change_exact(&mut self, node: NodeId, vv: &VersionVector) -> Result<()> {
+        self.ensure_node(node)?;
+        let node_bytes = node_to_bytes(node);
+        let bytes = if vv.is_empty() {
+            None
+        } else {
+            Some(vv_to_bytes(vv)?)
+        };
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "UPDATE treecrdt_nodes \
+             SET last_change = $3 \
+             WHERE doc_id = $1 AND node = $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
+            .map_err(storage_debug)?;
+
+        if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
+            row.last_change = bytes;
+        }
+        self.pending_last_change.borrow_mut().remove(&node);
+        Ok(())
+    }
+
+    fn set_deleted_at_exact(&mut self, node: NodeId, vv: Option<&VersionVector>) -> Result<()> {
+        self.ensure_node(node)?;
+        let node_bytes = node_to_bytes(node);
+        let bytes = match vv {
+            Some(vv) if !vv.is_empty() => Some(vv_to_bytes(vv)?),
+            _ => None,
+        };
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "UPDATE treecrdt_nodes \
+             SET deleted_at = $3 \
+             WHERE doc_id = $1 AND node = $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
+            .map_err(storage_debug)?;
+
+        if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
+            row.deleted_at = bytes;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct PgPayloadStore {
     ctx: PgCtx,
     cache: RefCell<HashMap<NodeId, Option<CachedPayloadRow>>>,
@@ -976,6 +1027,21 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
     }
 }
 
+impl ExactPayloadStore for PgPayloadStore {
+    fn clear_payload(&mut self, node: NodeId) -> Result<()> {
+        let node_bytes = node_to_bytes(node);
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "DELETE FROM treecrdt_payload WHERE doc_id = $1 AND node = $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice()])
+            .map_err(storage_debug)?;
+        self.cache.borrow_mut().insert(node, None);
+        Ok(())
+    }
+}
+
 pub(crate) struct PgParentOpIndex {
     ctx: PgCtx,
     pending: Vec<PendingParentOpRefRow>,
@@ -1055,6 +1121,19 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
         if self.pending.len() >= PARENT_OP_INDEX_FLUSH_SIZE {
             self.flush()?;
         }
+        Ok(())
+    }
+}
+
+impl TruncatingParentOpIndex for PgParentOpIndex {
+    fn truncate_from(&mut self, seq: u64) -> Result<()> {
+        self.pending.clear();
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1 AND seq >= $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &(seq as i64)]).map_err(storage_debug)?;
         Ok(())
     }
 }
@@ -1539,6 +1618,13 @@ fn materialize_inserted_ops(
     )
 }
 
+fn merge_affected_nodes(mut left: Vec<NodeId>, right: Vec<NodeId>) -> Vec<NodeId> {
+    left.extend(right);
+    left.sort();
+    left.dedup();
+    left
+}
+
 pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
     {
         let mut c = client.borrow_mut();
@@ -1634,18 +1720,83 @@ fn append_ops_in_tx(
 
     let materialize_started_at = Instant::now();
     let mut update_head_ms = 0.0;
-    let apply_result = apply_persisted_remote_ops_with_delta(
-        &meta,
-        inserted_ops,
-        |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
-        |head| {
-            let started_at = Instant::now();
-            let result = update_tree_meta_head(&ctx.client, &ctx.doc_id, Some(head));
-            update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
-            result
-        },
-        |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
-    )?;
+    let mut update_head = |head: &MaterializationHead| {
+        let started_at = Instant::now();
+        let result = update_tree_meta_head(&ctx.client, &ctx.doc_id, Some(head));
+        update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
+        result
+    };
+    let apply_result = if let Some(shortcut) = {
+        let payloads = PgPayloadStore::new(ctx.clone());
+        try_shortcut_out_of_order_payload_noops(&meta, inserted_ops.clone(), |node| {
+            payloads.last_writer(node)
+        })?
+    } {
+        if shortcut.remaining_ops.is_empty() {
+            update_head(&shortcut.resumed_head)?;
+            treecrdt_core::PersistedRemoteApplyResult {
+                inserted_count: inserted_ops.len().min(u64::MAX as usize) as u64,
+                affected_nodes: shortcut.affected_nodes,
+                catch_up_needed: false,
+            }
+        } else {
+            let shortcut_meta = TreeMeta(MaterializationState {
+                head: Some(shortcut.resumed_head.clone()),
+                replay_from: None,
+            });
+            let result =
+                materialize_inserted_ops(ctx.clone(), &shortcut_meta, shortcut.remaining_ops)?;
+            let head = result.head.ok_or_else(|| {
+                Error::Storage("expected head after payload noop shortcut".into())
+            })?;
+            update_head(&head)?;
+            treecrdt_core::PersistedRemoteApplyResult {
+                inserted_count: inserted_ops.len().min(u64::MAX as usize) as u64,
+                affected_nodes: merge_affected_nodes(
+                    shortcut.affected_nodes,
+                    result.affected_nodes,
+                ),
+                catch_up_needed: false,
+            }
+        }
+    } else {
+        apply_persisted_remote_ops_with_delta(
+            &meta,
+            inserted_ops,
+            |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
+            &mut update_head,
+            |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
+        )?
+    };
+    let apply_result = if apply_result.catch_up_needed {
+        let refreshed_meta = load_tree_meta_for_update(client, doc_id)?;
+        let catch_up = catch_up_materialized_state(
+            PgOpStorage::new(ctx.clone()),
+            PersistedRemoteStores {
+                replica_id: ReplicaId::new(b"postgres"),
+                clock: LamportClock::default(),
+                nodes: PgNodeStore::new(ctx.clone()),
+                payloads: PgPayloadStore::new(ctx.clone()),
+                index: PgParentOpIndex::new(ctx.clone()),
+            },
+            &refreshed_meta,
+            |nodes| nodes.flush_last_change(),
+            |index| index.flush(),
+        )?;
+        update_head(
+            catch_up
+                .head
+                .as_ref()
+                .ok_or_else(|| Error::Storage("expected head after immediate catch-up".into()))?,
+        )?;
+        treecrdt_core::PersistedRemoteApplyResult {
+            inserted_count: apply_result.inserted_count,
+            affected_nodes: catch_up.affected_nodes,
+            catch_up_needed: false,
+        }
+    } else {
+        apply_result
+    };
     if let Some(profile) = &append_profile {
         profile.borrow_mut().materialize_ms +=
             materialize_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1653,8 +1804,8 @@ fn append_ops_in_tx(
 
     if let Some(profile) = &append_profile {
         profile.borrow_mut().update_head_ms += update_head_ms;
-        if apply_result.frontier_recorded {
-            profile.borrow_mut().frontier_recorded = true;
+        if apply_result.catch_up_needed {
+            profile.borrow_mut().catch_up_needed = true;
         }
         profile.borrow().log(doc_id, apply_result.inserted_count as usize);
     }
@@ -1701,7 +1852,7 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
 
     let ctx = PgCtx::new(client.clone(), doc_id)?;
     let storage = PgOpStorage::new(ctx.clone());
-    let head = catch_up_materialized_state(
+    let catch_up = catch_up_materialized_state(
         storage,
         PersistedRemoteStores {
             replica_id: ReplicaId::new(b"postgres"),
@@ -1715,7 +1866,7 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
         |index| index.flush(),
     )?;
 
-    update_tree_meta_head(client, doc_id, head.as_ref())?;
+    update_tree_meta_head(client, doc_id, catch_up.head.as_ref())?;
 
     Ok(())
 }

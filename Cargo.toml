@@ -5,6 +5,7 @@ members = [
   "packages/treecrdt-postgres-rs",
   "packages/treecrdt-riblt-wasm",
   "packages/treecrdt-sqlite-ext",
+  "packages/treecrdt-test-support",
   "packages/treecrdt-wasm",
 ]
 resolver = "2"
