@@ -9,7 +9,7 @@ use treecrdt_core::{
 };
 
 use crate::store::{
-    ensure_materialized_in_tx, load_tree_meta_for_update, set_tree_meta_dirty,
+    ensure_materialized_in_tx, load_tree_meta_for_update, set_tree_meta_replay_frontier,
     update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage, PgParentOpIndex, PgPayloadStore,
     TreeMeta,
 };
@@ -75,17 +75,23 @@ fn begin_local_core_op(
     })
 }
 
-fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: LocalFinalizePlan) {
+fn finish_local_core_op(
+    session: &mut LocalOpSession,
+    op: &Operation,
+    plan: LocalFinalizePlan,
+) -> Result<()> {
     let mut post_materialization_ok = true;
     let mut seq = 0u64;
 
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
     // commit_local() already persisted the op and updated node/payload state. The finalize step
     // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
-    match session
-        .crdt
-        .finalize_local_with_plan(op, &mut op_index, session.meta.head_seq(), &plan)
-    {
+    match session.crdt.finalize_local_with_plan(
+        op,
+        &mut op_index,
+        session.meta.state().head_seq(),
+        &plan,
+    ) {
         Ok(v) => {
             seq = v;
             if session.nodes.flush_last_change().is_err() || op_index.flush().is_err() {
@@ -95,23 +101,33 @@ fn finish_local_core_op(session: &mut LocalOpSession, op: &Operation, plan: Loca
         Err(_) => post_materialization_ok = false,
     }
 
+    let head = treecrdt_core::MaterializationHead {
+        at: treecrdt_core::MaterializationKey {
+            lamport: op.meta.lamport,
+            replica: op.meta.id.replica.as_bytes(),
+            counter: op.meta.id.counter,
+        },
+        seq,
+    };
     if post_materialization_ok
-        && update_tree_meta_head(
-            &session.ctx.client,
-            &session.ctx.doc_id,
-            op.meta.lamport,
-            op.meta.id.replica.as_bytes(),
-            op.meta.id.counter,
-            seq,
-        )
-        .is_err()
+        && update_tree_meta_head(&session.ctx.client, &session.ctx.doc_id, Some(&head)).is_err()
     {
         post_materialization_ok = false;
     }
 
     if !post_materialization_ok {
-        let _ = set_tree_meta_dirty(&session.ctx.client, &session.ctx.doc_id, true);
+        set_tree_meta_replay_frontier(
+            &session.ctx.client,
+            &session.ctx.doc_id,
+            &treecrdt_core::MaterializationFrontier {
+                lamport: 0,
+                replica: Vec::new(),
+                counter: 0,
+            },
+        )?;
     }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -129,7 +145,7 @@ pub fn local_insert(
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let placement = LocalPlacement::from_parts(placement, after)?;
         let (op, plan) = session.crdt.local_insert_with_plan(parent, node, placement, payload)?;
-        finish_local_core_op(&mut session, &op, plan);
+        finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })
 }
@@ -147,7 +163,7 @@ pub fn local_move(
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let placement = LocalPlacement::from_parts(placement, after)?;
         let (op, plan) = session.crdt.local_move_with_plan(node, new_parent, placement)?;
-        finish_local_core_op(&mut session, &op, plan);
+        finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })
 }
@@ -161,7 +177,7 @@ pub fn local_delete(
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let (op, plan) = session.crdt.local_delete_with_plan(node)?;
-        finish_local_core_op(&mut session, &op, plan);
+        finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })
 }
@@ -176,7 +192,7 @@ pub fn local_payload(
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let (op, plan) = session.crdt.local_payload_with_plan(node, payload)?;
-        finish_local_core_op(&mut session, &op, plan);
+        finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })
 }

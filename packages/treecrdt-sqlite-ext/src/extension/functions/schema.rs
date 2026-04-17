@@ -5,17 +5,19 @@ use std::os::raw::{c_int, c_void};
 use std::ptr::null_mut;
 use std::slice;
 
-use treecrdt_core::Lamport;
+use treecrdt_core::{
+    Lamport, MaterializationCursor, MaterializationHead, MaterializationKey, MaterializationState,
+};
 
 pub(super) const ROOT_NODE_ID: [u8; 16] = [0u8; 16];
 
 #[derive(Clone, Debug)]
-pub(super) struct TreeMeta {
-    pub(super) dirty: bool,
-    pub(super) head_lamport: Lamport,
-    pub(super) head_replica: Vec<u8>,
-    pub(super) head_counter: u64,
-    pub(super) head_seq: u64,
+pub(super) struct TreeMeta(MaterializationState);
+
+impl MaterializationCursor for TreeMeta {
+    fn state(&self) -> MaterializationState<&[u8]> {
+        self.0.as_borrowed()
+    }
 }
 
 pub(super) fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {
@@ -55,7 +57,8 @@ pub(super) fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {
 
 pub(super) fn load_tree_meta(db: *mut sqlite3) -> Result<TreeMeta, c_int> {
     let sql = CString::new(
-        "SELECT dirty, head_lamport, head_replica, head_counter, head_seq \
+        "SELECT head_lamport, head_replica, head_counter, head_seq, \
+                replay_lamport, replay_replica, replay_counter \
          FROM tree_meta WHERE id = 1 LIMIT 1",
     )
     .expect("tree meta sql");
@@ -71,45 +74,99 @@ pub(super) fn load_tree_meta(db: *mut sqlite3) -> Result<TreeMeta, c_int> {
         return Err(SQLITE_ERROR as c_int);
     }
 
-    let dirty = unsafe { sqlite_column_int64(stmt, 0) } != 0;
-    let head_lamport = unsafe { sqlite_column_int64(stmt, 1) } as Lamport;
-    let rep_ptr = unsafe { sqlite_column_blob(stmt, 2) } as *const u8;
-    let rep_len = unsafe { sqlite_column_bytes(stmt, 2) } as usize;
+    let head_lamport = unsafe { sqlite_column_int64(stmt, 0) } as Lamport;
+    let rep_ptr = unsafe { sqlite_column_blob(stmt, 1) } as *const u8;
+    let rep_len = unsafe { sqlite_column_bytes(stmt, 1) } as usize;
     let head_replica = if rep_ptr.is_null() || rep_len == 0 {
         Vec::new()
     } else {
         unsafe { slice::from_raw_parts(rep_ptr, rep_len) }.to_vec()
     };
-    let head_counter = unsafe { sqlite_column_int64(stmt, 3) } as u64;
-    let head_seq = unsafe { sqlite_column_int64(stmt, 4) } as u64;
+    let head_counter = unsafe { sqlite_column_int64(stmt, 2) } as u64;
+    let head_seq = unsafe { sqlite_column_int64(stmt, 3) } as u64;
+    let replay_lamport = if unsafe { sqlite_column_type(stmt, 4) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        Some(unsafe { sqlite_column_int64(stmt, 4).max(0) as Lamport })
+    };
+    let replay_replica = if unsafe { sqlite_column_type(stmt, 5) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        let ptr = unsafe { sqlite_column_blob(stmt, 5) } as *const u8;
+        let len = unsafe { sqlite_column_bytes(stmt, 5) } as usize;
+        Some(if ptr.is_null() || len == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
+        })
+    };
+    let replay_counter = if unsafe { sqlite_column_type(stmt, 6) } == SQLITE_NULL as c_int {
+        None
+    } else {
+        Some(unsafe { sqlite_column_int64(stmt, 6).max(0) as u64 })
+    };
 
     let finalize_rc = unsafe { sqlite_finalize(stmt) };
     if finalize_rc != SQLITE_OK as c_int {
         return Err(finalize_rc);
     }
 
-    Ok(TreeMeta {
-        dirty,
-        head_lamport,
-        head_replica,
-        head_counter,
-        head_seq,
-    })
+    let head = if head_seq == 0 && head_lamport == 0 && head_replica.is_empty() && head_counter == 0
+    {
+        None
+    } else {
+        Some(MaterializationHead {
+            at: MaterializationKey {
+                lamport: head_lamport,
+                replica: head_replica,
+                counter: head_counter,
+            },
+            seq: head_seq,
+        })
+    };
+    let replay_from = match (replay_lamport, replay_replica, replay_counter) {
+        (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
+            lamport,
+            replica,
+            counter,
+        }),
+        _ => None,
+    };
+
+    Ok(TreeMeta(MaterializationState { head, replay_from }))
 }
 
-pub(super) fn set_tree_meta_dirty(db: *mut sqlite3, dirty: bool) -> Result<(), c_int> {
-    let sql =
-        CString::new("UPDATE tree_meta SET dirty = ?1 WHERE id = 1").expect("tree meta dirty sql");
+pub(super) fn set_tree_meta_replay_frontier(
+    db: *mut sqlite3,
+    frontier: &treecrdt_core::MaterializationFrontier,
+) -> Result<(), c_int> {
+    let sql = CString::new(
+        "UPDATE tree_meta \
+         SET replay_lamport = ?1, replay_replica = ?2, replay_counter = ?3 \
+         WHERE id = 1",
+    )
+    .expect("tree meta replay sql");
     let mut stmt: *mut sqlite3_stmt = null_mut();
     let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
     if rc != SQLITE_OK as c_int {
         return Err(rc);
     }
 
-    let bind_rc = unsafe { sqlite_bind_int64(stmt, 1, if dirty { 1 } else { 0 }) };
-    if bind_rc != SQLITE_OK as c_int {
+    let mut bind_err = false;
+    unsafe {
+        bind_err |= sqlite_bind_int64(stmt, 1, frontier.lamport as i64) != SQLITE_OK as c_int;
+        bind_err |= sqlite_bind_blob(
+            stmt,
+            2,
+            frontier.replica.as_ptr() as *const c_void,
+            frontier.replica.len() as c_int,
+            None,
+        ) != SQLITE_OK as c_int;
+        bind_err |= sqlite_bind_int64(stmt, 3, frontier.counter as i64) != SQLITE_OK as c_int;
+    }
+    if bind_err {
         unsafe { sqlite_finalize(stmt) };
-        return Err(bind_rc);
+        return Err(SQLITE_ERROR as c_int);
     }
 
     let step_rc = unsafe { sqlite_step(stmt) };
@@ -123,16 +180,28 @@ pub(super) fn set_tree_meta_dirty(db: *mut sqlite3, dirty: bool) -> Result<(), c
     Ok(())
 }
 
-pub(super) fn update_tree_meta_head(
+pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
     db: *mut sqlite3,
-    lamport: Lamport,
-    replica: &[u8],
-    counter: u64,
-    seq: u64,
+    head: Option<&MaterializationHead<R>>,
 ) -> Result<(), c_int> {
+    let (lamport, replica, counter, seq): (Lamport, &[u8], u64, u64) = match head {
+        Some(head) => (
+            head.at.lamport,
+            head.at.replica.as_ref(),
+            head.at.counter,
+            head.seq,
+        ),
+        None => (0, &[], 0, 0),
+    };
     let sql = CString::new(
         "UPDATE tree_meta \
-         SET dirty = 0, head_lamport = ?1, head_replica = ?2, head_counter = ?3, head_seq = ?4 \
+         SET head_lamport = ?1, \
+             head_replica = ?2, \
+             head_counter = ?3, \
+             head_seq = ?4, \
+             replay_lamport = NULL, \
+             replay_replica = NULL, \
+             replay_counter = NULL \
          WHERE id = 1",
     )
     .expect("tree meta head sql");
@@ -197,15 +266,17 @@ CREATE TABLE IF NOT EXISTS ops (
   PRIMARY KEY (replica, counter)
 );
 "#;
-    // Materialized tree state + indexes (v1).
+    // Materialized tree state + indexes.
     const TREE_META: &str = r#"
 CREATE TABLE IF NOT EXISTS tree_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  dirty INTEGER NOT NULL DEFAULT 1,
   head_lamport INTEGER NOT NULL DEFAULT 0,
   head_replica BLOB NOT NULL DEFAULT X'',
   head_counter INTEGER NOT NULL DEFAULT 0,
-  head_seq INTEGER NOT NULL DEFAULT 0
+  head_seq INTEGER NOT NULL DEFAULT 0,
+  replay_lamport INTEGER,
+  replay_replica BLOB,
+  replay_counter INTEGER
 );
 INSERT OR IGNORE INTO tree_meta(id) VALUES (1);
 "#;
@@ -296,8 +367,8 @@ CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(par
         return Err(rc_idx);
     }
 
-    // If this is a fresh database with no ops yet, mark materialization clean so appends can
-    // maintain state incrementally without a full rebuild.
+    // If this is a fresh database with no ops yet, seed the materialized root so appends can
+    // maintain state incrementally without a full catch-up pass.
     let mut ops_count: i64 = 0;
     {
         let sql = CString::new("SELECT COUNT(*) FROM ops").expect("count ops sql");
@@ -312,8 +383,7 @@ CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(par
         }
     }
     if ops_count == 0 {
-        let _ = set_tree_meta_dirty(db, false);
-        // Ensure ROOT exists even before first rebuild.
+        // Ensure ROOT exists even before first catch-up.
         let _ = {
             let sql = CString::new(
                 "INSERT OR IGNORE INTO tree_nodes(node,parent,order_key,tombstone) VALUES (?1,NULL,X'',0)",

@@ -26,10 +26,6 @@ pub(super) struct SqliteOpStorage {
 }
 
 impl SqliteOpStorage {
-    pub(super) fn new(db: *mut sqlite3) -> Self {
-        Self { db, doc_id: None }
-    }
-
     pub(super) fn with_doc_id(db: *mut sqlite3, doc_id: Vec<u8>) -> Self {
         Self {
             db,

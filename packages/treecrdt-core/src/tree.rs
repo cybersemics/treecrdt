@@ -487,7 +487,7 @@ where
             }));
         }
 
-        // Out-of-order operation: rebuild derived state from storage.
+        // Out-of-order operation: catch derived state up from storage.
         self.replay_from_storage()?;
         Ok(None)
     }

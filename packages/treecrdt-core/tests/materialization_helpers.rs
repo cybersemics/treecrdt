@@ -1,9 +1,9 @@
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     materialize_persisted_remote_ops_with_delta, LamportClock, MaterializationCursor,
-    MaterializationHead, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId,
-    NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId,
-    TreeCrdt,
+    MaterializationHead, MaterializationKey, MaterializationState, MemoryNodeStore,
+    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
+    ParentOpIndex, PersistedRemoteStores, ReplicaId, TreeCrdt,
 };
 
 #[derive(Default)]
@@ -13,32 +13,47 @@ struct RecordingIndex {
 
 #[derive(Default)]
 struct Cursor {
-    dirty: bool,
     head_lamport: u64,
     head_replica: Vec<u8>,
     head_counter: u64,
     head_seq: u64,
+    replay_lamport: Option<u64>,
+    replay_replica: Option<Vec<u8>>,
+    replay_counter: Option<u64>,
 }
 
 impl MaterializationCursor for Cursor {
-    fn dirty(&self) -> bool {
-        self.dirty
-    }
+    fn state(&self) -> MaterializationState<&[u8]> {
+        let head = if self.head_seq == 0
+            && self.head_lamport == 0
+            && self.head_replica.is_empty()
+            && self.head_counter == 0
+        {
+            None
+        } else {
+            Some(MaterializationHead {
+                at: MaterializationKey {
+                    lamport: self.head_lamport,
+                    replica: self.head_replica.as_slice(),
+                    counter: self.head_counter,
+                },
+                seq: self.head_seq,
+            })
+        };
+        let replay_from = match (
+            self.replay_lamport,
+            self.replay_replica.as_deref(),
+            self.replay_counter,
+        ) {
+            (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
+                lamport,
+                replica,
+                counter,
+            }),
+            _ => None,
+        };
 
-    fn head_lamport(&self) -> u64 {
-        self.head_lamport
-    }
-
-    fn head_replica(&self) -> &[u8] {
-        &self.head_replica
-    }
-
-    fn head_counter(&self) -> u64 {
-        self.head_counter
-    }
-
-    fn head_seq(&self) -> u64 {
-        self.head_seq
+        MaterializationState { head, replay_from }
     }
 }
 
@@ -117,9 +132,9 @@ fn apply_incremental_ops_with_delta_sorts_and_returns_head() {
             .head
             .expect("expected materialization head");
 
-    assert_eq!(next.lamport, 2);
-    assert_eq!(next.replica, replica.as_bytes());
-    assert_eq!(next.counter, 2);
+    assert_eq!(next.at.lamport, 2);
+    assert_eq!(next.at.replica, replica.as_bytes());
+    assert_eq!(next.at.counter, 2);
     assert_eq!(next.seq, 2);
     assert_eq!(index.records.len(), 2);
     assert_eq!(index.records[0].2, 1);
@@ -136,17 +151,48 @@ fn apply_incremental_ops_with_delta_rejects_before_materialized_head() {
     .unwrap();
     let mut index = RecordingIndex::default();
     let cursor = Cursor {
-        dirty: false,
         head_lamport: 5,
         head_replica: b"r".to_vec(),
         head_counter: 3,
         head_seq: 12,
+        ..Cursor::default()
     };
 
     let op = Operation::insert(
         &ReplicaId::new(b"r"),
         2,
         4,
+        NodeId::ROOT,
+        NodeId(9),
+        vec![0x10],
+    );
+
+    let res = apply_incremental_ops_with_delta(&mut crdt, &mut index, &cursor, vec![op]);
+    assert!(res.is_err());
+}
+
+#[test]
+fn apply_incremental_ops_with_delta_rejects_pending_replay_frontier() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut index = RecordingIndex::default();
+    let cursor = Cursor {
+        head_lamport: 5,
+        head_replica: b"r".to_vec(),
+        head_counter: 3,
+        head_seq: 12,
+        replay_lamport: Some(4),
+        replay_replica: Some(b"r".to_vec()),
+        replay_counter: Some(2),
+    };
+    let op = Operation::insert(
+        &ReplicaId::new(b"r"),
+        4,
+        6,
         NodeId::ROOT,
         NodeId(9),
         vec![0x10],
@@ -182,7 +228,7 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
     .unwrap();
 
     let head = res.head.expect("expected materialization head");
-    assert_eq!(head.counter, 2);
+    assert_eq!(head.at.counter, 2);
     assert_eq!(res.affected_nodes, vec![NodeId::ROOT, parent, child],);
 }
 
@@ -202,9 +248,11 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
             seen_counters = ops.iter().map(|op| op.meta.id.counter).collect();
             Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
                 head: Some(MaterializationHead {
-                    lamport: op3.meta.lamport,
-                    replica: op3.meta.id.replica.as_bytes().to_vec(),
-                    counter: op3.meta.id.counter,
+                    at: MaterializationKey {
+                        lamport: op3.meta.lamport,
+                        replica: op3.meta.id.replica.as_bytes().to_vec(),
+                        counter: op3.meta.id.counter,
+                    },
                     seq: 2,
                 }),
                 affected_nodes: vec![NodeId(2)],
@@ -214,34 +262,34 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
             updated_head = Some(head.clone());
             Ok::<_, ()>(())
         },
-        || Ok::<_, ()>(()),
-    );
+        |_| Ok::<_, ()>(()),
+    )
+    .unwrap();
 
     assert_eq!(seen_counters, vec![2, 3]);
     assert_eq!(result.inserted_count, 2);
     assert_eq!(result.affected_nodes, vec![NodeId(2)]);
-    assert!(!result.dirty_fallback);
+    assert!(!result.frontier_recorded);
     assert_eq!(
         updated_head,
         Some(MaterializationHead {
-            lamport: 3,
-            replica: replica.as_bytes().to_vec(),
-            counter: 3,
+            at: MaterializationKey {
+                lamport: 3,
+                replica: replica.as_bytes().to_vec(),
+                counter: 3,
+            },
             seq: 2,
         })
     );
 }
 
 #[test]
-fn apply_persisted_remote_ops_short_circuits_to_dirty_when_cursor_dirty() {
-    let cursor = Cursor {
-        dirty: true,
-        ..Cursor::default()
-    };
+fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing() {
+    let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
     let mut runs = 0u64;
-    let mut marked_dirty = 0u64;
+    let mut scheduled_replay = 0u64;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -254,25 +302,26 @@ fn apply_persisted_remote_ops_short_circuits_to_dirty_when_cursor_dirty() {
             })
         },
         |_| Ok::<_, ()>(()),
-        || {
-            marked_dirty += 1;
+        |_| {
+            scheduled_replay += 1;
             Ok::<_, ()>(())
         },
-    );
+    )
+    .unwrap();
 
-    assert_eq!(runs, 0);
-    assert_eq!(marked_dirty, 1);
+    assert_eq!(runs, 1);
+    assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
     assert_eq!(result.affected_nodes, Vec::<NodeId>::new());
-    assert!(result.dirty_fallback);
+    assert!(result.frontier_recorded);
 }
 
 #[test]
-fn apply_persisted_remote_ops_clears_affected_nodes_when_update_head_fails() {
+fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
-    let mut marked_dirty = 0u64;
+    let mut scheduled_replay = 0u64;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -280,25 +329,115 @@ fn apply_persisted_remote_ops_clears_affected_nodes_when_update_head_fails() {
         |_| {
             Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
                 head: Some(MaterializationHead {
-                    lamport: 7,
-                    replica: b"r".to_vec(),
-                    counter: 4,
+                    at: MaterializationKey {
+                        lamport: 7,
+                        replica: b"r".to_vec(),
+                        counter: 4,
+                    },
                     seq: 9,
                 }),
                 affected_nodes: vec![NodeId(1), NodeId(2)],
             })
         },
         |_| Err::<(), ()>(()),
-        || {
-            marked_dirty += 1;
+        |_| {
+            scheduled_replay += 1;
             Ok::<(), ()>(())
         },
-    );
+    )
+    .unwrap();
 
-    assert_eq!(marked_dirty, 1);
+    assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
     assert!(result.affected_nodes.is_empty());
-    assert!(result.dirty_fallback);
+    assert!(result.frontier_recorded);
+}
+
+#[test]
+fn apply_persisted_remote_ops_schedules_replay_frontier_for_out_of_order_ops() {
+    let cursor = Cursor {
+        head_lamport: 5,
+        head_replica: b"r".to_vec(),
+        head_counter: 5,
+        head_seq: 5,
+        ..Cursor::default()
+    };
+    let replica = ReplicaId::new(b"r");
+    let out_of_order = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
+    let later = Operation::insert(&replica, 6, 6, NodeId::ROOT, NodeId(6), vec![0x60]);
+    let mut materialize_runs = 0u64;
+    let mut replay_frontier = None;
+
+    let result = apply_persisted_remote_ops_with_delta(
+        &cursor,
+        vec![later, out_of_order.clone()],
+        |_| {
+            materialize_runs += 1;
+            Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
+                head: None,
+                affected_nodes: Vec::new(),
+            })
+        },
+        |_| Ok::<_, ()>(()),
+        |frontier| {
+            replay_frontier = Some(frontier.clone());
+            Ok::<_, ()>(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(materialize_runs, 0);
+    assert_eq!(result.inserted_count, 2);
+    assert!(result.affected_nodes.is_empty());
+    assert!(result.frontier_recorded);
+    assert_eq!(
+        replay_frontier,
+        Some(treecrdt_core::MaterializationFrontier {
+            lamport: out_of_order.meta.lamport,
+            replica: out_of_order.meta.id.replica.as_bytes().to_vec(),
+            counter: out_of_order.meta.id.counter,
+        })
+    );
+}
+
+#[test]
+fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
+    let cursor = Cursor {
+        head_lamport: 5,
+        head_replica: b"r".to_vec(),
+        head_counter: 5,
+        head_seq: 5,
+        replay_lamport: Some(2),
+        replay_replica: Some(b"r".to_vec()),
+        replay_counter: Some(2),
+    };
+    let replica = ReplicaId::new(b"r");
+    let later = Operation::insert(&replica, 4, 4, NodeId::ROOT, NodeId(4), vec![0x40]);
+    let mut replay_frontier = None;
+
+    let result = apply_persisted_remote_ops_with_delta(
+        &cursor,
+        vec![later],
+        |_| unreachable!("pending replay frontier should bypass incremental materialization"),
+        |_| Ok::<_, ()>(()),
+        |frontier| {
+            replay_frontier = Some(frontier.clone());
+            Ok::<_, ()>(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.inserted_count, 1);
+    assert!(result.affected_nodes.is_empty());
+    assert!(result.frontier_recorded);
+    assert_eq!(
+        replay_frontier,
+        Some(treecrdt_core::MaterializationFrontier {
+            lamport: 2,
+            replica: b"r".to_vec(),
+            counter: 2,
+        })
+    );
 }
 
 #[test]
@@ -341,7 +480,7 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
     assert_eq!(prepared, 2);
     assert_eq!(flushed_nodes, 1);
     assert_eq!(flushed_index, 1);
-    assert_eq!(head.counter, 2);
+    assert_eq!(head.at.counter, 2);
     assert_eq!(
         result.affected_nodes,
         vec![NodeId::ROOT, NodeId(10), NodeId(11)]

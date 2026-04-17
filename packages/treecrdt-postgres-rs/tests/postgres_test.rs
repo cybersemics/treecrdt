@@ -165,7 +165,7 @@ fn postgres_backend_append_with_affected_nodes_matches_representative_remote_bat
 }
 
 #[test]
-fn postgres_backend_dirty_append_falls_back_to_rebuild_on_read() {
+fn postgres_backend_out_of_order_append_uses_replay_frontier() {
     let Some(client) = connect() else {
         return;
     };
@@ -177,7 +177,93 @@ fn postgres_backend_dirty_append_falls_back_to_rebuild_on_read() {
         reset_doc_for_tests(&mut c, &doc_id).unwrap();
     }
 
-    let replica = ReplicaId::new(b"dirty");
+    let replica = ReplicaId::new(b"ooo");
+    let second = Operation::insert(
+        &replica,
+        2,
+        2,
+        NodeId::ROOT,
+        node(2),
+        order_key_from_position(1),
+    );
+    let first = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node(1),
+        order_key_from_position(0),
+    );
+
+    append_ops(&client, &doc_id, &[second]).unwrap();
+    let affected =
+        append_ops_with_affected_nodes(&client, &doc_id, std::slice::from_ref(&first)).unwrap();
+    assert!(affected.is_empty());
+
+    let (replay_lamport, replay_replica, replay_counter, head_seq_before) = {
+        let mut c = client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT replay_lamport, replay_replica, replay_counter, head_seq \
+                 FROM treecrdt_meta WHERE doc_id = $1",
+                &[&doc_id],
+            )
+            .unwrap();
+        (
+            row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
+            row.get::<_, Option<Vec<u8>>>(1),
+            row.get::<_, Option<i64>>(2).map(|v| v.max(0) as u64),
+            row.get::<_, i64>(3).max(0) as u64,
+        )
+    };
+    assert_eq!(replay_lamport, Some(first.meta.lamport));
+    assert_eq!(
+        replay_replica,
+        Some(first.meta.id.replica.as_bytes().to_vec())
+    );
+    assert_eq!(replay_counter, Some(first.meta.id.counter));
+    assert_eq!(head_seq_before, 1);
+
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
+        vec![node(1), node(2)]
+    );
+
+    let replay_after_read = {
+        let mut c = client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
+                &[&doc_id],
+            )
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(1).max(0) as u64, 2);
+        row.get::<_, Option<i64>>(0)
+    };
+    assert_eq!(replay_after_read, None);
+
+    let refs = list_op_refs_children(&client, &doc_id, NodeId::ROOT).unwrap();
+    let ops = get_ops_by_op_refs(&client, &doc_id, &refs).unwrap();
+    assert_eq!(
+        ops.iter().map(|op| op.meta.id.counter).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+#[test]
+fn postgres_backend_replay_from_start_frontier_recovers_materialized_state() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"restart");
     let first = Operation::insert(
         &replica,
         1,
@@ -199,7 +285,9 @@ fn postgres_backend_dirty_append_falls_back_to_rebuild_on_read() {
     {
         let mut c = client.borrow_mut();
         c.execute(
-            "UPDATE treecrdt_meta SET dirty = TRUE WHERE doc_id = $1",
+            "UPDATE treecrdt_meta \
+             SET replay_lamport = 0, replay_replica = ''::bytea, replay_counter = 0 \
+             WHERE doc_id = $1",
             &[&doc_id],
         )
         .unwrap();
@@ -208,39 +296,46 @@ fn postgres_backend_dirty_append_falls_back_to_rebuild_on_read() {
     let affected = append_ops_with_affected_nodes(&client, &doc_id, &[second]).unwrap();
     assert!(affected.is_empty());
 
-    let dirty_before_read = {
+    let (replay_lamport, replay_replica, replay_counter) = {
         let mut c = client.borrow_mut();
         let row = c
             .query_one(
-                "SELECT dirty FROM treecrdt_meta WHERE doc_id = $1",
+                "SELECT replay_lamport, replay_replica, replay_counter \
+                 FROM treecrdt_meta WHERE doc_id = $1",
                 &[&doc_id],
             )
             .unwrap();
-        row.get::<_, bool>(0)
+        (
+            row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
+            row.get::<_, Option<Vec<u8>>>(1),
+            row.get::<_, Option<i64>>(2).map(|v| v.max(0) as u64),
+        )
     };
-    assert!(dirty_before_read);
+    assert_eq!(replay_lamport, Some(0));
+    assert_eq!(replay_replica, Some(Vec::new()));
+    assert_eq!(replay_counter, Some(0));
 
     assert_eq!(
         tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
         vec![node(1), node(2)]
     );
 
-    let dirty_after_read = {
+    let replay_after_read = {
         let mut c = client.borrow_mut();
         let row = c
             .query_one(
-                "SELECT dirty, head_seq FROM treecrdt_meta WHERE doc_id = $1",
+                "SELECT replay_lamport, head_seq FROM treecrdt_meta WHERE doc_id = $1",
                 &[&doc_id],
             )
             .unwrap();
         assert_eq!(row.get::<_, i64>(1).max(0) as u64, 2);
-        row.get::<_, bool>(0)
+        row.get::<_, Option<i64>>(0)
     };
-    assert!(!dirty_after_read);
+    assert_eq!(replay_after_read, None);
 }
 
 #[test]
-fn postgres_backend_large_append_rebuilds_materialized_views_on_demand() {
+fn postgres_backend_large_append_catches_up_materialized_views_on_demand() {
     let Some(client) = connect() else {
         return;
     };

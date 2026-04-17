@@ -71,14 +71,13 @@ pub(super) unsafe extern "C" fn treecrdt_set_doc_id(
     };
 
     // Ensure the materialized tree state is available for direct SQL reads over `tree_nodes`.
-    // This is especially important on reopen, where `tree_meta.dirty = 1` requires a replay.
+    // This is especially important on reopen, where a pending replay frontier requires catch-up.
     if let Err(rc) = ensure_materialized(db) {
         sqlite_result_error_code(ctx, rc);
         return;
     }
 
-    // No backfill/migration: callers must set `doc_id` before appending ops so `op_ref`
-    // is always computed at write time.
+    // Callers must set `doc_id` before appending ops so `op_ref` is always computed at write time.
     sqlite_result_int(ctx, 1);
 }
 

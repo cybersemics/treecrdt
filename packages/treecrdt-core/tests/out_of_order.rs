@@ -51,7 +51,7 @@ fn move_applied_after_insert_when_delivered_out_of_order() {
 }
 
 #[test]
-fn replay_rebuilds_state_and_advanced_clock() {
+fn replay_from_storage_catches_up_state_and_advanced_clock() {
     let mut storage = MemoryStorage::default();
     let replica = ReplicaId::new(b"r1");
     let parent = NodeId(10);

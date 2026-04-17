@@ -2,8 +2,10 @@ use super::append::JsonAppendOp;
 use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::payload_store::SqlitePayloadStore;
+use super::schema::set_tree_meta_replay_frontier;
 use super::util::sqlite_err_from_core;
 use super::*;
+use treecrdt_core::MaterializationCursor;
 use treecrdt_core::Storage;
 
 fn parse_node_id(bytes: &[u8]) -> Result<NodeId, c_int> {
@@ -80,28 +82,6 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
     })
 }
 
-impl treecrdt_core::MaterializationCursor for TreeMeta {
-    fn dirty(&self) -> bool {
-        self.dirty
-    }
-
-    fn head_lamport(&self) -> Lamport {
-        self.head_lamport
-    }
-
-    fn head_replica(&self) -> &[u8] {
-        &self.head_replica
-    }
-
-    fn head_counter(&self) -> u64 {
-        self.head_counter
-    }
-
-    fn head_seq(&self) -> u64 {
-        self.head_seq
-    }
-}
-
 fn materialize_inserted_ops(
     db: *mut sqlite3,
     doc_id: &[u8],
@@ -133,10 +113,10 @@ fn materialize_inserted_ops(
 
 pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
     let meta = load_tree_meta(db)?;
-    if !meta.dirty {
+    if meta.state().replay_from.is_none() {
         return Ok(());
     }
-    rebuild_materialized(db)
+    catch_up_materialized_from_frontier(db)
 }
 
 pub(super) unsafe extern "C" fn treecrdt_ensure_materialized(
@@ -159,7 +139,7 @@ pub(super) unsafe extern "C" fn treecrdt_ensure_materialized(
     }
 }
 
-fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
+fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
     let begin = CString::new("SAVEPOINT treecrdt_materialize").expect("static");
     let commit = CString::new("RELEASE treecrdt_materialize").expect("static");
     let rollback = CString::new("ROLLBACK TO treecrdt_materialize; RELEASE treecrdt_materialize")
@@ -171,63 +151,62 @@ fn rebuild_materialized(db: *mut sqlite3) -> Result<(), c_int> {
 
     let doc_id = load_doc_id(db).unwrap_or(None).unwrap_or_default();
 
-    // Rebuild materialized state by replaying the op-log through core semantics.
-    use treecrdt_core::{LamportClock, ReplicaId, TreeCrdt};
-    let node_store = match SqliteNodeStore::prepare(db) {
-        Ok(store) => store,
-        Err(_) => {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
-        }
-    };
-    let payload_store = match SqlitePayloadStore::prepare(db) {
-        Ok(store) => store,
-        Err(_) => {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
-        }
-    };
+    // Catch materialized state up from the pending frontier by replaying the op-log through core
+    // semantics.
+    use treecrdt_core::{catch_up_materialized_state, LamportClock, ReplicaId};
     let storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.clone());
-    let mut op_index = match SqliteParentOpIndex::prepare(db, doc_id.clone()) {
+    let meta = match load_tree_meta(db) {
+        Ok(meta) => meta,
+        Err(rc) => {
+            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+            return Err(rc);
+        }
+    };
+    let nodes = match SqliteNodeStore::prepare(db) {
+        Ok(store) => store,
+        Err(_) => {
+            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+            return Err(SQLITE_ERROR as c_int);
+        }
+    };
+    let payloads = match SqlitePayloadStore::prepare(db) {
+        Ok(store) => store,
+        Err(_) => {
+            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+            return Err(SQLITE_ERROR as c_int);
+        }
+    };
+    let index = match SqliteParentOpIndex::prepare(db, doc_id.clone()) {
+        Ok(index) => index,
+        Err(_) => {
+            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+            return Err(SQLITE_ERROR as c_int);
+        }
+    };
+    let head = match catch_up_materialized_state(
+        storage,
+        treecrdt_core::PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"sqlite-ext"),
+            clock: LamportClock::default(),
+            nodes,
+            payloads,
+            index,
+        },
+        &meta,
+        |_| Ok(()),
+        |_| Ok(()),
+    ) {
         Ok(v) => v,
         Err(_) => {
             sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
             return Err(SQLITE_ERROR as c_int);
         }
     };
-    let mut crdt = TreeCrdt::with_stores(
-        ReplicaId::new(b"sqlite-ext"),
-        storage,
-        LamportClock::default(),
-        node_store,
-        payload_store,
-    )
-    .map_err(|_| SQLITE_ERROR as c_int)?;
-    if crdt.replay_from_storage_with_materialization(&mut op_index).is_err() {
-        sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-        return Err(SQLITE_ERROR as c_int);
-    }
 
-    // Update meta head + seq.
-    let seq = crdt.log_len() as u64;
-    if let Some(last) = crdt.head_op() {
-        let head_rc = update_tree_meta_head(
-            db,
-            last.meta.lamport,
-            last.meta.id.replica.as_bytes(),
-            last.meta.id.counter,
-            seq,
-        );
-        if head_rc.is_err() {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return head_rc;
-        }
-    } else {
-        let head_rc = update_tree_meta_head(db, 0, &[], 0, 0);
-        if head_rc.is_err() {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return head_rc;
-        }
+    let head_rc = update_tree_meta_head(db, head.as_ref());
+    if head_rc.is_err() {
+        sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+        return head_rc;
     }
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
@@ -289,9 +268,9 @@ pub(super) fn append_ops_impl(
         &meta,
         inserted_ops,
         |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
-        |head| update_tree_meta_head(db, head.lamport, &head.replica, head.counter, head.seq),
-        || set_tree_meta_dirty(db, true),
-    );
+        |head| update_tree_meta_head(db, Some(head)),
+        |frontier| set_tree_meta_replay_frontier(db, frontier),
+    )?;
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
     if commit_rc != SQLITE_OK as c_int {
