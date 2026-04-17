@@ -7,7 +7,7 @@ use postgres::{Client, Row, Statement};
 
 use treecrdt_core::{
     apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
-    materialize_persisted_remote_ops_with_delta, try_partial_rewind_catch_up_materialized_state,
+    materialize_persisted_remote_ops_with_delta, try_direct_rewind_catch_up_materialized_state,
     try_shortcut_out_of_order_payload_noops, Error, ExactNodeStore, ExactPayloadStore,
     FrontierRewindStorage, Lamport, LamportClock, MaterializationCursor,
     MaterializationFrontier, MaterializationHead, MaterializationKey, MaterializationState, NodeId,
@@ -1898,7 +1898,7 @@ fn append_ops_in_tx(
     let apply_result = if apply_result.catch_up_needed {
         let refreshed_meta = load_tree_meta_for_update(client, doc_id)?;
         let catch_up = if meta.state().replay_from.is_none() {
-            try_partial_rewind_catch_up_materialized_state(
+            try_direct_rewind_catch_up_materialized_state(
                 &PgOpStorage::new(ctx.clone()),
                 &inserted_op_ids,
                 PersistedRemoteStores {

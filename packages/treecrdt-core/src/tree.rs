@@ -967,10 +967,6 @@ where
         &mut self.nodes
     }
 
-    pub(crate) fn payload_store_mut(&mut self) -> &mut P {
-        &mut self.payloads
-    }
-
     pub fn validate_invariants(&self) -> Result<()> {
         for pid in self.nodes.all_nodes()? {
             let pchildren = self.nodes.children(pid)?;

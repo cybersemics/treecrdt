@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use treecrdt_core::PayloadStore;
 use treecrdt_core::Storage;
 use treecrdt_core::{
-    try_partial_rewind_catch_up_materialized_state, LamportClock, MaterializationCursor, ReplicaId,
+    try_direct_rewind_catch_up_materialized_state, LamportClock, MaterializationCursor, ReplicaId,
 };
 
 fn merge_affected_nodes(mut left: Vec<NodeId>, right: Vec<NodeId>) -> Vec<NodeId> {
@@ -322,7 +322,7 @@ pub(super) fn append_ops_impl(
     let apply_result = if apply_result.catch_up_needed {
         let refreshed_meta = load_tree_meta(db)?;
         let catch_up = if meta.state().replay_from.is_none() {
-            try_partial_rewind_catch_up_materialized_state(
+            try_direct_rewind_catch_up_materialized_state(
                 &super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
                 &inserted_op_ids,
                 treecrdt_core::PersistedRemoteStores {

@@ -286,6 +286,16 @@ fn postgres_backend_deferred_recovery_from_replay_frontier_catches_up_on_ensure(
 }
 
 #[test]
+fn postgres_backend_out_of_order_delete_suffix_falls_back_and_restores_parent() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_delete_suffix_falls_back_and_restores_parent(
+        &harness,
+    );
+}
+
+#[test]
 fn postgres_backend_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
     let Some(client) = connect() else {
         return;

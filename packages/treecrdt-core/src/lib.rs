@@ -17,7 +17,7 @@ pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use materialization::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    try_partial_rewind_catch_up_materialized_state, try_shortcut_out_of_order_payload_noops,
+    try_direct_rewind_catch_up_materialized_state, try_shortcut_out_of_order_payload_noops,
     CatchUpResult, FrontierRewindStorage, IncrementalApplyResult, MaterializationCursor,
     MaterializationFrontier, MaterializationFrontierRef, MaterializationHead,
     MaterializationHeadRef, MaterializationKey, MaterializationState, MaterializationStateRef,

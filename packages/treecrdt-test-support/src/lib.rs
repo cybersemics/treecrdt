@@ -231,3 +231,29 @@ pub fn deferred_recovery_from_replay_frontier_catches_up_on_ensure<
     assert_eq!(harness.head_seq(), 2);
     assert_eq!(harness.op_ref_counters_for_parent(NodeId::ROOT), vec![1, 2]);
 }
+
+pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
+    H: MaterializationConformanceHarness,
+>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"delete-fallback");
+    let parent = node(1);
+    let child = node(2);
+
+    let insert_parent =
+        Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, order_key_from_position(0));
+    let insert_child = Operation::insert(&replica, 2, 2, parent, child, order_key_from_position(0));
+
+    let mut vv = treecrdt_core::VersionVector::new();
+    vv.observe(&replica, 1);
+    let delete_parent = Operation::delete(&replica, 3, 3, parent, Some(vv));
+
+    harness.append_ops(&[insert_parent, delete_parent]);
+    let _ = harness.append_ops_with_affected_nodes(&[insert_child]);
+
+    assert_replay_cleared(harness);
+    assert_eq!(harness.head_seq(), 3);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![parent]);
+    assert_eq!(harness.visible_children(parent), vec![child]);
+}
