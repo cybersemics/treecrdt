@@ -7,6 +7,7 @@ use treecrdt_core::{
     MaterializationHead, MaterializationKey, MaterializationState, MemoryNodeStore,
     MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
     ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt,
+    LocalPlacement,
 };
 
 #[derive(Default)]
@@ -120,8 +121,8 @@ fn finalize_local_materialization_records_unique_hints_and_extras() {
 
     let parent = NodeId(10);
     let node = NodeId(11);
-    crdt.local_insert_after(NodeId::ROOT, parent, None).unwrap();
-    let op = crdt.local_insert_after(parent, node, None).unwrap();
+    crdt.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (op, _) = crdt.local_insert(parent, node, LocalPlacement::First, None).unwrap();
 
     let extra_op_id = OperationId {
         replica: ReplicaId::new(b"extra"),

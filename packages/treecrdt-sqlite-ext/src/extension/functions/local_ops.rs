@@ -208,7 +208,7 @@ fn finish_local_core_op(
         let finalize_rc = match SqliteParentOpIndex::prepare(session.db, session.doc_id.clone()) {
             Ok(mut op_index) => session
                 .crdt
-                .finalize_local_with_plan(&op, &mut op_index, head_seq, &plan)
+                .finalize_local(&op, &mut op_index, head_seq, &plan)
                 .map_err(|_| SQLITE_ERROR as c_int),
             Err(_) => Err(SQLITE_ERROR as c_int),
         };
@@ -384,7 +384,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
-        crdt.local_insert_with_plan(parent_id, node_id, placement, payload.clone())
+        crdt.local_insert(parent_id, node_id, placement, payload.clone())
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -487,7 +487,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         }
     };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
-        crdt.local_move_with_plan(node_id, new_parent_id, placement)
+        crdt.local_move(node_id, new_parent_id, placement)
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -557,7 +557,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
-        crdt.local_delete_with_plan(node_id)
+        crdt.local_delete(node_id)
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -629,7 +629,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
-        crdt.local_payload_with_plan(node_id, payload.clone())
+        crdt.local_payload(node_id, payload.clone())
     }) {
         Ok(v) => v,
         Err(rc) => {

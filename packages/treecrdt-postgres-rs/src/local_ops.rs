@@ -86,7 +86,7 @@ fn finish_local_core_op(
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
     // commit_local() already persisted the op and updated node/payload state. The finalize step
     // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
-    match session.crdt.finalize_local_with_plan(
+    match session.crdt.finalize_local(
         op,
         &mut op_index,
         session.meta.state().head_seq(),
@@ -144,7 +144,7 @@ pub fn local_insert(
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_insert_with_plan(parent, node, placement, payload)?;
+        let (op, plan) = session.crdt.local_insert(parent, node, placement, payload)?;
         finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })
@@ -162,7 +162,7 @@ pub fn local_move(
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_move_with_plan(node, new_parent, placement)?;
+        let (op, plan) = session.crdt.local_move(node, new_parent, placement)?;
         finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })
@@ -176,7 +176,7 @@ pub fn local_delete(
 ) -> Result<Operation> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_delete_with_plan(node)?;
+        let (op, plan) = session.crdt.local_delete(node)?;
         finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })
@@ -191,7 +191,7 @@ pub fn local_payload(
 ) -> Result<Operation> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_payload_with_plan(node, payload)?;
+        let (op, plan) = session.crdt.local_payload(node, payload)?;
         finish_local_core_op(&mut session, &op, plan)?;
         Ok(op)
     })

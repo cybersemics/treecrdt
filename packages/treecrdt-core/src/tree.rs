@@ -214,15 +214,6 @@ where
         (replica, counter, lamport, seed)
     }
 
-    pub fn local_insert_after(
-        &mut self,
-        parent: NodeId,
-        node: NodeId,
-        after: Option<NodeId>,
-    ) -> Result<Operation> {
-        self.local_insert_after_opt(parent, node, after, None)
-    }
-
     pub fn resolve_after_for_placement(
         &self,
         parent: NodeId,
@@ -249,7 +240,7 @@ where
         }
     }
 
-    pub fn local_insert_with_plan(
+    pub fn local_insert(
         &mut self,
         parent: NodeId,
         node: NodeId,
@@ -257,7 +248,12 @@ where
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let after = self.resolve_after_for_placement(parent, placement, None)?;
-        let op = self.local_insert_after_opt(parent, node, after, payload)?;
+        let (replica, counter, lamport, seed) = self.next_op_meta();
+        let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
+        let op = Operation::insert_with_optional_payload(
+            &replica, counter, lamport, parent, node, order_key, payload,
+        );
+        let op = self.commit_local(op)?;
         Ok((
             op,
             LocalFinalizePlan {
@@ -267,44 +263,7 @@ where
         ))
     }
 
-    pub fn local_insert_after_with_payload(
-        &mut self,
-        parent: NodeId,
-        node: NodeId,
-        after: Option<NodeId>,
-        payload: impl Into<Vec<u8>>,
-    ) -> Result<Operation> {
-        self.local_insert_after_opt(parent, node, after, Some(payload.into()))
-    }
-
-    fn local_insert_after_opt(
-        &mut self,
-        parent: NodeId,
-        node: NodeId,
-        after: Option<NodeId>,
-        payload: Option<Vec<u8>>,
-    ) -> Result<Operation> {
-        let (replica, counter, lamport, seed) = self.next_op_meta();
-        let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
-        let op = Operation::insert_with_optional_payload(
-            &replica, counter, lamport, parent, node, order_key, payload,
-        );
-        self.commit_local(op)
-    }
-
-    pub fn local_move_after(
-        &mut self,
-        node: NodeId,
-        new_parent: NodeId,
-        after: Option<NodeId>,
-    ) -> Result<Operation> {
-        let (replica, counter, lamport, seed) = self.next_op_meta();
-        let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
-        let op = Operation::move_node(&replica, counter, lamport, node, new_parent, order_key);
-        self.commit_local(op)
-    }
-
-    pub fn local_move_with_plan(
+    pub fn local_move(
         &mut self,
         node: NodeId,
         new_parent: NodeId,
@@ -312,7 +271,10 @@ where
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let old_parent = self.parent(node)?;
         let after = self.resolve_after_for_placement(new_parent, placement, Some(node))?;
-        let op = self.local_move_after(node, new_parent, after)?;
+        let (replica, counter, lamport, seed) = self.next_op_meta();
+        let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
+        let op = Operation::move_node(&replica, counter, lamport, node, new_parent, order_key);
+        let op = self.commit_local(op)?;
 
         let mut parent_hints = vec![new_parent];
         if let Some(parent) = old_parent {
@@ -335,19 +297,15 @@ where
         ))
     }
 
-    pub fn local_delete(&mut self, node: NodeId) -> Result<Operation> {
-        let (replica, counter, lamport, _seed) = self.next_op_meta();
-        let known_state = Some(self.nodes.subtree_version_vector(node)?);
-        let op = Operation::delete(&replica, counter, lamport, node, known_state);
-        self.commit_local(op)
-    }
-
-    pub fn local_delete_with_plan(
+    pub fn local_delete(
         &mut self,
         node: NodeId,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let old_parent = self.parent(node)?;
-        let op = self.local_delete(node)?;
+        let (replica, counter, lamport, _seed) = self.next_op_meta();
+        let known_state = Some(self.nodes.subtree_version_vector(node)?);
+        let op = Operation::delete(&replica, counter, lamport, node, known_state);
+        let op = self.commit_local(op)?;
         Ok((
             op,
             LocalFinalizePlan {
@@ -357,33 +315,19 @@ where
         ))
     }
 
-    pub fn local_set_payload(
-        &mut self,
-        node: NodeId,
-        payload: impl Into<Vec<u8>>,
-    ) -> Result<Operation> {
-        let (replica, counter, lamport, _seed) = self.next_op_meta();
-        let op = Operation::set_payload(&replica, counter, lamport, node, payload);
-        self.commit_local(op)
-    }
-
-    pub fn local_clear_payload(&mut self, node: NodeId) -> Result<Operation> {
-        let (replica, counter, lamport, _seed) = self.next_op_meta();
-        let op = Operation::clear_payload(&replica, counter, lamport, node);
-        self.commit_local(op)
-    }
-
-    pub fn local_payload_with_plan(
+    pub fn local_payload(
         &mut self,
         node: NodeId,
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let parent = self.parent(node)?;
+        let (replica, counter, lamport, _seed) = self.next_op_meta();
         let op = if let Some(payload) = payload {
-            self.local_set_payload(node, payload)?
+            Operation::set_payload(&replica, counter, lamport, node, payload)
         } else {
-            self.local_clear_payload(node)?
+            Operation::clear_payload(&replica, counter, lamport, node)
         };
+        let op = self.commit_local(op)?;
         Ok((
             op,
             LocalFinalizePlan {
@@ -587,7 +531,7 @@ where
         })
     }
 
-    pub fn finalize_local_with_plan<I: ParentOpIndex>(
+    pub fn finalize_local<I: ParentOpIndex>(
         &mut self,
         op: &Operation,
         index: &mut I,
