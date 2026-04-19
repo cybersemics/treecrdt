@@ -3,6 +3,7 @@
 //! This crate stays independent of concrete storage engines so it can be embedded in SQLite,
 //! WASM, or any host that can satisfy the traits defined here.
 
+pub(crate) mod affected;
 pub mod error;
 pub mod ids;
 pub mod materialization;
@@ -10,6 +11,8 @@ pub mod ops;
 pub mod order_key;
 pub mod traits;
 pub mod tree;
+pub mod types;
+mod validation;
 pub mod version_vector;
 
 pub use error::{Error, Result};
@@ -30,7 +33,8 @@ pub use traits::{
     MemoryPayloadStore, MemoryStorage, NodeStore, NoopParentOpIndex, NoopStorage, ParentOpIndex,
     PayloadStore, Storage, TruncatingParentOpIndex,
 };
-pub use tree::{
-    ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport, TreeCrdt,
+pub use tree::TreeCrdt;
+pub use types::{
+    ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport,
 };
 pub use version_vector::VersionVector;

@@ -6,6 +6,10 @@ use crate::ops::{cmp_op_key, Operation, OperationKind};
 use crate::traits::{
     Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
 };
+use crate::affected::{affected_parents, direct_affected_nodes, parent_hints_from, sorted_node_ids};
+use crate::types::{
+    ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport,
+};
 use crate::version_vector::VersionVector;
 
 #[derive(Clone)]
@@ -31,118 +35,6 @@ where
     payloads: P,
     head: Option<Operation>,
     op_count: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct NodeExport {
-    pub node: NodeId,
-    pub parent: Option<NodeId>,
-    pub children: Vec<NodeId>,
-    pub last_change: VersionVector,
-    pub deleted_at: Option<VersionVector>,
-}
-
-#[derive(Clone, Debug)]
-pub struct NodeSnapshotExport {
-    pub parent: Option<NodeId>,
-    pub order_key: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ApplyDelta {
-    pub snapshot: NodeSnapshotExport,
-    pub affected_nodes: Vec<NodeId>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LocalPlacement {
-    First,
-    Last,
-    After(NodeId),
-}
-
-impl LocalPlacement {
-    pub fn from_parts(placement: &str, after: Option<NodeId>) -> Result<Self> {
-        match placement {
-            "first" => Ok(Self::First),
-            "last" => Ok(Self::Last),
-            "after" => {
-                let Some(after_id) = after else {
-                    return Err(Error::InvalidOperation(
-                        "missing after for placement=after".into(),
-                    ));
-                };
-                Ok(Self::After(after_id))
-            }
-            _ => Err(Error::InvalidOperation("invalid placement".into())),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct LocalFinalizePlan {
-    pub parent_hints: Vec<NodeId>,
-    pub extra_index_records: Vec<(NodeId, OperationId)>,
-}
-
-fn affected_parents(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
-    let mut parents = Vec::new();
-    if let Some(p) = snapshot_parent {
-        parents.push(p);
-    }
-    match kind {
-        OperationKind::Insert { parent, .. } => parents.push(*parent),
-        OperationKind::Move { new_parent, .. } => parents.push(*new_parent),
-        OperationKind::Delete { .. }
-        | OperationKind::Tombstone { .. }
-        | OperationKind::Payload { .. } => {}
-    }
-    parents.sort();
-    parents.dedup();
-    parents
-}
-
-fn sorted_node_ids(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
-    let mut ids: Vec<NodeId> = nodes.into_iter().collect();
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
-fn parent_hints_from(parent: Option<NodeId>) -> Vec<NodeId> {
-    parent.into_iter().collect()
-}
-
-fn push_if_live(nodes: &mut Vec<NodeId>, id: NodeId) {
-    if id != NodeId::TRASH {
-        nodes.push(id);
-    }
-}
-
-fn push_snapshot_parent(nodes: &mut Vec<NodeId>, snapshot_parent: Option<NodeId>) {
-    if let Some(p) = snapshot_parent {
-        push_if_live(nodes, p);
-    }
-}
-
-fn direct_affected_nodes(snapshot_parent: Option<NodeId>, kind: &OperationKind) -> Vec<NodeId> {
-    let mut nodes = Vec::new();
-    push_if_live(&mut nodes, kind.node());
-    match kind {
-        OperationKind::Insert { parent, .. } => {
-            push_snapshot_parent(&mut nodes, snapshot_parent);
-            push_if_live(&mut nodes, *parent);
-        }
-        OperationKind::Move { new_parent, .. } => {
-            push_snapshot_parent(&mut nodes, snapshot_parent);
-            push_if_live(&mut nodes, *new_parent);
-        }
-        OperationKind::Delete { .. } | OperationKind::Tombstone { .. } => {
-            push_snapshot_parent(&mut nodes, snapshot_parent);
-        }
-        OperationKind::Payload { .. } => {}
-    }
-    sorted_node_ids(nodes)
 }
 
 impl<S, C> TreeCrdt<S, C, MemoryNodeStore>
@@ -711,51 +603,12 @@ where
         self.head.as_ref()
     }
 
+    pub(crate) fn node_store(&self) -> &N {
+        &self.nodes
+    }
+
     pub(crate) fn node_store_mut(&mut self) -> &mut N {
         &mut self.nodes
-    }
-
-    pub fn validate_invariants(&self) -> Result<()> {
-        for pid in self.nodes.all_nodes()? {
-            let pchildren = self.nodes.children(pid)?;
-            let mut seen = HashSet::new();
-            for child in pchildren {
-                if !seen.insert(child) {
-                    return Err(Error::InvalidOperation("duplicate child entry".into()));
-                }
-                if !self.nodes.exists(child)? {
-                    return Err(Error::InvalidOperation("child not present in nodes".into()));
-                }
-                if self.nodes.parent(child)? != Some(pid) {
-                    return Err(Error::InvalidOperation("child parent mismatch".into()));
-                }
-            }
-        }
-
-        for node in self.nodes.all_nodes()? {
-            if self.has_cycle_from(node)? {
-                return Err(Error::InvalidOperation("cycle detected".into()));
-            }
-        }
-        Ok(())
-    }
-
-    fn has_cycle_from(&self, start: NodeId) -> Result<bool> {
-        if start == NodeId::ROOT || start == NodeId::TRASH {
-            return Ok(false);
-        }
-        let mut visited = HashSet::new();
-        let mut current = Some(start);
-        while let Some(n) = current {
-            if !visited.insert(n) {
-                return Ok(true);
-            }
-            if n == NodeId::ROOT || n == NodeId::TRASH {
-                return Ok(false);
-            }
-            current = self.nodes.parent(n)?;
-        }
-        Ok(false)
     }
 
     fn commit_local(&mut self, op: Operation) -> Result<Operation> {
