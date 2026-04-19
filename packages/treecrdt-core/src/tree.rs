@@ -270,38 +270,12 @@ where
         Ok(None)
     }
 
-    /// Apply a remote operation while maintaining adapter-provided derived state.
+    /// Apply a remote op with full materialization bookkeeping.
     ///
-    /// This wires together:
-    /// - core CRDT semantics (`apply_remote_with_delta`)
-    /// - a parent→op index (`ParentOpIndex`) for partial sync
-    /// - cached tombstone flags in the [`NodeStore`] (via `set_tombstone`)
-    fn apply_remote_with_materialization<I: ParentOpIndex>(
-        &mut self,
-        op: Operation,
-        index: &mut I,
-        seq: u64,
-    ) -> Result<Option<ApplyDelta>> {
-        let snapshot = self.apply_remote_with_delta(op.clone())?.map(|delta| NodeSnapshot {
-            parent: delta.snapshot.parent,
-            order_key: delta.snapshot.order_key,
-        });
-        let Some(snapshot) = snapshot else {
-            return Ok(None);
-        };
-        let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
-        Ok(Some(self.finalize_materialized_apply(
-            snapshot,
-            &op,
-            index,
-            seq,
-            affected_nodes,
-        )?))
-    }
-
-    /// Apply a remote op and advance materialization sequence only when it is accepted.
-    ///
-    /// Adapters can hold `seq` in metadata and pass it by mutable reference across a batch.
+    /// This wires together core CRDT semantics (`apply_remote_with_delta`),
+    /// a parent-op index (`ParentOpIndex`) for partial sync, and cached
+    /// tombstone flags in the [`NodeStore`]. The materialization sequence
+    /// is advanced only when the operation is actually accepted.
     pub fn apply_remote_with_materialization_seq<I: ParentOpIndex>(
         &mut self,
         op: Operation,
@@ -309,11 +283,22 @@ where
         seq: &mut u64,
     ) -> Result<Option<ApplyDelta>> {
         *seq = (*seq).saturating_add(1);
-        let applied = self.apply_remote_with_materialization(op, index, *seq)?;
-        if applied.is_none() {
+        let snapshot = self.apply_remote_with_delta(op.clone())?.map(|delta| NodeSnapshot {
+            parent: delta.snapshot.parent,
+            order_key: delta.snapshot.order_key,
+        });
+        let Some(snapshot) = snapshot else {
             *seq = (*seq).saturating_sub(1);
-        }
-        Ok(applied)
+            return Ok(None);
+        };
+        let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
+        Ok(Some(self.finalize_materialized_apply(
+            snapshot,
+            &op,
+            index,
+            *seq,
+            affected_nodes,
+        )?))
     }
 
     /// Apply a canonically sorted remote op directly against the current materialized state.
@@ -345,36 +330,6 @@ where
     ///
     /// This is intended for adapters that execute local operations directly against core and then
     /// need to keep external materialized indexes/metadata in sync.
-    pub fn finalize_local_materialization<I: ParentOpIndex>(
-        &mut self,
-        op: &Operation,
-        index: &mut I,
-        seq: u64,
-        parent_hints: &[NodeId],
-        extra_index_records: &[(NodeId, OperationId)],
-    ) -> Result<()> {
-        let mut refresh_starts: Vec<NodeId> = parent_hints.to_vec();
-        refresh_starts.push(op.kind.node());
-        self.refresh_tombstones_upward(refresh_starts)?;
-
-        let mut seen: HashSet<NodeId> = HashSet::new();
-        for parent in parent_hints {
-            if *parent == NodeId::TRASH || !seen.insert(*parent) {
-                continue;
-            }
-            index.record(*parent, &op.meta.id, seq)?;
-        }
-
-        for (parent, op_id) in extra_index_records {
-            if *parent == NodeId::TRASH {
-                continue;
-            }
-            index.record(*parent, op_id, seq)?;
-        }
-
-        Ok(())
-    }
-
     fn finalize_materialized_apply<I: ParentOpIndex>(
         &mut self,
         snapshot: NodeSnapshot,
@@ -422,7 +377,6 @@ where
             affected_nodes,
         })
     }
-
     pub fn finalize_local<I: ParentOpIndex>(
         &mut self,
         op: &Operation,
@@ -431,13 +385,26 @@ where
         plan: &LocalFinalizePlan,
     ) -> Result<u64> {
         let seq = head_seq.saturating_add(1);
-        self.finalize_local_materialization(
-            op,
-            index,
-            seq,
-            &plan.parent_hints,
-            &plan.extra_index_records,
-        )?;
+
+        let mut refresh_starts: Vec<NodeId> = plan.parent_hints.to_vec();
+        refresh_starts.push(op.kind.node());
+        self.refresh_tombstones_upward(refresh_starts)?;
+
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        for parent in &plan.parent_hints {
+            if *parent == NodeId::TRASH || !seen.insert(*parent) {
+                continue;
+            }
+            index.record(*parent, &op.meta.id, seq)?;
+        }
+
+        for (parent, op_id) in &plan.extra_index_records {
+            if *parent == NodeId::TRASH {
+                continue;
+            }
+            index.record(*parent, op_id, seq)?;
+        }
+
         Ok(seq)
     }
 
