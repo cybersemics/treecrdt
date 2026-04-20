@@ -12,16 +12,12 @@ use treecrdt_core::{
 pub(super) const ROOT_NODE_ID: [u8; 16] = [0u8; 16];
 
 #[derive(Clone, Debug)]
-pub(super) struct TreeMeta(MaterializationState);
+pub(super) struct TreeMeta(pub(super) MaterializationState);
 
 impl MaterializationCursor for TreeMeta {
     fn state(&self) -> MaterializationState<&[u8]> {
         self.0.as_borrowed()
     }
-}
-
-pub(super) fn tree_meta_from_state(state: MaterializationState) -> TreeMeta {
-    TreeMeta(state)
 }
 
 pub(super) fn load_doc_id(db: *mut sqlite3) -> Result<Option<Vec<u8>>, c_int> {

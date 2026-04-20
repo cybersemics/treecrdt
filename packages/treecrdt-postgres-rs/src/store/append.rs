@@ -1,26 +1,24 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Instant;
 
 use postgres::Client;
 
 use treecrdt_core::{
-    apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
-    materialize_persisted_remote_ops_with_delta, try_direct_rewind_catch_up_materialized_state,
-    try_shortcut_out_of_order_payload_noops, Error, LamportClock, MaterializationCursor,
-    MaterializationHead, MaterializationState, NodeId, Operation, OperationId, OperationKind,
+    catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
+    orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state, Error,
+    LamportClock, MaterializationCursor, MaterializationHead, NodeId, Operation, OperationKind,
     PersistedRemoteStores, ReplicaId, Result,
 };
 
 use crate::profile::{append_profile_enabled, PgAppendProfile};
 
-use super::*;
 use super::meta::load_tree_meta;
+use super::*;
 
 fn materialize_inserted_ops(
     ctx: PgCtx,
-    meta: &TreeMeta,
+    meta: &dyn MaterializationCursor,
     ops: Vec<Operation>,
 ) -> Result<treecrdt_core::IncrementalApplyResult> {
     // At this point treecrdt_ops already contains the inserted operations. This temporary
@@ -34,7 +32,7 @@ fn materialize_inserted_ops(
             payloads: PgPayloadStore::new(ctx.clone()),
             index: PgParentOpIndex::new(ctx.clone()),
         },
-        meta,
+        &meta,
         ops,
         |nodes, ops| {
             if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
@@ -46,13 +44,6 @@ fn materialize_inserted_ops(
         |nodes| nodes.flush_last_change(),
         |index| index.flush(),
     )
-}
-
-fn merge_affected_nodes(mut left: Vec<NodeId>, right: Vec<NodeId>) -> Vec<NodeId> {
-    left.extend(right);
-    left.sort();
-    left.dedup();
-    left
 }
 
 pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
@@ -143,8 +134,6 @@ fn append_ops_in_tx(
     // Only materialize the ops Postgres actually inserted. This keeps duplicate opRefs in the
     // input batch from being replayed twice through core materialization.
     let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
-    let inserted_op_ids: HashSet<OperationId> =
-        inserted_ops.iter().map(|op| op.meta.id.clone()).collect();
     if let Some(profile) = &append_profile {
         profile.borrow_mut().dedupe_filter_ms +=
             dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -158,58 +147,21 @@ fn append_ops_in_tx(
         update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
         result
     };
-    let apply_result = if let Some(shortcut) = {
-        let payloads = PgPayloadStore::new(ctx.clone());
-        try_shortcut_out_of_order_payload_noops(&meta, inserted_ops.clone(), |node| {
-            payloads.last_writer(node)
-        })?
-    } {
-        if shortcut.remaining_ops.is_empty() {
-            update_head(&shortcut.resumed_head)?;
-            treecrdt_core::PersistedRemoteApplyResult {
-                inserted_count: inserted_ops.len().min(u64::MAX as usize) as u64,
-                affected_nodes: shortcut.affected_nodes,
-                catch_up_needed: false,
-            }
-        } else {
-            let shortcut_meta = TreeMeta(MaterializationState {
-                head: Some(shortcut.resumed_head.clone()),
-                replay_from: None,
-            });
-            let result =
-                materialize_inserted_ops(ctx.clone(), &shortcut_meta, shortcut.remaining_ops)?;
-            let head = result.head.ok_or_else(|| {
-                Error::Storage("expected head after payload noop shortcut".into())
-            })?;
-            update_head(&head)?;
-            treecrdt_core::PersistedRemoteApplyResult {
-                inserted_count: inserted_ops.len().min(u64::MAX as usize) as u64,
-                affected_nodes: merge_affected_nodes(
-                    shortcut.affected_nodes,
-                    result.affected_nodes,
-                ),
-                catch_up_needed: false,
-            }
-        }
-    } else {
-        apply_persisted_remote_ops_with_delta(
-            &meta,
-            inserted_ops,
-            |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
-            &mut update_head,
-            |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
-        )?
-    };
-    let catch_up_performed = apply_result.catch_up_needed;
-    let apply_result = if catch_up_performed {
-        let refreshed_meta = load_tree_meta_for_update(client, doc_id)?;
-        let catch_up = if meta.state().replay_from.is_none() {
-            // No replay frontier existed before this append, so if one was just scheduled it came
-            // from the current batch. That is the narrow case where the direct rewind fast path is
-            // safe to try before falling back to conservative replay-from-frontier catch-up.
+    let apply_result = orchestrate_persisted_remote_append(
+        &meta,
+        inserted_ops,
+        {
+            let payloads = PgPayloadStore::new(ctx.clone());
+            move |node| payloads.last_writer(node)
+        },
+        |meta, inserted| materialize_inserted_ops(ctx.clone(), meta, inserted),
+        &mut update_head,
+        |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
+        || Ok(load_tree_meta_for_update(client, doc_id)?.0),
+        |meta, inserted_op_ids| {
             try_direct_rewind_catch_up_materialized_state(
                 &PgOpStorage::new(ctx.clone()),
-                &inserted_op_ids,
+                inserted_op_ids,
                 PersistedRemoteStores {
                     replica_id: ReplicaId::new(b"postgres"),
                     clock: LamportClock::default(),
@@ -217,24 +169,12 @@ fn append_ops_in_tx(
                     payloads: PgPayloadStore::new(ctx.clone()),
                     index: PgParentOpIndex::new(ctx.clone()),
                 },
-                &refreshed_meta,
+                &meta,
                 |nodes| nodes.flush_last_change(),
                 |index| index.flush(),
-            )?
-            .unwrap_or(catch_up_materialized_state(
-                PgOpStorage::new(ctx.clone()),
-                PersistedRemoteStores {
-                    replica_id: ReplicaId::new(b"postgres"),
-                    clock: LamportClock::default(),
-                    nodes: PgNodeStore::new(ctx.clone()),
-                    payloads: PgPayloadStore::new(ctx.clone()),
-                    index: PgParentOpIndex::new(ctx.clone()),
-                },
-                &refreshed_meta,
-                |nodes| nodes.flush_last_change(),
-                |index| index.flush(),
-            )?)
-        } else {
+            )
+        },
+        |meta| {
             catch_up_materialized_state(
                 PgOpStorage::new(ctx.clone()),
                 PersistedRemoteStores {
@@ -244,25 +184,14 @@ fn append_ops_in_tx(
                     payloads: PgPayloadStore::new(ctx.clone()),
                     index: PgParentOpIndex::new(ctx.clone()),
                 },
-                &refreshed_meta,
+                &meta,
                 |nodes| nodes.flush_last_change(),
                 |index| index.flush(),
-            )?
-        };
-        update_head(
-            catch_up
-                .head
-                .as_ref()
-                .ok_or_else(|| Error::Storage("expected head after immediate catch-up".into()))?,
-        )?;
-        treecrdt_core::PersistedRemoteApplyResult {
-            inserted_count: apply_result.inserted_count,
-            affected_nodes: catch_up.affected_nodes,
-            catch_up_needed: false,
-        }
-    } else {
-        apply_result
-    };
+            )
+        },
+        |message| Error::Storage(message.into()),
+    )?;
+    let catch_up_performed = apply_result.catch_up_needed;
     if let Some(profile) = &append_profile {
         profile.borrow_mut().materialize_ms +=
             materialize_started_at.elapsed().as_secs_f64() * 1000.0;

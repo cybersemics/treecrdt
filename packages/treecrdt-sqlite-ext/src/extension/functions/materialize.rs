@@ -2,22 +2,15 @@ use super::append::JsonAppendOp;
 use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::payload_store::SqlitePayloadStore;
-use super::schema::{set_tree_meta_replay_frontier, tree_meta_from_state};
+use super::schema::set_tree_meta_replay_frontier;
 use super::util::sqlite_err_from_core;
 use super::*;
-use std::collections::HashSet;
 use treecrdt_core::PayloadStore;
 use treecrdt_core::Storage;
 use treecrdt_core::{
-    try_direct_rewind_catch_up_materialized_state, LamportClock, MaterializationCursor, ReplicaId,
+    orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state,
+    LamportClock, MaterializationCursor, ReplicaId,
 };
-
-fn merge_affected_nodes(mut left: Vec<NodeId>, right: Vec<NodeId>) -> Vec<NodeId> {
-    left.extend(right);
-    left.sort();
-    left.dedup();
-    left
-}
 
 fn parse_node_id(bytes: &[u8]) -> Result<NodeId, c_int> {
     if bytes.len() != 16 {
@@ -96,8 +89,8 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
 fn materialize_inserted_ops(
     db: *mut sqlite3,
     doc_id: &[u8],
-    meta: &TreeMeta,
-    ops: &[treecrdt_core::Operation],
+    meta: &dyn MaterializationCursor,
+    ops: Vec<treecrdt_core::Operation>,
 ) -> Result<treecrdt_core::IncrementalApplyResult, c_int> {
     use treecrdt_core::{
         materialize_persisted_remote_ops_with_delta, LamportClock, PersistedRemoteStores, ReplicaId,
@@ -113,8 +106,8 @@ fn materialize_inserted_ops(
             index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
                 .map_err(|_| SQLITE_ERROR as c_int)?,
         },
-        meta,
-        ops.to_vec(),
+        &meta,
+        ops,
         |_, _| Ok(()),
         |_| Ok(()),
         |_| Ok(()),
@@ -274,60 +267,21 @@ pub(super) fn append_ops_impl(
             inserted_ops.push(operation);
         }
     }
-    let inserted_op_ids: HashSet<treecrdt_core::OperationId> =
-        inserted_ops.iter().map(|op| op.meta.id.clone()).collect();
-
-    let apply_result = if let Some(shortcut) = {
-        let payloads = SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
-        treecrdt_core::try_shortcut_out_of_order_payload_noops(
-            &meta,
-            inserted_ops.clone(),
-            |node| payloads.last_writer(node).map_err(sqlite_err_from_core),
-        )?
-    } {
-        if shortcut.remaining_ops.is_empty() {
-            update_tree_meta_head(db, Some(&shortcut.resumed_head))?;
-            treecrdt_core::PersistedRemoteApplyResult {
-                inserted_count: inserted_ops.len().min(u64::MAX as usize) as u64,
-                affected_nodes: shortcut.affected_nodes,
-                catch_up_needed: false,
-            }
-        } else {
-            let shortcut_meta = tree_meta_from_state(treecrdt_core::MaterializationState {
-                head: Some(shortcut.resumed_head.clone()),
-                replay_from: None,
-            });
-            let result =
-                materialize_inserted_ops(db, doc_id, &shortcut_meta, &shortcut.remaining_ops)?;
-            let head = result.head.ok_or(SQLITE_ERROR as c_int)?;
-            update_tree_meta_head(db, Some(&head))?;
-            treecrdt_core::PersistedRemoteApplyResult {
-                inserted_count: inserted_ops.len().min(u64::MAX as usize) as u64,
-                affected_nodes: merge_affected_nodes(
-                    shortcut.affected_nodes,
-                    result.affected_nodes,
-                ),
-                catch_up_needed: false,
-            }
-        }
-    } else {
-        treecrdt_core::apply_persisted_remote_ops_with_delta(
-            &meta,
-            inserted_ops,
-            |inserted| materialize_inserted_ops(db, doc_id, &meta, &inserted),
-            |head| update_tree_meta_head(db, Some(head)),
-            |frontier| set_tree_meta_replay_frontier(db, frontier),
-        )?
-    };
-    let apply_result = if apply_result.catch_up_needed {
-        let refreshed_meta = load_tree_meta(db)?;
-        let catch_up = if meta.state().replay_from.is_none() {
-            // Mirror the Postgres path: only try direct rewind when this append introduced the
-            // frontier. If the document was already behind before the append, stay on the
-            // conservative replay-from-frontier catch-up path.
+    let apply_result = orchestrate_persisted_remote_append(
+        &meta,
+        inserted_ops,
+        {
+            let payloads = SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
+            move |node| payloads.last_writer(node).map_err(sqlite_err_from_core)
+        },
+        |meta, inserted| materialize_inserted_ops(db, doc_id, meta, inserted),
+        |head| update_tree_meta_head(db, Some(head)),
+        |frontier| set_tree_meta_replay_frontier(db, frontier),
+        || Ok(load_tree_meta(db)?.0),
+        |meta, inserted_op_ids| {
             try_direct_rewind_catch_up_materialized_state(
                 &super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
-                &inserted_op_ids,
+                inserted_op_ids,
                 treecrdt_core::PersistedRemoteStores {
                     replica_id: ReplicaId::new(b"sqlite-ext"),
                     clock: LamportClock::default(),
@@ -336,30 +290,13 @@ pub(super) fn append_ops_impl(
                     index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
                         .map_err(|_| SQLITE_ERROR as c_int)?,
                 },
-                &refreshed_meta,
+                &meta,
                 |_| Ok(()),
                 |_| Ok(()),
             )
-            .map_err(|_| SQLITE_ERROR as c_int)?
-            .unwrap_or(
-                treecrdt_core::catch_up_materialized_state(
-                    super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
-                    treecrdt_core::PersistedRemoteStores {
-                        replica_id: ReplicaId::new(b"sqlite-ext"),
-                        clock: LamportClock::default(),
-                        nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                        payloads: SqlitePayloadStore::prepare(db)
-                            .map_err(|_| SQLITE_ERROR as c_int)?,
-                        index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                            .map_err(|_| SQLITE_ERROR as c_int)?,
-                    },
-                    &refreshed_meta,
-                    |_| Ok(()),
-                    |_| Ok(()),
-                )
-                .map_err(|_| SQLITE_ERROR as c_int)?,
-            )
-        } else {
+            .map_err(|_| SQLITE_ERROR as c_int)
+        },
+        |meta| {
             treecrdt_core::catch_up_materialized_state(
                 super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
                 treecrdt_core::PersistedRemoteStores {
@@ -370,24 +307,14 @@ pub(super) fn append_ops_impl(
                     index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
                         .map_err(|_| SQLITE_ERROR as c_int)?,
                 },
-                &refreshed_meta,
+                &meta,
                 |_| Ok(()),
                 |_| Ok(()),
             )
-            .map_err(|_| SQLITE_ERROR as c_int)?
-        };
-        update_tree_meta_head(
-            db,
-            Some(catch_up.head.as_ref().ok_or(SQLITE_ERROR as c_int)?),
-        )?;
-        treecrdt_core::PersistedRemoteApplyResult {
-            inserted_count: apply_result.inserted_count,
-            affected_nodes: catch_up.affected_nodes,
-            catch_up_needed: false,
-        }
-    } else {
-        apply_result
-    };
+            .map_err(|_| SQLITE_ERROR as c_int)
+        },
+        |_| SQLITE_ERROR as c_int,
+    )?;
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
     if commit_rc != SQLITE_OK as c_int {

@@ -73,6 +73,18 @@ pub trait MaterializationCursor {
     fn state(&self) -> MaterializationStateRef<'_>;
 }
 
+impl<R: AsRef<[u8]>> MaterializationCursor for MaterializationState<R> {
+    fn state(&self) -> MaterializationStateRef<'_> {
+        self.as_borrowed()
+    }
+}
+
+impl<T: MaterializationCursor + ?Sized> MaterializationCursor for &T {
+    fn state(&self) -> MaterializationStateRef<'_> {
+        (**self).state()
+    }
+}
+
 /// Optional storage hooks for direct rewind/replay of a frontier-invalidated suffix.
 ///
 /// The default implementations are intentionally naive and scan the full op log in memory. Real
@@ -1017,4 +1029,139 @@ where
             })
         }
     }
+}
+
+/// Shared adapter append orchestration for already-persisted remote ops.
+///
+/// Adapters still own transactions, dedupe, and concrete backend stores. This helper just
+/// centralizes the repeated control flow around:
+/// - payload noop shortcut
+/// - incremental materialization vs replay frontier scheduling
+/// - direct rewind fast path when the current batch introduced the frontier
+/// - conservative catch-up fallback
+#[allow(clippy::too_many_arguments)]
+pub fn orchestrate_persisted_remote_append<
+    M,
+    LoadWriter,
+    MaterializeInserted,
+    UpdateHead,
+    ScheduleReplay,
+    LoadCatchUpMeta,
+    TryDirectRewind,
+    CatchUp,
+    MissingHead,
+    E,
+>(
+    meta: &M,
+    inserted_ops: Vec<Operation>,
+    mut load_last_writer: LoadWriter,
+    mut materialize_inserted: MaterializeInserted,
+    mut update_head: UpdateHead,
+    mut schedule_replay: ScheduleReplay,
+    mut load_catch_up_meta: LoadCatchUpMeta,
+    mut try_direct_rewind: TryDirectRewind,
+    mut catch_up: CatchUp,
+    mut missing_head_error: MissingHead,
+) -> std::result::Result<PersistedRemoteApplyResult, E>
+where
+    M: MaterializationCursor,
+    LoadWriter: FnMut(NodeId) -> std::result::Result<Option<(Lamport, OperationId)>, E>,
+    MaterializeInserted: FnMut(
+        &dyn MaterializationCursor,
+        Vec<Operation>,
+    ) -> std::result::Result<IncrementalApplyResult, E>,
+    UpdateHead: FnMut(&MaterializationHead) -> std::result::Result<(), E>,
+    ScheduleReplay: FnMut(&MaterializationFrontier) -> std::result::Result<(), E>,
+    LoadCatchUpMeta: FnMut() -> std::result::Result<MaterializationState, E>,
+    TryDirectRewind: FnMut(
+        &dyn MaterializationCursor,
+        &HashSet<OperationId>,
+    ) -> std::result::Result<Option<CatchUpResult>, E>,
+    CatchUp: FnMut(&dyn MaterializationCursor) -> std::result::Result<CatchUpResult, E>,
+    MissingHead: FnMut(&'static str) -> E,
+{
+    let inserted_count = inserted_ops.len().min(u64::MAX as usize) as u64;
+    if inserted_count == 0 {
+        return Ok(PersistedRemoteApplyResult {
+            inserted_count: 0,
+            affected_nodes: Vec::new(),
+            catch_up_needed: false,
+        });
+    }
+
+    let inserted_op_ids: HashSet<OperationId> =
+        inserted_ops.iter().map(|op| op.meta.id.clone()).collect();
+    let had_pending_frontier = meta.state().replay_from.is_some();
+
+    let apply_result = if let Some(shortcut) = {
+        try_shortcut_out_of_order_payload_noops(meta, inserted_ops.clone(), |node| {
+            load_last_writer(node)
+        })?
+    } {
+        if shortcut.remaining_ops.is_empty() {
+            update_head(&shortcut.resumed_head)?;
+            PersistedRemoteApplyResult {
+                inserted_count,
+                affected_nodes: shortcut.affected_nodes,
+                catch_up_needed: false,
+            }
+        } else {
+            let shortcut_meta = MaterializationState {
+                head: Some(shortcut.resumed_head.clone()),
+                replay_from: None,
+            };
+            let result = materialize_inserted(&shortcut_meta, shortcut.remaining_ops)?;
+            let Some(head) = result.head else {
+                schedule_replay(&start_replay_frontier())?;
+                return Ok(PersistedRemoteApplyResult {
+                    inserted_count,
+                    affected_nodes: Vec::new(),
+                    catch_up_needed: true,
+                });
+            };
+            update_head(&head)?;
+
+            let mut affected_nodes = shortcut.affected_nodes;
+            affected_nodes.extend(result.affected_nodes);
+            affected_nodes.sort();
+            affected_nodes.dedup();
+
+            PersistedRemoteApplyResult {
+                inserted_count,
+                affected_nodes,
+                catch_up_needed: false,
+            }
+        }
+    } else {
+        apply_persisted_remote_ops_with_delta(
+            meta,
+            inserted_ops,
+            |inserted| materialize_inserted(meta, inserted),
+            &mut update_head,
+            &mut schedule_replay,
+        )?
+    };
+
+    if !apply_result.catch_up_needed {
+        return Ok(apply_result);
+    }
+
+    let refreshed_meta = load_catch_up_meta()?;
+    let catch_up_result = if !had_pending_frontier {
+        try_direct_rewind(&refreshed_meta, &inserted_op_ids)?.unwrap_or(catch_up(&refreshed_meta)?)
+    } else {
+        catch_up(&refreshed_meta)?
+    };
+
+    let head = catch_up_result
+        .head
+        .as_ref()
+        .ok_or_else(|| missing_head_error("expected head after immediate catch-up"))?;
+    update_head(head)?;
+
+    Ok(PersistedRemoteApplyResult {
+        inserted_count: apply_result.inserted_count,
+        affected_nodes: catch_up_result.affected_nodes,
+        catch_up_needed: false,
+    })
 }
