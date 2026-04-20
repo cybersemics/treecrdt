@@ -504,46 +504,21 @@ where
         index: &mut I,
         seq: u64,
     ) -> Result<Option<ApplyDelta>> {
-        let op_node = op.kind.node();
-        let parent_after = match &op.kind {
-            OperationKind::Insert { parent, .. } => Some(*parent),
-            OperationKind::Move { new_parent, .. } => Some(*new_parent),
-            _ => None,
-        };
-        let op_id = op.meta.id.clone();
-        let op_kind = op.kind.clone();
-
-        let Some(mut delta) = self.apply_remote_with_delta(op)? else {
+        let snapshot = self.apply_remote_with_delta(op.clone())?.map(|delta| NodeSnapshot {
+            parent: delta.snapshot.parent,
+            order_key: delta.snapshot.order_key,
+        });
+        let Some(snapshot) = snapshot else {
             return Ok(None);
         };
-
-        let parents = affected_parents(delta.snapshot.parent, &op_kind);
-        for parent in &parents {
-            if *parent == NodeId::TRASH {
-                continue;
-            }
-            index.record(*parent, &op_id, seq)?;
-        }
-
-        // Ensure the latest payload op for `op_node` is discoverable under its current parent.
-        // This supports partial sync subscribers that only track `children(parent)` opRefs.
-        if let Some(parent_after) = parent_after {
-            if parent_after != NodeId::TRASH && delta.snapshot.parent != Some(parent_after) {
-                if let Some((_lamport, payload_id)) = self.payload_last_writer(op_node)? {
-                    index.record(parent_after, &payload_id, seq)?;
-                }
-            }
-        }
-
-        let mut starts = parents;
-        starts.push(op_node);
-        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
-        delta
-            .affected_nodes
-            .extend(tombstone_changed.into_iter().filter(|node| *node != NodeId::TRASH));
-        delta.affected_nodes = sorted_node_ids(delta.affected_nodes);
-
-        Ok(Some(delta))
+        let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
+        Ok(Some(self.finalize_materialized_apply(
+            snapshot,
+            &op,
+            index,
+            seq,
+            affected_nodes,
+        )?))
     }
 
     /// Apply a remote op and advance materialization sequence only when it is accepted.
@@ -580,49 +555,12 @@ where
             self.counter = self.counter.max(op.meta.id.counter);
         }
 
-        let op_node = op.kind.node();
-        let parent_after = match &op.kind {
-            OperationKind::Insert { parent, .. } => Some(*parent),
-            OperationKind::Move { new_parent, .. } => Some(*new_parent),
-            _ => None,
-        };
-        let op_id = op.meta.id.clone();
-        let op_kind = op.kind.clone();
-
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         self.op_count = seq;
         self.head = Some(op.clone());
 
-        let parents = affected_parents(snapshot.parent, &op_kind);
-        for parent in &parents {
-            if *parent == NodeId::TRASH {
-                continue;
-            }
-            index.record(*parent, &op_id, seq)?;
-        }
-
-        if let Some(parent_after) = parent_after {
-            if parent_after != NodeId::TRASH && snapshot.parent != Some(parent_after) {
-                if let Some((_lamport, payload_id)) = self.payload_last_writer(op_node)? {
-                    index.record(parent_after, &payload_id, seq)?;
-                }
-            }
-        }
-
-        let mut affected_nodes = direct_affected_nodes(snapshot.parent, &op_kind);
-        let mut starts = parents;
-        starts.push(op_node);
-        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
-        affected_nodes.extend(tombstone_changed.into_iter().filter(|node| *node != NodeId::TRASH));
-        affected_nodes = sorted_node_ids(affected_nodes);
-
-        Ok(ApplyDelta {
-            snapshot: NodeSnapshotExport {
-                parent: snapshot.parent,
-                order_key: snapshot.order_key,
-            },
-            affected_nodes,
-        })
+        let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
+        self.finalize_materialized_apply(snapshot, &op, index, seq, affected_nodes)
     }
 
     /// Finalize adapter-owned local ops by refreshing tombstones and recording parent-op index rows.
@@ -657,6 +595,54 @@ where
         }
 
         Ok(())
+    }
+
+    fn finalize_materialized_apply<I: ParentOpIndex>(
+        &mut self,
+        snapshot: NodeSnapshot,
+        op: &Operation,
+        index: &mut I,
+        seq: u64,
+        mut affected_nodes: Vec<NodeId>,
+    ) -> Result<ApplyDelta> {
+        let op_node = op.kind.node();
+        let parent_after = match &op.kind {
+            OperationKind::Insert { parent, .. } => Some(*parent),
+            OperationKind::Move { new_parent, .. } => Some(*new_parent),
+            _ => None,
+        };
+        let parents = affected_parents(snapshot.parent, &op.kind);
+
+        for parent in &parents {
+            if *parent == NodeId::TRASH {
+                continue;
+            }
+            index.record(*parent, &op.meta.id, seq)?;
+        }
+
+        // Ensure the latest payload op for `op_node` is discoverable under its current parent.
+        // This supports partial sync subscribers that only track `children(parent)` opRefs.
+        if let Some(parent_after) = parent_after {
+            if parent_after != NodeId::TRASH && snapshot.parent != Some(parent_after) {
+                if let Some((_lamport, payload_id)) = self.payload_last_writer(op_node)? {
+                    index.record(parent_after, &payload_id, seq)?;
+                }
+            }
+        }
+
+        let mut starts = parents;
+        starts.push(op_node);
+        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
+        affected_nodes.extend(tombstone_changed.into_iter().filter(|node| *node != NodeId::TRASH));
+        affected_nodes = sorted_node_ids(affected_nodes);
+
+        Ok(ApplyDelta {
+            snapshot: NodeSnapshotExport {
+                parent: snapshot.parent,
+                order_key: snapshot.order_key,
+            },
+            affected_nodes,
+        })
     }
 
     pub fn finalize_local_with_plan<I: ParentOpIndex>(
