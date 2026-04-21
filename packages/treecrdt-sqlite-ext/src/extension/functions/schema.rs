@@ -12,7 +12,7 @@ use treecrdt_core::{
 pub(super) const ROOT_NODE_ID: [u8; 16] = [0u8; 16];
 
 #[derive(Clone, Debug)]
-pub(super) struct TreeMeta(MaterializationState);
+pub(super) struct TreeMeta(pub(super) MaterializationState);
 
 impl MaterializationCursor for TreeMeta {
     fn state(&self) -> MaterializationState<&[u8]> {
@@ -355,6 +355,7 @@ CREATE TABLE IF NOT EXISTS tree_payload (
     const INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
 CREATE INDEX IF NOT EXISTS idx_ops_op_ref ON ops(op_ref);
+CREATE INDEX IF NOT EXISTS idx_ops_node_kind_order ON ops(node, kind, lamport, replica, counter);
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_order_key_node ON tree_nodes(parent, order_key, node);
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_tombstone_order_key_node ON tree_nodes(parent, tombstone, order_key, node);
 CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(parent, seq);

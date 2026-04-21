@@ -91,10 +91,7 @@ impl ReplicaVersion {
     }
 
     fn absorb_frontier_ranges(&mut self) {
-        loop {
-            let Some(&(start, end)) = self.ranges.first() else {
-                break;
-            };
+        while let Some(&(start, end)) = self.ranges.first() {
             if start == self.frontier + 1 {
                 self.frontier = end;
                 self.ranges.remove(0);

@@ -13,5 +13,5 @@ serde_json = "1.0"
 treecrdt-core = { path = "../treecrdt-core", features = ["serde"] }
 
 [dev-dependencies]
+treecrdt-test-support = { path = "../treecrdt-test-support" }
 uuid = { version = "1.8", features = ["v4"] }
-

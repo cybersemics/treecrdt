@@ -159,6 +159,15 @@ pub trait PayloadStore {
     ) -> Result<()>;
 }
 
+pub trait ExactPayloadStore: PayloadStore {
+    /// Remove any current payload winner for `node`.
+    ///
+    /// `PayloadStore::set_payload(...)` is a forward-materialization API: callers provide the new
+    /// winner tuple explicitly. Direct rewind/catch-up also needs an exact "no winner exists"
+    /// operation when rolling a payload-bearing suffix back to the pre-suffix state.
+    fn clear_payload(&mut self, node: NodeId) -> Result<()>;
+}
+
 /// Persistent index of operations relevant to a `children(parent)` filter.
 ///
 /// This is used by adapters (e.g. SQLite) to support partial sync without re-implementing which
@@ -166,6 +175,14 @@ pub trait PayloadStore {
 pub trait ParentOpIndex {
     fn reset(&mut self) -> Result<()>;
     fn record(&mut self, parent: NodeId, op_id: &OperationId, seq: u64) -> Result<()>;
+}
+
+pub trait TruncatingParentOpIndex: ParentOpIndex {
+    /// Delete derived index rows for the invalidated materialized suffix starting at `seq`.
+    ///
+    /// This does not truncate the op log. It only removes stale `children(parent)` index entries
+    /// so the corrected suffix can be re-recorded in canonical order.
+    fn truncate_from(&mut self, seq: u64) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -179,6 +196,23 @@ impl ParentOpIndex for NoopParentOpIndex {
     fn record(&mut self, _parent: NodeId, _op_id: &OperationId, _seq: u64) -> Result<()> {
         Ok(())
     }
+}
+
+impl TruncatingParentOpIndex for NoopParentOpIndex {
+    fn truncate_from(&mut self, _seq: u64) -> Result<()> {
+        Ok(())
+    }
+}
+
+pub trait ExactNodeStore: NodeStore {
+    /// Overwrite `last_change` with the exact value from a rebuilt/rewound materialized state.
+    ///
+    /// `NodeStore::merge_last_change(...)` is sufficient for forward incremental application, but
+    /// rewind/catch-up needs to restore the precise post-replay value rather than merge with the
+    /// stale value currently persisted in the backend.
+    fn set_last_change_exact(&mut self, node: NodeId, vv: &VersionVector) -> Result<()>;
+    /// Overwrite `deleted_at` with the exact rebuilt value, including clearing it to `None`.
+    fn set_deleted_at_exact(&mut self, node: NodeId, vv: Option<&VersionVector>) -> Result<()>;
 }
 
 /// Basic Lamport clock implementation useful for tests and default flows.
@@ -304,6 +338,13 @@ impl PayloadStore for MemoryPayloadStore {
         let entry = self.entries.entry(node).or_default();
         entry.payload = payload;
         entry.last_writer = Some(writer);
+        Ok(())
+    }
+}
+
+impl ExactPayloadStore for MemoryPayloadStore {
+    fn clear_payload(&mut self, node: NodeId) -> Result<()> {
+        self.entries.remove(&node);
         Ok(())
     }
 }
@@ -481,5 +522,19 @@ impl NodeStore for MemoryNodeStore {
 
     fn all_nodes(&self) -> Result<Vec<NodeId>> {
         Ok(self.nodes.keys().copied().collect())
+    }
+}
+
+impl ExactNodeStore for MemoryNodeStore {
+    fn set_last_change_exact(&mut self, node: NodeId, vv: &VersionVector) -> Result<()> {
+        self.ensure_node(node)?;
+        self.get_state_mut(node)?.last_change = vv.clone();
+        Ok(())
+    }
+
+    fn set_deleted_at_exact(&mut self, node: NodeId, vv: Option<&VersionVector>) -> Result<()> {
+        self.ensure_node(node)?;
+        self.get_state_mut(node)?.deleted_at = vv.cloned();
+        Ok(())
     }
 }

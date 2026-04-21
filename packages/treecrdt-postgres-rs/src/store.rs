@@ -1,20 +1,27 @@
+mod append;
+mod meta;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
 
-use postgres::{Client, Row, Statement};
+use postgres::{Client, Row};
 
 use treecrdt_core::{
-    apply_persisted_remote_ops_with_delta, catch_up_materialized_state,
-    materialize_persisted_remote_ops_with_delta, Error, Lamport, LamportClock,
-    MaterializationCursor, MaterializationFrontier, MaterializationHead, MaterializationKey,
-    MaterializationState, NodeId, Operation, OperationId, OperationKind, PersistedRemoteStores,
-    ReplicaId, Result, Storage, VersionVector,
+    Error, ExactNodeStore, ExactPayloadStore, FrontierRewindStorage, Lamport, NodeId, NodeStore,
+    Operation, OperationId, OperationKind, PayloadStore, ReplicaId, Result, Storage,
+    TruncatingParentOpIndex, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
-use crate::profile::{append_profile_enabled, PgAppendProfile};
+
+pub(crate) use self::append::ensure_materialized_in_tx;
+pub use self::append::{append_ops, append_ops_with_affected_nodes, ensure_materialized};
+pub(crate) use self::meta::{
+    ensure_doc_meta, load_tree_meta_for_update, set_tree_meta_replay_frontier,
+    update_tree_meta_head, PgCtx, TreeMeta,
+};
 
 pub(crate) fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
@@ -48,192 +55,6 @@ fn vv_to_bytes(vv: &VersionVector) -> Result<Vec<u8>> {
 
 pub(crate) fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
     serde_json::from_slice(bytes).map_err(|e| Error::Storage(e.to_string()))
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct TreeMeta(MaterializationState);
-
-impl MaterializationCursor for TreeMeta {
-    fn state(&self) -> MaterializationState<&[u8]> {
-        self.0.as_borrowed()
-    }
-}
-
-pub(crate) fn ensure_doc_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
-    let mut c = client.borrow_mut();
-    c.execute(
-        "INSERT INTO treecrdt_meta(doc_id) VALUES ($1) ON CONFLICT (doc_id) DO NOTHING",
-        &[&doc_id],
-    )
-    .map_err(storage_debug)?;
-    Ok(())
-}
-
-fn load_tree_meta_row(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    for_update: bool,
-) -> Result<TreeMeta> {
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
-    let mut c = client.borrow_mut();
-    let stmt = if for_update {
-        ctx.stmt(
-            &mut c,
-            "SELECT head_lamport, head_replica, head_counter, head_seq, \
-                    replay_lamport, replay_replica, replay_counter \
-             FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
-        )?
-    } else {
-        ctx.stmt(
-            &mut c,
-            "SELECT head_lamport, head_replica, head_counter, head_seq, \
-                    replay_lamport, replay_replica, replay_counter \
-             FROM treecrdt_meta WHERE doc_id = $1 LIMIT 1",
-        )?
-    };
-    let rows = c.query(&stmt, &[&doc_id]).map_err(storage_debug)?;
-
-    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
-
-    let head_lamport = row.get::<_, i64>(0).max(0) as Lamport;
-    let head_replica = row.get::<_, Vec<u8>>(1);
-    let head_counter = row.get::<_, i64>(2).max(0) as u64;
-    let head_seq = row.get::<_, i64>(3).max(0) as u64;
-    let replay_lamport = row.get::<_, Option<i64>>(4).map(|v| v.max(0) as Lamport);
-    let replay_replica = row.get::<_, Option<Vec<u8>>>(5);
-    let replay_counter = row.get::<_, Option<i64>>(6).map(|v| v.max(0) as u64);
-
-    let head = if head_seq == 0 && head_lamport == 0 && head_replica.is_empty() && head_counter == 0
-    {
-        None
-    } else {
-        Some(MaterializationHead {
-            at: MaterializationKey {
-                lamport: head_lamport,
-                replica: head_replica,
-                counter: head_counter,
-            },
-            seq: head_seq,
-        })
-    };
-    let replay_from = match (replay_lamport, replay_replica, replay_counter) {
-        (Some(lamport), Some(replica), Some(counter)) => Some(MaterializationKey {
-            lamport,
-            replica,
-            counter,
-        }),
-        _ => None,
-    };
-
-    Ok(TreeMeta(MaterializationState { head, replay_from }))
-}
-
-fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
-    load_tree_meta_row(client, doc_id, false)
-}
-
-pub(crate) fn load_tree_meta_for_update(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-) -> Result<TreeMeta> {
-    load_tree_meta_row(client, doc_id, true)
-}
-
-pub(crate) fn set_tree_meta_replay_frontier(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    frontier: &MaterializationFrontier,
-) -> Result<()> {
-    ensure_doc_meta(client, doc_id)?;
-    let mut c = client.borrow_mut();
-    c.execute(
-        "UPDATE treecrdt_meta \
-         SET replay_lamport = $2, replay_replica = $3, replay_counter = $4 \
-         WHERE doc_id = $1",
-        &[
-            &doc_id,
-            &(frontier.lamport as i64),
-            &frontier.replica,
-            &(frontier.counter as i64),
-        ],
-    )
-    .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(())
-}
-
-pub(crate) fn update_tree_meta_head<R: AsRef<[u8]>>(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    head: Option<&MaterializationHead<R>>,
-) -> Result<()> {
-    ensure_doc_meta(client, doc_id)?;
-    let (lamport, replica, counter, seq): (Lamport, &[u8], u64, u64) = match head {
-        Some(head) => (
-            head.at.lamport,
-            head.at.replica.as_ref(),
-            head.at.counter,
-            head.seq,
-        ),
-        None => (0, &[], 0, 0),
-    };
-    let mut c = client.borrow_mut();
-    c.execute(
-        "UPDATE treecrdt_meta \
-         SET head_lamport = $2, \
-             head_replica = $3, \
-             head_counter = $4, \
-             head_seq = $5, \
-             replay_lamport = NULL, \
-             replay_replica = NULL, \
-             replay_counter = NULL \
-         WHERE doc_id = $1",
-        &[
-            &doc_id,
-            &(lamport as i64),
-            &replica,
-            &(counter as i64),
-            &(seq as i64),
-        ],
-    )
-    .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(())
-}
-
-#[derive(Clone)]
-pub(crate) struct PgCtx {
-    pub(crate) doc_id: String,
-    pub(crate) client: Rc<RefCell<Client>>,
-    stmts: Rc<RefCell<HashMap<&'static str, Statement>>>,
-    append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
-}
-
-impl PgCtx {
-    pub(crate) fn new(client: Rc<RefCell<Client>>, doc_id: &str) -> Result<Self> {
-        Self::new_with_profile(client, doc_id, None)
-    }
-
-    fn new_with_profile(
-        client: Rc<RefCell<Client>>,
-        doc_id: &str,
-        append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
-    ) -> Result<Self> {
-        ensure_doc_meta(&client, doc_id)?;
-        Ok(Self {
-            doc_id: doc_id.to_string(),
-            client,
-            stmts: Rc::new(RefCell::new(HashMap::new())),
-            append_profile,
-        })
-    }
-
-    pub(crate) fn stmt(&self, c: &mut Client, sql: &'static str) -> Result<Statement> {
-        if let Some(stmt) = self.stmts.borrow().get(sql) {
-            return Ok(stmt.clone());
-        }
-        let stmt = c.prepare(sql).map_err(storage_debug)?;
-        self.stmts.borrow_mut().insert(sql, stmt.clone());
-        Ok(stmt)
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -841,6 +662,56 @@ impl treecrdt_core::NodeStore for PgNodeStore {
     }
 }
 
+impl ExactNodeStore for PgNodeStore {
+    fn set_last_change_exact(&mut self, node: NodeId, vv: &VersionVector) -> Result<()> {
+        self.ensure_node(node)?;
+        let node_bytes = node_to_bytes(node);
+        let bytes = if vv.is_empty() {
+            None
+        } else {
+            Some(vv_to_bytes(vv)?)
+        };
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "UPDATE treecrdt_nodes \
+             SET last_change = $3 \
+             WHERE doc_id = $1 AND node = $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
+            .map_err(storage_debug)?;
+
+        if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
+            row.last_change = bytes;
+        }
+        self.pending_last_change.borrow_mut().remove(&node);
+        Ok(())
+    }
+
+    fn set_deleted_at_exact(&mut self, node: NodeId, vv: Option<&VersionVector>) -> Result<()> {
+        self.ensure_node(node)?;
+        let node_bytes = node_to_bytes(node);
+        let bytes = match vv {
+            Some(vv) if !vv.is_empty() => Some(vv_to_bytes(vv)?),
+            _ => None,
+        };
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "UPDATE treecrdt_nodes \
+             SET deleted_at = $3 \
+             WHERE doc_id = $1 AND node = $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
+            .map_err(storage_debug)?;
+
+        if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
+            row.deleted_at = bytes;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct PgPayloadStore {
     ctx: PgCtx,
     cache: RefCell<HashMap<NodeId, Option<CachedPayloadRow>>>,
@@ -976,6 +847,21 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
     }
 }
 
+impl ExactPayloadStore for PgPayloadStore {
+    fn clear_payload(&mut self, node: NodeId) -> Result<()> {
+        let node_bytes = node_to_bytes(node);
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "DELETE FROM treecrdt_payload WHERE doc_id = $1 AND node = $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice()])
+            .map_err(storage_debug)?;
+        self.cache.borrow_mut().insert(node, None);
+        Ok(())
+    }
+}
+
 pub(crate) struct PgParentOpIndex {
     ctx: PgCtx,
     pending: Vec<PendingParentOpRefRow>,
@@ -1059,6 +945,19 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
     }
 }
 
+impl TruncatingParentOpIndex for PgParentOpIndex {
+    fn truncate_from(&mut self, seq: u64) -> Result<()> {
+        self.pending.clear();
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1 AND seq >= $2",
+        )?;
+        c.execute(&stmt, &[&self.ctx.doc_id, &(seq as i64)]).map_err(storage_debug)?;
+        Ok(())
+    }
+}
+
 const PARENT_OP_INDEX_FLUSH_SIZE: usize = 4096;
 
 struct PendingParentOpRefRow {
@@ -1133,6 +1032,105 @@ impl Storage for PgOpStorage {
             visit(op)?;
         }
         Ok(())
+    }
+}
+
+impl FrontierRewindStorage for PgOpStorage {
+    fn scan_frontier_range(
+        &self,
+        start: &treecrdt_core::MaterializationFrontierRef<'_>,
+        visit: &mut dyn FnMut(Operation) -> Result<()>,
+    ) -> Result<()> {
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 \
+               AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
+             ORDER BY lamport, replica, counter",
+        )?;
+        let rows = c
+            .query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &(start.lamport as i64),
+                    &start.replica,
+                    &(start.counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?;
+
+        drop(c);
+        for row in rows {
+            visit(row_to_op(row)?)?;
+        }
+        Ok(())
+    }
+
+    fn latest_structural_before(
+        &self,
+        node: NodeId,
+        before: &treecrdt_core::MaterializationFrontierRef<'_>,
+    ) -> Result<Option<Operation>> {
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 \
+               AND node = $2 \
+               AND kind IN ('insert', 'move') \
+               AND (lamport < $3 OR (lamport = $3 AND (replica < $4 OR (replica = $4 AND counter < $5)))) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+        )?;
+        let rows = c
+            .query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &node_to_bytes(node).to_vec(),
+                    &(before.lamport as i64),
+                    &before.replica,
+                    &(before.counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?;
+        rows.first().cloned().map(row_to_op).transpose()
+    }
+
+    fn latest_payload_before(
+        &self,
+        node: NodeId,
+        before: &treecrdt_core::MaterializationFrontierRef<'_>,
+    ) -> Result<Option<Operation>> {
+        let mut c = self.ctx.client.borrow_mut();
+        let stmt = self.ctx.stmt(
+            &mut c,
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+             FROM treecrdt_ops \
+             WHERE doc_id = $1 \
+               AND node = $2 \
+               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+               AND (lamport < $3 OR (lamport = $3 AND (replica < $4 OR (replica = $4 AND counter < $5)))) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+        )?;
+        let rows = c
+            .query(
+                &stmt,
+                &[
+                    &self.ctx.doc_id,
+                    &node_to_bytes(node).to_vec(),
+                    &(before.lamport as i64),
+                    &before.replica,
+                    &(before.counter as i64),
+                ],
+            )
+            .map_err(storage_debug)?;
+        rows.first().cloned().map(row_to_op).transpose()
     }
 }
 
@@ -1507,215 +1505,4 @@ fn select_inserted_ops(
     }
 
     inserted_ops
-}
-
-fn materialize_inserted_ops(
-    ctx: PgCtx,
-    meta: &TreeMeta,
-    ops: Vec<Operation>,
-) -> Result<treecrdt_core::IncrementalApplyResult> {
-    // At this point treecrdt_ops already contains the inserted operations. This temporary
-    // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
-    materialize_persisted_remote_ops_with_delta(
-        PersistedRemoteStores {
-            // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
-            replica_id: ReplicaId::new(b"postgres"),
-            clock: LamportClock::default(),
-            nodes: PgNodeStore::new(ctx.clone()),
-            payloads: PgPayloadStore::new(ctx.clone()),
-            index: PgParentOpIndex::new(ctx.clone()),
-        },
-        meta,
-        ops,
-        |nodes, ops| {
-            if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
-                // Payload ops can depend on the current node row, so front-load the reads here.
-                nodes.preload_for_ops(ops)?;
-            }
-            Ok(())
-        },
-        |nodes| nodes.flush_last_change(),
-        |index| index.flush(),
-    )
-}
-
-pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = append_ops_in_tx(client, doc_id, ops);
-
-    match res {
-        Ok(v) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v.inserted_count)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
-pub fn append_ops_with_affected_nodes(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    ops: &[Operation],
-) -> Result<Vec<NodeId>> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = append_ops_in_tx(client, doc_id, ops);
-
-    match res {
-        Ok(v) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v.affected_nodes)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
-#[derive(Default)]
-struct AppendOpsResult {
-    inserted_count: u64,
-    affected_nodes: Vec<NodeId>,
-}
-
-fn append_ops_in_tx(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    ops: &[Operation],
-) -> Result<AppendOpsResult> {
-    // Serialize per-doc writers across all server instances (incremental materialization updates
-    // derived tables + head_seq and is not safe to run concurrently for the same doc_id).
-    let meta = load_tree_meta_for_update(client, doc_id)?;
-    // This profiler is only for large-upload benchmark/debug runs. The normal
-    // append path keeps the hook disabled and pays only the `OnceLock` check.
-    let append_profile = append_profile_enabled().then(|| {
-        Rc::new(RefCell::new(PgAppendProfile::new(
-            ops.len(),
-            meta.state().replay_from.is_some(),
-            meta.state().head_seq(),
-        )))
-    });
-    let ctx = PgCtx::new_with_profile(client.clone(), doc_id, append_profile.clone())?;
-
-    let bulk_insert_started_at = Instant::now();
-    let inserted_op_refs = {
-        let mut c = client.borrow_mut();
-        bulk_insert_ops_in_tx(&ctx, &mut c, ops)?
-    };
-    if let Some(profile) = &append_profile {
-        let mut profile = profile.borrow_mut();
-        profile.bulk_insert_ms += bulk_insert_started_at.elapsed().as_secs_f64() * 1000.0;
-        profile.bulk_inserted_ops += inserted_op_refs.len();
-    }
-
-    let dedupe_filter_started_at = Instant::now();
-    // Only materialize the ops Postgres actually inserted. This keeps duplicate opRefs in the
-    // input batch from being replayed twice through core materialization.
-    let inserted_ops = select_inserted_ops(&ctx, ops, inserted_op_refs);
-    if let Some(profile) = &append_profile {
-        profile.borrow_mut().dedupe_filter_ms +=
-            dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
-    }
-
-    let materialize_started_at = Instant::now();
-    let mut update_head_ms = 0.0;
-    let apply_result = apply_persisted_remote_ops_with_delta(
-        &meta,
-        inserted_ops,
-        |inserted| materialize_inserted_ops(ctx.clone(), &meta, inserted),
-        |head| {
-            let started_at = Instant::now();
-            let result = update_tree_meta_head(&ctx.client, &ctx.doc_id, Some(head));
-            update_head_ms += started_at.elapsed().as_secs_f64() * 1000.0;
-            result
-        },
-        |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
-    )?;
-    if let Some(profile) = &append_profile {
-        profile.borrow_mut().materialize_ms +=
-            materialize_started_at.elapsed().as_secs_f64() * 1000.0;
-    }
-
-    if let Some(profile) = &append_profile {
-        profile.borrow_mut().update_head_ms += update_head_ms;
-        if apply_result.frontier_recorded {
-            profile.borrow_mut().frontier_recorded = true;
-        }
-        profile.borrow().log(doc_id, apply_result.inserted_count as usize);
-    }
-
-    Ok(AppendOpsResult {
-        inserted_count: apply_result.inserted_count,
-        affected_nodes: apply_result.affected_nodes,
-    })
-}
-
-pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
-
-    let res = ensure_materialized_in_tx(client, doc_id);
-
-    match res {
-        Ok(()) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(())
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
-pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
-    let meta = load_tree_meta(client, doc_id)?;
-    if meta.state().replay_from.is_none() {
-        return Ok(());
-    }
-
-    // Take a per-doc lock so catch-up can't race with concurrent append/materialization.
-    let meta = load_tree_meta_for_update(client, doc_id)?;
-    if meta.state().replay_from.is_none() {
-        return Ok(());
-    }
-
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
-    let storage = PgOpStorage::new(ctx.clone());
-    let head = catch_up_materialized_state(
-        storage,
-        PersistedRemoteStores {
-            replica_id: ReplicaId::new(b"postgres"),
-            clock: LamportClock::default(),
-            nodes: PgNodeStore::new(ctx.clone()),
-            payloads: PgPayloadStore::new(ctx.clone()),
-            index: PgParentOpIndex::new(ctx.clone()),
-        },
-        &meta,
-        |nodes| nodes.flush_last_change(),
-        |index| index.flush(),
-    )?;
-
-    update_tree_meta_head(client, doc_id, head.as_ref())?;
-
-    Ok(())
 }
