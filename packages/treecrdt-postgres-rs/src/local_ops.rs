@@ -86,12 +86,10 @@ fn finish_local_core_op(
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
     // commit_local() already persisted the op and updated node/payload state. The finalize step
     // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
-    match session.crdt.finalize_local(
-        op,
-        &mut op_index,
-        session.meta.state().head_seq(),
-        &plan,
-    ) {
+    match session
+        .crdt
+        .finalize_local(op, &mut op_index, session.meta.state().head_seq(), &plan)
+    {
         Ok(v) => {
             seq = v;
             if session.nodes.flush_last_change().is_err() || op_index.flush().is_err() {

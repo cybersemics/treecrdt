@@ -20,10 +20,12 @@ fn defensive_delete_parent_then_insert_child_restores_parent() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let (insert_child_op, _) = crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
+    let (insert_child_op, _) =
+        crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
     assert_eq!(crdt_b.parent(child).unwrap(), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
@@ -69,14 +71,22 @@ fn defensive_delete_parent_then_move_child_restores_parent() {
     let child = NodeId(2);
     let other_parent = NodeId(3);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let (other_parent_op, _) =
-        crdt_a.local_insert(NodeId::ROOT, other_parent, LocalPlacement::After(parent), None).unwrap();
+    let (other_parent_op, _) = crdt_a
+        .local_insert(
+            NodeId::ROOT,
+            other_parent,
+            LocalPlacement::After(parent),
+            None,
+        )
+        .unwrap();
     crdt_b.apply_remote(other_parent_op).unwrap();
 
-    let (child_op, _) = crdt_a.local_insert(other_parent, child, LocalPlacement::First, None).unwrap();
+    let (child_op, _) =
+        crdt_a.local_insert(other_parent, child, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(child_op).unwrap();
 
     let (move_op, _) = crdt_b.local_move(child, parent, LocalPlacement::First).unwrap();
@@ -128,16 +138,19 @@ fn defensive_delete_sibling_moved_same_parent_then_deleted_restores_node() {
     let middle = NodeId(3);
     let last = NodeId(4);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     let (first_op, _) = crdt_a.local_insert(parent, first, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(first_op).unwrap();
 
-    let (middle_op, _) = crdt_a.local_insert(parent, middle, LocalPlacement::After(first), None).unwrap();
+    let (middle_op, _) =
+        crdt_a.local_insert(parent, middle, LocalPlacement::After(first), None).unwrap();
     crdt_b.apply_remote(middle_op).unwrap();
 
-    let (last_op, _) = crdt_a.local_insert(parent, last, LocalPlacement::After(middle), None).unwrap();
+    let (last_op, _) =
+        crdt_a.local_insert(parent, last, LocalPlacement::After(middle), None).unwrap();
     crdt_b.apply_remote(last_op).unwrap();
 
     assert_eq!(crdt_a.children(parent).unwrap(), &[first, middle, last]);
@@ -191,16 +204,19 @@ fn defensive_delete_parent_when_sibling_moved_same_parent_restores_parent() {
     let middle = NodeId(3);
     let last = NodeId(4);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     let (first_op, _) = crdt_a.local_insert(parent, first, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(first_op).unwrap();
 
-    let (middle_op, _) = crdt_a.local_insert(parent, middle, LocalPlacement::After(first), None).unwrap();
+    let (middle_op, _) =
+        crdt_a.local_insert(parent, middle, LocalPlacement::After(first), None).unwrap();
     crdt_b.apply_remote(middle_op).unwrap();
 
-    let (last_op, _) = crdt_a.local_insert(parent, last, LocalPlacement::After(middle), None).unwrap();
+    let (last_op, _) =
+        crdt_a.local_insert(parent, last, LocalPlacement::After(middle), None).unwrap();
     crdt_b.apply_remote(last_op).unwrap();
 
     assert_eq!(crdt_a.children(parent).unwrap(), &[first, middle, last]);
@@ -257,12 +273,16 @@ fn defensive_delete_parent_then_multiple_children_restores_parent() {
     let child1 = NodeId(2);
     let child2 = NodeId(3);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let (insert_child1_op, _) = crdt_b.local_insert(parent, child1, LocalPlacement::First, None).unwrap();
+    let (insert_child1_op, _) =
+        crdt_b.local_insert(parent, child1, LocalPlacement::First, None).unwrap();
 
-    let (insert_child2_op, _) = crdt_b.local_insert(parent, child2, LocalPlacement::After(child1), None).unwrap();
+    let (insert_child2_op, _) = crdt_b
+        .local_insert(parent, child2, LocalPlacement::After(child1), None)
+        .unwrap();
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
     assert_eq!(crdt_b.children(parent).unwrap(), &[child1, child2]);
 
@@ -310,7 +330,8 @@ fn defensive_delete_insert_then_delete_no_restoration() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     let (child_op, _) = crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
@@ -353,7 +374,8 @@ fn defensive_delete_parent_then_payload_change_restores_parent() {
 
     let parent = NodeId(1);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     let (set_payload_op, _) = crdt_b.local_payload(parent, Some(b"hello".to_vec())).unwrap();
@@ -397,7 +419,8 @@ fn defensive_delete_parent_then_payload_change_no_restoration_when_aware() {
 
     let parent = NodeId(1);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     let (set_payload_op, _) = crdt_b.local_payload(parent, Some(b"hello".to_vec())).unwrap();
@@ -436,10 +459,12 @@ fn defensive_delete_later_delete_unaware_restores_parent() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let (insert_child_op, _) = crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
+    let (insert_child_op, _) =
+        crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
     assert_eq!(crdt_b.parent(child).unwrap(), Some(parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
@@ -485,10 +510,12 @@ fn defensive_delete_insert_delete_sequence() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let (insert_child_op, _) = crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
+    let (insert_child_op, _) =
+        crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
 
     let (delete1_op, _) = crdt_a.local_delete(parent).unwrap();
@@ -533,11 +560,13 @@ fn defensive_delete_multiple_deletes_then_insert_restores_parent() {
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op.clone()).unwrap();
     crdt_c.apply_remote(parent_op).unwrap();
 
-    let (insert_child_op, _) = crdt_c.local_insert(parent, child, LocalPlacement::First, None).unwrap();
+    let (insert_child_op, _) =
+        crdt_c.local_insert(parent, child, LocalPlacement::First, None).unwrap();
     assert!(!crdt_c.is_tombstoned(parent).unwrap());
     assert_eq!(crdt_c.children(parent).unwrap(), &[child]);
 
@@ -597,20 +626,29 @@ fn defensive_delete_parent_then_modify_grandchild_restores_parent() {
     let grandchild = NodeId(3);
     let other_parent = NodeId(4);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
     let (child_op, _) = crdt_a.local_insert(parent, child, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(child_op).unwrap();
 
-    let (grandchild_op, _) = crdt_a.local_insert(child, grandchild, LocalPlacement::First, None).unwrap();
+    let (grandchild_op, _) =
+        crdt_a.local_insert(child, grandchild, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(grandchild_op).unwrap();
 
-    let (other_parent_op, _) =
-        crdt_a.local_insert(NodeId::ROOT, other_parent, LocalPlacement::After(parent), None).unwrap();
+    let (other_parent_op, _) = crdt_a
+        .local_insert(
+            NodeId::ROOT,
+            other_parent,
+            LocalPlacement::After(parent),
+            None,
+        )
+        .unwrap();
     crdt_b.apply_remote(other_parent_op).unwrap();
 
-    let (move_grandchild_op, _) = crdt_b.local_move(grandchild, other_parent, LocalPlacement::First).unwrap();
+    let (move_grandchild_op, _) =
+        crdt_b.local_move(grandchild, other_parent, LocalPlacement::First).unwrap();
     assert_eq!(crdt_b.parent(grandchild).unwrap(), Some(other_parent));
     assert!(!crdt_b.is_tombstoned(parent).unwrap());
     assert_eq!(crdt_b.children(parent).unwrap(), &[child]);
@@ -663,12 +701,16 @@ fn delete_unrelated_ops_should_not_prevent_restoration_when_child_insert_was_uns
     let child = NodeId(2);
     let unrelated = NodeId(99);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let (insert_child_op, _) = crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
+    let (insert_child_op, _) =
+        crdt_b.local_insert(parent, child, LocalPlacement::First, None).unwrap();
 
-    let (unrelated_op, _) = crdt_b.local_insert(NodeId::ROOT, unrelated, LocalPlacement::After(parent), None).unwrap();
+    let (unrelated_op, _) = crdt_b
+        .local_insert(NodeId::ROOT, unrelated, LocalPlacement::After(parent), None)
+        .unwrap();
     crdt_a.apply_remote(unrelated_op).unwrap();
 
     let (delete_op, _) = crdt_a.local_delete(parent).unwrap();
@@ -704,11 +746,15 @@ fn delete_should_restore_when_earlier_child_op_from_same_replica_was_missing() {
     let child1 = NodeId(2);
     let child2 = NodeId(3);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b.apply_remote(parent_op).unwrap();
 
-    let (insert_child1_op, _) = crdt_b.local_insert(parent, child1, LocalPlacement::First, None).unwrap();
-    let (insert_child2_op, _) = crdt_b.local_insert(parent, child2, LocalPlacement::After(child1), None).unwrap();
+    let (insert_child1_op, _) =
+        crdt_b.local_insert(parent, child1, LocalPlacement::First, None).unwrap();
+    let (insert_child2_op, _) = crdt_b
+        .local_insert(parent, child2, LocalPlacement::After(child1), None)
+        .unwrap();
 
     crdt_a.apply_remote(insert_child2_op).unwrap();
 
@@ -748,7 +794,8 @@ fn materialized_apply_delta_includes_parent_restored_by_unseen_payload_change() 
     let parent = NodeId(1);
     let child = NodeId(2);
 
-    let (parent_op, _) = crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (parent_op, _) =
+        crdt_a.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
     crdt_b
         .apply_remote_with_materialization_seq(parent_op, &mut index_b, &mut seq_b)
         .unwrap()

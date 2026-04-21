@@ -3,11 +3,11 @@ use std::rc::Rc;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, MaterializationCursor,
-    MaterializationHead, MaterializationKey, MaterializationState, MemoryNodeStore,
-    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, LocalFinalizePlan,
-    LocalPlacement,
+    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, LocalFinalizePlan,
+    LocalPlacement, MaterializationCursor, MaterializationHead, MaterializationKey,
+    MaterializationState, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId,
+    NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId,
+    Storage, TreeCrdt,
 };
 
 #[derive(Default)]

@@ -17,7 +17,8 @@ fn higher_lamport_wins_on_conflict() {
     let right = NodeId(11);
 
     let (insert_left, _) = crdt_a.local_insert(root, left, LocalPlacement::First, None).unwrap();
-    let (insert_right, _) = crdt_a.local_insert(root, right, LocalPlacement::After(left), None).unwrap();
+    let (insert_right, _) =
+        crdt_a.local_insert(root, right, LocalPlacement::After(left), None).unwrap();
     let (insert_x, _) = crdt_a.local_insert(root, x, LocalPlacement::After(right), None).unwrap();
 
     // replica a moves x under left (lamport 4)

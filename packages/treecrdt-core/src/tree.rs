@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 
+use crate::affected::{
+    affected_parents, direct_affected_nodes, parent_hints_from, sorted_node_ids,
+};
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{cmp_op_key, Operation, OperationKind};
 use crate::traits::{
     Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
 };
-use crate::affected::{affected_parents, direct_affected_nodes, parent_hints_from, sorted_node_ids};
-use crate::types::{
-    ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport,
-};
+use crate::types::{ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport};
 use crate::version_vector::VersionVector;
 
 #[derive(Clone)]
@@ -189,10 +189,7 @@ where
         ))
     }
 
-    pub fn local_delete(
-        &mut self,
-        node: NodeId,
-    ) -> Result<(Operation, LocalFinalizePlan)> {
+    pub fn local_delete(&mut self, node: NodeId) -> Result<(Operation, LocalFinalizePlan)> {
         let old_parent = self.parent(node)?;
         let (replica, counter, lamport, _seed) = self.next_op_meta();
         let known_state = Some(self.nodes.subtree_version_vector(node)?);
