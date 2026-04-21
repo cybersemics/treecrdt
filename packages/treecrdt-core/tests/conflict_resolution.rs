@@ -1,4 +1,6 @@
-use treecrdt_core::{LamportClock, MemoryStorage, NodeId, Operation, ReplicaId, TreeCrdt};
+use treecrdt_core::{
+    LamportClock, LocalPlacement, MemoryStorage, NodeId, Operation, ReplicaId, TreeCrdt,
+};
 
 #[test]
 fn higher_lamport_wins_on_conflict() {
@@ -14,12 +16,13 @@ fn higher_lamport_wins_on_conflict() {
     let left = NodeId(10);
     let right = NodeId(11);
 
-    let insert_left = crdt_a.local_insert_after(root, left, None).unwrap();
-    let insert_right = crdt_a.local_insert_after(root, right, Some(left)).unwrap();
-    let insert_x = crdt_a.local_insert_after(root, x, Some(right)).unwrap();
+    let (insert_left, _) = crdt_a.local_insert(root, left, LocalPlacement::First, None).unwrap();
+    let (insert_right, _) =
+        crdt_a.local_insert(root, right, LocalPlacement::After(left), None).unwrap();
+    let (insert_x, _) = crdt_a.local_insert(root, x, LocalPlacement::After(right), None).unwrap();
 
     // replica a moves x under left (lamport 4)
-    let move_left = crdt_a.local_move_after(x, left, None).unwrap();
+    let (move_left, _) = crdt_a.local_move(x, left, LocalPlacement::First).unwrap();
 
     // replica b moves x under right with higher lamport
     let mut crdt_b = TreeCrdt::new(

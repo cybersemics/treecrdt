@@ -1,6 +1,6 @@
 use treecrdt_core::{
-    LamportClock, LocalFinalizePlan, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex,
-    Operation, ReplicaId, TreeCrdt,
+    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId,
+    TreeCrdt,
 };
 
 #[test]
@@ -16,14 +16,13 @@ fn inserts_and_moves_nodes() {
     let a = NodeId(1);
     let b = NodeId(2);
 
-    crdt.local_insert_after(root, a, None).unwrap();
-    crdt.local_insert_after(a, b, None).unwrap();
+    crdt.local_insert(root, a, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(a, b, LocalPlacement::First, None).unwrap();
 
     assert_eq!(crdt.parent(a).unwrap(), Some(root));
     assert_eq!(crdt.parent(b).unwrap(), Some(a));
 
-    // move b under root
-    crdt.local_move_after(b, root, None).unwrap();
+    crdt.local_move(b, root, LocalPlacement::First).unwrap();
     assert_eq!(crdt.parent(b).unwrap(), Some(root));
     assert_eq!(crdt.children(root).unwrap(), &[b, a]);
 }
@@ -37,8 +36,7 @@ fn duplicate_operations_are_ignored() {
     )
     .unwrap();
 
-    let op = crdt.local_insert_after(NodeId::ROOT, NodeId(1), None).unwrap();
-    // applying again should be idempotent
+    let (op, _) = crdt.local_insert(NodeId::ROOT, NodeId(1), LocalPlacement::First, None).unwrap();
     crdt.apply_remote(op.clone()).unwrap();
     crdt.apply_remote(op).unwrap();
     assert_eq!(crdt.children(NodeId::ROOT).unwrap(), &[NodeId(1)]);
@@ -54,14 +52,14 @@ fn delete_marks_tombstone_and_removes_from_parent() {
     .unwrap();
 
     let child = NodeId(1);
-    crdt.local_insert_after(NodeId::ROOT, child, None).unwrap();
+    crdt.local_insert(NodeId::ROOT, child, LocalPlacement::First, None).unwrap();
     crdt.local_delete(child).unwrap();
 
     assert!(crdt.is_tombstoned(child).unwrap());
     assert_eq!(crdt.parent(child).unwrap(), Some(NodeId::TRASH));
     assert!(crdt.children(NodeId::ROOT).unwrap().is_empty());
 
-    crdt.local_move_after(child, NodeId::ROOT, None).unwrap();
+    crdt.local_move(child, NodeId::ROOT, LocalPlacement::First).unwrap();
     assert!(!crdt.is_tombstoned(child).unwrap());
     assert_eq!(crdt.parent(child).unwrap(), Some(NodeId::ROOT));
 }
@@ -79,8 +77,8 @@ fn prevents_cycle_on_move() {
     let a = NodeId(1);
     let b = NodeId(2);
 
-    crdt.local_insert_after(root, a, None).unwrap();
-    crdt.local_insert_after(a, b, None).unwrap();
+    crdt.local_insert(root, a, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(a, b, LocalPlacement::First, None).unwrap();
 
     crdt.apply_remote(Operation::move_node(
         &ReplicaId::new(b"a"),
@@ -179,7 +177,7 @@ fn apply_remote_with_materialization_reports_affected_nodes() {
 }
 
 #[test]
-fn local_move_with_plan_tracks_hint_and_payload_reindex() {
+fn local_move_tracks_hint_and_payload_reindex() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
@@ -192,12 +190,12 @@ fn local_move_with_plan_tracks_hint_and_payload_reindex() {
     let parent_b = NodeId(11);
     let node = NodeId(12);
 
-    crdt.local_insert_after(root, parent_a, None).unwrap();
-    crdt.local_insert_after(root, parent_b, None).unwrap();
-    crdt.local_insert_after_with_payload(parent_a, node, None, vec![1]).unwrap();
+    crdt.local_insert(root, parent_a, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(root, parent_b, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(parent_a, node, LocalPlacement::First, Some(vec![1])).unwrap();
 
     let expected_payload_writer = crdt.payload_last_writer(node).unwrap().unwrap().1;
-    let (_op, plan) = crdt.local_move_with_plan(node, parent_b, LocalPlacement::Last).unwrap();
+    let (_op, plan) = crdt.local_move(node, parent_b, LocalPlacement::Last).unwrap();
 
     assert_eq!(plan.parent_hints, vec![parent_b, parent_a]);
     assert_eq!(
@@ -222,7 +220,7 @@ fn resolve_after_rejects_excluded_node() {
     .unwrap();
     let root = NodeId::ROOT;
     let node = NodeId(42);
-    crdt.local_insert_after(root, node, None).unwrap();
+    crdt.local_insert(root, node, LocalPlacement::First, None).unwrap();
 
     let err = crdt
         .resolve_after_for_placement(root, LocalPlacement::After(node), Some(node))
@@ -231,7 +229,7 @@ fn resolve_after_rejects_excluded_node() {
 }
 
 #[test]
-fn finalize_local_with_plan_advances_head_seq() {
+fn finalize_local_advances_head_seq() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
@@ -240,13 +238,9 @@ fn finalize_local_with_plan_advances_head_seq() {
     .unwrap();
     let root = NodeId::ROOT;
     let node = NodeId(7);
-    let op = crdt.local_insert_after(root, node, None).unwrap();
-    let plan = LocalFinalizePlan {
-        parent_hints: vec![root],
-        extra_index_records: Vec::new(),
-    };
+    let (op, plan) = crdt.local_insert(root, node, LocalPlacement::First, None).unwrap();
     let mut index = NoopParentOpIndex;
 
-    let next_seq = crdt.finalize_local_with_plan(&op, &mut index, 41, &plan).unwrap();
+    let next_seq = crdt.finalize_local(&op, &mut index, 41, &plan).unwrap();
     assert_eq!(next_seq, 42);
 }

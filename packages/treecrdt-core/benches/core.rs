@@ -3,7 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use treecrdt_core::{Lamport, LamportClock, MemoryStorage, NodeId, ReplicaId, TreeCrdt};
+use treecrdt_core::{
+    Lamport, LamportClock, LocalPlacement, MemoryStorage, NodeId, ReplicaId, TreeCrdt,
+};
 
 const BENCH_CONFIG: &[(u64, u64)] = &[(100, 10), (1_000, 10), (10_000, 10)];
 
@@ -53,15 +55,15 @@ fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
     let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default()).unwrap();
 
     let start = Instant::now();
-    let mut last: Option<NodeId> = None;
+    let mut last_placement = LocalPlacement::First;
     for i in 0..count {
         let node = hex_id(i + 1);
-        let _ = tree.local_insert_after(NodeId::ROOT, node, last).unwrap();
-        last = Some(node);
+        let _ = tree.local_insert(NodeId::ROOT, node, last_placement, None).unwrap();
+        last_placement = LocalPlacement::After(node);
     }
     for i in 0..count {
         let node = hex_id(i + 1);
-        let _ = tree.local_move_after(node, NodeId::ROOT, None).unwrap();
+        let _ = tree.local_move(node, NodeId::ROOT, LocalPlacement::First).unwrap();
     }
     let _ = tree.operations_since(0 as Lamport).unwrap();
     start.elapsed().as_secs_f64() * 1000.0

@@ -3,10 +3,11 @@ use std::rc::Rc;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, MaterializationCursor,
-    MaterializationHead, MaterializationKey, MaterializationState, MemoryNodeStore,
-    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt,
+    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, LocalFinalizePlan,
+    LocalPlacement, MaterializationCursor, MaterializationHead, MaterializationKey,
+    MaterializationState, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId,
+    NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId,
+    Storage, TreeCrdt,
 };
 
 #[derive(Default)]
@@ -110,7 +111,7 @@ impl Storage for CountingStorage {
 }
 
 #[test]
-fn finalize_local_materialization_records_unique_hints_and_extras() {
+fn finalize_local_records_unique_hints_and_extras() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"local"),
         MemoryStorage::default(),
@@ -120,27 +121,26 @@ fn finalize_local_materialization_records_unique_hints_and_extras() {
 
     let parent = NodeId(10);
     let node = NodeId(11);
-    crdt.local_insert_after(NodeId::ROOT, parent, None).unwrap();
-    let op = crdt.local_insert_after(parent, node, None).unwrap();
+    crdt.local_insert(NodeId::ROOT, parent, LocalPlacement::First, None).unwrap();
+    let (op, _) = crdt.local_insert(parent, node, LocalPlacement::First, None).unwrap();
 
     let extra_op_id = OperationId {
         replica: ReplicaId::new(b"extra"),
         counter: 7,
     };
 
-    let mut index = RecordingIndex::default();
-    crdt.finalize_local_materialization(
-        &op,
-        &mut index,
-        42,
-        &[parent, parent, NodeId::TRASH],
-        &[
+    let plan = LocalFinalizePlan {
+        parent_hints: vec![parent, parent, NodeId::TRASH],
+        extra_index_records: vec![
             (parent, extra_op_id.clone()),
             (NodeId::TRASH, extra_op_id.clone()),
         ],
-    )
-    .unwrap();
+    };
 
+    let mut index = RecordingIndex::default();
+    let seq = crdt.finalize_local(&op, &mut index, 41, &plan).unwrap();
+
+    assert_eq!(seq, 42);
     assert_eq!(index.records.len(), 2);
     assert_eq!(index.records[0], (parent, op.meta.id.clone(), 42));
     assert_eq!(index.records[1], (parent, extra_op_id, 42));

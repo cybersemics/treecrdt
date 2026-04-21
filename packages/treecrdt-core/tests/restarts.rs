@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use treecrdt_core::{
-    Lamport, LamportClock, NodeId, Operation, OperationId, ReplicaId, Result, Storage, TreeCrdt,
+    Lamport, LamportClock, LocalPlacement, NodeId, Operation, OperationId, ReplicaId, Result,
+    Storage, TreeCrdt,
 };
 
 #[derive(Clone, Default)]
@@ -52,8 +53,15 @@ fn local_meta_survives_restart() {
     let replica = ReplicaId::new(b"a");
 
     let mut a = TreeCrdt::new(replica.clone(), storage.clone(), LamportClock::default()).unwrap();
-    let op1 = a.local_insert_after(NodeId::ROOT, NodeId(1), None).unwrap();
-    let op2 = a.local_insert_after(NodeId::ROOT, NodeId(2), Some(NodeId(1))).unwrap();
+    let (op1, _) = a.local_insert(NodeId::ROOT, NodeId(1), LocalPlacement::First, None).unwrap();
+    let (op2, _) = a
+        .local_insert(
+            NodeId::ROOT,
+            NodeId(2),
+            LocalPlacement::After(NodeId(1)),
+            None,
+        )
+        .unwrap();
     assert_eq!(op2.meta.id.counter, op1.meta.id.counter + 1);
     assert_eq!(op2.meta.lamport, op1.meta.lamport + 1);
 
@@ -62,7 +70,14 @@ fn local_meta_survives_restart() {
     let mut b = TreeCrdt::new(replica.clone(), storage.clone(), LamportClock::default()).unwrap();
     b.replay_from_storage().unwrap();
 
-    let op3 = b.local_insert_after(NodeId::ROOT, NodeId(3), Some(NodeId(2))).unwrap();
+    let (op3, _) = b
+        .local_insert(
+            NodeId::ROOT,
+            NodeId(3),
+            LocalPlacement::After(NodeId(2)),
+            None,
+        )
+        .unwrap();
     assert_eq!(op3.meta.id.counter, op2.meta.id.counter + 1);
     assert_eq!(op3.meta.lamport, op2.meta.lamport + 1);
 }
