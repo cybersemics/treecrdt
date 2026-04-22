@@ -244,55 +244,10 @@ jobs:
         if: steps.pr.outputs.same_repo == 'true' && steps.request.outputs.needs_emscripten == 'true'
         run: emcc -v
 
-      - name: Install dependencies (base)
-        if: steps.pr.outputs.same_repo == 'true'
-        working-directory: bench-base
-        run: pnpm install --frozen-lockfile=false
-
-      - name: Build benchmark TypeScript deps (base)
-        if: steps.pr.outputs.same_repo == 'true'
-        working-directory: bench-base
-        env:
-          BENCH_SUITE: ${{ steps.request.outputs.suite }}
-        run: |
-          pnpm -C packages/treecrdt-ts run build
-          pnpm -C packages/treecrdt-riblt-wasm-js run build
-          pnpm -C packages/sync/protocol run build
-          pnpm -C packages/sync/material/sqlite run build
-          pnpm -C packages/sync/material/postgres run build
-          pnpm -C packages/sync/server/core run build
-          pnpm -C packages/treecrdt-auth run build
-          pnpm -C packages/treecrdt-crypto run build
-          if [ "$BENCH_SUITE" = "full" ]; then
-            pnpm -C packages/treecrdt-sqlite-conformance run build
-            pnpm -C packages/treecrdt-wa-sqlite run build:ts
-            pnpm -C packages/treecrdt-wa-sqlite/e2e run build:wa-sqlite
-          fi
-
-      - name: Install dependencies (head)
-        if: steps.pr.outputs.same_repo == 'true'
+      - name: Install dependencies for Playwright bundle
+        if: steps.pr.outputs.same_repo == 'true' && steps.request.outputs.needs_playwright == 'true'
         working-directory: bench-head
         run: pnpm install --frozen-lockfile=false
-
-      - name: Build benchmark TypeScript deps (head)
-        if: steps.pr.outputs.same_repo == 'true'
-        working-directory: bench-head
-        env:
-          BENCH_SUITE: ${{ steps.request.outputs.suite }}
-        run: |
-          pnpm -C packages/treecrdt-ts run build
-          pnpm -C packages/treecrdt-riblt-wasm-js run build
-          pnpm -C packages/sync/protocol run build
-          pnpm -C packages/sync/material/sqlite run build
-          pnpm -C packages/sync/material/postgres run build
-          pnpm -C packages/sync/server/core run build
-          pnpm -C packages/treecrdt-auth run build
-          pnpm -C packages/treecrdt-crypto run build
-          if [ "$BENCH_SUITE" = "full" ]; then
-            pnpm -C packages/treecrdt-sqlite-conformance run build
-            pnpm -C packages/treecrdt-wa-sqlite run build:ts
-            pnpm -C packages/treecrdt-wa-sqlite/e2e run build:wa-sqlite
-          fi
 
       - name: Install Playwright browsers
         if: steps.pr.outputs.same_repo == 'true' && steps.request.outputs.needs_playwright == 'true'
@@ -335,165 +290,27 @@ jobs:
 
       - name: Run benchmarks (base)
         if: steps.pr.outputs.same_repo == 'true'
-        working-directory: bench-base
         env:
           BENCH_SUITE: ${{ steps.request.outputs.suite }}
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
           TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/${{ env.BENCH_BASE_DB }}
         run: |
-          has_hot_write_suite() {
-            node -e "const p=require('./package.json'); process.exit(p.scripts?.['benchmark:hot-write'] ? 0 : 1)"
-          }
-
-          run_hot_write_suite() {
-            if ! has_hot_write_suite; then
-              echo "Skipping hot-write benchmarks (scripts not present on this branch)"
-              return 0
-            fi
-
-            pnpm -C packages/treecrdt-sqlite-node run benchmark:hot-write -- "$@"
-
-            if [ -n "$TREECRDT_POSTGRES_URL" ]; then
-              pnpm -C packages/treecrdt-postgres-napi run benchmark:hot-write -- "$@"
-            else
-              echo "Skipping postgres hot-write benchmark (TREECRDT_POSTGRES_URL not set)"
-            fi
-          }
-
-          case "$BENCH_SUITE" in
-            default)
-              pnpm run benchmark:sync:local -- \
-                --workloads=sync-balanced-children-payloads-cold-start \
-                --counts=100000 \
-                --first-view \
-                --iterations=3 \
-                --warmup=1 \
-                --server-fixture-cache=rebuild
-              run_hot_write_suite \
-                --benches=payload-edit,insert-sibling \
-                --counts=100000 \
-                --writes-per-sample=10 \
-                --warmup-writes=2
-              ;;
-            sync)
-              pnpm run benchmark:sync:local -- \
-                --workloads=sync-balanced-children-cold-start,sync-balanced-children-payloads-cold-start \
-                --counts=10000,100000 \
-                --first-view \
-                --iterations=3 \
-                --warmup=1 \
-                --server-fixture-cache=rebuild
-              ;;
-            hot-write)
-              run_hot_write_suite \
-                --benches=payload-edit,insert-sibling \
-                --counts=10000,100000 \
-                --writes-per-sample=10 \
-                --warmup-writes=2
-              ;;
-            full)
-              pnpm run benchmark
-              pnpm run benchmark:sync:local -- \
-                --workloads=sync-balanced-children-payloads-cold-start \
-                --counts=100000 \
-                --first-view \
-                --iterations=3 \
-                --warmup=1 \
-                --server-fixture-cache=rebuild
-              run_hot_write_suite \
-                --benches=payload-edit,insert-sibling \
-                --counts=100000 \
-                --writes-per-sample=10 \
-                --warmup-writes=2
-              ;;
-            *)
-              echo "Unknown BENCH_SUITE=$BENCH_SUITE" >&2
-              exit 1
-              ;;
-          esac
-
-          pnpm run benchmark:aggregate
+          bash bench-head/scripts/bench-run-checkout.sh \
+            --checkout bench-base \
+            --suite "$BENCH_SUITE" \
+            --postgres-url "$TREECRDT_POSTGRES_URL"
 
       - name: Run benchmarks (head)
         if: steps.pr.outputs.same_repo == 'true'
-        working-directory: bench-head
         env:
           BENCH_SUITE: ${{ steps.request.outputs.suite }}
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
           TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/${{ env.BENCH_HEAD_DB }}
         run: |
-          has_hot_write_suite() {
-            node -e "const p=require('./package.json'); process.exit(p.scripts?.['benchmark:hot-write'] ? 0 : 1)"
-          }
-
-          run_hot_write_suite() {
-            if ! has_hot_write_suite; then
-              echo "Skipping hot-write benchmarks (scripts not present on this branch)"
-              return 0
-            fi
-
-            pnpm -C packages/treecrdt-sqlite-node run benchmark:hot-write -- "$@"
-
-            if [ -n "$TREECRDT_POSTGRES_URL" ]; then
-              pnpm -C packages/treecrdt-postgres-napi run benchmark:hot-write -- "$@"
-            else
-              echo "Skipping postgres hot-write benchmark (TREECRDT_POSTGRES_URL not set)"
-            fi
-          }
-
-          case "$BENCH_SUITE" in
-            default)
-              pnpm run benchmark:sync:local -- \
-                --workloads=sync-balanced-children-payloads-cold-start \
-                --counts=100000 \
-                --first-view \
-                --iterations=3 \
-                --warmup=1 \
-                --server-fixture-cache=rebuild
-              run_hot_write_suite \
-                --benches=payload-edit,insert-sibling \
-                --counts=100000 \
-                --writes-per-sample=10 \
-                --warmup-writes=2
-              ;;
-            sync)
-              pnpm run benchmark:sync:local -- \
-                --workloads=sync-balanced-children-cold-start,sync-balanced-children-payloads-cold-start \
-                --counts=10000,100000 \
-                --first-view \
-                --iterations=3 \
-                --warmup=1 \
-                --server-fixture-cache=rebuild
-              ;;
-            hot-write)
-              run_hot_write_suite \
-                --benches=payload-edit,insert-sibling \
-                --counts=10000,100000 \
-                --writes-per-sample=10 \
-                --warmup-writes=2
-              ;;
-            full)
-              pnpm run benchmark
-              pnpm run benchmark:sync:local -- \
-                --workloads=sync-balanced-children-payloads-cold-start \
-                --counts=100000 \
-                --first-view \
-                --iterations=3 \
-                --warmup=1 \
-                --server-fixture-cache=rebuild
-              run_hot_write_suite \
-                --benches=payload-edit,insert-sibling \
-                --counts=100000 \
-                --writes-per-sample=10 \
-                --warmup-writes=2
-              ;;
-            *)
-              echo "Unknown BENCH_SUITE=$BENCH_SUITE" >&2
-              exit 1
-              ;;
-          esac
-
-          pnpm run benchmark:aggregate
+          bash bench-head/scripts/bench-run-checkout.sh \
+            --checkout bench-head \
+            --suite "$BENCH_SUITE" \
+            --postgres-url "$TREECRDT_POSTGRES_URL"
 
       - name: Upload benchmark artifacts
         if: steps.pr.outputs.same_repo == 'true'

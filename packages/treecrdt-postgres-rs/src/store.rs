@@ -17,10 +17,7 @@ use treecrdt_core::{
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
 
 pub(crate) use self::append::ensure_materialized_in_tx;
-pub use self::append::{
-    append_ops, append_ops_with_affected_nodes, ensure_materialized,
-    prime_balanced_fanout_doc_for_tests, prime_doc_for_tests,
-};
+pub use self::append::{append_ops, append_ops_with_affected_nodes, ensure_materialized};
 pub(crate) use self::meta::{
     ensure_doc_meta, load_tree_meta_for_update, set_tree_meta_replay_frontier,
     update_tree_meta_head, PgCtx, TreeMeta,
