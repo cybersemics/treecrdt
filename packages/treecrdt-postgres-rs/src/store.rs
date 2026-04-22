@@ -17,7 +17,10 @@ use treecrdt_core::{
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
 
 pub(crate) use self::append::ensure_materialized_in_tx;
-pub use self::append::{append_ops, append_ops_with_affected_nodes, ensure_materialized};
+pub use self::append::{
+    append_ops, append_ops_with_affected_nodes, ensure_materialized,
+    prime_balanced_fanout_doc_for_tests, prime_doc_for_tests,
+};
 pub(crate) use self::meta::{
     ensure_doc_meta, load_tree_meta_for_update, set_tree_meta_replay_frontier,
     update_tree_meta_head, PgCtx, TreeMeta,
@@ -25,6 +28,24 @@ pub(crate) use self::meta::{
 
 pub(crate) fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
+}
+
+pub(crate) fn replica_max_counter_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &[u8],
+) -> Result<u64> {
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
+    let mut c = client.borrow_mut();
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT COALESCE(MAX(max_counter), 0) \
+         FROM treecrdt_replica_meta \
+         WHERE doc_id = $1 AND replica = $2",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &replica]).map_err(storage_debug)?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
+    Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
 pub(crate) fn node_to_bytes(node: NodeId) -> [u8; 16] {

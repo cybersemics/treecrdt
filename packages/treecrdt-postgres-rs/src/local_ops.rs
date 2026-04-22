@@ -74,8 +74,7 @@ struct LocalOpSession {
 fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
     {
         let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN")
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
     }
 
     let res = f();
@@ -83,8 +82,7 @@ fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> 
     match res {
         Ok(v) => {
             let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT")
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
             Ok(v)
         }
         Err(e) => {
@@ -133,12 +131,7 @@ fn begin_local_core_op(
     let nodes = PgNodeStore::new(ctx.clone());
     let payloads = PgPayloadStore::new(ctx.clone());
     let crdt_started_at = Instant::now();
-    let latest_lamport = meta
-        .state()
-        .head
-        .as_ref()
-        .map(|head| head.at.lamport)
-        .unwrap_or(0);
+    let latest_lamport = meta.state().head.as_ref().map(|head| head.at.lamport).unwrap_or(0);
     let crdt = TreeCrdt::with_stores_seeded(
         replica.clone(),
         storage,

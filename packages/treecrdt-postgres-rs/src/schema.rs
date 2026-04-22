@@ -150,10 +150,6 @@ pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
     }
 }
 
-pub fn reset_doc_for_tests_within_tx(client: &mut Client, doc_id: &str) -> Result<()> {
-    reset_doc_for_tests_in_tx(client, doc_id)
-}
-
 pub fn clone_doc_for_tests(
     client: &mut Client,
     source_doc_id: &str,
@@ -204,8 +200,11 @@ pub fn clone_doc_for_tests(
     .map_err(|e| Error::Storage(format!("{e:?}")))?;
 
     tx.execute(
-        "INSERT INTO treecrdt_meta (doc_id, dirty, head_lamport, head_replica, head_counter, head_seq)
-         SELECT $1, dirty, head_lamport, head_replica, head_counter, head_seq
+        "INSERT INTO treecrdt_meta
+           (doc_id, head_lamport, head_replica, head_counter, head_seq,
+            replay_lamport, replay_replica, replay_counter)
+         SELECT $1, head_lamport, head_replica, head_counter, head_seq,
+                replay_lamport, replay_replica, replay_counter
            FROM treecrdt_meta
           WHERE doc_id = $2",
         &[&target_doc_id, &source_doc_id],
@@ -294,8 +293,11 @@ pub fn clone_materialized_doc_for_tests(
     reset_doc_for_tests_in_tx(&mut tx, target_doc_id)?;
 
     tx.execute(
-        "INSERT INTO treecrdt_meta (doc_id, dirty, head_lamport, head_replica, head_counter, head_seq)
-         SELECT $1, dirty, head_lamport, head_replica, head_counter, head_seq
+        "INSERT INTO treecrdt_meta
+           (doc_id, head_lamport, head_replica, head_counter, head_seq,
+            replay_lamport, replay_replica, replay_counter)
+         SELECT $1, head_lamport, head_replica, head_counter, head_seq,
+                replay_lamport, replay_replica, replay_counter
            FROM treecrdt_meta
           WHERE doc_id = $2",
         &[&target_doc_id, &source_doc_id],

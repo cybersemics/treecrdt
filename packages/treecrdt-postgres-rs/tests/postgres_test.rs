@@ -9,9 +9,9 @@ use treecrdt_core::{NodeId, Operation, ReplicaId, VersionVector};
 use treecrdt_postgres::{
     append_ops, append_ops_with_affected_nodes, clone_doc_for_tests,
     clone_materialized_doc_for_tests, ensure_materialized, ensure_schema, get_ops_by_op_refs,
-    list_op_refs_all, list_op_refs_children, local_delete, local_insert, local_move,
-    local_payload, max_lamport, prime_balanced_fanout_doc_for_tests, prime_doc_for_tests,
-    replica_max_counter, reset_doc_for_tests, tree_children, tree_node_count, tree_payload,
+    list_op_refs_all, list_op_refs_children, local_delete, local_insert, local_move, local_payload,
+    max_lamport, prime_balanced_fanout_doc_for_tests, prime_doc_for_tests, replica_max_counter,
+    reset_doc_for_tests, tree_children, tree_node_count, tree_payload,
 };
 use treecrdt_test_support::{
     self as materialization_conformance, node, order_key_from_position,
@@ -27,7 +27,15 @@ type NodeRow = (
 );
 type PayloadRow = (Vec<u8>, Vec<u8>, i64, Vec<u8>, i64);
 type IndexRow = (Vec<u8>, Vec<u8>, i64);
-type MetaRow = (i64, Vec<u8>, i64, i64, Option<i64>, Option<Vec<u8>>, Option<i64>);
+type MetaRow = (
+    i64,
+    Vec<u8>,
+    i64,
+    i64,
+    Option<i64>,
+    Option<Vec<u8>>,
+    Option<i64>,
+);
 type ReplicaRow = (Vec<u8>, i64);
 
 #[derive(Debug, PartialEq, Eq)]

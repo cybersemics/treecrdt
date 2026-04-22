@@ -78,31 +78,35 @@ function createTestingFactory(url: string): NativeTestingFactory {
   return new native.PgTestingFactory(url);
 }
 
-export function createPostgresNapiTestAdapterFactory(url: string): PostgresNapiTestAdapterFactory {
-  ensureNonEmptyString('url', url);
-  const base = createPostgresNapiAdapterFactory(url);
-  const factory = createTestingFactory(url);
+function ensureDocPair(sourceDocId: string, targetDocId: string): void {
+  ensureNonEmptyString('sourceDocId', sourceDocId);
+  ensureNonEmptyString('targetDocId', targetDocId);
+}
 
+function ensureBalancedFixtureArgs(
+  docId: string,
+  size: number,
+  fanout: number,
+  payloadBytes: number,
+  replicaLabel: string,
+): void {
+  ensureNonEmptyString('docId', docId);
+  ensureNonEmptyString('replicaLabel', replicaLabel);
+  ensurePositiveInteger('size', size);
+  ensurePositiveInteger('fanout', fanout);
+  ensureNonNegativeInteger('payloadBytes', payloadBytes);
+}
+
+function createCommonFixtureHelpers(factory: NativeTestingFactory) {
   return {
-    ...base,
     resetForTests: async () => factory.resetForTests(),
     resetDocForTests: async (docId: string) => {
       ensureNonEmptyString('docId', docId);
       factory.resetDocForTests(docId);
     },
     cloneDocForTests: async (sourceDocId: string, targetDocId: string) => {
-      ensureNonEmptyString('sourceDocId', sourceDocId);
-      ensureNonEmptyString('targetDocId', targetDocId);
+      ensureDocPair(sourceDocId, targetDocId);
       factory.cloneDocForTests(sourceDocId, targetDocId);
-    },
-    cloneMaterializedDocForTests: async (sourceDocId: string, targetDocId: string) => {
-      ensureNonEmptyString('sourceDocId', sourceDocId);
-      ensureNonEmptyString('targetDocId', targetDocId);
-      factory.cloneMaterializedDocForTests(sourceDocId, targetDocId);
-    },
-    primeDocForTests: async (docId: string, ops: Operation[]) => {
-      ensureNonEmptyString('docId', docId);
-      factory.primeDocForTests(docId, ops.map(opToNative));
     },
     primeBalancedFanoutDocForTests: async (
       docId: string,
@@ -111,12 +115,27 @@ export function createPostgresNapiTestAdapterFactory(url: string): PostgresNapiT
       payloadBytes: number,
       replicaLabel: string,
     ) => {
-      ensureNonEmptyString('docId', docId);
-      ensureNonEmptyString('replicaLabel', replicaLabel);
-      ensurePositiveInteger('size', size);
-      ensurePositiveInteger('fanout', fanout);
-      ensureNonNegativeInteger('payloadBytes', payloadBytes);
+      ensureBalancedFixtureArgs(docId, size, fanout, payloadBytes, replicaLabel);
       factory.primeBalancedFanoutDocForTests(docId, size, fanout, payloadBytes, replicaLabel);
+    },
+  };
+}
+
+export function createPostgresNapiTestAdapterFactory(url: string): PostgresNapiTestAdapterFactory {
+  ensureNonEmptyString('url', url);
+  const base = createPostgresNapiAdapterFactory(url);
+  const factory = createTestingFactory(url);
+
+  return {
+    ...base,
+    ...createCommonFixtureHelpers(factory),
+    cloneMaterializedDocForTests: async (sourceDocId: string, targetDocId: string) => {
+      ensureDocPair(sourceDocId, targetDocId);
+      factory.cloneMaterializedDocForTests(sourceDocId, targetDocId);
+    },
+    primeDocForTests: async (docId: string, ops: Operation[]) => {
+      ensureNonEmptyString('docId', docId);
+      factory.primeDocForTests(docId, ops.map(opToNative));
     },
   };
 }
@@ -130,29 +149,6 @@ export function createPostgresNapiTestSyncBackendFactory(
 
   return {
     ...base,
-    resetForTests: async () => factory.resetForTests(),
-    resetDocForTests: async (docId: string) => {
-      ensureNonEmptyString('docId', docId);
-      factory.resetDocForTests(docId);
-    },
-    cloneDocForTests: async (sourceDocId: string, targetDocId: string) => {
-      ensureNonEmptyString('sourceDocId', sourceDocId);
-      ensureNonEmptyString('targetDocId', targetDocId);
-      factory.cloneDocForTests(sourceDocId, targetDocId);
-    },
-    primeBalancedFanoutDocForTests: async (
-      docId: string,
-      size: number,
-      fanout: number,
-      payloadBytes: number,
-      replicaLabel: string,
-    ) => {
-      ensureNonEmptyString('docId', docId);
-      ensureNonEmptyString('replicaLabel', replicaLabel);
-      ensurePositiveInteger('size', size);
-      ensurePositiveInteger('fanout', fanout);
-      ensureNonNegativeInteger('payloadBytes', payloadBytes);
-      factory.primeBalancedFanoutDocForTests(docId, size, fanout, payloadBytes, replicaLabel);
-    },
+    ...createCommonFixtureHelpers(factory),
   };
 }

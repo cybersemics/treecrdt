@@ -175,12 +175,24 @@ impl PgCtx {
         Self::new_with_profile(client, doc_id, None)
     }
 
+    pub(crate) fn new_assume_doc_meta(client: Rc<RefCell<Client>>, doc_id: &str) -> Result<Self> {
+        Self::new_with_profile_assume_doc_meta(client, doc_id, None)
+    }
+
     pub(super) fn new_with_profile(
         client: Rc<RefCell<Client>>,
         doc_id: &str,
         append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
     ) -> Result<Self> {
         ensure_doc_meta(&client, doc_id)?;
+        Self::new_with_profile_assume_doc_meta(client, doc_id, append_profile)
+    }
+
+    fn new_with_profile_assume_doc_meta(
+        client: Rc<RefCell<Client>>,
+        doc_id: &str,
+        append_profile: Option<Rc<RefCell<PgAppendProfile>>>,
+    ) -> Result<Self> {
         Ok(Self {
             doc_id: doc_id.to_string(),
             client,

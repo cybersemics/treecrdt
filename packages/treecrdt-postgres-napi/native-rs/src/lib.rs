@@ -555,8 +555,7 @@ impl PgBackend {
 
     #[napi]
     pub fn apply_ops(&self, ops: Vec<NativeOp>) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
 
         let mut core_ops = Vec::with_capacity(ops.len());
         for op in ops {
