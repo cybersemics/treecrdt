@@ -139,6 +139,11 @@ fn append_ops_in_tx(
             dedupe_filter_started_at.elapsed().as_secs_f64() * 1000.0;
     }
 
+    if !inserted_ops.is_empty() {
+        let mut c = client.borrow_mut();
+        update_replica_max_counters_for_ops_in_tx(&ctx, &mut c, &inserted_ops)?;
+    }
+
     let materialize_started_at = Instant::now();
     let mut update_head_ms = 0.0;
     let mut update_head = |head: &MaterializationHead| {

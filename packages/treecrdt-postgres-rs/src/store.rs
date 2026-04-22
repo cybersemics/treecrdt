@@ -45,6 +45,43 @@ pub(crate) fn replica_max_counter_in_tx(
     Ok(row.get::<_, i64>(0).max(0) as u64)
 }
 
+fn update_replica_max_counter_in_tx(
+    ctx: &PgCtx,
+    c: &mut Client,
+    replica: &[u8],
+    counter: u64,
+) -> Result<()> {
+    let stmt = ctx.stmt(
+        c,
+        "INSERT INTO treecrdt_replica_meta (doc_id, replica, max_counter) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (doc_id, replica) DO UPDATE \
+         SET max_counter = GREATEST(treecrdt_replica_meta.max_counter, EXCLUDED.max_counter)",
+    )?;
+    c.execute(&stmt, &[&ctx.doc_id, &replica, &(counter as i64)])
+        .map_err(storage_debug)?;
+    Ok(())
+}
+
+fn update_replica_max_counters_for_ops_in_tx(
+    ctx: &PgCtx,
+    c: &mut Client,
+    ops: &[Operation],
+) -> Result<()> {
+    let mut maxima: HashMap<Vec<u8>, u64> = HashMap::new();
+    for op in ops {
+        let replica = op.meta.id.replica.as_bytes().to_vec();
+        let counter = op.meta.id.counter;
+        let entry = maxima.entry(replica).or_insert(0);
+        *entry = (*entry).max(counter);
+    }
+
+    for (replica, counter) in maxima {
+        update_replica_max_counter_in_tx(ctx, c, &replica, counter)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn node_to_bytes(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
 }
@@ -1398,6 +1435,9 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
             ],
         )
         .map_err(storage_debug)?;
+    if inserted > 0 {
+        update_replica_max_counter_in_tx(ctx, c, replica, counter)?;
+    }
     Ok(inserted > 0)
 }
 
