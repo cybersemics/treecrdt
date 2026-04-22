@@ -8,12 +8,12 @@ use treecrdt_core::{Error, Lamport, NodeId, Operation, Result};
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
 use crate::store::{
     bytes_to_node, ensure_doc_meta, ensure_materialized, node_to_bytes, op_ref_from_bytes,
-    row_to_op, row_to_op_at, storage_debug, PgCtx,
+    replica_max_counter_in_tx, row_to_op, row_to_op_at, storage_debug, PgCtx,
 };
 
 pub fn max_lamport(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport> {
     ensure_doc_meta(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
         &mut c,
@@ -29,7 +29,7 @@ pub fn list_op_refs_all(
     doc_id: &str,
 ) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
     ensure_doc_meta(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
         &mut c,
@@ -50,7 +50,7 @@ pub fn list_op_refs_children(
     parent: NodeId,
 ) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
     ensure_materialized(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
@@ -72,7 +72,7 @@ pub fn list_op_refs_children_with_parent_payload(
     parent: NodeId,
 ) -> Result<Vec<[u8; OPREF_V0_WIDTH]>> {
     ensure_materialized(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let mut c = client.borrow_mut();
 
@@ -144,7 +144,7 @@ pub fn get_ops_by_op_refs(
         return Ok(Vec::new());
     }
 
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let refs: Vec<Vec<u8>> = op_refs.iter().map(|r| r.to_vec()).collect();
 
     let mut c = client.borrow_mut();
@@ -178,7 +178,7 @@ pub fn ops_since(
     root: Option<NodeId>,
 ) -> Result<Vec<Operation>> {
     ensure_doc_meta(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let root_bytes: Option<Vec<u8>> = root.map(|n| node_to_bytes(n).to_vec());
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
@@ -218,7 +218,7 @@ pub fn tree_children(
     if parent == NodeId::TRASH {
         return Ok(Vec::new());
     }
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
@@ -247,7 +247,7 @@ pub fn tree_children_page(
     if parent == NodeId::TRASH {
         return Ok(Vec::new());
     }
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
     let after_order_key: Option<Vec<u8>> = cursor.as_ref().map(|(k, _n)| k.clone());
     let after_node: Option<Vec<u8>> = cursor.as_ref().map(|(_k, n)| n.clone());
@@ -289,7 +289,7 @@ pub fn tree_children_page(
 
 pub fn tree_dump(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Vec<TreeRow>> {
     ensure_materialized(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
         &mut c,
@@ -325,7 +325,7 @@ pub fn tree_payload(
     node: NodeId,
 ) -> Result<Option<Vec<u8>>> {
     ensure_materialized(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let node_bytes = node_to_bytes(node);
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
@@ -342,7 +342,7 @@ pub fn tree_payload(
 
 pub fn tree_node_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<u64> {
     ensure_materialized(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let root_bytes = node_to_bytes(NodeId::ROOT);
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
@@ -361,7 +361,7 @@ pub fn tree_parent(
     node: NodeId,
 ) -> Result<Option<NodeId>> {
     ensure_materialized(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let node_bytes = node_to_bytes(node);
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
@@ -379,7 +379,7 @@ pub fn tree_parent(
 
 pub fn tree_exists(client: &Rc<RefCell<Client>>, doc_id: &str, node: NodeId) -> Result<bool> {
     ensure_materialized(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
     let node_bytes = node_to_bytes(node);
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
@@ -396,13 +396,5 @@ pub fn replica_max_counter(
     replica: &[u8],
 ) -> Result<u64> {
     ensure_doc_meta(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
-    let mut c = client.borrow_mut();
-    let stmt = ctx.stmt(
-        &mut c,
-        "SELECT COALESCE(MAX(counter), 0) FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
-    )?;
-    let rows = c.query(&stmt, &[&doc_id, &replica]).map_err(storage_debug)?;
-    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
-    Ok(row.get::<_, i64>(0).max(0) as u64)
+    replica_max_counter_in_tx(client, doc_id, replica)
 }

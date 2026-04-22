@@ -9,8 +9,6 @@ export { createTreecrdtPostgresClient } from './client.js';
 
 export type PostgresNapiSyncBackendFactory = {
   ensureSchema: () => Promise<void>;
-  resetForTests: () => Promise<void>;
-  resetDocForTests: (docId: string) => Promise<void>;
   open: (docId: string) => Promise<SyncBackend<Operation>>;
 };
 
@@ -27,11 +25,6 @@ export function createPostgresNapiSyncBackendFactory(url: string): PostgresNapiS
 
   return {
     ensureSchema: async () => factory.ensureSchema(),
-    resetForTests: async () => factory.resetForTests(),
-    resetDocForTests: async (docId: string) => {
-      ensureNonEmptyString('docId', docId);
-      factory.resetDocForTests(docId);
-    },
     open: async (docId: string) => {
       ensureNonEmptyString('docId', docId);
       const nativeBackend = factory.open(docId);

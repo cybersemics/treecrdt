@@ -4,15 +4,13 @@ import type {
   SerializeReplica,
   TreecrdtAdapter,
 } from '@treecrdt/interface';
-import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 
 import { nativeOpToSqliteRow, operationToNativeWithSerializers } from './codec.js';
 import { loadNative } from './native.js';
 
 export type PostgresNapiAdapterFactory = {
   ensureSchema: () => Promise<void>;
-  resetForTests: () => Promise<void>;
-  resetDocForTests: (docId: string) => Promise<void>;
   open: (docId: string) => Promise<TreecrdtAdapter>;
 };
 
@@ -44,11 +42,6 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
 
   return {
     ensureSchema: async () => factory.ensureSchema(),
-    resetForTests: async () => factory.resetForTests(),
-    resetDocForTests: async (docId: string) => {
-      ensureNonEmptyString('docId', docId);
-      factory.resetDocForTests(docId);
-    },
     open: async (initialDocId: string) => {
       ensureNonEmptyString('docId', initialDocId);
       let docId = initialDocId;
@@ -108,7 +101,7 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
           return rows.map(nativeOpToSqliteRow);
         },
         close: async () => {
-          // no-op: native layer opens per-call connections
+          backend.close();
         },
       };
 

@@ -245,12 +245,36 @@ impl PgFactory {
     }
 
     #[napi]
+    pub fn open(&self, doc_id: String) -> napi::Result<PgBackend> {
+        let client = connect(&self.url)?;
+        Ok(PgBackend {
+            client: std::cell::RefCell::new(Some(std::rc::Rc::new(std::cell::RefCell::new(
+                client,
+            )))),
+            doc_id,
+        })
+    }
+}
+
+#[napi]
+pub struct PgTestingFactory {
+    url: String,
+}
+
+#[napi]
+impl PgTestingFactory {
+    #[napi(constructor)]
+    pub fn new(url: String) -> Self {
+        Self { url }
+    }
+
+    #[napi]
     pub fn reset_for_tests(&self) -> napi::Result<()> {
         let mut client = connect(&self.url)?;
         // Test-only convenience: wipe all docs.
         client
             .batch_execute(
-                "TRUNCATE treecrdt_oprefs_children, treecrdt_payload, treecrdt_nodes, treecrdt_ops, treecrdt_meta",
+                "TRUNCATE treecrdt_oprefs_children, treecrdt_payload, treecrdt_nodes, treecrdt_ops, treecrdt_meta, treecrdt_replica_meta",
             )
             .map_err(map_err)?;
         Ok(())
@@ -264,26 +288,95 @@ impl PgFactory {
     }
 
     #[napi]
-    pub fn open(&self, doc_id: String) -> PgBackend {
-        PgBackend {
-            url: self.url.clone(),
-            doc_id,
+    pub fn clone_doc_for_tests(
+        &self,
+        source_doc_id: String,
+        target_doc_id: String,
+    ) -> napi::Result<()> {
+        let mut client = connect(&self.url)?;
+        treecrdt_postgres::clone_doc_for_tests(&mut client, &source_doc_id, &target_doc_id)
+            .map_err(map_core_err)?;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn clone_materialized_doc_for_tests(
+        &self,
+        source_doc_id: String,
+        target_doc_id: String,
+    ) -> napi::Result<()> {
+        let mut client = connect(&self.url)?;
+        treecrdt_postgres::clone_materialized_doc_for_tests(
+            &mut client,
+            &source_doc_id,
+            &target_doc_id,
+        )
+        .map_err(map_core_err)?;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn prime_doc_for_tests(&self, doc_id: String, ops: Vec<NativeOp>) -> napi::Result<()> {
+        let client = std::rc::Rc::new(std::cell::RefCell::new(connect(&self.url)?));
+        let mut core_ops = Vec::with_capacity(ops.len());
+        for op in ops {
+            core_ops.push(native_to_core_op(op).map_err(map_core_err)?);
         }
+        treecrdt_postgres::prime_doc_for_tests(&client, &doc_id, &core_ops)
+            .map_err(map_core_err)?;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn prime_balanced_fanout_doc_for_tests(
+        &self,
+        doc_id: String,
+        size: u32,
+        fanout: u32,
+        payload_bytes: u32,
+        replica_label: String,
+    ) -> napi::Result<()> {
+        let client = std::rc::Rc::new(std::cell::RefCell::new(connect(&self.url)?));
+        treecrdt_postgres::prime_balanced_fanout_doc_for_tests(
+            &client,
+            &doc_id,
+            size as usize,
+            fanout as usize,
+            payload_bytes as usize,
+            &replica_label,
+        )
+        .map_err(map_core_err)?;
+        Ok(())
     }
 }
 
 #[napi]
 pub struct PgBackend {
-    url: String,
+    client: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<Client>>>>,
     doc_id: String,
+}
+
+impl PgBackend {
+    fn shared_client(&self) -> napi::Result<std::rc::Rc<std::cell::RefCell<Client>>> {
+        self.client
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| map_err("postgres backend is closed"))
+    }
 }
 
 #[napi]
 impl PgBackend {
     #[napi]
+    pub fn close(&self) -> napi::Result<()> {
+        self.client.borrow_mut().take();
+        Ok(())
+    }
+
+    #[napi]
     pub fn max_lamport(&self) -> napi::Result<BigInt> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let lamport =
             treecrdt_postgres::max_lamport(&client, &self.doc_id).map_err(map_core_err)?;
         Ok(BigInt::from(lamport as u64))
@@ -291,8 +384,7 @@ impl PgBackend {
 
     #[napi]
     pub fn list_op_refs_all(&self) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let refs =
             treecrdt_postgres::list_op_refs_all(&client, &self.doc_id).map_err(map_core_err)?;
         Ok(refs.into_iter().map(|r| Buffer::from(r.to_vec())).collect())
@@ -300,8 +392,7 @@ impl PgBackend {
 
     #[napi]
     pub fn list_op_refs_children(&self, parent: Buffer) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
         let refs = treecrdt_postgres::list_op_refs_children(&client, &self.doc_id, parent)
             .map_err(map_core_err)?;
@@ -313,8 +404,7 @@ impl PgBackend {
         &self,
         parent: Buffer,
     ) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
         let refs = treecrdt_postgres::list_op_refs_children_with_parent_payload(
             &client,
@@ -327,8 +417,7 @@ impl PgBackend {
 
     #[napi]
     pub fn ops_since(&self, lamport: BigInt, root: Option<Buffer>) -> napi::Result<Vec<NativeOp>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let lamport_u64 = bigint_to_u64("lamport", lamport).map_err(map_core_err)?;
         let root_id = match root {
             None => None,
@@ -347,8 +436,7 @@ impl PgBackend {
 
     #[napi]
     pub fn tree_children(&self, parent: Buffer) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
         let nodes = treecrdt_postgres::tree_children(&client, &self.doc_id, parent)
             .map_err(map_core_err)?;
@@ -363,8 +451,7 @@ impl PgBackend {
         cursor_node: Option<Buffer>,
         limit: u32,
     ) -> napi::Result<Vec<NativeTreeChildRow>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
 
         let cursor = match (cursor_order_key, cursor_node) {
@@ -387,8 +474,7 @@ impl PgBackend {
 
     #[napi]
     pub fn tree_dump(&self) -> napi::Result<Vec<NativeTreeRow>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let rows = treecrdt_postgres::tree_dump(&client, &self.doc_id).map_err(map_core_err)?;
         Ok(rows
             .into_iter()
@@ -403,8 +489,7 @@ impl PgBackend {
 
     #[napi]
     pub fn tree_node_count(&self) -> napi::Result<BigInt> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let cnt =
             treecrdt_postgres::tree_node_count(&client, &self.doc_id).map_err(map_core_err)?;
         Ok(BigInt::from(cnt))
@@ -412,8 +497,7 @@ impl PgBackend {
 
     #[napi]
     pub fn tree_parent(&self, node: Buffer) -> napi::Result<Option<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
         let parent =
             treecrdt_postgres::tree_parent(&client, &self.doc_id, node).map_err(map_core_err)?;
@@ -422,16 +506,14 @@ impl PgBackend {
 
     #[napi]
     pub fn tree_exists(&self, node: Buffer) -> napi::Result<bool> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
         treecrdt_postgres::tree_exists(&client, &self.doc_id, node).map_err(map_core_err)
     }
 
     #[napi]
     pub fn tree_payload(&self, node: Buffer) -> napi::Result<Option<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
         let payload =
             treecrdt_postgres::tree_payload(&client, &self.doc_id, node).map_err(map_core_err)?;
@@ -440,8 +522,7 @@ impl PgBackend {
 
     #[napi]
     pub fn replica_max_counter(&self, replica: Buffer) -> napi::Result<BigInt> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
         let cnt = treecrdt_postgres::replica_max_counter(&client, &self.doc_id, &replica)
             .map_err(map_core_err)?;
         Ok(BigInt::from(cnt))
@@ -449,8 +530,7 @@ impl PgBackend {
 
     #[napi]
     pub fn get_ops_by_op_refs(&self, op_refs: Vec<Buffer>) -> napi::Result<Vec<NativeOp>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
 
         let refs: Vec<[u8; 16]> = op_refs
             .into_iter()
@@ -475,8 +555,7 @@ impl PgBackend {
 
     #[napi]
     pub fn apply_ops(&self, ops: Vec<NativeOp>) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
 
         let mut core_ops = Vec::with_capacity(ops.len());
         for op in ops {
@@ -502,8 +581,7 @@ impl PgBackend {
         after: Option<Buffer>,
         payload: Option<Buffer>,
     ) -> napi::Result<NativeOp> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
 
         let replica = ReplicaId(replica.to_vec());
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
@@ -536,8 +614,7 @@ impl PgBackend {
         placement: String,
         after: Option<Buffer>,
     ) -> napi::Result<NativeOp> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
 
         let replica = ReplicaId(replica.to_vec());
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
@@ -562,8 +639,7 @@ impl PgBackend {
 
     #[napi]
     pub fn local_delete(&self, replica: Buffer, node: Buffer) -> napi::Result<NativeOp> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
 
         let replica = ReplicaId(replica.to_vec());
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
@@ -579,8 +655,7 @@ impl PgBackend {
         node: Buffer,
         payload: Option<Buffer>,
     ) -> napi::Result<NativeOp> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+        let client = self.shared_client()?;
 
         let replica = ReplicaId(replica.to_vec());
         let node = bytes16_to_node(&node).map_err(map_core_err)?;

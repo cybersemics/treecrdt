@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { benchTiming, buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 
-import { createPostgresNapiAdapterFactory } from '../src/index.js';
+import { createPostgresNapiTestAdapterFactory } from '../src/testing.js';
 
 const POSTGRES_URL = process.env.TREECRDT_POSTGRES_URL;
 
@@ -27,7 +27,7 @@ async function main() {
     w.warmupIterations = timing.warmupIterations;
   }
 
-  const factory = createPostgresNapiAdapterFactory(POSTGRES_URL);
+  const factory = createPostgresNapiTestAdapterFactory(POSTGRES_URL);
   await factory.ensureSchema();
   await factory.resetForTests();
   const benchDocId = `bench-${randomUUID()}`;

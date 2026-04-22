@@ -27,6 +27,61 @@ pub(crate) fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
 }
 
+pub(crate) fn replica_max_counter_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &[u8],
+) -> Result<u64> {
+    let ctx = PgCtx::new_assume_doc_meta(client.clone(), doc_id)?;
+    let mut c = client.borrow_mut();
+    let stmt = ctx.stmt(
+        &mut c,
+        "SELECT COALESCE(MAX(max_counter), 0) \
+         FROM treecrdt_replica_meta \
+         WHERE doc_id = $1 AND replica = $2",
+    )?;
+    let rows = c.query(&stmt, &[&doc_id, &replica]).map_err(storage_debug)?;
+    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
+    Ok(row.get::<_, i64>(0).max(0) as u64)
+}
+
+fn update_replica_max_counter_in_tx(
+    ctx: &PgCtx,
+    c: &mut Client,
+    replica: &[u8],
+    counter: u64,
+) -> Result<()> {
+    let stmt = ctx.stmt(
+        c,
+        "INSERT INTO treecrdt_replica_meta (doc_id, replica, max_counter) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (doc_id, replica) DO UPDATE \
+         SET max_counter = GREATEST(treecrdt_replica_meta.max_counter, EXCLUDED.max_counter)",
+    )?;
+    c.execute(&stmt, &[&ctx.doc_id, &replica, &(counter as i64)])
+        .map_err(storage_debug)?;
+    Ok(())
+}
+
+fn update_replica_max_counters_for_ops_in_tx(
+    ctx: &PgCtx,
+    c: &mut Client,
+    ops: &[Operation],
+) -> Result<()> {
+    let mut maxima: HashMap<Vec<u8>, u64> = HashMap::new();
+    for op in ops {
+        let replica = op.meta.id.replica.as_bytes().to_vec();
+        let counter = op.meta.id.counter;
+        let entry = maxima.entry(replica).or_insert(0);
+        *entry = (*entry).max(counter);
+    }
+
+    for (replica, counter) in maxima {
+        update_replica_max_counter_in_tx(ctx, c, &replica, counter)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn node_to_bytes(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
 }
@@ -1380,6 +1435,9 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
             ],
         )
         .map_err(storage_debug)?;
+    if inserted > 0 {
+        update_replica_max_counter_in_tx(ctx, c, replica, counter)?;
+    }
     Ok(inserted > 0)
 }
 

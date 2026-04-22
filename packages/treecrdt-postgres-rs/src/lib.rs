@@ -10,6 +10,7 @@ mod profile;
 mod reads;
 mod schema;
 mod store;
+mod testing;
 
 pub use local_ops::{local_delete, local_insert, local_move, local_payload};
 pub use reads::{
@@ -18,5 +19,8 @@ pub use reads::{
     tree_children, tree_children_page, tree_dump, tree_exists, tree_node_count, tree_parent,
     tree_payload, TreeChildRow, TreeRow,
 };
-pub use schema::{ensure_schema, reset_doc_for_tests};
+pub use schema::{
+    clone_doc_for_tests, clone_materialized_doc_for_tests, ensure_schema, reset_doc_for_tests,
+};
 pub use store::{append_ops, append_ops_with_affected_nodes, ensure_materialized};
+pub use testing::{prime_balanced_fanout_doc_for_tests, prime_doc_for_tests};

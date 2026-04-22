@@ -197,7 +197,7 @@ export async function createTreecrdtPostgresClient(
       payload: localPayloadImpl,
     },
     close: async () => {
-      // no-op: native layer opens per-call connections
+      backend.close();
     },
   };
 }

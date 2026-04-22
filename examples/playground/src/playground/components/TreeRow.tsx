@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   MdAdd,
@@ -25,6 +25,7 @@ import {
   toggleCapabilityAction,
   type CapabilityAction,
 } from "../capabilities";
+import { markBenchRowCommitted } from "../bench";
 import { ROOT_ID } from "../constants";
 import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
 
@@ -331,6 +332,10 @@ export function TreeRow({
       window.removeEventListener("scroll", onScrollOrResize, true);
     };
   }, [showMembersMenu, updateMembersMenuLayout]);
+
+  useLayoutEffect(() => {
+    markBenchRowCommitted(node.id);
+  }, [node.id]);
 
   return (
     <div

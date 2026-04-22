@@ -19,6 +19,7 @@ export type NativeOp = {
 };
 
 export type NativeBackend = {
+  close(): void;
   maxLamport(): bigint;
   listOpRefsAll(): Uint8Array[];
   listOpRefsChildren(parent: Uint8Array): Uint8Array[];
@@ -65,8 +66,6 @@ export type NativeBackend = {
 
 export type NativeFactory = {
   ensureSchema(): void;
-  resetForTests(): void;
-  resetDocForTests(docId: string): void;
   open(docId: string): NativeBackend;
 };
 
