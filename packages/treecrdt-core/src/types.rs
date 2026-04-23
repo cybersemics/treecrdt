@@ -116,10 +116,6 @@ impl MaterializationOutcome {
         nodes.dedup();
         nodes
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.changes.is_empty()
-    }
 }
 
 #[derive(Clone, Debug)]

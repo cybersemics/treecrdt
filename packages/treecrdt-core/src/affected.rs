@@ -2,6 +2,14 @@ use crate::ids::NodeId;
 use crate::ops::OperationKind;
 use crate::types::MaterializationChange;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TombstoneDelta {
+    pub(crate) node: NodeId,
+    pub(crate) parent: Option<NodeId>,
+    pub(crate) previous: bool,
+    pub(crate) tombstoned: bool,
+}
+
 pub(crate) fn affected_parents(
     snapshot_parent: Option<NodeId>,
     kind: &OperationKind,
@@ -55,6 +63,27 @@ pub(crate) fn direct_materialization_changes(
         }],
         OperationKind::Payload { node, .. } => vec![MaterializationChange::Payload { node: *node }],
         OperationKind::Delete { .. } | OperationKind::Tombstone { .. } => Vec::new(),
+    }
+}
+
+pub(crate) fn materialization_change_from_tombstone_delta(
+    delta: TombstoneDelta,
+) -> Option<MaterializationChange> {
+    if delta.node == NodeId::TRASH {
+        return None;
+    }
+
+    let parent = delta.parent.filter(|parent| *parent != NodeId::TRASH);
+    match (delta.previous, delta.tombstoned) {
+        (true, false) => Some(MaterializationChange::Restore {
+            node: delta.node,
+            parent_after: parent,
+        }),
+        (false, true) => Some(MaterializationChange::Delete {
+            node: delta.node,
+            parent_before: parent,
+        }),
+        _ => None,
     }
 }
 

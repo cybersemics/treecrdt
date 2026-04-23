@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::affected::{
     affected_parents, coalesce_materialization_changes, direct_materialization_changes,
-    parent_hints_from,
+    materialization_change_from_tombstone_delta, parent_hints_from, TombstoneDelta,
 };
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
@@ -20,14 +20,6 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TombstoneDelta {
-    node: NodeId,
-    parent: Option<NodeId>,
-    previous: bool,
-    tombstoned: bool,
 }
 
 /// Generic Tree CRDT facade that wires clock and storage together.
@@ -390,21 +382,9 @@ where
         starts.push(op_node);
         let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
         changes.extend(
-            tombstone_changed.into_iter().filter(|delta| delta.node != NodeId::TRASH).map(
-                |delta| {
-                    if delta.previous && !delta.tombstoned {
-                        MaterializationChange::Restore {
-                            node: delta.node,
-                            parent_after: delta.parent.filter(|parent| *parent != NodeId::TRASH),
-                        }
-                    } else {
-                        MaterializationChange::Delete {
-                            node: delta.node,
-                            parent_before: delta.parent.filter(|parent| *parent != NodeId::TRASH),
-                        }
-                    }
-                },
-            ),
+            tombstone_changed
+                .into_iter()
+                .filter_map(materialization_change_from_tombstone_delta),
         );
 
         Ok(ApplyDelta {
@@ -446,21 +426,9 @@ where
 
         let mut changes = plan.changes.clone();
         changes.extend(
-            tombstone_changed.into_iter().filter(|delta| delta.node != NodeId::TRASH).map(
-                |delta| {
-                    if delta.previous && !delta.tombstoned {
-                        MaterializationChange::Restore {
-                            node: delta.node,
-                            parent_after: delta.parent.filter(|parent| *parent != NodeId::TRASH),
-                        }
-                    } else {
-                        MaterializationChange::Delete {
-                            node: delta.node,
-                            parent_before: delta.parent.filter(|parent| *parent != NodeId::TRASH),
-                        }
-                    }
-                },
-            ),
+            tombstone_changed
+                .into_iter()
+                .filter_map(materialization_change_from_tombstone_delta),
         );
 
         Ok(MaterializationOutcome {
