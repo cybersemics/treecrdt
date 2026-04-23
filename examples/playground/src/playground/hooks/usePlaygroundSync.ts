@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
-import { type TreecrdtIdentityChainV1 } from '@treecrdt/auth';
 import {
   createStringStoreRouteCache,
   isDiscoveryBootstrapUrl,
@@ -38,7 +37,7 @@ import {
   PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
   ROOT_ID,
 } from '../constants';
-import type { PeerInfo, RemoteSyncStatus, SyncTransportMode, TreeState } from '../types';
+import type { PeerInfo, RemoteSyncStatus, SyncTransportMode } from '../types';
 import type { StoredAuthMaterial } from '../../auth';
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
@@ -190,18 +189,8 @@ export type UsePlaygroundSyncOptions = {
   joinMode: boolean;
   authCanSyncAll: boolean;
   viewRootId: string;
-  hardRevokedTokenIds: string[];
-  revocationCutoverEnabled: boolean;
-  revocationCutoverTokenId: string;
-  revocationCutoverCounter: string;
-  treeStateRef: React.MutableRefObject<TreeState>;
+  getLoadedParentIds: () => string[];
   refreshMeta: () => Promise<void>;
-  getLocalIdentityChain: () => Promise<TreecrdtIdentityChainV1 | null>;
-  onPeerIdentityChain: (chain: {
-    identityPublicKey: Uint8Array;
-    devicePublicKey: Uint8Array;
-    replicaPublicKey: Uint8Array;
-  }) => void;
   onAuthGrantMessage?: (grant: AuthGrantMessageV1) => void;
   onRemoteOpsImported: (ops: Operation[]) => Promise<void> | void;
 };
@@ -224,7 +213,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     joinMode,
     authCanSyncAll,
     viewRootId,
-    treeStateRef,
+    getLoadedParentIds,
     refreshMeta,
     onAuthGrantMessage,
     onRemoteOpsImported,
@@ -635,7 +624,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   };
 
   const handleScopedSync = async () => {
-    const parents = new Set(Object.keys(treeStateRef.current.childrenByParent));
+    const parents = new Set(getLoadedParentIds());
     parents.add(viewRootId);
     if (viewRootId !== ROOT_ID) parents.delete(ROOT_ID);
     const parentIds = Array.from(parents).filter((id) => /^[0-9a-f]{32}$/i.test(id));

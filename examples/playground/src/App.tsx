@@ -216,7 +216,6 @@ export default function App() {
     syncAuth,
     refreshAuthMaterial,
     localIdentityChainPromiseRef,
-    getLocalIdentityChain,
     authToken,
     replica,
     selfPeerId,
@@ -384,6 +383,20 @@ export default function App() {
     []
   );
 
+  const recordOps = React.useCallback(
+    (incoming: Operation[], opts: { assumeSorted?: boolean } = {}) => {
+      if (incoming.length === 0) return;
+      let nextLamport = lamportRef.current;
+      for (const op of incoming) nextLamport = Math.max(nextLamport, op.meta.lamport);
+      if (nextLamport !== lamportRef.current) {
+        lamportRef.current = nextLamport;
+        setHeadLamport(nextLamport);
+      }
+      ingestOps(incoming, opts);
+    },
+    [ingestOps]
+  );
+
   const childrenLoadInFlightRef = useRef<Set<string>>(new Set());
 
   const ensureChildrenLoaded = React.useCallback(
@@ -541,6 +554,10 @@ export default function App() {
   );
 
   const getMaxLamport = React.useCallback(() => BigInt(lamportRef.current), []);
+  const getLoadedParentIds = React.useCallback(
+    () => Object.keys(treeStateRef.current.childrenByParent),
+    []
+  );
 
   const applyMaterializationEvent = React.useCallback(
     (event: MaterializationEvent) => {
@@ -592,19 +609,6 @@ export default function App() {
     if (!client) return;
     return client.onMaterialized(applyMaterializationEvent);
   }, [client, applyMaterializationEvent]);
-
-  const onRemoteOpsImported = React.useCallback(
-    async (appliedOps: Operation[]) => {
-      ingestOps(appliedOps);
-      if (appliedOps.length > 0) {
-        let max = 0;
-        for (const op of appliedOps) max = Math.max(max, op.meta.lamport);
-        lamportRef.current = Math.max(lamportRef.current, max);
-        setHeadLamport(lamportRef.current);
-      }
-    },
-    [ingestOps]
-  );
 
   const openNewPeerTab = () => {
     if (typeof window === "undefined") return;
@@ -660,17 +664,19 @@ export default function App() {
     joinMode,
     authCanSyncAll,
     viewRootId,
-    hardRevokedTokenIds,
-    revocationCutoverEnabled,
-    revocationCutoverTokenId,
-    revocationCutoverCounter,
-    treeStateRef,
+    getLoadedParentIds,
     refreshMeta,
-    getLocalIdentityChain,
-    onPeerIdentityChain,
     onAuthGrantMessage,
-    onRemoteOpsImported,
+    onRemoteOpsImported: recordOps,
   });
+
+  const recordLocalOps = React.useCallback(
+    (ops: Operation[]) => {
+      notifyLocalUpdate(ops);
+      recordOps(ops, { assumeSorted: true });
+    },
+    [notifyLocalUpdate, recordOps]
+  );
 
   const grantSubtreeToReplicaPubkey = React.useCallback(
     async (opts?: {
@@ -723,6 +729,27 @@ export default function App() {
     });
     return roots.map((id) => ({ id, label: nodeLabelForId(id) }));
   }, [privateRoots, nodeLabelForId]);
+
+  const expandPathTo = React.useCallback(
+    (nodeId: string) => {
+      setCollapse((prev) => {
+        const overrides = new Set(prev.overrides);
+        const setExpanded = (id: string) => {
+          if (prev.defaultCollapsed) overrides.add(id);
+          else overrides.delete(id);
+        };
+        setExpanded(nodeId);
+        let cur = index[nodeId]?.parentId ?? null;
+        while (cur) {
+          setExpanded(cur);
+          cur = index[cur]?.parentId ?? null;
+        }
+        return { ...prev, overrides };
+      });
+    },
+    [index]
+  );
+
   const visibleNodes = useMemo(() => {
     const acc: Array<{ node: DisplayNode; depth: number }> = [];
     const isCollapsed = (id: string) => {
@@ -929,11 +956,7 @@ export default function App() {
       }
       await verifyLocalOps([op]);
 
-      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      setHeadLamport(lamportRef.current);
-
-      notifyLocalUpdate([op]);
-      ingestOps([op], { assumeSorted: true });
+      recordLocalOps([op]);
     } catch (err) {
       console.error("Failed to append op", err);
       setError("Failed to append operation (see console)");
@@ -949,10 +972,7 @@ export default function App() {
     try {
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
       const op = await client.local.move(replica, nodeId, newParent, placement);
-      notifyLocalUpdate([op]);
-      ingestOps([op], { assumeSorted: true });
-      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      setHeadLamport(lamportRef.current);
+      recordLocalOps([op]);
     } catch (err) {
       console.error("Failed to append move op", err);
       setError("Failed to move node (see console)");
@@ -1046,28 +1066,8 @@ export default function App() {
         prev ? { ...prev, completed: normalizedCount, phase: "applying" } : prev
       );
 
-      for (const op of ops) {
-        lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      }
-      setHeadLamport(lamportRef.current);
-
-      notifyLocalUpdate(ops);
-      ingestOps(ops, { assumeSorted: true });
-      setCollapse((prev) => {
-        const overrides = new Set(prev.overrides);
-        const setExpanded = (id: string) => {
-          if (prev.defaultCollapsed) overrides.add(id);
-          else overrides.delete(id);
-        };
-        // Keep the chosen parent expanded so the user sees immediate children.
-        setExpanded(parentId);
-        let cur = index[parentId]?.parentId ?? null;
-        while (cur) {
-          setExpanded(cur);
-          cur = index[cur]?.parentId ?? null;
-        }
-        return { ...prev, overrides };
-      });
+      recordLocalOps(ops);
+      expandPathTo(parentId);
     } catch (err) {
       console.error("Failed to add nodes", err);
       setError("Failed to add nodes (see console)");
@@ -1087,27 +1087,11 @@ export default function App() {
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
-      notifyLocalUpdate([op]);
-      ingestOps([op], { assumeSorted: true });
+      recordLocalOps([op]);
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
       }
-      lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
-      setHeadLamport(lamportRef.current);
-      setCollapse((prev) => {
-        const overrides = new Set(prev.overrides);
-        const setExpanded = (id: string) => {
-          if (prev.defaultCollapsed) overrides.add(id);
-          else overrides.delete(id);
-        };
-        setExpanded(parentId);
-        let cur = index[parentId]?.parentId ?? null;
-        while (cur) {
-          setExpanded(cur);
-          cur = index[cur]?.parentId ?? null;
-        }
-        return { ...prev, overrides };
-      });
+      expandPathTo(parentId);
     } catch (err) {
       console.error("Failed to insert node", err);
       setError("Failed to insert node (see console)");
