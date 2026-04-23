@@ -26,11 +26,9 @@ import type {
   TreecrdtEngineOpRefs,
   TreecrdtEngineOps,
   TreecrdtEngineTree,
-  MaterializationEvent,
-  MaterializationListener,
-  MaterializationOutcome,
   WriteOptions,
 } from '@treecrdt/interface/engine';
+import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
 import type {
@@ -73,28 +71,6 @@ export type TreecrdtClient = TreecrdtEngine & {
   close: () => Promise<void>;
   drop: () => Promise<void>;
 };
-
-function createMaterializationDispatch() {
-  const listeners = new Set<MaterializationListener>();
-  const emitEvent = (event: MaterializationEvent) => {
-    if (event.changes.length === 0) return;
-    for (const listener of listeners) listener(event);
-  };
-  const emitOutcome = (outcome: MaterializationOutcome, writeId?: string) => {
-    if (outcome.changes.length === 0) return;
-    emitEvent({
-      ...outcome,
-      ...(writeId ? { writeIds: [writeId] } : {}),
-    });
-  };
-  const onMaterialized = (listener: MaterializationListener) => {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
-  };
-  return { emitEvent, emitOutcome, onMaterialized };
-}
 
 export type ClientOptions = {
   storage?: StorageMode | 'auto';
@@ -165,7 +141,7 @@ async function createWorkerClient(opts: {
   docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
-  const materialized = createMaterializationDispatch();
+  const materialized = createMaterializationDispatcher();
   // Keep the URL inline so Vite detects and bundles the worker properly.
   const worker = new Worker(new URL('./worker.js', import.meta.url), {
     type: 'module',
@@ -281,7 +257,7 @@ async function createDirectClient(opts: {
   docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
-  const materialized = createMaterializationDispatch();
+  const materialized = createMaterializationDispatcher();
   const { baseUrl, storage, requireOpfs } = opts;
   const opened = await openTreecrdtDb({
     baseUrl,
@@ -475,7 +451,7 @@ function makeTreecrdtClientFromCall(opts: {
   storage: StorageMode;
   docId: string;
   call: RpcCall;
-  materialized: ReturnType<typeof createMaterializationDispatch>;
+  materialized: ReturnType<typeof createMaterializationDispatcher>;
   close: () => Promise<void>;
   drop: () => Promise<void>;
 }): TreecrdtClient {

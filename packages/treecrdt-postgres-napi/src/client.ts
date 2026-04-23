@@ -1,12 +1,7 @@
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type {
-  MaterializationEvent,
-  MaterializationListener,
-  MaterializationOutcome,
-  TreecrdtEngine,
-  WriteOptions,
-} from '@treecrdt/interface/engine';
+import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
+import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
 import {
@@ -57,18 +52,10 @@ export async function createTreecrdtPostgresClient(
   ensureNonEmptyString('docId', docId);
 
   const backend = factory.open(docId);
-  const listeners = new Set<MaterializationListener>();
-  const emitMaterialized = (outcome: MaterializationOutcome, writeId?: string) => {
-    if (outcome.changes.length === 0) return;
-    const event: MaterializationEvent = {
-      ...outcome,
-      ...(writeId ? { writeIds: [writeId] } : {}),
-    };
-    for (const listener of listeners) listener(event);
-  };
+  const materialized = createMaterializationDispatcher();
   const ensureMaterializedImpl = () => {
     const outcome = nativeToMaterializationOutcome(backend.ensureMaterialized());
-    emitMaterialized(outcome);
+    materialized.emitOutcome(outcome);
   };
 
   const encodeReplica = (replica: Operation['meta']['id']['replica']): Uint8Array =>
@@ -160,7 +147,7 @@ export async function createTreecrdtPostgresClient(
       payload,
     );
     const outcome = nativeToMaterializationOutcome(result.outcome);
-    emitMaterialized(outcome);
+    materialized.emitOutcome(outcome);
     return nativeToOperation(result.op);
   };
 
@@ -179,21 +166,21 @@ export async function createTreecrdtPostgresClient(
       after,
     );
     const outcome = nativeToMaterializationOutcome(result.outcome);
-    emitMaterialized(outcome);
+    materialized.emitOutcome(outcome);
     return nativeToOperation(result.op);
   };
 
   const localDeleteImpl = async (replica: ReplicaId, node: string) => {
     const result = backend.localDelete(encodeReplica(replica), nodeIdToBytes16(node));
     const outcome = nativeToMaterializationOutcome(result.outcome);
-    emitMaterialized(outcome);
+    materialized.emitOutcome(outcome);
     return nativeToOperation(result.op);
   };
 
   const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) => {
     const result = backend.localPayload(encodeReplica(replica), nodeIdToBytes16(node), payload);
     const outcome = nativeToMaterializationOutcome(result.outcome);
-    emitMaterialized(outcome);
+    materialized.emitOutcome(outcome);
     return nativeToOperation(result.op);
   };
 
@@ -206,7 +193,7 @@ export async function createTreecrdtPostgresClient(
         const outcome = nativeToMaterializationOutcome(
           backend.applyOps([operationToNativeWithSerializers(op, nodeIdToBytes16, encodeReplica)]),
         );
-        emitMaterialized(outcome, writeOpts?.writeId);
+        materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       appendMany: async (ops, writeOpts?: WriteOptions) => {
         if (ops.length === 0) return;
@@ -215,7 +202,7 @@ export async function createTreecrdtPostgresClient(
             ops.map((op) => operationToNativeWithSerializers(op, nodeIdToBytes16, encodeReplica)),
           ),
         );
-        emitMaterialized(outcome, writeOpts?.writeId);
+        materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
@@ -245,12 +232,7 @@ export async function createTreecrdtPostgresClient(
       delete: localDeleteImpl,
       payload: localPayloadImpl,
     },
-    onMaterialized: (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    onMaterialized: materialized.onMaterialized,
     close: async () => {
       // no-op: native layer opens per-call connections
     },

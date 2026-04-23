@@ -29,6 +29,38 @@ export type MaterializationEvent = MaterializationOutcome & {
 
 export type MaterializationListener = (event: MaterializationEvent) => void;
 
+export type MaterializationDispatcher = {
+  emitEvent: (event: MaterializationEvent) => void;
+  emitOutcome: (outcome: MaterializationOutcome, writeId?: string) => void;
+  onMaterialized: (listener: MaterializationListener) => () => void;
+};
+
+export function createMaterializationDispatcher(): MaterializationDispatcher {
+  const listeners = new Set<MaterializationListener>();
+
+  const emitEvent = (event: MaterializationEvent) => {
+    if (event.changes.length === 0) return;
+    for (const listener of listeners) listener(event);
+  };
+
+  const emitOutcome = (outcome: MaterializationOutcome, writeId?: string) => {
+    if (outcome.changes.length === 0) return;
+    emitEvent({
+      ...outcome,
+      ...(writeId ? { writeIds: [writeId] } : {}),
+    });
+  };
+
+  const onMaterialized = (listener: MaterializationListener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+
+  return { emitEvent, emitOutcome, onMaterialized };
+}
+
 export type WriteOptions = {
   writeId?: string;
 };
