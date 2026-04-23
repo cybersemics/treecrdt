@@ -4,9 +4,14 @@ import type {
   SerializeReplica,
   TreecrdtAdapter,
 } from '@treecrdt/interface';
+import type { MaterializationOutcome } from '@treecrdt/interface/engine';
 import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
 
-import { nativeOpToSqliteRow, operationToNativeWithSerializers } from './codec.js';
+import {
+  nativeOpToSqliteRow,
+  nativeToMaterializationOutcome,
+  operationToNativeWithSerializers,
+} from './codec.js';
 import { loadNative } from './native.js';
 
 export type PostgresNapiAdapterFactory = {
@@ -36,6 +41,8 @@ function opToNative(
 ) {
   return operationToNativeWithSerializers(op, serializeNodeId, serializeReplica);
 }
+
+const EMPTY_OUTCOME: MaterializationOutcome = { headSeq: 0, changes: [] };
 
 export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapterFactory {
   ensureNonEmptyString('url', url);
@@ -94,12 +101,14 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
         replicaMaxCounter: async (replica) =>
           bigintToSafeNumber('replicaMaxCounter', backend.replicaMaxCounter(replica)),
         appendOp: async (op, serializeNodeId, serializeReplica) => {
-          backend.applyOps([opToNative(op, serializeNodeId, serializeReplica)]);
+          return nativeToMaterializationOutcome(
+            backend.applyOps([opToNative(op, serializeNodeId, serializeReplica)]),
+          );
         },
         appendOps: async (ops, serializeNodeId, serializeReplica) => {
-          if (ops.length === 0) return [];
-          return backend.applyOps(
-            ops.map((op) => opToNative(op, serializeNodeId, serializeReplica)),
+          if (ops.length === 0) return EMPTY_OUTCOME;
+          return nativeToMaterializationOutcome(
+            backend.applyOps(ops.map((op) => opToNative(op, serializeNodeId, serializeReplica))),
           );
         },
         opsSince: async (lamport, root) => {

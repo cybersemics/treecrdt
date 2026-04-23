@@ -10,6 +10,7 @@ import {
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from '@treecrdt/interface/sqlite';
+import type { MaterializationEvent, WriteOptions } from '@treecrdt/interface/engine';
 import type { RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import { clearOpfsStorage } from './opfs.js';
@@ -20,6 +21,10 @@ let storedStorage: 'memory' | 'opfs' = 'memory';
 let api: TreecrdtAdapter | null = null;
 let runner: SqliteRunner | null = null;
 const localWriters = new Map<string, TreecrdtSqliteWriter>();
+
+function postMaterialized(event: MaterializationEvent) {
+  (self as unknown as Worker).postMessage({ type: 'materialized', event });
+}
 
 const methods = {
   init,
@@ -85,6 +90,7 @@ async function init(
     storage: storageParam,
     docId,
     requireOpfs: false,
+    onMaterialized: postMaterialized,
   });
   db = opened.db;
   api = opened.api;
@@ -107,16 +113,14 @@ async function sqlGetText(sql: string, params?: RpcSqlParams): Promise<string | 
   return dbGetText(ensureDb(), sql, params ?? []);
 }
 
-async function append(op: Operation) {
+async function append(op: Operation, _opts?: WriteOptions) {
   const api = ensureApi();
-  await api.appendOp(op, nodeIdToBytes16, replicaIdToBytes);
-  return null;
+  return await api.appendOp(op, nodeIdToBytes16, replicaIdToBytes);
 }
 
-async function appendMany(ops: Operation[]) {
+async function appendMany(ops: Operation[], _opts?: WriteOptions) {
   const api = ensureApi();
-  const affected = await api.appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
-  return affected.map((node) => Array.from(node));
+  return await api.appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
 }
 
 async function opsSince(lamport: number, root: string | undefined) {
@@ -283,7 +287,10 @@ function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
   const key = replicaKey(replica);
   const existing = localWriters.get(key);
   if (existing) return existing;
-  const writer = createTreecrdtSqliteWriter(ensureRunner(), { replica });
+  const writer = createTreecrdtSqliteWriter(ensureRunner(), {
+    replica,
+    onMaterialized: postMaterialized,
+  });
   localWriters.set(key, writer);
   return writer;
 }

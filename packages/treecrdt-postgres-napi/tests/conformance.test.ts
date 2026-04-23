@@ -65,11 +65,11 @@ function internalDocId(publicDocId: string, key: string): string {
   return `${publicDocId}::${key}::${randomUUID()}`;
 }
 
-test('conformance registry includes affected-id scenarios', () => {
+test('conformance registry includes materialization-event scenarios', () => {
   const names = treecrdtEngineConformanceScenarios().map((s) => s.name);
-  expect(names).toContain('appendMany: returns affected ids for structural batch');
-  expect(names).toContain('appendMany: returns deduped deterministic affected ids');
-  expect(names).toContain('appendMany: returns indirect affected ids on defensive restore');
+  expect(names).toContain('materialization events: structural batch');
+  expect(names).toContain('materialization events: payload coalescing');
+  expect(names).toContain('materialization events: defensive restore');
 });
 
 maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {

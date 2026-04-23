@@ -1,9 +1,41 @@
 import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
 
+export type Change =
+  | { kind: 'insert'; node: string; parentAfter: string }
+  | { kind: 'move'; node: string; parentBefore: string | null; parentAfter: string }
+  | { kind: 'delete'; node: string; parentBefore: string | null }
+  | { kind: 'restore'; node: string; parentAfter: string | null }
+  | { kind: 'payload'; node: string };
+
+/**
+ * Coalesced result of advancing materialized state to `headSeq`.
+ *
+ * This is intentionally not a raw op list. Replays and batched appends collapse multiple writes for
+ * the same node into final visible changes before adapters emit events.
+ */
+export type MaterializationOutcome = {
+  headSeq: number;
+  changes: Change[];
+};
+
+/**
+ * Event emitted after write-path materialization, or after read-path recovery advances a pending
+ * materialization frontier. `writeIds` echoes optional ids supplied to append APIs.
+ */
+export type MaterializationEvent = MaterializationOutcome & {
+  writeIds?: string[];
+};
+
+export type MaterializationListener = (event: MaterializationEvent) => void;
+
+export type WriteOptions = {
+  writeId?: string;
+};
+
 export type TreecrdtEngineOps = {
-  append: (op: Operation) => Promise<void>;
-  appendMany: (ops: Operation[]) => Promise<string[]>;
+  append: (op: Operation, opts?: WriteOptions) => Promise<void>;
+  appendMany: (ops: Operation[], opts?: WriteOptions) => Promise<void>;
   all: () => Promise<Operation[]>;
   since: (lamport: number, root?: string) => Promise<Operation[]>;
   children: (parent: string) => Promise<Operation[]>;
@@ -67,5 +99,6 @@ export type TreecrdtEngine = {
   tree: TreecrdtEngineTree;
   meta: TreecrdtEngineMeta;
   local: TreecrdtEngineLocal;
+  onMaterialized: (listener: MaterializationListener) => () => void;
   close: () => Promise<void>;
 };

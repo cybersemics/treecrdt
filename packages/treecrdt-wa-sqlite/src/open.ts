@@ -3,6 +3,7 @@ import { createWaSqliteApi } from './index.js';
 import type { Database } from './index.js';
 import { makeDbAdapter } from './db.js';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 
 export type OpenTreecrdtDbOptions = {
   baseUrl: string;
@@ -10,6 +11,7 @@ export type OpenTreecrdtDbOptions = {
   storage: 'memory' | 'opfs';
   docId: string;
   requireOpfs?: boolean;
+  onMaterialized?: (event: MaterializationEvent) => void;
 };
 
 export type OpenTreecrdtDbResult = {
@@ -48,7 +50,7 @@ export async function openTreecrdtDb(opts: OpenTreecrdtDbOptions): Promise<OpenT
   const filename = storage === 'opfs' ? (opts.filename ?? '/treecrdt.db') : ':memory:';
   const handle = await sqlite3.open_v2(filename);
   const db = makeDbAdapter(sqlite3, handle);
-  const api = createWaSqliteApi(db);
+  const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
   await api.setDocId(opts.docId);
 
   return opfsError ? { db, api, storage, filename, opfsError } : { db, api, storage, filename };

@@ -5,8 +5,9 @@ import {
   nodeIdToBytes16,
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
+import type { MaterializationOutcome } from '@treecrdt/interface/engine';
 
-import type { NativeOp } from './native.js';
+import type { NativeMaterializationOutcome, NativeOp } from './native.js';
 
 function assertSafeNonNegativeInteger(name: string, value: number): void {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -173,5 +174,51 @@ export function nativeOpToSqliteRow(row: NativeOp): Record<string, unknown> {
     order_key: row.orderKey ?? null,
     payload: row.payload ?? null,
     known_state: row.knownState ?? null,
+  };
+}
+
+export function nativeToMaterializationOutcome(
+  outcome: NativeMaterializationOutcome,
+): MaterializationOutcome {
+  return {
+    headSeq: parseSafeInteger('headSeq', outcome.headSeq),
+    changes: outcome.changes.map((change) => {
+      const kind = String(change.kind);
+      if (kind === 'insert') {
+        if (!change.parentAfter) throw new Error('native insert change missing parentAfter');
+        return {
+          kind,
+          node: nodeIdFromBytes16(change.node),
+          parentAfter: nodeIdFromBytes16(change.parentAfter),
+        };
+      }
+      if (kind === 'move') {
+        if (!change.parentAfter) throw new Error('native move change missing parentAfter');
+        return {
+          kind,
+          node: nodeIdFromBytes16(change.node),
+          parentBefore: change.parentBefore ? nodeIdFromBytes16(change.parentBefore) : null,
+          parentAfter: nodeIdFromBytes16(change.parentAfter),
+        };
+      }
+      if (kind === 'delete') {
+        return {
+          kind,
+          node: nodeIdFromBytes16(change.node),
+          parentBefore: change.parentBefore ? nodeIdFromBytes16(change.parentBefore) : null,
+        };
+      }
+      if (kind === 'restore') {
+        return {
+          kind,
+          node: nodeIdFromBytes16(change.node),
+          parentAfter: change.parentAfter ? nodeIdFromBytes16(change.parentAfter) : null,
+        };
+      }
+      if (kind === 'payload') {
+        return { kind, node: nodeIdFromBytes16(change.node) };
+      }
+      throw new Error(`unknown native materialization change kind: ${kind}`);
+    }),
   };
 }

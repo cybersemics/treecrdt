@@ -68,26 +68,6 @@ export function nodesAffectedByPayloadOps(ops: Operation[]): Set<string> {
   return out;
 }
 
-export function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<string> {
-  const out = new Set<string>();
-  for (const op of ops) {
-    const kind = op.kind;
-    if (kind.type === "insert") {
-      out.add(kind.parent);
-    } else if (kind.type === "move") {
-      out.add(kind.newParent);
-      const prevParent = state.index[kind.node]?.parentId;
-      if (prevParent) out.add(prevParent);
-    } else if (kind.type === "payload") {
-      // Payload ops do not affect tree structure.
-    } else {
-      const prevParent = state.index[kind.node]?.parentId;
-      if (prevParent) out.add(prevParent);
-    }
-  }
-  return out;
-}
-
 export function flattenForSelectState(
   childrenByParent: Record<string, string[]>,
   getLabel?: (id: string) => string,

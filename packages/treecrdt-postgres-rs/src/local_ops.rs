@@ -4,8 +4,8 @@ use std::rc::Rc;
 use postgres::Client;
 
 use treecrdt_core::{
-    Error, LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationCursor, NodeId,
-    Operation, ReplicaId, Result, TreeCrdt,
+    Error, LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationCursor,
+    MaterializationOutcome, NodeId, Operation, ReplicaId, Result, TreeCrdt,
 };
 
 use crate::store::{
@@ -21,6 +21,20 @@ struct LocalOpSession {
     meta: TreeMeta,
     nodes: PgNodeStore,
     crdt: LocalCrdt,
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalOpResult {
+    pub op: Operation,
+    pub outcome: MaterializationOutcome,
+}
+
+impl std::ops::Deref for LocalOpResult {
+    type Target = Operation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.op
+    }
 }
 
 fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -79,19 +93,21 @@ fn finish_local_core_op(
     session: &mut LocalOpSession,
     op: &Operation,
     plan: LocalFinalizePlan,
-) -> Result<()> {
+) -> Result<MaterializationOutcome> {
     let mut post_materialization_ok = true;
-    let mut seq = 0u64;
+    let mut outcome = MaterializationOutcome::empty(session.meta.state().head_seq());
 
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
     // commit_local() already persisted the op and updated node/payload state. The finalize step
     // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
-    match session
-        .crdt
-        .finalize_local(op, &mut op_index, session.meta.state().head_seq(), &plan)
-    {
+    match session.crdt.finalize_local_with_outcome(
+        op,
+        &mut op_index,
+        session.meta.state().head_seq(),
+        &plan,
+    ) {
         Ok(v) => {
-            seq = v;
+            outcome = v;
             if session.nodes.flush_last_change().is_err() || op_index.flush().is_err() {
                 post_materialization_ok = false;
             }
@@ -105,7 +121,7 @@ fn finish_local_core_op(
             replica: op.meta.id.replica.as_bytes(),
             counter: op.meta.id.counter,
         },
-        seq,
+        seq: outcome.head_seq,
     };
     if post_materialization_ok
         && update_tree_meta_head(&session.ctx.client, &session.ctx.doc_id, Some(&head)).is_err()
@@ -125,7 +141,7 @@ fn finish_local_core_op(
         )?;
     }
 
-    Ok(())
+    Ok(outcome)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -138,13 +154,13 @@ pub fn local_insert(
     placement: &str,
     after: Option<NodeId>,
     payload: Option<Vec<u8>>,
-) -> Result<Operation> {
+) -> Result<LocalOpResult> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let placement = LocalPlacement::from_parts(placement, after)?;
         let (op, plan) = session.crdt.local_insert(parent, node, placement, payload)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+        let outcome = finish_local_core_op(&mut session, &op, plan)?;
+        Ok(LocalOpResult { op, outcome })
     })
 }
 
@@ -156,13 +172,13 @@ pub fn local_move(
     new_parent: NodeId,
     placement: &str,
     after: Option<NodeId>,
-) -> Result<Operation> {
+) -> Result<LocalOpResult> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let placement = LocalPlacement::from_parts(placement, after)?;
         let (op, plan) = session.crdt.local_move(node, new_parent, placement)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+        let outcome = finish_local_core_op(&mut session, &op, plan)?;
+        Ok(LocalOpResult { op, outcome })
     })
 }
 
@@ -171,12 +187,12 @@ pub fn local_delete(
     doc_id: &str,
     replica: &ReplicaId,
     node: NodeId,
-) -> Result<Operation> {
+) -> Result<LocalOpResult> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let (op, plan) = session.crdt.local_delete(node)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+        let outcome = finish_local_core_op(&mut session, &op, plan)?;
+        Ok(LocalOpResult { op, outcome })
     })
 }
 
@@ -186,11 +202,11 @@ pub fn local_payload(
     replica: &ReplicaId,
     node: NodeId,
     payload: Option<Vec<u8>>,
-) -> Result<Operation> {
+) -> Result<LocalOpResult> {
     run_in_tx(client, || {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let (op, plan) = session.crdt.local_payload(node, payload)?;
-        finish_local_core_op(&mut session, &op, plan)?;
-        Ok(op)
+        let outcome = finish_local_core_op(&mut session, &op, plan)?;
+        Ok(LocalOpResult { op, outcome })
     })
 }

@@ -18,6 +18,23 @@ export type NativeOp = {
   knownState?: Uint8Array | null;
 };
 
+export type NativeMaterializationChange = {
+  kind: string;
+  node: Uint8Array;
+  parentBefore?: Uint8Array | null;
+  parentAfter?: Uint8Array | null;
+};
+
+export type NativeMaterializationOutcome = {
+  headSeq: bigint | number;
+  changes: NativeMaterializationChange[];
+};
+
+export type NativeLocalOpResult = {
+  op: NativeOp;
+  outcome: NativeMaterializationOutcome;
+};
+
 export type NativeBackend = {
   maxLamport(): bigint;
   listOpRefsAll(): Uint8Array[];
@@ -43,7 +60,8 @@ export type NativeBackend = {
   treeExists(node: Uint8Array): boolean;
   treePayload(node: Uint8Array): Uint8Array | null;
   replicaMaxCounter(replica: Uint8Array): bigint;
-  applyOps(ops: NativeOp[]): Uint8Array[];
+  applyOps(ops: NativeOp[]): NativeMaterializationOutcome;
+  ensureMaterialized(): NativeMaterializationOutcome;
   localInsert(
     replica: Uint8Array,
     parent: Uint8Array,
@@ -51,16 +69,20 @@ export type NativeBackend = {
     placement: string,
     after: Uint8Array | null,
     payload: Uint8Array | null,
-  ): NativeOp;
+  ): NativeLocalOpResult;
   localMove(
     replica: Uint8Array,
     node: Uint8Array,
     newParent: Uint8Array,
     placement: string,
     after: Uint8Array | null,
-  ): NativeOp;
-  localDelete(replica: Uint8Array, node: Uint8Array): NativeOp;
-  localPayload(replica: Uint8Array, node: Uint8Array, payload: Uint8Array | null): NativeOp;
+  ): NativeLocalOpResult;
+  localDelete(replica: Uint8Array, node: Uint8Array): NativeLocalOpResult;
+  localPayload(
+    replica: Uint8Array,
+    node: Uint8Array,
+    payload: Uint8Array | null,
+  ): NativeLocalOpResult;
 };
 
 export type NativeFactory = {

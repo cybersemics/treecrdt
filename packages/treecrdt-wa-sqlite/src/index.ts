@@ -1,5 +1,6 @@
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import { createTreecrdtSqliteAdapter, type SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import { dbGetText } from './sql.js';
 import type { Database } from './types.js';
 
@@ -14,7 +15,7 @@ function createRunner(db: Database): SqliteRunner {
 
 export function createWaSqliteApi(
   db: Database,
-  opts: { maxBulkOps?: number } = {},
+  opts: { maxBulkOps?: number; onMaterialized?: (event: MaterializationEvent) => void } = {},
 ): TreecrdtAdapter {
   return createTreecrdtSqliteAdapter(createRunner(db), opts);
 }

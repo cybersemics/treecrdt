@@ -264,12 +264,12 @@ export async function runTreecrdtSyncE2E(): Promise<{ ok: true }> {
   return { ok: true };
 }
 
-export async function runTreecrdtAppendManyAffectedIdsE2E(): Promise<{
+export async function runTreecrdtMaterializationEventE2E(): Promise<{
   ok: true;
-  affectedIds: string[];
+  eventIds: string[];
   children: string[];
 }> {
-  const docId = `e2e-affected-ids-${crypto.randomUUID()}`;
+  const docId = `e2e-materialization-event-${crypto.randomUUID()}`;
   const client = await createTreecrdtClient({ storage: 'memory', docId });
   try {
     const root = '0'.repeat(32);
@@ -290,9 +290,20 @@ export async function runTreecrdtAppendManyAffectedIdsE2E(): Promise<{
       }),
     ];
 
-    const affectedIds = await client.ops.appendMany(ops);
+    const events: string[][] = [];
+    const unsubscribe = client.onMaterialized((event) => {
+      const ids = new Set<string>();
+      for (const change of event.changes) {
+        ids.add(change.node);
+        if ('parentAfter' in change && change.parentAfter) ids.add(change.parentAfter);
+        if ('parentBefore' in change && change.parentBefore) ids.add(change.parentBefore);
+      }
+      events.push([...ids].sort());
+    });
+    await client.ops.appendMany(ops);
+    unsubscribe();
     const children = await client.tree.children(root);
-    return { ok: true, affectedIds, children };
+    return { ok: true, eventIds: events.length ? events[events.length - 1]! : [], children };
   } finally {
     await client.close();
   }
@@ -610,7 +621,7 @@ export async function runTreecrdtSyncBench(
 declare global {
   interface Window {
     runTreecrdtSyncE2E?: typeof runTreecrdtSyncE2E;
-    runTreecrdtAppendManyAffectedIdsE2E?: typeof runTreecrdtAppendManyAffectedIdsE2E;
+    runTreecrdtMaterializationEventE2E?: typeof runTreecrdtMaterializationEventE2E;
     runTreecrdtSyncLargeFanoutE2E?: typeof runTreecrdtSyncLargeFanoutE2E;
     runTreecrdtSyncSubscribeE2E?: typeof runTreecrdtSyncSubscribeE2E;
     runTreecrdtSyncBench?: typeof runTreecrdtSyncBench;
@@ -619,7 +630,7 @@ declare global {
 
 if (typeof window !== 'undefined') {
   window.runTreecrdtSyncE2E = runTreecrdtSyncE2E;
-  window.runTreecrdtAppendManyAffectedIdsE2E = runTreecrdtAppendManyAffectedIdsE2E;
+  window.runTreecrdtMaterializationEventE2E = runTreecrdtMaterializationEventE2E;
   window.runTreecrdtSyncLargeFanoutE2E = runTreecrdtSyncLargeFanoutE2E;
   window.runTreecrdtSyncSubscribeE2E = runTreecrdtSyncSubscribeE2E;
   window.runTreecrdtSyncBench = runTreecrdtSyncBench;

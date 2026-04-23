@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use treecrdt_core::{
-    order_key::allocate_between, NodeId, Operation, OperationKind, ReplicaId, VersionVector,
+    order_key::allocate_between, MaterializationChange, MaterializationOutcome, NodeId, Operation,
+    OperationKind, ReplicaId, VersionVector,
 };
 use treecrdt_test_support::{
     self as materialization_conformance, MaterializationConformanceHarness,
@@ -25,12 +26,109 @@ struct JsonOp {
     payload: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonMaterializationOutcome {
+    head_seq: u64,
+    changes: Vec<JsonMaterializationChange>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum JsonMaterializationChange {
+    Insert {
+        node: String,
+        parent_after: String,
+    },
+    Move {
+        node: String,
+        parent_before: Option<String>,
+        parent_after: String,
+    },
+    Delete {
+        node: String,
+        parent_before: Option<String>,
+    },
+    Restore {
+        node: String,
+        parent_after: Option<String>,
+    },
+    Payload {
+        node: String,
+    },
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonLocalOpResult {
+    op: JsonOp,
+    outcome: JsonMaterializationOutcome,
+}
+
 fn node_bytes_from_id(node: NodeId) -> Vec<u8> {
     node.0.to_be_bytes().to_vec()
 }
 
 fn bytes_to_node_id(bytes: &[u8]) -> NodeId {
     NodeId(u128::from_be_bytes(bytes.try_into().unwrap()))
+}
+
+fn hex_to_node_id(hex: &str) -> NodeId {
+    NodeId(u128::from_str_radix(hex, 16).unwrap())
+}
+
+fn json_outcome_to_core(outcome: JsonMaterializationOutcome) -> MaterializationOutcome {
+    MaterializationOutcome {
+        head_seq: outcome.head_seq,
+        changes: outcome
+            .changes
+            .into_iter()
+            .map(|change| match change {
+                JsonMaterializationChange::Insert { node, parent_after } => {
+                    MaterializationChange::Insert {
+                        node: hex_to_node_id(&node),
+                        parent_after: hex_to_node_id(&parent_after),
+                    }
+                }
+                JsonMaterializationChange::Move {
+                    node,
+                    parent_before,
+                    parent_after,
+                } => MaterializationChange::Move {
+                    node: hex_to_node_id(&node),
+                    parent_before: parent_before.as_deref().map(hex_to_node_id),
+                    parent_after: hex_to_node_id(&parent_after),
+                },
+                JsonMaterializationChange::Delete {
+                    node,
+                    parent_before,
+                } => MaterializationChange::Delete {
+                    node: hex_to_node_id(&node),
+                    parent_before: parent_before.as_deref().map(hex_to_node_id),
+                },
+                JsonMaterializationChange::Restore { node, parent_after } => {
+                    MaterializationChange::Restore {
+                        node: hex_to_node_id(&node),
+                        parent_after: parent_after.as_deref().map(hex_to_node_id),
+                    }
+                }
+                JsonMaterializationChange::Payload { node } => MaterializationChange::Payload {
+                    node: hex_to_node_id(&node),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn decode_ops_or_local_result(json: &str) -> Vec<JsonOp> {
+    if let Ok(ops) = serde_json::from_str::<Vec<JsonOp>>(json) {
+        return ops;
+    }
+    vec![serde_json::from_str::<JsonLocalOpResult>(json).unwrap().op]
 }
 
 fn vv_to_bytes(vv: &VersionVector) -> Vec<u8> {
@@ -114,7 +212,7 @@ fn read_replay_frontier(conn: &Connection) -> (Option<i64>, Option<Vec<u8>>, Opt
     .unwrap()
 }
 
-fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (Vec<Vec<u8>>, i64) {
+fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (MaterializationOutcome, i64) {
     let json = serde_json::to_string(ops).unwrap();
     let affected_json: String = conn
         .query_row(
@@ -123,9 +221,9 @@ fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (Vec<Vec<u8>>, i64) {
             |row| row.get(0),
         )
         .unwrap();
-    let affected: Vec<Vec<u8>> = serde_json::from_str(&affected_json).unwrap();
+    let outcome: JsonMaterializationOutcome = serde_json::from_str(&affected_json).unwrap();
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
-    (affected, count)
+    (json_outcome_to_core(outcome), count)
 }
 
 fn visible_children(conn: &Connection, parent: &[u8]) -> Vec<Vec<u8>> {
@@ -188,9 +286,9 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
         append_ops_json(&self.conn, &json_ops(ops));
     }
 
-    fn append_ops_with_affected_nodes(&self, ops: &[Operation]) -> Vec<NodeId> {
-        let (affected, _) = append_ops_json(&self.conn, &json_ops(ops));
-        affected.iter().map(|bytes| bytes_to_node_id(bytes)).collect()
+    fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
+        let (outcome, _) = append_ops_json(&self.conn, &json_ops(ops));
+        outcome
     }
 
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId> {
@@ -241,7 +339,7 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
     }
 
     fn ensure_materialized(&self) {
-        let _: i64 = self
+        let _: String = self
             .conn
             .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
                 row.get(0)
@@ -283,7 +381,7 @@ fn append_and_fetch_ops_via_extension() {
     let node = node_bytes(1);
     let order_key = (1u16).to_be_bytes().to_vec();
 
-    let _: i64 = conn
+    let _: String = conn
         .query_row(
             "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
             rusqlite::params![
@@ -300,7 +398,7 @@ fn append_and_fetch_ops_via_extension() {
         .unwrap();
 
     // Move node to the end again
-    let _: i64 = conn
+    let _: String = conn
         .query_row(
             "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, NULL)",
             rusqlite::params![
@@ -319,7 +417,7 @@ fn append_and_fetch_ops_via_extension() {
     let json: String =
         conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0)).unwrap();
 
-    let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 2);
     assert_eq!(ops[0].kind, "insert");
     assert_eq!(ops[1].kind, "move");
@@ -343,7 +441,7 @@ fn append_and_fetch_ops_via_extension() {
             |row| row.get(0),
         )
         .unwrap();
-    let filtered: Vec<JsonOp> = serde_json::from_str(&json_filtered).unwrap();
+    let filtered: Vec<JsonOp> = decode_ops_or_local_result(&json_filtered);
     assert_eq!(filtered.len(), 2);
 }
 
@@ -363,7 +461,7 @@ fn local_insert_returns_appended_insert_op() {
         )
         .unwrap();
 
-    let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "insert");
@@ -525,7 +623,7 @@ fn local_insert_after_is_deterministic_for_single_gap() {
 
     // A(1), B(3)
     for (counter, (node, order_key)) in [(1i64, (&node_a, &key_a)), (2i64, (&node_b, &key_b))] {
-        let _: i64 = conn
+        let _: String = conn
             .query_row(
                 "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
                 rusqlite::params![
@@ -550,7 +648,7 @@ fn local_insert_after_is_deterministic_for_single_gap() {
             |row| row.get(0),
         )
         .unwrap();
-    let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "insert");
@@ -570,7 +668,7 @@ fn local_insert_last_is_deterministic_for_single_gap() {
     let node_b = node_bytes(2);
 
     let key_a = (0xfffdu16).to_be_bytes().to_vec();
-    let _: i64 = conn
+    let _: String = conn
         .query_row(
             "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
             rusqlite::params![replica.clone(), 1i64, 1i64, "insert", parent, node_a, key_a],
@@ -585,7 +683,7 @@ fn local_insert_last_is_deterministic_for_single_gap() {
             |row| row.get(0),
         )
         .unwrap();
-    let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "insert");
@@ -633,7 +731,7 @@ fn local_move_allocates_key_excluding_self() {
         (2i64, (&node_b, &key_b)),
         (3i64, (&node_c, &key_c)),
     ] {
-        let _: i64 = conn
+        let _: String = conn
             .query_row(
                 "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
                 rusqlite::params![
@@ -664,7 +762,7 @@ fn local_move_allocates_key_excluding_self() {
         )
         .unwrap();
 
-    let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "move");
@@ -716,7 +814,7 @@ fn local_move_to_trash_returns_empty_order_key() {
             |row| row.get(0),
         )
         .unwrap();
-    let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "move");
@@ -747,7 +845,7 @@ fn local_delete_includes_known_state_bytes() {
             |row| row.get(0),
         )
         .unwrap();
-    let ops: Vec<JsonOp> = serde_json::from_str(&json).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "delete");
@@ -842,7 +940,7 @@ fn local_payload_set_and_clear_updates_meta() {
             |row| row.get(0),
         )
         .unwrap();
-    let set_ops: Vec<JsonOp> = serde_json::from_str(&set_json).unwrap();
+    let set_ops: Vec<JsonOp> = decode_ops_or_local_result(&set_json);
     assert_eq!(set_ops.len(), 1);
     assert_eq!(set_ops[0].kind, "payload");
     assert_eq!(set_ops[0].payload, Some(payload_bytes));
@@ -856,7 +954,7 @@ fn local_payload_set_and_clear_updates_meta() {
             |row| row.get(0),
         )
         .unwrap();
-    let clear_ops: Vec<JsonOp> = serde_json::from_str(&clear_json).unwrap();
+    let clear_ops: Vec<JsonOp> = decode_ops_or_local_result(&clear_json);
     assert_eq!(clear_ops.len(), 1);
     assert_eq!(clear_ops[0].kind, "payload");
     assert_eq!(clear_ops[0].payload, None);

@@ -205,7 +205,7 @@ export type UsePlaygroundSyncOptions = {
     replicaPublicKey: Uint8Array;
   }) => void;
   onAuthGrantMessage?: (grant: AuthGrantMessageV1) => void;
-  onRemoteOpsApplied: (ops: Operation[], affectedNodeIds: string[]) => Promise<void> | void;
+  onRemoteOpsApplied: (ops: Operation[]) => Promise<void> | void;
 };
 
 export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyncApi {
@@ -982,8 +982,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (debugSync && ops.length > 0) {
           console.debug(`[sync:${selfPeerId}] applyOps(${ops.length})`);
         }
-        const affected = ops.length > 0 ? await client.ops.appendMany(ops) : [];
-        await onRemoteOpsApplied(ops, affected);
+        if (ops.length > 0) await client.ops.appendMany(ops);
+        await onRemoteOpsApplied(ops);
       },
     };
 

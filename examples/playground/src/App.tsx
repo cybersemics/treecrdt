@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Operation, type OperationKind } from "@treecrdt/interface";
+import type { MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
@@ -37,7 +38,6 @@ import {
   applyChildrenLoaded,
   flattenForSelectState,
   nodesAffectedByPayloadOps,
-  parentsAffectedByOps,
 } from "./playground/treeState";
 import type {
   CollapseState,
@@ -504,12 +504,12 @@ export default function App() {
       if (queue.size === 0) return;
       if (refreshParentsScheduledRef.current) return;
       refreshParentsScheduledRef.current = true;
-      queueMicrotask(() => {
+      setTimeout(() => {
         refreshParentsScheduledRef.current = false;
         const ids = Array.from(refreshParentsQueueRef.current);
         refreshParentsQueueRef.current.clear();
         void refreshParents(ids);
-      });
+      }, 0);
     },
     [refreshParents]
   );
@@ -518,20 +518,90 @@ export default function App() {
   const scheduleRefreshNodeCount = React.useCallback(() => {
     if (refreshNodeCountQueuedRef.current) return;
     refreshNodeCountQueuedRef.current = true;
-    queueMicrotask(() => {
+    setTimeout(() => {
       refreshNodeCountQueuedRef.current = false;
       void refreshNodeCount();
-    });
+    }, 0);
   }, [refreshNodeCount]);
+
+  const refreshPayloadsQueueRef = useRef<Set<string>>(new Set());
+  const refreshPayloadsScheduledRef = useRef(false);
+  const scheduleRefreshPayloads = React.useCallback(
+    (nodeIds: Iterable<string>) => {
+      const queue = refreshPayloadsQueueRef.current;
+      for (const id of nodeIds) queue.add(id);
+      if (queue.size === 0 || refreshPayloadsScheduledRef.current) return;
+      refreshPayloadsScheduledRef.current = true;
+      setTimeout(() => {
+        refreshPayloadsScheduledRef.current = false;
+        const ids = new Set(refreshPayloadsQueueRef.current);
+        refreshPayloadsQueueRef.current.clear();
+        const active = clientRef.current ?? client;
+        if (!active || ids.size === 0) return;
+        void refreshPayloadsForNodes(active, ids);
+      }, 0);
+    },
+    [client, refreshPayloadsForNodes]
+  );
 
   const getMaxLamport = React.useCallback(() => BigInt(lamportRef.current), []);
 
-  const onRemoteOpsApplied = React.useCallback(
-    async (appliedOps: Operation[], affectedNodeIds: string[]) => {
+  const applyMaterializationEvent = React.useCallback(
+    (event: MaterializationEvent) => {
       const active = clientRef.current ?? client;
-      if (active && appliedOps.length > 0) {
-        await refreshPayloadsForNodes(active, nodesAffectedByPayloadOps(appliedOps));
+      if (!active || event.changes.length === 0) return;
+
+      const payloadNodes = new Set<string>();
+      const parentsToRefresh = new Set<string>();
+      const loadedChildren = treeStateRef.current.childrenByParent;
+
+      const addLoadedParent = (id: string | null | undefined) => {
+        if (id && Object.prototype.hasOwnProperty.call(loadedChildren, id)) {
+          parentsToRefresh.add(id);
+        }
+      };
+
+      for (const change of event.changes) {
+        if (change.kind === "payload") {
+          payloadNodes.add(change.node);
+          continue;
+        }
+
+        if (change.kind === "insert") {
+          payloadNodes.add(change.node);
+          addLoadedParent(change.parentAfter);
+        } else if (change.kind === "move") {
+          addLoadedParent(change.parentBefore);
+          addLoadedParent(change.parentAfter);
+        } else if (change.kind === "delete") {
+          addLoadedParent(change.parentBefore);
+        } else if (change.kind === "restore") {
+          addLoadedParent(change.parentAfter);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(loadedChildren, change.node)) {
+          parentsToRefresh.add(change.node);
+        }
       }
+
+      if (payloadNodes.size > 0) {
+        scheduleRefreshPayloads(payloadNodes);
+      }
+      scheduleRefreshParents(parentsToRefresh);
+      scheduleRefreshNodeCount();
+    },
+    [client, scheduleRefreshNodeCount, scheduleRefreshParents, scheduleRefreshPayloads]
+  );
+
+  useEffect(() => {
+    if (!client) return;
+    return client.onMaterialized((event) => {
+      applyMaterializationEvent(event);
+    });
+  }, [client, applyMaterializationEvent]);
+
+  const onRemoteOpsApplied = React.useCallback(
+    async (appliedOps: Operation[]) => {
       ingestOps(appliedOps);
       if (appliedOps.length > 0) {
         let max = 0;
@@ -539,25 +609,8 @@ export default function App() {
         lamportRef.current = Math.max(lamportRef.current, max);
         setHeadLamport(lamportRef.current);
       }
-      const parentsToRefresh = new Set<string>();
-      const loadedChildren = treeStateRef.current.childrenByParent;
-      const index = treeStateRef.current.index;
-      for (const nodeId of affectedNodeIds) {
-        const parentId = index[nodeId]?.parentId;
-        if (parentId && Object.prototype.hasOwnProperty.call(loadedChildren, parentId)) {
-          parentsToRefresh.add(parentId);
-        }
-        if (Object.prototype.hasOwnProperty.call(loadedChildren, nodeId)) {
-          parentsToRefresh.add(nodeId);
-        }
-      }
-      for (const id of parentsAffectedByOps(treeStateRef.current, appliedOps)) {
-        parentsToRefresh.add(id);
-      }
-      scheduleRefreshParents(parentsToRefresh);
-      scheduleRefreshNodeCount();
     },
-    [client, ingestOps, refreshPayloadsForNodes, scheduleRefreshNodeCount, scheduleRefreshParents]
+    [ingestOps]
   );
 
   const openNewPeerTab = () => {
@@ -867,8 +920,6 @@ export default function App() {
     if (!client || !replica) return;
     setBusy(true);
     try {
-      const stateBefore = treeStateRef.current;
-
       let op: Operation;
       if (kind.type === "payload") {
         const encryptedPayload = await encryptPayloadBytes(kind.payload);
@@ -884,10 +935,7 @@ export default function App() {
       setHeadLamport(lamportRef.current);
 
       notifyLocalUpdate([op]);
-      await refreshPayloadsForNodes(client, nodesAffectedByPayloadOps([op]));
       ingestOps([op], { assumeSorted: true });
-      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
-      scheduleRefreshNodeCount();
     } catch (err) {
       console.error("Failed to append op", err);
       setError("Failed to append operation (see console)");
@@ -901,13 +949,10 @@ export default function App() {
     if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
     setBusy(true);
     try {
-      const stateBefore = treeStateRef.current;
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
       const op = await client.local.move(replica, nodeId, newParent, placement);
       notifyLocalUpdate([op]);
       ingestOps([op], { assumeSorted: true });
-      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
-      scheduleRefreshNodeCount();
       lamportRef.current = Math.max(lamportRef.current, op.meta.lamport);
       setHeadLamport(lamportRef.current);
     } catch (err) {
@@ -928,7 +973,6 @@ export default function App() {
     const progressStep = normalizedCount >= 1_000 ? 50 : normalizedCount >= 200 ? 20 : normalizedCount >= 50 ? 5 : 1;
     setBulkAddProgress({ total: normalizedCount, completed: 0, phase: "creating", startedAtMs });
     try {
-      const stateBefore = treeStateRef.current;
       const ops: Operation[] = [];
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
@@ -1010,10 +1054,7 @@ export default function App() {
       setHeadLamport(lamportRef.current);
 
       notifyLocalUpdate(ops);
-      await refreshPayloadsForNodes(client, nodesAffectedByPayloadOps(ops));
       ingestOps(ops, { assumeSorted: true });
-      scheduleRefreshParents(parentsAffectedByOps(stateBefore, ops));
-      scheduleRefreshNodeCount();
       setCollapse((prev) => {
         const overrides = new Set(prev.overrides);
         const setExpanded = (id: string) => {
@@ -1043,17 +1084,13 @@ export default function App() {
     if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
-      const stateBefore = treeStateRef.current;
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
       notifyLocalUpdate([op]);
-      await refreshPayloadsForNodes(client, [op.kind.node]);
       ingestOps([op], { assumeSorted: true });
-      scheduleRefreshParents(parentsAffectedByOps(stateBefore, [op]));
-      scheduleRefreshNodeCount();
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
       }

@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
 use crate::affected::{
-    affected_parents, direct_affected_nodes, parent_hints_from, sorted_node_ids,
+    affected_parents, coalesce_materialization_changes, direct_materialization_changes,
+    parent_hints_from,
 };
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
@@ -9,13 +10,24 @@ use crate::ops::{cmp_op_key, Operation, OperationKind};
 use crate::traits::{
     Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
 };
-use crate::types::{ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport};
+use crate::types::{
+    ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
+    NodeExport, NodeSnapshotExport,
+};
 use crate::version_vector::VersionVector;
 
 #[derive(Clone)]
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TombstoneDelta {
+    node: NodeId,
+    parent: Option<NodeId>,
+    previous: bool,
+    tombstoned: bool,
 }
 
 /// Generic Tree CRDT facade that wires clock and storage together.
@@ -140,6 +152,7 @@ where
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let after = self.resolve_after_for_placement(parent, placement, None)?;
+        let has_payload = payload.is_some();
         let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
         let op = Operation::insert_with_optional_payload(
@@ -151,6 +164,16 @@ where
             LocalFinalizePlan {
                 parent_hints: vec![parent],
                 extra_index_records: Vec::new(),
+                changes: {
+                    let mut changes = vec![MaterializationChange::Insert {
+                        node,
+                        parent_after: parent,
+                    }];
+                    if has_payload {
+                        changes.push(MaterializationChange::Payload { node });
+                    }
+                    changes
+                },
             },
         ))
     }
@@ -185,6 +208,11 @@ where
             LocalFinalizePlan {
                 parent_hints,
                 extra_index_records,
+                changes: vec![MaterializationChange::Move {
+                    node,
+                    parent_before: old_parent,
+                    parent_after: new_parent,
+                }],
             },
         ))
     }
@@ -200,6 +228,7 @@ where
             LocalFinalizePlan {
                 parent_hints: parent_hints_from(old_parent),
                 extra_index_records: Vec::new(),
+                changes: Vec::new(),
             },
         ))
     }
@@ -222,6 +251,7 @@ where
             LocalFinalizePlan {
                 parent_hints: parent_hints_from(parent),
                 extra_index_records: Vec::new(),
+                changes: vec![MaterializationChange::Payload { node }],
             },
         ))
     }
@@ -252,13 +282,13 @@ where
             self.op_count += 1;
             self.head = Some(op.clone());
 
-            let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
+            let changes = direct_materialization_changes(snapshot.parent, &op.kind);
             return Ok(Some(ApplyDelta {
                 snapshot: NodeSnapshotExport {
                     parent: snapshot.parent,
                     order_key: snapshot.order_key,
                 },
-                affected_nodes,
+                changes,
             }));
         }
 
@@ -288,13 +318,9 @@ where
             *seq = (*seq).saturating_sub(1);
             return Ok(None);
         };
-        let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
+        let changes = direct_materialization_changes(snapshot.parent, &op.kind);
         Ok(Some(self.finalize_materialized_apply(
-            snapshot,
-            &op,
-            index,
-            *seq,
-            affected_nodes,
+            snapshot, &op, index, *seq, changes,
         )?))
     }
 
@@ -319,8 +345,8 @@ where
         self.op_count = seq;
         self.head = Some(op.clone());
 
-        let affected_nodes = direct_affected_nodes(snapshot.parent, &op.kind);
-        self.finalize_materialized_apply(snapshot, &op, index, seq, affected_nodes)
+        let changes = direct_materialization_changes(snapshot.parent, &op.kind);
+        self.finalize_materialized_apply(snapshot, &op, index, seq, changes)
     }
 
     /// Finalize adapter-owned local ops by refreshing tombstones and recording parent-op index rows.
@@ -333,7 +359,7 @@ where
         op: &Operation,
         index: &mut I,
         seq: u64,
-        mut affected_nodes: Vec<NodeId>,
+        mut changes: Vec<MaterializationChange>,
     ) -> Result<ApplyDelta> {
         let op_node = op.kind.node();
         let parent_after = match &op.kind {
@@ -363,29 +389,45 @@ where
         let mut starts = parents;
         starts.push(op_node);
         let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
-        affected_nodes.extend(tombstone_changed.into_iter().filter(|node| *node != NodeId::TRASH));
-        affected_nodes = sorted_node_ids(affected_nodes);
+        changes.extend(
+            tombstone_changed.into_iter().filter(|delta| delta.node != NodeId::TRASH).map(
+                |delta| {
+                    if delta.previous && !delta.tombstoned {
+                        MaterializationChange::Restore {
+                            node: delta.node,
+                            parent_after: delta.parent.filter(|parent| *parent != NodeId::TRASH),
+                        }
+                    } else {
+                        MaterializationChange::Delete {
+                            node: delta.node,
+                            parent_before: delta.parent.filter(|parent| *parent != NodeId::TRASH),
+                        }
+                    }
+                },
+            ),
+        );
 
         Ok(ApplyDelta {
             snapshot: NodeSnapshotExport {
                 parent: snapshot.parent,
                 order_key: snapshot.order_key,
             },
-            affected_nodes,
+            changes: coalesce_materialization_changes(changes),
         })
     }
-    pub fn finalize_local<I: ParentOpIndex>(
+
+    pub fn finalize_local_with_outcome<I: ParentOpIndex>(
         &mut self,
         op: &Operation,
         index: &mut I,
         head_seq: u64,
         plan: &LocalFinalizePlan,
-    ) -> Result<u64> {
+    ) -> Result<MaterializationOutcome> {
         let seq = head_seq.saturating_add(1);
 
         let mut refresh_starts: Vec<NodeId> = plan.parent_hints.to_vec();
         refresh_starts.push(op.kind.node());
-        self.refresh_tombstones_upward(refresh_starts)?;
+        let tombstone_changed = self.refresh_tombstones_upward_with_delta(refresh_starts)?;
 
         let mut seen: HashSet<NodeId> = HashSet::new();
         for parent in &plan.parent_hints {
@@ -402,7 +444,39 @@ where
             index.record(*parent, op_id, seq)?;
         }
 
-        Ok(seq)
+        let mut changes = plan.changes.clone();
+        changes.extend(
+            tombstone_changed.into_iter().filter(|delta| delta.node != NodeId::TRASH).map(
+                |delta| {
+                    if delta.previous && !delta.tombstoned {
+                        MaterializationChange::Restore {
+                            node: delta.node,
+                            parent_after: delta.parent.filter(|parent| *parent != NodeId::TRASH),
+                        }
+                    } else {
+                        MaterializationChange::Delete {
+                            node: delta.node,
+                            parent_before: delta.parent.filter(|parent| *parent != NodeId::TRASH),
+                        }
+                    }
+                },
+            ),
+        );
+
+        Ok(MaterializationOutcome {
+            head_seq: seq,
+            changes: coalesce_materialization_changes(changes),
+        })
+    }
+
+    pub fn finalize_local<I: ParentOpIndex>(
+        &mut self,
+        op: &Operation,
+        index: &mut I,
+        head_seq: u64,
+        plan: &LocalFinalizePlan,
+    ) -> Result<u64> {
+        Ok(self.finalize_local_with_outcome(op, index, head_seq, plan)?.head_seq)
     }
 
     fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
@@ -416,13 +490,13 @@ where
     /// Refresh tombstone cache for nodes on the upward closure of `starts`.
     ///
     /// Returns every node whose cached tombstone value actually changed.
-    fn refresh_tombstones_upward_with_delta<I>(&mut self, starts: I) -> Result<Vec<NodeId>>
+    fn refresh_tombstones_upward_with_delta<I>(&mut self, starts: I) -> Result<Vec<TombstoneDelta>>
     where
         I: IntoIterator<Item = NodeId>,
     {
         let mut stack: Vec<NodeId> = starts.into_iter().collect();
         let mut visited: HashSet<NodeId> = HashSet::new();
-        let mut changed: Vec<NodeId> = Vec::new();
+        let mut changed: Vec<TombstoneDelta> = Vec::new();
 
         while let Some(node) = stack.pop() {
             if node == NodeId::ROOT || node == NodeId::TRASH {
@@ -440,7 +514,12 @@ where
                 let tombstoned = self.is_tombstoned(node)?;
                 if previous != tombstoned {
                     self.nodes.set_tombstone(node, tombstoned)?;
-                    changed.push(node);
+                    changed.push(TombstoneDelta {
+                        node,
+                        parent,
+                        previous,
+                        tombstoned,
+                    });
                 }
             }
 
@@ -449,7 +528,9 @@ where
             }
         }
 
-        Ok(sorted_node_ids(changed))
+        changed.sort_by(|left, right| left.node.cmp(&right.node));
+        changed.dedup_by(|left, right| left.node == right.node);
+        Ok(changed)
     }
 
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {

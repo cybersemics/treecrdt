@@ -87,8 +87,8 @@ async function createAdapter(
     treeNodeCount: async () => client.tree.nodeCount(),
     headLamport: async () => client.meta.headLamport(),
     replicaMaxCounter: async (replica) => client.meta.replicaMaxCounter(replica),
-    appendOp: (op, serializeNodeId, serializeReplica) =>
-      client.ops.append({
+    appendOp: async (op, serializeNodeId, serializeReplica) => {
+      await client.ops.append({
         ...op,
         meta: {
           ...op.meta,
@@ -97,9 +97,11 @@ async function createAdapter(
             counter: op.meta.id.counter,
           },
         },
-      }),
+      });
+      return { headSeq: 0, changes: [] };
+    },
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      const affected = await client.ops.appendMany(
+      await client.ops.appendMany(
         ops.map((op) => ({
           ...op,
           meta: {
@@ -108,7 +110,7 @@ async function createAdapter(
           },
         })),
       );
-      return affected.map((id) => serializeNodeId(id));
+      return { headSeq: 0, changes: [] };
     },
     opsSince: async (lamport, root) => client.ops.since(lamport, root),
     close: async () => client.close(),

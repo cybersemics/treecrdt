@@ -1,4 +1,4 @@
-import type { TreecrdtEngine } from '@treecrdt/interface/engine';
+import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
@@ -138,16 +138,16 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
     {
-      name: 'appendMany: returns affected ids for structural batch',
-      run: scenarioAppendManyReturnsAffectedIdsStructuralBatch,
+      name: 'materialization events: structural batch',
+      run: scenarioMaterializationEventStructuralBatch,
     },
     {
-      name: 'appendMany: returns deduped deterministic affected ids',
-      run: scenarioAppendManyReturnsDedupedDeterministicIds,
+      name: 'materialization events: payload coalescing',
+      run: scenarioMaterializationEventPayloadCoalescing,
     },
     {
-      name: 'appendMany: returns indirect affected ids on defensive restore',
-      run: scenarioAppendManyReturnsIndirectAffectedIdsOnDefensiveRestore,
+      name: 'materialization events: defensive restore',
+      run: scenarioMaterializationEventDefensiveRestore,
     },
     {
       name: 'tree: childrenPage uses keyset cursor',
@@ -270,7 +270,7 @@ function assertArrayEqual(actual: string[], expected: string[], message: string)
   }
 }
 
-function assertAffectedIdsShape(ids: string[], message: string): void {
+function assertEventNodeRefsShape(ids: string[], message: string): void {
   for (const id of ids) {
     if (!/^[0-9a-f]{32}$/.test(id)) {
       throw new Error(`${message}: expected canonical NodeId hex, got ${JSON.stringify(id)}`);
@@ -278,8 +278,8 @@ function assertAffectedIdsShape(ids: string[], message: string): void {
   }
 }
 
-function assertAffectedIdsSortedUnique(ids: string[], message: string): void {
-  assertAffectedIdsShape(ids, message);
+function assertEventNodeRefsSortedUnique(ids: string[], message: string): void {
+  assertEventNodeRefsShape(ids, message);
   const sorted = ids.slice().sort();
   for (let i = 0; i < ids.length; i += 1) {
     if (ids[i] !== sorted[i]) {
@@ -291,13 +291,37 @@ function assertAffectedIdsSortedUnique(ids: string[], message: string): void {
   }
 }
 
-function assertAffectedIdsContain(ids: string[], expected: string[], message: string): void {
+function assertEventNodeRefsContain(ids: string[], expected: string[], message: string): void {
   const set = new Set(ids);
   for (const id of expected) {
     if (!set.has(id)) {
       throw new Error(`${message}: expected ${JSON.stringify(id)} in ${JSON.stringify(ids)}`);
     }
   }
+}
+
+function materializationEventNodeRefs(event: MaterializationEvent): string[] {
+  const ids = new Set<string>();
+  for (const change of event.changes) {
+    ids.add(change.node);
+    if ('parentAfter' in change && change.parentAfter) ids.add(change.parentAfter);
+    if ('parentBefore' in change && change.parentBefore) ids.add(change.parentBefore);
+  }
+  return [...ids].sort();
+}
+
+async function captureMaterializationEvents(
+  engine: TreecrdtEngine,
+  fn: () => Promise<void>,
+): Promise<MaterializationEvent[]> {
+  const events: MaterializationEvent[] = [];
+  const unsubscribe = engine.onMaterialized((event) => events.push(event));
+  try {
+    await fn();
+  } finally {
+    unsubscribe();
+  }
+  return events;
 }
 
 function assertBytesEqual(
@@ -533,7 +557,7 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
   assertEqual(await engine.meta.headLamport(), 7, 'meta.headLamport after duplicate append');
 }
 
-async function scenarioAppendManyReturnsAffectedIdsStructuralBatch(
+async function scenarioMaterializationEventStructuralBatch(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
@@ -542,33 +566,37 @@ async function scenarioAppendManyReturnsAffectedIdsStructuralBatch(
   const parent = nodeIdFromInt(11);
   const child = nodeIdFromInt(12);
 
-  const affected = await engine.ops.appendMany([
-    makeInsertOp({
-      replica,
-      counter: 1,
-      lamport: 1,
-      parent: root,
-      node: parent,
-      orderKey: orderKeyFromPosition(0),
-    }),
-    makeInsertOp({
-      replica,
-      counter: 2,
-      lamport: 2,
-      parent,
-      node: child,
-      orderKey: orderKeyFromPosition(0),
-    }),
-  ]);
-  assertAffectedIdsSortedUnique(affected, 'appendMany structural affected ids');
-  assertAffectedIdsContain(
-    affected,
+  const events = await captureMaterializationEvents(engine, () =>
+    engine.ops.appendMany([
+      makeInsertOp({
+        replica,
+        counter: 1,
+        lamport: 1,
+        parent: root,
+        node: parent,
+        orderKey: orderKeyFromPosition(0),
+      }),
+      makeInsertOp({
+        replica,
+        counter: 2,
+        lamport: 2,
+        parent,
+        node: child,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    ]),
+  );
+  assertEqual(events.length, 1, 'appendMany structural should emit one materialization event');
+  const refs = materializationEventNodeRefs(events[0]!);
+  assertEventNodeRefsSortedUnique(refs, 'appendMany structural event node refs');
+  assertEventNodeRefsContain(
+    refs,
     [root, parent, child],
     'appendMany structural should include root+parent+child',
   );
 }
 
-async function scenarioAppendManyReturnsDedupedDeterministicIds(
+async function scenarioMaterializationEventPayloadCoalescing(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
@@ -576,35 +604,44 @@ async function scenarioAppendManyReturnsDedupedDeterministicIds(
   const root = nodeIdFromInt(0);
   const node = nodeIdFromInt(21);
 
-  const affected = await engine.ops.appendMany([
-    makeInsertOp({
-      replica,
-      counter: 1,
-      lamport: 1,
-      parent: root,
-      node,
-      orderKey: orderKeyFromPosition(0),
-    }),
-    makePayloadOp({
-      replica,
-      counter: 2,
-      lamport: 2,
-      node,
-      payload: new Uint8Array([1]),
-    }),
-    makePayloadOp({
-      replica,
-      counter: 3,
-      lamport: 3,
-      node,
-      payload: new Uint8Array([2]),
-    }),
-  ]);
-  assertAffectedIdsSortedUnique(affected, 'appendMany dedupe affected ids');
-  assertAffectedIdsContain(affected, [root, node], 'appendMany dedupe should include root+node');
+  const events = await captureMaterializationEvents(engine, () =>
+    engine.ops.appendMany([
+      makeInsertOp({
+        replica,
+        counter: 1,
+        lamport: 1,
+        parent: root,
+        node,
+        orderKey: orderKeyFromPosition(0),
+      }),
+      makePayloadOp({
+        replica,
+        counter: 2,
+        lamport: 2,
+        node,
+        payload: new Uint8Array([1]),
+      }),
+      makePayloadOp({
+        replica,
+        counter: 3,
+        lamport: 3,
+        node,
+        payload: new Uint8Array([2]),
+      }),
+    ]),
+  );
+  assertEqual(events.length, 1, 'appendMany payload coalescing should emit one event');
+  const refs = materializationEventNodeRefs(events[0]!);
+  assertEventNodeRefsSortedUnique(refs, 'appendMany coalesced event node refs');
+  assertEventNodeRefsContain(refs, [root, node], 'appendMany event should include root+node');
+  assertEqual(
+    events[0]!.changes.filter((change) => change.kind === 'payload' && change.node === node).length,
+    1,
+    'payload changes should be coalesced by node',
+  );
 }
 
-async function scenarioAppendManyReturnsIndirectAffectedIdsOnDefensiveRestore(
+async function scenarioMaterializationEventDefensiveRestore(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const a = ctx.engine;
@@ -629,11 +666,13 @@ async function scenarioAppendManyReturnsIndirectAffectedIdsOnDefensiveRestore(
 
   const childInsert = await b.local.insert(rB, parent, child, { type: 'last' }, null);
   await a.local.delete(rA, parent);
-  const affected = await a.ops.appendMany([childInsert]);
+  const events = await captureMaterializationEvents(a, () => a.ops.appendMany([childInsert]));
+  assertEqual(events.length, 1, 'defensive restore should emit one materialization event');
+  const refs = materializationEventNodeRefs(events[0]!);
 
-  assertAffectedIdsSortedUnique(affected, 'appendMany defensive restore affected ids');
-  assertAffectedIdsContain(
-    affected,
+  assertEventNodeRefsSortedUnique(refs, 'appendMany defensive restore event node refs');
+  assertEventNodeRefsContain(
+    refs,
     [parent, child],
     'appendMany defensive restore should include restored parent+child',
   );
@@ -1202,8 +1241,14 @@ async function scenarioSyncKnownStatePropagation(
   );
 
   // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
-  const affectedOnB = await b.ops.appendMany(await a.ops.all());
-  assertAffectedIdsSortedUnique(affectedOnB, 'sync known_state: appendMany affected ids shape');
+  const eventsOnB = await captureMaterializationEvents(b, async () => {
+    await b.ops.appendMany(await a.ops.all());
+  });
+  assert(eventsOnB.length > 0, 'sync known_state should emit a materialization event on B');
+  assertEventNodeRefsSortedUnique(
+    materializationEventNodeRefs(eventsOnB[eventsOnB.length - 1]!),
+    'sync known_state: materialization event node refs shape',
+  );
 
   assertArrayEqual(await b.tree.children(root), [parent], 'parent restored after sync delete');
   assertArrayEqual(await b.tree.children(parent), [child], 'child still present after sync delete');

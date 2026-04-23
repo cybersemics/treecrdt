@@ -823,9 +823,14 @@ fn materialized_apply_delta_includes_parent_restored_by_unseen_payload_change() 
         !crdt_a.is_tombstoned(parent).unwrap(),
         "parent should be restored by unseen payload change"
     );
-    assert!(delta.affected_nodes.contains(&child));
+    let affected = treecrdt_core::MaterializationOutcome {
+        head_seq: seq_a,
+        changes: delta.changes,
+    }
+    .affected_nodes();
+    assert!(affected.contains(&child));
     assert!(
-        delta.affected_nodes.contains(&parent),
+        affected.contains(&parent),
         "delta should include ancestor tombstone flip"
     );
 }

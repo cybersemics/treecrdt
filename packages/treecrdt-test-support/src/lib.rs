@@ -1,10 +1,13 @@
 use std::slice;
 
-use treecrdt_core::{MaterializationFrontier, NodeId, Operation, ReplicaId};
+use treecrdt_core::{
+    MaterializationChange, MaterializationFrontier, MaterializationOutcome, NodeId, Operation,
+    ReplicaId,
+};
 
 pub trait MaterializationConformanceHarness {
     fn append_ops(&self, ops: &[Operation]);
-    fn append_ops_with_affected_nodes(&self, ops: &[Operation]) -> Vec<NodeId>;
+    fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome;
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId>;
     fn payload(&self, node: NodeId) -> Option<Vec<u8>>;
     fn op_count(&self) -> u64;
@@ -14,6 +17,10 @@ pub trait MaterializationConformanceHarness {
     fn ensure_materialized(&self);
     fn op_ref_counters_for_parent(&self, parent: NodeId) -> Vec<u64>;
     fn op_kinds_for_parent(&self, parent: NodeId) -> Vec<String>;
+}
+
+fn changed_nodes(outcome: &MaterializationOutcome) -> Vec<NodeId> {
+    outcome.affected_nodes()
 }
 
 pub fn order_key_from_position(position: u16) -> Vec<u8> {
@@ -75,8 +82,12 @@ pub fn representative_remote_batch_matches_shape<H: MaterializationConformanceHa
     let replica = ReplicaId::new(b"rep");
     let (p1, p2, child, ops) = representative_remote_batch(&replica);
 
-    let affected = harness.append_ops_with_affected_nodes(&ops);
-    assert_eq!(affected, vec![NodeId::ROOT, p1, p2, child]);
+    let outcome = harness.append_ops_with_materialization_outcome(&ops);
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, p1, p2, child]);
+    assert!(outcome
+        .changes
+        .iter()
+        .any(|change| matches!(change, MaterializationChange::Payload { node } if *node == child)));
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![p1, p2]);
     assert_eq!(harness.visible_children(p2), vec![child]);
     assert_eq!(harness.payload(child), Some(vec![8]));
@@ -114,8 +125,11 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
     );
 
     harness.append_ops(&[second]);
-    let affected = harness.append_ops_with_affected_nodes(slice::from_ref(&first));
-    assert_eq!(affected, vec![NodeId::ROOT, node(1), node(2)]);
+    let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&first));
+    assert_eq!(
+        changed_nodes(&outcome),
+        vec![NodeId::ROOT, node(1), node(2)]
+    );
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 2);
     assert_eq!(
@@ -142,8 +156,8 @@ pub fn out_of_order_losing_payload_skips_replay_frontier<H: MaterializationConfo
     let losing_payload = Operation::set_payload(&replica, 2, 2, payload_node, vec![4]);
 
     harness.append_ops(&[insert, winning_payload]);
-    let affected = harness.append_ops_with_affected_nodes(slice::from_ref(&losing_payload));
-    assert_eq!(affected, vec![payload_node]);
+    let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&losing_payload));
+    assert!(outcome.changes.is_empty());
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 3);
     assert_eq!(harness.payload(payload_node), Some(vec![9]));
@@ -167,8 +181,9 @@ pub fn out_of_order_move_with_later_payload_catches_up_immediately<
     let later_payload = Operation::set_payload(&replica, 6, 6, child, vec![9]);
 
     harness.append_ops(&[insert_p1, insert_p2, insert_child, earlier_payload]);
-    let affected = harness.append_ops_with_affected_nodes(&[later_payload, out_of_order_move]);
-    assert_eq!(affected, vec![p1, p2, child]);
+    let outcome =
+        harness.append_ops_with_materialization_outcome(&[later_payload, out_of_order_move]);
+    assert_eq!(changed_nodes(&outcome), vec![p1, p2, child]);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 6);
     assert_eq!(harness.visible_children(p1), Vec::<NodeId>::new());
@@ -194,9 +209,9 @@ pub fn out_of_order_insert_and_move_before_head_catches_up_immediately<
         Operation::move_node(&replica, 4, 4, child, p2, order_key_from_position(0));
 
     harness.append_ops(&[insert_p1, insert_p2, unrelated_head]);
-    let affected =
-        harness.append_ops_with_affected_nodes(&[out_of_order_move, out_of_order_insert]);
-    assert_eq!(affected, vec![p1, p2, child]);
+    let outcome =
+        harness.append_ops_with_materialization_outcome(&[out_of_order_move, out_of_order_insert]);
+    assert_eq!(changed_nodes(&outcome), vec![p2, child]);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 5);
     assert_eq!(harness.visible_children(p1), Vec::<NodeId>::new());
@@ -228,8 +243,11 @@ pub fn replay_from_start_frontier_catches_up_immediately<H: MaterializationConfo
     harness.append_ops(&[first]);
     harness.force_replay_from_start();
 
-    let affected = harness.append_ops_with_affected_nodes(&[second]);
-    assert_eq!(affected, vec![NodeId::ROOT, node(1), node(2)]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[second]);
+    assert_eq!(
+        changed_nodes(&outcome),
+        vec![NodeId::ROOT, node(1), node(2)]
+    );
     assert_replay_cleared(harness);
     assert_eq!(
         harness.visible_children(NodeId::ROOT),
@@ -298,7 +316,7 @@ pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
     let delete_parent = Operation::delete(&replica, 3, 3, parent, Some(vv));
 
     harness.append_ops(&[insert_parent, delete_parent]);
-    let _ = harness.append_ops_with_affected_nodes(&[insert_child]);
+    let _ = harness.append_ops_with_materialization_outcome(&[insert_child]);
 
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 3);

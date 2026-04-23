@@ -3,14 +3,100 @@ use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::payload_store::SqlitePayloadStore;
 use super::schema::set_tree_meta_replay_frontier;
-use super::util::sqlite_err_from_core;
+use super::util::{sqlite_err_from_core, sqlite_result_json};
 use super::*;
 use treecrdt_core::PayloadStore;
 use treecrdt_core::Storage;
 use treecrdt_core::{
     orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state,
-    LamportClock, MaterializationCursor, ReplicaId,
+    LamportClock, MaterializationChange, MaterializationCursor, MaterializationOutcome, ReplicaId,
 };
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct JsonMaterializationOutcome {
+    head_seq: u64,
+    changes: Vec<JsonMaterializationChange>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum JsonMaterializationChange {
+    Insert {
+        node: String,
+        parent_after: String,
+    },
+    Move {
+        node: String,
+        parent_before: Option<String>,
+        parent_after: String,
+    },
+    Delete {
+        node: String,
+        parent_before: Option<String>,
+    },
+    Restore {
+        node: String,
+        parent_after: Option<String>,
+    },
+    Payload {
+        node: String,
+    },
+}
+
+fn node_hex(node: NodeId) -> String {
+    format!("{:032x}", node.0)
+}
+
+pub(super) fn json_outcome_from_core(
+    outcome: &MaterializationOutcome,
+) -> JsonMaterializationOutcome {
+    let changes = outcome
+        .changes
+        .iter()
+        .map(|change| match change {
+            MaterializationChange::Insert { node, parent_after } => {
+                JsonMaterializationChange::Insert {
+                    node: node_hex(*node),
+                    parent_after: node_hex(*parent_after),
+                }
+            }
+            MaterializationChange::Move {
+                node,
+                parent_before,
+                parent_after,
+            } => JsonMaterializationChange::Move {
+                node: node_hex(*node),
+                parent_before: parent_before.map(node_hex),
+                parent_after: node_hex(*parent_after),
+            },
+            MaterializationChange::Delete {
+                node,
+                parent_before,
+            } => JsonMaterializationChange::Delete {
+                node: node_hex(*node),
+                parent_before: parent_before.map(node_hex),
+            },
+            MaterializationChange::Restore { node, parent_after } => {
+                JsonMaterializationChange::Restore {
+                    node: node_hex(*node),
+                    parent_after: parent_after.map(node_hex),
+                }
+            }
+            MaterializationChange::Payload { node } => JsonMaterializationChange::Payload {
+                node: node_hex(*node),
+            },
+        })
+        .collect();
+    JsonMaterializationOutcome {
+        head_seq: outcome.head_seq,
+        changes,
+    }
+}
 
 fn parse_node_id(bytes: &[u8]) -> Result<NodeId, c_int> {
     if bytes.len() != 16 {
@@ -115,10 +201,10 @@ fn materialize_inserted_ops(
     .map_err(|_| SQLITE_ERROR as c_int)
 }
 
-pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<(), c_int> {
+pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<MaterializationOutcome, c_int> {
     let meta = load_tree_meta(db)?;
     if meta.state().replay_from.is_none() {
-        return Ok(());
+        return Ok(MaterializationOutcome::empty(meta.state().head_seq()));
     }
     catch_up_materialized_from_frontier(db)
 }
@@ -138,12 +224,12 @@ pub(super) unsafe extern "C" fn treecrdt_ensure_materialized(
 
     let db = sqlite_context_db_handle(ctx);
     match ensure_materialized(db) {
-        Ok(()) => sqlite_result_int(ctx, 1),
+        Ok(outcome) => sqlite_result_json(ctx, &json_outcome_from_core(&outcome)),
         Err(rc) => sqlite_result_error_code(ctx, rc),
     }
 }
 
-fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
+fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<MaterializationOutcome, c_int> {
     let begin = CString::new("SAVEPOINT treecrdt_materialize").expect("static");
     let commit = CString::new("RELEASE treecrdt_materialize").expect("static");
     let rollback = CString::new("ROLLBACK TO treecrdt_materialize; RELEASE treecrdt_materialize")
@@ -210,7 +296,7 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
     let head_rc = update_tree_meta_head(db, catch_up.head.as_ref());
     if head_rc.is_err() {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-        return head_rc;
+        return Err(head_rc.err().unwrap_or(SQLITE_ERROR as c_int));
     }
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
@@ -218,7 +304,7 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<(), c_int> {
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
         return Err(commit_rc);
     }
-    Ok(())
+    Ok(catch_up.outcome)
 }
 
 pub(super) fn append_ops_impl(
@@ -226,9 +312,10 @@ pub(super) fn append_ops_impl(
     doc_id: &[u8],
     savepoint_name: &str,
     ops: &[JsonAppendOp],
-) -> Result<Vec<NodeId>, c_int> {
+) -> Result<MaterializationOutcome, c_int> {
     if ops.is_empty() {
-        return Ok(Vec::new());
+        let meta = load_tree_meta(db)?;
+        return Ok(MaterializationOutcome::empty(meta.state().head_seq()));
     }
 
     let meta = load_tree_meta(db)?;
@@ -322,5 +409,5 @@ pub(super) fn append_ops_impl(
         return Err(commit_rc);
     }
 
-    Ok(apply_result.affected_nodes)
+    Ok(apply_result.outcome)
 }
