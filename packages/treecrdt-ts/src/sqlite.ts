@@ -1,4 +1,5 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
+import { emptyMaterializationOutcome } from './engine.js';
 import type {
   MaterializationEvent,
   MaterializationOutcome,
@@ -239,7 +240,7 @@ async function treecrdtAppendOps(
   serializeReplica: SerializeReplica,
   opts: { maxBulkOps?: number } = {},
 ): Promise<MaterializationOutcome> {
-  if (ops.length === 0) return { headSeq: 0, changes: [] };
+  if (ops.length === 0) return emptyMaterializationOutcome();
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = 'SELECT treecrdt_append_ops(?1)';

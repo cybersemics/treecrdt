@@ -8,6 +8,7 @@ import {
 } from '@treecrdt/benchmark';
 import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
+import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
 import { bytesToHex } from '@treecrdt/interface/ids';
 
 type StorageKind = 'browser-opfs-coop-sync' | 'browser-memory';
@@ -98,7 +99,7 @@ async function createAdapter(
           },
         },
       });
-      return { headSeq: 0, changes: [] };
+      return emptyMaterializationOutcome();
     },
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
       await client.ops.appendMany(
@@ -110,7 +111,7 @@ async function createAdapter(
           },
         })),
       );
-      return { headSeq: 0, changes: [] };
+      return emptyMaterializationOutcome();
     },
     opsSince: async (lamport, root) => client.ops.since(lamport, root),
     close: async () => client.close(),

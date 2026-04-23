@@ -19,6 +19,10 @@ export type MaterializationOutcome = {
   changes: Change[];
 };
 
+export function emptyMaterializationOutcome(headSeq = 0): MaterializationOutcome {
+  return { headSeq, changes: [] };
+}
+
 /**
  * Event emitted after write-path materialization, or after read-path recovery advances a pending
  * materialization frontier. `writeIds` echoes optional ids supplied to append APIs.

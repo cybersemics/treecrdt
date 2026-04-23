@@ -4,7 +4,7 @@ import type {
   SerializeReplica,
   TreecrdtAdapter,
 } from '@treecrdt/interface';
-import type { MaterializationOutcome } from '@treecrdt/interface/engine';
+import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
 import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
 
 import {
@@ -41,8 +41,6 @@ function opToNative(
 ) {
   return operationToNativeWithSerializers(op, serializeNodeId, serializeReplica);
 }
-
-const EMPTY_OUTCOME: MaterializationOutcome = { headSeq: 0, changes: [] };
 
 export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapterFactory {
   ensureNonEmptyString('url', url);
@@ -106,7 +104,7 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
           );
         },
         appendOps: async (ops, serializeNodeId, serializeReplica) => {
-          if (ops.length === 0) return EMPTY_OUTCOME;
+          if (ops.length === 0) return emptyMaterializationOutcome();
           return nativeToMaterializationOutcome(
             backend.applyOps(ops.map((op) => opToNative(op, serializeNodeId, serializeReplica))),
           );

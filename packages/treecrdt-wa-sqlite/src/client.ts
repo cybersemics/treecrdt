@@ -8,7 +8,6 @@ import {
   decodeSqliteTreeChildRows,
   decodeSqliteTreeRows,
   type SqliteTreeChildRow,
-  type SqliteTreeRow,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
@@ -21,11 +20,6 @@ import {
 } from '@treecrdt/interface/ids';
 import type {
   TreecrdtEngine,
-  TreecrdtEngineLocal,
-  TreecrdtEngineMeta,
-  TreecrdtEngineOpRefs,
-  TreecrdtEngineOps,
-  TreecrdtEngineTree,
   WriteOptions,
 } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
@@ -46,29 +40,10 @@ export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 
-export type TreecrdtOpsApi = TreecrdtEngineOps;
-
-export type TreecrdtOpRefsApi = TreecrdtEngineOpRefs;
-
-export type TreeNodeRow = SqliteTreeRow;
-
-export type TreecrdtTreeApi = TreecrdtEngineTree;
-
-export type TreecrdtMetaApi = TreecrdtEngineMeta;
-
-export type TreecrdtLocalApi = TreecrdtEngineLocal;
-
 export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   storage: StorageMode;
-  docId: string;
   runner: SqliteRunner;
-  ops: TreecrdtOpsApi;
-  opRefs: TreecrdtOpRefsApi;
-  tree: TreecrdtTreeApi;
-  meta: TreecrdtMetaApi;
-  local: TreecrdtLocalApi;
-  close: () => Promise<void>;
   drop: () => Promise<void>;
 };
 

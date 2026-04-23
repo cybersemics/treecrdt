@@ -1,4 +1,5 @@
 import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
+import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
 import { bytesToHex, hexToBytes, normalizeNodeId } from '@treecrdt/interface/ids';
 import { WasmTree } from '../pkg/treecrdt_wasm.js';
 import { createHash } from 'node:crypto';
@@ -94,7 +95,7 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
         jsOp.known_state = Array.from(op.meta.knownState);
       }
       tree.appendOp(JSON.stringify(jsOp));
-      return { headSeq: 0, changes: [] };
+      return emptyMaterializationOutcome();
     },
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
       for (const op of ops) {
@@ -107,7 +108,7 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
         }
         tree.appendOp(JSON.stringify(jsOp));
       }
-      return { headSeq: 0, changes: [] };
+      return emptyMaterializationOutcome();
     },
     opsSince: async (lamport: number) => {
       const ops = tree.opsSince(BigInt(lamport));
