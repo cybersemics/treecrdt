@@ -1,5 +1,3 @@
-import type { Operation } from "@treecrdt/interface";
-
 import { ROOT_ID } from "./constants";
 import type { NodeMeta, TreeState } from "./types";
 
@@ -55,17 +53,6 @@ export function applyChildrenLoaded(
   }
 
   return { index: nextIndex, childrenByParent: nextChildrenByParent };
-}
-
-export function nodesAffectedByPayloadOps(ops: Operation[]): Set<string> {
-  const out = new Set<string>();
-  for (const op of ops) {
-    const kind = op.kind;
-    if (kind.type === "insert" || kind.type === "payload" || kind.type === "delete") {
-      out.add(kind.node);
-    }
-  }
-  return out;
 }
 
 export function flattenForSelectState(

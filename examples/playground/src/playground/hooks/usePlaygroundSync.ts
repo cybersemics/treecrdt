@@ -196,8 +196,6 @@ export type UsePlaygroundSyncOptions = {
   revocationCutoverCounter: string;
   treeStateRef: React.MutableRefObject<TreeState>;
   refreshMeta: () => Promise<void>;
-  refreshParents: (parentIds: string[]) => Promise<void>;
-  refreshNodeCount: () => Promise<void>;
   getLocalIdentityChain: () => Promise<TreecrdtIdentityChainV1 | null>;
   onPeerIdentityChain: (chain: {
     identityPublicKey: Uint8Array;
@@ -205,7 +203,7 @@ export type UsePlaygroundSyncOptions = {
     replicaPublicKey: Uint8Array;
   }) => void;
   onAuthGrantMessage?: (grant: AuthGrantMessageV1) => void;
-  onRemoteOpsApplied: (ops: Operation[]) => Promise<void> | void;
+  onRemoteOpsImported: (ops: Operation[]) => Promise<void> | void;
 };
 
 export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyncApi {
@@ -228,10 +226,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     viewRootId,
     treeStateRef,
     refreshMeta,
-    refreshParents,
-    refreshNodeCount,
     onAuthGrantMessage,
-    onRemoteOpsApplied,
+    onRemoteOpsImported,
   } = opts;
 
   const [syncBusy, setSyncBusy] = useState(false);
@@ -284,17 +280,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     merged.sort((a, b) => a.id.localeCompare(b.id));
     setPeers(merged);
   };
-
-  const refreshLoadedSyncState = useCallback(
-    async (extraParentIds: Iterable<string> = []) => {
-      await refreshMeta();
-      const parentIds = new Set(Object.keys(treeStateRef.current.childrenByParent));
-      for (const parentId of extraParentIds) parentIds.add(parentId);
-      await refreshParents(Array.from(parentIds));
-      await refreshNodeCount();
-    },
-    [refreshMeta, refreshNodeCount, refreshParents, treeStateRef]
-  );
 
   const isRemotePeerId = (peerId: string) => peerId.startsWith('remote:');
   const syncOnceOptionsForPeer = (peerId: string, localCodewordsPerMessage: number) => ({
@@ -640,7 +625,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
-      await refreshLoadedSyncState();
+      await refreshMeta();
     } catch (err) {
       console.error('Sync failed', err);
       setSyncError(formatSyncError(err));
@@ -711,7 +696,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (lastErr) throw lastErr;
         throw new Error('No peers responded to sync.');
       }
-      await refreshLoadedSyncState();
+      await refreshMeta();
     } catch (err) {
       console.error('Scoped sync failed', err);
       setSyncError(formatSyncError(err));
@@ -794,7 +779,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           );
         }
 
-        await refreshLoadedSyncState([viewRootId]);
+        await refreshMeta();
 
         autoSyncDoneRef.current = true;
         if (typeof window !== 'undefined') {
@@ -822,7 +807,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     authMaterial.localTokensB64.length,
     autoSyncJoinTick,
     joinMode,
-    refreshLoadedSyncState,
+    refreshMeta,
     syncBusy,
     viewRootId,
   ]);
@@ -983,7 +968,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           console.debug(`[sync:${selfPeerId}] applyOps(${ops.length})`);
         }
         if (ops.length > 0) await client.ops.appendMany(ops);
-        await onRemoteOpsApplied(ops);
+        await onRemoteOpsImported(ops);
       },
     };
 
@@ -1234,7 +1219,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     getMaxLamport,
     joinMode,
     onAuthGrantMessage,
-    onRemoteOpsApplied,
+    onRemoteOpsImported,
     selfPeerId,
     syncServerUrl,
     transportMode,

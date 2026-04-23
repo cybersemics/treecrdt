@@ -34,11 +34,7 @@ import {
   persistStorage,
 } from "./playground/persist";
 import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
-import {
-  applyChildrenLoaded,
-  flattenForSelectState,
-  nodesAffectedByPayloadOps,
-} from "./playground/treeState";
+import { applyChildrenLoaded, flattenForSelectState } from "./playground/treeState";
 import type {
   CollapseState,
   DisplayNode,
@@ -548,8 +544,7 @@ export default function App() {
 
   const applyMaterializationEvent = React.useCallback(
     (event: MaterializationEvent) => {
-      const active = clientRef.current ?? client;
-      if (!active || event.changes.length === 0) return;
+      if (event.changes.length === 0) return;
 
       const payloadNodes = new Set<string>();
       const parentsToRefresh = new Set<string>();
@@ -590,17 +585,15 @@ export default function App() {
       scheduleRefreshParents(parentsToRefresh);
       scheduleRefreshNodeCount();
     },
-    [client, scheduleRefreshNodeCount, scheduleRefreshParents, scheduleRefreshPayloads]
+    [scheduleRefreshNodeCount, scheduleRefreshParents, scheduleRefreshPayloads]
   );
 
   useEffect(() => {
     if (!client) return;
-    return client.onMaterialized((event) => {
-      applyMaterializationEvent(event);
-    });
+    return client.onMaterialized(applyMaterializationEvent);
   }, [client, applyMaterializationEvent]);
 
-  const onRemoteOpsApplied = React.useCallback(
+  const onRemoteOpsImported = React.useCallback(
     async (appliedOps: Operation[]) => {
       ingestOps(appliedOps);
       if (appliedOps.length > 0) {
@@ -673,12 +666,10 @@ export default function App() {
     revocationCutoverCounter,
     treeStateRef,
     refreshMeta,
-    refreshParents,
-    refreshNodeCount,
     getLocalIdentityChain,
     onPeerIdentityChain,
     onAuthGrantMessage,
-    onRemoteOpsApplied,
+    onRemoteOpsImported,
   });
 
   const grantSubtreeToReplicaPubkey = React.useCallback(
@@ -901,7 +892,14 @@ export default function App() {
       fetched.sort(compareOps);
       setOps(fetched);
       knownOpsRef.current = new Set(fetched.map(opKey));
-      await refreshPayloadsForNodes(active, nodesAffectedByPayloadOps(fetched));
+      const payloadNodeIds = new Set<string>();
+      for (const op of fetched) {
+        const kind = op.kind;
+        if (kind.type === "insert" || kind.type === "payload" || kind.type === "delete") {
+          payloadNodeIds.add(kind.node);
+        }
+      }
+      await refreshPayloadsForNodes(active, payloadNodeIds);
       setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
     } catch (err) {
       console.error("Failed to refresh ops", err);
