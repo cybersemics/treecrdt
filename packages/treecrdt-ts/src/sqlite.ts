@@ -1,9 +1,6 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
 import { emptyMaterializationOutcome } from './engine.js';
-import type {
-  MaterializationEvent,
-  MaterializationOutcome,
-} from './engine.js';
+import type { MaterializationEvent, MaterializationOutcome } from './engine.js';
 import {
   decodeNodeId,
   decodeReplicaId,
@@ -223,9 +220,7 @@ async function treecrdtAppendOp(
   return decodeSqliteMaterializationOutcome(await sqliteGetJson<unknown>(runner, sql, params));
 }
 
-function mergeMaterializationOutcomes(
-  outcomes: MaterializationOutcome[],
-): MaterializationOutcome {
+function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
   const last = outcomes.length > 0 ? outcomes[outcomes.length - 1] : undefined;
   return {
     headSeq: last?.headSeq ?? 0,

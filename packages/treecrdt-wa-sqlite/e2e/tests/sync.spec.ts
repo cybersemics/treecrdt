@@ -18,9 +18,7 @@ test('sync v0 e2e', async ({ page }) => {
 test('appendMany emits materialization event e2e', async ({ page }) => {
   test.setTimeout(90_000);
   await page.goto('/');
-  await page.waitForFunction(
-    () => typeof window.runTreecrdtMaterializationEventE2E === 'function',
-  );
+  await page.waitForFunction(() => typeof window.runTreecrdtMaterializationEventE2E === 'function');
 
   const result = await page.evaluate(async () => {
     const runner = window.runTreecrdtMaterializationEventE2E;
