@@ -496,7 +496,7 @@ where
             }
         }
 
-        changed.sort_by(|left, right| left.node.cmp(&right.node));
+        changed.sort_by_key(|delta| delta.node);
         changed.dedup_by(|left, right| left.node == right.node);
         Ok(changed)
     }

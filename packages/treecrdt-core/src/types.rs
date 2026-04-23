@@ -77,11 +77,11 @@ impl MaterializationChange {
                 parent_after,
                 ..
             } => {
-                nodes.extend(parent_before.into_iter().copied());
+                nodes.extend(parent_before.iter().copied());
                 nodes.push(*parent_after);
             }
-            Self::Delete { parent_before, .. } => nodes.extend(parent_before.into_iter().copied()),
-            Self::Restore { parent_after, .. } => nodes.extend(parent_after.into_iter().copied()),
+            Self::Delete { parent_before, .. } => nodes.extend(parent_before.iter().copied()),
+            Self::Restore { parent_after, .. } => nodes.extend(parent_after.iter().copied()),
             Self::Payload { .. } => {}
         }
         nodes.retain(|node| *node != NodeId::TRASH);
