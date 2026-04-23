@@ -265,17 +265,10 @@ async function treecrdtAppendOps(
   if (bulkFailedAt === null) return mergeMaterializationOutcomes(outcomes);
 
   const remaining = ops.slice(bulkFailedAt);
-  await runner.exec('BEGIN');
-  try {
-    for (const op of remaining) {
-      const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
-      const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
-      outcomes.push(decodeSqliteMaterializationOutcome(raw));
-    }
-    await runner.exec('COMMIT');
-  } catch (err) {
-    await runner.exec('ROLLBACK');
-    throw err;
+  for (const op of remaining) {
+    const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
+    const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
+    outcomes.push(decodeSqliteMaterializationOutcome(raw));
   }
   return mergeMaterializationOutcomes(outcomes);
 }

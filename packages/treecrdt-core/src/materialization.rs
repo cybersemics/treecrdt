@@ -875,7 +875,7 @@ fn patch_final_state_in_place<N, P, I>(
     nodes: &mut N,
     payloads: &mut P,
     index: &mut I,
-) -> Result<()>
+) -> Result<Vec<MaterializationChange>>
 where
     N: ExactNodeStore,
     P: ExactPayloadStore,
@@ -886,16 +886,46 @@ where
     // suffix first, then repopulate only the rebuilt suffix records below.
     index.truncate_from(truncate_from)?;
 
+    let mut patch_changes = Vec::new();
+
     for node in affected_nodes {
+        let existed_before = nodes.exists(*node)?;
+        let previous_parent = if existed_before {
+            nodes.parent(*node)?
+        } else {
+            None
+        };
+        let previous_tombstone = if existed_before {
+            Some(nodes.tombstone(*node)?)
+        } else {
+            None
+        };
+        let final_parent = replay.crdt.node_store_mut().parent(*node)?;
+        let final_tombstone = replay.crdt.node_store_mut().tombstone(*node)?;
+
         nodes.ensure_node(*node)?;
         nodes.detach(*node)?;
 
-        if let Some(parent) = replay.crdt.node_store_mut().parent(*node)? {
+        if let Some(parent) = final_parent {
             let order_key = replay.crdt.node_store_mut().order_key(*node)?.unwrap_or_default();
             nodes.attach(*node, parent, order_key)?;
         }
 
-        nodes.set_tombstone(*node, replay.crdt.node_store_mut().tombstone(*node)?)?;
+        nodes.set_tombstone(*node, final_tombstone)?;
+
+        if let Some(previous_tombstone) = previous_tombstone {
+            match (previous_tombstone, final_tombstone) {
+                (true, false) => patch_changes.push(MaterializationChange::Restore {
+                    node: *node,
+                    parent_after: final_parent.filter(|parent| *parent != NodeId::TRASH),
+                }),
+                (false, true) => patch_changes.push(MaterializationChange::Delete {
+                    node: *node,
+                    parent_before: previous_parent.filter(|parent| *parent != NodeId::TRASH),
+                }),
+                _ => {}
+            }
+        }
 
         // These are exact setters on purpose: the backend may already contain newer-looking merged
         // values from the stale suffix, so fallback catch-up must overwrite them with the rebuilt
@@ -925,7 +955,7 @@ where
         index.record(parent, &op_id, seq)?;
     }
 
-    Ok(())
+    Ok(MaterializationOutcome::from_changes(replay.seq, patch_changes).changes)
 }
 
 /// Catch backend materialized state up from a replay frontier by patching affected backend rows
@@ -968,10 +998,22 @@ where
         mut index,
     } = stores;
 
-    let (mut replay, prefix_seq, outcome) =
+    let (mut replay, prefix_seq, replay_outcome) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
-    let affected_nodes = outcome.affected_nodes();
-    patch_final_state_in_place(
+    let mut affected_nodes = replay_outcome.affected_nodes();
+    let mut seen_nodes: HashSet<NodeId> = affected_nodes.iter().copied().collect();
+    let mut idx = 0usize;
+    while idx < affected_nodes.len() {
+        if let Some(parent) = replay.crdt.node_store_mut().parent(affected_nodes[idx])? {
+            if parent != NodeId::ROOT && parent != NodeId::TRASH && seen_nodes.insert(parent) {
+                affected_nodes.push(parent);
+            }
+        }
+        idx += 1;
+    }
+    affected_nodes.sort();
+    affected_nodes.dedup();
+    let patch_changes = patch_final_state_in_place(
         &mut replay,
         prefix_seq,
         &affected_nodes,
@@ -985,7 +1027,13 @@ where
 
     Ok(CatchUpResult {
         head: replay.head.as_ref().map(|head| MaterializationHead::from_op(head, replay.seq)),
-        outcome,
+        outcome: MaterializationOutcome::merge(
+            replay.seq,
+            [
+                replay_outcome,
+                MaterializationOutcome::from_changes(replay.seq, patch_changes),
+            ],
+        ),
     })
 }
 

@@ -128,28 +128,21 @@ RETURNING 1
     storePendingOps: async (pending) => {
       if (pending.length === 0) return;
 
-      await opts.runner.exec('BEGIN');
-      try {
-        for (const p of pending) {
-          const opRef = opRefForOp(p.op);
-          const opBytes = encodeTreecrdtSyncV0Operation(p.op);
-          const proofRef = p.auth.proofRef ?? null;
-          const message = p.message ?? null;
-          await opts.runner.getText(insertSql, [
-            opts.docId,
-            opRef,
-            opBytes,
-            p.auth.sig,
-            proofRef,
-            p.reason,
-            message,
-            nowMs(),
-          ]);
-        }
-        await opts.runner.exec('COMMIT');
-      } catch (err) {
-        await opts.runner.exec('ROLLBACK');
-        throw err;
+      for (const p of pending) {
+        const opRef = opRefForOp(p.op);
+        const opBytes = encodeTreecrdtSyncV0Operation(p.op);
+        const proofRef = p.auth.proofRef ?? null;
+        const message = p.message ?? null;
+        await opts.runner.getText(insertSql, [
+          opts.docId,
+          opRef,
+          opBytes,
+          p.auth.sig,
+          proofRef,
+          p.reason,
+          message,
+          nowMs(),
+        ]);
       }
     },
 
@@ -195,15 +188,8 @@ RETURNING 1
 
     deletePendingOps: async (ops) => {
       if (ops.length === 0) return;
-      await opts.runner.exec('BEGIN');
-      try {
-        for (const op of ops) {
-          await opts.runner.getText(deleteSql, [opts.docId, opRefForOp(op)]);
-        }
-        await opts.runner.exec('COMMIT');
-      } catch (err) {
-        await opts.runner.exec('ROLLBACK');
-        throw err;
+      for (const op of ops) {
+        await opts.runner.getText(deleteSql, [opts.docId, opRefForOp(op)]);
       }
     },
   };
@@ -249,22 +235,9 @@ FROM (
     storeOpAuth: async (entries) => {
       if (entries.length === 0) return;
 
-      await opts.runner.exec('BEGIN');
-      try {
-        for (const e of entries) {
-          const proofRef = e.auth.proofRef ?? null;
-          await opts.runner.getText(insertSql, [
-            opts.docId,
-            e.opRef,
-            e.auth.sig,
-            proofRef,
-            nowMs(),
-          ]);
-        }
-        await opts.runner.exec('COMMIT');
-      } catch (err) {
-        await opts.runner.exec('ROLLBACK');
-        throw err;
+      for (const e of entries) {
+        const proofRef = e.auth.proofRef ?? null;
+        await opts.runner.getText(insertSql, [opts.docId, e.opRef, e.auth.sig, proofRef, nowMs()]);
       }
     },
 
@@ -327,15 +300,8 @@ FROM (
     storeCapabilities: async (caps) => {
       if (caps.length === 0) return;
 
-      await opts.runner.exec('BEGIN');
-      try {
-        for (const cap of caps) {
-          await opts.runner.getText(insertSql, [opts.docId, cap.name, cap.value, nowMs()]);
-        }
-        await opts.runner.exec('COMMIT');
-      } catch (err) {
-        await opts.runner.exec('ROLLBACK');
-        throw err;
+      for (const cap of caps) {
+        await opts.runner.getText(insertSql, [opts.docId, cap.name, cap.value, nowMs()]);
       }
     },
 

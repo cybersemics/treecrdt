@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use treecrdt_core::NodeStore;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
@@ -7,7 +8,7 @@ use treecrdt_core::{
     LocalPlacement, MaterializationChange, MaterializationCursor, MaterializationHead,
     MaterializationKey, MaterializationOutcome, MaterializationState, MemoryNodeStore,
     MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt,
+    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
 };
 
 #[derive(Default)]
@@ -689,5 +690,72 @@ fn catch_up_materialized_state_scans_storage_once() {
     assert_eq!(
         result.outcome.affected_nodes(),
         vec![NodeId::ROOT, NodeId(1), NodeId(2)]
+    );
+}
+
+#[test]
+fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
+    let author = ReplicaId::new(b"author");
+    let deleter = ReplicaId::new(b"deleter");
+    let parent = NodeId(10);
+    let child = NodeId(11);
+
+    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
+    let child_op = Operation::insert(&author, 2, 2, parent, child, vec![0x20]);
+    let mut known_state = VersionVector::new();
+    known_state.observe(&author, 1);
+    let delete_op = Operation::delete(&deleter, 1, 3, parent, Some(known_state.clone()));
+
+    let mut storage = MemoryStorage::default();
+    storage.apply(parent_op.clone()).unwrap();
+    storage.apply(child_op.clone()).unwrap();
+    storage.apply(delete_op.clone()).unwrap();
+
+    let mut deleted_at = known_state;
+    deleted_at.observe(&deleter, 1);
+
+    // Simulate the stale materialized backend state before catch-up: the parent insert and later
+    // delete were materialized, but the out-of-order child insert has not been replayed yet.
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(parent).unwrap();
+    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.merge_deleted_at(parent, &deleted_at).unwrap();
+    nodes.set_tombstone(parent, true).unwrap();
+
+    let meta = Cursor {
+        head_lamport: delete_op.meta.lamport,
+        head_replica: delete_op.meta.id.replica.as_bytes().to_vec(),
+        head_counter: delete_op.meta.id.counter,
+        head_seq: 2,
+        replay_lamport: Some(child_op.meta.lamport),
+        replay_replica: Some(child_op.meta.id.replica.as_bytes().to_vec()),
+        replay_counter: Some(child_op.meta.id.counter),
+    };
+
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes,
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    assert!(
+        result.outcome.changes.contains(&MaterializationChange::Restore {
+            node: parent,
+            parent_after: Some(NodeId::ROOT),
+        }),
+        "catch-up must report rows restored by patching stale backend state"
+    );
+    assert_eq!(
+        result.outcome.affected_nodes(),
+        vec![NodeId::ROOT, parent, child],
     );
 }

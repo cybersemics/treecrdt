@@ -220,7 +220,10 @@ where
             LocalFinalizePlan {
                 parent_hints: parent_hints_from(old_parent),
                 extra_index_records: Vec::new(),
-                changes: Vec::new(),
+                changes: vec![MaterializationChange::Delete {
+                    node,
+                    parent_before: old_parent.filter(|parent| *parent != NodeId::TRASH),
+                }],
             },
         ))
     }

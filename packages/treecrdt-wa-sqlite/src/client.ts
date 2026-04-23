@@ -272,8 +272,9 @@ async function createDirectClient(opts: {
     );
   let closed = false;
   const closedError = new Error(CLIENT_CLOSED_ERROR);
+  let callQueue: Promise<void> = Promise.resolve();
 
-  const call: RpcCall = async (method, params) => {
+  const runDirectCall: RpcCall = async (method, params) => {
     if (closed) throw closedError;
     try {
       switch (method) {
@@ -392,6 +393,17 @@ async function createDirectClient(opts: {
     } catch (err) {
       throw wrapError(method, err);
     }
+  };
+  const call: RpcCall = (method, params) => {
+    const run = callQueue.then(
+      () => runDirectCall(method, params),
+      () => runDirectCall(method, params),
+    );
+    callQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   };
 
   return makeTreecrdtClientFromCall({
