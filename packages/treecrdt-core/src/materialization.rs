@@ -47,6 +47,36 @@ impl<R: AsRef<[u8]>> MaterializationHead<R> {
             seq: self.seq,
         }
     }
+
+    fn owned(&self) -> MaterializationHead {
+        MaterializationHead {
+            at: MaterializationKey {
+                lamport: self.at.lamport,
+                replica: self.at.replica.as_ref().to_vec(),
+                counter: self.at.counter,
+            },
+            seq: self.seq,
+        }
+    }
+
+    fn with_seq(&self, seq: u64) -> MaterializationHead {
+        let mut head = self.owned();
+        head.seq = seq;
+        head
+    }
+}
+
+impl MaterializationHead {
+    fn from_op(op: &Operation, seq: u64) -> Self {
+        Self {
+            at: MaterializationKey {
+                lamport: op.meta.lamport,
+                replica: op.meta.id.replica.as_bytes().to_vec(),
+                counter: op.meta.id.counter,
+            },
+            seq,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,6 +211,32 @@ pub struct PersistedRemoteApplyResult {
     pub catch_up_needed: bool,
 }
 
+impl PersistedRemoteApplyResult {
+    fn empty(inserted_count: u64, head_seq: u64) -> Self {
+        Self {
+            inserted_count,
+            outcome: MaterializationOutcome::empty(head_seq),
+            catch_up_needed: false,
+        }
+    }
+
+    fn applied(inserted_count: u64, outcome: MaterializationOutcome) -> Self {
+        Self {
+            inserted_count,
+            outcome,
+            catch_up_needed: false,
+        }
+    }
+
+    fn needs_catch_up(inserted_count: u64, head_seq: u64) -> Self {
+        Self {
+            inserted_count,
+            outcome: MaterializationOutcome::empty(head_seq),
+            catch_up_needed: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PayloadNoopShortcut {
     pub resumed_head: MaterializationHead,
@@ -225,7 +281,7 @@ impl TruncatingParentOpIndex for RecordingIndex {
     }
 }
 
-struct PrefixSnapshot {
+struct ReplaySnapshot {
     crdt: TreeCrdt<NoopStorage, LamportClock, MemoryNodeStore, MemoryPayloadStore>,
     index: RecordingIndex,
     head: Option<Operation>,
@@ -524,37 +580,26 @@ where
 
     let resumed_seq = head.seq.saturating_add(skipped);
     Ok(Some(PayloadNoopShortcut {
-        resumed_head: MaterializationHead {
-            at: MaterializationKey {
-                lamport: head.at.lamport,
-                replica: head.at.replica.to_vec(),
-                counter: head.at.counter,
-            },
-            seq: resumed_seq,
-        },
+        resumed_head: head.with_seq(resumed_seq),
         remaining_ops,
         outcome: MaterializationOutcome::empty(resumed_seq),
     }))
 }
 
-fn outcome_from_changes(
-    head_seq: u64,
-    changes: Vec<MaterializationChange>,
-) -> MaterializationOutcome {
-    MaterializationOutcome {
-        head_seq,
-        changes: coalesce_materialization_changes(changes),
+impl MaterializationOutcome {
+    fn from_changes(head_seq: u64, changes: Vec<MaterializationChange>) -> Self {
+        Self {
+            head_seq,
+            changes: coalesce_materialization_changes(changes),
+        }
     }
-}
 
-fn merge_outcomes(
-    head_seq: u64,
-    outcomes: impl IntoIterator<Item = MaterializationOutcome>,
-) -> MaterializationOutcome {
-    outcome_from_changes(
-        head_seq,
-        outcomes.into_iter().flat_map(|outcome| outcome.changes).collect(),
-    )
+    fn merge(head_seq: u64, outcomes: impl IntoIterator<Item = MaterializationOutcome>) -> Self {
+        Self::from_changes(
+            head_seq,
+            outcomes.into_iter().flat_map(|outcome| outcome.changes).collect(),
+        )
+    }
 }
 
 /// Apply an incremental batch and return both head metadata and the structured materialization delta.
@@ -619,15 +664,8 @@ where
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
 
     Ok(IncrementalApplyResult {
-        head: Some(MaterializationHead {
-            at: MaterializationKey {
-                lamport: last.meta.lamport,
-                replica: last.meta.id.replica.as_bytes().to_vec(),
-                counter: last.meta.id.counter,
-            },
-            seq,
-        }),
-        outcome: outcome_from_changes(seq, changes),
+        head: Some(MaterializationHead::from_op(last, seq)),
+        outcome: MaterializationOutcome::from_changes(seq, changes),
     })
 }
 
@@ -683,7 +721,7 @@ fn replay_frontier_in_memory<S: Storage>(
     storage: &S,
     frontier: &MaterializationFrontier,
     replica_id: &ReplicaId,
-) -> Result<(PrefixSnapshot, u64, MaterializationOutcome)> {
+) -> Result<(ReplaySnapshot, u64, MaterializationOutcome)> {
     let mut crdt = TreeCrdt::with_stores(
         replica_id.clone(),
         NoopStorage,
@@ -717,9 +755,9 @@ fn replay_frontier_in_memory<S: Storage>(
         }
     })?;
 
-    let outcome = outcome_from_changes(seq, changes);
+    let outcome = MaterializationOutcome::from_changes(seq, changes);
     Ok((
-        PrefixSnapshot {
+        ReplaySnapshot {
             crdt,
             index,
             head,
@@ -825,20 +863,13 @@ where
     flush_index(&mut index)?;
 
     Ok(Some(CatchUpResult {
-        head: replay_head.map(|head| MaterializationHead {
-            at: MaterializationKey {
-                lamport: head.meta.lamport,
-                replica: head.meta.id.replica.as_bytes().to_vec(),
-                counter: head.meta.id.counter,
-            },
-            seq,
-        }),
-        outcome: outcome_from_changes(seq, changes),
+        head: replay_head.as_ref().map(|head| MaterializationHead::from_op(head, seq)),
+        outcome: MaterializationOutcome::from_changes(seq, changes),
     }))
 }
 
 fn patch_final_state_in_place<N, P, I>(
-    prefix: &mut PrefixSnapshot,
+    replay: &mut ReplaySnapshot,
     prefix_seq: u64,
     affected_nodes: &[NodeId],
     nodes: &mut N,
@@ -859,30 +890,30 @@ where
         nodes.ensure_node(*node)?;
         nodes.detach(*node)?;
 
-        if let Some(parent) = prefix.crdt.node_store_mut().parent(*node)? {
-            let order_key = prefix.crdt.node_store_mut().order_key(*node)?.unwrap_or_default();
+        if let Some(parent) = replay.crdt.node_store_mut().parent(*node)? {
+            let order_key = replay.crdt.node_store_mut().order_key(*node)?.unwrap_or_default();
             nodes.attach(*node, parent, order_key)?;
         }
 
-        nodes.set_tombstone(*node, prefix.crdt.node_store_mut().tombstone(*node)?)?;
+        nodes.set_tombstone(*node, replay.crdt.node_store_mut().tombstone(*node)?)?;
 
         // These are exact setters on purpose: the backend may already contain newer-looking merged
         // values from the stale suffix, so fallback catch-up must overwrite them with the rebuilt
         // post-replay state rather than merge again.
-        let last_change = prefix.crdt.node_store_mut().last_change(*node)?;
+        let last_change = replay.crdt.node_store_mut().last_change(*node)?;
         nodes.set_last_change_exact(*node, &last_change)?;
 
-        let deleted_at = prefix.crdt.node_store_mut().deleted_at(*node)?;
+        let deleted_at = replay.crdt.node_store_mut().deleted_at(*node)?;
         nodes.set_deleted_at_exact(*node, deleted_at.as_ref())?;
 
-        if let Some(writer) = prefix.crdt.payload_last_writer(*node)? {
-            payloads.set_payload(*node, prefix.crdt.payload(*node)?, writer)?;
+        if let Some(writer) = replay.crdt.payload_last_writer(*node)? {
+            payloads.set_payload(*node, replay.crdt.payload(*node)?, writer)?;
         } else {
             payloads.clear_payload(*node)?;
         }
     }
 
-    let mut records: Vec<_> = prefix
+    let mut records: Vec<_> = replay
         .index
         .records
         .iter()
@@ -924,14 +955,7 @@ where
     let Some(frontier) = replay_frontier.as_ref() else {
         let head_seq = meta.state().head_seq();
         return Ok(CatchUpResult {
-            head: meta.state().head.as_ref().map(|head| MaterializationHead {
-                at: MaterializationKey {
-                    lamport: head.at.lamport,
-                    replica: head.at.replica.to_vec(),
-                    counter: head.at.counter,
-                },
-                seq: head.seq,
-            }),
+            head: meta.state().head.as_ref().map(MaterializationHead::owned),
             outcome: MaterializationOutcome::empty(head_seq),
         });
     };
@@ -944,11 +968,11 @@ where
         mut index,
     } = stores;
 
-    let (mut prefix, prefix_seq, outcome) =
+    let (mut replay, prefix_seq, outcome) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
     let affected_nodes = outcome.affected_nodes();
     patch_final_state_in_place(
-        &mut prefix,
+        &mut replay,
         prefix_seq,
         &affected_nodes,
         &mut nodes,
@@ -960,14 +984,7 @@ where
     flush_index(&mut index)?;
 
     Ok(CatchUpResult {
-        head: prefix.head.map(|head| MaterializationHead {
-            at: MaterializationKey {
-                lamport: head.meta.lamport,
-                replica: head.meta.id.replica.as_bytes().to_vec(),
-                counter: head.meta.id.counter,
-            },
-            seq: prefix.seq,
-        }),
+        head: replay.head.as_ref().map(|head| MaterializationHead::from_op(head, replay.seq)),
         outcome,
     })
 }
@@ -989,57 +1006,49 @@ where
     M: MaterializationCursor,
 {
     let inserted_count = inserted_ops.len().min(u64::MAX as usize) as u64;
+    let head_seq = meta.state().head_seq();
 
     if inserted_count == 0 {
-        return Ok(PersistedRemoteApplyResult {
-            inserted_count: 0,
-            outcome: MaterializationOutcome::empty(meta.state().head_seq()),
-            catch_up_needed: false,
-        });
+        return Ok(PersistedRemoteApplyResult::empty(0, head_seq));
     }
 
     if let Some(frontier) = next_replay_frontier(meta, &inserted_ops) {
         schedule_replay(&frontier)?;
-        return Ok(PersistedRemoteApplyResult {
+        return Ok(PersistedRemoteApplyResult::needs_catch_up(
             inserted_count,
-            outcome: MaterializationOutcome::empty(meta.state().head_seq()),
-            catch_up_needed: true,
-        });
+            head_seq,
+        ));
     }
 
     match materialize_inserted(inserted_ops) {
         Ok(result) => {
             let Some(head) = result.head else {
                 schedule_replay(&start_replay_frontier())?;
-                return Ok(PersistedRemoteApplyResult {
+                return Ok(PersistedRemoteApplyResult::needs_catch_up(
                     inserted_count,
-                    outcome: MaterializationOutcome::empty(meta.state().head_seq()),
-                    catch_up_needed: true,
-                });
+                    head_seq,
+                ));
             };
 
             if update_head(&head).is_ok() {
-                Ok(PersistedRemoteApplyResult {
+                Ok(PersistedRemoteApplyResult::applied(
                     inserted_count,
-                    outcome: result.outcome,
-                    catch_up_needed: false,
-                })
+                    result.outcome,
+                ))
             } else {
                 schedule_replay(&start_replay_frontier())?;
-                Ok(PersistedRemoteApplyResult {
+                Ok(PersistedRemoteApplyResult::needs_catch_up(
                     inserted_count,
-                    outcome: MaterializationOutcome::empty(meta.state().head_seq()),
-                    catch_up_needed: true,
-                })
+                    head_seq,
+                ))
             }
         }
         Err(_) => {
             schedule_replay(&start_replay_frontier())?;
-            Ok(PersistedRemoteApplyResult {
+            Ok(PersistedRemoteApplyResult::needs_catch_up(
                 inserted_count,
-                outcome: MaterializationOutcome::empty(meta.state().head_seq()),
-                catch_up_needed: true,
-            })
+                head_seq,
+            ))
         }
     }
 }
@@ -1094,12 +1103,9 @@ where
     MissingHead: FnMut(&'static str) -> E,
 {
     let inserted_count = inserted_ops.len().min(u64::MAX as usize) as u64;
+    let head_seq = meta.state().head_seq();
     if inserted_count == 0 {
-        return Ok(PersistedRemoteApplyResult {
-            inserted_count: 0,
-            outcome: MaterializationOutcome::empty(meta.state().head_seq()),
-            catch_up_needed: false,
-        });
+        return Ok(PersistedRemoteApplyResult::empty(0, head_seq));
     }
 
     let inserted_op_ids: HashSet<OperationId> =
@@ -1113,11 +1119,7 @@ where
     } {
         if shortcut.remaining_ops.is_empty() {
             update_head(&shortcut.resumed_head)?;
-            PersistedRemoteApplyResult {
-                inserted_count,
-                outcome: shortcut.outcome,
-                catch_up_needed: false,
-            }
+            PersistedRemoteApplyResult::applied(inserted_count, shortcut.outcome)
         } else {
             let shortcut_meta = MaterializationState {
                 head: Some(shortcut.resumed_head.clone()),
@@ -1126,19 +1128,17 @@ where
             let result = materialize_inserted(&shortcut_meta, shortcut.remaining_ops)?;
             let Some(head) = result.head else {
                 schedule_replay(&start_replay_frontier())?;
-                return Ok(PersistedRemoteApplyResult {
+                return Ok(PersistedRemoteApplyResult::needs_catch_up(
                     inserted_count,
-                    outcome: MaterializationOutcome::empty(shortcut.resumed_head.seq),
-                    catch_up_needed: true,
-                });
+                    shortcut.resumed_head.seq,
+                ));
             };
             update_head(&head)?;
 
-            PersistedRemoteApplyResult {
+            PersistedRemoteApplyResult::applied(
                 inserted_count,
-                outcome: merge_outcomes(head.seq, [shortcut.outcome, result.outcome]),
-                catch_up_needed: false,
-            }
+                MaterializationOutcome::merge(head.seq, [shortcut.outcome, result.outcome]),
+            )
         }
     } else {
         apply_persisted_remote_ops_with_delta(
@@ -1167,9 +1167,8 @@ where
         .ok_or_else(|| missing_head_error("expected head after immediate catch-up"))?;
     update_head(head)?;
 
-    Ok(PersistedRemoteApplyResult {
-        inserted_count: apply_result.inserted_count,
-        outcome: catch_up_result.outcome,
-        catch_up_needed: false,
-    })
+    Ok(PersistedRemoteApplyResult::applied(
+        apply_result.inserted_count,
+        catch_up_result.outcome,
+    ))
 }
