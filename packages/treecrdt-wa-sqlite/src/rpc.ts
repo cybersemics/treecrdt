@@ -1,8 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
-import type {
-  MaterializationEvent,
-  MaterializationOutcome,
-} from '@treecrdt/interface/engine';
+import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
 export type RpcStorageMode = 'memory' | 'opfs';
