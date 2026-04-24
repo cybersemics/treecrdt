@@ -1,5 +1,5 @@
 import type { Operation } from './index.js';
-import type { MaterializationOutcome, WriteOptions } from './engine.js';
+import type { MaterializationOutcome } from './engine.js';
 
 export type SerializeNodeId = (id: string) => Uint8Array;
 export type SerializeReplica = (replica: Operation['meta']['id']['replica']) => Uint8Array;
@@ -92,7 +92,6 @@ export interface TreecrdtAdapter {
     op: Operation,
     serializeNodeId: SerializeNodeId,
     serializeReplica: SerializeReplica,
-    opts?: WriteOptions,
   ): Promise<MaterializationOutcome> | MaterializationOutcome;
   /**
    * Optional batch append hook. When provided, callers can submit many ops
@@ -102,7 +101,6 @@ export interface TreecrdtAdapter {
     ops: Operation[],
     serializeNodeId: SerializeNodeId,
     serializeReplica: SerializeReplica,
-    opts?: WriteOptions,
   ): Promise<MaterializationOutcome> | MaterializationOutcome;
   opsSince(lamport: number, root?: string): Promise<unknown[]>;
   close?(): Promise<void> | void;

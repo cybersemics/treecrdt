@@ -196,11 +196,11 @@ export function createTreecrdtClient(
     docId,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
-        const outcome = await adapter.appendOp(op, nodeIdToBytes16, encodeReplica, writeOpts);
+        const outcome = await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       appendMany: async (ops, writeOpts?: WriteOptions) => {
-        const outcome = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica, writeOpts);
+        const outcome = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       all: () => opsSinceImpl(0),

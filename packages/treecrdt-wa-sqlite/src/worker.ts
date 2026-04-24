@@ -10,7 +10,7 @@ import {
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from '@treecrdt/interface/sqlite';
-import type { MaterializationEvent, WriteOptions } from '@treecrdt/interface/engine';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import type { RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import { clearOpfsStorage } from './opfs.js';
@@ -113,12 +113,12 @@ async function sqlGetText(sql: string, params?: RpcSqlParams): Promise<string | 
   return dbGetText(ensureDb(), sql, params ?? []);
 }
 
-async function append(op: Operation, _opts?: WriteOptions) {
+async function append(op: Operation) {
   const api = ensureApi();
   return await api.appendOp(op, nodeIdToBytes16, replicaIdToBytes);
 }
 
-async function appendMany(ops: Operation[], _opts?: WriteOptions) {
+async function appendMany(ops: Operation[]) {
   const api = ensureApi();
   return await api.appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
 }

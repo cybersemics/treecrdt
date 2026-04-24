@@ -537,11 +537,11 @@ function makeTreecrdtClientFromCall(opts: {
     runner,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
-        const outcome = await call('append', [op, writeOpts]);
+        const outcome = await call('append', [op]);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       appendMany: async (ops, writeOpts?: WriteOptions) => {
-        const outcome = await call('appendMany', [ops, writeOpts]);
+        const outcome = await call('appendMany', [ops]);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       all: () => opsSinceImpl(0),

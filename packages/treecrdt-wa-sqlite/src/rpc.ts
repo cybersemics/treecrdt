@@ -2,7 +2,6 @@ import type { Operation } from '@treecrdt/interface';
 import type {
   MaterializationEvent,
   MaterializationOutcome,
-  WriteOptions,
 } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
@@ -27,9 +26,9 @@ export type RpcSchema = {
   };
   sqlExec: { params: [sql: string]; result: void };
   sqlGetText: { params: [sql: string, params?: RpcSqlParams]; result: string | null };
-  append: { params: [op: Operation, opts?: WriteOptions]; result: MaterializationOutcome };
+  append: { params: [op: Operation]; result: MaterializationOutcome };
   appendMany: {
-    params: [ops: Operation[], opts?: WriteOptions];
+    params: [ops: Operation[]];
     result: MaterializationOutcome;
   };
   opsSince: { params: [lamport: number, root?: string]; result: unknown[] };

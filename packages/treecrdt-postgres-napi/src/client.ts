@@ -9,7 +9,11 @@ import {
   nativeToOperation,
   operationToNativeWithSerializers,
 } from './codec.js';
-import { loadNative } from './native.js';
+import {
+  loadNative,
+  type NativeLocalOpResult,
+  type NativeMaterializationOutcome,
+} from './native.js';
 
 function ensureNonEmptyString(name: string, value: string): void {
   if (typeof value !== 'string' || value.length === 0) {
@@ -53,9 +57,15 @@ export async function createTreecrdtPostgresClient(
 
   const backend = factory.open(docId);
   const materialized = createMaterializationDispatcher();
+  const emitNativeOutcome = (nativeOutcome: NativeMaterializationOutcome) => {
+    materialized.emitOutcome(nativeToMaterializationOutcome(nativeOutcome));
+  };
+  const finishLocalOp = (result: NativeLocalOpResult): Operation => {
+    emitNativeOutcome(result.outcome);
+    return nativeToOperation(result.op);
+  };
   const ensureMaterializedImpl = () => {
-    const outcome = nativeToMaterializationOutcome(backend.ensureMaterialized());
-    materialized.emitOutcome(outcome);
+    emitNativeOutcome(backend.ensureMaterialized());
   };
 
   const encodeReplica = (replica: Operation['meta']['id']['replica']): Uint8Array =>
@@ -146,9 +156,7 @@ export async function createTreecrdtPostgresClient(
       after,
       payload,
     );
-    const outcome = nativeToMaterializationOutcome(result.outcome);
-    materialized.emitOutcome(outcome);
-    return nativeToOperation(result.op);
+    return finishLocalOp(result);
   };
 
   const localMoveImpl = async (
@@ -165,23 +173,17 @@ export async function createTreecrdtPostgresClient(
       type,
       after,
     );
-    const outcome = nativeToMaterializationOutcome(result.outcome);
-    materialized.emitOutcome(outcome);
-    return nativeToOperation(result.op);
+    return finishLocalOp(result);
   };
 
   const localDeleteImpl = async (replica: ReplicaId, node: string) => {
     const result = backend.localDelete(encodeReplica(replica), nodeIdToBytes16(node));
-    const outcome = nativeToMaterializationOutcome(result.outcome);
-    materialized.emitOutcome(outcome);
-    return nativeToOperation(result.op);
+    return finishLocalOp(result);
   };
 
   const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) => {
     const result = backend.localPayload(encodeReplica(replica), nodeIdToBytes16(node), payload);
-    const outcome = nativeToMaterializationOutcome(result.outcome);
-    materialized.emitOutcome(outcome);
-    return nativeToOperation(result.op);
+    return finishLocalOp(result);
   };
 
   return {
