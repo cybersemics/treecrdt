@@ -1,14 +1,9 @@
 import React from "react";
 import { MdExpandLess, MdExpandMore } from "react-icons/md";
 
-import { ParentPicker } from "./ParentPicker";
+import type { BulkAddProgress } from "../types";
 
-type BulkAddProgress = {
-  total: number;
-  completed: number;
-  phase: "creating" | "applying";
-  startedAtMs: number;
-};
+import { ParentPicker } from "./ParentPicker";
 
 export function ComposerPanel({
   composerOpen,

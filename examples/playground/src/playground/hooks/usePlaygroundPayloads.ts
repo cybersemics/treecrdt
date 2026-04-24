@@ -5,9 +5,11 @@ import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { loadOrCreateDocPayloadKeyB64 } from '../../auth';
 import { ROOT_ID } from '../constants';
-import type { PayloadRecord } from '../types';
 
-export type RawPayloadUpdate = { node: string; payload: Uint8Array | null };
+type PayloadRecord = {
+  payload: Uint8Array | null;
+  encrypted?: boolean;
+};
 
 function bytesEqual(left: Uint8Array | null, right: Uint8Array | null): boolean {
   if (left === right) return true;
@@ -92,7 +94,7 @@ export function usePlaygroundPayloads(opts: {
   );
 
   const applyPayloadUpdatesFromRaw = React.useCallback(
-    async (updates: Iterable<RawPayloadUpdate>) => {
+    async (updates: Iterable<{ node: string; payload: Uint8Array | null }>) => {
       let changed = false;
       const payloads = payloadByNodeRef.current;
       for (const { node, payload } of updates) {
@@ -120,7 +122,7 @@ export function usePlaygroundPayloads(opts: {
   );
 
   const schedulePayloadEventUpdates = React.useCallback(
-    (updates: RawPayloadUpdate[]) => {
+    (updates: Array<{ node: string; payload: Uint8Array | null }>) => {
       if (updates.length === 0) return;
       const run = payloadEventQueueRef.current
         .catch(() => undefined)

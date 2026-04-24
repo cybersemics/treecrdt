@@ -1,9 +1,9 @@
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
 
-import type { RawPayloadUpdate } from './hooks/usePlaygroundPayloads';
+type PayloadUpdate = { node: string; payload: Uint8Array | null };
 
-export type MaterializationRefreshPlan = {
-  payloadUpdates: RawPayloadUpdate[];
+type MaterializationRefreshPlan = {
+  payloadUpdates: PayloadUpdate[];
   parentsToRefresh: Set<string>;
 };
 
@@ -11,7 +11,7 @@ export function materializationRefreshPlan(
   event: MaterializationEvent,
   loadedChildren: Record<string, readonly string[]>,
 ): MaterializationRefreshPlan {
-  const payloadUpdates: RawPayloadUpdate[] = [];
+  const payloadUpdates: PayloadUpdate[] = [];
   const parentsToRefresh = new Set<string>();
 
   const addLoadedParent = (id: string | null | undefined) => {

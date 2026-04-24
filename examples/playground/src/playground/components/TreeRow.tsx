@@ -26,17 +26,8 @@ import {
   type CapabilityAction,
 } from "../capabilities";
 import { ROOT_ID } from "../constants";
+import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
 import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
-
-type IssuedGrantRecordRow = {
-  recipientPkHex: string;
-  tokenIdHex: string;
-  rootNodeId: string;
-  actions: string[];
-  maxDepth?: number;
-  excludeCount: number;
-  ts: number;
-};
 
 type MembersMenuLayout = {
   top: number;
@@ -98,7 +89,7 @@ export function TreeRow({
   authEnabled: boolean;
   canManageCapabilities: boolean;
   authBusy: boolean;
-  issuedGrantRecords: IssuedGrantRecordRow[];
+  issuedGrantRecords: IssuedGrantRecord[];
   hardRevokedTokenIds: string[];
   onToggleHardRevokedTokenId: (tokenIdHex: string) => void;
   onGrantToReplicaPubkey: (opts: {
@@ -163,7 +154,7 @@ export function TreeRow({
     [peers, selfPeerId]
   );
   const latestScopedGrantByPeer = useMemo(() => {
-    const out = new Map<string, IssuedGrantRecordRow>();
+    const out = new Map<string, IssuedGrantRecord>();
     for (const row of issuedGrantRecords) {
       if (row.rootNodeId !== nodeIdLower) continue;
       if (out.has(row.recipientPkHex)) continue;

@@ -35,6 +35,7 @@ import {
 import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
 import { applyChildrenLoaded, flattenForSelectState } from "./playground/treeState";
 import type {
+  BulkAddProgress,
   CollapseState,
   DisplayNode,
   Status,
@@ -75,13 +76,6 @@ function initialSyncTransportMode(): SyncTransportMode {
 
   return "local";
 }
-
-type BulkAddProgress = {
-  total: number;
-  completed: number;
-  phase: "creating" | "applying";
-  startedAtMs: number;
-};
 
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);

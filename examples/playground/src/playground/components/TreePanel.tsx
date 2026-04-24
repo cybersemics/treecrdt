@@ -15,6 +15,7 @@ import {
 } from "react-icons/md";
 
 import { ROOT_ID } from "../constants";
+import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
 import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
 
 import { PeersPanel } from "./PeersPanel";
@@ -134,15 +135,7 @@ export function TreePanel({
   selfPeerId: string | null;
   canManageCapabilities: boolean;
   authBusy: boolean;
-  issuedGrantRecords: Array<{
-    recipientPkHex: string;
-    tokenIdHex: string;
-    rootNodeId: string;
-    actions: string[];
-    maxDepth?: number;
-    excludeCount: number;
-    ts: number;
-  }>;
+  issuedGrantRecords: IssuedGrantRecord[];
   hardRevokedTokenIds: string[];
   toggleHardRevokedTokenId: (tokenIdHex: string) => void;
   scopeRootId: string;

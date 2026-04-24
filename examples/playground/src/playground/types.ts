@@ -20,6 +20,13 @@ export type CollapseState = {
   overrides: Set<string>;
 };
 
+export type BulkAddProgress = {
+  total: number;
+  completed: number;
+  phase: "creating" | "applying";
+  startedAtMs: number;
+};
+
 export type Status = "booting" | "ready" | "error";
 export type StorageMode = "memory" | "opfs";
 export type SyncTransportMode = "local" | "remote" | "hybrid";
@@ -32,8 +39,3 @@ export type RemoteSyncStatus =
   | { state: "error"; detail: string };
 
 export type PeerInfo = { id: string; lastSeen: number };
-
-export type PayloadRecord = {
-  payload: Uint8Array | null;
-  encrypted?: boolean;
-};
