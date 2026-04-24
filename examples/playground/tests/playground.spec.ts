@@ -478,6 +478,39 @@ test("insert and delete node", async ({ page }) => {
   await expect(parentRow).toHaveCount(0, { timeout: 30_000 });
 });
 
+test("live payload editing commits each keystroke without clobbering the draft", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  const doc = uniqueDocId("pw-playground-live-payload");
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+  await expectAuthEnabledByDefault(page);
+  await waitForLocalAuthTokens(page);
+
+  await page.getByPlaceholder("Stored as payload bytes").fill("seed");
+  await treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+
+  const seedRow = treeRowByLabel(page, "seed");
+  await expect(seedRow).toBeVisible({ timeout: 30_000 });
+  const nodeId = await seedRow.getAttribute("data-node-id");
+  expect(nodeId).toBeTruthy();
+
+  const row = treeRowByNodeId(page, nodeId!);
+  await row.getByRole("button", { name: "seed" }).click();
+  const input = row.getByRole("textbox");
+  await expect(input).toHaveValue("seed", { timeout: 30_000 });
+
+  await input.fill("");
+  await input.pressSequentially("abcdef", { delay: 1 });
+  await expect(input).toHaveValue("abcdef");
+
+  await row.getByRole("button", { name: "Save" }).click();
+  await expect(treeRowByNodeId(page, nodeId!).getByRole("button", { name: "abcdef" })).toBeVisible({ timeout: 30_000 });
+
+  await page.getByTitle("Toggle operations panel").click();
+  const opsPanel = page.locator("aside", { hasText: "Operations" });
+  await expect(opsPanel.getByText("Ops: 8")).toBeVisible({ timeout: 30_000 });
+});
+
 test("switching remote sync server URL reconnects to the new endpoint", async ({ page }) => {
   test.setTimeout(120_000);
 

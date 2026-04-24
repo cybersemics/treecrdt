@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { type Operation, type OperationKind } from "@treecrdt/interface";
+import { type Operation } from "@treecrdt/interface";
 import type { MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
@@ -274,6 +274,7 @@ export default function App() {
     treeStateRef.current = treeState;
   }, [treeState]);
 
+  const payloadWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const childrenLoadInFlightRef = useRef<Set<string>>(new Set());
 
   const ensureChildrenLoaded = React.useCallback(
@@ -702,30 +703,6 @@ export default function App() {
     await initClient(target, nextKey, opts.docId);
   };
 
-  const appendOperation = async (kind: OperationKind) => {
-    if (!client || !replica) return;
-    setBusy(true);
-    try {
-      let op: Operation;
-      if (kind.type === "payload") {
-        const encryptedPayload = await encryptPayloadBytes(kind.payload);
-        op = await client.local.payload(replica, kind.node, encryptedPayload);
-      } else if (kind.type === "delete") {
-        op = await client.local.delete(replica, kind.node);
-      } else {
-        throw new Error(`unsupported operation kind: ${kind.type}`);
-      }
-      await verifyLocalOps([op]);
-
-      recordLocalOps([op]);
-    } catch (err) {
-      console.error("Failed to append op", err);
-      setError("Failed to append operation (see console)");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {
     if (!client || !replica) return;
     if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
@@ -861,15 +838,39 @@ export default function App() {
     }
   };
 
-  const handleSetValue = async (nodeId: string, value: string) => {
-    if (nodeId === ROOT_ID) return;
-    const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
-    await appendOperation({ type: "payload", node: nodeId, payload });
+  const handleSetValue = (nodeId: string, value: string): Promise<void> => {
+    const run = payloadWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (nodeId === ROOT_ID || !client || !replica) return;
+        try {
+          const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
+          const encryptedPayload = await encryptPayloadBytes(payload);
+          const op = await client.local.payload(replica, nodeId, encryptedPayload);
+          await verifyLocalOps([op]);
+          recordLocalOps([op]);
+        } catch (err) {
+          console.error("Failed to write payload", err);
+          setError("Failed to write payload (see console)");
+        }
+      });
+    payloadWriteQueueRef.current = run.catch(() => undefined);
+    return run;
   };
 
   const handleDelete = async (nodeId: string) => {
-    if (nodeId === ROOT_ID) return;
-    await appendOperation({ type: "delete", node: nodeId });
+    if (nodeId === ROOT_ID || !client || !replica) return;
+    setBusy(true);
+    try {
+      const op = await client.local.delete(replica, nodeId);
+      await verifyLocalOps([op]);
+      recordLocalOps([op]);
+    } catch (err) {
+      console.error("Failed to delete node", err);
+      setError("Failed to delete node (see console)");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleMove = async (nodeId: string, direction: "up" | "down") => {

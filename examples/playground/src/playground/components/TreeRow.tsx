@@ -269,6 +269,18 @@ export function TreeRow({
     if (!canEditValue && isEditing) setIsEditing(false);
   }, [canEditValue, isEditing]);
 
+  const pendingValueWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const writeDraftValue = useCallback(
+    (nextValue: string) => {
+      setDraftValue(nextValue);
+      const run = Promise.resolve().then(() => onSetValue(node.id, nextValue));
+      pendingValueWriteRef.current = run.catch((err) => {
+        console.error("Failed to live-write node payload", err);
+      });
+    },
+    [node.id, onSetValue]
+  );
+
   useEffect(() => {
     if (showMembersButton) return;
     setShowMembersMenu(false);
@@ -350,14 +362,14 @@ export function TreeRow({
                   className="flex items-center gap-2"
                   onSubmit={async (e) => {
                     e.preventDefault();
+                    await pendingValueWriteRef.current;
                     setIsEditing(false);
-                    await onSetValue(node.id, draftValue);
                   }}
                 >
                   <input
                     type="text"
                     value={draftValue}
-                    onChange={(e) => setDraftValue(e.target.value)}
+                    onChange={(e) => writeDraftValue(e.target.value)}
                     className="w-56 max-w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
                   />
                   <button
