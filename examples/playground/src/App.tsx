@@ -4,10 +4,7 @@ import type { MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
-import { base64urlDecode } from "@treecrdt/auth";
-import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from "@treecrdt/crypto";
 
-import { loadOrCreateDocPayloadKeyB64 } from "./auth";
 import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
@@ -19,8 +16,10 @@ import { ShareSubtreeDialog } from "./playground/components/ShareSubtreeDialog";
 import { PlaygroundToast } from "./playground/components/PlaygroundToast";
 import { TreePanel } from "./playground/components/TreePanel";
 import { usePlaygroundAuth } from "./playground/hooks/usePlaygroundAuth";
+import { usePlaygroundOpsLog } from "./playground/hooks/usePlaygroundOpsLog";
+import { usePlaygroundPayloads } from "./playground/hooks/usePlaygroundPayloads";
 import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
-import { compareOps, mergeSortedOps, opKey } from "./playground/ops";
+import { materializationRefreshPlan } from "./playground/materializationEvents";
 import {
   ensureOpfsKey,
   initialDocId,
@@ -38,7 +37,6 @@ import { applyChildrenLoaded, flattenForSelectState } from "./playground/treeSta
 import type {
   CollapseState,
   DisplayNode,
-  PayloadRecord,
   Status,
   StorageMode,
   SyncTransportMode,
@@ -88,9 +86,8 @@ type BulkAddProgress = {
 export default function App() {
   const [client, setClient] = useState<TreecrdtClient | null>(null);
   const clientRef = useRef<TreecrdtClient | null>(null);
-  const [ops, setOps] = useState<Operation[]>([]);
   const [treeState, setTreeState] = useState<TreeState>(() => ({
-    index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0, deleted: false } },
+    index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0 } },
     childrenByParent: { [ROOT_ID]: [] },
   }));
   const [status, setStatus] = useState<Status>("booting");
@@ -125,7 +122,6 @@ export default function App() {
     return false;
   });
   const [online, setOnline] = useState(true);
-  const [payloadVersion, setPayloadVersion] = useState(0);
 
   const joinMode =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).get("join") === "1";
@@ -162,12 +158,14 @@ export default function App() {
   const initEpochRef = useRef(0);
   const disposedRef = useRef(false);
   const opfsSupport = useMemo(detectOpfsSupport, []);
-  const docPayloadKeyRef = useRef<Uint8Array | null>(null);
-  const refreshDocPayloadKey = React.useCallback(async () => {
-    const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
-    docPayloadKeyRef.current = base64urlDecode(keyB64);
-    return docPayloadKeyRef.current;
-  }, [docId]);
+  const {
+    encryptPayloadBytes,
+    payloadDisplayForNode,
+    refreshDocPayloadKey,
+    refreshPayloadsForNodes,
+    resetPayloadCache,
+    schedulePayloadEventUpdates,
+  } = usePlaygroundPayloads({ docId, setError });
   const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
   const [, bumpIdentityVersion] = useState(0);
   const onPeerIdentityChain = React.useCallback(
@@ -216,10 +214,8 @@ export default function App() {
     syncAuth,
     refreshAuthMaterial,
     localIdentityChainPromiseRef,
-    authToken,
     replica,
     selfPeerId,
-    authActionSet,
     viewRootId,
     authCanSyncAll,
     canWriteStructure,
@@ -235,19 +231,8 @@ export default function App() {
     authTokenScope,
     authTokenActions,
     authNeedsInvite,
-    revocationKnownTokenIds,
     hardRevokedTokenIds,
     toggleHardRevokedTokenId,
-    clearHardRevokedTokenIds,
-    revocationTokenInput,
-    setRevocationTokenInput,
-    addHardRevokedTokenId,
-    revocationCutoverEnabled,
-    setRevocationCutoverEnabled,
-    revocationCutoverTokenId,
-    setRevocationCutoverTokenId,
-    revocationCutoverCounter,
-    setRevocationCutoverCounter,
     pendingOps,
     refreshPendingOps,
     privateRoots,
@@ -279,123 +264,21 @@ export default function App() {
     refreshDocPayloadKey,
   });
 
-  const showOpsPanelRef = useRef(false);
   const textEncoder = useMemo(() => new TextEncoder(), []);
-  const textDecoder = useMemo(() => new TextDecoder(), []);
-
-  useEffect(() => {
-    docPayloadKeyRef.current = null;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
-        if (cancelled) return;
-        docPayloadKeyRef.current = base64urlDecode(keyB64);
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [docId]);
-
-  const payloadByNodeRef = useRef<Map<string, PayloadRecord>>(new Map());
-
-  const requireDocPayloadKey = React.useCallback(async (): Promise<Uint8Array> => {
-    if (docPayloadKeyRef.current) return docPayloadKeyRef.current;
-    const next = await refreshDocPayloadKey();
-    if (!next) throw new Error("doc payload key is missing");
-    return next;
-  }, [refreshDocPayloadKey]);
-
-  const refreshPayloadsForNodes = React.useCallback(
-    async (active: TreecrdtClient, nodeIds: Iterable<string>) => {
-      const payloads = payloadByNodeRef.current;
-      const unique = [...new Set(nodeIds)].filter((id) => id !== ROOT_ID);
-      if (unique.length === 0) return;
-      let changed = false;
-      for (const nodeId of unique) {
-        const raw = await active.tree.getPayload(nodeId);
-        if (raw === null) {
-          payloads.set(nodeId, { payload: null, encrypted: false });
-          changed = true;
-          continue;
-        }
-        try {
-          const key = await requireDocPayloadKey();
-          const res = await maybeDecryptTreecrdtPayloadV1({
-            docId,
-            payloadKey: key,
-            bytes: raw,
-          });
-          payloads.set(nodeId, { payload: res.plaintext, encrypted: res.encrypted });
-        } catch {
-          payloads.set(nodeId, { payload: null, encrypted: true });
-        }
-        changed = true;
-      }
-      if (changed) setPayloadVersion((v) => v + 1);
-    },
-    [docId, requireDocPayloadKey]
-  );
-
-  const encryptPayloadBytes = React.useCallback(
-    async (payload: Uint8Array | null): Promise<Uint8Array | null> => {
-      if (payload === null) return null;
-      const key = await requireDocPayloadKey();
-      return await encryptTreecrdtPayloadV1({ docId, payloadKey: key, plaintext: payload });
-    },
-    [docId, requireDocPayloadKey]
-  );
-  const knownOpsRef = useRef<Set<string>>(new Set());
+  const { ops, recordOps, resetOps } = usePlaygroundOpsLog({
+    client,
+    status,
+    showOpsPanel,
+    lamportRef,
+    setHeadLamport,
+    setError,
+    refreshPayloadsForNodes,
+  });
 
   const treeStateRef = useRef<TreeState>(treeState);
   useEffect(() => {
     treeStateRef.current = treeState;
   }, [treeState]);
-
-  useEffect(() => {
-    showOpsPanelRef.current = showOpsPanel;
-    if (!showOpsPanel) {
-      setOps([]);
-      knownOpsRef.current = new Set();
-    }
-  }, [showOpsPanel]);
-
-  const ingestOps = React.useCallback(
-    (incoming: Operation[], opts: { assumeSorted?: boolean } = {}) => {
-      if (!showOpsPanelRef.current) return;
-      if (incoming.length === 0) return;
-      const fresh: Operation[] = [];
-      const known = knownOpsRef.current;
-      for (const op of incoming) {
-        const key = opKey(op);
-        if (known.has(key)) continue;
-        known.add(key);
-        fresh.push(op);
-      }
-      if (fresh.length === 0) return;
-      if (!opts.assumeSorted) fresh.sort(compareOps);
-      setOps((prev) => mergeSortedOps(prev, fresh));
-    },
-    []
-  );
-
-  const recordOps = React.useCallback(
-    (incoming: Operation[], opts: { assumeSorted?: boolean } = {}) => {
-      if (incoming.length === 0) return;
-      let nextLamport = lamportRef.current;
-      for (const op of incoming) nextLamport = Math.max(nextLamport, op.meta.lamport);
-      if (nextLamport !== lamportRef.current) {
-        lamportRef.current = nextLamport;
-        setHeadLamport(nextLamport);
-      }
-      ingestOps(incoming, opts);
-    },
-    [ingestOps]
-  );
 
   const childrenLoadInFlightRef = useRef<Set<string>>(new Set());
 
@@ -533,26 +416,6 @@ export default function App() {
     }, 0);
   }, [refreshNodeCount]);
 
-  const refreshPayloadsQueueRef = useRef<Set<string>>(new Set());
-  const refreshPayloadsScheduledRef = useRef(false);
-  const scheduleRefreshPayloads = React.useCallback(
-    (nodeIds: Iterable<string>) => {
-      const queue = refreshPayloadsQueueRef.current;
-      for (const id of nodeIds) queue.add(id);
-      if (queue.size === 0 || refreshPayloadsScheduledRef.current) return;
-      refreshPayloadsScheduledRef.current = true;
-      setTimeout(() => {
-        refreshPayloadsScheduledRef.current = false;
-        const ids = new Set(refreshPayloadsQueueRef.current);
-        refreshPayloadsQueueRef.current.clear();
-        const active = clientRef.current ?? client;
-        if (!active || ids.size === 0) return;
-        void refreshPayloadsForNodes(active, ids);
-      }, 0);
-    },
-    [client, refreshPayloadsForNodes]
-  );
-
   const getMaxLamport = React.useCallback(() => BigInt(lamportRef.current), []);
   const getLoadedParentIds = React.useCallback(
     () => Object.keys(treeStateRef.current.childrenByParent),
@@ -562,47 +425,15 @@ export default function App() {
   const applyMaterializationEvent = React.useCallback(
     (event: MaterializationEvent) => {
       if (event.changes.length === 0) return;
-
-      const payloadNodes = new Set<string>();
-      const parentsToRefresh = new Set<string>();
-      const loadedChildren = treeStateRef.current.childrenByParent;
-
-      const addLoadedParent = (id: string | null | undefined) => {
-        if (id && Object.prototype.hasOwnProperty.call(loadedChildren, id)) {
-          parentsToRefresh.add(id);
-        }
-      };
-
-      for (const change of event.changes) {
-        if (change.kind === "payload") {
-          payloadNodes.add(change.node);
-          continue;
-        }
-
-        if (change.kind === "insert") {
-          payloadNodes.add(change.node);
-          addLoadedParent(change.parentAfter);
-        } else if (change.kind === "move") {
-          addLoadedParent(change.parentBefore);
-          addLoadedParent(change.parentAfter);
-        } else if (change.kind === "delete") {
-          addLoadedParent(change.parentBefore);
-        } else if (change.kind === "restore") {
-          addLoadedParent(change.parentAfter);
-        }
-
-        if (Object.prototype.hasOwnProperty.call(loadedChildren, change.node)) {
-          parentsToRefresh.add(change.node);
-        }
-      }
-
-      if (payloadNodes.size > 0) {
-        scheduleRefreshPayloads(payloadNodes);
-      }
+      const { payloadUpdates, parentsToRefresh } = materializationRefreshPlan(
+        event,
+        treeStateRef.current.childrenByParent
+      );
+      schedulePayloadEventUpdates(payloadUpdates);
       scheduleRefreshParents(parentsToRefresh);
       scheduleRefreshNodeCount();
     },
-    [scheduleRefreshNodeCount, scheduleRefreshParents, scheduleRefreshPayloads]
+    [schedulePayloadEventUpdates, scheduleRefreshNodeCount, scheduleRefreshParents]
   );
 
   useEffect(() => {
@@ -704,31 +535,14 @@ export default function App() {
   }, [ensureChildrenLoaded, viewRootId]);
 
   const nodeLabelForId = React.useCallback(
-    (id: string) => {
-      if (id === ROOT_ID) return "Root";
-      const record = payloadByNodeRef.current.get(id);
-      const payload = record?.payload ?? null;
-      if (payload === null) return record?.encrypted ? "(encrypted)" : id;
-      const decoded = textDecoder.decode(payload);
-      return decoded.length === 0 ? "(empty)" : decoded;
-    },
-    [payloadVersion, textDecoder]
+    (id: string) => payloadDisplayForNode(id).label,
+    [payloadDisplayForNode]
   );
 
   const nodeList = useMemo(
     () => flattenForSelectState(childrenByParent, nodeLabelForId, { rootId: viewRootId }),
     [childrenByParent, nodeLabelForId, viewRootId]
   );
-  const privateRootEntries = useMemo(() => {
-    const roots = Array.from(privateRoots).filter((id) => id !== ROOT_ID);
-    roots.sort((a, b) => {
-      const la = nodeLabelForId(a);
-      const lb = nodeLabelForId(b);
-      if (la === lb) return a.localeCompare(b);
-      return la.localeCompare(lb);
-    });
-    return roots.map((id) => ({ id, label: nodeLabelForId(id) }));
-  }, [privateRoots, nodeLabelForId]);
 
   const expandPathTo = React.useCallback(
     (nodeId: string) => {
@@ -759,20 +573,8 @@ export default function App() {
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
-      const record = payloadByNodeRef.current.get(entry.id);
-      const payload = record?.payload ?? null;
-      const value = payload === null ? "" : textDecoder.decode(payload);
-      const label =
-        entry.id === ROOT_ID
-          ? "Root"
-          : payload === null
-            ? record?.encrypted
-              ? "(encrypted)"
-              : entry.id
-            : value.length === 0
-              ? "(empty)"
-              : value;
-      acc.push({ node: { id: entry.id, label, value, children: [] }, depth: entry.depth });
+      const { label, value } = payloadDisplayForNode(entry.id);
+      acc.push({ node: { id: entry.id, label, value }, depth: entry.depth });
       if (isCollapsed(entry.id)) continue;
       const kids = childrenByParent[entry.id] ?? [];
       for (let i = kids.length - 1; i >= 0; i--) {
@@ -780,7 +582,7 @@ export default function App() {
       }
     }
     return acc;
-  }, [childrenByParent, collapse, payloadVersion, textDecoder]);
+  }, [childrenByParent, collapse, payloadDisplayForNode]);
   const treeParentRef = useRef<HTMLDivElement | null>(null);
   const opsParentRef = useRef<HTMLDivElement | null>(null);
   const treeEstimateSize = React.useCallback(() => 72, []);
@@ -888,14 +690,12 @@ export default function App() {
           : ensureOpfsKey()
         : sessionKey;
     setSessionKey(nextKey);
-    setOps([]);
+    resetOps();
     setTreeState({
-      index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0, deleted: false } },
+      index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0 } },
       childrenByParent: { [ROOT_ID]: [] },
     });
-    payloadByNodeRef.current = new Map();
-    setPayloadVersion((v) => v + 1);
-    knownOpsRef.current = new Set();
+    resetPayloadCache();
     setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
     lamportRef.current = 0;
     setHeadLamport(0);
@@ -910,36 +710,6 @@ export default function App() {
     await closeClientSafely(closingClient);
     await initClient(target, nextKey, opts.docId);
   };
-
-  const refreshOps = async (nextClient?: TreecrdtClient, opts: { preserveParent?: boolean } = {}) => {
-    const active = nextClient ?? client;
-    if (!active) return;
-    try {
-      const fetched = await active.ops.all();
-      fetched.sort(compareOps);
-      setOps(fetched);
-      knownOpsRef.current = new Set(fetched.map(opKey));
-      const payloadNodeIds = new Set<string>();
-      for (const op of fetched) {
-        const kind = op.kind;
-        if (kind.type === "insert" || kind.type === "payload" || kind.type === "delete") {
-          payloadNodeIds.add(kind.node);
-        }
-      }
-      await refreshPayloadsForNodes(active, payloadNodeIds);
-      setParentChoice((prev) => (opts.preserveParent ? prev : ROOT_ID));
-    } catch (err) {
-      console.error("Failed to refresh ops", err);
-      setError("Failed to refresh operations (see console)");
-    }
-  };
-
-  useEffect(() => {
-    if (!showOpsPanel) return;
-    if (!client || status !== "ready") return;
-    void refreshOps(undefined, { preserveParent: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showOpsPanel, client, status]);
 
   const appendOperation = async (kind: OperationKind) => {
     if (!client || !replica) return;
@@ -1196,31 +966,6 @@ export default function App() {
       ? `${selfPeerId.slice(0, 8)}…${selfPeerId.slice(-6)}`
       : selfPeerId
     : null;
-  const authScopeSummary = (() => {
-    if (!authTokenScope) return "-";
-    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
-    if (rootId === ROOT_ID) return "doc-wide";
-    const label = nodeLabelForId(rootId);
-    if (label && label !== rootId) return `subtree ${label}`;
-    return `subtree ${rootId.slice(0, 8)}…`;
-  })();
-  const authScopeTitle = (() => {
-    if (!authTokenScope) return "";
-    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
-    const parts = [`root=${rootId}`];
-    if (authTokenScope.maxDepth !== undefined) parts.push(`maxDepth=${authTokenScope.maxDepth}`);
-    const excludeCount = authTokenScope.excludeNodeIds?.length ?? 0;
-    if (excludeCount > 0) parts.push(`exclude=${excludeCount}`);
-    return parts.join(" ");
-  })();
-  const authSummaryBadges = (() => {
-    if (!Array.isArray(authTokenActions)) return [];
-    const set = new Set(authTokenActions.map(String));
-    const out: string[] = [];
-    if (set.has("write_structure") || set.has("write_payload")) out.push("write");
-    if (set.has("delete")) out.push("delete");
-    return out;
-  })();
   const canManageCapabilities = authEnabled && (authCanIssue || authCanDelegate);
   const localReplicaHex = selfPeerId;
 
@@ -1348,9 +1093,7 @@ export default function App() {
               authTokenCount,
               authTokenScope,
               authTokenActions,
-              authScopeSummary,
-              authScopeTitle,
-              authSummaryBadges,
+              nodeLabelForId,
               selfPeerId,
               revealIdentity,
               setRevealIdentity,

@@ -144,7 +144,7 @@ where
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let after = self.resolve_after_for_placement(parent, placement, None)?;
-        let has_payload = payload.is_some();
+        let payload_after = payload.clone();
         let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
         let op = Operation::insert_with_optional_payload(
@@ -156,16 +156,11 @@ where
             LocalFinalizePlan {
                 parent_hints: vec![parent],
                 extra_index_records: Vec::new(),
-                changes: {
-                    let mut changes = vec![MaterializationChange::Insert {
-                        node,
-                        parent_after: parent,
-                    }];
-                    if has_payload {
-                        changes.push(MaterializationChange::Payload { node });
-                    }
-                    changes
-                },
+                changes: vec![MaterializationChange::Insert {
+                    node,
+                    parent_after: parent,
+                    payload: payload_after,
+                }],
             },
         ))
     }
@@ -234,6 +229,7 @@ where
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let parent = self.parent(node)?;
+        let payload_after = payload.clone();
         let (replica, counter, lamport, _seed) = self.next_op_meta();
         let op = if let Some(payload) = payload {
             Operation::set_payload(&replica, counter, lamport, node, payload)
@@ -246,7 +242,10 @@ where
             LocalFinalizePlan {
                 parent_hints: parent_hints_from(parent),
                 extra_index_records: Vec::new(),
-                changes: vec![MaterializationChange::Payload { node }],
+                changes: vec![MaterializationChange::Payload {
+                    node,
+                    payload: payload_after,
+                }],
             },
         ))
     }
@@ -490,6 +489,11 @@ where
                         parent,
                         previous,
                         tombstoned,
+                        payload_after: if tombstoned {
+                            None
+                        } else {
+                            self.payloads.payload(node)?
+                        },
                     });
                 }
             }

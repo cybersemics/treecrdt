@@ -180,6 +180,7 @@ export function nativeOpToSqliteRow(row: NativeOp): Record<string, unknown> {
 export function nativeToMaterializationOutcome(
   outcome: NativeMaterializationOutcome,
 ): MaterializationOutcome {
+  const payloadOrNull = (payload: Uint8Array | null | undefined) => payload ?? null;
   return {
     headSeq: parseSafeInteger('headSeq', outcome.headSeq),
     changes: outcome.changes.map((change) => {
@@ -190,6 +191,7 @@ export function nativeToMaterializationOutcome(
           kind,
           node: nodeIdFromBytes16(change.node),
           parentAfter: nodeIdFromBytes16(change.parentAfter),
+          payload: payloadOrNull(change.payload),
         };
       }
       if (kind === 'move') {
@@ -213,10 +215,15 @@ export function nativeToMaterializationOutcome(
           kind,
           node: nodeIdFromBytes16(change.node),
           parentAfter: change.parentAfter ? nodeIdFromBytes16(change.parentAfter) : null,
+          payload: payloadOrNull(change.payload),
         };
       }
       if (kind === 'payload') {
-        return { kind, node: nodeIdFromBytes16(change.node) };
+        return {
+          kind,
+          node: nodeIdFromBytes16(change.node),
+          payload: payloadOrNull(change.payload),
+        };
       }
       throw new Error(`unknown native materialization change kind: ${kind}`);
     }),

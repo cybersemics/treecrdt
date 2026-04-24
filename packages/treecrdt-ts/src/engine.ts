@@ -2,11 +2,11 @@ import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
 
 export type Change =
-  | { kind: 'insert'; node: string; parentAfter: string }
+  | { kind: 'insert'; node: string; parentAfter: string; payload: Uint8Array | null }
   | { kind: 'move'; node: string; parentBefore: string | null; parentAfter: string }
   | { kind: 'delete'; node: string; parentBefore: string | null }
-  | { kind: 'restore'; node: string; parentAfter: string | null }
-  | { kind: 'payload'; node: string };
+  | { kind: 'restore'; node: string; parentAfter: string | null; payload: Uint8Array | null }
+  | { kind: 'payload'; node: string; payload: Uint8Array | null };
 
 /**
  * Coalesced result of advancing materialized state to `headSeq`.

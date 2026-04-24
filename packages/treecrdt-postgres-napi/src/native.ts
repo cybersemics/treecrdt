@@ -23,6 +23,7 @@ export type NativeMaterializationChange = {
   node: Uint8Array;
   parentBefore?: Uint8Array | null;
   parentAfter?: Uint8Array | null;
+  payload?: Uint8Array | null;
 };
 
 export type NativeMaterializationOutcome = {

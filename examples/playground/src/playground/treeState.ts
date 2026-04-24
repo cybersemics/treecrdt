@@ -13,13 +13,13 @@ export function applyChildrenLoaded(
   const ensureNode = (id: string): NodeMeta => {
     const existing = nextIndex[id];
     if (existing) return existing;
-    const meta: NodeMeta = { parentId: null, order: 0, childCount: 0, deleted: false };
+    const meta: NodeMeta = { parentId: null, order: 0, childCount: 0 };
     nextIndex[id] = meta;
     return meta;
   };
 
   ensureNode(ROOT_ID);
-  nextIndex[ROOT_ID] = { ...nextIndex[ROOT_ID]!, parentId: null, deleted: false };
+  nextIndex[ROOT_ID] = { ...nextIndex[ROOT_ID]!, parentId: null };
   if (!Object.prototype.hasOwnProperty.call(nextChildrenByParent, ROOT_ID)) nextChildrenByParent[ROOT_ID] = [];
 
   const parentMeta = ensureNode(parentId);
@@ -28,7 +28,6 @@ export function applyChildrenLoaded(
   nextIndex[parentId] = {
     ...parentMeta,
     parentId: resolvedParentId,
-    deleted: false,
     childCount: children.length,
   };
 
@@ -49,7 +48,7 @@ export function applyChildrenLoaded(
     const existing = ensureNode(childId);
     const loaded = Object.prototype.hasOwnProperty.call(nextChildrenByParent, childId);
     const childCount = loaded ? nextChildrenByParent[childId]!.length : existing.childCount;
-    nextIndex[childId] = { ...existing, parentId, order: i, deleted: false, childCount };
+    nextIndex[childId] = { ...existing, parentId, order: i, childCount };
   }
 
   return { index: nextIndex, childrenByParent: nextChildrenByParent };

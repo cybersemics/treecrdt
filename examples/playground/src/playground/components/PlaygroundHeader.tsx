@@ -1,4 +1,3 @@
-import React from "react";
 import { MdContentCopy, MdGroup, MdLockOutline, MdOpenInNew, MdVpnKey } from "react-icons/md";
 
 import type { Status, StorageMode } from "../types";

@@ -79,6 +79,7 @@ pub struct NativeMaterializationChange {
     pub node: Buffer,
     pub parent_before: Option<Buffer>,
     pub parent_after: Option<Buffer>,
+    pub payload: Option<Buffer>,
 }
 
 #[napi(object)]
@@ -98,11 +99,16 @@ fn outcome_to_native(outcome: MaterializationOutcome) -> NativeMaterializationOu
         .changes
         .into_iter()
         .map(|change| match change {
-            MaterializationChange::Insert { node, parent_after } => NativeMaterializationChange {
+            MaterializationChange::Insert {
+                node,
+                parent_after,
+                payload,
+            } => NativeMaterializationChange {
                 kind: "insert".to_string(),
                 node: node_buffer(node),
                 parent_before: None,
                 parent_after: Some(node_buffer(parent_after)),
+                payload: payload.map(Buffer::from),
             },
             MaterializationChange::Move {
                 node,
@@ -113,6 +119,7 @@ fn outcome_to_native(outcome: MaterializationOutcome) -> NativeMaterializationOu
                 node: node_buffer(node),
                 parent_before: parent_before.map(node_buffer),
                 parent_after: Some(node_buffer(parent_after)),
+                payload: None,
             },
             MaterializationChange::Delete {
                 node,
@@ -122,18 +129,25 @@ fn outcome_to_native(outcome: MaterializationOutcome) -> NativeMaterializationOu
                 node: node_buffer(node),
                 parent_before: parent_before.map(node_buffer),
                 parent_after: None,
+                payload: None,
             },
-            MaterializationChange::Restore { node, parent_after } => NativeMaterializationChange {
+            MaterializationChange::Restore {
+                node,
+                parent_after,
+                payload,
+            } => NativeMaterializationChange {
                 kind: "restore".to_string(),
                 node: node_buffer(node),
                 parent_before: None,
                 parent_after: parent_after.map(node_buffer),
+                payload: payload.map(Buffer::from),
             },
-            MaterializationChange::Payload { node } => NativeMaterializationChange {
+            MaterializationChange::Payload { node, payload } => NativeMaterializationChange {
                 kind: "payload".to_string(),
                 node: node_buffer(node),
                 parent_before: None,
                 parent_after: None,
+                payload: payload.map(Buffer::from),
             },
         })
         .collect();

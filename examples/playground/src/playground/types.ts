@@ -2,14 +2,12 @@ export type DisplayNode = {
   id: string;
   label: string;
   value: string;
-  children: DisplayNode[];
 };
 
 export type NodeMeta = {
   parentId: string | null;
   order: number;
   childCount: number;
-  deleted: boolean;
 };
 
 export type TreeState = {

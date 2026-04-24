@@ -273,6 +273,11 @@ async function createDirectClient(opts: {
   let closed = false;
   const closedError = new Error(CLIENT_CLOSED_ERROR);
   let callQueue: Promise<void> = Promise.resolve();
+  const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
+    promise.then(
+      () => undefined,
+      () => undefined,
+    );
 
   const runDirectCall: RpcCall = async (method, params) => {
     if (closed) throw closedError;
@@ -395,14 +400,8 @@ async function createDirectClient(opts: {
     }
   };
   const call: RpcCall = (method, params) => {
-    const run = callQueue.then(
-      () => runDirectCall(method, params),
-      () => runDirectCall(method, params),
-    );
-    callQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
+    const run = callQueue.then(() => runDirectCall(method, params));
+    callQueue = settleQueue(run);
     return run;
   };
 

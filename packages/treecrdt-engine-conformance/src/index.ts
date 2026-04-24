@@ -604,16 +604,19 @@ async function scenarioMaterializationEventPayloadCoalescing(
   const root = nodeIdFromInt(0);
   const node = nodeIdFromInt(21);
 
+  await engine.ops.append(
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  );
+
   const events = await captureMaterializationEvents(engine, () =>
     engine.ops.appendMany([
-      makeInsertOp({
-        replica,
-        counter: 1,
-        lamport: 1,
-        parent: root,
-        node,
-        orderKey: orderKeyFromPosition(0),
-      }),
       makePayloadOp({
         replica,
         counter: 2,
@@ -633,12 +636,15 @@ async function scenarioMaterializationEventPayloadCoalescing(
   assertEqual(events.length, 1, 'appendMany payload coalescing should emit one event');
   const refs = materializationEventNodeRefs(events[0]!);
   assertEventNodeRefsSortedUnique(refs, 'appendMany coalesced event node refs');
-  assertEventNodeRefsContain(refs, [root, node], 'appendMany event should include root+node');
-  assertEqual(
-    events[0]!.changes.filter((change) => change.kind === 'payload' && change.node === node).length,
-    1,
-    'payload changes should be coalesced by node',
+  assertEventNodeRefsContain(refs, [node], 'appendMany event should include changed node');
+  const payloadChanges = events[0]!.changes.filter(
+    (change) => change.kind === 'payload' && change.node === node,
   );
+  assertEqual(payloadChanges.length, 1, 'payload changes should be coalesced by node');
+  if (payloadChanges[0]?.kind !== 'payload') {
+    throw new Error('expected payload change');
+  }
+  assertBytesEqual(payloadChanges[0].payload, new Uint8Array([2]), 'payload change final bytes');
 }
 
 async function scenarioMaterializationEventDefensiveRestore(

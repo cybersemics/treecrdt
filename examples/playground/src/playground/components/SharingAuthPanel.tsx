@@ -12,15 +12,7 @@ import {
   setSealedIdentityKeyB64,
   setSealedIssuerKeyB64,
 } from "../../auth";
-
-type AuthTokenScope = {
-  docId: string;
-  rootNodeId?: string;
-  maxDepth?: number;
-  excludeNodeIds?: string[];
-};
-
-type PendingOpEntry = { id: string; kind: string; message?: string };
+import type { PlaygroundAuthApi } from "../hooks/usePlaygroundAuth";
 
 export type SharingAuthPanelProps = {
   docId: string;
@@ -37,11 +29,9 @@ export type SharingAuthPanelProps = {
   authLocalKeyIdHex: string | null;
   authLocalTokenIdHex: string | null;
   authTokenCount: number;
-  authTokenScope: AuthTokenScope | null;
-  authTokenActions: string[] | null;
-  authScopeSummary: string;
-  authScopeTitle: string;
-  authSummaryBadges: string[];
+  authTokenScope: PlaygroundAuthApi["authTokenScope"];
+  authTokenActions: PlaygroundAuthApi["authTokenActions"];
+  nodeLabelForId: (id: string) => string;
 
   selfPeerId: string | null;
   copyToClipboard: (text: string) => Promise<void>;
@@ -62,17 +52,103 @@ export type SharingAuthPanelProps = {
   deviceSigningKeyBlobImportText: string;
   setDeviceSigningKeyBlobImportText: React.Dispatch<React.SetStateAction<string>>;
 
-  localIdentityChainPromiseRef: React.MutableRefObject<unknown | null>;
+  localIdentityChainPromiseRef: PlaygroundAuthApi["localIdentityChainPromiseRef"];
 
   client: unknown | null;
-  pendingOps: PendingOpEntry[];
+  pendingOps: PlaygroundAuthApi["pendingOps"];
   refreshPendingOps: () => Promise<void>;
 
   revealIdentity: boolean;
   setRevealIdentity: React.Dispatch<React.SetStateAction<boolean>>;
 
-  refreshAuthMaterial: () => Promise<unknown>;
+  refreshAuthMaterial: PlaygroundAuthApi["refreshAuthMaterial"];
 };
+
+type KeyMaterialCardProps = {
+  label: string;
+  value: string | null;
+  emptyLabel?: string;
+  copyTitle: string;
+  importText: string;
+  setImportText: React.Dispatch<React.SetStateAction<string>>;
+  importPlaceholder: string;
+  importTitle: string;
+  help: string;
+  authBusy: boolean;
+  copyToClipboard: (text: string) => Promise<void>;
+  setAuthError: React.Dispatch<React.SetStateAction<string | null>>;
+  onImport: (value: string) => void;
+};
+
+function KeyMaterialCard(props: KeyMaterialCardProps) {
+  const {
+    label,
+    value,
+    emptyLabel = "-",
+    copyTitle,
+    importText,
+    setImportText,
+    importPlaceholder,
+    importTitle,
+    help,
+    authBusy,
+    copyToClipboard,
+    setAuthError,
+    onImport,
+  } = props;
+
+  return (
+    <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+        <button
+          className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+          type="button"
+          onClick={() =>
+            void copyToClipboard(value ?? "").catch((err) =>
+              setAuthError(err instanceof Error ? err.message : String(err))
+            )
+          }
+          disabled={authBusy || !value}
+          title={copyTitle}
+        >
+          <MdContentCopy className="text-[16px]" />
+          Copy
+        </button>
+      </div>
+      <div className="mt-1 font-mono text-slate-200" title={value ?? ""}>
+        {value ? `${value.slice(0, 24)}…` : emptyLabel}
+      </div>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input
+          type="text"
+          value={importText}
+          onChange={(e) => setImportText(e.target.value)}
+          placeholder={importPlaceholder}
+          className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+          disabled={authBusy}
+        />
+        <button
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
+          type="button"
+          onClick={() => {
+            try {
+              onImport(importText);
+              setImportText("");
+            } catch (err) {
+              setAuthError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+          disabled={authBusy || importText.trim().length === 0}
+          title={importTitle}
+        >
+          Import
+        </button>
+      </div>
+      <div className="mt-1 text-[11px] text-slate-500">{help}</div>
+    </div>
+  );
+}
 
 export function SharingAuthPanel(props: SharingAuthPanelProps) {
   const {
@@ -93,9 +169,7 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     authTokenCount,
     authTokenScope,
     authTokenActions,
-    authScopeSummary,
-    authScopeTitle,
-    authSummaryBadges,
+    nodeLabelForId,
     selfPeerId,
     openMintingPeerTab,
     revealIdentity,
@@ -123,6 +197,31 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
   const sealedIdentityKeyB64 = getSealedIdentityKeyB64();
   const sealedDeviceSigningKeyB64 = getSealedDeviceSigningKeyB64();
   const userFacingAuthTokenActions = authTokenActions?.filter((name) => name !== "tombstone") ?? null;
+  const authScopeSummary = (() => {
+    if (!authTokenScope) return "-";
+    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
+    if (rootId === ROOT_ID) return "doc-wide";
+    const label = nodeLabelForId(rootId);
+    if (label && label !== rootId) return `subtree ${label}`;
+    return `subtree ${rootId.slice(0, 8)}…`;
+  })();
+  const authScopeTitle = (() => {
+    if (!authTokenScope) return "";
+    const rootId = (authTokenScope.rootNodeId ?? ROOT_ID).toLowerCase();
+    const parts = [`root=${rootId}`];
+    if (authTokenScope.maxDepth !== undefined) parts.push(`maxDepth=${authTokenScope.maxDepth}`);
+    const excludeCount = authTokenScope.excludeNodeIds?.length ?? 0;
+    if (excludeCount > 0) parts.push(`exclude=${excludeCount}`);
+    return parts.join(" ");
+  })();
+  const authSummaryBadges = (() => {
+    if (!Array.isArray(authTokenActions)) return [];
+    const set = new Set(authTokenActions.map(String));
+    const out: string[] = [];
+    if (set.has("write_structure") || set.has("write_payload")) out.push("write");
+    if (set.has("delete")) out.push("delete");
+    return out;
+  })();
 
   return (
     <div id="playground-auth-panel" className="mb-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300">
@@ -311,217 +410,84 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
           </div>
 
           <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-            <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Device wrap key</div>
-                <button
-                  className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  type="button"
-                  onClick={() =>
-                    void copyToClipboard(deviceWrapKeyB64 ?? "").catch((err) =>
-                      setAuthError(err instanceof Error ? err.message : String(err))
-                    )
-                  }
-                  disabled={authBusy || !deviceWrapKeyB64}
-                  title="Copy device wrap key"
-                >
-                  <MdContentCopy className="text-[16px]" />
-                  Copy
-                </button>
-              </div>
-              <div className="mt-1 font-mono text-slate-200" title={deviceWrapKeyB64 ?? ""}>
-                {deviceWrapKeyB64 ? `${deviceWrapKeyB64.slice(0, 24)}…` : "(initializing)"}
-              </div>
-              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <input
-                  type="text"
-                  value={wrapKeyImportText}
-                  onChange={(e) => setWrapKeyImportText(e.target.value)}
-                  placeholder="Paste base64url wrap key"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={authBusy}
-                />
-                <button
-                  className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
-                  type="button"
-                  onClick={() => {
-                    try {
-                      importDeviceWrapKeyB64(wrapKeyImportText);
-                      setWrapKeyImportText("");
-                      void refreshAuthMaterial().catch((err) =>
-                        setAuthError(err instanceof Error ? err.message : String(err))
-                      );
-                    } catch (err) {
-                      setAuthError(err instanceof Error ? err.message : String(err));
-                    }
-                  }}
-                  disabled={authBusy || wrapKeyImportText.trim().length === 0}
-                  title="Import device wrap key"
-                >
-                  Import
-                </button>
-              </div>
-              <div className="mt-1 text-[11px] text-slate-500">
-                Back up this key (e.g. Supabase). Needed to decrypt doc key blobs.
-              </div>
-            </div>
+            <KeyMaterialCard
+              label="Device wrap key"
+              value={deviceWrapKeyB64}
+              emptyLabel="(initializing)"
+              copyTitle="Copy device wrap key"
+              importText={wrapKeyImportText}
+              setImportText={setWrapKeyImportText}
+              importPlaceholder="Paste base64url wrap key"
+              importTitle="Import device wrap key"
+              help="Back up this key (e.g. Supabase). Needed to decrypt doc key blobs."
+              authBusy={authBusy}
+              copyToClipboard={copyToClipboard}
+              setAuthError={setAuthError}
+              onImport={(value) => {
+                importDeviceWrapKeyB64(value);
+                void refreshAuthMaterial().catch((err) =>
+                  setAuthError(err instanceof Error ? err.message : String(err))
+                );
+              }}
+            />
 
-            <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Issuer key blob</div>
-                <button
-                  className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  type="button"
-                  onClick={() =>
-                    void copyToClipboard(sealedIssuerKeyB64 ?? "").catch((err) =>
-                      setAuthError(err instanceof Error ? err.message : String(err))
-                    )
-                  }
-                  disabled={authBusy || !sealedIssuerKeyB64}
-                  title="Copy sealed issuer key blob (base64url)"
-                >
-                  <MdContentCopy className="text-[16px]" />
-                  Copy
-                </button>
-              </div>
-              <div className="mt-1 font-mono text-slate-200" title={sealedIssuerKeyB64 ?? ""}>
-                {sealedIssuerKeyB64 ? `${sealedIssuerKeyB64.slice(0, 24)}…` : "-"}
-              </div>
-              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <input
-                  type="text"
-                  value={issuerKeyBlobImportText}
-                  onChange={(e) => setIssuerKeyBlobImportText(e.target.value)}
-                  placeholder="Paste sealed issuer key blob (base64url)"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={authBusy}
-                />
-                <button
-                  className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
-                  type="button"
-                  onClick={() => {
-                    try {
-                      setSealedIssuerKeyB64(docId, issuerKeyBlobImportText);
-                      setIssuerKeyBlobImportText("");
-                      void refreshAuthMaterial().catch((err) =>
-                        setAuthError(err instanceof Error ? err.message : String(err))
-                      );
-                    } catch (err) {
-                      setAuthError(err instanceof Error ? err.message : String(err));
-                    }
-                  }}
-                  disabled={authBusy || issuerKeyBlobImportText.trim().length === 0}
-                  title="Import sealed issuer key blob"
-                >
-                  Import
-                </button>
-              </div>
-              <div className="mt-1 text-[11px] text-slate-500">Encrypted at rest. Bound to this `docId` via AAD.</div>
-            </div>
+            <KeyMaterialCard
+              label="Issuer key blob"
+              value={sealedIssuerKeyB64}
+              copyTitle="Copy sealed issuer key blob (base64url)"
+              importText={issuerKeyBlobImportText}
+              setImportText={setIssuerKeyBlobImportText}
+              importPlaceholder="Paste sealed issuer key blob (base64url)"
+              importTitle="Import sealed issuer key blob"
+              help="Encrypted at rest. Bound to this `docId` via AAD."
+              authBusy={authBusy}
+              copyToClipboard={copyToClipboard}
+              setAuthError={setAuthError}
+              onImport={(value) => {
+                setSealedIssuerKeyB64(docId, value);
+                void refreshAuthMaterial().catch((err) =>
+                  setAuthError(err instanceof Error ? err.message : String(err))
+                );
+              }}
+            />
           </div>
 
           <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-            <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Identity key blob</div>
-                <button
-                  className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  type="button"
-                  onClick={() =>
-                    void copyToClipboard(sealedIdentityKeyB64 ?? "").catch((err) =>
-                      setAuthError(err instanceof Error ? err.message : String(err))
-                    )
-                  }
-                  disabled={authBusy || !sealedIdentityKeyB64}
-                  title="Copy sealed identity key blob (base64url)"
-                >
-                  <MdContentCopy className="text-[16px]" />
-                  Copy
-                </button>
-              </div>
-              <div className="mt-1 font-mono text-slate-200" title={sealedIdentityKeyB64 ?? ""}>
-                {sealedIdentityKeyB64 ? `${sealedIdentityKeyB64.slice(0, 24)}…` : "-"}
-              </div>
-              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <input
-                  type="text"
-                  value={identityKeyBlobImportText}
-                  onChange={(e) => setIdentityKeyBlobImportText(e.target.value)}
-                  placeholder="Paste sealed identity key blob (base64url)"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={authBusy}
-                />
-                <button
-                  className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
-                  type="button"
-                  onClick={() => {
-                    try {
-                      setSealedIdentityKeyB64(identityKeyBlobImportText);
-                      setIdentityKeyBlobImportText("");
-                      localIdentityChainPromiseRef.current = null;
-                    } catch (err) {
-                      setAuthError(err instanceof Error ? err.message : String(err));
-                    }
-                  }}
-                  disabled={authBusy || identityKeyBlobImportText.trim().length === 0}
-                  title="Import sealed identity key blob"
-                >
-                  Import
-                </button>
-              </div>
-              <div className="mt-1 text-[11px] text-slate-500">Encrypted at rest. Requires the device wrap key to open.</div>
-            </div>
+            <KeyMaterialCard
+              label="Identity key blob"
+              value={sealedIdentityKeyB64}
+              copyTitle="Copy sealed identity key blob (base64url)"
+              importText={identityKeyBlobImportText}
+              setImportText={setIdentityKeyBlobImportText}
+              importPlaceholder="Paste sealed identity key blob (base64url)"
+              importTitle="Import sealed identity key blob"
+              help="Encrypted at rest. Requires the device wrap key to open."
+              authBusy={authBusy}
+              copyToClipboard={copyToClipboard}
+              setAuthError={setAuthError}
+              onImport={(value) => {
+                setSealedIdentityKeyB64(value);
+                localIdentityChainPromiseRef.current = null;
+              }}
+            />
 
-            <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Device signing key blob</div>
-                <button
-                  className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-                  type="button"
-                  onClick={() =>
-                    void copyToClipboard(sealedDeviceSigningKeyB64 ?? "").catch((err) =>
-                      setAuthError(err instanceof Error ? err.message : String(err))
-                    )
-                  }
-                  disabled={authBusy || !sealedDeviceSigningKeyB64}
-                  title="Copy sealed device signing key blob (base64url)"
-                >
-                  <MdContentCopy className="text-[16px]" />
-                  Copy
-                </button>
-              </div>
-              <div className="mt-1 font-mono text-slate-200" title={sealedDeviceSigningKeyB64 ?? ""}>
-                {sealedDeviceSigningKeyB64 ? `${sealedDeviceSigningKeyB64.slice(0, 24)}…` : "-"}
-              </div>
-              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <input
-                  type="text"
-                  value={deviceSigningKeyBlobImportText}
-                  onChange={(e) => setDeviceSigningKeyBlobImportText(e.target.value)}
-                  placeholder="Paste sealed device signing key blob (base64url)"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                  disabled={authBusy}
-                />
-                <button
-                  className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:bg-accent/90 disabled:opacity-50"
-                  type="button"
-                  onClick={() => {
-                    try {
-                      setSealedDeviceSigningKeyB64(deviceSigningKeyBlobImportText);
-                      setDeviceSigningKeyBlobImportText("");
-                      localIdentityChainPromiseRef.current = null;
-                    } catch (err) {
-                      setAuthError(err instanceof Error ? err.message : String(err));
-                    }
-                  }}
-                  disabled={authBusy || deviceSigningKeyBlobImportText.trim().length === 0}
-                  title="Import sealed device signing key blob"
-                >
-                  Import
-                </button>
-              </div>
-              <div className="mt-1 text-[11px] text-slate-500">Encrypted at rest. Requires the device wrap key to open.</div>
-            </div>
+            <KeyMaterialCard
+              label="Device signing key blob"
+              value={sealedDeviceSigningKeyB64}
+              copyTitle="Copy sealed device signing key blob (base64url)"
+              importText={deviceSigningKeyBlobImportText}
+              setImportText={setDeviceSigningKeyBlobImportText}
+              importPlaceholder="Paste sealed device signing key blob (base64url)"
+              importTitle="Import sealed device signing key blob"
+              help="Encrypted at rest. Requires the device wrap key to open."
+              authBusy={authBusy}
+              copyToClipboard={copyToClipboard}
+              setAuthError={setAuthError}
+              onImport={(value) => {
+                setSealedDeviceSigningKeyB64(value);
+                localIdentityChainPromiseRef.current = null;
+              }}
+            />
           </div>
 
           <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">

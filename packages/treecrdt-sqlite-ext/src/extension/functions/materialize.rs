@@ -29,6 +29,7 @@ enum JsonMaterializationChange {
     Insert {
         node: String,
         parent_after: String,
+        payload: Option<Vec<u8>>,
     },
     Move {
         node: String,
@@ -42,9 +43,11 @@ enum JsonMaterializationChange {
     Restore {
         node: String,
         parent_after: Option<String>,
+        payload: Option<Vec<u8>>,
     },
     Payload {
         node: String,
+        payload: Option<Vec<u8>>,
     },
 }
 
@@ -59,12 +62,15 @@ pub(super) fn json_outcome_from_core(
         .changes
         .iter()
         .map(|change| match change {
-            MaterializationChange::Insert { node, parent_after } => {
-                JsonMaterializationChange::Insert {
-                    node: node_hex(*node),
-                    parent_after: node_hex(*parent_after),
-                }
-            }
+            MaterializationChange::Insert {
+                node,
+                parent_after,
+                payload,
+            } => JsonMaterializationChange::Insert {
+                node: node_hex(*node),
+                parent_after: node_hex(*parent_after),
+                payload: payload.clone(),
+            },
             MaterializationChange::Move {
                 node,
                 parent_before,
@@ -81,15 +87,21 @@ pub(super) fn json_outcome_from_core(
                 node: node_hex(*node),
                 parent_before: parent_before.map(node_hex),
             },
-            MaterializationChange::Restore { node, parent_after } => {
-                JsonMaterializationChange::Restore {
+            MaterializationChange::Restore {
+                node,
+                parent_after,
+                payload,
+            } => JsonMaterializationChange::Restore {
+                node: node_hex(*node),
+                parent_after: parent_after.map(node_hex),
+                payload: payload.clone(),
+            },
+            MaterializationChange::Payload { node, payload } => {
+                JsonMaterializationChange::Payload {
                     node: node_hex(*node),
-                    parent_after: parent_after.map(node_hex),
+                    payload: payload.clone(),
                 }
             }
-            MaterializationChange::Payload { node } => JsonMaterializationChange::Payload {
-                node: node_hex(*node),
-            },
         })
         .collect();
     JsonMaterializationOutcome {

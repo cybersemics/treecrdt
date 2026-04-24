@@ -43,6 +43,7 @@ enum JsonMaterializationChange {
     Insert {
         node: String,
         parent_after: String,
+        payload: Option<Vec<u8>>,
     },
     Move {
         node: String,
@@ -56,9 +57,11 @@ enum JsonMaterializationChange {
     Restore {
         node: String,
         parent_after: Option<String>,
+        payload: Option<Vec<u8>>,
     },
     Payload {
         node: String,
+        payload: Option<Vec<u8>>,
     },
 }
 
@@ -88,12 +91,15 @@ fn json_outcome_to_core(outcome: JsonMaterializationOutcome) -> MaterializationO
             .changes
             .into_iter()
             .map(|change| match change {
-                JsonMaterializationChange::Insert { node, parent_after } => {
-                    MaterializationChange::Insert {
-                        node: hex_to_node_id(&node),
-                        parent_after: hex_to_node_id(&parent_after),
-                    }
-                }
+                JsonMaterializationChange::Insert {
+                    node,
+                    parent_after,
+                    payload,
+                } => MaterializationChange::Insert {
+                    node: hex_to_node_id(&node),
+                    parent_after: hex_to_node_id(&parent_after),
+                    payload,
+                },
                 JsonMaterializationChange::Move {
                     node,
                     parent_before,
@@ -110,15 +116,21 @@ fn json_outcome_to_core(outcome: JsonMaterializationOutcome) -> MaterializationO
                     node: hex_to_node_id(&node),
                     parent_before: parent_before.as_deref().map(hex_to_node_id),
                 },
-                JsonMaterializationChange::Restore { node, parent_after } => {
-                    MaterializationChange::Restore {
+                JsonMaterializationChange::Restore {
+                    node,
+                    parent_after,
+                    payload,
+                } => MaterializationChange::Restore {
+                    node: hex_to_node_id(&node),
+                    parent_after: parent_after.as_deref().map(hex_to_node_id),
+                    payload,
+                },
+                JsonMaterializationChange::Payload { node, payload } => {
+                    MaterializationChange::Payload {
                         node: hex_to_node_id(&node),
-                        parent_after: parent_after.as_deref().map(hex_to_node_id),
+                        payload,
                     }
                 }
-                JsonMaterializationChange::Payload { node } => MaterializationChange::Payload {
-                    node: hex_to_node_id(&node),
-                },
             })
             .collect(),
     }

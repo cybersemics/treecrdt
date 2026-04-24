@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import {

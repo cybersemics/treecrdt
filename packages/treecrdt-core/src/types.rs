@@ -31,6 +31,7 @@ pub enum MaterializationChange {
     Insert {
         node: NodeId,
         parent_after: NodeId,
+        payload: Option<Vec<u8>>,
     },
     Move {
         node: NodeId,
@@ -44,9 +45,11 @@ pub enum MaterializationChange {
     Restore {
         node: NodeId,
         parent_after: Option<NodeId>,
+        payload: Option<Vec<u8>>,
     },
     Payload {
         node: NodeId,
+        payload: Option<Vec<u8>>,
     },
 }
 
@@ -57,7 +60,7 @@ impl MaterializationChange {
             | Self::Move { node, .. }
             | Self::Delete { node, .. }
             | Self::Restore { node, .. }
-            | Self::Payload { node } => *node,
+            | Self::Payload { node, .. } => *node,
         }
     }
 

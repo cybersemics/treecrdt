@@ -637,6 +637,13 @@ export function decodeSqliteNodeIds(raw: unknown): string[] {
   return raw.map((val) => decodeNodeId(val instanceof Uint8Array ? val : (val as any)));
 }
 
+function decodeSqlitePayload(raw: unknown): Uint8Array | null {
+  if (raw == null) return null;
+  if (raw instanceof Uint8Array) return raw;
+  if (typeof raw === 'string') return hexToBytes(raw);
+  return Uint8Array.from(raw as any);
+}
+
 export function decodeSqliteMaterializationOutcome(raw: unknown): MaterializationOutcome {
   const value = (raw ?? {}) as any;
   const rawChanges = Array.isArray(value.changes) ? value.changes : [];
@@ -647,6 +654,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         kind,
         node: decodeNodeId(change.node),
         parentAfter: decodeNodeId(change.parentAfter),
+        payload: decodeSqlitePayload(change.payload),
       };
     }
     if (kind === 'move') {
@@ -669,10 +677,15 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         kind,
         node: decodeNodeId(change.node),
         parentAfter: change.parentAfter == null ? null : decodeNodeId(change.parentAfter),
+        payload: decodeSqlitePayload(change.payload),
       };
     }
     if (kind === 'payload') {
-      return { kind, node: decodeNodeId(change.node) };
+      return {
+        kind,
+        node: decodeNodeId(change.node),
+        payload: decodeSqlitePayload(change.payload),
+      };
     }
     throw new Error(`unknown materialization change kind: ${kind}`);
   });

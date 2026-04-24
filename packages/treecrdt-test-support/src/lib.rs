@@ -87,7 +87,7 @@ pub fn representative_remote_batch_matches_shape<H: MaterializationConformanceHa
     assert!(outcome
         .changes
         .iter()
-        .any(|change| matches!(change, MaterializationChange::Payload { node } if *node == child)));
+        .any(|change| matches!(change, MaterializationChange::Payload { node, payload } if *node == child && payload.as_deref() == Some(&[8]))));
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![p1, p2]);
     assert_eq!(harness.visible_children(p2), vec![child]);
     assert_eq!(harness.payload(child), Some(vec![8]));

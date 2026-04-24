@@ -918,6 +918,7 @@ where
                 (true, false) => patch_changes.push(MaterializationChange::Restore {
                     node: *node,
                     parent_after: final_parent.filter(|parent| *parent != NodeId::TRASH),
+                    payload: replay.crdt.payload(*node)?,
                 }),
                 (false, true) => patch_changes.push(MaterializationChange::Delete {
                     node: *node,

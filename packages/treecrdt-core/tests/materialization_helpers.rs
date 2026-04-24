@@ -297,7 +297,10 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
                 }),
                 outcome: MaterializationOutcome {
                     head_seq: 2,
-                    changes: vec![MaterializationChange::Payload { node: NodeId(2) }],
+                    changes: vec![MaterializationChange::Payload {
+                        node: NodeId(2),
+                        payload: Some(vec![9]),
+                    }],
                 },
             })
         },
@@ -382,8 +385,14 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
                 outcome: MaterializationOutcome {
                     head_seq: 9,
                     changes: vec![
-                        MaterializationChange::Payload { node: NodeId(1) },
-                        MaterializationChange::Payload { node: NodeId(2) },
+                        MaterializationChange::Payload {
+                            node: NodeId(1),
+                            payload: None,
+                        },
+                        MaterializationChange::Payload {
+                            node: NodeId(2),
+                            payload: None,
+                        },
                     ],
                 },
             })
@@ -751,6 +760,7 @@ fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
         result.outcome.changes.contains(&MaterializationChange::Restore {
             node: parent,
             parent_after: Some(NodeId::ROOT),
+            payload: None,
         }),
         "catch-up must report rows restored by patching stale backend state"
     );
