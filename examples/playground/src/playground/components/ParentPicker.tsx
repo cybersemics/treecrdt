@@ -12,10 +12,10 @@ export const ParentPicker = React.memo(function ParentPicker({
   disabled: boolean;
 }) {
   return (
-    <label className="w-full md:w-52 space-y-2 text-sm text-slate-200">
+    <label className="min-w-0 w-full space-y-2 text-sm text-slate-200 md:w-52">
       <span>Parent</span>
       <select
-        className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+        className="min-w-0 w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
@@ -30,4 +30,3 @@ export const ParentPicker = React.memo(function ParentPicker({
     </label>
   );
 });
-

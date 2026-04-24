@@ -162,9 +162,9 @@ export function TreePanel({
   );
 
   return (
-    <div className="rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
+    <div className="min-w-0 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-3">
+        <div className="min-w-0 flex items-center gap-3">
           <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Tree</div>
           <div className="text-xs text-slate-500">
             {totalNodes === null ? "…" : totalNodes} nodes
@@ -177,7 +177,7 @@ export function TreePanel({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <button
             className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-50 ${
               online

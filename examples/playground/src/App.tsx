@@ -1007,8 +1007,8 @@ export default function App() {
         error={error}
       />
 
-      <div className="grid gap-6 md:grid-cols-3">
-        <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} space-y-4`}>
+      <div className="grid min-w-0 gap-6 md:grid-cols-3">
+        <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} min-w-0 space-y-4`}>
           <ComposerPanel
             composerOpen={composerOpen}
             setComposerOpen={setComposerOpen}

@@ -26,7 +26,7 @@ export function OpsPanel({
   opsVirtualizer: Virtualizer<HTMLDivElement, Element>;
 }) {
   return (
-    <aside className="space-y-3 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
+    <aside className="min-w-0 space-y-3 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
       <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Operations</div>
       <div className="flex items-center justify-between text-xs text-slate-400">
         <span>Ops: {ops.length}</span>
