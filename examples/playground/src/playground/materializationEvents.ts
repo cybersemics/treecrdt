@@ -9,15 +9,12 @@ type MaterializationRefreshPlan = {
 
 export function materializationRefreshPlan(
   event: MaterializationEvent,
-  loadedChildren: Record<string, readonly string[]>,
 ): MaterializationRefreshPlan {
   const payloadUpdates: PayloadUpdate[] = [];
   const parentsToRefresh = new Set<string>();
 
-  const addLoadedParent = (id: string | null | undefined) => {
-    if (id && Object.prototype.hasOwnProperty.call(loadedChildren, id)) {
-      parentsToRefresh.add(id);
-    }
+  const addParent = (id: string | null | undefined) => {
+    if (id) parentsToRefresh.add(id);
   };
 
   for (const change of event.changes) {
@@ -28,20 +25,18 @@ export function materializationRefreshPlan(
 
     if (change.kind === 'insert') {
       payloadUpdates.push({ node: change.node, payload: change.payload });
-      addLoadedParent(change.parentAfter);
+      addParent(change.parentAfter);
     } else if (change.kind === 'move') {
-      addLoadedParent(change.parentBefore);
-      addLoadedParent(change.parentAfter);
+      addParent(change.parentBefore);
+      addParent(change.parentAfter);
     } else if (change.kind === 'delete') {
-      addLoadedParent(change.parentBefore);
+      addParent(change.parentBefore);
     } else if (change.kind === 'restore') {
       payloadUpdates.push({ node: change.node, payload: change.payload });
-      addLoadedParent(change.parentAfter);
+      addParent(change.parentAfter);
     }
 
-    if (Object.prototype.hasOwnProperty.call(loadedChildren, change.node)) {
-      parentsToRefresh.add(change.node);
-    }
+    parentsToRefresh.add(change.node);
   }
 
   return { payloadUpdates, parentsToRefresh };

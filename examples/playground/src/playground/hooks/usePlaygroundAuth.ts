@@ -278,7 +278,7 @@ export type PlaygroundAuthApi = {
   onAuthGrantMessage: (grant: AuthGrantMessageV1) => void;
 };
 
-export type UsePlaygroundAuthOptions = {
+type UsePlaygroundAuthOptions = {
   docId: string;
   joinMode: boolean;
   client: TreecrdtClient | null;

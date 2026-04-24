@@ -14,7 +14,7 @@ import {
 } from "../../auth";
 import type { PlaygroundAuthApi } from "../hooks/usePlaygroundAuth";
 
-export type SharingAuthPanelProps = {
+type SharingAuthPanelProps = {
   docId: string;
   authEnabled: boolean;
   authBusy: boolean;

@@ -152,7 +152,7 @@ function formatRemoteErrorDetail(
   if (!bootstrapHost || bootstrapHost === host) return base;
   return `${base} via ${bootstrapHost}`;
 }
-export type PlaygroundSyncApi = {
+type PlaygroundSyncApi = {
   peers: PeerInfo[];
   remoteSyncStatus: RemoteSyncStatus;
   syncBusy: boolean;
@@ -172,7 +172,7 @@ export type PlaygroundSyncApi = {
   ) => boolean;
 };
 
-export type UsePlaygroundSyncOptions = {
+type UsePlaygroundSyncOptions = {
   client: TreecrdtClient | null;
   status: 'booting' | 'ready' | 'error';
   docId: string;

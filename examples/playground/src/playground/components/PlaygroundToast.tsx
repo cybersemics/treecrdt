@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 
-export type ToastKind = "success" | "info" | "error";
-export type ToastAction = "sync" | "details";
+type ToastKind = "success" | "info" | "error";
+type ToastAction = "sync" | "details";
 export type ToastState = {
   kind: ToastKind;
   title: string;
@@ -10,7 +10,7 @@ export type ToastState = {
   durationMs?: number;
 };
 
-export type PlaygroundToastProps = {
+type PlaygroundToastProps = {
   toast: ToastState | null;
   setToast: Dispatch<SetStateAction<ToastState | null>>;
   onSync: () => void;
@@ -83,4 +83,3 @@ export function PlaygroundToast(props: PlaygroundToastProps) {
     </div>
   );
 }
-

@@ -419,10 +419,7 @@ export default function App() {
   const applyMaterializationEvent = React.useCallback(
     (event: MaterializationEvent) => {
       if (event.changes.length === 0) return;
-      const { payloadUpdates, parentsToRefresh } = materializationRefreshPlan(
-        event,
-        treeStateRef.current.childrenByParent
-      );
+      const { payloadUpdates, parentsToRefresh } = materializationRefreshPlan(event);
       schedulePayloadEventUpdates(payloadUpdates);
       scheduleRefreshParents(parentsToRefresh);
       scheduleRefreshNodeCount();
