@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { expect, test } from 'vitest';
 import { defineProofMaterialStoreContract } from '../../protocol/tests/helpers/proof-material-contract.ts';
 import { definePendingProofMaterialStoreContract } from '../../protocol/tests/helpers/pending-proof-material-contract.ts';
 import { defineReplayOnlyAuthStoreContract } from '../../protocol/tests/helpers/replay-only-auth-contract.ts';
@@ -8,6 +9,7 @@ import {
   createCapabilityMaterialStore,
   createOpAuthStore,
   createPendingOpsStore,
+  createTreecrdtSqliteAuthBackend,
 } from '../dist/index.js';
 
 function createRunner(db: Database.Database): SqliteRunner {
@@ -32,6 +34,30 @@ function createRunner(db: Database.Database): SqliteRunner {
     },
   };
 }
+
+test('sqlite auth backend helper bundles scope evaluator and auth stores', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const backend = createTreecrdtSqliteAuthBackend({ runner, docId: 'doc-auth-helper' });
+    expect(typeof backend.scopeEvaluator).toBe('function');
+
+    await backend.capabilityStore.init();
+    await backend.opAuthStore.init();
+    await backend.pendingOpsStore.init();
+
+    await backend.capabilityStore.storeCapabilities([
+      { name: 'auth.capability', value: 'token-a' },
+    ]);
+    await expect(backend.capabilityStore.listCapabilities()).resolves.toEqual([
+      { name: 'auth.capability', value: 'token-a' },
+    ]);
+    await expect(backend.pendingOpsStore.listPendingOps()).resolves.toEqual([]);
+  } finally {
+    db.close();
+  }
+});
 
 defineProofMaterialStoreContract('sqlite proof material stores', async () => {
   const db = new Database(':memory:');

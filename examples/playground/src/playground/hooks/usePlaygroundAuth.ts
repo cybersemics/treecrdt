@@ -5,18 +5,13 @@ import {
   base64urlDecode,
   base64urlEncode,
   createTreecrdtAuthSession,
-  createTreecrdtSqliteSubtreeScopeEvaluator,
   describeTreecrdtCapabilityTokenV1,
   deriveKeyIdV1,
   deriveTokenIdV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
-import {
-  createCapabilityMaterialStore,
-  createOpAuthStore,
-  createPendingOpsStore,
-} from "@treecrdt/sync-sqlite";
+import { createTreecrdtSqliteAuthBackend } from "@treecrdt/sync-sqlite";
 import type { SyncAuth } from "@treecrdt/sync";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
@@ -541,9 +536,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const localSk = base64urlDecode(authMaterial.localSkB64);
       const localPk = base64urlDecode(authMaterial.localPkB64);
       const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
-      const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(client.runner);
-      const opAuthStore = createOpAuthStore({ runner: client.runner, docId });
-      const capabilityStore = createCapabilityMaterialStore({ runner: client.runner, docId });
+      const authBackend = createTreecrdtSqliteAuthBackend({ runner: client.runner, docId });
 
       const authSession = createTreecrdtAuthSession({
         docId,
@@ -551,11 +544,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         localPrivateKey: localSk,
         localPublicKey: localPk,
         localCapabilityTokens: localTokens,
-        capabilityStore,
+        capabilityStore: authBackend.capabilityStore,
         revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
         requireProofRef: true,
-        scopeEvaluator,
-        opAuthStore,
+        scopeEvaluator: authBackend.scopeEvaluator,
+        opAuthStore: authBackend.opAuthStore,
         onPeerIdentityChain,
         localIdentityChain: getLocalIdentityChain,
       });
@@ -994,7 +987,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
       const issuerPk = base64urlDecode(issuerPkB64);
       const proofTokenBytes = base64urlDecode(proofTokenB64);
-      const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
+      const scopeEvaluator = client ? createTreecrdtSqliteAuthBackend({ runner: client.runner, docId }).scopeEvaluator : undefined;
       const proofDesc = await describeTreecrdtCapabilityTokenV1({
         tokenBytes: proofTokenBytes,
         issuerPublicKeys: [issuerPk],
@@ -1151,9 +1144,9 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const store = createPendingOpsStore({ runner: client.runner, docId });
-      await store.init();
-      const listed = await store.listPendingOps();
+      const { pendingOpsStore } = createTreecrdtSqliteAuthBackend({ runner: client.runner, docId });
+      await pendingOpsStore.init();
+      const listed = await pendingOpsStore.listPendingOps();
       setPendingOps(
         listed.map((p) => ({
           id: `${bytesToHex(p.op.meta.id.replica)}:${p.op.meta.id.counter}`,
@@ -1294,7 +1287,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
         const issuerPk = base64urlDecode(issuerPkB64);
         const proofTokenBytes = base64urlDecode(proofTokenB64);
-        const scopeEvaluator = client ? createTreecrdtSqliteSubtreeScopeEvaluator(client.runner) : undefined;
+        const scopeEvaluator = client ? createTreecrdtSqliteAuthBackend({ runner: client.runner, docId }).scopeEvaluator : undefined;
         const proofDesc = await describeTreecrdtCapabilityTokenV1({
           tokenBytes: proofTokenBytes,
           issuerPublicKeys: [issuerPk],
