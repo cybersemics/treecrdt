@@ -8,7 +8,8 @@ use treecrdt_core::{
     LocalPlacement, MaterializationChange, MaterializationCursor, MaterializationHead,
     MaterializationKey, MaterializationOutcome, MaterializationState, MemoryNodeStore,
     MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
+    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, TruncatingParentOpIndex,
+    VersionVector,
 };
 
 #[derive(Default)]
@@ -75,6 +76,13 @@ impl ParentOpIndex for RecordingIndex {
         seq: u64,
     ) -> treecrdt_core::Result<()> {
         self.records.push((parent, op_id.clone(), seq));
+        Ok(())
+    }
+}
+
+impl TruncatingParentOpIndex for RecordingIndex {
+    fn truncate_from(&mut self, seq: u64) -> treecrdt_core::Result<()> {
+        self.records.retain(|(_, _, existing_seq)| *existing_seq < seq);
         Ok(())
     }
 }
@@ -759,6 +767,8 @@ fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
     let mut nodes = MemoryNodeStore::default();
     nodes.ensure_node(prefix).unwrap();
     nodes.attach(prefix, NodeId::ROOT, vec![0x10]).unwrap();
+    let mut index = RecordingIndex::default();
+    index.record(NodeId::ROOT, &prefix_op.meta.id, 1).unwrap();
 
     let meta = Cursor {
         head_lamport: suffix_op.meta.lamport,
@@ -778,7 +788,7 @@ fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
             clock: LamportClock::default(),
             nodes,
             payloads: MemoryPayloadStore::default(),
-            index: NoopParentOpIndex,
+            index,
         },
         &meta,
         |nodes| {
@@ -787,7 +797,16 @@ fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
             assert!(nodes.exists(suffix)?);
             Ok(())
         },
-        |_| Ok(()),
+        |index| {
+            assert_eq!(
+                index.records,
+                vec![
+                    (NodeId::ROOT, prefix_op.meta.id.clone(), 1),
+                    (NodeId::ROOT, suffix_op.meta.id.clone(), 2)
+                ]
+            );
+            Ok(())
+        },
     )
     .unwrap();
 
