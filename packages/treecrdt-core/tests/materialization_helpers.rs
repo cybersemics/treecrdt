@@ -179,6 +179,46 @@ fn apply_incremental_ops_with_delta_sorts_and_returns_head() {
 }
 
 #[test]
+fn apply_incremental_ops_with_delta_keeps_head_for_duplicate_ops() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut index = RecordingIndex::default();
+    let replica = ReplicaId::new(b"remote");
+    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+
+    let first_result = apply_incremental_ops_with_delta(
+        &mut crdt,
+        &mut index,
+        &Cursor::default(),
+        vec![op.clone()],
+    )
+    .unwrap();
+    let first_head = first_result.head.expect("expected first head");
+
+    let duplicate_cursor = Cursor {
+        head_lamport: first_head.at.lamport,
+        head_replica: first_head.at.replica.to_vec(),
+        head_counter: first_head.at.counter,
+        head_seq: first_head.seq,
+        ..Cursor::default()
+    };
+    let duplicate_result =
+        apply_incremental_ops_with_delta(&mut crdt, &mut index, &duplicate_cursor, vec![op])
+            .unwrap();
+
+    assert_eq!(
+        duplicate_result.head.expect("expected duplicate head").seq,
+        1
+    );
+    assert_eq!(duplicate_result.outcome.head_seq, 1);
+    assert!(duplicate_result.outcome.changes.is_empty());
+}
+
+#[test]
 fn apply_incremental_ops_with_delta_rejects_before_materialized_head() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"local"),
@@ -700,6 +740,60 @@ fn catch_up_materialized_state_scans_storage_once() {
         result.outcome.affected_nodes(),
         vec![NodeId::ROOT, NodeId(1), NodeId(2)]
     );
+}
+
+#[test]
+fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
+    let replica = ReplicaId::new(b"suffix-only");
+    let prefix = NodeId(1);
+    let suffix = NodeId(2);
+    let prefix_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, prefix, vec![0x10]);
+    let suffix_op = Operation::insert(&replica, 2, 2, NodeId::ROOT, suffix, vec![0x20]);
+
+    let mut storage = MemoryStorage::default();
+    storage.apply(prefix_op.clone()).unwrap();
+    storage.apply(suffix_op.clone()).unwrap();
+
+    // Simulate the backend state at the replay boundary: prefix rows are already materialized,
+    // so conservative catch-up should not re-emit them as materialization changes.
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(prefix).unwrap();
+    nodes.attach(prefix, NodeId::ROOT, vec![0x10]).unwrap();
+
+    let meta = Cursor {
+        head_lamport: suffix_op.meta.lamport,
+        head_replica: suffix_op.meta.id.replica.as_bytes().to_vec(),
+        head_counter: suffix_op.meta.id.counter,
+        head_seq: 2,
+        replay_lamport: Some(suffix_op.meta.lamport),
+        replay_replica: Some(suffix_op.meta.id.replica.as_bytes().to_vec()),
+        replay_counter: Some(suffix_op.meta.id.counter),
+    };
+
+    let mut flushed_nodes = false;
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes,
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |nodes| {
+            flushed_nodes = true;
+            assert!(nodes.exists(prefix)?);
+            assert!(nodes.exists(suffix)?);
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    assert!(flushed_nodes);
+    assert_eq!(result.head.expect("expected head").seq, 2);
+    assert_eq!(result.outcome.affected_nodes(), vec![NodeId::ROOT, suffix]);
 }
 
 #[test]

@@ -281,11 +281,89 @@ impl TruncatingParentOpIndex for RecordingIndex {
     }
 }
 
-struct ReplaySnapshot {
+struct RebuiltMaterialization {
     crdt: TreeCrdt<NoopStorage, LamportClock, MemoryNodeStore, MemoryPayloadStore>,
     index: RecordingIndex,
     head: Option<Operation>,
     seq: u64,
+}
+
+enum ReplayChangeScope<'a> {
+    All,
+    FromFrontier(&'a MaterializationFrontier),
+}
+
+impl ReplayChangeScope<'_> {
+    fn includes(&self, op: &Operation) -> bool {
+        match self {
+            Self::All => true,
+            Self::FromFrontier(frontier) => {
+                cmp_frontiers(&frontier_from_op(op), frontier) != Ordering::Less
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RejectedReplayOp {
+    Ignore,
+    Error(&'static str),
+}
+
+struct ReplayRun {
+    head: Option<Operation>,
+    seq: u64,
+    prefix_seq: u64,
+    outcome: MaterializationOutcome,
+}
+
+struct ReplayAccumulator<'a> {
+    seq: u64,
+    head: Option<Operation>,
+    changes: Vec<MaterializationChange>,
+    prefix_seq: Option<u64>,
+    change_scope: ReplayChangeScope<'a>,
+}
+
+impl<'a> ReplayAccumulator<'a> {
+    fn new(seq: u64, change_scope: ReplayChangeScope<'a>) -> Self {
+        Self {
+            seq,
+            head: None,
+            changes: Vec::new(),
+            prefix_seq: None,
+            change_scope,
+        }
+    }
+
+    fn before_op(&mut self, op: &Operation) -> bool {
+        let collect = self.change_scope.includes(op);
+        if collect && self.prefix_seq.is_none() {
+            self.prefix_seq = Some(self.seq);
+        }
+        collect
+    }
+
+    fn record_applied(
+        &mut self,
+        op: Operation,
+        collect: bool,
+        changes: Vec<MaterializationChange>,
+    ) {
+        self.head = Some(op);
+        if collect {
+            self.changes.extend(changes);
+        }
+    }
+
+    fn finish(self) -> ReplayRun {
+        ReplayRun {
+            head: self.head,
+            seq: self.seq,
+            prefix_seq: self.prefix_seq.unwrap_or(self.seq),
+            outcome: MaterializationOutcome::from_changes(self.seq, self.changes),
+        }
+    }
 }
 
 fn frontier_from_op(op: &Operation) -> MaterializationFrontier {
@@ -602,6 +680,81 @@ impl MaterializationOutcome {
     }
 }
 
+fn replay_remote_op_with_materialization_seq<S, C, N, P, I>(
+    crdt: &mut TreeCrdt<S, C, N, P>,
+    index: &mut I,
+    replay: &mut ReplayAccumulator<'_>,
+    op: Operation,
+    rejected_op: RejectedReplayOp,
+) -> Result<()>
+where
+    S: Storage,
+    C: Clock,
+    N: NodeStore,
+    P: PayloadStore,
+    I: ParentOpIndex,
+{
+    let collect = replay.before_op(&op);
+    match crdt.apply_remote_with_materialization_seq(op.clone(), index, &mut replay.seq)? {
+        Some(delta) => replay.record_applied(op, collect, delta.changes),
+        None => match rejected_op {
+            RejectedReplayOp::Ignore => {}
+            RejectedReplayOp::Error(message) => return Err(Error::Storage(message.into())),
+        },
+    }
+    Ok(())
+}
+
+fn replay_remote_ops_with_materialization_seq<S, C, N, P, I>(
+    crdt: &mut TreeCrdt<S, C, N, P>,
+    index: &mut I,
+    start_seq: u64,
+    ops: impl IntoIterator<Item = Operation>,
+    change_scope: ReplayChangeScope<'_>,
+    rejected_op: RejectedReplayOp,
+) -> Result<ReplayRun>
+where
+    S: Storage,
+    C: Clock,
+    N: NodeStore,
+    P: PayloadStore,
+    I: ParentOpIndex,
+{
+    let mut replay = ReplayAccumulator::new(start_seq, change_scope);
+
+    for op in ops {
+        replay_remote_op_with_materialization_seq(crdt, index, &mut replay, op, rejected_op)?;
+    }
+
+    Ok(replay.finish())
+}
+
+fn replay_sorted_ops_with_materialization<S, C, N, P, I>(
+    crdt: &mut TreeCrdt<S, C, N, P>,
+    index: &mut I,
+    start_seq: u64,
+    ops: impl IntoIterator<Item = Operation>,
+    change_scope: ReplayChangeScope<'_>,
+) -> Result<ReplayRun>
+where
+    S: Storage,
+    C: Clock,
+    N: NodeStore,
+    P: PayloadStore,
+    I: ParentOpIndex,
+{
+    let mut replay = ReplayAccumulator::new(start_seq, change_scope);
+
+    for op in ops {
+        let collect = replay.before_op(&op);
+        replay.seq = replay.seq.saturating_add(1);
+        let delta = crdt.apply_sorted_remote_with_materialization(op.clone(), index, replay.seq)?;
+        replay.record_applied(op, collect, delta.changes);
+    }
+
+    Ok(replay.finish())
+}
+
 /// Apply an incremental batch and return both head metadata and the structured materialization delta.
 pub fn apply_incremental_ops_with_delta<S, C, N, P, I, M>(
     crdt: &mut TreeCrdt<S, C, N, P>,
@@ -651,21 +804,24 @@ where
         }
     }
 
-    let mut seq = state.head_seq();
-    let mut changes = Vec::new();
-    for op in ops {
-        if let Some(delta) = crdt.apply_remote_with_materialization_seq(op, index, &mut seq)? {
-            changes.extend(delta.changes);
-        }
-    }
+    let replay = replay_remote_ops_with_materialization_seq(
+        crdt,
+        index,
+        state.head_seq(),
+        ops,
+        ReplayChangeScope::All,
+        RejectedReplayOp::Ignore,
+    )?;
 
-    let last = crdt
-        .head_op()
+    let last = replay
+        .head
+        .as_ref()
+        .or_else(|| crdt.head_op())
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
 
     Ok(IncrementalApplyResult {
-        head: Some(MaterializationHead::from_op(last, seq)),
-        outcome: MaterializationOutcome::from_changes(seq, changes),
+        head: Some(MaterializationHead::from_op(last, replay.seq)),
+        outcome: replay.outcome,
     })
 }
 
@@ -721,7 +877,7 @@ fn replay_frontier_in_memory<S: Storage>(
     storage: &S,
     frontier: &MaterializationFrontier,
     replica_id: &ReplicaId,
-) -> Result<(ReplaySnapshot, u64, MaterializationOutcome)> {
+) -> Result<(RebuiltMaterialization, u64, MaterializationOutcome)> {
     let mut crdt = TreeCrdt::with_stores(
         replica_id.clone(),
         NoopStorage,
@@ -730,40 +886,29 @@ fn replay_frontier_in_memory<S: Storage>(
         MemoryPayloadStore::default(),
     )?;
     let mut index = RecordingIndex::default();
-    let mut seq = 0u64;
-    let mut head: Option<Operation> = None;
-    let mut changes = Vec::new();
-    let mut prefix_seq = None;
+    let mut replay = ReplayAccumulator::new(0, ReplayChangeScope::FromFrontier(frontier));
 
     storage.scan_since(0, &mut |op| {
-        let in_suffix = cmp_frontiers(&frontier_from_op(&op), frontier) != Ordering::Less;
-        if in_suffix && prefix_seq.is_none() {
-            prefix_seq = Some(seq);
-        }
-
-        match crdt.apply_remote_with_materialization_seq(op.clone(), &mut index, &mut seq)? {
-            Some(delta) => {
-                head = Some(op);
-                if in_suffix {
-                    changes.extend(delta.changes);
-                }
-                Ok(())
-            }
-            None => Err(Error::Storage(
-                "frontier replay unexpectedly required nested catch-up".into(),
-            )),
-        }
+        replay_remote_op_with_materialization_seq(
+            &mut crdt,
+            &mut index,
+            &mut replay,
+            op,
+            RejectedReplayOp::Error("frontier replay unexpectedly required nested catch-up"),
+        )
     })?;
 
-    let outcome = MaterializationOutcome::from_changes(seq, changes);
+    let replay = replay.finish();
+    let prefix_seq = replay.prefix_seq;
+    let outcome = replay.outcome;
     Ok((
-        ReplaySnapshot {
+        RebuiltMaterialization {
             crdt,
             index,
-            head,
-            seq,
+            head: replay.head,
+            seq: replay.seq,
         },
-        prefix_seq.unwrap_or(seq),
+        prefix_seq,
         outcome,
     ))
 }
@@ -849,27 +994,25 @@ where
     // invalidated suffix. Replaying `full_suffix_ops` forward rebuilds only the corrected suffix.
     let mut crdt = TreeCrdt::with_stores(replica_id, NoopStorage, clock, nodes, payloads)?;
 
-    let mut changes = Vec::new();
-    let mut seq = prefix_seq;
-    let mut replay_head: Option<Operation> = None;
-    for op in full_suffix_ops {
-        seq = seq.saturating_add(1);
-        let delta = crdt.apply_sorted_remote_with_materialization(op.clone(), &mut index, seq)?;
-        changes.extend(delta.changes);
-        replay_head = Some(op);
-    }
+    let replay = replay_sorted_ops_with_materialization(
+        &mut crdt,
+        &mut index,
+        prefix_seq,
+        full_suffix_ops,
+        ReplayChangeScope::All,
+    )?;
 
     flush_nodes(crdt.node_store_mut())?;
     flush_index(&mut index)?;
 
     Ok(Some(CatchUpResult {
-        head: replay_head.as_ref().map(|head| MaterializationHead::from_op(head, seq)),
-        outcome: MaterializationOutcome::from_changes(seq, changes),
+        head: replay.head.as_ref().map(|head| MaterializationHead::from_op(head, replay.seq)),
+        outcome: replay.outcome,
     }))
 }
 
 fn patch_final_state_in_place<N, P, I>(
-    replay: &mut ReplaySnapshot,
+    replay: &mut RebuiltMaterialization,
     prefix_seq: u64,
     affected_nodes: &[NodeId],
     nodes: &mut N,
