@@ -7,8 +7,8 @@ use postgres::Client;
 use treecrdt_core::{
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
     orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state, Error,
-    LamportClock, MaterializationCursor, MaterializationHead, NodeId, Operation, OperationKind,
-    PersistedRemoteStores, ReplicaId, Result,
+    LamportClock, MaterializationCursor, MaterializationHead, MaterializationOutcome, Operation,
+    OperationKind, PersistedRemoteStores, ReplicaId, Result,
 };
 
 use crate::profile::{append_profile_enabled, PgAppendProfile};
@@ -68,11 +68,11 @@ pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation])
     }
 }
 
-pub fn append_ops_with_affected_nodes(
+pub fn append_ops_with_materialization_outcome(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
     ops: &[Operation],
-) -> Result<Vec<NodeId>> {
+) -> Result<MaterializationOutcome> {
     {
         let mut c = client.borrow_mut();
         c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
@@ -84,7 +84,7 @@ pub fn append_ops_with_affected_nodes(
         Ok(v) => {
             let mut c = client.borrow_mut();
             c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v.affected_nodes)
+            Ok(v.outcome)
         }
         Err(e) => {
             let mut c = client.borrow_mut();
@@ -97,7 +97,7 @@ pub fn append_ops_with_affected_nodes(
 #[derive(Default)]
 struct AppendOpsResult {
     inserted_count: u64,
-    affected_nodes: Vec<NodeId>,
+    outcome: MaterializationOutcome,
 }
 
 fn append_ops_in_tx(
@@ -207,11 +207,14 @@ fn append_ops_in_tx(
 
     Ok(AppendOpsResult {
         inserted_count: apply_result.inserted_count,
-        affected_nodes: apply_result.affected_nodes,
+        outcome: apply_result.outcome,
     })
 }
 
-pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
+pub fn ensure_materialized(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> Result<MaterializationOutcome> {
     {
         let mut c = client.borrow_mut();
         c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
@@ -220,10 +223,10 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
     let res = ensure_materialized_in_tx(client, doc_id);
 
     match res {
-        Ok(()) => {
+        Ok(outcome) => {
             let mut c = client.borrow_mut();
             c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(())
+            Ok(outcome)
         }
         Err(e) => {
             let mut c = client.borrow_mut();
@@ -233,16 +236,19 @@ pub fn ensure_materialized(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result
     }
 }
 
-pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<()> {
+pub(crate) fn ensure_materialized_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> Result<MaterializationOutcome> {
     let meta = load_tree_meta(client, doc_id)?;
     if meta.state().replay_from.is_none() {
-        return Ok(());
+        return Ok(MaterializationOutcome::empty(meta.state().head_seq()));
     }
 
     // Take a per-doc lock so catch-up can't race with concurrent append/materialization.
     let meta = load_tree_meta_for_update(client, doc_id)?;
     if meta.state().replay_from.is_none() {
-        return Ok(());
+        return Ok(MaterializationOutcome::empty(meta.state().head_seq()));
     }
 
     let ctx = PgCtx::new(client.clone(), doc_id)?;
@@ -263,5 +269,5 @@ pub(crate) fn ensure_materialized_in_tx(client: &Rc<RefCell<Client>>, doc_id: &s
 
     update_tree_meta_head(client, doc_id, catch_up.head.as_ref())?;
 
-    Ok(())
+    Ok(catch_up.outcome)
 }

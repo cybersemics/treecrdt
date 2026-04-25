@@ -4,8 +4,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use postgres::{Client, NoTls};
 use treecrdt_core::{
-    Error as CoreError, Lamport, NodeId, Operation, OperationId, OperationKind, ReplicaId,
-    Result as CoreResult, VersionVector,
+    Error as CoreError, Lamport, MaterializationChange, MaterializationOutcome, NodeId, Operation,
+    OperationId, OperationKind, ReplicaId, Result as CoreResult, VersionVector,
 };
 
 fn map_err(e: impl std::fmt::Display) -> napi::Error {
@@ -31,6 +31,10 @@ fn bytes16_to_node(bytes: &[u8]) -> CoreResult<NodeId> {
 
 fn node_to_bytes16(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
+}
+
+fn node_buffer(node: NodeId) -> Buffer {
+    Buffer::from(node_to_bytes16(node).to_vec())
 }
 
 fn vv_from_bytes(bytes: &[u8]) -> CoreResult<VersionVector> {
@@ -67,6 +71,90 @@ pub struct NativeTreeRow {
     pub parent: Option<Buffer>,
     pub order_key: Option<Buffer>,
     pub tombstone: bool,
+}
+
+#[napi(object)]
+pub struct NativeMaterializationChange {
+    pub kind: String,
+    pub node: Buffer,
+    pub parent_before: Option<Buffer>,
+    pub parent_after: Option<Buffer>,
+    pub payload: Option<Buffer>,
+}
+
+#[napi(object)]
+pub struct NativeMaterializationOutcome {
+    pub head_seq: BigInt,
+    pub changes: Vec<NativeMaterializationChange>,
+}
+
+#[napi(object)]
+pub struct NativeLocalOpResult {
+    pub op: NativeOp,
+    pub outcome: NativeMaterializationOutcome,
+}
+
+fn outcome_to_native(outcome: MaterializationOutcome) -> NativeMaterializationOutcome {
+    let changes = outcome
+        .changes
+        .into_iter()
+        .map(|change| match change {
+            MaterializationChange::Insert {
+                node,
+                parent_after,
+                payload,
+            } => NativeMaterializationChange {
+                kind: "insert".to_string(),
+                node: node_buffer(node),
+                parent_before: None,
+                parent_after: Some(node_buffer(parent_after)),
+                payload: payload.map(Buffer::from),
+            },
+            MaterializationChange::Move {
+                node,
+                parent_before,
+                parent_after,
+            } => NativeMaterializationChange {
+                kind: "move".to_string(),
+                node: node_buffer(node),
+                parent_before: parent_before.map(node_buffer),
+                parent_after: Some(node_buffer(parent_after)),
+                payload: None,
+            },
+            MaterializationChange::Delete {
+                node,
+                parent_before,
+            } => NativeMaterializationChange {
+                kind: "delete".to_string(),
+                node: node_buffer(node),
+                parent_before: parent_before.map(node_buffer),
+                parent_after: None,
+                payload: None,
+            },
+            MaterializationChange::Restore {
+                node,
+                parent_after,
+                payload,
+            } => NativeMaterializationChange {
+                kind: "restore".to_string(),
+                node: node_buffer(node),
+                parent_before: None,
+                parent_after: parent_after.map(node_buffer),
+                payload: payload.map(Buffer::from),
+            },
+            MaterializationChange::Payload { node, payload } => NativeMaterializationChange {
+                kind: "payload".to_string(),
+                node: node_buffer(node),
+                parent_before: None,
+                parent_after: None,
+                payload: payload.map(Buffer::from),
+            },
+        })
+        .collect();
+    NativeMaterializationOutcome {
+        head_seq: BigInt::from(outcome.head_seq),
+        changes,
+    }
 }
 
 fn bigint_to_u64(name: &str, v: BigInt) -> CoreResult<u64> {
@@ -474,7 +562,7 @@ impl PgBackend {
     }
 
     #[napi]
-    pub fn apply_ops(&self, ops: Vec<NativeOp>) -> napi::Result<Vec<Buffer>> {
+    pub fn apply_ops(&self, ops: Vec<NativeOp>) -> napi::Result<NativeMaterializationOutcome> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
@@ -483,13 +571,23 @@ impl PgBackend {
             core_ops.push(native_to_core_op(op).map_err(map_core_err)?);
         }
 
-        let affected =
-            treecrdt_postgres::append_ops_with_affected_nodes(&client, &self.doc_id, &core_ops)
-                .map_err(map_core_err)?;
-        Ok(affected
-            .into_iter()
-            .map(|node| Buffer::from(node_to_bytes16(node).to_vec()))
-            .collect())
+        let outcome = treecrdt_postgres::append_ops_with_materialization_outcome(
+            &client,
+            &self.doc_id,
+            &core_ops,
+        )
+        .map_err(map_core_err)?;
+        Ok(outcome_to_native(outcome))
+    }
+
+    #[napi]
+    pub fn ensure_materialized(&self) -> napi::Result<NativeMaterializationOutcome> {
+        let client = connect(&self.url)?;
+        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+
+        let outcome =
+            treecrdt_postgres::ensure_materialized(&client, &self.doc_id).map_err(map_core_err)?;
+        Ok(outcome_to_native(outcome))
     }
 
     #[napi]
@@ -501,7 +599,7 @@ impl PgBackend {
         placement: String,
         after: Option<Buffer>,
         payload: Option<Buffer>,
-    ) -> napi::Result<NativeOp> {
+    ) -> napi::Result<NativeLocalOpResult> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
@@ -513,7 +611,7 @@ impl PgBackend {
             Some(b) => Some(bytes16_to_node(&b).map_err(map_core_err)?),
         };
 
-        let op = treecrdt_postgres::local_insert(
+        let result = treecrdt_postgres::local_insert(
             &client,
             &self.doc_id,
             &replica,
@@ -524,7 +622,10 @@ impl PgBackend {
             payload.map(|p| p.to_vec()),
         )
         .map_err(map_core_err)?;
-        core_to_native_op(op).map_err(map_core_err)
+        Ok(NativeLocalOpResult {
+            op: core_to_native_op(result.op).map_err(map_core_err)?,
+            outcome: outcome_to_native(result.outcome),
+        })
     }
 
     #[napi]
@@ -535,7 +636,7 @@ impl PgBackend {
         new_parent: Buffer,
         placement: String,
         after: Option<Buffer>,
-    ) -> napi::Result<NativeOp> {
+    ) -> napi::Result<NativeLocalOpResult> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
@@ -547,7 +648,7 @@ impl PgBackend {
             Some(b) => Some(bytes16_to_node(&b).map_err(map_core_err)?),
         };
 
-        let op = treecrdt_postgres::local_move(
+        let result = treecrdt_postgres::local_move(
             &client,
             &self.doc_id,
             &replica,
@@ -557,19 +658,25 @@ impl PgBackend {
             after_id,
         )
         .map_err(map_core_err)?;
-        core_to_native_op(op).map_err(map_core_err)
+        Ok(NativeLocalOpResult {
+            op: core_to_native_op(result.op).map_err(map_core_err)?,
+            outcome: outcome_to_native(result.outcome),
+        })
     }
 
     #[napi]
-    pub fn local_delete(&self, replica: Buffer, node: Buffer) -> napi::Result<NativeOp> {
+    pub fn local_delete(&self, replica: Buffer, node: Buffer) -> napi::Result<NativeLocalOpResult> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
         let replica = ReplicaId(replica.to_vec());
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
-        let op = treecrdt_postgres::local_delete(&client, &self.doc_id, &replica, node)
+        let result = treecrdt_postgres::local_delete(&client, &self.doc_id, &replica, node)
             .map_err(map_core_err)?;
-        core_to_native_op(op).map_err(map_core_err)
+        Ok(NativeLocalOpResult {
+            op: core_to_native_op(result.op).map_err(map_core_err)?,
+            outcome: outcome_to_native(result.outcome),
+        })
     }
 
     #[napi]
@@ -578,13 +685,13 @@ impl PgBackend {
         replica: Buffer,
         node: Buffer,
         payload: Option<Buffer>,
-    ) -> napi::Result<NativeOp> {
+    ) -> napi::Result<NativeLocalOpResult> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
         let replica = ReplicaId(replica.to_vec());
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
-        let op = treecrdt_postgres::local_payload(
+        let result = treecrdt_postgres::local_payload(
             &client,
             &self.doc_id,
             &replica,
@@ -592,6 +699,9 @@ impl PgBackend {
             payload.map(|p| p.to_vec()),
         )
         .map_err(map_core_err)?;
-        core_to_native_op(op).map_err(map_core_err)
+        Ok(NativeLocalOpResult {
+            op: core_to_native_op(result.op).map_err(map_core_err)?,
+            outcome: outcome_to_native(result.outcome),
+        })
     }
 }

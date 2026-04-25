@@ -1,13 +1,14 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use treecrdt_core::NodeStore;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
     try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, LocalFinalizePlan,
-    LocalPlacement, MaterializationCursor, MaterializationHead, MaterializationKey,
-    MaterializationState, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId,
-    NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId,
-    Storage, TreeCrdt,
+    LocalPlacement, MaterializationChange, MaterializationCursor, MaterializationHead,
+    MaterializationKey, MaterializationOutcome, MaterializationState, MemoryNodeStore,
+    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
+    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
 };
 
 #[derive(Default)]
@@ -135,6 +136,7 @@ fn finalize_local_records_unique_hints_and_extras() {
             (parent, extra_op_id.clone()),
             (NodeId::TRASH, extra_op_id.clone()),
         ],
+        changes: Vec::new(),
     };
 
     let mut index = RecordingIndex::default();
@@ -264,7 +266,10 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
 
     let head = res.head.expect("expected materialization head");
     assert_eq!(head.at.counter, 2);
-    assert_eq!(res.affected_nodes, vec![NodeId::ROOT, parent, child],);
+    assert_eq!(
+        res.outcome.affected_nodes(),
+        vec![NodeId::ROOT, parent, child],
+    );
 }
 
 #[test]
@@ -290,7 +295,13 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
                     },
                     seq: 2,
                 }),
-                affected_nodes: vec![NodeId(2)],
+                outcome: MaterializationOutcome {
+                    head_seq: 2,
+                    changes: vec![MaterializationChange::Payload {
+                        node: NodeId(2),
+                        payload: Some(vec![9]),
+                    }],
+                },
             })
         },
         |head| {
@@ -303,7 +314,7 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
 
     assert_eq!(seen_counters, vec![2, 3]);
     assert_eq!(result.inserted_count, 2);
-    assert_eq!(result.affected_nodes, vec![NodeId(2)]);
+    assert_eq!(result.outcome.affected_nodes(), vec![NodeId(2)]);
     assert!(!result.catch_up_needed);
     assert_eq!(
         updated_head,
@@ -333,7 +344,7 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
             runs += 1;
             Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
                 head: None,
-                affected_nodes: Vec::new(),
+                outcome: MaterializationOutcome::empty(0),
             })
         },
         |_| Ok::<_, ()>(()),
@@ -347,7 +358,7 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
     assert_eq!(runs, 1);
     assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
-    assert_eq!(result.affected_nodes, Vec::<NodeId>::new());
+    assert_eq!(result.outcome.affected_nodes(), Vec::<NodeId>::new());
     assert!(result.catch_up_needed);
 }
 
@@ -371,7 +382,19 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
                     },
                     seq: 9,
                 }),
-                affected_nodes: vec![NodeId(1), NodeId(2)],
+                outcome: MaterializationOutcome {
+                    head_seq: 9,
+                    changes: vec![
+                        MaterializationChange::Payload {
+                            node: NodeId(1),
+                            payload: None,
+                        },
+                        MaterializationChange::Payload {
+                            node: NodeId(2),
+                            payload: None,
+                        },
+                    ],
+                },
             })
         },
         |_| Err::<(), ()>(()),
@@ -384,7 +407,7 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
 
     assert_eq!(scheduled_replay, 1);
     assert_eq!(result.inserted_count, 1);
-    assert!(result.affected_nodes.is_empty());
+    assert!(result.outcome.changes.is_empty());
     assert!(result.catch_up_needed);
 }
 
@@ -410,7 +433,7 @@ fn apply_persisted_remote_ops_schedules_replay_frontier_for_out_of_order_ops() {
             materialize_runs += 1;
             Ok::<_, ()>(treecrdt_core::IncrementalApplyResult {
                 head: None,
-                affected_nodes: Vec::new(),
+                outcome: MaterializationOutcome::empty(0),
             })
         },
         |_| Ok::<_, ()>(()),
@@ -423,7 +446,7 @@ fn apply_persisted_remote_ops_schedules_replay_frontier_for_out_of_order_ops() {
 
     assert_eq!(materialize_runs, 0);
     assert_eq!(result.inserted_count, 2);
-    assert!(result.affected_nodes.is_empty());
+    assert!(result.outcome.changes.is_empty());
     assert!(result.catch_up_needed);
     assert_eq!(
         replay_frontier,
@@ -463,7 +486,7 @@ fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
     .unwrap();
 
     assert_eq!(result.inserted_count, 1);
-    assert!(result.affected_nodes.is_empty());
+    assert!(result.outcome.changes.is_empty());
     assert!(result.catch_up_needed);
     assert_eq!(
         replay_frontier,
@@ -517,7 +540,7 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
     assert_eq!(flushed_index, 1);
     assert_eq!(head.at.counter, 2);
     assert_eq!(
-        result.affected_nodes,
+        result.outcome.affected_nodes(),
         vec![NodeId::ROOT, NodeId(10), NodeId(11)]
     );
 }
@@ -551,7 +574,7 @@ fn payload_noop_shortcut_skips_out_of_order_payload_dominated_by_current_winner(
     assert_eq!(shortcut.resumed_head.at.counter, 10);
     assert_eq!(shortcut.resumed_head.seq, 6);
     assert!(shortcut.remaining_ops.is_empty());
-    assert_eq!(shortcut.affected_nodes, vec![node]);
+    assert!(shortcut.outcome.changes.is_empty());
 }
 
 #[test]
@@ -578,7 +601,7 @@ fn payload_noop_shortcut_keeps_later_in_order_payload_for_incremental_materializ
 
     assert_eq!(shortcut.resumed_head.seq, 6);
     assert_eq!(shortcut.remaining_ops, vec![newer]);
-    assert_eq!(shortcut.affected_nodes, vec![node]);
+    assert!(shortcut.outcome.changes.is_empty());
 }
 
 #[test]
@@ -674,7 +697,75 @@ fn catch_up_materialized_state_scans_storage_once() {
     assert_eq!(scan_count.get(), 1);
     assert_eq!(result.head.expect("expected head").seq, 2);
     assert_eq!(
-        result.affected_nodes,
+        result.outcome.affected_nodes(),
         vec![NodeId::ROOT, NodeId(1), NodeId(2)]
+    );
+}
+
+#[test]
+fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
+    let author = ReplicaId::new(b"author");
+    let deleter = ReplicaId::new(b"deleter");
+    let parent = NodeId(10);
+    let child = NodeId(11);
+
+    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
+    let child_op = Operation::insert(&author, 2, 2, parent, child, vec![0x20]);
+    let mut known_state = VersionVector::new();
+    known_state.observe(&author, 1);
+    let delete_op = Operation::delete(&deleter, 1, 3, parent, Some(known_state.clone()));
+
+    let mut storage = MemoryStorage::default();
+    storage.apply(parent_op.clone()).unwrap();
+    storage.apply(child_op.clone()).unwrap();
+    storage.apply(delete_op.clone()).unwrap();
+
+    let mut deleted_at = known_state;
+    deleted_at.observe(&deleter, 1);
+
+    // Simulate the stale materialized backend state before catch-up: the parent insert and later
+    // delete were materialized, but the out-of-order child insert has not been replayed yet.
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(parent).unwrap();
+    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.merge_deleted_at(parent, &deleted_at).unwrap();
+    nodes.set_tombstone(parent, true).unwrap();
+
+    let meta = Cursor {
+        head_lamport: delete_op.meta.lamport,
+        head_replica: delete_op.meta.id.replica.as_bytes().to_vec(),
+        head_counter: delete_op.meta.id.counter,
+        head_seq: 2,
+        replay_lamport: Some(child_op.meta.lamport),
+        replay_replica: Some(child_op.meta.id.replica.as_bytes().to_vec()),
+        replay_counter: Some(child_op.meta.id.counter),
+    };
+
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes,
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    assert!(
+        result.outcome.changes.contains(&MaterializationChange::Restore {
+            node: parent,
+            parent_after: Some(NodeId::ROOT),
+            payload: None,
+        }),
+        "catch-up must report rows restored by patching stale backend state"
+    );
+    assert_eq!(
+        result.outcome.affected_nodes(),
+        vec![NodeId::ROOT, parent, child],
     );
 }

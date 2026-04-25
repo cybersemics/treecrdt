@@ -577,6 +577,15 @@ test('syncOnce waits for ribltStatus.more before sending another codeword batch'
   const a = new MemoryBackend(docId);
   const b = new MemoryBackend(docId);
 
+  const commonOp = makeOp(replicas.b, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(100),
+    orderKey: orderKeyFromPosition(100),
+  });
+  await a.applyOps([commonOp]);
+  await b.applyOps([commonOp]);
+
   const ops: Operation[] = [];
   for (let i = 1; i <= 12; i += 1) {
     ops.push(

@@ -1,4 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
+import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
 export type RpcStorageMode = 'memory' | 'opfs';
@@ -22,8 +23,11 @@ export type RpcSchema = {
   };
   sqlExec: { params: [sql: string]; result: void };
   sqlGetText: { params: [sql: string, params?: RpcSqlParams]; result: string | null };
-  append: { params: [op: Operation]; result: void };
-  appendMany: { params: [ops: Operation[]]; result: number[][] };
+  append: { params: [op: Operation]; result: MaterializationOutcome };
+  appendMany: {
+    params: [ops: Operation[]];
+    result: MaterializationOutcome;
+  };
   opsSince: { params: [lamport: number, root?: string]; result: unknown[] };
   opRefsAll: { params: []; result: unknown[] };
   opRefsChildren: { params: [parent: string]; result: unknown[] };
@@ -81,3 +85,8 @@ export type RpcRequest<M extends RpcMethod = RpcMethod> = {
 export type RpcResponse<M extends RpcMethod = RpcMethod> =
   | { id: number; ok: true; result: RpcResult<M> }
   | { id: number; ok: false; error: string };
+
+export type RpcPushMessage = {
+  type: 'materialized';
+  event: MaterializationEvent;
+};

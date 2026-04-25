@@ -150,7 +150,7 @@ fn materialization_seq_advances_only_for_new_ops() {
 }
 
 #[test]
-fn apply_remote_with_materialization_reports_affected_nodes() {
+fn apply_remote_with_materialization_reports_changes() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"a"),
         MemoryStorage::default(),
@@ -166,14 +166,19 @@ fn apply_remote_with_materialization_reports_affected_nodes() {
         .apply_remote_with_materialization_seq(insert, &mut index, &mut seq)
         .unwrap()
         .unwrap();
-    assert_eq!(insert_delta.affected_nodes, vec![NodeId::ROOT, NodeId(1)]);
+    assert_eq!(insert_delta.changes.len(), 1);
+    assert_eq!(
+        insert_delta.changes[0].affected_nodes(),
+        vec![NodeId(1), NodeId::ROOT]
+    );
 
     let payload = Operation::set_payload(&replica, 2, 2, NodeId(1), b"hello".to_vec());
     let payload_delta = crdt
         .apply_remote_with_materialization_seq(payload, &mut index, &mut seq)
         .unwrap()
         .unwrap();
-    assert_eq!(payload_delta.affected_nodes, vec![NodeId(1)]);
+    assert_eq!(payload_delta.changes.len(), 1);
+    assert_eq!(payload_delta.changes[0].affected_nodes(), vec![NodeId(1)]);
 }
 
 #[test]

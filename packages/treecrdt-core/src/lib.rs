@@ -34,5 +34,8 @@ pub use traits::{
     PayloadStore, Storage, TruncatingParentOpIndex,
 };
 pub use tree::TreeCrdt;
-pub use types::{ApplyDelta, LocalFinalizePlan, LocalPlacement, NodeExport, NodeSnapshotExport};
+pub use types::{
+    ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
+    NodeExport, NodeSnapshotExport,
+};
 pub use version_vector::VersionVector;

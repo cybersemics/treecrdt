@@ -1,14 +1,9 @@
 import React from "react";
 import { MdExpandLess, MdExpandMore } from "react-icons/md";
 
-import { ParentPicker } from "./ParentPicker";
+import type { BulkAddProgress } from "../types";
 
-type BulkAddProgress = {
-  total: number;
-  completed: number;
-  phase: "creating" | "applying";
-  startedAtMs: number;
-};
+import { ParentPicker } from "./ParentPicker";
 
 export function ComposerPanel({
   composerOpen,
@@ -85,7 +80,7 @@ export function ComposerPanel({
 
   return (
     <div
-      className={`rounded-2xl bg-slate-900/60 shadow-lg shadow-black/20 ring-1 ring-slate-800/60 ${containerPadding}`}
+      className={`min-w-0 rounded-2xl bg-slate-900/60 shadow-lg shadow-black/20 ring-1 ring-slate-800/60 ${containerPadding}`}
     >
       <div className={`${headerMargin} flex flex-wrap items-center justify-between gap-2`}>
         <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">Composer</div>
@@ -103,21 +98,21 @@ export function ComposerPanel({
       {composerOpen ? (
         <>
           <form
-            className="flex flex-col gap-3 md:flex-row md:items-end"
+            className="flex min-w-0 flex-col gap-3 md:flex-row md:items-end"
             onSubmit={(e) => {
               e.preventDefault();
               void onAddNodes(parentChoice, nodeCount, { fanout });
             }}
           >
             <ParentPicker nodeList={nodeList} value={parentChoice} onChange={setParentChoice} disabled={!ready} />
-            <label className="w-full space-y-2 text-sm text-slate-200 md:w-52">
+            <label className="min-w-0 w-full space-y-2 text-sm text-slate-200 md:w-52">
               <span>Value (optional)</span>
               <input
                 type="text"
                 value={newNodeValue}
                 onChange={(e) => setNewNodeValue(e.target.value)}
                 placeholder="Stored as payload bytes"
-                className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
+                className="min-w-0 w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
                 disabled={!ready || busy || !canWritePayload}
               />
             </label>

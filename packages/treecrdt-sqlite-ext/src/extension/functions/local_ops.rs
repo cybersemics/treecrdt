@@ -1,3 +1,4 @@
+use super::materialize::{json_outcome_from_core, JsonMaterializationOutcome};
 use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::op_storage::SqliteOpStorage;
@@ -24,6 +25,13 @@ struct JsonOp {
     order_key: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonLocalOpResult {
+    op: JsonOp,
+    outcome: JsonMaterializationOutcome,
 }
 
 type LocalCrdt = TreeCrdt<SqliteOpStorage, LamportClock, SqliteNodeStore, SqlitePayloadStore>;
@@ -196,10 +204,10 @@ fn finish_local_core_op(
     mut session: LocalOpSession,
     op: Operation,
     plan: LocalFinalizePlan,
-) -> Result<JsonOp, c_int> {
+) -> Result<JsonLocalOpResult, c_int> {
     let mut post_materialization_ok = true;
-    let mut next_seq = 0u64;
     let mut head_seq = 0u64;
+    let mut outcome = treecrdt_core::MaterializationOutcome::empty(0);
     match load_tree_meta(session.db) {
         Ok(meta) => head_seq = meta.state().head_seq(),
         Err(_) => post_materialization_ok = false,
@@ -208,12 +216,12 @@ fn finish_local_core_op(
         let finalize_rc = match SqliteParentOpIndex::prepare(session.db, session.doc_id.clone()) {
             Ok(mut op_index) => session
                 .crdt
-                .finalize_local(&op, &mut op_index, head_seq, &plan)
+                .finalize_local_with_outcome(&op, &mut op_index, head_seq, &plan)
                 .map_err(|_| SQLITE_ERROR as c_int),
             Err(_) => Err(SQLITE_ERROR as c_int),
         };
         match finalize_rc {
-            Ok(seq) => next_seq = seq,
+            Ok(next) => outcome = next,
             Err(_) => post_materialization_ok = false,
         }
     }
@@ -223,7 +231,7 @@ fn finish_local_core_op(
             replica: op.meta.id.replica.as_bytes(),
             counter: op.meta.id.counter,
         },
-        seq: next_seq,
+        seq: outcome.head_seq,
     };
     if post_materialization_ok && update_tree_meta_head(session.db, Some(&head)).is_err() {
         post_materialization_ok = false;
@@ -239,7 +247,7 @@ fn finish_local_core_op(
         )?;
     }
 
-    let out = match json_op_from_operation(op) {
+    let op = match json_op_from_operation(op) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_exec(
@@ -271,7 +279,10 @@ fn finish_local_core_op(
         return Err(commit_rc);
     }
 
-    Ok(out)
+    Ok(JsonLocalOpResult {
+        op,
+        outcome: json_outcome_from_core(&outcome),
+    })
 }
 
 fn run_local_core_op<F>(
@@ -280,7 +291,7 @@ fn run_local_core_op<F>(
     replica: Vec<u8>,
     savepoint_name: &str,
     build: F,
-) -> Result<JsonOp, c_int>
+) -> Result<JsonLocalOpResult, c_int>
 where
     F: FnOnce(&mut LocalCrdt) -> treecrdt_core::Result<(Operation, LocalFinalizePlan)>,
 {
@@ -393,7 +404,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
 
-    sqlite_result_json(ctx, &vec![out]);
+    sqlite_result_json(ctx, &out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_move(
@@ -495,7 +506,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
             return;
         }
     };
-    sqlite_result_json(ctx, &vec![out]);
+    sqlite_result_json(ctx, &out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_delete(
@@ -565,7 +576,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
             return;
         }
     };
-    sqlite_result_json(ctx, &vec![out]);
+    sqlite_result_json(ctx, &out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_payload(
@@ -637,5 +648,5 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
             return;
         }
     };
-    sqlite_result_json(ctx, &vec![out]);
+    sqlite_result_json(ctx, &out);
 }

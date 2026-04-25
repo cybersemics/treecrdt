@@ -6,7 +6,7 @@ import type { InviteActions } from "../invite";
 
 import { InvitePermissionsEditor } from "./InvitePermissionsEditor";
 
-export type ShareSubtreeDialogProps = {
+type ShareSubtreeDialogProps = {
   open: boolean;
   onClose: () => void;
   busy: boolean;

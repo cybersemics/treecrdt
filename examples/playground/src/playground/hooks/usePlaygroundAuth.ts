@@ -203,7 +203,6 @@ export type PlaygroundAuthApi = {
   showAuthAdvanced: boolean;
   setShowAuthAdvanced: React.Dispatch<React.SetStateAction<boolean>>;
   authInfo: string | null;
-  setAuthInfo: React.Dispatch<React.SetStateAction<string | null>>;
   authError: string | null;
   setAuthError: React.Dispatch<React.SetStateAction<string | null>>;
   authBusy: boolean;
@@ -225,13 +224,10 @@ export type PlaygroundAuthApi = {
   localIdentityChainPromiseRef: React.MutableRefObject<
     Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
   >;
-  getLocalIdentityChain: () => Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null>;
-  authToken: TreecrdtCapabilityTokenV1 | null;
 
   replica: Uint8Array | null;
   selfPeerId: string | null;
 
-  authActionSet: Set<string>;
   viewRootId: string;
   authCanSyncAll: boolean;
   canWriteStructure: boolean;
@@ -248,45 +244,23 @@ export type PlaygroundAuthApi = {
   authTokenScope: TreecrdtCapabilityTokenV1["caps"][number]["res"] | null;
   authTokenActions: TreecrdtCapabilityTokenV1["caps"][number]["actions"] | null;
   authNeedsInvite: boolean;
-  revocationKnownTokenIds: string[];
   hardRevokedTokenIds: string[];
   toggleHardRevokedTokenId: (tokenIdHex: string) => void;
-  clearHardRevokedTokenIds: () => void;
-  revocationTokenInput: string;
-  setRevocationTokenInput: React.Dispatch<React.SetStateAction<string>>;
-  addHardRevokedTokenId: () => void;
-  revocationCutoverEnabled: boolean;
-  setRevocationCutoverEnabled: React.Dispatch<React.SetStateAction<boolean>>;
-  revocationCutoverTokenId: string;
-  setRevocationCutoverTokenId: React.Dispatch<React.SetStateAction<string>>;
-  revocationCutoverCounter: string;
-  setRevocationCutoverCounter: React.Dispatch<React.SetStateAction<string>>;
 
   pendingOps: Array<{ id: string; kind: string; message?: string }>;
   refreshPendingOps: () => Promise<void>;
 
   privateRoots: Set<string>;
   privateRootsCount: number;
-  showPrivateRootsPanel: boolean;
-  setShowPrivateRootsPanel: React.Dispatch<React.SetStateAction<boolean>>;
   togglePrivateRoot: (id: string) => void;
-  clearPrivateRoots: () => void;
 
   inviteRoot: string;
-  setInviteRoot: React.Dispatch<React.SetStateAction<string>>;
-  inviteMaxDepth: string;
-  setInviteMaxDepth: React.Dispatch<React.SetStateAction<string>>;
   inviteActions: InviteActions;
   setInviteActions: React.Dispatch<React.SetStateAction<InviteActions>>;
   inviteAllowGrant: boolean;
   setInviteAllowGrant: React.Dispatch<React.SetStateAction<boolean>>;
-  inviteExcludeNodeIds: string[];
   inviteLink: string;
   generateInviteLink: (opts?: { rootNodeId?: string; copyToClipboard?: boolean }) => Promise<void>;
-
-  inviteImportText: string;
-  setInviteImportText: React.Dispatch<React.SetStateAction<string>>;
-  importInviteLink: () => Promise<void>;
 
   issuedGrantRecords: IssuedGrantRecord[];
   grantSubtreeToReplicaPubkey: (
@@ -304,7 +278,7 @@ export type PlaygroundAuthApi = {
   onAuthGrantMessage: (grant: AuthGrantMessageV1) => void;
 };
 
-export type UsePlaygroundAuthOptions = {
+type UsePlaygroundAuthOptions = {
   docId: string;
   joinMode: boolean;
   client: TreecrdtClient | null;
@@ -360,13 +334,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
   const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
   const [hardRevokedTokenIds, setHardRevokedTokenIds] = useState<string[]>([]);
-  const [revocationTokenInput, setRevocationTokenInput] = useState("");
-  const [revocationCutoverEnabled, setRevocationCutoverEnabled] = useState(false);
-  const [revocationCutoverTokenId, setRevocationCutoverTokenId] = useState("");
-  const [revocationCutoverCounter, setRevocationCutoverCounter] = useState("");
 
   const [inviteRoot, setInviteRoot] = useState(ROOT_ID);
-  const [inviteMaxDepth, setInviteMaxDepth] = useState<string>("");
   const [inviteActions, setInviteActions] = useState<InviteActions>({
     write_structure: true,
     write_payload: true,
@@ -375,19 +344,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const [inviteAllowGrant, setInviteAllowGrant] = useState(true);
   const [inviteLink, setInviteLink] = useState<string>("");
   const inviteLinkConfigKeyRef = useRef<string | null>(null);
-  const [inviteImportText, setInviteImportText] = useState<string>("");
   const [issuedGrantRecords, setIssuedGrantRecords] = useState<IssuedGrantRecord[]>(() => loadIssuedGrantRecords(docId));
   const [pendingOps, setPendingOps] = useState<Array<{ id: string; kind: string; message?: string }>>([]);
 
   const [privateRoots, setPrivateRoots] = useState<Set<string>>(() => loadPrivateRoots(docId));
-  const [showPrivateRootsPanel, setShowPrivateRootsPanel] = useState(false);
   const privateRootsCount = useMemo(
     () => Array.from(privateRoots).filter((id) => id !== ROOT_ID).length,
     [privateRoots]
-  );
-  const inviteExcludeNodeIds = useMemo(
-    () => computeInviteExcludeNodeIds(privateRoots, inviteRoot),
-    [privateRoots, inviteRoot]
   );
 
   useEffect(() => {
@@ -448,14 +411,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      persistPrivateRoots(docId, next);
-      return next;
-    });
-  };
-
-  const clearPrivateRoots = () => {
-    setPrivateRoots(() => {
-      const next = new Set<string>();
       persistPrivateRoots(docId, next);
       return next;
     });
@@ -598,7 +553,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         localCapabilityTokens: localTokens,
         capabilityStore,
         revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
-        isCapabilityTokenRevoked: runtimeCutoverRevocationChecker,
         requireProofRef: true,
         scopeEvaluator,
         opAuthStore,
@@ -664,9 +618,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     hardRevokedTokenIds.join(","),
     getLocalIdentityChain,
     onPeerIdentityChain,
-    revocationCutoverEnabled,
-    revocationCutoverTokenId,
-    revocationCutoverCounter,
   ]);
 
   const replica = useMemo(() => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null), [
@@ -776,31 +727,9 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const authTokenActions = authToken?.caps?.[0]?.actions ?? null;
   const authNeedsInvite = Boolean(authEnabled && joinMode && authTokenCount === 0);
 
-  const revocationKnownTokenIds = useMemo(() => {
-    const seen = new Set<string>();
-    for (const tokenB64 of authMaterial.localTokensB64) {
-      try {
-        seen.add(bytesToHex(deriveTokenIdV1(base64urlDecode(tokenB64))));
-      } catch {
-        // ignore malformed local token bytes
-      }
-    }
-    return Array.from(seen.values());
-  }, [authMaterial.localTokensB64.join(",")]);
-
   useEffect(() => {
     setHardRevokedTokenIds([]);
-    setRevocationTokenInput("");
-    setRevocationCutoverEnabled(false);
-    setRevocationCutoverTokenId("");
-    setRevocationCutoverCounter("");
   }, [docId]);
-
-  useEffect(() => {
-    if (revocationCutoverTokenId) return;
-    if (revocationKnownTokenIds.length === 0) return;
-    setRevocationCutoverTokenId(revocationKnownTokenIds[0]!);
-  }, [revocationCutoverTokenId, revocationKnownTokenIds]);
 
   const toggleHardRevokedTokenId = React.useCallback((tokenIdHex: string) => {
     const normalized = normalizeTokenIdHex(tokenIdHex);
@@ -811,46 +740,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     });
   }, []);
 
-  const clearHardRevokedTokenIds = React.useCallback(() => {
-    setHardRevokedTokenIds([]);
-  }, []);
-
-  const addHardRevokedTokenId = React.useCallback(() => {
-    const normalized = normalizeTokenIdHex(revocationTokenInput);
-    if (!normalized) {
-      setAuthError("Token id must be exactly 32 hex chars (16 bytes).");
-      return;
-    }
-    setHardRevokedTokenIds((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
-    setRevocationTokenInput("");
-    setAuthError(null);
-  }, [revocationTokenInput]);
-
   const hardRevokedTokenIdBytes = useMemo(() => hardRevokedTokenIds.map((hex) => hexToBytes16(hex)), [hardRevokedTokenIds]);
-  const revocationCutoverTokenIdNormalized = useMemo(
-    () => normalizeTokenIdHex(revocationCutoverTokenId),
-    [revocationCutoverTokenId]
-  );
-  const revocationCutoverCounterValue = useMemo(() => {
-    const text = revocationCutoverCounter.trim();
-    if (text.length === 0) return null;
-    const parsed = Number(text);
-    if (!Number.isInteger(parsed) || parsed < 0) return null;
-    return parsed;
-  }, [revocationCutoverCounter]);
-
-  const runtimeCutoverRevocationChecker = React.useCallback(
-    (ctx: { stage: "parse" | "runtime"; tokenIdHex: string; op?: Operation }) => {
-      if (ctx.stage !== "runtime") return false;
-      if (!revocationCutoverEnabled) return false;
-      if (!revocationCutoverTokenIdNormalized) return false;
-      if (revocationCutoverCounterValue === null) return false;
-      if (ctx.tokenIdHex !== revocationCutoverTokenIdNormalized) return false;
-      if (!ctx.op) return false;
-      return ctx.op.meta.id.counter >= revocationCutoverCounterValue;
-    },
-    [revocationCutoverCounterValue, revocationCutoverEnabled, revocationCutoverTokenIdNormalized]
-  );
 
   const importInvitePayload = React.useCallback(
     async (inviteB64: string, opts2: { clearHash?: boolean } = {}) => {
@@ -905,7 +795,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     void (async () => {
       try {
         const current = await loadAuthMaterial(docId);
-        let { issuerPkB64, issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
+        let { issuerSkB64, localPkB64, localSkB64, localTokensB64 } = current;
 
         const ensureIssuerKeys = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
           const run = async (): Promise<Pick<StoredAuthMaterial, "issuerPkB64" | "issuerSkB64">> => {
@@ -982,7 +872,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
         if (authEnabled) {
           const ensured = await ensureIssuerKeys();
-          issuerPkB64 = ensured.issuerPkB64;
           issuerSkB64 = ensured.issuerSkB64;
         }
 
@@ -1034,7 +923,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         const next = await loadAuthMaterial(docId);
         if (cancelled) return;
         setAuthMaterial(next);
-        setAuthError(authEnabled ? null : null);
+        setAuthError(null);
       } catch (err) {
         if (cancelled) return;
         localAuthRef.current = null;
@@ -1051,7 +940,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     clearAuthMaterial(docId);
     setInviteLink("");
     inviteLinkConfigKeyRef.current = null;
-    setInviteImportText("");
     setAuthEnabled(false);
     setAuthError(null);
     void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
@@ -1077,16 +965,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     actions = expandInternalCompatActions(actions);
     if (actions.length === 0) actions = ["read_structure", "read_payload"];
 
-    const maxDepthText = inviteMaxDepth.trim();
-    let maxDepth: number | undefined;
-    if (maxDepthText.length > 0) {
-      const parsed = Number(maxDepthText);
-      if (!Number.isFinite(parsed) || parsed < 0) throw new Error("max depth must be a non-negative number");
-      maxDepth = parsed;
-    }
-
     const excludeNodeIds = computeInviteExcludeNodeIds(privateRoots, rootNodeId);
-    return { actions, maxDepth, excludeNodeIds };
+    return { actions, maxDepth: undefined, excludeNodeIds };
   };
 
   const inviteConfigCacheKey = (rootNodeId: string): string => {
@@ -1281,34 +1161,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         await copyToClipboard(link);
         setAuthInfo("Invite link copied to clipboard.");
       }
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const importInviteLink = async () => {
-    if (typeof window === "undefined") return;
-    const raw = inviteImportText.trim();
-    if (!raw) return;
-    setAuthBusy(true);
-    setAuthError(null);
-    try {
-      let inviteB64: string | null = null;
-      try {
-        const url = new URL(raw, window.location.href);
-        inviteB64 = new URLSearchParams(url.hash.slice(1)).get("invite");
-      } catch {
-        // not a URL; fall back to raw text parsing
-      }
-
-      if (!inviteB64) {
-        inviteB64 = raw.startsWith("invite=") ? raw.slice("invite=".length) : raw;
-      }
-
-      await importInvitePayload(inviteB64);
-      setInviteImportText("");
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1601,7 +1453,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     showAuthAdvanced,
     setShowAuthAdvanced,
     authInfo,
-    setAuthInfo,
     authError,
     setAuthError,
     authBusy,
@@ -1619,11 +1470,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     syncAuth,
     refreshAuthMaterial,
     localIdentityChainPromiseRef,
-    getLocalIdentityChain,
-    authToken,
     replica,
     selfPeerId,
-    authActionSet,
     viewRootId,
     authCanSyncAll,
     canWriteStructure,
@@ -1639,41 +1487,20 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authTokenScope,
     authTokenActions,
     authNeedsInvite,
-    revocationKnownTokenIds,
     hardRevokedTokenIds,
     toggleHardRevokedTokenId,
-    clearHardRevokedTokenIds,
-    revocationTokenInput,
-    setRevocationTokenInput,
-    addHardRevokedTokenId,
-    revocationCutoverEnabled,
-    setRevocationCutoverEnabled,
-    revocationCutoverTokenId,
-    setRevocationCutoverTokenId,
-    revocationCutoverCounter,
-    setRevocationCutoverCounter,
     pendingOps,
     refreshPendingOps,
     privateRoots,
     privateRootsCount,
-    showPrivateRootsPanel,
-    setShowPrivateRootsPanel,
     togglePrivateRoot,
-    clearPrivateRoots,
     inviteRoot,
-    setInviteRoot,
-    inviteMaxDepth,
-    setInviteMaxDepth,
     inviteActions,
     setInviteActions,
     inviteAllowGrant,
     setInviteAllowGrant,
-    inviteExcludeNodeIds,
     inviteLink,
     generateInviteLink,
-    inviteImportText,
-    setInviteImportText,
-    importInviteLink,
     issuedGrantRecords,
     grantSubtreeToReplicaPubkey,
     resetAuth,

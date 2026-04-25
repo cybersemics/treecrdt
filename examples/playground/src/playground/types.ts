@@ -2,14 +2,12 @@ export type DisplayNode = {
   id: string;
   label: string;
   value: string;
-  children: DisplayNode[];
 };
 
 export type NodeMeta = {
   parentId: string | null;
   order: number;
   childCount: number;
-  deleted: boolean;
 };
 
 export type TreeState = {
@@ -20,6 +18,13 @@ export type TreeState = {
 export type CollapseState = {
   defaultCollapsed: boolean;
   overrides: Set<string>;
+};
+
+export type BulkAddProgress = {
+  total: number;
+  completed: number;
+  phase: "creating" | "applying";
+  startedAtMs: number;
 };
 
 export type Status = "booting" | "ready" | "error";
@@ -34,8 +39,3 @@ export type RemoteSyncStatus =
   | { state: "error"; detail: string };
 
 export type PeerInfo = { id: string; lastSeen: number };
-
-export type PayloadRecord = {
-  payload: Uint8Array | null;
-  encrypted?: boolean;
-};

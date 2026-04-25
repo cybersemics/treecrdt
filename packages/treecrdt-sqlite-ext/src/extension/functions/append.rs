@@ -1,3 +1,4 @@
+use super::materialize::json_outcome_from_core;
 use super::util::sqlite_result_json;
 use super::*;
 
@@ -150,7 +151,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
     };
 
     match append_ops_impl(db, &doc_id, "treecrdt_append_op", std::slice::from_ref(&op)) {
-        Ok(_) => sqlite_result_int(ctx, 1),
+        Ok(outcome) => sqlite_result_json(ctx, &json_outcome_from_core(&outcome)),
         Err(rc) => sqlite_result_error_code(ctx, rc),
     }
 }
@@ -172,7 +173,7 @@ pub(super) struct JsonAppendOp {
 }
 
 /// Batch append: accepts a single JSON array argument with fields matching the ops table.
-/// Returns JSON array of affected 16-byte node IDs.
+/// Returns a JSON materialization outcome.
 pub(super) unsafe extern "C" fn treecrdt_append_ops(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -219,7 +220,10 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
         }
     };
     if ops.is_empty() {
-        sqlite_result_json(ctx, &Vec::<Vec<u8>>::new());
+        sqlite_result_json(
+            ctx,
+            &json_outcome_from_core(&treecrdt_core::MaterializationOutcome::empty(0)),
+        );
         return;
     }
 
@@ -261,11 +265,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
     }
 
     match append_ops_impl(db, &doc_id, "treecrdt_append_ops", &ops) {
-        Ok(affected_nodes) => {
-            let out: Vec<Vec<u8>> =
-                affected_nodes.into_iter().map(|id| id.0.to_be_bytes().to_vec()).collect();
-            sqlite_result_json(ctx, &out);
-        }
+        Ok(outcome) => sqlite_result_json(ctx, &json_outcome_from_core(&outcome)),
         Err(rc) => sqlite_result_error_code(ctx, rc),
     }
 }

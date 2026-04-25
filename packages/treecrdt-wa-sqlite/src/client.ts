@@ -8,7 +8,6 @@ import {
   decodeSqliteTreeChildRows,
   decodeSqliteTreeRows,
   type SqliteTreeChildRow,
-  type SqliteTreeRow,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
@@ -19,17 +18,18 @@ import {
   nodeIdToBytes16,
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
-import type {
-  TreecrdtEngine,
-  TreecrdtEngineLocal,
-  TreecrdtEngineMeta,
-  TreecrdtEngineOpRefs,
-  TreecrdtEngineOps,
-  TreecrdtEngineTree,
-} from '@treecrdt/interface/engine';
+import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
-import type { RpcMethod, RpcParams, RpcRequest, RpcResponse, RpcResult } from './rpc.js';
+import type {
+  RpcMethod,
+  RpcParams,
+  RpcPushMessage,
+  RpcRequest,
+  RpcResponse,
+  RpcResult,
+} from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
@@ -37,29 +37,10 @@ export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 
-export type TreecrdtOpsApi = TreecrdtEngineOps;
-
-export type TreecrdtOpRefsApi = TreecrdtEngineOpRefs;
-
-export type TreeNodeRow = SqliteTreeRow;
-
-export type TreecrdtTreeApi = TreecrdtEngineTree;
-
-export type TreecrdtMetaApi = TreecrdtEngineMeta;
-
-export type TreecrdtLocalApi = TreecrdtEngineLocal;
-
 export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   storage: StorageMode;
-  docId: string;
   runner: SqliteRunner;
-  ops: TreecrdtOpsApi;
-  opRefs: TreecrdtOpRefsApi;
-  tree: TreecrdtTreeApi;
-  meta: TreecrdtMetaApi;
-  local: TreecrdtLocalApi;
-  close: () => Promise<void>;
   drop: () => Promise<void>;
 };
 
@@ -132,6 +113,7 @@ async function createWorkerClient(opts: {
   docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
+  const materialized = createMaterializationDispatcher();
   // Keep the URL inline so Vite detects and bundles the worker properly.
   const worker = new Worker(new URL('./worker.js', import.meta.url), {
     type: 'module',
@@ -156,12 +138,18 @@ async function createWorkerClient(opts: {
     });
   };
 
-  const onMessage = (ev: MessageEvent<RpcResponse>) => {
-    const handler = pending.get(ev.data.id as number);
+  const onMessage = (ev: MessageEvent<RpcResponse | RpcPushMessage>) => {
+    const data = ev.data;
+    if ('type' in data && data.type === 'materialized') {
+      materialized.emitEvent(data.event);
+      return;
+    }
+    const response = data as RpcResponse;
+    const handler = pending.get(response.id as number);
     if (!handler) return;
-    pending.delete(ev.data.id as number);
-    if (ev.data.ok) handler.resolve(ev.data.result);
-    else handler.reject(new Error(ev.data.error || 'worker error'));
+    pending.delete(response.id as number);
+    if (response.ok) handler.resolve(response.result);
+    else handler.reject(new Error(response.error || 'worker error'));
   };
   const onError = (ev: ErrorEvent) => {
     const err = new Error(ev.message || 'worker error');
@@ -226,6 +214,7 @@ async function createWorkerClient(opts: {
     storage: effectiveStorage,
     docId: opts.docId,
     call,
+    materialized,
     close: closeImpl,
     drop: dropImpl,
   });
@@ -240,6 +229,7 @@ async function createDirectClient(opts: {
   docId: string;
   requireOpfs?: boolean;
 }): Promise<TreecrdtClient> {
+  const materialized = createMaterializationDispatcher();
   const { baseUrl, storage, requireOpfs } = opts;
   const opened = await openTreecrdtDb({
     baseUrl,
@@ -247,6 +237,7 @@ async function createDirectClient(opts: {
     storage,
     docId: opts.docId,
     requireOpfs,
+    onMaterialized: materialized.emitEvent,
   });
   const db = opened.db;
   const finalStorage: StorageMode = opened.storage;
@@ -262,7 +253,10 @@ async function createDirectClient(opts: {
     const key = localWriterKey(replica);
     const existing = localWriters.get(key);
     if (existing) return existing;
-    const next = createTreecrdtSqliteWriter(runner, { replica });
+    const next = createTreecrdtSqliteWriter(runner, {
+      replica,
+      onMaterialized: materialized.emitEvent,
+    });
     localWriters.set(key, next);
     return next;
   };
@@ -278,8 +272,14 @@ async function createDirectClient(opts: {
     );
   let closed = false;
   const closedError = new Error(CLIENT_CLOSED_ERROR);
+  let callQueue: Promise<void> = Promise.resolve();
+  const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
+    promise.then(
+      () => undefined,
+      () => undefined,
+    );
 
-  const call: RpcCall = async (method, params) => {
+  const runDirectCall: RpcCall = async (method, params) => {
     if (closed) throw closedError;
     try {
       switch (method) {
@@ -294,13 +294,11 @@ async function createDirectClient(opts: {
         }
         case 'append': {
           const [op] = params as RpcParams<'append'>;
-          await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
-          return undefined as any;
+          return (await adapter.appendOp(op, nodeIdToBytes16, encodeReplica)) as any;
         }
         case 'appendMany': {
           const [ops] = params as RpcParams<'appendMany'>;
-          const affected = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
-          return affected.map((node) => Array.from(node)) as any;
+          return (await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica)) as any;
         }
         case 'opsSince': {
           const [lamport, root] = params as RpcParams<'opsSince'>;
@@ -401,12 +399,18 @@ async function createDirectClient(opts: {
       throw wrapError(method, err);
     }
   };
+  const call: RpcCall = (method, params) => {
+    const run = callQueue.then(() => runDirectCall(method, params));
+    callQueue = settleQueue(run);
+    return run;
+  };
 
   return makeTreecrdtClientFromCall({
     mode: 'direct',
     storage: finalStorage,
     docId: opts.docId,
     call,
+    materialized,
     close: async () => {
       if (closed) return;
       if (db.close) await db.close();
@@ -430,10 +434,12 @@ function makeTreecrdtClientFromCall(opts: {
   storage: StorageMode;
   docId: string;
   call: RpcCall;
+  materialized: ReturnType<typeof createMaterializationDispatcher>;
   close: () => Promise<void>;
   drop: () => Promise<void>;
 }): TreecrdtClient {
   const call = opts.call;
+  const materialized = opts.materialized;
   let closePromise: Promise<void> | null = null;
 
   const runner: SqliteRunner = {
@@ -530,11 +536,13 @@ function makeTreecrdtClientFromCall(opts: {
     docId: opts.docId,
     runner,
     ops: {
-      append: (op) => call('append', [op]).then(() => undefined),
-      appendMany: async (ops) => {
-        const affected = await call('appendMany', [ops]);
-        if (!Array.isArray(affected)) return [];
-        return affected.map((node) => nodeIdFromBytes16(Uint8Array.from(node)));
+      append: async (op, writeOpts?: WriteOptions) => {
+        const outcome = await call('append', [op]);
+        materialized.emitOutcome(outcome, writeOpts?.writeId);
+      },
+      appendMany: async (ops, writeOpts?: WriteOptions) => {
+        const outcome = await call('appendMany', [ops]);
+        materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
@@ -558,6 +566,7 @@ function makeTreecrdtClientFromCall(opts: {
       delete: localDeleteImpl,
       payload: localPayloadImpl,
     },
+    onMaterialized: materialized.onMaterialized,
     close: closeImpl,
     drop: opts.drop,
   };

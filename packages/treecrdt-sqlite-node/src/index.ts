@@ -19,7 +19,8 @@ import {
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
 import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
-import type { TreecrdtEngine } from '@treecrdt/interface/engine';
+import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
+import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 
 export type LoadOptions = {
   extensionPath?: string;
@@ -120,7 +121,11 @@ export function createTreecrdtClient(
   opts: { docId?: string; maxBulkOps?: number } = {},
 ): Promise<TreecrdtEngine & { runner: SqliteRunner }> {
   const runner = createRunner(db);
-  const adapter = createTreecrdtSqliteAdapter(runner, { maxBulkOps: opts.maxBulkOps });
+  const materialized = createMaterializationDispatcher();
+  const adapter = createTreecrdtSqliteAdapter(runner, {
+    maxBulkOps: opts.maxBulkOps,
+    onMaterialized: materialized.emitEvent,
+  });
   const docId = opts.docId ?? 'treecrdt';
 
   const ready = Promise.resolve(adapter.setDocId(docId));
@@ -131,7 +136,10 @@ export function createTreecrdtClient(
     const key = localWriterKey(replica);
     const existing = localWriters.get(key);
     if (existing) return existing;
-    const next = createTreecrdtSqliteWriter(runner, { replica });
+    const next = createTreecrdtSqliteWriter(runner, {
+      replica,
+      onMaterialized: materialized.emitEvent,
+    });
     localWriters.set(key, next);
     return next;
   };
@@ -187,10 +195,13 @@ export function createTreecrdtClient(
     storage: 'sqlite',
     docId,
     ops: {
-      append: async (op) => adapter.appendOp(op, nodeIdToBytes16, encodeReplica),
-      appendMany: async (ops) => {
-        const affected = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
-        return affected.map((node) => nodeIdFromBytes16(node));
+      append: async (op, writeOpts?: WriteOptions) => {
+        const outcome = await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
+        materialized.emitOutcome(outcome, writeOpts?.writeId);
+      },
+      appendMany: async (ops, writeOpts?: WriteOptions) => {
+        const outcome = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
+        materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
@@ -217,6 +228,7 @@ export function createTreecrdtClient(
       delete: localDeleteImpl,
       payload: localPayloadImpl,
     },
+    onMaterialized: materialized.onMaterialized,
     runner,
     close: async () => {
       if (typeof db?.close === 'function') db.close();

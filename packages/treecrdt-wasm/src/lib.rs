@@ -5,7 +5,8 @@
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::to_value;
 use treecrdt_core::{
-    Lamport, LamportClock, MemoryStorage, NodeId, Operation, OperationKind, ReplicaId, TreeCrdt,
+    Lamport, LamportClock, MaterializationOutcome, MemoryStorage, NodeId, Operation, OperationKind,
+    ReplicaId, TreeCrdt,
 };
 use wasm_bindgen::prelude::*;
 
@@ -198,7 +199,16 @@ impl WasmTree {
             .apply_remote_with_delta(op)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         let affected: Vec<String> = delta
-            .map(|d| d.affected_nodes.into_iter().map(node_to_hex).collect())
+            .map(|d| {
+                MaterializationOutcome {
+                    head_seq: 0,
+                    changes: d.changes,
+                }
+                .affected_nodes()
+                .into_iter()
+                .map(node_to_hex)
+                .collect()
+            })
             .unwrap_or_default();
         to_value(&affected).map_err(|e| JsValue::from_str(&e.to_string()))
     }

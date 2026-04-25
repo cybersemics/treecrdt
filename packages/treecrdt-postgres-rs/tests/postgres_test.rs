@@ -5,9 +5,9 @@ use std::sync::OnceLock;
 use postgres::{Client, NoTls};
 use uuid::Uuid;
 
-use treecrdt_core::{NodeId, Operation, ReplicaId, VersionVector};
+use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId, VersionVector};
 use treecrdt_postgres::{
-    append_ops, append_ops_with_affected_nodes, ensure_materialized, ensure_schema,
+    append_ops, append_ops_with_materialization_outcome, ensure_materialized, ensure_schema,
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
     local_move, local_payload, max_lamport, replica_max_counter, reset_doc_for_tests,
     tree_children, tree_payload,
@@ -41,8 +41,8 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
         append_ops(&self.client, &self.doc_id, ops).unwrap();
     }
 
-    fn append_ops_with_affected_nodes(&self, ops: &[Operation]) -> Vec<NodeId> {
-        append_ops_with_affected_nodes(&self.client, &self.doc_id, ops).unwrap()
+    fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
+        append_ops_with_materialization_outcome(&self.client, &self.doc_id, ops).unwrap()
     }
 
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId> {
@@ -189,7 +189,7 @@ fn postgres_backend_append_batch_materializes_only_inserted_ops() {
 }
 
 #[test]
-fn postgres_backend_append_with_affected_nodes_matches_representative_remote_batch() {
+fn postgres_backend_append_with_materialization_outcome_matches_representative_remote_batch() {
     let Some(harness) = setup_conformance_harness() else {
         return;
     };
@@ -313,7 +313,8 @@ fn postgres_backend_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta()
     }
 
     let append_err =
-        append_ops_with_affected_nodes(&client, &doc_id, std::slice::from_ref(&first)).unwrap_err();
+        append_ops_with_materialization_outcome(&client, &doc_id, std::slice::from_ref(&first))
+            .unwrap_err();
     assert!(append_err.to_string().contains("forced catch-up failure"));
 
     let (op_count, replay_lamport, replay_replica, replay_counter, head_seq, children) = {

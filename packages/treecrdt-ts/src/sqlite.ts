@@ -1,6 +1,7 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
+import { emptyMaterializationOutcome } from './engine.js';
+import type { MaterializationEvent, MaterializationOutcome } from './engine.js';
 import {
-  bytesToHex,
   decodeNodeId,
   decodeReplicaId,
   hexToBytes,
@@ -200,7 +201,7 @@ async function treecrdtAppendOp(
   op: Operation,
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
-): Promise<void> {
+): Promise<MaterializationOutcome> {
   if (op.kind.type === 'delete' && (!op.meta.knownState || op.meta.knownState.length === 0)) {
     throw new Error('treecrdt: delete operations require meta.knownState');
   }
@@ -216,7 +217,15 @@ async function treecrdtAppendOp(
     knownState: meta.knownState ?? null,
   });
 
-  await runner.getText(sql, params);
+  return decodeSqliteMaterializationOutcome(await sqliteGetJson<unknown>(runner, sql, params));
+}
+
+function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
+  const last = outcomes.length > 0 ? outcomes[outcomes.length - 1] : undefined;
+  return {
+    headSeq: last?.headSeq ?? 0,
+    changes: outcomes.flatMap((outcome) => outcome.changes),
+  };
 }
 
 async function treecrdtAppendOps(
@@ -225,8 +234,8 @@ async function treecrdtAppendOps(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
   opts: { maxBulkOps?: number } = {},
-): Promise<Uint8Array[]> {
-  if (ops.length === 0) return [];
+): Promise<MaterializationOutcome> {
+  if (ops.length === 0) return emptyMaterializationOutcome();
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = 'SELECT treecrdt_append_ops(?1)';
@@ -239,43 +248,29 @@ async function treecrdtAppendOps(
     throw new Error('treecrdt: delete operations require meta.knownState');
   }
 
-  const mergeAffected = (into: Map<string, Uint8Array>, values: Uint8Array[]) => {
-    for (const node of values) {
-      const key = bytesToHex(node);
-      if (!into.has(key)) into.set(key, node);
-    }
-  };
-
   // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
   let bulkFailedAt: number | null = null;
-  const affectedByHex = new Map<string, Uint8Array>();
+  const outcomes: MaterializationOutcome[] = [];
   for (let start = 0; start < ops.length; start += maxBulkOps) {
     const chunk = ops.slice(start, start + maxBulkOps);
     const payload = buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica);
     try {
-      const raw = await sqliteGetJsonOrEmpty<unknown[]>(runner, bulkSql, [JSON.stringify(payload)]);
-      mergeAffected(affectedByHex, decodeSqliteOpRefs(raw));
+      const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
+      outcomes.push(decodeSqliteMaterializationOutcome(raw));
     } catch {
       bulkFailedAt = start;
       break;
     }
   }
-  if (bulkFailedAt === null) return Array.from(affectedByHex.values());
+  if (bulkFailedAt === null) return mergeMaterializationOutcomes(outcomes);
 
   const remaining = ops.slice(bulkFailedAt);
-  await runner.exec('BEGIN');
-  try {
-    for (const op of remaining) {
-      const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
-      const raw = await sqliteGetJsonOrEmpty<unknown[]>(runner, bulkSql, [JSON.stringify(payload)]);
-      mergeAffected(affectedByHex, decodeSqliteOpRefs(raw));
-    }
-    await runner.exec('COMMIT');
-  } catch (err) {
-    await runner.exec('ROLLBACK');
-    throw err;
+  for (const op of remaining) {
+    const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
+    const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
+    outcomes.push(decodeSqliteMaterializationOutcome(raw));
   }
-  return Array.from(affectedByHex.values());
+  return mergeMaterializationOutcomes(outcomes);
 }
 
 async function treecrdtOpsSince(
@@ -293,22 +288,26 @@ async function treecrdtOpsSince(
 
 export function createTreecrdtSqliteAdapter(
   runner: SqliteRunner,
-  opts: { maxBulkOps?: number } = {},
+  opts: { maxBulkOps?: number; onMaterialized?: (event: MaterializationEvent) => void } = {},
 ): TreecrdtAdapter {
+  const emitOutcome = (outcome: MaterializationOutcome) => {
+    if (outcome.changes.length === 0) return;
+    opts.onMaterialized?.({ ...outcome });
+  };
   return {
     setDocId: (docId) => treecrdtSetDocId(runner, docId),
     docId: () => treecrdtDocId(runner),
-    opRefsAll: () => treecrdtOpRefsAll(runner),
-    opRefsChildren: (parent) => treecrdtOpRefsChildren(runner, parent),
+    opRefsAll: () => treecrdtOpRefsAll(runner, emitOutcome),
+    opRefsChildren: (parent) => treecrdtOpRefsChildren(runner, parent, emitOutcome),
     opsByOpRefs: (opRefs) => treecrdtOpsByOpRefs(runner, opRefs),
-    treeChildren: (parent) => treecrdtTreeChildren(runner, parent),
+    treeChildren: (parent) => treecrdtTreeChildren(runner, parent, emitOutcome),
     treeChildrenPage: (parent, cursor, limit) =>
-      treecrdtTreeChildrenPage(runner, parent, cursor, limit),
-    treeDump: () => treecrdtTreeDump(runner),
-    treeNodeCount: () => treecrdtTreeNodeCount(runner),
-    treeParent: (node) => treecrdtTreeParent(runner, node),
-    treeExists: (node) => treecrdtTreeExists(runner, node),
-    treePayload: (node) => treecrdtTreePayload(runner, node),
+      treecrdtTreeChildrenPage(runner, parent, cursor, limit, emitOutcome),
+    treeDump: () => treecrdtTreeDump(runner, emitOutcome),
+    treeNodeCount: () => treecrdtTreeNodeCount(runner, emitOutcome),
+    treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
+    treeExists: (node) => treecrdtTreeExists(runner, node, emitOutcome),
+    treePayload: (node) => treecrdtTreePayload(runner, node, emitOutcome),
     headLamport: () => treecrdtHeadLamport(runner),
     replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(runner, replica),
     appendOp: (op, serializeNodeId, serializeReplica) =>
@@ -332,16 +331,25 @@ async function treecrdtDocId(runner: SqliteRunner): Promise<string | null> {
   return runner.getText('SELECT treecrdt_doc_id()');
 }
 
-async function treecrdtEnsureMaterialized(runner: SqliteRunner): Promise<void> {
-  await runner.getText('SELECT treecrdt_ensure_materialized()');
+async function treecrdtEnsureMaterialized(
+  runner: SqliteRunner,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<void> {
+  const outcome = decodeSqliteMaterializationOutcome(
+    await sqliteGetJson<unknown>(runner, 'SELECT treecrdt_ensure_materialized()'),
+  );
+  if (outcome.changes.length > 0) emitOutcome?.(outcome);
 }
 
 /**
  * Fetch all stored opRefs (16-byte values) from the extension.
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
-async function treecrdtOpRefsAll(runner: SqliteRunner): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner);
+async function treecrdtOpRefsAll(
+  runner: SqliteRunner,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<unknown[]> {
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_all()');
 }
 
@@ -352,8 +360,9 @@ async function treecrdtOpRefsAll(runner: SqliteRunner): Promise<unknown[]> {
 async function treecrdtOpRefsChildren(
   runner: SqliteRunner,
   parent: Uint8Array,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner);
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_children(?1)', [parent]);
 }
 
@@ -374,8 +383,12 @@ async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): 
  * Implemented as direct SQL over `tree_nodes` (not a SQLite extension UDF), returning a JSON
  * array of canonical node id hex strings (32 chars).
  */
-async function treecrdtTreeChildren(runner: SqliteRunner, parent: Uint8Array): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner);
+async function treecrdtTreeChildren(
+  runner: SqliteRunner,
+  parent: Uint8Array,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<unknown[]> {
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   return sqliteGetJsonOrEmpty(
     runner,
     "SELECT COALESCE(json_group_array(node_hex), '[]') FROM (\
@@ -398,8 +411,9 @@ async function treecrdtTreeChildrenPage(
   parent: Uint8Array,
   cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
   limit: number,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner);
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   const afterOrderKey = cursor?.orderKey ?? null;
   const afterNode = cursor?.node ?? null;
   return sqliteGetJsonOrEmpty(
@@ -425,8 +439,11 @@ async function treecrdtTreeChildrenPage(
  * Dump the full materialized tree state.
  * Returns raw JSON-decoded rows (array of objects with byte fields).
  */
-async function treecrdtTreeDump(runner: SqliteRunner): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner);
+async function treecrdtTreeDump(
+  runner: SqliteRunner,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<unknown[]> {
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   return sqliteGetJsonOrEmpty(
     runner,
     "SELECT COALESCE(json_group_array(json_object('node', node_hex, 'parent', parent_hex, 'order_key', order_key_hex, 'tombstone', tombstone)), '[]') \
@@ -445,8 +462,11 @@ async function treecrdtTreeDump(runner: SqliteRunner): Promise<unknown[]> {
 /**
  * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
  */
-async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
-  await treecrdtEnsureMaterialized(runner);
+async function treecrdtTreeNodeCount(
+  runner: SqliteRunner,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<number> {
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   return sqliteGetNumber(
     runner,
     'SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node <> ?1',
@@ -461,8 +481,9 @@ async function treecrdtTreeNodeCount(runner: SqliteRunner): Promise<number> {
 async function treecrdtTreeParent(
   runner: SqliteRunner,
   node: Uint8Array,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<Uint8Array | null> {
-  await treecrdtEnsureMaterialized(runner);
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   const parentHex = await runner.getText(
     'SELECT CASE WHEN parent IS NULL THEN NULL ELSE lower(hex(parent)) END FROM tree_nodes WHERE node = ?1',
     [node],
@@ -474,8 +495,12 @@ async function treecrdtTreeParent(
 /**
  * Check if a non-tombstoned node exists (16-byte id).
  */
-async function treecrdtTreeExists(runner: SqliteRunner, node: Uint8Array): Promise<boolean> {
-  await treecrdtEnsureMaterialized(runner);
+async function treecrdtTreeExists(
+  runner: SqliteRunner,
+  node: Uint8Array,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<boolean> {
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   const result = await runner.getText(
     'SELECT 1 FROM tree_nodes WHERE node = ?1 AND tombstone = 0 LIMIT 1',
     [node],
@@ -490,8 +515,9 @@ async function treecrdtTreeExists(runner: SqliteRunner, node: Uint8Array): Promi
 async function treecrdtTreePayload(
   runner: SqliteRunner,
   node: Uint8Array,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<Uint8Array | null> {
-  await treecrdtEnsureMaterialized(runner);
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
   const hex = await runner.getText(
     'SELECT hex(payload) FROM tree_payload WHERE node = ?1 LIMIT 1',
     [node],
@@ -538,15 +564,20 @@ export type TreecrdtSqliteWriter = {
 
 export function createTreecrdtSqliteWriter(
   runner: SqliteRunner,
-  opts: { replica: ReplicaId },
+  opts: {
+    replica: ReplicaId;
+    onMaterialized?: (event: MaterializationEvent) => void;
+  },
 ): TreecrdtSqliteWriter {
   const replica = opts.replica;
   const replicaBytes = replicaIdToBytes(replica);
 
   const getLocalOp = async (sql: string, params: SqlCall['params']) => {
-    const raw = await sqliteGetJson<unknown[]>(runner, sql, params);
-    const ops = decodeSqliteOps(raw);
+    const raw = await sqliteGetJson<any>(runner, sql, params);
+    const ops = decodeSqliteOps([raw.op]);
     if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
+    const outcome = decodeSqliteMaterializationOutcome(raw.outcome);
+    if (outcome.changes.length > 0) opts.onMaterialized?.({ ...outcome });
     return ops[0]!;
   };
 
@@ -604,6 +635,64 @@ export function decodeSqliteOpRefs(raw: unknown): Uint8Array[] {
 export function decodeSqliteNodeIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((val) => decodeNodeId(val instanceof Uint8Array ? val : (val as any)));
+}
+
+function decodeSqlitePayload(raw: unknown): Uint8Array | null {
+  if (raw == null) return null;
+  if (raw instanceof Uint8Array) return raw;
+  if (typeof raw === 'string') return hexToBytes(raw);
+  return Uint8Array.from(raw as any);
+}
+
+export function decodeSqliteMaterializationOutcome(raw: unknown): MaterializationOutcome {
+  const value = (raw ?? {}) as any;
+  const rawChanges = Array.isArray(value.changes) ? value.changes : [];
+  const changes = rawChanges.map((change: any) => {
+    const kind = String(change.kind);
+    if (kind === 'insert') {
+      return {
+        kind,
+        node: decodeNodeId(change.node),
+        parentAfter: decodeNodeId(change.parentAfter),
+        payload: decodeSqlitePayload(change.payload),
+      };
+    }
+    if (kind === 'move') {
+      return {
+        kind,
+        node: decodeNodeId(change.node),
+        parentBefore: change.parentBefore == null ? null : decodeNodeId(change.parentBefore),
+        parentAfter: decodeNodeId(change.parentAfter),
+      };
+    }
+    if (kind === 'delete') {
+      return {
+        kind,
+        node: decodeNodeId(change.node),
+        parentBefore: change.parentBefore == null ? null : decodeNodeId(change.parentBefore),
+      };
+    }
+    if (kind === 'restore') {
+      return {
+        kind,
+        node: decodeNodeId(change.node),
+        parentAfter: change.parentAfter == null ? null : decodeNodeId(change.parentAfter),
+        payload: decodeSqlitePayload(change.payload),
+      };
+    }
+    if (kind === 'payload') {
+      return {
+        kind,
+        node: decodeNodeId(change.node),
+        payload: decodeSqlitePayload(change.payload),
+      };
+    }
+    throw new Error(`unknown materialization change kind: ${kind}`);
+  });
+  return {
+    headSeq: Number(value.headSeq ?? 0),
+    changes,
+  };
 }
 
 export type SqliteTreeChildRow = {

@@ -1,9 +1,77 @@
 import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
 
+export type Change =
+  | { kind: 'insert'; node: string; parentAfter: string; payload: Uint8Array | null }
+  | { kind: 'move'; node: string; parentBefore: string | null; parentAfter: string }
+  | { kind: 'delete'; node: string; parentBefore: string | null }
+  | { kind: 'restore'; node: string; parentAfter: string | null; payload: Uint8Array | null }
+  | { kind: 'payload'; node: string; payload: Uint8Array | null };
+
+/**
+ * Coalesced result of advancing materialized state to `headSeq`.
+ *
+ * This is intentionally not a raw op list. Replays and batched appends collapse multiple writes for
+ * the same node into final visible changes before adapters emit events.
+ */
+export type MaterializationOutcome = {
+  headSeq: number;
+  changes: Change[];
+};
+
+export function emptyMaterializationOutcome(headSeq = 0): MaterializationOutcome {
+  return { headSeq, changes: [] };
+}
+
+/**
+ * Event emitted after write-path materialization, or after read-path recovery advances a pending
+ * materialization frontier. `writeIds` echoes optional ids supplied to append APIs.
+ */
+export type MaterializationEvent = MaterializationOutcome & {
+  writeIds?: string[];
+};
+
+export type MaterializationListener = (event: MaterializationEvent) => void;
+
+export type MaterializationDispatcher = {
+  emitEvent: (event: MaterializationEvent) => void;
+  emitOutcome: (outcome: MaterializationOutcome, writeId?: string) => void;
+  onMaterialized: (listener: MaterializationListener) => () => void;
+};
+
+export function createMaterializationDispatcher(): MaterializationDispatcher {
+  const listeners = new Set<MaterializationListener>();
+
+  const emitEvent = (event: MaterializationEvent) => {
+    if (event.changes.length === 0) return;
+    for (const listener of listeners) listener(event);
+  };
+
+  const emitOutcome = (outcome: MaterializationOutcome, writeId?: string) => {
+    if (outcome.changes.length === 0) return;
+    emitEvent({
+      ...outcome,
+      ...(writeId ? { writeIds: [writeId] } : {}),
+    });
+  };
+
+  const onMaterialized = (listener: MaterializationListener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+
+  return { emitEvent, emitOutcome, onMaterialized };
+}
+
+export type WriteOptions = {
+  writeId?: string;
+};
+
 export type TreecrdtEngineOps = {
-  append: (op: Operation) => Promise<void>;
-  appendMany: (ops: Operation[]) => Promise<string[]>;
+  append: (op: Operation, opts?: WriteOptions) => Promise<void>;
+  appendMany: (ops: Operation[], opts?: WriteOptions) => Promise<void>;
   all: () => Promise<Operation[]>;
   since: (lamport: number, root?: string) => Promise<Operation[]>;
   children: (parent: string) => Promise<Operation[]>;
@@ -67,5 +135,6 @@ export type TreecrdtEngine = {
   tree: TreecrdtEngineTree;
   meta: TreecrdtEngineMeta;
   local: TreecrdtEngineLocal;
+  onMaterialized: (listener: MaterializationListener) => () => void;
   close: () => Promise<void>;
 };

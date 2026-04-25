@@ -1,5 +1,3 @@
-import type { Operation } from "@treecrdt/interface";
-
 import { ROOT_ID } from "./constants";
 import type { NodeMeta, TreeState } from "./types";
 
@@ -15,13 +13,13 @@ export function applyChildrenLoaded(
   const ensureNode = (id: string): NodeMeta => {
     const existing = nextIndex[id];
     if (existing) return existing;
-    const meta: NodeMeta = { parentId: null, order: 0, childCount: 0, deleted: false };
+    const meta: NodeMeta = { parentId: null, order: 0, childCount: 0 };
     nextIndex[id] = meta;
     return meta;
   };
 
   ensureNode(ROOT_ID);
-  nextIndex[ROOT_ID] = { ...nextIndex[ROOT_ID]!, parentId: null, deleted: false };
+  nextIndex[ROOT_ID] = { ...nextIndex[ROOT_ID]!, parentId: null };
   if (!Object.prototype.hasOwnProperty.call(nextChildrenByParent, ROOT_ID)) nextChildrenByParent[ROOT_ID] = [];
 
   const parentMeta = ensureNode(parentId);
@@ -30,7 +28,6 @@ export function applyChildrenLoaded(
   nextIndex[parentId] = {
     ...parentMeta,
     parentId: resolvedParentId,
-    deleted: false,
     childCount: children.length,
   };
 
@@ -51,41 +48,10 @@ export function applyChildrenLoaded(
     const existing = ensureNode(childId);
     const loaded = Object.prototype.hasOwnProperty.call(nextChildrenByParent, childId);
     const childCount = loaded ? nextChildrenByParent[childId]!.length : existing.childCount;
-    nextIndex[childId] = { ...existing, parentId, order: i, deleted: false, childCount };
+    nextIndex[childId] = { ...existing, parentId, order: i, childCount };
   }
 
   return { index: nextIndex, childrenByParent: nextChildrenByParent };
-}
-
-export function nodesAffectedByPayloadOps(ops: Operation[]): Set<string> {
-  const out = new Set<string>();
-  for (const op of ops) {
-    const kind = op.kind;
-    if (kind.type === "insert" || kind.type === "payload" || kind.type === "delete") {
-      out.add(kind.node);
-    }
-  }
-  return out;
-}
-
-export function parentsAffectedByOps(state: TreeState, ops: Operation[]): Set<string> {
-  const out = new Set<string>();
-  for (const op of ops) {
-    const kind = op.kind;
-    if (kind.type === "insert") {
-      out.add(kind.parent);
-    } else if (kind.type === "move") {
-      out.add(kind.newParent);
-      const prevParent = state.index[kind.node]?.parentId;
-      if (prevParent) out.add(prevParent);
-    } else if (kind.type === "payload") {
-      // Payload ops do not affect tree structure.
-    } else {
-      const prevParent = state.index[kind.node]?.parentId;
-      if (prevParent) out.add(prevParent);
-    }
-  }
-  return out;
 }
 
 export function flattenForSelectState(
