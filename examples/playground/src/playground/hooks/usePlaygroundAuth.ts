@@ -4,14 +4,17 @@ import type { Operation } from "@treecrdt/interface";
 import {
   base64urlDecode,
   base64urlEncode,
-  createTreecrdtAuthSession,
   describeTreecrdtCapabilityTokenV1,
   deriveKeyIdV1,
   deriveTokenIdV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
-import { createTreecrdtSqliteAuthBackend, createTreecrdtSqliteSyncDiagnostics } from "@treecrdt/sync-sqlite";
+import {
+  createTreecrdtSqliteAuthBackend,
+  createTreecrdtSqliteAuthSession,
+  createTreecrdtSqliteSyncDiagnostics,
+} from "@treecrdt/sync-sqlite";
 import type { SyncAuth } from "@treecrdt/sync";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
@@ -536,9 +539,9 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const localSk = base64urlDecode(authMaterial.localSkB64);
       const localPk = base64urlDecode(authMaterial.localPkB64);
       const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
-      const authBackend = createTreecrdtSqliteAuthBackend({ runner: client.runner, docId });
 
-      const authSession = createTreecrdtAuthSession({
+      const authSession = createTreecrdtSqliteAuthSession({
+        runner: client.runner,
         docId,
         issuerPublicKeys: [issuerPk],
         localPrivateKey: localSk,
@@ -546,7 +549,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         localCapabilityTokens: localTokens,
         revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
         requireProofRef: true,
-        backend: authBackend,
         identity: {
           onPeer: onPeerIdentityChain,
           local: getLocalIdentityChain,

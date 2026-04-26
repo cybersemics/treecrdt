@@ -10,8 +10,13 @@ import {
   createOpAuthStore,
   createPendingOpsStore,
   createTreecrdtSqliteAuthBackend,
+  createTreecrdtSqliteAuthSession,
   createTreecrdtSqliteSyncDiagnostics,
 } from '../dist/index.js';
+
+function testKey(byte: number): Uint8Array {
+  return new Uint8Array(32).fill(byte);
+}
 
 function createRunner(db: Database.Database): SqliteRunner {
   const toBindings = (params: unknown[]) =>
@@ -54,6 +59,26 @@ test('sqlite auth backend helper bundles scope evaluator and auth stores', async
     await expect(backend.capabilityStore.listCapabilities()).resolves.toEqual([
       { name: 'auth.capability', value: 'token-a' },
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test('sqlite auth session helper wires the backend automatically', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const session = createTreecrdtSqliteAuthSession({
+      runner,
+      docId: 'doc-auth-session-helper',
+      issuerPublicKeys: [],
+      localPrivateKey: testKey(4),
+      localPublicKey: testKey(5),
+      allowUnsigned: true,
+    });
+    await session.ready;
+    expect(session.getState().status).toBe('ready');
   } finally {
     db.close();
   }

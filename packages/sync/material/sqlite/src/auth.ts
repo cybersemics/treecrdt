@@ -1,6 +1,9 @@
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import {
+  createTreecrdtAuthSession,
   createTreecrdtSqliteSubtreeScopeEvaluator,
+  type TreecrdtAuthSession,
+  type TreecrdtAuthSessionOptions,
   type TreecrdtScopeEvaluator,
 } from '@treecrdt/auth';
 
@@ -34,4 +37,26 @@ export function createTreecrdtSqliteAuthBackend(opts: {
     capabilityStore: createCapabilityMaterialStore(storeOpts),
     opAuthStore: createOpAuthStore(storeOpts),
   };
+}
+
+export type TreecrdtSqliteAuthSessionOptions = Omit<
+  TreecrdtAuthSessionOptions,
+  'backend' | 'scopeEvaluator' | 'capabilityStore' | 'opAuthStore'
+> & {
+  runner: SqliteRunner;
+  nowMs?: () => number;
+};
+
+export function createTreecrdtSqliteAuthSession(
+  opts: TreecrdtSqliteAuthSessionOptions,
+): TreecrdtAuthSession {
+  const { runner, nowMs, ...sessionOpts } = opts;
+  return createTreecrdtAuthSession({
+    ...sessionOpts,
+    backend: createTreecrdtSqliteAuthBackend({
+      runner,
+      docId: sessionOpts.docId,
+      nowMs,
+    }),
+  });
 }
