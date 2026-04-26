@@ -544,13 +544,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         localPrivateKey: localSk,
         localPublicKey: localPk,
         localCapabilityTokens: localTokens,
-        capabilityStore: authBackend.capabilityStore,
         revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
         requireProofRef: true,
-        scopeEvaluator: authBackend.scopeEvaluator,
-        opAuthStore: authBackend.opAuthStore,
-        onPeerIdentityChain,
-        localIdentityChain: getLocalIdentityChain,
+        backend: authBackend,
+        identity: {
+          onPeer: onPeerIdentityChain,
+          local: getLocalIdentityChain,
+        },
       });
 
       const preparedAuth = authSession.syncAuth;
