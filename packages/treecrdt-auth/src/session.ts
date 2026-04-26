@@ -1,5 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
-import type { Capability, SyncAuth } from '@treecrdt/sync';
+import type { Capability, OpAuth, SyncAuth, SyncAuthOpsContext } from '@treecrdt/sync';
 
 import {
   createTreecrdtIdentityChainCapabilityV1,
@@ -36,17 +36,40 @@ export type TreecrdtAuthSessionIdentity = {
   onPeer?: TreecrdtCoseCwtAuthOptions['onPeerIdentityChain'];
 };
 
+export type TreecrdtAuthSessionTrust = {
+  issuerPublicKeys: Uint8Array[];
+};
+
+export type TreecrdtAuthSessionLocal = {
+  privateKey: Uint8Array;
+  publicKey: Uint8Array;
+  capabilityTokens?: Uint8Array[];
+  revocationRecords?: Uint8Array[];
+};
+
+export type TreecrdtAuthSessionLocalAuthorizeOptions = Partial<SyncAuthOpsContext>;
+
 type LegacyTreecrdtAuthSessionOptions = Pick<
   TreecrdtCoseCwtAuthOptions,
   'scopeEvaluator' | 'capabilityStore' | 'opAuthStore' | 'onPeerIdentityChain'
-> & {
-  /** Prefer `identity.local`; kept so existing callers do not need to migrate immediately. */
-  localIdentityChain?:
-    | TreecrdtIdentityChainV1
-    | (() => MaybePromise<TreecrdtIdentityChainV1 | null | undefined>);
-  /** Prefer `identity.onLocalError`; kept so existing callers do not need to migrate immediately. */
-  onIdentityChainError?: (error: unknown) => void;
-};
+> &
+  Partial<
+    Pick<
+      TreecrdtCoseCwtAuthOptions,
+      | 'issuerPublicKeys'
+      | 'localPrivateKey'
+      | 'localPublicKey'
+      | 'localCapabilityTokens'
+      | 'localRevocationRecords'
+    >
+  > & {
+    /** Prefer `identity.local`; kept so existing callers do not need to migrate immediately. */
+    localIdentityChain?:
+      | TreecrdtIdentityChainV1
+      | (() => MaybePromise<TreecrdtIdentityChainV1 | null | undefined>);
+    /** Prefer `identity.onLocalError`; kept so existing callers do not need to migrate immediately. */
+    onIdentityChainError?: (error: unknown) => void;
+  };
 
 export type TreecrdtAuthSessionOptions = Omit<
   TreecrdtCoseCwtAuthOptions,
@@ -55,6 +78,11 @@ export type TreecrdtAuthSessionOptions = Omit<
   | 'capabilityStore'
   | 'opAuthStore'
   | 'onPeerIdentityChain'
+  | 'issuerPublicKeys'
+  | 'localPrivateKey'
+  | 'localPublicKey'
+  | 'localCapabilityTokens'
+  | 'localRevocationRecords'
 > &
   LegacyTreecrdtAuthSessionOptions & {
     /** Doc used to warm local auth material before the session is handed to sync. */
@@ -62,6 +90,8 @@ export type TreecrdtAuthSessionOptions = Omit<
     /** Backend-owned auth dependencies, e.g. subtree scope checks and proof-material stores. */
     backend?: TreecrdtAuthSessionBackend;
     identity?: TreecrdtAuthSessionIdentity;
+    trust?: TreecrdtAuthSessionTrust;
+    local?: TreecrdtAuthSessionLocal;
   };
 
 export type TreecrdtAuthSession = {
@@ -69,6 +99,10 @@ export type TreecrdtAuthSession = {
   readonly ready: Promise<SyncAuth<Operation>>;
   getState: () => TreecrdtAuthSessionState;
   refresh: () => Promise<SyncAuth<Operation>>;
+  authorizeLocalOps: (
+    ops: readonly Operation[],
+    opts?: TreecrdtAuthSessionLocalAuthorizeOptions,
+  ) => Promise<OpAuth[]>;
 };
 
 /**
@@ -82,16 +116,35 @@ export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): Tre
     docId,
     backend,
     identity,
+    trust,
+    local,
     localIdentityChain,
     onIdentityChainError,
     scopeEvaluator,
     capabilityStore,
     opAuthStore,
     onPeerIdentityChain,
+    issuerPublicKeys,
+    localPrivateKey,
+    localPublicKey,
+    localCapabilityTokens,
+    localRevocationRecords,
     ...authOptsBase
   } = opts;
+  const resolvedIssuerPublicKeys = trust?.issuerPublicKeys ?? issuerPublicKeys;
+  const resolvedLocalPrivateKey = local?.privateKey ?? localPrivateKey;
+  const resolvedLocalPublicKey = local?.publicKey ?? localPublicKey;
+  if (!resolvedIssuerPublicKeys) throw new Error('auth session requires trust.issuerPublicKeys');
+  if (!resolvedLocalPrivateKey) throw new Error('auth session requires local.privateKey');
+  if (!resolvedLocalPublicKey) throw new Error('auth session requires local.publicKey');
+
   const authOpts: TreecrdtCoseCwtAuthOptions = {
     ...authOptsBase,
+    issuerPublicKeys: resolvedIssuerPublicKeys,
+    localPrivateKey: resolvedLocalPrivateKey,
+    localPublicKey: resolvedLocalPublicKey,
+    localCapabilityTokens: local?.capabilityTokens ?? localCapabilityTokens,
+    localRevocationRecords: local?.revocationRecords ?? localRevocationRecords,
     scopeEvaluator: backend?.scopeEvaluator ?? scopeEvaluator,
     capabilityStore: backend?.capabilityStore ?? capabilityStore,
     opAuthStore: backend?.opAuthStore ?? opAuthStore,
@@ -143,6 +196,38 @@ export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): Tre
 
   let ready = warm();
 
+  const authorizeLocalOps: TreecrdtAuthSession['authorizeLocalOps'] = async (
+    ops,
+    ctxOverrides = {},
+  ) => {
+    if (ops.length === 0) return [];
+    if (!syncAuth.signOps || !syncAuth.verifyOps) {
+      throw new Error('auth session is missing local op signing/verification hooks');
+    }
+    const ctx: SyncAuthOpsContext = {
+      docId,
+      purpose: 'reconcile',
+      filterId: '__local__',
+      ...ctxOverrides,
+    };
+    const auth = await syncAuth.signOps(ops, ctx);
+    if (auth.length !== ops.length) {
+      throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
+    }
+    const res = await syncAuth.verifyOps(ops, auth, ctx);
+    const dispositions = res?.dispositions;
+    if (dispositions && dispositions.length !== ops.length) {
+      throw new Error(
+        `verifyOps returned ${dispositions.length} dispositions for ${ops.length} ops`,
+      );
+    }
+    const rejected = dispositions?.find((d) => d.status !== 'allow');
+    if (rejected?.status === 'pending_context') {
+      throw new Error(rejected.message ?? 'missing subtree context to authorize op');
+    }
+    return auth;
+  };
+
   return {
     syncAuth,
     get ready() {
@@ -153,5 +238,6 @@ export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): Tre
       ready = warm();
       return ready;
     },
+    authorizeLocalOps,
   };
 }

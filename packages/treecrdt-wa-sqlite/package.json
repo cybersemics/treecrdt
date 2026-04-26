@@ -40,7 +40,8 @@
     "postinstall": "pnpm run prep:opfs"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync-sqlite": "workspace:*"
   },
   "devDependencies": {
     "@treecrdt/wa-sqlite-vendor": "workspace:*",

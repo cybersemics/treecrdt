@@ -1,9 +1,13 @@
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import {
   createTreecrdtAuthSession,
+  describeTreecrdtCapabilityTokenV1,
   createTreecrdtSqliteSubtreeScopeEvaluator,
+  type TreecrdtAuthSessionTrust,
   type TreecrdtAuthSession,
   type TreecrdtAuthSessionOptions,
+  type TreecrdtCapabilityRevocationOptions,
+  type TreecrdtCapabilityTokenV1,
   type TreecrdtScopeEvaluator,
 } from '@treecrdt/auth';
 
@@ -47,6 +51,13 @@ export type TreecrdtSqliteAuthSessionOptions = Omit<
   nowMs?: () => number;
 };
 
+export type TreecrdtSqliteClientAuthSessionOptions = Omit<
+  TreecrdtSqliteAuthSessionOptions,
+  'runner' | 'docId'
+> & {
+  docId?: string;
+};
+
 export function createTreecrdtSqliteAuthSession(
   opts: TreecrdtSqliteAuthSessionOptions,
 ): TreecrdtAuthSession {
@@ -59,4 +70,57 @@ export function createTreecrdtSqliteAuthSession(
       nowMs,
     }),
   });
+}
+
+export type TreecrdtSqliteDescribeCapabilityTokenOptions = {
+  tokenBytes: Uint8Array;
+  issuerPublicKeys?: readonly Uint8Array[];
+  trust?: TreecrdtAuthSessionTrust;
+  docId?: string;
+  nowSec?: number;
+} & TreecrdtCapabilityRevocationOptions;
+
+export type TreecrdtSqliteEvaluateScopeOptions = Omit<
+  Parameters<TreecrdtScopeEvaluator>[0],
+  'docId'
+> & {
+  docId?: string;
+};
+
+export type TreecrdtSqliteAuthApi = {
+  createSession: (opts: TreecrdtSqliteClientAuthSessionOptions) => TreecrdtAuthSession;
+  describeCapabilityToken: (
+    opts: TreecrdtSqliteDescribeCapabilityTokenOptions,
+  ) => Promise<TreecrdtCapabilityTokenV1>;
+  evaluateScope: (opts: TreecrdtSqliteEvaluateScopeOptions) => ReturnType<TreecrdtScopeEvaluator>;
+};
+
+export function createTreecrdtSqliteAuthApi(opts: {
+  runner: SqliteRunner;
+  docId: string;
+  nowMs?: () => number;
+}): TreecrdtSqliteAuthApi {
+  const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(opts.runner);
+  return {
+    createSession: (sessionOpts) =>
+      createTreecrdtSqliteAuthSession({
+        ...sessionOpts,
+        runner: opts.runner,
+        docId: sessionOpts.docId ?? opts.docId,
+        nowMs: sessionOpts.nowMs ?? opts.nowMs,
+      }),
+    describeCapabilityToken: (describeOpts) =>
+      describeTreecrdtCapabilityTokenV1({
+        ...describeOpts,
+        issuerPublicKeys:
+          describeOpts.trust?.issuerPublicKeys ?? describeOpts.issuerPublicKeys ?? [],
+        docId: describeOpts.docId ?? opts.docId,
+        scopeEvaluator,
+      }),
+    evaluateScope: (scopeOpts) =>
+      scopeEvaluator({
+        ...scopeOpts,
+        docId: scopeOpts.docId ?? opts.docId,
+      }),
+  };
 }

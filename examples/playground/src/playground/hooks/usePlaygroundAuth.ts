@@ -9,10 +9,9 @@ import {
   deriveTokenIdV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
+  type TreecrdtAuthSession,
 } from "@treecrdt/auth";
 import {
-  createTreecrdtSqliteAuthBackend,
-  createTreecrdtSqliteAuthSession,
   createTreecrdtSqliteSyncDiagnostics,
 } from "@treecrdt/sync-sqlite";
 import type { SyncAuth } from "@treecrdt/sync";
@@ -324,7 +323,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   }));
 
   const [syncAuth, setSyncAuth] = useState<SyncAuth<Operation> | null>(null);
-  const localAuthRef = useRef<SyncAuth<Operation> | null>(null);
+  const localAuthSessionRef = useRef<TreecrdtAuthSession | null>(null);
   const localIdentityChainPromiseRef = useRef<
     Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
   >(null);
@@ -516,7 +515,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setSyncAuth(null);
 
     if (!authEnabled || !client) {
-      localAuthRef.current = null;
+      localAuthSessionRef.current = null;
       return () => {
         cancelled = true;
       };
@@ -528,7 +527,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       !authMaterial.localPkB64 ||
       authMaterial.localTokensB64.length === 0
     ) {
-      localAuthRef.current = null;
+      localAuthSessionRef.current = null;
       return () => {
         cancelled = true;
       };
@@ -540,13 +539,14 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const localPk = base64urlDecode(authMaterial.localPkB64);
       const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
 
-      const authSession = createTreecrdtSqliteAuthSession({
-        runner: client.runner,
+      const authSession = client.auth.createSession({
         docId,
-        issuerPublicKeys: [issuerPk],
-        localPrivateKey: localSk,
-        localPublicKey: localPk,
-        localCapabilityTokens: localTokens,
+        trust: { issuerPublicKeys: [issuerPk] },
+        local: {
+          privateKey: localSk,
+          publicKey: localPk,
+          capabilityTokens: localTokens,
+        },
         revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
         requireProofRef: true,
         identity: {
@@ -556,7 +556,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       });
 
       const preparedAuth = authSession.syncAuth;
-      localAuthRef.current = preparedAuth;
+      localAuthSessionRef.current = authSession;
 
       void (async () => {
         try {
@@ -565,19 +565,19 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           setSyncAuth(preparedAuth);
         } catch (err) {
           if (cancelled) return;
-          if (localAuthRef.current === preparedAuth) localAuthRef.current = null;
+          if (localAuthSessionRef.current === authSession) localAuthSessionRef.current = null;
           setAuthError(err instanceof Error ? err.message : String(err));
         }
       })();
     } catch (err) {
-      localAuthRef.current = null;
+      localAuthSessionRef.current = null;
       setSyncAuth(null);
       setAuthError(err instanceof Error ? err.message : String(err));
     }
 
     return () => {
       cancelled = true;
-      if (localAuthRef.current) localAuthRef.current = null;
+      if (localAuthSessionRef.current) localAuthSessionRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -601,16 +601,9 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   const verifyLocalOps = React.useCallback(
     async (ops: Operation[]) => {
       if (!authEnabled) return;
-      const auth = localAuthRef.current;
-      if (!auth?.signOps || !auth.verifyOps) throw new Error("auth is enabled but not configured");
-      const ctx = { docId, purpose: "reconcile" as const, filterId: "__local__" };
-      const authEntries = await auth.signOps(ops, ctx);
-      const res = await auth.verifyOps(ops, authEntries, ctx);
-      const dispositions = (res as any)?.dispositions as Array<{ status: string; message?: string }> | undefined;
-      const rejected = dispositions?.find((d) => d.status !== "allow");
-      if (rejected?.status === "pending_context") {
-        throw new Error(rejected.message ?? "missing subtree context to authorize op");
-      }
+      const session = localAuthSessionRef.current;
+      if (!session) throw new Error("auth is enabled but not configured");
+      await session.authorizeLocalOps(ops);
     },
     [authEnabled, docId]
   );
@@ -899,7 +892,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         setAuthError(null);
       } catch (err) {
         if (cancelled) return;
-        localAuthRef.current = null;
+        localAuthSessionRef.current = null;
         setAuthError(authEnabled ? (err instanceof Error ? err.message : String(err)) : null);
       }
     })();
@@ -989,13 +982,17 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
       const issuerPk = base64urlDecode(issuerPkB64);
       const proofTokenBytes = base64urlDecode(proofTokenB64);
-      const scopeEvaluator = client ? createTreecrdtSqliteAuthBackend({ runner: client.runner, docId }).scopeEvaluator : undefined;
-      const proofDesc = await describeTreecrdtCapabilityTokenV1({
-        tokenBytes: proofTokenBytes,
-        issuerPublicKeys: [issuerPk],
-        docId,
-        scopeEvaluator,
-      });
+      const proofDesc = client
+        ? await client.auth.describeCapabilityToken({
+            tokenBytes: proofTokenBytes,
+            trust: { issuerPublicKeys: [issuerPk] },
+            docId,
+          })
+        : await describeTreecrdtCapabilityTokenV1({
+            tokenBytes: proofTokenBytes,
+            issuerPublicKeys: [issuerPk],
+            docId,
+          });
       const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
       if (!proofActions.has("grant")) {
         throw new Error("This tab is verify-only and cannot mint invites (missing grant permission).");
@@ -1012,11 +1009,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         if (proofScope?.maxDepth !== undefined) {
           throw new Error("This tab can only mint delegated invites for its current subtree scope (maxDepth).");
         }
-        if (!scopeEvaluator) {
+        if (!client) {
           throw new Error("This tab can only mint delegated invites for its current subtree scope.");
         }
-        const tri = await scopeEvaluator({
-          docId,
+        const tri = await client.auth.evaluateScope({
           node: hexToBytes16(rootNodeId),
           scope: {
             root: hexToBytes16(proofRootId),
@@ -1288,13 +1284,17 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
         const issuerPk = base64urlDecode(issuerPkB64);
         const proofTokenBytes = base64urlDecode(proofTokenB64);
-        const scopeEvaluator = client ? createTreecrdtSqliteAuthBackend({ runner: client.runner, docId }).scopeEvaluator : undefined;
-        const proofDesc = await describeTreecrdtCapabilityTokenV1({
-          tokenBytes: proofTokenBytes,
-          issuerPublicKeys: [issuerPk],
-          docId,
-          scopeEvaluator,
-        });
+        const proofDesc = client
+          ? await client.auth.describeCapabilityToken({
+              tokenBytes: proofTokenBytes,
+              trust: { issuerPublicKeys: [issuerPk] },
+              docId,
+            })
+          : await describeTreecrdtCapabilityTokenV1({
+              tokenBytes: proofTokenBytes,
+              issuerPublicKeys: [issuerPk],
+              docId,
+            });
         const proofActions = new Set(proofDesc.caps.flatMap((c) => c.actions ?? []));
         if (!proofActions.has("grant")) {
           throw new Error("this tab cannot delegate grants (missing grant permission)");
@@ -1308,11 +1308,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           if (proofScope?.maxDepth !== undefined) {
             throw new Error("this tab can only delegate grants for its current subtree scope (maxDepth)");
           }
-          if (!scopeEvaluator) {
+          if (!client) {
             throw new Error("this tab can only delegate grants for its current subtree scope");
           }
-          const tri = await scopeEvaluator({
-            docId,
+          const tri = await client.auth.evaluateScope({
             node: hexToBytes16(rootNodeId),
             scope: {
               root: hexToBytes16(proofRootId),

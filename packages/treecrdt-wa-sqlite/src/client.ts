@@ -20,6 +20,7 @@ import {
 } from '@treecrdt/interface/ids';
 import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
+import { createTreecrdtSqliteAuthApi, type TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
 import type {
@@ -41,6 +42,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   storage: StorageMode;
   runner: SqliteRunner;
+  auth: TreecrdtSqliteAuthApi;
   drop: () => Promise<void>;
 };
 
@@ -560,6 +562,7 @@ function makeTreecrdtClientFromCall(opts: {
       getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
+    auth: createTreecrdtSqliteAuthApi({ runner, docId: opts.docId }),
     local: {
       insert: localInsertImpl,
       move: localMoveImpl,

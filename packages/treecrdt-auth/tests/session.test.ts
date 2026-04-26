@@ -55,9 +55,11 @@ test('auth session accepts grouped backend and identity options', async () => {
   let listedCapabilities = 0;
   const session = createTreecrdtAuthSession({
     docId: 'doc-auth-session-grouped',
-    issuerPublicKeys: [],
-    localPrivateKey: testKey(4),
-    localPublicKey: testKey(5),
+    trust: { issuerPublicKeys: [] },
+    local: {
+      privateKey: testKey(4),
+      publicKey: testKey(5),
+    },
     allowUnsigned: true,
     backend: {
       scopeEvaluator: async () => 'deny',

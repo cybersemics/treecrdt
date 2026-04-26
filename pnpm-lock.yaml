@@ -389,6 +389,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../sync/material/sqlite
     devDependencies:
       '@noble/ed25519':
         specifier: ^3.0.0
@@ -414,9 +417,6 @@ importers:
       '@treecrdt/sync-server-postgres-node':
         specifier: workspace:*
         version: link:../sync/server/postgres-node
-      '@treecrdt/sync-sqlite':
-        specifier: workspace:*
-        version: link:../sync/material/sqlite
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -456,6 +456,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../sync/material/sqlite
     devDependencies:
       '@treecrdt/benchmark':
         specifier: workspace:*

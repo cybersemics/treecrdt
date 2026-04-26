@@ -9,6 +9,7 @@ import {
   createCapabilityMaterialStore,
   createOpAuthStore,
   createPendingOpsStore,
+  createTreecrdtSqliteAuthApi,
   createTreecrdtSqliteAuthBackend,
   createTreecrdtSqliteAuthSession,
   createTreecrdtSqliteSyncDiagnostics,
@@ -72,11 +73,38 @@ test('sqlite auth session helper wires the backend automatically', async () => {
     const session = createTreecrdtSqliteAuthSession({
       runner,
       docId: 'doc-auth-session-helper',
-      issuerPublicKeys: [],
-      localPrivateKey: testKey(4),
-      localPublicKey: testKey(5),
+      trust: { issuerPublicKeys: [] },
+      local: {
+        privateKey: testKey(4),
+        publicKey: testKey(5),
+      },
       allowUnsigned: true,
     });
+    await session.ready;
+    expect(session.getState().status).toBe('ready');
+  } finally {
+    db.close();
+  }
+});
+
+test('sqlite client auth api hides runner wiring', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const auth = createTreecrdtSqliteAuthApi({
+      runner,
+      docId: 'doc-client-auth-api',
+    });
+    const session = auth.createSession({
+      trust: { issuerPublicKeys: [] },
+      local: {
+        privateKey: testKey(4),
+        publicKey: testKey(5),
+      },
+      allowUnsigned: true,
+    });
+
     await session.ready;
     expect(session.getState().status).toBe('ready');
   } finally {
