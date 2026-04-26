@@ -7,10 +7,8 @@ import {
 import {
   createCapabilityMaterialStore,
   createOpAuthStore,
-  createPendingOpsStore,
   type SqliteCapabilityMaterialStore,
   type SqliteOpAuthStore,
-  type SqlitePendingOpsStore,
 } from './proof-material/index.js';
 
 export type TreecrdtSqliteAuthBackend = {
@@ -23,7 +21,6 @@ export type TreecrdtSqliteAuthBackend = {
   scopeEvaluator: TreecrdtScopeEvaluator;
   capabilityStore: SqliteCapabilityMaterialStore;
   opAuthStore: SqliteOpAuthStore;
-  pendingOpsStore: SqlitePendingOpsStore;
 };
 
 export function createTreecrdtSqliteAuthBackend(opts: {
@@ -36,6 +33,5 @@ export function createTreecrdtSqliteAuthBackend(opts: {
     scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(opts.runner),
     capabilityStore: createCapabilityMaterialStore(storeOpts),
     opAuthStore: createOpAuthStore(storeOpts),
-    pendingOpsStore: createPendingOpsStore(storeOpts),
   };
 }

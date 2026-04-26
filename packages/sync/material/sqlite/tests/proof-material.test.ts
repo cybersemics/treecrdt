@@ -10,6 +10,7 @@ import {
   createOpAuthStore,
   createPendingOpsStore,
   createTreecrdtSqliteAuthBackend,
+  createTreecrdtSqliteSyncDiagnostics,
 } from '../dist/index.js';
 
 function createRunner(db: Database.Database): SqliteRunner {
@@ -42,10 +43,10 @@ test('sqlite auth backend helper bundles scope evaluator and auth stores', async
   try {
     const backend = createTreecrdtSqliteAuthBackend({ runner, docId: 'doc-auth-helper' });
     expect(typeof backend.scopeEvaluator).toBe('function');
+    expect('pendingOpsStore' in backend).toBe(false);
 
     await backend.capabilityStore.init();
     await backend.opAuthStore.init();
-    await backend.pendingOpsStore.init();
 
     await backend.capabilityStore.storeCapabilities([
       { name: 'auth.capability', value: 'token-a' },
@@ -53,7 +54,21 @@ test('sqlite auth backend helper bundles scope evaluator and auth stores', async
     await expect(backend.capabilityStore.listCapabilities()).resolves.toEqual([
       { name: 'auth.capability', value: 'token-a' },
     ]);
-    await expect(backend.pendingOpsStore.listPendingOps()).resolves.toEqual([]);
+  } finally {
+    db.close();
+  }
+});
+
+test('sqlite sync diagnostics lists pending ops without exposing the raw store', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const diagnostics = createTreecrdtSqliteSyncDiagnostics({
+      runner,
+      docId: 'doc-diagnostics',
+    });
+    await expect(diagnostics.listPendingOps()).resolves.toEqual([]);
   } finally {
     db.close();
   }

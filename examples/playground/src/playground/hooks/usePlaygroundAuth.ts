@@ -11,7 +11,7 @@ import {
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
-import { createTreecrdtSqliteAuthBackend } from "@treecrdt/sync-sqlite";
+import { createTreecrdtSqliteAuthBackend, createTreecrdtSqliteSyncDiagnostics } from "@treecrdt/sync-sqlite";
 import type { SyncAuth } from "@treecrdt/sync";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
@@ -1144,9 +1144,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const { pendingOpsStore } = createTreecrdtSqliteAuthBackend({ runner: client.runner, docId });
-      await pendingOpsStore.init();
-      const listed = await pendingOpsStore.listPendingOps();
+      const diagnostics = createTreecrdtSqliteSyncDiagnostics({ runner: client.runner, docId });
+      const listed = await diagnostics.listPendingOps();
       setPendingOps(
         listed.map((p) => ({
           id: `${bytesToHex(p.op.meta.id.replica)}:${p.op.meta.id.counter}`,
