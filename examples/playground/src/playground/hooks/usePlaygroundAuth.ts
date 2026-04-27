@@ -4,8 +4,7 @@ import type { Operation } from "@treecrdt/interface";
 import {
   base64urlDecode,
   base64urlEncode,
-  createTreecrdtCoseCwtAuth,
-  createTreecrdtIdentityChainCapabilityV1,
+  createTreecrdtAuthSession,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   describeTreecrdtCapabilityTokenV1,
   deriveKeyIdV1,
@@ -546,7 +545,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       const opAuthStore = createOpAuthStore({ runner: client.runner, docId });
       const capabilityStore = createCapabilityMaterialStore({ runner: client.runner, docId });
 
-      const baseAuth = createTreecrdtCoseCwtAuth({
+      const authSession = createTreecrdtAuthSession({
+        docId,
         issuerPublicKeys: [issuerPk],
         localPrivateKey: localSk,
         localPublicKey: localPk,
@@ -557,37 +557,15 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         scopeEvaluator,
         opAuthStore,
         onPeerIdentityChain,
+        localIdentityChain: getLocalIdentityChain,
       });
 
-      const preparedAuth: SyncAuth<Operation> = {
-        ...baseAuth,
-        helloCapabilities: async (ctx) => {
-          const caps = (await baseAuth.helloCapabilities?.(ctx)) ?? [];
-          try {
-            const chain = await getLocalIdentityChain();
-            if (chain) caps.push(createTreecrdtIdentityChainCapabilityV1(chain));
-          } catch {
-            // Identity chains are optional and best-effort.
-          }
-          return caps;
-        },
-        onHello: async (hello, ctx) => {
-          const ackCaps = (await baseAuth.onHello?.(hello, ctx)) ?? [];
-          try {
-            const chain = await getLocalIdentityChain();
-            if (chain) ackCaps.push(createTreecrdtIdentityChainCapabilityV1(chain));
-          } catch {
-            // Identity chains are optional and best-effort.
-          }
-          return ackCaps;
-        },
-      };
-
+      const preparedAuth = authSession.syncAuth;
       localAuthRef.current = preparedAuth;
 
       void (async () => {
         try {
-          await preparedAuth.helloCapabilities?.({ docId });
+          await authSession.ready;
           if (cancelled) return;
           setSyncAuth(preparedAuth);
         } catch (err) {
