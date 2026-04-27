@@ -48,8 +48,12 @@ export function createTreecrdtWebSocketSyncFromTransport(
   onCloseTransport: (() => void) | undefined,
   options: CreateTreecrdtWebSocketSyncFromTransportOptions = {},
 ): TreecrdtWebSocketSync {
-  const { enablePendingSidecar = false, auth, syncPeerOptions: extraPeerOptions, onLiveError } =
-    options;
+  const {
+    enablePendingSidecar = false,
+    auth,
+    syncPeerOptions: extraPeerOptions,
+    onLiveError,
+  } = options;
 
   const reportLiveError =
     onLiveError ??
