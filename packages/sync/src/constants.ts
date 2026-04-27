@@ -1,6 +1,6 @@
 import type { SyncOnceOptions, SyncSubscribeOptions } from '@treecrdt/sync-protocol';
 
-/** Aligned with examples/playground defaults for one-shot and live subscribe. */
+/** Default batching limits for one-shot `syncOnce` and live `subscribe`. */
 export const DEFAULT_SYNC_ONCE: Required<
   Pick<SyncOnceOptions, 'maxCodewords' | 'maxOpsPerBatch' | 'codewordsPerMessage'>
 > = {
