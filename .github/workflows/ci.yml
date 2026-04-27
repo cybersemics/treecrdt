@@ -83,7 +83,7 @@ jobs:
         pnpm -C packages/treecrdt-riblt-wasm-js run build
         pnpm -C packages/sync-protocol/protocol run build
         pnpm -C packages/sync-protocol/material/sqlite run build
-        pnpm -C packages/sync run build
+        pnpm -C packages/treecrdt-sync run build
         pnpm -C packages/treecrdt-auth run build
         pnpm -C packages/treecrdt-crypto run build
         pnpm -C packages/treecrdt-wa-sqlite run build:ts

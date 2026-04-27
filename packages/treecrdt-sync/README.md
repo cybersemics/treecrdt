@@ -16,19 +16,19 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@treecrdt/dis
 
 ## Repo location
 
-- Source: `packages/sync` in this monorepo.
+- Source: `packages/treecrdt-sync` in this monorepo.
 - Spec and layout: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md), [docs/sync/v0.md](../../docs/sync/v0.md).
 
 ## Build
 
 ```bash
-pnpm -C packages/sync run build
+pnpm -C packages/treecrdt-sync run build
 ```
 
 ## Test
 
 ```bash
-pnpm -C packages/sync run test
+pnpm -C packages/treecrdt-sync run test
 ```
 
 Builds and tests assume sibling packages under `packages/sync-protocol/` are available (workspace layout).

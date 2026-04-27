@@ -116,34 +116,6 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.25)
 
-  packages/sync:
-    dependencies:
-      '@treecrdt/discovery':
-        specifier: workspace:*
-        version: link:../discovery
-      '@treecrdt/interface':
-        specifier: workspace:*
-        version: link:../treecrdt-ts
-      '@treecrdt/sync-protocol':
-        specifier: workspace:*
-        version: link:../sync-protocol/protocol
-      '@treecrdt/sync-sqlite':
-        specifier: workspace:*
-        version: link:../sync-protocol/material/sqlite
-    devDependencies:
-      '@treecrdt/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
-      '@types/node':
-        specifier: ^20.19.25
-        version: 20.19.25
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^1.6.0
-        version: 1.6.1(@types/node@20.19.25)
-
   packages/sync-protocol/material/postgres:
     dependencies:
       '@treecrdt/interface':
@@ -469,6 +441,34 @@ importers:
       ws:
         specifier: ^8.18.3
         version: 8.19.0
+
+  packages/treecrdt-sync:
+    dependencies:
+      '@treecrdt/discovery':
+        specifier: workspace:*
+        version: link:../discovery
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../treecrdt-ts
+      '@treecrdt/sync-protocol':
+        specifier: workspace:*
+        version: link:../sync-protocol/protocol
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../sync-protocol/material/sqlite
+    devDependencies:
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.25
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
 
   packages/treecrdt-ts:
     devDependencies:
