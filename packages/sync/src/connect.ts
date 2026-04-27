@@ -13,9 +13,25 @@ import type {
 } from './types.js';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 
+function waitForWebSocketOpen(socket: WebSocket, url: string | URL): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const label = String(url);
+    const onError = () => {
+      reject(new Error(`connectTreecrdtWebSocketSync: WebSocket could not open (${label})`));
+    };
+    const onOpen = () => {
+      resolve();
+    };
+    socket.addEventListener('open', onOpen, { once: true });
+    socket.addEventListener('error', onError, { once: true });
+  });
+}
+
 /**
  * Open a binary WebSocket to a sync server, wrap it with the v0 protobuf codec, and return a
  * {@link TreecrdtWebSocketSync} handle. `client.docId` must match the document on the server.
+ * Uses the global `WebSocket` unless you pass `options.webSocketCtor` (e.g. for Node, use
+ * `import { WebSocket } from "undici"`).
  */
 export async function connectTreecrdtWebSocketSync(
   client: TreecrdtWebSocketSyncClient,
@@ -32,6 +48,7 @@ export async function connectTreecrdtWebSocketSync(
     syncPeerOptions,
     autoNotifyLocalOnWrite,
     webSocketBinaryType = 'arraybuffer',
+    webSocketCtor,
   } = options;
 
   const { url } = await resolveWebSocketAttachment({
@@ -42,25 +59,18 @@ export async function connectTreecrdtWebSocketSync(
     resolveDocPath,
   });
 
-  if (typeof WebSocket === 'undefined') {
-    throw new Error('connectTreecrdtWebSocketSync: WebSocket is not available in this environment');
+  const Ctor: typeof WebSocket | undefined =
+    webSocketCtor ?? (typeof globalThis !== 'undefined' ? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket : undefined);
+  if (!Ctor) {
+    throw new Error(
+      'connectTreecrdtWebSocketSync: no WebSocket (pass `webSocketCtor`, e.g. `import { WebSocket } from "undici"` in Node)',
+    );
   }
 
-  const socket = new WebSocket(url.toString());
+  const socket: WebSocket = new Ctor(url);
   socket.binaryType = webSocketBinaryType;
 
-  await new Promise<void>((resolve, reject) => {
-    const onError = () => {
-      socket.removeEventListener('open', onOpen);
-      reject(new Error(`connectTreecrdtWebSocketSync: WebSocket could not open (${url})`));
-    };
-    const onOpen = () => {
-      socket.removeEventListener('error', onError);
-      resolve();
-    };
-    socket.addEventListener('open', onOpen, { once: true });
-    socket.addEventListener('error', onError, { once: true });
-  });
+  await waitForWebSocketOpen(socket, url);
 
   const wire = createBrowserWebSocketTransport(socket);
   const transport: DuplexTransport<SyncMessage<Operation>> = wrapDuplexTransportWithCodec(

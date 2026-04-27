@@ -21,6 +21,13 @@ export type TreecrdtWebSocketSyncClient = TreecrdtEngine & TreecrdtSyncBackendCl
 
 export type ConnectTreecrdtWebSocketSyncOptions = {
   /**
+   * `WebSocket` **constructor** when the runtime has no global (e.g. Node before a global client
+   * is standard), or a non-default spec client. In Node, use e.g. `import { WebSocket } from
+   * "undici"`. A spec `EventTarget` implementation is required (the same applies to the built-in
+   * wire via `addEventListener` for `message`).
+   */
+  webSocketCtor?: typeof WebSocket;
+  /**
    * WebSocket URL, or `http(s)://` discovery bootstrap URL.
    */
   baseUrl: string;
