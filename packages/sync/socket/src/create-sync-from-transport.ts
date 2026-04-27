@@ -12,7 +12,11 @@ import {
   type SyncSubscribeOptions,
 } from '@treecrdt/sync';
 import { DEFAULT_LIVE_SUBSCRIBE, DEFAULT_SYNC_ONCE } from './constants.js';
-import type { CreateTreecrdtWebSocketSyncFromTransportOptions, TreecrdtWebSocketSync, TreecrdtWebSocketSyncClient } from './types.js';
+import type {
+  CreateTreecrdtWebSocketSyncFromTransportOptions,
+  TreecrdtWebSocketSync,
+  TreecrdtWebSocketSyncClient,
+} from './types.js';
 import type { DuplexTransport } from '@treecrdt/sync/transport';
 
 const defaultAutoNotify = true;

@@ -59,7 +59,9 @@ export function createInMemoryTestClient(
     return store.ops.find(
       (o) =>
         want ===
-        bytesToHex(deriveOpRefV0(docId, { replica: o.meta.id.replica, counter: o.meta.id.counter })),
+        bytesToHex(
+          deriveOpRefV0(docId, { replica: o.meta.id.replica, counter: o.meta.id.counter }),
+        ),
     );
   };
   const client: TreecrdtWebSocketSyncClient = {
@@ -138,7 +140,9 @@ export function createInMemoryTestClientWithWriteId(
     return store.ops.find(
       (o) =>
         want ===
-        bytesToHex(deriveOpRefV0(docId, { replica: o.meta.id.replica, counter: o.meta.id.counter })),
+        bytesToHex(
+          deriveOpRefV0(docId, { replica: o.meta.id.replica, counter: o.meta.id.counter }),
+        ),
     );
   };
 

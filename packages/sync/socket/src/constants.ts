@@ -10,7 +10,10 @@ export const DEFAULT_SYNC_ONCE: Required<
 };
 
 export const DEFAULT_LIVE_SUBSCRIBE: Required<
-  Pick<SyncSubscribeOptions, 'maxCodewords' | 'maxOpsPerBatch' | 'codewordsPerMessage' | 'intervalMs' | 'immediate'>
+  Pick<
+    SyncSubscribeOptions,
+    'maxCodewords' | 'maxOpsPerBatch' | 'codewordsPerMessage' | 'intervalMs' | 'immediate'
+  >
 > = {
   maxCodewords: 2_000_000,
   maxOpsPerBatch: 20_000,

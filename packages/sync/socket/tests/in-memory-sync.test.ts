@@ -34,7 +34,9 @@ async function runSyncOnceInMemory(
   const transportA = wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
   const transportB = wrapDuplexTransportWithCodec(wireB, treecrdtSyncV0ProtobufCodec);
 
-  const backendB = createTreecrdtSyncBackendFromClient(bClient, docId, { maxLamport: () => headAsBigint(bClient) });
+  const backendB = createTreecrdtSyncBackendFromClient(bClient, docId, {
+    maxLamport: () => headAsBigint(bClient),
+  });
   const peerB = new SyncPeer(backendB, {
     maxCodewords: 100_000,
     maxOpsPerBatch: 2_000,
@@ -168,8 +170,6 @@ test('syncOnce pulls insert, move, payload, and delete operations', async () => 
 
   const inserts = after.filter((o) => o.kind.type === 'insert');
   expect(inserts).toHaveLength(2);
-  const nodes = new Set(
-    inserts.map((o) => (o.kind.type === 'insert' ? o.kind.node : '')),
-  );
+  const nodes = new Set(inserts.map((o) => (o.kind.type === 'insert' ? o.kind.node : '')));
   expect(nodes).toEqual(new Set([n1, n2]));
 });

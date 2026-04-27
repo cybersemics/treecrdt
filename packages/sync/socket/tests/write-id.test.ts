@@ -56,7 +56,9 @@ test('onChange receives writeIds from appendMany(…, { writeId })', async () =>
   }
 
   const withWrite = events.find(
-    (e) => e.writeIds?.[0] === 'my-batch-42' && e.changes.some((c) => c.kind === 'insert' && c.node === n1),
+    (e) =>
+      e.writeIds?.[0] === 'my-batch-42' &&
+      e.changes.some((c) => c.kind === 'insert' && c.node === n1),
   );
   expect(withWrite).toBeDefined();
   expect(withWrite!.writeIds).toEqual(['my-batch-42']);
