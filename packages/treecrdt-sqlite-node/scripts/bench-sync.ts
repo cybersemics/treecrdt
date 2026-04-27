@@ -42,7 +42,10 @@ import {
   type HelloTraceRecord,
   type SyncBackend,
 } from '@treecrdt/sync-protocol';
-import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync-protocol/in-memory';
+import {
+  makeQueuedSyncBackend,
+  type FlushableSyncBackend,
+} from '@treecrdt/sync-protocol/in-memory';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import {

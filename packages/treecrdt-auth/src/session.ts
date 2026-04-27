@@ -1,5 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
-import type { Capability, SyncAuth } from '@treecrdt/sync';
+import type { Capability, Hello, SyncAuth, SyncAuthHelloContext } from '@treecrdt/sync-protocol';
 
 import {
   createTreecrdtIdentityChainCapabilityV1,
@@ -71,8 +71,10 @@ export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): Tre
 
   const syncAuth: SyncAuth<Operation> = {
     ...baseAuth,
-    helloCapabilities: (ctx) => addLocalIdentity(baseAuth.helloCapabilities?.(ctx)),
-    onHello: (hello, ctx) => addLocalIdentity(baseAuth.onHello?.(hello, ctx)),
+    helloCapabilities: (ctx: SyncAuthHelloContext) =>
+      addLocalIdentity(baseAuth.helloCapabilities?.(ctx)),
+    onHello: (hello: Hello, ctx: SyncAuthHelloContext) =>
+      addLocalIdentity(baseAuth.onHello?.(hello, ctx)),
   };
 
   const warm = async () => {

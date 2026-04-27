@@ -4,7 +4,10 @@ import { makeOp, maxLamport, nodeIdFromInt } from '@treecrdt/benchmark';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import { SyncPeer, deriveOpRefV0 } from '@treecrdt/sync-protocol';
-import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from '@treecrdt/sync-protocol/transport';
+import {
+  createInMemoryDuplex,
+  wrapDuplexTransportWithCodec,
+} from '@treecrdt/sync-protocol/transport';
 import type { Operation } from '@treecrdt/interface';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';

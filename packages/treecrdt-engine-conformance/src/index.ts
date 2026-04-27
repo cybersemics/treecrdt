@@ -13,7 +13,10 @@ import {
   type TreecrdtScopeEvaluator,
 } from '@treecrdt/auth';
 import { createInMemoryConnectedPeers } from '@treecrdt/sync-protocol/in-memory';
-import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync-protocol/in-memory';
+import {
+  makeQueuedSyncBackend,
+  type FlushableSyncBackend,
+} from '@treecrdt/sync-protocol/in-memory';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import { createOpAuthStore, createPendingOpsStore } from '@treecrdt/sync-sqlite';
 
