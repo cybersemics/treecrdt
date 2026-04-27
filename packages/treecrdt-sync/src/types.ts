@@ -41,12 +41,6 @@ export type ConnectTreecrdtWebSocketSyncOptions = {
   auth?: SyncAuth<Operation>;
   syncPeerOptions?: Partial<SyncPeerOptions<Operation>>;
   /**
-   * When true (default), while live mode is active, main-thread `ops.append` / `ops.appendMany` that
-   * are not remote `apply` batches call `notifyLocalUpdate` with the written ops. OPFS worker local
-   * APIs may not go through this path — call `notifyLocalUpdate` yourself in that case.
-   */
-  autoNotifyLocalOnWrite?: boolean;
-  /**
    * If the live `subscribe` session ends with an error after `startLive` has settled (e.g. wire
    * drop), that rejection is passed here. Defaults to `console.error` so behavior matches older
    * releases; pass a no-op or your own logger to avoid logging in production.
@@ -65,7 +59,11 @@ export type TreecrdtWebSocketSync = {
   syncOnce: (filter?: Filter, opts?: SyncOnceOptions) => Promise<void>;
   startLive: (opts?: SyncSubscribeOptions) => Promise<void>;
   stopLive: () => void;
-  notifyLocalUpdate: (ops?: readonly Operation[]) => Promise<void>;
+  /**
+   * Push locally committed ops to peers while live sync is active. Call from your local edit path;
+   * remote batches are applied via the sync backend and do not use this method.
+   */
+  pushLocalOps: (ops?: readonly Operation[]) => Promise<void>;
   close: () => Promise<void>;
 };
 
@@ -73,7 +71,6 @@ export type CreateTreecrdtWebSocketSyncFromTransportOptions = {
   enablePendingSidecar?: boolean;
   auth?: SyncAuth<Operation>;
   syncPeerOptions?: Partial<SyncPeerOptions<Operation>>;
-  autoNotifyLocalOnWrite?: boolean;
   /**
    * @see {@link ConnectTreecrdtWebSocketSyncOptions.onLiveError}
    */

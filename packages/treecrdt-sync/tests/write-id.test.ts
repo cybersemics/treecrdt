@@ -31,9 +31,7 @@ test('onChange receives writeIds from appendMany(…, { writeId })', async () =>
   const docId = `write-id-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
-  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined, {
-    autoNotifyLocalOnWrite: false,
-  });
+  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
 
   const events: MaterializationEvent[] = [];
   const u = sync.onChange((e) => {
@@ -68,9 +66,7 @@ test('onChange receives writeIds from append(…, { writeId })', async () => {
   const docId = `write-id-s-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
-  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined, {
-    autoNotifyLocalOnWrite: false,
-  });
+  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
   const seen: string[] = [];
   const u = sync.onChange((e) => {
     if (e.writeIds?.[0]) seen.push(e.writeIds[0]!);

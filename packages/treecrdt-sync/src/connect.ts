@@ -96,7 +96,6 @@ export async function connectTreecrdtWebSocketSync(
     enablePendingSidecar,
     auth,
     syncPeerOptions,
-    autoNotifyLocalOnWrite,
     onLiveError,
     webSocketBinaryType = 'arraybuffer',
     webSocketCtor,
@@ -136,7 +135,6 @@ export async function connectTreecrdtWebSocketSync(
     enablePendingSidecar,
     auth,
     syncPeerOptions,
-    autoNotifyLocalOnWrite,
     onLiveError,
   };
 

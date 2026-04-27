@@ -55,9 +55,7 @@ test('onChange delegates to client.onMaterialized', () => {
     onMessage: () => () => {},
   };
 
-  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined, {
-    autoNotifyLocalOnWrite: false,
-  });
+  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
 
   const l1 = () => {};
   const u1 = sync.onChange(l1);

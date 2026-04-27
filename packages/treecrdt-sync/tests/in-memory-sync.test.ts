@@ -57,7 +57,6 @@ async function runSyncOnceInMemory(
   };
 
   const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, onCloseB, {
-    autoNotifyLocalOnWrite: false,
     syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
   });
   try {

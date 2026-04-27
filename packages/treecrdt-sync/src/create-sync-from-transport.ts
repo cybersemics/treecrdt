@@ -1,11 +1,9 @@
 import type { Operation } from '@treecrdt/interface';
-import type { TreecrdtEngineOps } from '@treecrdt/interface/engine';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import {
   SyncPeer,
   deriveOpRefV0,
   type Filter,
-  type SyncBackend,
   type SyncMessage,
   type SyncOnceOptions,
   type SyncPeerOptions,
@@ -18,8 +16,6 @@ import type {
   TreecrdtWebSocketSyncClient,
 } from './types.js';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
-
-const defaultAutoNotify = true;
 
 function mergeSyncOnceOptions(opts: SyncOnceOptions = {}): SyncOnceOptions {
   return {
@@ -52,13 +48,8 @@ export function createTreecrdtWebSocketSyncFromTransport(
   onCloseTransport: (() => void) | undefined,
   options: CreateTreecrdtWebSocketSyncFromTransportOptions = {},
 ): TreecrdtWebSocketSync {
-  const {
-    enablePendingSidecar = false,
-    auth,
-    syncPeerOptions: extraPeerOptions,
-    autoNotifyLocalOnWrite = defaultAutoNotify,
-    onLiveError,
-  } = options;
+  const { enablePendingSidecar = false, auth, syncPeerOptions: extraPeerOptions, onLiveError } =
+    options;
 
   const reportLiveError =
     onLiveError ??
@@ -68,56 +59,14 @@ export function createTreecrdtWebSocketSyncFromTransport(
 
   const getMaxLamport = () => client.meta.headLamport().then((n) => BigInt(n));
 
-  const ingestDepth = { value: 0 };
-  const liveOn = { value: false };
   let liveSub: { stop: () => void } | null = null;
   let peer!: SyncPeer<Operation>;
   let closed = false;
 
-  const afterLocalWrite = (ops: readonly Operation[]) => {
-    if (!liveOn.value || !autoNotifyLocalOnWrite || ops.length === 0) return;
-    if (ingestDepth.value > 0) return;
-    void peer.notifyLocalUpdate([...ops]);
-  };
-
-  const baseOps = client.ops;
-  const wrappedOps: TreecrdtEngineOps = {
-    ...baseOps,
-    append: async (op, writeOpts) => {
-      if (ingestDepth.value > 0) {
-        return baseOps.append(op, writeOpts);
-      }
-      await baseOps.append(op, writeOpts);
-      afterLocalWrite([op]);
-    },
-    appendMany: async (ops, writeOpts) => {
-      if (ingestDepth.value > 0) {
-        return baseOps.appendMany(ops, writeOpts);
-      }
-      await baseOps.appendMany(ops, writeOpts);
-      afterLocalWrite(ops);
-    },
-  };
-
-  client.ops = wrappedOps;
-
-  const clientBackend = createTreecrdtSyncBackendFromClient(client, client.docId, {
+  const backend = createTreecrdtSyncBackendFromClient(client, client.docId, {
     maxLamport: getMaxLamport,
     enablePendingSidecar,
   });
-
-  const backend: SyncBackend<Operation> = {
-    ...clientBackend,
-    applyOps: async (ops) => {
-      if (ops.length === 0) return;
-      ingestDepth.value += 1;
-      try {
-        await clientBackend.applyOps(ops);
-      } finally {
-        ingestDepth.value -= 1;
-      }
-    },
-  };
 
   const peerOpts: SyncPeerOptions<Operation> = {
     maxCodewords: 2_000_000,
@@ -150,18 +99,15 @@ export function createTreecrdtWebSocketSyncFromTransport(
       const sub = peer.subscribe(transport, { all: {} }, subOpts);
       liveSub = sub;
       void sub.done.catch((err) => {
-        liveOn.value = false;
         if (liveSub === sub) liveSub = null;
         reportLiveError(err);
       });
       try {
         await sub.ready;
       } catch (err) {
-        liveOn.value = false;
         if (liveSub === sub) liveSub = null;
         throw err;
       }
-      liveOn.value = true;
     },
     stopLive: () => {
       if (liveSub) {
@@ -172,14 +118,12 @@ export function createTreecrdtWebSocketSyncFromTransport(
         }
         liveSub = null;
       }
-      liveOn.value = false;
     },
-    notifyLocalUpdate: (ops) => peer.notifyLocalUpdate(ops),
+    pushLocalOps: (ops) => peer.notifyLocalUpdate(ops),
     close: async () => {
       if (closed) return;
       closed = true;
       handle.stopLive();
-      client.ops = baseOps;
       try {
         detach();
       } catch {
