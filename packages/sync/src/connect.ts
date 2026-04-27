@@ -13,17 +13,69 @@ import type {
 } from './types.js';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 
+/**
+ * Resolves when the socket is OPEN. Rejects on `error` or `close` before open (so the handshake
+ * cannot hang if no `error` fires). Always removes listeners; on failure, best-effort `close()`.
+ */
 function waitForWebSocketOpen(socket: WebSocket, url: string | URL): Promise<void> {
   return new Promise((resolve, reject) => {
-    const label = String(url);
-    const onError = () => {
-      reject(new Error(`connectTreecrdtWebSocketSync: WebSocket could not open (${label})`));
+    const urlStr = String(url);
+    let done = false;
+
+    const removeHandshakeListeners = () => {
+      socket.removeEventListener('open', handleOpen);
+      socket.removeEventListener('error', handleError);
+      socket.removeEventListener('close', handleClose);
     };
-    const onOpen = () => {
+
+    const tryCloseSocket = () => {
+      try {
+        const { readyState } = socket;
+        if (readyState !== WebSocket.CLOSED && readyState !== WebSocket.CLOSING) {
+          socket.close();
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    const rejectAndClose = (message: string) => {
+      if (done) return;
+      done = true;
+      removeHandshakeListeners();
+      tryCloseSocket();
+      reject(new Error(message));
+    };
+
+    const handleOpen = () => {
+      if (done) return;
+      done = true;
+      removeHandshakeListeners();
       resolve();
     };
-    socket.addEventListener('open', onOpen, { once: true });
-    socket.addEventListener('error', onError, { once: true });
+
+    const handleError = () => {
+      rejectAndClose(`connectTreecrdtWebSocketSync: WebSocket error while connecting to ${urlStr}`);
+    };
+
+    const handleClose = (event: Event) => {
+      if (done) return;
+      const closeEvent = event as CloseEvent;
+      const code = typeof closeEvent.code === 'number' ? closeEvent.code : undefined;
+      const reasonText = closeEvent.reason
+        ? String(closeEvent.reason).slice(0, 200)
+        : undefined;
+      const parts: string[] = [
+        `connectTreecrdtWebSocketSync: WebSocket closed before open (${urlStr})`,
+      ];
+      if (code !== undefined) parts.push(`code=${code}`);
+      if (reasonText) parts.push(`reason=${JSON.stringify(reasonText)}`);
+      rejectAndClose(parts.join(' '));
+    };
+
+    socket.addEventListener('open', handleOpen, { once: true });
+    socket.addEventListener('error', handleError, { once: true });
+    socket.addEventListener('close', handleClose, { once: true });
   });
 }
 
