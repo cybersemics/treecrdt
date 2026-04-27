@@ -46,6 +46,12 @@ export type ConnectTreecrdtWebSocketSyncOptions = {
    * APIs may not go through this path — call `notifyLocalUpdate` yourself in that case.
    */
   autoNotifyLocalOnWrite?: boolean;
+  /**
+   * If the live `subscribe` session ends with an error after `startLive` has settled (e.g. wire
+   * drop), that rejection is passed here. Defaults to `console.error` so behavior matches older
+   * releases; pass a no-op or your own logger to avoid logging in production.
+   */
+  onLiveError?: (error: unknown) => void;
   webSocketBinaryType?: BinaryType;
 };
 
@@ -68,6 +74,10 @@ export type CreateTreecrdtWebSocketSyncFromTransportOptions = {
   auth?: SyncAuth<Operation>;
   syncPeerOptions?: Partial<SyncPeerOptions<Operation>>;
   autoNotifyLocalOnWrite?: boolean;
+  /**
+   * @see {@link ConnectTreecrdtWebSocketSyncOptions.onLiveError}
+   */
+  onLiveError?: (error: unknown) => void;
 };
 
 export type { MaterializationEvent, MaterializationListener };

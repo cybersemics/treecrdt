@@ -57,7 +57,14 @@ export function createTreecrdtWebSocketSyncFromTransport(
     auth,
     syncPeerOptions: extraPeerOptions,
     autoNotifyLocalOnWrite = defaultAutoNotify,
+    onLiveError,
   } = options;
+
+  const reportLiveError =
+    onLiveError ??
+    ((err: unknown) => {
+      console.error('TreecrdtWebSocketSync: live subscription failed', err);
+    });
 
   const getMaxLamport = () => client.meta.headLamport().then((n) => BigInt(n));
 
@@ -145,7 +152,7 @@ export function createTreecrdtWebSocketSyncFromTransport(
       void sub.done.catch((err) => {
         liveOn.value = false;
         if (liveSub === sub) liveSub = null;
-        console.error('TreecrdtWebSocketSync: live subscription failed', err);
+        reportLiveError(err);
       });
       try {
         await sub.ready;
