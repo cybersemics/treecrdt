@@ -521,59 +521,53 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       };
     }
 
-    if (
-      !authMaterial.issuerPkB64 ||
-      !authMaterial.localSkB64 ||
-      !authMaterial.localPkB64 ||
-      authMaterial.localTokensB64.length === 0
-    ) {
+    const { issuerPkB64, localSkB64, localPkB64 } = authMaterial;
+    const localTokensB64 = authMaterial.localTokensB64;
+
+    if (!issuerPkB64 || !localSkB64 || !localPkB64 || localTokensB64.length === 0) {
       localAuthSessionRef.current = null;
       return () => {
         cancelled = true;
       };
     }
 
-    try {
-      const issuerPk = base64urlDecode(authMaterial.issuerPkB64);
-      const localSk = base64urlDecode(authMaterial.localSkB64);
-      const localPk = base64urlDecode(authMaterial.localPkB64);
-      const localTokens = authMaterial.localTokensB64.map((t) => base64urlDecode(t));
+    void (async () => {
+      try {
+        const issuerPk = base64urlDecode(issuerPkB64);
+        const localSk = base64urlDecode(localSkB64);
+        const localPk = base64urlDecode(localPkB64);
+        const localTokens = localTokensB64.map((t) => base64urlDecode(t));
 
-      const authSession = client.auth.createSession({
-        docId,
-        trust: { issuerPublicKeys: [issuerPk] },
-        local: {
-          privateKey: localSk,
-          publicKey: localPk,
-          capabilityTokens: localTokens,
-        },
-        revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
-        requireProofRef: true,
-        identity: {
-          onPeer: onPeerIdentityChain,
-          local: getLocalIdentityChain,
-        },
-      });
+        const authSession = await client.auth.createSession({
+          docId,
+          trust: { issuerPublicKeys: [issuerPk] },
+          local: {
+            privateKey: localSk,
+            publicKey: localPk,
+            capabilityTokens: localTokens,
+          },
+          revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
+          requireProofRef: true,
+          identity: {
+            onPeer: onPeerIdentityChain,
+            local: getLocalIdentityChain,
+          },
+        });
+        if (cancelled) return;
 
-      const preparedAuth = authSession.syncAuth;
-      localAuthSessionRef.current = authSession;
+        const preparedAuth = authSession.syncAuth;
+        localAuthSessionRef.current = authSession;
 
-      void (async () => {
-        try {
-          await authSession.ready;
-          if (cancelled) return;
-          setSyncAuth(preparedAuth);
-        } catch (err) {
-          if (cancelled) return;
-          if (localAuthSessionRef.current === authSession) localAuthSessionRef.current = null;
-          setAuthError(err instanceof Error ? err.message : String(err));
-        }
-      })();
-    } catch (err) {
-      localAuthSessionRef.current = null;
-      setSyncAuth(null);
-      setAuthError(err instanceof Error ? err.message : String(err));
-    }
+        await authSession.ready;
+        if (cancelled) return;
+        setSyncAuth(preparedAuth);
+      } catch (err) {
+        if (cancelled) return;
+        localAuthSessionRef.current = null;
+        setSyncAuth(null);
+        setAuthError(err instanceof Error ? err.message : String(err));
+      }
+    })();
 
     return () => {
       cancelled = true;

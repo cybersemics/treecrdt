@@ -21,7 +21,10 @@ import {
 import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
-import { createTreecrdtSqliteAuthApi, type TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite';
+import {
+  createTreecrdtSqliteAuthApi,
+  type TreecrdtSqliteAuthApi,
+} from '@treecrdt/sync-sqlite/auth';
 
 export type LoadOptions = {
   extensionPath?: string;
