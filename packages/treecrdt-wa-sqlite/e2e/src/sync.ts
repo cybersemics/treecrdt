@@ -18,9 +18,9 @@ import {
   createInMemoryConnectedPeers,
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
-} from '@treecrdt/sync/in-memory';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
-import type { Filter } from '@treecrdt/sync';
+} from '@treecrdt/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+import type { Filter } from '@treecrdt/sync-protocol';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
 export type SyncBenchResult = {

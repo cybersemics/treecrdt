@@ -3,7 +3,7 @@ import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
-import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync';
+import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 import {
   createTreecrdtCoseCwtAuth,
   createTreecrdtSqliteSubtreeScopeEvaluator,
@@ -12,9 +12,9 @@ import {
   randomEd25519SecretKey,
   type TreecrdtScopeEvaluator,
 } from '@treecrdt/auth';
-import { createInMemoryConnectedPeers } from '@treecrdt/sync/in-memory';
-import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync/in-memory';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
+import { createInMemoryConnectedPeers } from '@treecrdt/sync-protocol/in-memory';
+import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import { createOpAuthStore, createPendingOpsStore } from '@treecrdt/sync-sqlite';
 
 export function conformanceSlugify(input: string): string {

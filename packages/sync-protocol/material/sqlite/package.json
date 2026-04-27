@@ -1,0 +1,41 @@
+{
+  "name": "@treecrdt/sync-sqlite",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./backend": {
+      "import": "./dist/backend.js",
+      "types": "./dist/backend.d.ts"
+    },
+    "./proof-material": {
+      "import": "./dist/proof-material/index.js",
+      "types": "./dist/proof-material/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm -C ../../protocol run build && pnpm run build && vitest run"
+  },
+  "dependencies": {
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.19.25",
+    "better-sqlite3": "^9.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  }
+}

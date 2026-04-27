@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync": "workspace:*"
+    "@treecrdt/sync-protocol": "workspace:*"
   },
   "devDependencies": {
     "@treecrdt/benchmark": "workspace:*",

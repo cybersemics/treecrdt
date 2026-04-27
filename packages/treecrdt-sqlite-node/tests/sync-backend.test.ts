@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { defineSyncBackendContract } from '../../sync/protocol/tests/helpers/sync-backend-contract.ts';
-import { createTreecrdtSyncBackendFromClient } from '../../sync/material/sqlite/dist/backend.js';
+import { defineSyncBackendContract } from '../../sync-protocol/protocol/tests/helpers/sync-backend-contract.ts';
+import { createTreecrdtSyncBackendFromClient } from '../../sync-protocol/material/sqlite/dist/backend.js';
 
 import {
   createTreecrdtClient,

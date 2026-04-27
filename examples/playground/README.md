@@ -8,7 +8,7 @@ A small, self-contained demo that exercises the `@treecrdt/wa-sqlite` adapter in
 - Collapsible tree with per-node controls and a composer form to target any parent.
 - Live CRDT operation log with lamport/counter metadata.
 - Labels are stored in `localStorage`; structure lives in an in-memory wa-sqlite DB.
-- Draft sync UI (v0) using `@treecrdt/sync` over `BroadcastChannel` (same-origin).
+- Draft sync UI (v0) using `@treecrdt/sync-protocol` over `BroadcastChannel` (same-origin). The app wires peers and transports in-app; for a single-package remote sync entrypoint in other apps, see `@treecrdt/sync` (WebSocket + discovery + SQLite backend).
 - Optional auth/ACL demo (COSE_Sign1 + CWT subtree capabilities) with invite links, per-op signatures, and a pending-op inspector.
 
 ## Running locally

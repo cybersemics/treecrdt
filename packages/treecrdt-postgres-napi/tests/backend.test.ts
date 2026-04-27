@@ -1,6 +1,6 @@
 import { describe } from 'vitest';
 
-import { defineSyncBackendContract } from '../../sync/protocol/tests/helpers/sync-backend-contract.ts';
+import { defineSyncBackendContract } from '../../sync-protocol/protocol/tests/helpers/sync-backend-contract.ts';
 
 import { createPostgresNapiSyncBackendFactory } from '../dist/index.js';
 

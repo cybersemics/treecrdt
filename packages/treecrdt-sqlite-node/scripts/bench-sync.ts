@@ -41,15 +41,15 @@ import {
   type Filter,
   type HelloTraceRecord,
   type SyncBackend,
-} from '@treecrdt/sync';
-import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync/in-memory';
+} from '@treecrdt/sync-protocol';
+import { makeQueuedSyncBackend, type FlushableSyncBackend } from '@treecrdt/sync-protocol/in-memory';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import {
   createInMemoryDuplex,
   wrapDuplexTransportWithCodec,
   type DuplexTransport,
-} from '@treecrdt/sync/transport';
+} from '@treecrdt/sync-protocol/transport';
 import { startSyncServer } from '@treecrdt/sync-server-postgres-node';
 
 import { createTreecrdtClient, createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';

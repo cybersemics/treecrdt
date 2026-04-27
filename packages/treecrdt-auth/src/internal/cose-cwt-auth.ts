@@ -21,7 +21,7 @@ import {
   type OpRef,
   type SyncAuth,
   type SyncCapabilityMaterialStore,
-} from '@treecrdt/sync';
+} from '@treecrdt/sync-protocol';
 
 import { base64urlDecode, base64urlEncode } from '../base64url.js';
 import { deriveTokenIdV1 } from '../cose.js';

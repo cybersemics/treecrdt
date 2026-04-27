@@ -1,5 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
-import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync';
+import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 
 import { nativeToOperation, operationToNative } from './codec.js';
 import { loadNative } from './native.js';
