@@ -62,9 +62,7 @@ function waitForWebSocketOpen(socket: WebSocket, url: string | URL): Promise<voi
       if (done) return;
       const closeEvent = event as CloseEvent;
       const code = typeof closeEvent.code === 'number' ? closeEvent.code : undefined;
-      const reasonText = closeEvent.reason
-        ? String(closeEvent.reason).slice(0, 200)
-        : undefined;
+      const reasonText = closeEvent.reason ? String(closeEvent.reason).slice(0, 200) : undefined;
       const parts: string[] = [
         `connectTreecrdtWebSocketSync: WebSocket closed before open (${urlStr})`,
       ];
@@ -113,7 +111,10 @@ export async function connectTreecrdtWebSocketSync(
   });
 
   const Ctor: typeof WebSocket | undefined =
-    webSocketCtor ?? (typeof globalThis !== 'undefined' ? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket : undefined);
+    webSocketCtor ??
+    (typeof globalThis !== 'undefined'
+      ? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket
+      : undefined);
   if (!Ctor) {
     throw new Error(
       'connectTreecrdtWebSocketSync: no WebSocket (pass `webSocketCtor`, e.g. `import { WebSocket } from "undici"` in Node)',
