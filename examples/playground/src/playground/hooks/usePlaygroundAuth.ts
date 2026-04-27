@@ -844,7 +844,13 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           const { sk, pk } = await generateEd25519KeyPair();
           localPkB64 = base64urlEncode(pk);
           localSkB64 = base64urlEncode(sk);
-          await saveLocalKeys(docId, localSkB64);
+          const saved = await saveLocalKeys(docId, localSkB64, { ifMissing: true });
+          if (!saved) {
+            const latest = await loadAuthMaterial(docId);
+            localPkB64 = latest.localPkB64;
+            localSkB64 = latest.localSkB64;
+            localTokensB64 = latest.localTokensB64;
+          }
         } else if (!localPkB64 && localSkB64) {
           const localSk = base64urlDecode(localSkB64);
           const localPk = await deriveEd25519PublicKey(localSk);
