@@ -759,17 +759,17 @@ where
     for op in ops {
         replay.apply_remote(crdt, index, op, None)?;
     }
-    let replay = replay.finish();
+    let run = replay.finish();
 
-    let last = replay
+    let last = run
         .head
         .as_ref()
         .or_else(|| crdt.head_op())
         .ok_or_else(|| Error::Storage("expected head op after materialization".into()))?;
 
     Ok(IncrementalApplyResult {
-        head: Some(MaterializationHead::from_op(last, replay.seq)),
-        outcome: replay.outcome,
+        head: Some(MaterializationHead::from_op(last, run.seq)),
+        outcome: run.outcome,
     })
 }
 
@@ -845,15 +845,15 @@ fn replay_frontier_in_memory<S: Storage>(
         )
     })?;
 
-    let replay = replay.finish();
-    let prefix_seq = replay.prefix_seq;
-    let outcome = replay.outcome;
+    let run = replay.finish();
+    let prefix_seq = run.prefix_seq;
+    let outcome = run.outcome;
     Ok((
         RebuiltMaterialization {
             crdt,
             index,
-            head: replay.head,
-            seq: replay.seq,
+            head: run.head,
+            seq: run.seq,
         },
         prefix_seq,
         outcome,
@@ -945,19 +945,19 @@ where
     for op in full_suffix_ops {
         replay.apply_sorted(&mut crdt, &mut index, op)?;
     }
-    let replay = replay.finish();
+    let run = replay.finish();
 
     flush_nodes(crdt.node_store_mut())?;
     flush_index(&mut index)?;
 
     Ok(Some(CatchUpResult {
-        head: replay.head.as_ref().map(|head| MaterializationHead::from_op(head, replay.seq)),
-        outcome: replay.outcome,
+        head: run.head.as_ref().map(|head| MaterializationHead::from_op(head, run.seq)),
+        outcome: run.outcome,
     }))
 }
 
 fn patch_final_state_in_place<N, P, I>(
-    replay: &mut RebuiltMaterialization,
+    rebuilt: &mut RebuiltMaterialization,
     prefix_seq: u64,
     affected_nodes: &[NodeId],
     nodes: &mut N,
@@ -988,14 +988,14 @@ where
         } else {
             None
         };
-        let final_parent = replay.crdt.node_store_mut().parent(*node)?;
-        let final_tombstone = replay.crdt.node_store_mut().tombstone(*node)?;
+        let final_parent = rebuilt.crdt.node_store_mut().parent(*node)?;
+        let final_tombstone = rebuilt.crdt.node_store_mut().tombstone(*node)?;
 
         nodes.ensure_node(*node)?;
         nodes.detach(*node)?;
 
         if let Some(parent) = final_parent {
-            let order_key = replay.crdt.node_store_mut().order_key(*node)?.unwrap_or_default();
+            let order_key = rebuilt.crdt.node_store_mut().order_key(*node)?.unwrap_or_default();
             nodes.attach(*node, parent, order_key)?;
         }
 
@@ -1006,7 +1006,7 @@ where
                 (true, false) => patch_changes.push(MaterializationChange::Restore {
                     node: *node,
                     parent_after: final_parent.filter(|parent| *parent != NodeId::TRASH),
-                    payload: replay.crdt.payload(*node)?,
+                    payload: rebuilt.crdt.payload(*node)?,
                 }),
                 (false, true) => patch_changes.push(MaterializationChange::Delete {
                     node: *node,
@@ -1019,20 +1019,20 @@ where
         // These are exact setters on purpose: the backend may already contain newer-looking merged
         // values from the stale suffix, so fallback catch-up must overwrite them with the rebuilt
         // post-replay state rather than merge again.
-        let last_change = replay.crdt.node_store_mut().last_change(*node)?;
+        let last_change = rebuilt.crdt.node_store_mut().last_change(*node)?;
         nodes.set_last_change_exact(*node, &last_change)?;
 
-        let deleted_at = replay.crdt.node_store_mut().deleted_at(*node)?;
+        let deleted_at = rebuilt.crdt.node_store_mut().deleted_at(*node)?;
         nodes.set_deleted_at_exact(*node, deleted_at.as_ref())?;
 
-        if let Some(writer) = replay.crdt.payload_last_writer(*node)? {
-            payloads.set_payload(*node, replay.crdt.payload(*node)?, writer)?;
+        if let Some(writer) = rebuilt.crdt.payload_last_writer(*node)? {
+            payloads.set_payload(*node, rebuilt.crdt.payload(*node)?, writer)?;
         } else {
             payloads.clear_payload(*node)?;
         }
     }
 
-    let mut records: Vec<_> = replay
+    let mut records: Vec<_> = rebuilt
         .index
         .records
         .iter()
@@ -1044,7 +1044,7 @@ where
         index.record(parent, &op_id, seq)?;
     }
 
-    Ok(MaterializationOutcome::from_changes(replay.seq, patch_changes).changes)
+    Ok(MaterializationOutcome::from_changes(rebuilt.seq, patch_changes).changes)
 }
 
 /// Catch backend materialized state up from a replay frontier by patching affected backend rows
@@ -1087,13 +1087,13 @@ where
         mut index,
     } = stores;
 
-    let (mut replay, prefix_seq, replay_outcome) =
+    let (mut rebuilt, prefix_seq, replay_outcome) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
     let mut affected_nodes = replay_outcome.affected_nodes();
     let mut seen_nodes: HashSet<NodeId> = affected_nodes.iter().copied().collect();
     let mut idx = 0usize;
     while idx < affected_nodes.len() {
-        if let Some(parent) = replay.crdt.node_store_mut().parent(affected_nodes[idx])? {
+        if let Some(parent) = rebuilt.crdt.node_store_mut().parent(affected_nodes[idx])? {
             if parent != NodeId::ROOT && parent != NodeId::TRASH && seen_nodes.insert(parent) {
                 affected_nodes.push(parent);
             }
@@ -1103,7 +1103,7 @@ where
     affected_nodes.sort();
     affected_nodes.dedup();
     let patch_changes = patch_final_state_in_place(
-        &mut replay,
+        &mut rebuilt,
         prefix_seq,
         &affected_nodes,
         &mut nodes,
@@ -1115,12 +1115,15 @@ where
     flush_index(&mut index)?;
 
     Ok(CatchUpResult {
-        head: replay.head.as_ref().map(|head| MaterializationHead::from_op(head, replay.seq)),
+        head: rebuilt
+            .head
+            .as_ref()
+            .map(|head| MaterializationHead::from_op(head, rebuilt.seq)),
         outcome: MaterializationOutcome::merge(
-            replay.seq,
+            rebuilt.seq,
             [
                 replay_outcome,
-                MaterializationOutcome::from_changes(replay.seq, patch_changes),
+                MaterializationOutcome::from_changes(rebuilt.seq, patch_changes),
             ],
         ),
     })
