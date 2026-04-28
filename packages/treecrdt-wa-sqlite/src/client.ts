@@ -20,7 +20,10 @@ import {
 } from '@treecrdt/interface/ids';
 import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
-import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
+import {
+  createTreecrdtSqliteAuthApi,
+  type TreecrdtSqliteAuthApi,
+} from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
 import type {
@@ -42,20 +45,8 @@ export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   storage: StorageMode;
   runner: SqliteRunner;
-  auth: TreecrdtClientAuthApi;
+  auth: TreecrdtSqliteAuthApi;
   drop: () => Promise<void>;
-};
-
-type TreecrdtSqliteAuthModule = typeof import('@treecrdt/sync-sqlite/auth');
-
-export type TreecrdtClientAuthApi = {
-  createSession: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['createSession']>
-  ) => Promise<ReturnType<TreecrdtSqliteAuthApi['createSession']>>;
-  describeCapabilityToken: TreecrdtSqliteAuthApi['describeCapabilityToken'];
-  evaluateScope: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['evaluateScope']>
-  ) => Promise<Awaited<ReturnType<TreecrdtSqliteAuthApi['evaluateScope']>>>;
 };
 
 export type ClientOptions = {
@@ -119,32 +110,6 @@ type WorkerProxy = {
 };
 
 type RpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise<RpcResult<M>>;
-
-let sqliteAuthModulePromise: Promise<TreecrdtSqliteAuthModule> | null = null;
-
-function loadSqliteAuthModule(): Promise<TreecrdtSqliteAuthModule> {
-  // Browser clients should not pay the auth/crypto/proof-material bundle cost unless auth is used.
-  // Dynamic import splits that code into a separate chunk, so wa-sqlite auth calls are async.
-  sqliteAuthModulePromise ??= import('@treecrdt/sync-sqlite/auth');
-  return sqliteAuthModulePromise;
-}
-
-function createLazyAuthApi(opts: { runner: SqliteRunner; docId: string }): TreecrdtClientAuthApi {
-  let authApiPromise: Promise<TreecrdtSqliteAuthApi> | null = null;
-  const getAuthApi = () => {
-    authApiPromise ??= loadSqliteAuthModule().then(({ createTreecrdtSqliteAuthApi }) =>
-      createTreecrdtSqliteAuthApi(opts),
-    );
-    return authApiPromise;
-  };
-
-  return {
-    createSession: async (...args) => (await getAuthApi()).createSession(...args),
-    describeCapabilityToken: async (...args) =>
-      (await getAuthApi()).describeCapabilityToken(...args),
-    evaluateScope: async (...args) => await (await getAuthApi()).evaluateScope(...args),
-  };
-}
 
 async function createWorkerClient(opts: {
   baseUrl: string;
@@ -600,7 +565,7 @@ function makeTreecrdtClientFromCall(opts: {
       getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
-    auth: createLazyAuthApi({ runner, docId: opts.docId }),
+    auth: createTreecrdtSqliteAuthApi({ runner, docId: opts.docId }),
     local: {
       insert: localInsertImpl,
       move: localMoveImpl,
