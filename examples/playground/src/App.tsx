@@ -501,6 +501,14 @@ export default function App() {
     [notifyLocalUpdate, recordOps]
   );
 
+  const acceptLocalOps = React.useCallback(
+    async (ops: Operation[]) => {
+      await verifyLocalOps(ops);
+      recordLocalOps(ops);
+    },
+    [recordLocalOps, verifyLocalOps]
+  );
+
   const grantSubtreeToReplicaPubkey = React.useCallback(
     async (opts?: {
       recipientKey?: string;
@@ -710,7 +718,7 @@ export default function App() {
     try {
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
       const op = await client.local.move(replica, nodeId, newParent, placement);
-      recordLocalOps([op]);
+      await acceptLocalOps([op]);
     } catch (err) {
       console.error("Failed to append move op", err);
       setError("Failed to move node (see console)");
@@ -804,7 +812,7 @@ export default function App() {
         prev ? { ...prev, completed: normalizedCount, phase: "applying" } : prev
       );
 
-      recordLocalOps(ops);
+      await acceptLocalOps(ops);
       expandPathTo(parentId);
     } catch (err) {
       console.error("Failed to add nodes", err);
@@ -825,7 +833,7 @@ export default function App() {
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
-      recordLocalOps([op]);
+      await acceptLocalOps([op]);
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
       }
@@ -847,8 +855,7 @@ export default function App() {
           const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
           const encryptedPayload = await encryptPayloadBytes(payload);
           const op = await client.local.payload(replica, nodeId, encryptedPayload);
-          await verifyLocalOps([op]);
-          recordLocalOps([op]);
+          await acceptLocalOps([op]);
         } catch (err) {
           console.error("Failed to write payload", err);
           setError("Failed to write payload (see console)");
@@ -863,8 +870,7 @@ export default function App() {
     setBusy(true);
     try {
       const op = await client.local.delete(replica, nodeId);
-      await verifyLocalOps([op]);
-      recordLocalOps([op]);
+      await acceptLocalOps([op]);
     } catch (err) {
       console.error("Failed to delete node", err);
       setError("Failed to delete node (see console)");
