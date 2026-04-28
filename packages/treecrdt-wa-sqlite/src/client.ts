@@ -123,6 +123,8 @@ type RpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise
 let sqliteAuthModulePromise: Promise<TreecrdtSqliteAuthModule> | null = null;
 
 function loadSqliteAuthModule(): Promise<TreecrdtSqliteAuthModule> {
+  // Browser clients should not pay the auth/crypto/proof-material bundle cost unless auth is used.
+  // Dynamic import splits that code into a separate chunk, so wa-sqlite auth calls are async.
   sqliteAuthModulePromise ??= import('@treecrdt/sync-sqlite/auth');
   return sqliteAuthModulePromise;
 }
