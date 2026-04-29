@@ -43,6 +43,31 @@ fn duplicate_operations_are_ignored() {
 }
 
 #[test]
+fn prepared_local_op_does_not_mutate_until_committed() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    let node = NodeId(1);
+    let prepared = crdt
+        .prepare_local_insert(NodeId::ROOT, node, LocalPlacement::First, Some(vec![1]))
+        .unwrap();
+
+    assert_eq!(crdt.children(NodeId::ROOT).unwrap(), Vec::<NodeId>::new());
+    assert_eq!(crdt.parent(node).unwrap(), None);
+
+    let (op, plan) = crdt.commit_prepared_local(prepared).unwrap();
+
+    assert_eq!(op.kind.node(), node);
+    assert_eq!(plan.changes.len(), 1);
+    assert_eq!(crdt.children(NodeId::ROOT).unwrap(), &[node]);
+    assert_eq!(crdt.parent(node).unwrap(), Some(NodeId::ROOT));
+}
+
+#[test]
 fn delete_marks_tombstone_and_removes_from_parent() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"a"),

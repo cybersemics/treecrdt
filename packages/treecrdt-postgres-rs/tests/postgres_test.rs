@@ -9,8 +9,8 @@ use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId, Versio
 use treecrdt_postgres::{
     append_ops, append_ops_with_materialization_outcome, ensure_materialized, ensure_schema,
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
-    local_move, local_payload, max_lamport, replica_max_counter, reset_doc_for_tests,
-    tree_children, tree_payload,
+    local_move, local_payload, max_lamport, prepare_local_insert_tx, replica_max_counter,
+    reset_doc_for_tests, tree_children, tree_payload,
 };
 use treecrdt_test_support::{
     self as materialization_conformance, node, order_key_from_position,
@@ -29,6 +29,17 @@ fn ensure_schema_once(client: &Rc<RefCell<Client>>) {
         let mut c = client.borrow_mut();
         ensure_schema(&mut c).unwrap();
     });
+}
+
+fn op_count(client: &Rc<RefCell<Client>>, doc_id: &str) -> u64 {
+    let mut c = client.borrow_mut();
+    let row = c
+        .query_one(
+            "SELECT COUNT(*) FROM treecrdt_ops WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .unwrap();
+    row.get::<_, i64>(0).max(0) as u64
 }
 
 struct PgConformanceHarness {
@@ -54,14 +65,7 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
     }
 
     fn op_count(&self) -> u64 {
-        let mut c = self.client.borrow_mut();
-        let row = c
-            .query_one(
-                "SELECT COUNT(*) FROM treecrdt_ops WHERE doc_id = $1",
-                &[&self.doc_id],
-            )
-            .unwrap();
-        row.get::<_, i64>(0).max(0) as u64
+        op_count(&self.client, &self.doc_id)
     }
 
     fn replay_frontier(&self) -> Option<treecrdt_core::MaterializationFrontier> {
@@ -672,5 +676,63 @@ fn postgres_backend_local_ops_drive_core_materialization_flow() {
     assert_eq!(
         replica_max_counter(&client, &doc_id, replica.as_bytes()).unwrap(),
         op6.meta.id.counter
+    );
+}
+
+#[test]
+fn postgres_backend_prepared_local_tx_rolls_back_until_committed() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"loc-auth");
+    let node_rejected = node(1101);
+    let rejected = prepare_local_insert_tx(
+        &client,
+        &doc_id,
+        &replica,
+        NodeId::ROOT,
+        node_rejected,
+        "first",
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(rejected.op().meta.id.counter, 1);
+    rejected.rollback().unwrap();
+    assert_eq!(op_count(&client, &doc_id), 0);
+    assert!(tree_children(&client, &doc_id, NodeId::ROOT).unwrap().is_empty());
+
+    let node_committed = node(1102);
+    let committed = prepare_local_insert_tx(
+        &client,
+        &doc_id,
+        &replica,
+        NodeId::ROOT,
+        node_committed,
+        "first",
+        None,
+        Some(vec![7]),
+    )
+    .unwrap();
+    assert_eq!(committed.op().meta.id.counter, 1);
+    let result = committed.commit().unwrap();
+
+    assert_eq!(result.op.kind.node(), node_committed);
+    assert_eq!(op_count(&client, &doc_id), 1);
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
+        vec![node_committed]
+    );
+    assert_eq!(
+        tree_payload(&client, &doc_id, node_committed).unwrap(),
+        Some(vec![7])
     );
 }

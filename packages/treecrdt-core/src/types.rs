@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::ids::{NodeId, OperationId};
+use crate::ops::Operation;
 use crate::version_vector::VersionVector;
 
 #[cfg(feature = "serde")]
@@ -157,4 +158,10 @@ pub struct LocalFinalizePlan {
     pub parent_hints: Vec<NodeId>,
     pub extra_index_records: Vec<(NodeId, OperationId)>,
     pub changes: Vec<MaterializationChange>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedLocalOp {
+    pub op: Operation,
+    pub plan: LocalFinalizePlan,
 }

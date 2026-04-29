@@ -36,6 +36,6 @@ pub use traits::{
 pub use tree::TreeCrdt;
 pub use types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
-    NodeExport, NodeSnapshotExport,
+    NodeExport, NodeSnapshotExport, PreparedLocalOp,
 };
 pub use version_vector::VersionVector;

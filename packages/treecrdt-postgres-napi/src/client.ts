@@ -13,6 +13,7 @@ import {
   loadNative,
   type NativeLocalOpResult,
   type NativeMaterializationOutcome,
+  type NativePreparedLocalOpTx,
 } from './native.js';
 
 function ensureNonEmptyString(name: string, value: string): void {
@@ -35,12 +36,6 @@ function placementToArgs(placement: TreecrdtSqlitePlacement): {
   if (placement.type === 'first') return { type: 'first', after: null };
   if (placement.type === 'last') return { type: 'last', after: null };
   return { type: 'after', after: nodeIdToBytes16(placement.after) };
-}
-
-function assertNoLocalAuthOptions(writeOpts?: LocalWriteOptions): void {
-  if (writeOpts?.authSession) {
-    throw new Error('auth-aware local writes are not implemented for the postgres client');
-  }
 }
 
 /**
@@ -69,6 +64,25 @@ export async function createTreecrdtPostgresClient(
   const finishLocalOp = (result: NativeLocalOpResult): Operation => {
     emitNativeOutcome(result.outcome);
     return nativeToOperation(result.op);
+  };
+  const finishPreparedLocalOp = async (
+    tx: NativePreparedLocalOpTx,
+    writeOpts?: LocalWriteOptions,
+  ): Promise<Operation> => {
+    if (writeOpts?.authSession) {
+      const op = nativeToOperation(tx.op());
+      try {
+        await writeOpts.authSession.authorizeLocalOps([op]);
+      } catch (err) {
+        try {
+          tx.rollback();
+        } catch {
+          // Preserve the auth failure. The native transaction also rolls back on drop.
+        }
+        throw err;
+      }
+    }
+    return finishLocalOp(tx.commit());
   };
   const ensureMaterializedImpl = () => {
     emitNativeOutcome(backend.ensureMaterialized());
@@ -154,9 +168,8 @@ export async function createTreecrdtPostgresClient(
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
   ) => {
-    assertNoLocalAuthOptions(writeOpts);
     const { type, after } = placementToArgs(placement);
-    const result = backend.localInsert(
+    const tx = backend.prepareLocalInsert(
       encodeReplica(replica),
       nodeIdToBytes16(parent),
       nodeIdToBytes16(node),
@@ -164,7 +177,7 @@ export async function createTreecrdtPostgresClient(
       after,
       payload,
     );
-    return finishLocalOp(result);
+    return finishPreparedLocalOp(tx, writeOpts);
   };
 
   const localMoveImpl = async (
@@ -174,16 +187,15 @@ export async function createTreecrdtPostgresClient(
     placement: TreecrdtSqlitePlacement,
     writeOpts?: LocalWriteOptions,
   ) => {
-    assertNoLocalAuthOptions(writeOpts);
     const { type, after } = placementToArgs(placement);
-    const result = backend.localMove(
+    const tx = backend.prepareLocalMove(
       encodeReplica(replica),
       nodeIdToBytes16(node),
       nodeIdToBytes16(newParent),
       type,
       after,
     );
-    return finishLocalOp(result);
+    return finishPreparedLocalOp(tx, writeOpts);
   };
 
   const localDeleteImpl = async (
@@ -191,9 +203,8 @@ export async function createTreecrdtPostgresClient(
     node: string,
     writeOpts?: LocalWriteOptions,
   ) => {
-    assertNoLocalAuthOptions(writeOpts);
-    const result = backend.localDelete(encodeReplica(replica), nodeIdToBytes16(node));
-    return finishLocalOp(result);
+    const tx = backend.prepareLocalDelete(encodeReplica(replica), nodeIdToBytes16(node));
+    return finishPreparedLocalOp(tx, writeOpts);
   };
 
   const localPayloadImpl = async (
@@ -202,9 +213,8 @@ export async function createTreecrdtPostgresClient(
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
   ) => {
-    assertNoLocalAuthOptions(writeOpts);
-    const result = backend.localPayload(encodeReplica(replica), nodeIdToBytes16(node), payload);
-    return finishLocalOp(result);
+    const tx = backend.prepareLocalPayload(encodeReplica(replica), nodeIdToBytes16(node), payload);
+    return finishPreparedLocalOp(tx, writeOpts);
   };
 
   return {

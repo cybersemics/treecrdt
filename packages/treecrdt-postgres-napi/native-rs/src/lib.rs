@@ -94,6 +94,44 @@ pub struct NativeLocalOpResult {
     pub outcome: NativeMaterializationOutcome,
 }
 
+#[napi]
+pub struct NativePreparedLocalOpTx {
+    tx: Option<treecrdt_postgres::PreparedLocalOpTx>,
+}
+
+#[napi]
+impl NativePreparedLocalOpTx {
+    #[napi]
+    pub fn op(&self) -> napi::Result<NativeOp> {
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| map_err("prepared local op transaction is already closed"))?;
+        core_to_native_op(tx.op().clone()).map_err(map_core_err)
+    }
+
+    #[napi]
+    pub fn commit(&mut self) -> napi::Result<NativeLocalOpResult> {
+        let tx = self
+            .tx
+            .take()
+            .ok_or_else(|| map_err("prepared local op transaction is already closed"))?;
+        let result = tx.commit().map_err(map_core_err)?;
+        Ok(NativeLocalOpResult {
+            op: core_to_native_op(result.op).map_err(map_core_err)?,
+            outcome: outcome_to_native(result.outcome),
+        })
+    }
+
+    #[napi]
+    pub fn rollback(&mut self) -> napi::Result<()> {
+        if let Some(tx) = self.tx.take() {
+            tx.rollback().map_err(map_core_err)?;
+        }
+        Ok(())
+    }
+}
+
 fn outcome_to_native(outcome: MaterializationOutcome) -> NativeMaterializationOutcome {
     let changes = outcome
         .changes
@@ -600,6 +638,20 @@ impl PgBackend {
         after: Option<Buffer>,
         payload: Option<Buffer>,
     ) -> napi::Result<NativeLocalOpResult> {
+        let mut tx = self.prepare_local_insert(replica, parent, node, placement, after, payload)?;
+        tx.commit()
+    }
+
+    #[napi]
+    pub fn prepare_local_insert(
+        &self,
+        replica: Buffer,
+        parent: Buffer,
+        node: Buffer,
+        placement: String,
+        after: Option<Buffer>,
+        payload: Option<Buffer>,
+    ) -> napi::Result<NativePreparedLocalOpTx> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
@@ -611,7 +663,7 @@ impl PgBackend {
             Some(b) => Some(bytes16_to_node(&b).map_err(map_core_err)?),
         };
 
-        let result = treecrdt_postgres::local_insert(
+        let tx = treecrdt_postgres::prepare_local_insert_tx(
             &client,
             &self.doc_id,
             &replica,
@@ -622,10 +674,7 @@ impl PgBackend {
             payload.map(|p| p.to_vec()),
         )
         .map_err(map_core_err)?;
-        Ok(NativeLocalOpResult {
-            op: core_to_native_op(result.op).map_err(map_core_err)?,
-            outcome: outcome_to_native(result.outcome),
-        })
+        Ok(NativePreparedLocalOpTx { tx: Some(tx) })
     }
 
     #[napi]
@@ -637,6 +686,19 @@ impl PgBackend {
         placement: String,
         after: Option<Buffer>,
     ) -> napi::Result<NativeLocalOpResult> {
+        let mut tx = self.prepare_local_move(replica, node, new_parent, placement, after)?;
+        tx.commit()
+    }
+
+    #[napi]
+    pub fn prepare_local_move(
+        &self,
+        replica: Buffer,
+        node: Buffer,
+        new_parent: Buffer,
+        placement: String,
+        after: Option<Buffer>,
+    ) -> napi::Result<NativePreparedLocalOpTx> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
@@ -648,7 +710,7 @@ impl PgBackend {
             Some(b) => Some(bytes16_to_node(&b).map_err(map_core_err)?),
         };
 
-        let result = treecrdt_postgres::local_move(
+        let tx = treecrdt_postgres::prepare_local_move_tx(
             &client,
             &self.doc_id,
             &replica,
@@ -658,25 +720,29 @@ impl PgBackend {
             after_id,
         )
         .map_err(map_core_err)?;
-        Ok(NativeLocalOpResult {
-            op: core_to_native_op(result.op).map_err(map_core_err)?,
-            outcome: outcome_to_native(result.outcome),
-        })
+        Ok(NativePreparedLocalOpTx { tx: Some(tx) })
     }
 
     #[napi]
     pub fn local_delete(&self, replica: Buffer, node: Buffer) -> napi::Result<NativeLocalOpResult> {
+        let mut tx = self.prepare_local_delete(replica, node)?;
+        tx.commit()
+    }
+
+    #[napi]
+    pub fn prepare_local_delete(
+        &self,
+        replica: Buffer,
+        node: Buffer,
+    ) -> napi::Result<NativePreparedLocalOpTx> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
         let replica = ReplicaId(replica.to_vec());
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
-        let result = treecrdt_postgres::local_delete(&client, &self.doc_id, &replica, node)
+        let tx = treecrdt_postgres::prepare_local_delete_tx(&client, &self.doc_id, &replica, node)
             .map_err(map_core_err)?;
-        Ok(NativeLocalOpResult {
-            op: core_to_native_op(result.op).map_err(map_core_err)?,
-            outcome: outcome_to_native(result.outcome),
-        })
+        Ok(NativePreparedLocalOpTx { tx: Some(tx) })
     }
 
     #[napi]
@@ -686,12 +752,23 @@ impl PgBackend {
         node: Buffer,
         payload: Option<Buffer>,
     ) -> napi::Result<NativeLocalOpResult> {
+        let mut tx = self.prepare_local_payload(replica, node, payload)?;
+        tx.commit()
+    }
+
+    #[napi]
+    pub fn prepare_local_payload(
+        &self,
+        replica: Buffer,
+        node: Buffer,
+        payload: Option<Buffer>,
+    ) -> napi::Result<NativePreparedLocalOpTx> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
 
         let replica = ReplicaId(replica.to_vec());
         let node = bytes16_to_node(&node).map_err(map_core_err)?;
-        let result = treecrdt_postgres::local_payload(
+        let tx = treecrdt_postgres::prepare_local_payload_tx(
             &client,
             &self.doc_id,
             &replica,
@@ -699,9 +776,6 @@ impl PgBackend {
             payload.map(|p| p.to_vec()),
         )
         .map_err(map_core_err)?;
-        Ok(NativeLocalOpResult {
-            op: core_to_native_op(result.op).map_err(map_core_err)?,
-            outcome: outcome_to_native(result.outcome),
-        })
+        Ok(NativePreparedLocalOpTx { tx: Some(tx) })
     }
 }

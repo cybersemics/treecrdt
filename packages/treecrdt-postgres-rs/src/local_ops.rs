@@ -5,7 +5,7 @@ use postgres::Client;
 
 use treecrdt_core::{
     Error, LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationCursor,
-    MaterializationOutcome, NodeId, Operation, ReplicaId, Result, TreeCrdt,
+    MaterializationOutcome, NodeId, Operation, PreparedLocalOp, ReplicaId, Result, TreeCrdt,
 };
 
 use crate::store::{
@@ -37,26 +37,19 @@ impl std::ops::Deref for LocalOpResult {
     }
 }
 
-fn run_in_tx<T>(client: &Rc<RefCell<Client>>, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))?;
-    }
+fn begin_tx(client: &Rc<RefCell<Client>>) -> Result<()> {
+    let mut c = client.borrow_mut();
+    c.batch_execute("BEGIN").map_err(|e| Error::Storage(e.to_string()))
+}
 
-    let res = f();
+fn commit_tx(client: &Rc<RefCell<Client>>) -> Result<()> {
+    let mut c = client.borrow_mut();
+    c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))
+}
 
-    match res {
-        Ok(v) => {
-            let mut c = client.borrow_mut();
-            c.batch_execute("COMMIT").map_err(|e| Error::Storage(e.to_string()))?;
-            Ok(v)
-        }
-        Err(e) => {
-            let mut c = client.borrow_mut();
-            let _ = c.batch_execute("ROLLBACK");
-            Err(e)
-        }
-    }
+fn rollback_tx(client: &Rc<RefCell<Client>>) -> Result<()> {
+    let mut c = client.borrow_mut();
+    c.batch_execute("ROLLBACK").map_err(|e| Error::Storage(e.to_string()))
 }
 
 fn begin_local_core_op(
@@ -98,8 +91,8 @@ fn finish_local_core_op(
     let mut outcome = MaterializationOutcome::empty(session.meta.state().head_seq());
 
     let mut op_index = PgParentOpIndex::new(session.ctx.clone());
-    // commit_local() already persisted the op and updated node/payload state. The finalize step
-    // refreshes adapter-owned derived state that lives outside TreeCrdt itself.
+    // commit_prepared_local() already persisted the op and updated node/payload state. The finalize
+    // step refreshes adapter-owned derived state that lives outside TreeCrdt itself.
     match session.crdt.finalize_local_with_outcome(
         op,
         &mut op_index,
@@ -144,6 +137,81 @@ fn finish_local_core_op(
     Ok(outcome)
 }
 
+pub struct PreparedLocalOpTx {
+    session: Option<LocalOpSession>,
+    prepared: Option<PreparedLocalOp>,
+}
+
+impl PreparedLocalOpTx {
+    pub fn op(&self) -> &Operation {
+        &self.prepared.as_ref().expect("prepared local op already closed").op
+    }
+
+    pub fn commit(mut self) -> Result<LocalOpResult> {
+        let mut session = self.session.take().expect("prepared local op already closed");
+        let prepared = self.prepared.take().expect("prepared local op already closed");
+        let res = (|| {
+            let (op, plan) = session.crdt.commit_prepared_local(prepared)?;
+            let outcome = finish_local_core_op(&mut session, &op, plan)?;
+            Ok(LocalOpResult { op, outcome })
+        })();
+
+        match res {
+            Ok(v) => {
+                if let Err(e) = commit_tx(&session.ctx.client) {
+                    let _ = rollback_tx(&session.ctx.client);
+                    return Err(e);
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = rollback_tx(&session.ctx.client);
+                Err(e)
+            }
+        }
+    }
+
+    pub fn rollback(mut self) -> Result<()> {
+        let Some(session) = self.session.take() else {
+            return Ok(());
+        };
+        self.prepared.take();
+        rollback_tx(&session.ctx.client)
+    }
+}
+
+impl Drop for PreparedLocalOpTx {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            let _ = rollback_tx(&session.ctx.client);
+        }
+    }
+}
+
+fn prepare_local_core_op<F>(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    build: F,
+) -> Result<PreparedLocalOpTx>
+where
+    F: FnOnce(&mut LocalCrdt) -> Result<PreparedLocalOp>,
+{
+    begin_tx(client)?;
+    let res = (|| {
+        let mut session = begin_local_core_op(client, doc_id, replica)?;
+        let prepared = build(&mut session.crdt)?;
+        Ok(PreparedLocalOpTx {
+            session: Some(session),
+            prepared: Some(prepared),
+        })
+    })();
+    if res.is_err() {
+        let _ = rollback_tx(client);
+    }
+    res
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn local_insert(
     client: &Rc<RefCell<Client>>,
@@ -155,12 +223,26 @@ pub fn local_insert(
     after: Option<NodeId>,
     payload: Option<Vec<u8>>,
 ) -> Result<LocalOpResult> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
+    prepare_local_insert_tx(
+        client, doc_id, replica, parent, node, placement, after, payload,
+    )?
+    .commit()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_local_insert_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    parent: NodeId,
+    node: NodeId,
+    placement: &str,
+    after: Option<NodeId>,
+    payload: Option<Vec<u8>>,
+) -> Result<PreparedLocalOpTx> {
+    prepare_local_core_op(client, doc_id, replica, |crdt| {
         let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_insert(parent, node, placement, payload)?;
-        let outcome = finish_local_core_op(&mut session, &op, plan)?;
-        Ok(LocalOpResult { op, outcome })
+        crdt.prepare_local_insert(parent, node, placement, payload)
     })
 }
 
@@ -173,12 +255,21 @@ pub fn local_move(
     placement: &str,
     after: Option<NodeId>,
 ) -> Result<LocalOpResult> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
+    prepare_local_move_tx(client, doc_id, replica, node, new_parent, placement, after)?.commit()
+}
+
+pub fn prepare_local_move_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    node: NodeId,
+    new_parent: NodeId,
+    placement: &str,
+    after: Option<NodeId>,
+) -> Result<PreparedLocalOpTx> {
+    prepare_local_core_op(client, doc_id, replica, |crdt| {
         let placement = LocalPlacement::from_parts(placement, after)?;
-        let (op, plan) = session.crdt.local_move(node, new_parent, placement)?;
-        let outcome = finish_local_core_op(&mut session, &op, plan)?;
-        Ok(LocalOpResult { op, outcome })
+        crdt.prepare_local_move(node, new_parent, placement)
     })
 }
 
@@ -188,11 +279,17 @@ pub fn local_delete(
     replica: &ReplicaId,
     node: NodeId,
 ) -> Result<LocalOpResult> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_delete(node)?;
-        let outcome = finish_local_core_op(&mut session, &op, plan)?;
-        Ok(LocalOpResult { op, outcome })
+    prepare_local_delete_tx(client, doc_id, replica, node)?.commit()
+}
+
+pub fn prepare_local_delete_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    node: NodeId,
+) -> Result<PreparedLocalOpTx> {
+    prepare_local_core_op(client, doc_id, replica, |crdt| {
+        crdt.prepare_local_delete(node)
     })
 }
 
@@ -203,10 +300,17 @@ pub fn local_payload(
     node: NodeId,
     payload: Option<Vec<u8>>,
 ) -> Result<LocalOpResult> {
-    run_in_tx(client, || {
-        let mut session = begin_local_core_op(client, doc_id, replica)?;
-        let (op, plan) = session.crdt.local_payload(node, payload)?;
-        let outcome = finish_local_core_op(&mut session, &op, plan)?;
-        Ok(LocalOpResult { op, outcome })
+    prepare_local_payload_tx(client, doc_id, replica, node, payload)?.commit()
+}
+
+pub fn prepare_local_payload_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    node: NodeId,
+    payload: Option<Vec<u8>>,
+) -> Result<PreparedLocalOpTx> {
+    prepare_local_core_op(client, doc_id, replica, |crdt| {
+        crdt.prepare_local_payload(node, payload)
     })
 }

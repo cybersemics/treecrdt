@@ -12,7 +12,7 @@ use crate::traits::{
 };
 use crate::types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
-    NodeExport, NodeSnapshotExport,
+    NodeExport, NodeSnapshotExport, PreparedLocalOp,
 };
 use crate::version_vector::VersionVector;
 
@@ -143,6 +143,17 @@ where
         placement: LocalPlacement,
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
+        let prepared = self.prepare_local_insert(parent, node, placement, payload)?;
+        self.commit_prepared_local(prepared)
+    }
+
+    pub fn prepare_local_insert(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placement: LocalPlacement,
+        payload: Option<Vec<u8>>,
+    ) -> Result<PreparedLocalOp> {
         let after = self.resolve_after_for_placement(parent, placement, None)?;
         let payload_after = payload.clone();
         let (replica, counter, lamport, seed) = self.next_op_meta();
@@ -150,10 +161,9 @@ where
         let op = Operation::insert_with_optional_payload(
             &replica, counter, lamport, parent, node, order_key, payload,
         );
-        let op = self.commit_local(op)?;
-        Ok((
+        Ok(PreparedLocalOp {
             op,
-            LocalFinalizePlan {
+            plan: LocalFinalizePlan {
                 parent_hints: vec![parent],
                 extra_index_records: Vec::new(),
                 changes: vec![MaterializationChange::Insert {
@@ -162,7 +172,7 @@ where
                     payload: payload_after,
                 }],
             },
-        ))
+        })
     }
 
     pub fn local_move(
@@ -171,12 +181,21 @@ where
         new_parent: NodeId,
         placement: LocalPlacement,
     ) -> Result<(Operation, LocalFinalizePlan)> {
+        let prepared = self.prepare_local_move(node, new_parent, placement)?;
+        self.commit_prepared_local(prepared)
+    }
+
+    pub fn prepare_local_move(
+        &mut self,
+        node: NodeId,
+        new_parent: NodeId,
+        placement: LocalPlacement,
+    ) -> Result<PreparedLocalOp> {
         let old_parent = self.parent(node)?;
         let after = self.resolve_after_for_placement(new_parent, placement, Some(node))?;
         let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
         let op = Operation::move_node(&replica, counter, lamport, node, new_parent, order_key);
-        let op = self.commit_local(op)?;
 
         let mut parent_hints = vec![new_parent];
         if let Some(parent) = old_parent {
@@ -190,9 +209,9 @@ where
             }
         }
 
-        Ok((
+        Ok(PreparedLocalOp {
             op,
-            LocalFinalizePlan {
+            plan: LocalFinalizePlan {
                 parent_hints,
                 extra_index_records,
                 changes: vec![MaterializationChange::Move {
@@ -201,18 +220,22 @@ where
                     parent_after: new_parent,
                 }],
             },
-        ))
+        })
     }
 
     pub fn local_delete(&mut self, node: NodeId) -> Result<(Operation, LocalFinalizePlan)> {
+        let prepared = self.prepare_local_delete(node)?;
+        self.commit_prepared_local(prepared)
+    }
+
+    pub fn prepare_local_delete(&mut self, node: NodeId) -> Result<PreparedLocalOp> {
         let old_parent = self.parent(node)?;
         let (replica, counter, lamport, _seed) = self.next_op_meta();
         let known_state = Some(self.nodes.subtree_version_vector(node)?);
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
-        let op = self.commit_local(op)?;
-        Ok((
+        Ok(PreparedLocalOp {
             op,
-            LocalFinalizePlan {
+            plan: LocalFinalizePlan {
                 parent_hints: parent_hints_from(old_parent),
                 extra_index_records: Vec::new(),
                 changes: vec![MaterializationChange::Delete {
@@ -220,7 +243,7 @@ where
                     parent_before: old_parent.filter(|parent| *parent != NodeId::TRASH),
                 }],
             },
-        ))
+        })
     }
 
     pub fn local_payload(
@@ -228,6 +251,15 @@ where
         node: NodeId,
         payload: Option<Vec<u8>>,
     ) -> Result<(Operation, LocalFinalizePlan)> {
+        let prepared = self.prepare_local_payload(node, payload)?;
+        self.commit_prepared_local(prepared)
+    }
+
+    pub fn prepare_local_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+    ) -> Result<PreparedLocalOp> {
         let parent = self.parent(node)?;
         let payload_after = payload.clone();
         let (replica, counter, lamport, _seed) = self.next_op_meta();
@@ -236,10 +268,9 @@ where
         } else {
             Operation::clear_payload(&replica, counter, lamport, node)
         };
-        let op = self.commit_local(op)?;
-        Ok((
+        Ok(PreparedLocalOp {
             op,
-            LocalFinalizePlan {
+            plan: LocalFinalizePlan {
                 parent_hints: parent_hints_from(parent),
                 extra_index_records: Vec::new(),
                 changes: vec![MaterializationChange::Payload {
@@ -247,7 +278,15 @@ where
                     payload: payload_after,
                 }],
             },
-        ))
+        })
+    }
+
+    pub fn commit_prepared_local(
+        &mut self,
+        prepared: PreparedLocalOp,
+    ) -> Result<(Operation, LocalFinalizePlan)> {
+        let op = self.commit_local(prepared.op)?;
+        Ok((op, prepared.plan))
     }
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
