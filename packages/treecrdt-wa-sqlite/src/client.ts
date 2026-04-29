@@ -298,19 +298,6 @@ async function createDirectClient(opts: {
     exec: (sql) => db.exec(sql),
     getText: (sql, params = []) => dbGetText(db, sql, params),
   };
-  const localWriters = new Map<string, TreecrdtSqliteWriter>();
-  const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
-  const localWriterFor = (replica: ReplicaId) => {
-    const key = localWriterKey(replica);
-    const existing = localWriters.get(key);
-    if (existing) return existing;
-    const next = createTreecrdtSqliteWriter(runner, {
-      replica,
-      onMaterialized: materialized.emitEvent,
-    });
-    localWriters.set(key, next);
-    return next;
-  };
   const wrapError = (stage: string, err: unknown) =>
     new Error(
       JSON.stringify({
@@ -406,31 +393,6 @@ async function createDirectClient(opts: {
         case 'replicaMaxCounter': {
           const [rawReplica] = params as RpcParams<'replicaMaxCounter'>;
           return (await adapter.replicaMaxCounter(Uint8Array.from(rawReplica))) as any;
-        }
-        case 'localInsert': {
-          const [replica, parent, node, placement, payload] = params as RpcParams<'localInsert'>;
-          return (await localWriterFor(Uint8Array.from(replica)).insert(
-            parent,
-            node,
-            placement,
-            payload ? { payload } : {},
-          )) as any;
-        }
-        case 'localMove': {
-          const [replica, node, newParent, placement] = params as RpcParams<'localMove'>;
-          return (await localWriterFor(Uint8Array.from(replica)).move(
-            node,
-            newParent,
-            placement,
-          )) as any;
-        }
-        case 'localDelete': {
-          const [replica, node] = params as RpcParams<'localDelete'>;
-          return (await localWriterFor(Uint8Array.from(replica)).delete(node)) as any;
-        }
-        case 'localPayload': {
-          const [replica, node, payload] = params as RpcParams<'localPayload'>;
-          return (await localWriterFor(Uint8Array.from(replica)).payload(node, payload)) as any;
         }
         case 'close': {
           if (db.close) await db.close();
@@ -554,58 +516,26 @@ function makeTreecrdtClientFromCall(opts: {
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
-  ) => {
-    if (writeOpts?.authSession) {
-      return localWriterFor(replica).insert(parent, node, placement, {
-        ...writeOpts,
-        ...(payload ? { payload } : {}),
-      });
-    }
-    const rid = Array.from(replica);
-    return (await call('localInsert', [
-      rid,
-      parent,
-      node,
-      placement,
-      payload,
-    ])) as unknown as Operation;
-  };
+  ) =>
+    localWriterFor(replica).insert(parent, node, placement, {
+      ...writeOpts,
+      ...(payload ? { payload } : {}),
+    });
   const localMoveImpl = async (
     replica: ReplicaId,
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
     writeOpts?: LocalWriteOptions,
-  ) => {
-    if (writeOpts?.authSession) {
-      return localWriterFor(replica).move(node, newParent, placement, writeOpts);
-    }
-    const rid = Array.from(replica);
-    return (await call('localMove', [rid, node, newParent, placement])) as unknown as Operation;
-  };
-  const localDeleteImpl = async (
-    replica: ReplicaId,
-    node: string,
-    writeOpts?: LocalWriteOptions,
-  ) => {
-    if (writeOpts?.authSession) {
-      return localWriterFor(replica).delete(node, writeOpts);
-    }
-    const rid = Array.from(replica);
-    return (await call('localDelete', [rid, node])) as unknown as Operation;
-  };
+  ) => localWriterFor(replica).move(node, newParent, placement, writeOpts);
+  const localDeleteImpl = async (replica: ReplicaId, node: string, writeOpts?: LocalWriteOptions) =>
+    localWriterFor(replica).delete(node, writeOpts);
   const localPayloadImpl = async (
     replica: ReplicaId,
     node: string,
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
-  ) => {
-    if (writeOpts?.authSession) {
-      return localWriterFor(replica).payload(node, payload, writeOpts);
-    }
-    const rid = Array.from(replica);
-    return (await call('localPayload', [rid, node, payload])) as unknown as Operation;
-  };
+  ) => localWriterFor(replica).payload(node, payload, writeOpts);
 
   const closeImpl = async () => {
     if (closePromise) return await closePromise;
