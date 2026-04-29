@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Operation } from "@treecrdt/interface";
-import type { MaterializationEvent } from "@treecrdt/interface/engine";
+import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
@@ -452,6 +452,10 @@ export default function App() {
   };
 
   const { index, childrenByParent } = treeState;
+  const getLocalWriter = React.useCallback((): BoundTreecrdtEngineLocal | null => {
+    if (!client || !replica) return null;
+    return client.local.forReplica(replica, getLocalWriteOptions());
+  }, [client, getLocalWriteOptions, replica]);
 
   const {
     peers,
@@ -704,12 +708,13 @@ export default function App() {
   };
 
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {
-    if (!client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (!localWriter) return;
     if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
     setBusy(true);
     try {
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
-      const op = await client.local.move(replica, nodeId, newParent, placement, getLocalWriteOptions());
+      const op = await localWriter.move(nodeId, newParent, placement);
       recordLocalOps([op]);
     } catch (err) {
       console.error("Failed to append move op", err);
@@ -720,7 +725,8 @@ export default function App() {
   };
 
   const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
-    if (!client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
     const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
@@ -731,7 +737,6 @@ export default function App() {
     const ops: Operation[] = [];
     let opsRecorded = false;
     try {
-      const writeOpts = getLocalWriteOptions();
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
@@ -742,7 +747,7 @@ export default function App() {
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload, writeOpts));
+          ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
           const completed = i + 1;
           if (completed === normalizedCount || completed % progressStep === 0) {
             setBulkAddProgress((prev) =>
@@ -789,7 +794,7 @@ export default function App() {
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(await client.local.insert(replica, targetParent, nodeId, { type: "last" }, encryptedPayload, writeOpts));
+          ops.push(await localWriter.insert(targetParent, nodeId, { type: "last" }, encryptedPayload));
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
@@ -820,7 +825,8 @@ export default function App() {
   };
 
   const handleInsert = async (parentId: string) => {
-    if (!client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
@@ -828,7 +834,7 @@ export default function App() {
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
-      const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload, getLocalWriteOptions());
+      const op = await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload);
       recordLocalOps([op]);
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
@@ -846,11 +852,13 @@ export default function App() {
     const run = payloadWriteQueueRef.current
       .catch(() => undefined)
       .then(async () => {
-        if (nodeId === ROOT_ID || !client || !replica) return;
+        if (nodeId === ROOT_ID) return;
+        const localWriter = getLocalWriter();
+        if (!localWriter) return;
         try {
           const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
           const encryptedPayload = await encryptPayloadBytes(payload);
-          const op = await client.local.payload(replica, nodeId, encryptedPayload, getLocalWriteOptions());
+          const op = await localWriter.payload(nodeId, encryptedPayload);
           recordLocalOps([op]);
         } catch (err) {
           console.error("Failed to write payload", err);
@@ -862,10 +870,11 @@ export default function App() {
   };
 
   const handleDelete = async (nodeId: string) => {
-    if (nodeId === ROOT_ID || !client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (nodeId === ROOT_ID || !localWriter) return;
     setBusy(true);
     try {
-      const op = await client.local.delete(replica, nodeId, getLocalWriteOptions());
+      const op = await localWriter.delete(nodeId);
       recordLocalOps([op]);
     } catch (err) {
       console.error("Failed to delete node", err);

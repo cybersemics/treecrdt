@@ -19,7 +19,10 @@ import {
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
 import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
-import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
+import {
+  createMaterializationDispatcher,
+  createTreecrdtEngineLocal,
+} from '@treecrdt/interface/engine';
 import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
@@ -204,6 +207,13 @@ export function createTreecrdtClient(
     writeOpts?: LocalWriteOptions,
   ) => localWriterFor(replica).payload(node, payload, writeOpts);
 
+  const local = createTreecrdtEngineLocal({
+    insert: localInsertImpl,
+    move: localMoveImpl,
+    delete: localDeleteImpl,
+    payload: localPayloadImpl,
+  });
+
   return ready.then(() => ({
     mode: 'node',
     storage: 'sqlite',
@@ -237,12 +247,7 @@ export function createTreecrdtClient(
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),
-    local: {
-      insert: localInsertImpl,
-      move: localMoveImpl,
-      delete: localDeleteImpl,
-      payload: localPayloadImpl,
-    },
+    local,
     onMaterialized: materialized.onMaterialized,
     runner,
     close: async () => {

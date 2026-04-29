@@ -19,7 +19,10 @@ import {
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
 import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
-import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
+import {
+  createMaterializationDispatcher,
+  createTreecrdtEngineLocal,
+} from '@treecrdt/interface/engine';
 import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
@@ -537,6 +540,13 @@ function makeTreecrdtClientFromCall(opts: {
     writeOpts?: LocalWriteOptions,
   ) => localWriterFor(replica).payload(node, payload, writeOpts);
 
+  const local = createTreecrdtEngineLocal({
+    insert: localInsertImpl,
+    move: localMoveImpl,
+    delete: localDeleteImpl,
+    payload: localPayloadImpl,
+  });
+
   const closeImpl = async () => {
     if (closePromise) return await closePromise;
     closePromise = (async () => {
@@ -581,12 +591,7 @@ function makeTreecrdtClientFromCall(opts: {
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createLazyAuthApi({ runner, docId: opts.docId }),
-    local: {
-      insert: localInsertImpl,
-      move: localMoveImpl,
-      delete: localDeleteImpl,
-      payload: localPayloadImpl,
-    },
+    local,
     onMaterialized: materialized.onMaterialized,
     close: closeImpl,
     drop: opts.drop,

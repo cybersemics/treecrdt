@@ -1,6 +1,9 @@
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
+import {
+  createMaterializationDispatcher,
+  createTreecrdtEngineLocal,
+} from '@treecrdt/interface/engine';
 import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
@@ -217,6 +220,13 @@ export async function createTreecrdtPostgresClient(
     return finishPreparedLocalOp(tx, writeOpts);
   };
 
+  const local = createTreecrdtEngineLocal({
+    insert: localInsertImpl,
+    move: localMoveImpl,
+    delete: localDeleteImpl,
+    payload: localPayloadImpl,
+  });
+
   return {
     mode: 'node',
     storage: 'postgres',
@@ -259,12 +269,7 @@ export async function createTreecrdtPostgresClient(
       headLamport: headLamportImpl,
       replicaMaxCounter: replicaMaxCounterImpl,
     },
-    local: {
-      insert: localInsertImpl,
-      move: localMoveImpl,
-      delete: localDeleteImpl,
-      payload: localPayloadImpl,
-    },
+    local,
     onMaterialized: materialized.onMaterialized,
     close: async () => {
       // no-op: native layer opens per-call connections
