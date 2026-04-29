@@ -69,6 +69,20 @@ export type WriteOptions = {
   writeId?: string;
 };
 
+export type LocalWriteAuthSession = {
+  authorizeLocalOps: (ops: readonly Operation[]) => Promise<unknown>;
+};
+
+export type LocalWriteOptions = {
+  /**
+   * Authorizes the minted local op before it is exposed to callers as committed.
+   *
+   * SQLite clients wrap this in a savepoint so auth failures roll back the local
+   * op and defer materialization events until auth succeeds.
+   */
+  authSession?: LocalWriteAuthSession;
+};
+
 export type TreecrdtEngineOps = {
   append: (op: Operation, opts?: WriteOptions) => Promise<void>;
   appendMany: (ops: Operation[], opts?: WriteOptions) => Promise<void>;
@@ -109,15 +123,22 @@ export type TreecrdtEngineLocal = {
     node: string,
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
   ) => Promise<Operation>;
   move: (
     replica: ReplicaId,
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
+    opts?: LocalWriteOptions,
   ) => Promise<Operation>;
-  delete: (replica: ReplicaId, node: string) => Promise<Operation>;
-  payload: (replica: ReplicaId, node: string, payload: Uint8Array | null) => Promise<Operation>;
+  delete: (replica: ReplicaId, node: string, opts?: LocalWriteOptions) => Promise<Operation>;
+  payload: (
+    replica: ReplicaId,
+    node: string,
+    payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
+  ) => Promise<Operation>;
 };
 
 /**

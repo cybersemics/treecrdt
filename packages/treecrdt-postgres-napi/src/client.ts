@@ -1,7 +1,7 @@
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
-import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
 import {
@@ -35,6 +35,12 @@ function placementToArgs(placement: TreecrdtSqlitePlacement): {
   if (placement.type === 'first') return { type: 'first', after: null };
   if (placement.type === 'last') return { type: 'last', after: null };
   return { type: 'after', after: nodeIdToBytes16(placement.after) };
+}
+
+function assertNoLocalAuthOptions(writeOpts?: LocalWriteOptions): void {
+  if (writeOpts?.authSession) {
+    throw new Error('auth-aware local writes are not implemented for the postgres client');
+  }
 }
 
 /**
@@ -146,7 +152,9 @@ export async function createTreecrdtPostgresClient(
     node: string,
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
   ) => {
+    assertNoLocalAuthOptions(writeOpts);
     const { type, after } = placementToArgs(placement);
     const result = backend.localInsert(
       encodeReplica(replica),
@@ -164,7 +172,9 @@ export async function createTreecrdtPostgresClient(
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
+    writeOpts?: LocalWriteOptions,
   ) => {
+    assertNoLocalAuthOptions(writeOpts);
     const { type, after } = placementToArgs(placement);
     const result = backend.localMove(
       encodeReplica(replica),
@@ -176,12 +186,23 @@ export async function createTreecrdtPostgresClient(
     return finishLocalOp(result);
   };
 
-  const localDeleteImpl = async (replica: ReplicaId, node: string) => {
+  const localDeleteImpl = async (
+    replica: ReplicaId,
+    node: string,
+    writeOpts?: LocalWriteOptions,
+  ) => {
+    assertNoLocalAuthOptions(writeOpts);
     const result = backend.localDelete(encodeReplica(replica), nodeIdToBytes16(node));
     return finishLocalOp(result);
   };
 
-  const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) => {
+  const localPayloadImpl = async (
+    replica: ReplicaId,
+    node: string,
+    payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
+  ) => {
+    assertNoLocalAuthOptions(writeOpts);
     const result = backend.localPayload(encodeReplica(replica), nodeIdToBytes16(node), payload);
     return finishLocalOp(result);
   };

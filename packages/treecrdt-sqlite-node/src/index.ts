@@ -20,7 +20,7 @@ import {
 } from '@treecrdt/interface/ids';
 import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
-import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
   type TreecrdtSqliteAuthApi,
@@ -182,17 +182,27 @@ export function createTreecrdtClient(
     node: string,
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null,
-  ) => localWriterFor(replica).insert(parent, node, placement, payload ? { payload } : {});
+    writeOpts?: LocalWriteOptions,
+  ) =>
+    localWriterFor(replica).insert(parent, node, placement, {
+      ...writeOpts,
+      ...(payload ? { payload } : {}),
+    });
   const localMoveImpl = async (
     replica: ReplicaId,
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
-  ) => localWriterFor(replica).move(node, newParent, placement);
-  const localDeleteImpl = async (replica: ReplicaId, node: string) =>
-    localWriterFor(replica).delete(node);
-  const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) =>
-    localWriterFor(replica).payload(node, payload);
+    writeOpts?: LocalWriteOptions,
+  ) => localWriterFor(replica).move(node, newParent, placement, writeOpts);
+  const localDeleteImpl = async (replica: ReplicaId, node: string, writeOpts?: LocalWriteOptions) =>
+    localWriterFor(replica).delete(node, writeOpts);
+  const localPayloadImpl = async (
+    replica: ReplicaId,
+    node: string,
+    payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
+  ) => localWriterFor(replica).payload(node, payload, writeOpts);
 
   return ready.then(() => ({
     mode: 'node',

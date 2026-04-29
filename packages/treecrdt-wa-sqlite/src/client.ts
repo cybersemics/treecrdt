@@ -18,7 +18,7 @@ import {
   nodeIdToBytes16,
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
-import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
@@ -486,6 +486,19 @@ function makeTreecrdtClientFromCall(opts: {
     exec: (sql) => call('sqlExec', [sql]).then(() => undefined),
     getText: (sql, params = []) => call('sqlGetText', [sql, params]),
   };
+  const localWriters = new Map<string, TreecrdtSqliteWriter>();
+  const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
+  const localWriterFor = (replica: ReplicaId) => {
+    const key = localWriterKey(replica);
+    const existing = localWriters.get(key);
+    if (existing) return existing;
+    const next = createTreecrdtSqliteWriter(runner, {
+      replica,
+      onMaterialized: materialized.emitEvent,
+    });
+    localWriters.set(key, next);
+    return next;
+  };
 
   const opsSinceImpl = async (lamport: number, root?: string) => {
     const rows = await call('opsSince', [lamport, root]);
@@ -529,7 +542,14 @@ function makeTreecrdtClientFromCall(opts: {
     node: string,
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
   ) => {
+    if (writeOpts?.authSession) {
+      return localWriterFor(replica).insert(parent, node, placement, {
+        ...writeOpts,
+        ...(payload ? { payload } : {}),
+      });
+    }
     const rid = Array.from(replica);
     return (await call('localInsert', [
       rid,
@@ -544,15 +564,34 @@ function makeTreecrdtClientFromCall(opts: {
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
+    writeOpts?: LocalWriteOptions,
   ) => {
+    if (writeOpts?.authSession) {
+      return localWriterFor(replica).move(node, newParent, placement, writeOpts);
+    }
     const rid = Array.from(replica);
     return (await call('localMove', [rid, node, newParent, placement])) as unknown as Operation;
   };
-  const localDeleteImpl = async (replica: ReplicaId, node: string) => {
+  const localDeleteImpl = async (
+    replica: ReplicaId,
+    node: string,
+    writeOpts?: LocalWriteOptions,
+  ) => {
+    if (writeOpts?.authSession) {
+      return localWriterFor(replica).delete(node, writeOpts);
+    }
     const rid = Array.from(replica);
     return (await call('localDelete', [rid, node])) as unknown as Operation;
   };
-  const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) => {
+  const localPayloadImpl = async (
+    replica: ReplicaId,
+    node: string,
+    payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
+  ) => {
+    if (writeOpts?.authSession) {
+      return localWriterFor(replica).payload(node, payload, writeOpts);
+    }
     const rid = Array.from(replica);
     return (await call('localPayload', [rid, node, payload])) as unknown as Operation;
   };
