@@ -165,10 +165,16 @@ async function createWorkerClient(opts: {
   >();
   let terminalError: Error | null = null;
   let closed = false;
+  let callQueue: Promise<void> = Promise.resolve();
 
   const closedError = new Error(CLIENT_CLOSED_ERROR);
+  const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
+    promise.then(
+      () => undefined,
+      () => undefined,
+    );
 
-  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+  const callRaw = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
     if (closed) return Promise.reject(closedError);
     const id = nextId++;
     if (terminalError) return Promise.reject(terminalError);
@@ -176,6 +182,11 @@ async function createWorkerClient(opts: {
       pending.set(id, { resolve, reject });
       worker.postMessage({ id, method, params } satisfies RpcRequest<M>);
     });
+  };
+  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+    const run = callQueue.then(() => callRaw(method, params));
+    callQueue = settleQueue(run);
+    return run;
   };
 
   const onMessage = (ev: MessageEvent<RpcResponse | RpcPushMessage>) => {

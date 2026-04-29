@@ -59,6 +59,25 @@ async function sqliteExec(runner: SqliteRunner, sql: string): Promise<void> {
 
 let localAuthSavepointCounter = 0;
 
+function decodeLocalOpResult(
+  raw: any,
+  sql: string,
+): { op: Operation; outcome: MaterializationOutcome } {
+  const ops = decodeSqliteOps([raw.op]);
+  if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
+  return {
+    op: ops[0]!,
+    outcome: decodeSqliteMaterializationOutcome(raw.outcome),
+  };
+}
+
+function emitLocalOutcome(
+  outcome: MaterializationOutcome,
+  emit?: (event: MaterializationEvent) => void,
+): void {
+  if (outcome.changes.length > 0) emit?.({ ...outcome });
+}
+
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
 
 function buildAppendOp(
@@ -594,27 +613,26 @@ export function createTreecrdtSqliteWriter(
   ) => {
     const authSession = writeOpts?.authSession;
     if (!authSession) {
-      const raw = await sqliteGetJson<any>(runner, sql, params);
-      const ops = decodeSqliteOps([raw.op]);
-      if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
-      const outcome = decodeSqliteMaterializationOutcome(raw.outcome);
-      if (outcome.changes.length > 0) opts.onMaterialized?.({ ...outcome });
-      return ops[0]!;
+      const { op, outcome } = decodeLocalOpResult(
+        await sqliteGetJson<any>(runner, sql, params),
+        sql,
+      );
+      emitLocalOutcome(outcome, opts.onMaterialized);
+      return op;
     }
 
     const savepoint = `treecrdt_local_auth_${++localAuthSavepointCounter}`;
     let released = false;
     await sqliteExec(runner, `SAVEPOINT ${savepoint}`);
     try {
-      const raw = await sqliteGetJson<any>(runner, sql, params);
-      const ops = decodeSqliteOps([raw.op]);
-      if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
-      const op = ops[0]!;
-      const outcome = decodeSqliteMaterializationOutcome(raw.outcome);
+      const { op, outcome } = decodeLocalOpResult(
+        await sqliteGetJson<any>(runner, sql, params),
+        sql,
+      );
       await authSession.authorizeLocalOps([op]);
       await sqliteExec(runner, `RELEASE ${savepoint}`);
       released = true;
-      if (outcome.changes.length > 0) opts.onMaterialized?.({ ...outcome });
+      emitLocalOutcome(outcome, opts.onMaterialized);
       return op;
     } catch (err) {
       if (!released) {
