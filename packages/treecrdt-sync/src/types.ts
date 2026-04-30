@@ -60,9 +60,10 @@ export type TreecrdtWebSocketSync = {
   startLive: (opts?: SyncSubscribeOptions) => Promise<void>;
   stopLive: () => void;
   /**
-   * Push locally committed ops to peers while live sync is active. Call from your local edit path;
-   * remote batches are applied via the sync backend and do not use this method.
-   */
+   /**
+    * Upload local ops to the peer. For local→remote only; pass ops from your edit API (not from onChange).
+    * No-ops if empty. For full sync, use syncOnce instead.
+    */
   pushLocalOps: (ops?: readonly Operation[]) => Promise<void>;
   close: () => Promise<void>;
 };

@@ -22,7 +22,7 @@ function replicaFromLabel(label: string): Uint8Array {
   return out;
 }
 
-const replicas = { b: replicaFromLabel('b') };
+const replicas = { a: replicaFromLabel('a'), b: replicaFromLabel('b') };
 
 async function headAsBigint(client: TreecrdtWebSocketSyncClient): Promise<bigint> {
   return BigInt(await client.meta.headLamport());
@@ -174,4 +174,109 @@ test('syncOnce pulls insert, move, payload, and delete operations', async () => 
   expect(inserts).toHaveLength(2);
   const nodes = new Set(inserts.map((o) => (o.kind.type === 'insert' ? o.kind.node : '')));
   expect(nodes).toEqual(new Set([n1, n2]));
+});
+
+test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', async () => {
+  const docId = `sync-push-local-${Math.random().toString(16).slice(2)}`;
+  const nodeId = nodeIdFromInt(1);
+  const opA = makeOp(replicas.a, 1, 1, {
+    type: 'insert',
+    parent: ROOT,
+    node: nodeId,
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  const { client: aClient } = createInMemoryTestClient(docId, []);
+  const { client: bClient, getOps: getAllB } = createInMemoryTestClient(docId, []);
+  await aClient.ops.append(opA);
+  expect((await getAllB()).length).toBe(0);
+
+  const [wireA, wireB] = createInMemoryDuplex<Uint8Array>();
+  const transportA = wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
+  const transportB = wrapDuplexTransportWithCodec(wireB, treecrdtSyncV0ProtobufCodec);
+
+  const backendB = createTreecrdtSyncBackendFromClient(bClient, docId, {
+    maxLamport: () => headAsBigint(bClient),
+  });
+  const peerB = new SyncPeer(backendB, {
+    maxCodewords: 100_000,
+    maxOpsPerBatch: 2_000,
+    deriveOpRef: (op, ctx) =>
+      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
+  });
+  const detachB = peerB.attach(transportB);
+  const onCloseB = () => {
+    try {
+      detachB();
+    } catch {
+      // ignore
+    }
+  };
+
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, onCloseB, {
+    syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
+  });
+  try {
+    await sync.pushLocalOps([opA]);
+  } finally {
+    await sync.close();
+  }
+
+  const afterB = await getAllB();
+  expect(afterB.length).toBe(1);
+  const [first] = afterB;
+  expect(bytesToHex(first!.meta.id.replica)).toBe(bytesToHex(replicas.a));
+  expect(first!.meta.lamport).toBe(1);
+  expect('kind' in first! && first!.kind.type === 'insert' ? first!.kind.node : '').toBe(nodeId);
+});
+
+test('pushLocalOps with no ops is a no-op (no syncOnce)', async () => {
+  const docId = `sync-pushnoop-${Math.random().toString(16).slice(2)}`;
+
+  const { client: aClient } = createInMemoryTestClient(docId, []);
+  const { client: bClient, getOps: getAllB } = createInMemoryTestClient(docId, []);
+  const opB = makeOp(replicas.b, 1, 1, {
+    type: 'insert',
+    parent: ROOT,
+    node: nodeIdFromInt(42),
+    orderKey: orderKeyFromPosition(0),
+  });
+  await bClient.ops.append(opB);
+  expect((await getAllB()).length).toBe(1);
+
+  const [wireA, wireB] = createInMemoryDuplex<Uint8Array>();
+  const transportA = wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
+  const transportB = wrapDuplexTransportWithCodec(wireB, treecrdtSyncV0ProtobufCodec);
+
+  const backendB = createTreecrdtSyncBackendFromClient(bClient, docId, {
+    maxLamport: () => headAsBigint(bClient),
+  });
+  const peerB = new SyncPeer(backendB, {
+    maxCodewords: 100_000,
+    maxOpsPerBatch: 2_000,
+    deriveOpRef: (op, ctx) =>
+      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
+  });
+  const detachB = peerB.attach(transportB);
+  const onCloseB = () => {
+    try {
+      detachB();
+    } catch {
+      // ignore
+    }
+  };
+
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, onCloseB, {
+    syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
+  });
+  try {
+    await sync.pushLocalOps();
+    await sync.pushLocalOps([]);
+    const onA = await aClient.ops.all();
+    expect(onA.length).toBe(0);
+  } finally {
+    await sync.close();
+  }
+
+  expect((await getAllB()).length).toBe(1);
 });

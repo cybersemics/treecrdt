@@ -123,7 +123,13 @@ export function createTreecrdtWebSocketSyncFromTransport(
         liveSub = null;
       }
     },
-    pushLocalOps: (ops) => peer.notifyLocalUpdate(ops),
+    pushLocalOps: async (ops) => {
+      assertOpen();
+      if (!ops?.length) return;
+      await peer.pushOps(transport, ops, {
+        maxOpsPerBatch: mergeSyncOnceOptions().maxOpsPerBatch,
+      });
+    },
     close: async () => {
       if (closed) return;
       closed = true;
