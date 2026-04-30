@@ -1,5 +1,12 @@
 import type { Operation } from '@treecrdt/interface';
-import type { Capability, Hello, SyncAuth, SyncAuthHelloContext } from '@treecrdt/sync-protocol';
+import type {
+  Capability,
+  Hello,
+  OpAuth,
+  SyncAuth,
+  SyncAuthHelloContext,
+  SyncAuthOpsContext,
+} from '@treecrdt/sync-protocol';
 
 import {
   createTreecrdtIdentityChainCapabilityV1,
