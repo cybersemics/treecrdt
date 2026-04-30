@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm -C ../sync-protocol/protocol run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm run build && vitest run"
+    "test": "pnpm -C ../treecrdt-ts run build && pnpm -C ../sync-protocol/protocol run build && pnpm -C ../treecrdt-auth run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@treecrdt/discovery": "workspace:*",
