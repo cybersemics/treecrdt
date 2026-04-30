@@ -1,4 +1,4 @@
-import { createOpfsVfs } from './opfs.js';
+import { createOpfsVfs, type OpfsVfsKind } from './opfs.js';
 import { createWaSqliteApi } from './index.js';
 import type { Database } from './index.js';
 import { makeDbAdapter } from './db.js';
@@ -12,6 +12,7 @@ export type OpenTreecrdtDbOptions = {
   docId: string;
   requireOpfs?: boolean;
   onMaterialized?: (event: MaterializationEvent) => void;
+  opfsVfs?: OpfsVfsKind;
 };
 
 export type OpenTreecrdtDbResult = {
@@ -36,7 +37,7 @@ export async function openTreecrdtDb(opts: OpenTreecrdtDbOptions): Promise<OpenT
   let opfsError: string | undefined;
   if (storage === 'opfs') {
     try {
-      const vfs = await createOpfsVfs(module, { name: 'opfs' });
+      const vfs = await createOpfsVfs(module, { name: 'opfs', kind: opts.opfsVfs });
       sqlite3.vfs_register(vfs, true);
     } catch (err) {
       opfsError = err instanceof Error ? err.message : String(err);

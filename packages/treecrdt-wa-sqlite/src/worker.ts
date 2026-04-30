@@ -5,7 +5,7 @@ import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import type { RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
+import type { RpcInitResult, RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import { clearOpfsStorage } from './opfs.js';
 
@@ -65,7 +65,7 @@ async function init(
   filename: string | undefined,
   storageParam: 'memory' | 'opfs',
   docId: string,
-): Promise<{ storage: 'memory' | 'opfs'; opfsError?: string }> {
+): Promise<RpcInitResult> {
   if (db) {
     if (db.close) await db.close();
     db = null;
@@ -84,8 +84,8 @@ async function init(
   storedFilename = opened.filename;
   storedStorage = opened.storage;
   return opened.opfsError
-    ? { storage: opened.storage, opfsError: opened.opfsError }
-    : { storage: opened.storage };
+    ? { storage: opened.storage, filename: opened.filename, opfsError: opened.opfsError }
+    : { storage: opened.storage, filename: opened.filename };
 }
 
 async function sqlExec(sql: string) {
