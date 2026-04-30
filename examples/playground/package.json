@@ -8,7 +8,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "pnpm -C ../../packages/discovery run build && pnpm -C ../../packages/sync-protocol/protocol run build && pnpm -C ../../packages/sync-protocol/server/core run build && pnpm -C ../../packages/treecrdt-auth run build && pnpm -C ../../packages/treecrdt-wa-sqlite-vendor run build && pnpm -C ../../packages/treecrdt-wa-sqlite run build:ts && playwright test",
+    "test:e2e": "pnpm -C ../../packages/discovery run build && pnpm -C ../../packages/sync-protocol/protocol run build && pnpm -C ../../packages/sync-protocol/server/core run build && pnpm -C ../../packages/treecrdt-auth run build && pnpm -C ../../packages/sync-protocol/material/sqlite run build && pnpm -C ../../packages/treecrdt-wa-sqlite-vendor run build && pnpm -C ../../packages/treecrdt-wa-sqlite run build:ts && playwright test",
     "deploy": "pnpm run build && gh-pages -d dist"
   },
   "dependencies": {

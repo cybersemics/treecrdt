@@ -1,15 +1,9 @@
 /// <reference lib="webworker" />
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type { Operation, ReplicaId } from '@treecrdt/interface';
+import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
-import {
-  createTreecrdtSqliteWriter,
-  type SqliteRunner,
-  type TreecrdtSqlitePlacement,
-  type TreecrdtSqliteWriter,
-} from '@treecrdt/interface/sqlite';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import type { RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
@@ -19,8 +13,6 @@ let db: Database | null = null;
 let storedFilename: string | undefined;
 let storedStorage: 'memory' | 'opfs' = 'memory';
 let api: TreecrdtAdapter | null = null;
-let runner: SqliteRunner | null = null;
-const localWriters = new Map<string, TreecrdtSqliteWriter>();
 
 function postMaterialized(event: MaterializationEvent) {
   (self as unknown as Worker).postMessage({ type: 'materialized', event });
@@ -45,10 +37,6 @@ const methods = {
   treePayload,
   headLamport,
   replicaMaxCounter,
-  localInsert,
-  localMove,
-  localDelete,
-  localPayload,
   close,
   drop,
 } as const;
@@ -82,7 +70,6 @@ async function init(
     if (db.close) await db.close();
     db = null;
     api = null;
-    runner = null;
   }
   const opened = await openTreecrdtDb({
     baseUrl,
@@ -94,10 +81,8 @@ async function init(
   });
   db = opened.db;
   api = opened.api;
-  runner = makeRunner(opened.db);
   storedFilename = opened.filename;
   storedStorage = opened.storage;
-  localWriters.clear();
   return opened.opfsError
     ? { storage: opened.storage, opfsError: opened.opfsError }
     : { storage: opened.storage };
@@ -201,45 +186,12 @@ async function replicaMaxCounter(replica: number[]) {
   return await api.replicaMaxCounter(Uint8Array.from(replica));
 }
 
-async function localInsert(
-  replica: number[],
-  parent: string,
-  node: string,
-  placement: TreecrdtSqlitePlacement,
-  payload: Uint8Array | null,
-) {
-  const writer = ensureLocalWriter(Uint8Array.from(replica));
-  return await writer.insert(parent, node, placement, payload ? { payload } : {});
-}
-
-async function localMove(
-  replica: number[],
-  node: string,
-  newParent: string,
-  placement: TreecrdtSqlitePlacement,
-) {
-  const writer = ensureLocalWriter(Uint8Array.from(replica));
-  return await writer.move(node, newParent, placement);
-}
-
-async function localDelete(replica: number[], node: string) {
-  const writer = ensureLocalWriter(Uint8Array.from(replica));
-  return await writer.delete(node);
-}
-
-async function localPayload(replica: number[], node: string, payload: Uint8Array | null) {
-  const writer = ensureLocalWriter(Uint8Array.from(replica));
-  return await writer.payload(node, payload);
-}
-
 async function closeDbAndReset() {
   if (db?.close) await db.close();
   db = null;
   api = null;
-  runner = null;
   storedFilename = undefined;
   storedStorage = 'memory';
-  localWriters.clear();
 }
 
 async function close() {
@@ -265,32 +217,4 @@ function ensureApi(): TreecrdtAdapter {
 function ensureDb(): Database {
   if (!db) throw new Error('db not initialized');
   return db;
-}
-
-function ensureRunner(): SqliteRunner {
-  if (!runner) throw new Error('db not initialized');
-  return runner;
-}
-
-function makeRunner(db: Database): SqliteRunner {
-  return {
-    exec: (sql) => db.exec(sql),
-    getText: (sql, params = []) => dbGetText(db, sql, params),
-  };
-}
-
-function replicaKey(replica: ReplicaId): string {
-  return bytesToHex(replica);
-}
-
-function ensureLocalWriter(replica: ReplicaId): TreecrdtSqliteWriter {
-  const key = replicaKey(replica);
-  const existing = localWriters.get(key);
-  if (existing) return existing;
-  const writer = createTreecrdtSqliteWriter(ensureRunner(), {
-    replica,
-    onMaterialized: postMaterialized,
-  });
-  localWriters.set(key, writer);
-  return writer;
 }

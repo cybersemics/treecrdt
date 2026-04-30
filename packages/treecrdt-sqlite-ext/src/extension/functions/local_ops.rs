@@ -10,7 +10,7 @@ use super::util::{
 use super::*;
 use treecrdt_core::{
     LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationCursor, Operation,
-    OperationKind, ReplicaId, TreeCrdt,
+    OperationKind, PreparedLocalOp, ReplicaId, TreeCrdt,
 };
 
 #[derive(serde::Serialize)]
@@ -293,10 +293,14 @@ fn run_local_core_op<F>(
     build: F,
 ) -> Result<JsonLocalOpResult, c_int>
 where
-    F: FnOnce(&mut LocalCrdt) -> treecrdt_core::Result<(Operation, LocalFinalizePlan)>,
+    F: FnOnce(&mut LocalCrdt) -> treecrdt_core::Result<PreparedLocalOp>,
 {
     let mut session = begin_local_core_op(db, &doc_id, &replica, savepoint_name)?;
-    let (op, plan) = match build(&mut session.crdt) {
+    let prepared = match build(&mut session.crdt) {
+        Ok(v) => v,
+        Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+    };
+    let (op, plan) = match session.crdt.commit_prepared_local(prepared) {
         Ok(v) => v,
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
     };
@@ -395,7 +399,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
-        crdt.local_insert(parent_id, node_id, placement, payload.clone())
+        crdt.prepare_local_insert(parent_id, node_id, placement, payload.clone())
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -498,7 +502,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         }
     };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
-        crdt.local_move(node_id, new_parent_id, placement)
+        crdt.prepare_local_move(node_id, new_parent_id, placement)
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -568,7 +572,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
-        crdt.local_delete(node_id)
+        crdt.prepare_local_delete(node_id)
     }) {
         Ok(v) => v,
         Err(rc) => {
@@ -640,7 +644,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
-        crdt.local_payload(node_id, payload.clone())
+        crdt.prepare_local_payload(node_id, payload.clone())
     }) {
         Ok(v) => v,
         Err(rc) => {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtEngine } from '@treecrdt/interface/engine';
@@ -16,6 +16,12 @@ import { createTreecrdtPostgresClient } from '../dist/index.js';
 
 const POSTGRES_URL = process.env.TREECRDT_POSTGRES_URL;
 const maybeDescribe = POSTGRES_URL ? describe : describe.skip;
+const root = '0'.repeat(32);
+const replica = Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? 1 : 0));
+
+function nodeIdFromInt(n: number): string {
+  return n.toString(16).padStart(32, '0');
+}
 
 function publicOpRef(docId: string, op: Operation): Uint8Array {
   return deriveOpRefV0(docId, {
@@ -73,6 +79,63 @@ test('conformance registry includes materialization-event scenarios', () => {
 });
 
 maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {
+  test('postgres auth-aware local write rolls back on auth failure', async () => {
+    const client = await createTreecrdtPostgresClient(POSTGRES_URL!, {
+      docId: internalDocId('postgres-auth-local-rollback', 'auth-failure'),
+    });
+    const events: unknown[] = [];
+    const unsubscribe = client.onMaterialized((event) => events.push(event));
+    const authSession = {
+      authorizeLocalOps: vi.fn(async () => {
+        throw new Error('local auth denied');
+      }),
+    };
+    const node = nodeIdFromInt(10);
+
+    try {
+      await expect(
+        client.local.insert(replica, root, node, { type: 'last' }, null, { authSession }),
+      ).rejects.toThrow('local auth denied');
+
+      expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
+      expect(events).toHaveLength(0);
+      expect(await client.tree.exists(node)).toBe(false);
+      expect(await client.ops.all()).toHaveLength(0);
+    } finally {
+      unsubscribe();
+      await client.close();
+    }
+  });
+
+  test('postgres auth-aware local write emits materialization after auth succeeds', async () => {
+    const client = await createTreecrdtPostgresClient(POSTGRES_URL!, {
+      docId: internalDocId('postgres-auth-local-success', 'auth-success'),
+    });
+    const events: unknown[] = [];
+    const unsubscribe = client.onMaterialized((event) => events.push(event));
+    const authSession = {
+      authorizeLocalOps: vi.fn(async () => {
+        expect(events).toHaveLength(0);
+      }),
+    };
+    const node = nodeIdFromInt(11);
+
+    try {
+      const op = await client.local.insert(replica, root, node, { type: 'last' }, null, {
+        authSession,
+      });
+
+      expect(op.kind.type).toBe('insert');
+      expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
+      expect(events).toHaveLength(1);
+      expect(await client.tree.exists(node)).toBe(true);
+      expect(await client.ops.all()).toHaveLength(1);
+    } finally {
+      unsubscribe();
+      await client.close();
+    }
+  });
+
   for (const scenario of treecrdtEngineConformanceScenarios()) {
     test(`postgres engine conformance: ${scenario.name}`, async () => {
       const persistentInternal = new Map<string, string>();

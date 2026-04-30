@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import type { Operation } from "@treecrdt/interface";
+import type { LocalWriteOptions } from "@treecrdt/interface/engine";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -269,7 +270,7 @@ export type PlaygroundAuthApi = {
   openNewIsolatedPeerTab: (opts: { autoInvite: boolean; rootNodeId?: string }) => Promise<void>;
   openShareForNode: (nodeId: string) => void;
 
-  verifyLocalOps: (ops: Operation[]) => Promise<void>;
+  getLocalWriteOptions: () => LocalWriteOptions | undefined;
   copyToClipboard: (text: string) => Promise<void>;
   onAuthGrantMessage: (grant: AuthGrantMessageV1) => void;
 };
@@ -592,14 +593,14 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
   ]);
   const selfPeerId = useMemo(() => (replica ? bytesToHex(replica) : null), [replica]);
 
-  const verifyLocalOps = React.useCallback(
-    async (ops: Operation[]) => {
+  const getLocalWriteOptions = React.useCallback(
+    (): LocalWriteOptions | undefined => {
       if (!authEnabled) return;
       const session = localAuthSessionRef.current;
       if (!session) throw new Error("auth is enabled but not configured");
-      await session.authorizeLocalOps(ops);
+      return { authSession: session };
     },
-    [authEnabled, docId]
+    [authEnabled]
   );
 
   useEffect(() => {
@@ -1478,7 +1479,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     openMintingPeerTab,
     openNewIsolatedPeerTab,
     openShareForNode,
-    verifyLocalOps,
+    getLocalWriteOptions,
     copyToClipboard,
     onAuthGrantMessage,
   };

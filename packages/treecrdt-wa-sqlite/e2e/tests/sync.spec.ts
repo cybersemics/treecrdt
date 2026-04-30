@@ -32,3 +32,26 @@ test('appendMany emits materialization event e2e', async ({ page }) => {
   expect(result.eventIds).toEqual([...result.eventIds].sort());
   expect(result.children.length).toBe(1);
 });
+
+test('auth-aware local writes roll back and defer materialization events e2e', async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto('/');
+  await page.waitForFunction(() => typeof window.runTreecrdtAuthLocalWriteE2E === 'function');
+
+  const result = await page.evaluate(async () => {
+    const runner = window.runTreecrdtAuthLocalWriteE2E;
+    if (!runner) throw new Error('runTreecrdtAuthLocalWriteE2E not available');
+    return await runner();
+  });
+
+  expect(result.ok).toBe(true);
+  for (const mode of [result.direct, result.worker]) {
+    expect(mode.rollback.exists).toBe(false);
+    expect(mode.rollback.eventCount).toBe(0);
+    expect(mode.rollback.opCount).toBe(0);
+    expect(mode.success.exists).toBe(true);
+    expect(mode.success.eventCount).toBe(1);
+    expect(mode.success.opCount).toBe(1);
+    expect(mode.success.authorizedBeforeEvent).toBe(true);
+  }
+});
