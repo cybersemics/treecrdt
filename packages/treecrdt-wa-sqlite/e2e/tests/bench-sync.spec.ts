@@ -9,6 +9,8 @@ import {
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { SyncBenchResult } from '../src/sync.js';
 
+test.skip(!!process.env.CI, 'Raw browser benchmarks run in the benchmark workflow.');
+
 test('wa-sqlite sync OPFS benchmarks', async ({ page }) => {
   test.setTimeout(600_000);
   page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));

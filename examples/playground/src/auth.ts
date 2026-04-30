@@ -361,18 +361,28 @@ async function writeLocalIdentity(docId: string, localSk: Uint8Array, localToken
   lsSet(`${LOCAL_IDENTITY_SEALED_KEY_PREFIX}${docId}`, base64urlEncode(sealed));
 }
 
-export async function saveLocalKeys(docId: string, localSkB64: string) {
-  const localSk = base64urlDecode(localSkB64);
-  const existing = await readLocalIdentityOrNull(docId);
-  const localTokens = existing?.localTokens ?? [];
-  await writeLocalIdentity(docId, localSk, localTokens);
+export async function saveLocalKeys(
+  docId: string,
+  localSkB64: string,
+  opts: { ifMissing?: boolean } = {}
+): Promise<boolean> {
+  return await withGlobalLock(`treecrdt-playground-local-identity:${docId}`, async () => {
+    const localSk = base64urlDecode(localSkB64);
+    const existing = await readLocalIdentityOrNull(docId);
+    if (opts.ifMissing && existing) return false;
+    const localTokens = existing?.localTokens ?? [];
+    await writeLocalIdentity(docId, localSk, localTokens);
+    return true;
+  });
 }
 
 export async function saveLocalTokens(docId: string, tokensB64: string[]) {
-  const existing = await readLocalIdentityOrNull(docId);
-  if (!existing) throw new Error("local identity is missing; cannot store capability tokens");
-  const tokens = tokensB64.map((b64) => base64urlDecode(b64));
-  await writeLocalIdentity(docId, existing.localSk, tokens);
+  await withGlobalLock(`treecrdt-playground-local-identity:${docId}`, async () => {
+    const existing = await readLocalIdentityOrNull(docId);
+    if (!existing) throw new Error("local identity is missing; cannot store capability tokens");
+    const tokens = tokensB64.map((b64) => base64urlDecode(b64));
+    await writeLocalIdentity(docId, existing.localSk, tokens);
+  });
 }
 
 export function clearAuthMaterial(docId: string) {

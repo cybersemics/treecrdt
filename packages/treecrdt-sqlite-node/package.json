@@ -24,7 +24,8 @@
     "better-sqlite3": "^9.0.0"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync-sqlite": "workspace:*"
   },
   "devDependencies": {
     "@noble/ed25519": "^3.0.0",
@@ -36,7 +37,6 @@
     "@treecrdt/postgres-napi": "workspace:*",
     "@treecrdt/engine-conformance": "workspace:*",
     "@treecrdt/sync": "workspace:*",
-    "@treecrdt/sync-sqlite": "workspace:*",
     "@treecrdt/sync-server-postgres-node": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "cborg": "^4.3.2",
