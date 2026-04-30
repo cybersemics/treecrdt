@@ -13,7 +13,7 @@ import {
   type SyncBenchWorkload,
 } from '@treecrdt/benchmark';
 import type { Operation } from '@treecrdt/interface';
-import type { LocalWriteOptions } from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, MaterializationEvent } from '@treecrdt/interface/engine';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import {
   createInMemoryConnectedPeers,
@@ -411,6 +411,143 @@ async function waitUntil(
   throw new Error(opts.message ?? `waitUntil timeout after ${timeoutMs}ms`);
 }
 
+type SharedOpfsCrossTabEvent = {
+  headSeq: number;
+  nodes: string[];
+};
+
+type SharedOpfsCrossTabState = {
+  mode: TreecrdtClient['mode'];
+  runtime: TreecrdtClient['runtime'];
+  storage: TreecrdtClient['storage'];
+  eventCount: number;
+  events: SharedOpfsCrossTabEvent[];
+  childrenByParent: Record<string, string[]>;
+  existsByNode: Record<string, boolean>;
+  parentByNode: Record<string, string | null>;
+  payloadByNode: Record<string, string | null>;
+};
+
+let sharedOpfsCrossTabClient: TreecrdtClient | null = null;
+let sharedOpfsCrossTabUnsubscribe: (() => void) | null = null;
+let sharedOpfsCrossTabEvents: MaterializationEvent[] = [];
+
+function summarizeMaterializationEvent(event: MaterializationEvent): SharedOpfsCrossTabEvent {
+  const nodes = new Set<string>();
+  for (const change of event.changes) {
+    nodes.add(change.node);
+    if ('parentAfter' in change && change.parentAfter) nodes.add(change.parentAfter);
+    if ('parentBefore' in change && change.parentBefore) nodes.add(change.parentBefore);
+  }
+  return { headSeq: event.headSeq, nodes: [...nodes].sort() };
+}
+
+export async function openSharedOpfsCrossTabClient(opts: {
+  docId: string;
+  filename: string;
+  runtime?: 'auto' | 'dedicated-worker' | 'shared-worker';
+}): Promise<{
+  mode: TreecrdtClient['mode'];
+  runtime: TreecrdtClient['runtime'];
+  storage: TreecrdtClient['storage'];
+}> {
+  await closeSharedOpfsCrossTabClient();
+  sharedOpfsCrossTabEvents = [];
+  sharedOpfsCrossTabClient = await createTreecrdtClient({
+    docId: opts.docId,
+    storage: { type: 'opfs', filename: opts.filename },
+    runtime: { type: opts.runtime ?? 'auto' },
+  });
+  sharedOpfsCrossTabUnsubscribe = sharedOpfsCrossTabClient.onMaterialized((event) => {
+    sharedOpfsCrossTabEvents.push(event);
+  });
+  return {
+    mode: sharedOpfsCrossTabClient.mode,
+    runtime: sharedOpfsCrossTabClient.runtime,
+    storage: sharedOpfsCrossTabClient.storage,
+  };
+}
+
+export async function mutateSharedOpfsCrossTabTree(opts: {
+  replicaLabel: string;
+  action: 'insert' | 'move' | 'payload' | 'delete';
+  nodeInt: number;
+  parent?: string;
+  newParent?: string;
+  payloadText?: string;
+}): Promise<{ node: string }> {
+  if (!sharedOpfsCrossTabClient) throw new Error('shared OPFS cross-tab client is not open');
+  const root = '0'.repeat(32);
+  const node = nodeIdFromInt(opts.nodeInt);
+  const replica = replicaFromLabel(opts.replicaLabel);
+
+  if (opts.action === 'insert') {
+    await sharedOpfsCrossTabClient.local.insert(
+      replica,
+      opts.parent ?? root,
+      node,
+      { type: 'last' },
+      opts.payloadText ? new TextEncoder().encode(opts.payloadText) : null,
+    );
+  } else if (opts.action === 'move') {
+    await sharedOpfsCrossTabClient.local.move(replica, node, opts.newParent ?? root, {
+      type: 'last',
+    });
+  } else if (opts.action === 'payload') {
+    await sharedOpfsCrossTabClient.local.payload(
+      replica,
+      node,
+      opts.payloadText ? new TextEncoder().encode(opts.payloadText) : null,
+    );
+  } else {
+    await sharedOpfsCrossTabClient.local.delete(replica, node);
+  }
+
+  return { node };
+}
+
+export async function sharedOpfsCrossTabState(
+  opts: { parents?: string[]; nodes?: string[] } = {},
+): Promise<SharedOpfsCrossTabState> {
+  if (!sharedOpfsCrossTabClient) throw new Error('shared OPFS cross-tab client is not open');
+  const root = '0'.repeat(32);
+  const parents = [...new Set([root, ...(opts.parents ?? [])])];
+  const childrenByParent: Record<string, string[]> = {};
+  for (const parent of parents) {
+    childrenByParent[parent] = await sharedOpfsCrossTabClient.tree.children(parent);
+  }
+
+  const existsByNode: Record<string, boolean> = {};
+  const parentByNode: Record<string, string | null> = {};
+  const payloadByNode: Record<string, string | null> = {};
+  for (const node of opts.nodes ?? []) {
+    existsByNode[node] = await sharedOpfsCrossTabClient.tree.exists(node);
+    parentByNode[node] = await sharedOpfsCrossTabClient.tree.parent(node);
+    const payload = await sharedOpfsCrossTabClient.tree.getPayload(node);
+    payloadByNode[node] = payload ? new TextDecoder().decode(payload) : null;
+  }
+
+  return {
+    mode: sharedOpfsCrossTabClient.mode,
+    runtime: sharedOpfsCrossTabClient.runtime,
+    storage: sharedOpfsCrossTabClient.storage,
+    eventCount: sharedOpfsCrossTabEvents.length,
+    events: sharedOpfsCrossTabEvents.map(summarizeMaterializationEvent),
+    childrenByParent,
+    existsByNode,
+    parentByNode,
+    payloadByNode,
+  };
+}
+
+export async function closeSharedOpfsCrossTabClient(): Promise<void> {
+  sharedOpfsCrossTabUnsubscribe?.();
+  sharedOpfsCrossTabUnsubscribe = null;
+  const client = sharedOpfsCrossTabClient;
+  sharedOpfsCrossTabClient = null;
+  if (client) await client.close();
+}
+
 export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
   const docId = `e2e-sync-subscribe-${crypto.randomUUID()}`;
   const a = await createTreecrdtClient({ storage: 'memory', docId });
@@ -704,6 +841,10 @@ declare global {
     runTreecrdtSyncLargeFanoutE2E?: typeof runTreecrdtSyncLargeFanoutE2E;
     runTreecrdtSyncSubscribeE2E?: typeof runTreecrdtSyncSubscribeE2E;
     runTreecrdtSyncBench?: typeof runTreecrdtSyncBench;
+    __openSharedOpfsCrossTabClient?: typeof openSharedOpfsCrossTabClient;
+    __mutateSharedOpfsCrossTabTree?: typeof mutateSharedOpfsCrossTabTree;
+    __sharedOpfsCrossTabState?: typeof sharedOpfsCrossTabState;
+    __closeSharedOpfsCrossTabClient?: typeof closeSharedOpfsCrossTabClient;
   }
 }
 
@@ -714,4 +855,8 @@ if (typeof window !== 'undefined') {
   window.runTreecrdtSyncLargeFanoutE2E = runTreecrdtSyncLargeFanoutE2E;
   window.runTreecrdtSyncSubscribeE2E = runTreecrdtSyncSubscribeE2E;
   window.runTreecrdtSyncBench = runTreecrdtSyncBench;
+  window.__openSharedOpfsCrossTabClient = openSharedOpfsCrossTabClient;
+  window.__mutateSharedOpfsCrossTabTree = mutateSharedOpfsCrossTabTree;
+  window.__sharedOpfsCrossTabState = sharedOpfsCrossTabState;
+  window.__closeSharedOpfsCrossTabClient = closeSharedOpfsCrossTabClient;
 }
