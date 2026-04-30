@@ -1,7 +1,7 @@
 packages:
   - packages/*
-  - packages/sync/*
-  - packages/sync/*/*
+  - packages/sync-protocol/*
+  - packages/sync-protocol/*/*
   - packages/treecrdt-wasm-js
   - packages/treecrdt-wa-sqlite/e2e
   - examples/*

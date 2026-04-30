@@ -2,9 +2,9 @@ import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import http from "node:http";
 import type { Operation } from "@treecrdt/interface";
-import { deriveOpRefV0 } from "@treecrdt/sync";
-import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync/protobuf";
-import { startWebSocketSyncServer } from "../../../packages/sync/server/core/dist/index.js";
+import { deriveOpRefV0 } from "@treecrdt/sync-protocol";
+import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync-protocol/protobuf";
+import { startWebSocketSyncServer } from "../../../packages/sync-protocol/server/core/dist/index.js";
 
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";

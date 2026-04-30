@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest';
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtEngine } from '@treecrdt/interface/engine';
 import { bytesToHex } from '@treecrdt/interface/ids';
-import { deriveOpRefV0 } from '@treecrdt/sync';
+import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
 import {
   conformanceSlugify,
   runTreecrdtEngineConformanceScenario,

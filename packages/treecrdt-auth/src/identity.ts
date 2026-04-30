@@ -1,6 +1,6 @@
 import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
-import type { Capability } from '@treecrdt/sync';
+import type { Capability } from '@treecrdt/sync-protocol';
 
 import { base64urlDecode, base64urlEncode } from './base64url.js';
 import { coseSign1Ed25519, coseVerifySign1Ed25519 } from './cose.js';

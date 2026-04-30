@@ -33,7 +33,8 @@ flowchart TD
     iface["@treecrdt/interface"]
     discovery["@treecrdt/discovery"]
     discovery_server["@treecrdt/discovery-server-node"]
-    sync_core["@treecrdt/sync"]
+    sync_protocol["@treecrdt/sync-protocol"]
+    sync_client["@treecrdt/sync"]
     sync_sqlite["@treecrdt/sync-sqlite"]
     sync_postgres["@treecrdt/sync-postgres"]
     sync_server_core["@treecrdt/sync-server-core"]
@@ -50,23 +51,27 @@ flowchart TD
   end
 
   %% Runtime dependencies
-  sync_core --> iface
+  sync_protocol --> iface
   discovery_server --> discovery
-  sync_core --> riblt_pkg
-  sync_sqlite --> sync_core
+  sync_protocol --> riblt_pkg
+  sync_client --> sync_protocol
+  sync_client --> discovery
+  sync_client --> iface
+  sync_client --> sync_sqlite
+  sync_sqlite --> sync_protocol
   sync_sqlite --> iface
-  sync_postgres --> sync_core
+  sync_postgres --> sync_protocol
   sync_postgres --> iface
-  sync_server_core --> sync_core
-  sync_server_pg --> sync_core
+  sync_server_core --> sync_protocol
+  sync_server_pg --> sync_protocol
   sync_server_pg --> sync_postgres
   sync_server_pg --> sync_server_core
   auth --> iface
-  auth --> sync_core
+  auth --> sync_protocol
   wa --> iface
   wasm_pkg --> iface
   conformance --> auth
-  conformance --> sync_core
+  conformance --> sync_protocol
   conformance --> sync_sqlite
   conformance --> iface
 
@@ -79,7 +84,7 @@ flowchart TD
 
   %% Dev/test relationships (kept out of runtime deps)
   auth -. dev .-> bench
-  sync_core -. dev .-> bench
+  sync_protocol -. dev .-> bench
   wasm_pkg -. dev .-> bench
   wa -. dev .-> bench
   sqlite_node -. conformance tests .-> conformance
@@ -104,6 +109,8 @@ flowchart TD
 - Provide both in-memory adapter and SQLite-backed adapter (via wa-sqlite) to satisfy the interface.
 
 ## Sync engine concept
+- **Protocol & runtime** (`@treecrdt/sync-protocol`, `packages/sync-protocol/protocol`): transport-agnostic peer, codecs, in-memory test helpers, and generated Protobuf types.
+- **Client integration** (`@treecrdt/sync`, `packages/treecrdt-sync`): optional wiring for spec `WebSocket` clients (browser global, or `webSocketCtor` e.g. from `undici` in Node; see `packages/treecrdt-sync` README)—uses `@treecrdt/discovery` to resolve docs to websocket URLs, `@treecrdt/sync-protocol` for the wire session, and `@treecrdt/sync-sqlite` for a `SyncBackend` backed by the SQLite material layer. App code that wants full control can depend on the protocol and discovery packages only.
 - Transport-agnostic: push/pull batches with causal metadata + optional subtree filters.
 - Progress hooks for UI, resumable checkpoints via lamport/head.
 - Access control enforced at responder using subtree filters and ACL callbacks.

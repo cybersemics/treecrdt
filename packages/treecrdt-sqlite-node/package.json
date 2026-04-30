@@ -14,10 +14,10 @@
     "copy:ext": "node ./scripts/copy-ext.mjs",
     "build:ts": "tsc -p tsconfig.json",
     "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
-    "test": "pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm run build && vitest run",
-    "benchmark:ops": "pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm run build && tsx ./scripts/bench.ts",
+    "test": "pnpm -C ../sync-protocol/protocol run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm run build && vitest run",
+    "benchmark:ops": "pnpm -C ../sync-protocol/protocol run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm run build && tsx ./scripts/bench.ts",
     "benchmark:note-paths": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench-note-paths.ts",
-    "benchmark:sync": "pnpm -C ../treecrdt-benchmark run build && pnpm -C ../sync/protocol run build && pnpm -C ../sync/material/sqlite run build && pnpm -C ../treecrdt-postgres-napi run build && pnpm -C ../sync/server/postgres-node run build && pnpm run build && tsx ./scripts/bench-sync.ts",
+    "benchmark:sync": "pnpm -C ../treecrdt-benchmark run build && pnpm -C ../sync-protocol/protocol run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm -C ../treecrdt-postgres-napi run build && pnpm -C ../sync-protocol/server/postgres-node run build && pnpm run build && tsx ./scripts/bench-sync.ts",
     "benchmark": "pnpm run benchmark:ops && pnpm run benchmark:note-paths && pnpm run benchmark:sync"
   },
   "peerDependencies": {
@@ -36,6 +36,8 @@
     "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/postgres-napi": "workspace:*",
     "@treecrdt/engine-conformance": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*",
+    "@treecrdt/sync-sqlite": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/sync-server-postgres-node": "workspace:*",
     "better-sqlite3": "^9.0.0",

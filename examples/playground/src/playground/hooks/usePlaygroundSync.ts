@@ -15,18 +15,18 @@ import {
   type Filter,
   type SyncAuth,
   type SyncSubscription,
-} from '@treecrdt/sync';
+} from '@treecrdt/sync-protocol';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
   BroadcastPresenceAckMessageV1,
   BroadcastPresenceMessageV1,
-} from '@treecrdt/sync/browser';
+} from '@treecrdt/sync-protocol/browser';
 import {
   createBroadcastPresenceMesh,
   createBrowserWebSocketTransport,
-} from '@treecrdt/sync/browser';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync/protobuf';
-import { wrapDuplexTransportWithCodec, type DuplexTransport } from '@treecrdt/sync/transport';
+} from '@treecrdt/sync-protocol/browser';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+import { wrapDuplexTransportWithCodec, type DuplexTransport } from '@treecrdt/sync-protocol/transport';
 import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';

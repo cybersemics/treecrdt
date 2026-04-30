@@ -21,7 +21,7 @@
   "dependencies": {
     "@treecrdt/auth": "workspace:*",
     "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*",
     "@treecrdt/sync-sqlite": "workspace:*"
   },
   "devDependencies": {

@@ -215,9 +215,9 @@ Notes:
 
   const buildCommands = [
     ["-C", "packages/treecrdt-benchmark", "run", "build"],
-    ["-C", "packages/sync/protocol", "run", "build"],
-    ["-C", "packages/sync/material/sqlite", "run", "build"],
-    ["-C", "packages/sync/server/postgres-node", "run", "build"],
+    ["-C", "packages/sync-protocol/protocol", "run", "build"],
+    ["-C", "packages/sync-protocol/material/sqlite", "run", "build"],
+    ["-C", "packages/sync-protocol/server/postgres-node", "run", "build"],
     ["-C", "packages/treecrdt-sqlite-node", "run", "build"],
   ];
   if (targets.includes("local-postgres-sync-server")) {

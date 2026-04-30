@@ -14,7 +14,7 @@ import {
 import {
   createTreecrdtSqliteSyncDiagnostics,
 } from "@treecrdt/sync-sqlite";
-import type { SyncAuth } from "@treecrdt/sync";
+import type { SyncAuth } from "@treecrdt/sync-protocol";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {

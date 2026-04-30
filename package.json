@@ -4,8 +4,8 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "packages/sync/*",
-    "packages/sync/*/*"
+    "packages/sync-protocol/*",
+    "packages/sync-protocol/*/*"
   ],
   "scripts": {
     "lint": "echo \"TODO: add linting\"",
@@ -20,7 +20,7 @@
     "build:ext:native": "cargo rustc -p treecrdt-sqlite-ext --release --no-default-features --features \"ext-sqlite rusqlite-storage\" -- --crate-type=cdylib",
     "build": "pnpm -r --if-present run build",
     "test:browser": "pnpm -C packages/treecrdt-wa-sqlite/e2e test:e2e",
-    "test:native-node": "pnpm -C packages/sync/material/sqlite run test && pnpm -C packages/treecrdt-sqlite-node run test",
+    "test:native-node": "pnpm -C packages/sync-protocol/material/sqlite run test && pnpm -C packages/treecrdt-sqlite-node run test",
     "benchmark": "rm -rf benchmarks && mkdir -p benchmarks && pnpm run benchmark:web && pnpm run benchmark:sqlite-node:ops && pnpm run benchmark:sqlite-node:note-paths && pnpm run benchmark:sync:direct && pnpm run benchmark:wasm && pnpm run benchmark:postgres && pnpm run benchmark:core && pnpm run benchmark:aggregate",
     "benchmark:sqlite-node": "pnpm run benchmark:sqlite-node:ops && pnpm run benchmark:sqlite-node:note-paths && pnpm run benchmark:sqlite-node:sync",
     "benchmark:core": "cargo bench -p treecrdt-core --bench core --features bench",

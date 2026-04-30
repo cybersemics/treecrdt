@@ -1,0 +1,34 @@
+{
+  "name": "@treecrdt/sync",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm -C ../treecrdt-ts run build && pnpm -C ../sync-protocol/protocol run build && pnpm -C ../treecrdt-auth run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm run build && vitest run"
+  },
+  "dependencies": {
+    "@treecrdt/discovery": "workspace:*",
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*",
+    "@treecrdt/sync-sqlite": "workspace:*"
+  },
+  "devDependencies": {
+    "@treecrdt/benchmark": "workspace:*",
+    "@types/node": "^20.19.25",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  }
+}
