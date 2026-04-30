@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { expect, test } from 'vitest';
 import { defineProofMaterialStoreContract } from '../../protocol/tests/helpers/proof-material-contract.ts';
 import { definePendingProofMaterialStoreContract } from '../../protocol/tests/helpers/pending-proof-material-contract.ts';
 import { defineReplayOnlyAuthStoreContract } from '../../protocol/tests/helpers/replay-only-auth-contract.ts';
@@ -8,7 +9,15 @@ import {
   createCapabilityMaterialStore,
   createOpAuthStore,
   createPendingOpsStore,
+  createTreecrdtSqliteAuthApi,
+  createTreecrdtSqliteAuthBackend,
+  createTreecrdtSqliteAuthSession,
+  createTreecrdtSqliteSyncDiagnostics,
 } from '../dist/index.js';
+
+function testKey(byte: number): Uint8Array {
+  return new Uint8Array(32).fill(byte);
+}
 
 function createRunner(db: Database.Database): SqliteRunner {
   const toBindings = (params: unknown[]) =>
@@ -32,6 +41,91 @@ function createRunner(db: Database.Database): SqliteRunner {
     },
   };
 }
+
+test('sqlite auth backend helper bundles scope evaluator and auth stores', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const backend = createTreecrdtSqliteAuthBackend({ runner, docId: 'doc-auth-helper' });
+    expect(typeof backend.scopeEvaluator).toBe('function');
+    expect('pendingOpsStore' in backend).toBe(false);
+
+    await backend.capabilityStore.init();
+    await backend.opAuthStore.init();
+
+    await backend.capabilityStore.storeCapabilities([
+      { name: 'auth.capability', value: 'token-a' },
+    ]);
+    await expect(backend.capabilityStore.listCapabilities()).resolves.toEqual([
+      { name: 'auth.capability', value: 'token-a' },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test('sqlite auth session helper wires the backend automatically', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const session = createTreecrdtSqliteAuthSession({
+      runner,
+      docId: 'doc-auth-session-helper',
+      trust: { issuerPublicKeys: [] },
+      local: {
+        privateKey: testKey(4),
+        publicKey: testKey(5),
+      },
+      allowUnsigned: true,
+    });
+    await session.ready;
+    expect(session.getState().status).toBe('ready');
+  } finally {
+    db.close();
+  }
+});
+
+test('sqlite client auth api hides runner wiring', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const auth = createTreecrdtSqliteAuthApi({
+      runner,
+      docId: 'doc-client-auth-api',
+    });
+    const session = auth.createSession({
+      trust: { issuerPublicKeys: [] },
+      local: {
+        privateKey: testKey(4),
+        publicKey: testKey(5),
+      },
+      allowUnsigned: true,
+    });
+
+    await session.ready;
+    expect(session.getState().status).toBe('ready');
+  } finally {
+    db.close();
+  }
+});
+
+test('sqlite sync diagnostics lists pending ops without exposing the raw store', async () => {
+  const db = new Database(':memory:');
+  const runner = createRunner(db);
+
+  try {
+    const diagnostics = createTreecrdtSqliteSyncDiagnostics({
+      runner,
+      docId: 'doc-diagnostics',
+    });
+    await expect(diagnostics.listPendingOps()).resolves.toEqual([]);
+  } finally {
+    db.close();
+  }
+});
 
 defineProofMaterialStoreContract('sqlite proof material stores', async () => {
   const db = new Database(':memory:');

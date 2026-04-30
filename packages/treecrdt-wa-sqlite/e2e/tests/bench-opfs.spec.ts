@@ -3,6 +3,8 @@ import path from 'node:path';
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { BenchResult } from '../src/bench.js';
 
+test.skip(!!process.env.CI, 'Raw browser benchmarks run in the benchmark workflow.');
+
 test('wa-sqlite OPFS benchmarks', async ({ page }) => {
   test.setTimeout(180_000);
   page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));

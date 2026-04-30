@@ -288,7 +288,7 @@ FROM (
   SELECT json_object('name', name, 'value', value) AS obj
   FROM treecrdt_sync_capability
   WHERE doc_id = ?1
-  ORDER BY created_at_ms ASC, name ASC, value ASC
+  ORDER BY name ASC, value ASC
 )
 `;
 

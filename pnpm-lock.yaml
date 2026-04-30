@@ -143,6 +143,9 @@ importers:
 
   packages/sync-protocol/material/sqlite:
     dependencies:
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../../../treecrdt-auth
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../../treecrdt-ts
@@ -386,6 +389,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../sync/material/sqlite
     devDependencies:
       '@noble/ed25519':
         specifier: ^3.0.0
@@ -414,6 +420,7 @@ importers:
       '@treecrdt/sync-sqlite':
         specifier: workspace:*
         version: link:../sync-protocol/material/sqlite
+        version: link:../sync/server/postgres-node
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -481,6 +488,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../sync/material/sqlite
     devDependencies:
       '@treecrdt/benchmark':
         specifier: workspace:*

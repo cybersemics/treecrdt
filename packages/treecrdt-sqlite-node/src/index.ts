@@ -21,6 +21,10 @@ import {
 import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import {
+  createTreecrdtSqliteAuthApi,
+  type TreecrdtSqliteAuthApi,
+} from '@treecrdt/sync-sqlite/auth';
 
 export type LoadOptions = {
   extensionPath?: string;
@@ -119,7 +123,7 @@ export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {})
 export function createTreecrdtClient(
   db: any,
   opts: { docId?: string; maxBulkOps?: number } = {},
-): Promise<TreecrdtEngine & { runner: SqliteRunner }> {
+): Promise<TreecrdtEngine & { runner: SqliteRunner; auth: TreecrdtSqliteAuthApi }> {
   const runner = createRunner(db);
   const materialized = createMaterializationDispatcher();
   const adapter = createTreecrdtSqliteAdapter(runner, {
@@ -222,6 +226,7 @@ export function createTreecrdtClient(
       getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
+    auth: createTreecrdtSqliteAuthApi({ runner, docId }),
     local: {
       insert: localInsertImpl,
       move: localMoveImpl,
