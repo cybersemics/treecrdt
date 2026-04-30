@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { bytesToHex } from "@treecrdt/interface/ids";
 import type { Operation } from "@treecrdt/interface";
 import type { LocalWriteOptions } from "@treecrdt/interface/engine";
+import { bytesToHex } from "@treecrdt/interface/ids";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -10,11 +10,8 @@ import {
   deriveTokenIdV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
-  type TreecrdtAuthSession,
 } from "@treecrdt/auth";
-import {
-  createTreecrdtSqliteSyncDiagnostics,
-} from "@treecrdt/sync-sqlite";
+import { createTreecrdtSqliteSyncDiagnostics } from "@treecrdt/sync-sqlite";
 import type { SyncAuth } from "@treecrdt/sync-protocol";
 import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
@@ -45,6 +42,7 @@ import { prefixPlaygroundStorageKey } from "../storage";
 import type { InviteActions } from "../invite";
 import type { ToastState } from "../components/PlaygroundToast";
 import type { SyncTransportMode } from "../types";
+import { usePlaygroundAuthSession } from "./usePlaygroundAuthSession";
 
 function computeInviteExcludeNodeIds(privateRoots: Set<string>, inviteRoot: string): string[] {
   return Array.from(privateRoots).filter((id) => id !== inviteRoot && id !== ROOT_ID && /^[0-9a-f]{32}$/i.test(id));
@@ -323,12 +321,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     localTokensB64: [],
   }));
 
-  const [syncAuth, setSyncAuth] = useState<SyncAuth<Operation> | null>(null);
-  const localAuthSessionRef = useRef<TreecrdtAuthSession | null>(null);
-  const localIdentityChainPromiseRef = useRef<
-    Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
-  >(null);
-
   const [authToken, setAuthToken] = useState<TreecrdtCapabilityTokenV1 | null>(null);
   const [hardRevokedTokenIds, setHardRevokedTokenIds] = useState<string[]>([]);
 
@@ -396,11 +388,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     },
     [docId]
   );
-
-  useEffect(() => {
-    // Local identity chains are doc-bound (replica cert includes `docId`) and depend on the current replica key.
-    localIdentityChainPromiseRef.current = null;
-  }, [docId, authMaterial.localPkB64, revealIdentity]);
 
   const togglePrivateRoot = (id: string) => {
     if (id === ROOT_ID) return;
@@ -476,24 +463,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     void refreshAuthMaterial().catch((err) => setAuthError(err instanceof Error ? err.message : String(err)));
   }, [docId, refreshAuthMaterial]);
 
-  const getLocalIdentityChain = React.useCallback(async () => {
-    if (!revealIdentity) return null;
-    const pkB64 = authMaterial.localPkB64;
-    if (!pkB64) return null;
-
-    if (!localIdentityChainPromiseRef.current) {
-      const replicaPk = base64urlDecode(pkB64);
-      localIdentityChainPromiseRef.current = createLocalIdentityChainV1({ docId, replicaPublicKey: replicaPk }).catch(
-        (err) => {
-          console.error("Failed to create identity chain", err);
-          return null;
-        }
-      );
-    }
-
-    return await localIdentityChainPromiseRef.current;
-  }, [authMaterial.localPkB64, docId, revealIdentity]);
-
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -511,97 +480,23 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     };
   }, [docId]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setSyncAuth(null);
-
-    if (!authEnabled || !client) {
-      localAuthSessionRef.current = null;
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const { issuerPkB64, localSkB64, localPkB64 } = authMaterial;
-    const localTokensB64 = authMaterial.localTokensB64;
-
-    if (!issuerPkB64 || !localSkB64 || !localPkB64 || localTokensB64.length === 0) {
-      localAuthSessionRef.current = null;
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    void (async () => {
-      try {
-        const issuerPk = base64urlDecode(issuerPkB64);
-        const localSk = base64urlDecode(localSkB64);
-        const localPk = base64urlDecode(localPkB64);
-        const localTokens = localTokensB64.map((t) => base64urlDecode(t));
-
-        const authSession = await client.auth.createSession({
-          docId,
-          trust: { issuerPublicKeys: [issuerPk] },
-          local: {
-            privateKey: localSk,
-            publicKey: localPk,
-            capabilityTokens: localTokens,
-          },
-          revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
-          requireProofRef: true,
-          identity: {
-            onPeer: onPeerIdentityChain,
-            local: getLocalIdentityChain,
-          },
-        });
-        if (cancelled) return;
-
-        const preparedAuth = authSession.syncAuth;
-        localAuthSessionRef.current = authSession;
-
-        await authSession.ready;
-        if (cancelled) return;
-        setSyncAuth(preparedAuth);
-      } catch (err) {
-        if (cancelled) return;
-        localAuthSessionRef.current = null;
-        setSyncAuth(null);
-        setAuthError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (localAuthSessionRef.current) localAuthSessionRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
+  const {
+    syncAuth,
+    localIdentityChainPromiseRef,
+    replica,
+    selfPeerId,
+    getLocalWriteOptions,
+    clearAuthSession,
+  } = usePlaygroundAuthSession({
     authEnabled,
     client,
     docId,
-    authMaterial.issuerPkB64,
-    authMaterial.localSkB64,
-    authMaterial.localPkB64,
-    authMaterial.localTokensB64.join(","),
-    hardRevokedTokenIds.join(","),
-    getLocalIdentityChain,
+    authMaterial,
+    hardRevokedTokenIds,
+    revealIdentity,
     onPeerIdentityChain,
-  ]);
-
-  const replica = useMemo(() => (authMaterial.localPkB64 ? base64urlDecode(authMaterial.localPkB64) : null), [
-    authMaterial.localPkB64,
-  ]);
-  const selfPeerId = useMemo(() => (replica ? bytesToHex(replica) : null), [replica]);
-
-  const getLocalWriteOptions = React.useCallback(
-    (): LocalWriteOptions | undefined => {
-      if (!authEnabled) return;
-      const session = localAuthSessionRef.current;
-      if (!session) throw new Error("auth is enabled but not configured");
-      return { authSession: session };
-    },
-    [authEnabled]
-  );
+    setAuthError,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -700,8 +595,6 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       return [...prev, normalized];
     });
   }, []);
-
-  const hardRevokedTokenIdBytes = useMemo(() => hardRevokedTokenIds.map((hex) => hexToBytes16(hex)), [hardRevokedTokenIds]);
 
   const importInvitePayload = React.useCallback(
     async (inviteB64: string, opts2: { clearHash?: boolean } = {}) => {
@@ -893,7 +786,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         setAuthError(null);
       } catch (err) {
         if (cancelled) return;
-        localAuthSessionRef.current = null;
+        clearAuthSession();
         setAuthError(authEnabled ? (err instanceof Error ? err.message : String(err)) : null);
       }
     })();
@@ -901,7 +794,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     return () => {
       cancelled = true;
     };
-  }, [authEnabled, docId, joinMode]);
+  }, [authEnabled, clearAuthSession, docId, joinMode]);
 
   const resetAuth = () => {
     clearAuthMaterial(docId);
