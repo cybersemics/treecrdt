@@ -17,7 +17,7 @@ test.describe.serial('non-root base path', () => {
     expect(summary.storage).toBe('memory');
   });
 
-  test('opfs client uses worker mode in preview build with base path', async ({
+  test('opfs client uses dedicated worker mode in preview build with base path', async ({
     page,
   }, testInfo) => {
     if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
@@ -30,21 +30,23 @@ test.describe.serial('non-root base path', () => {
     });
     expect(summary).not.toBeNull();
     expect(summary.mode).toBe('worker');
+    expect(summary.runtime).toBe('dedicated-worker');
     expect(summary.storage).toBe('opfs');
   });
 
   test("opfs init fails when OPFS VFS chunk can't load (and throws)", async ({
+    context,
     page,
   }, testInfo) => {
     if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
-    await page.route('**/OPFSCoopSyncVFS*.js', (route) => route.abort());
+    await context.route('**/OPFS*VFS*.js', (route) => route.abort());
     await page.goto('/base-path/');
     await page.waitForSelector('[data-testid="run-demo"]', { timeout: 30_000 });
     const result = await page.evaluate(async () => {
       const fn = (window as any).__createTreecrdtClient;
       if (!fn) return { ok: false, message: '__createTreecrdtClient missing' };
       try {
-        await fn('opfs');
+        await fn('opfs', undefined, 'dedicated-worker');
         return { ok: true, message: '' };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : String(err) };

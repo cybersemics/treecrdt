@@ -654,10 +654,12 @@ export default function App() {
       const baseUrl = resolvedBase.endsWith("/") ? resolvedBase : `${resolvedBase}/`;
       const filename = storageMode === "opfs" ? `/treecrdt-playground-${keyOverride ?? sessionKey}.db` : undefined;
       const c = await createTreecrdtClient({
-        storage: storageMode,
-        baseUrl,
-        preferWorker: storageMode === "opfs",
-        filename,
+        storage:
+          storageMode === "opfs"
+            ? { type: "opfs", filename, fallback: "throw" }
+            : { type: "memory" },
+        runtime: { type: "auto" },
+        assets: { baseUrl },
         docId: docIdOverride ?? docId,
       });
       if (disposedRef.current || initEpoch !== initEpochRef.current) {

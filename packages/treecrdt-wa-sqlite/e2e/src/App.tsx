@@ -16,13 +16,14 @@ export default function App() {
       (window as any).__createTreecrdtClient = async (
         storage: 'memory' | 'opfs',
         baseUrl?: string,
+        runtime: 'auto' | 'dedicated-worker' | 'shared-worker' = 'auto',
       ) => {
         const c = await createTreecrdtClient({
-          storage,
-          baseUrl,
-          preferWorker: storage === 'opfs',
+          storage: storage === 'opfs' ? { type: 'opfs' } : { type: 'memory' },
+          runtime: { type: runtime },
+          assets: { baseUrl },
         });
-        const summary = { mode: c.mode, storage: c.storage };
+        const summary = { mode: c.mode, runtime: c.runtime, storage: c.storage };
         if (c.close) await c.close();
         return summary;
       };
