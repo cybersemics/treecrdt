@@ -74,6 +74,32 @@ CREATE INDEX IF NOT EXISTS idx_treecrdt_oprefs_children_doc_parent_seq
   ON treecrdt_oprefs_children (doc_id, parent, seq);
 "#;
 
+fn ensure_meta_replay_columns(client: &mut Client) -> Result<()> {
+    let rows = client
+        .query(
+            "SELECT attname \
+             FROM pg_attribute \
+             WHERE attrelid = 'treecrdt_meta'::regclass \
+               AND attname IN ('replay_lamport', 'replay_replica', 'replay_counter') \
+               AND NOT attisdropped",
+            &[],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    if rows.len() == 3 {
+        return Ok(());
+    }
+
+    client
+        .batch_execute(
+            "ALTER TABLE treecrdt_meta
+               ADD COLUMN IF NOT EXISTS replay_lamport BIGINT,
+               ADD COLUMN IF NOT EXISTS replay_replica BYTEA,
+               ADD COLUMN IF NOT EXISTS replay_counter BIGINT",
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    Ok(())
+}
+
 pub fn ensure_schema(client: &mut Client) -> Result<()> {
     // `CREATE TABLE IF NOT EXISTS` is not fully concurrency-safe in Postgres; concurrent calls can
     // still fail with catalog uniqueness violations. Serialize schema creation across processes.
@@ -81,7 +107,10 @@ pub fn ensure_schema(client: &mut Client) -> Result<()> {
         .query_one("SELECT pg_advisory_lock($1)", &[&SCHEMA_LOCK_KEY])
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
 
-    let res = client.batch_execute(SCHEMA_SQL).map_err(|e| Error::Storage(format!("{e:?}")));
+    let res = client
+        .batch_execute(SCHEMA_SQL)
+        .map_err(|e| Error::Storage(format!("{e:?}")))
+        .and_then(|_| ensure_meta_replay_columns(client));
 
     // Best-effort unlock. Locks are also released when the connection is dropped.
     let _ = client.query_one("SELECT pg_advisory_unlock($1)", &[&SCHEMA_LOCK_KEY]);
