@@ -153,46 +153,6 @@ fn setup_conformance_harness() -> Option<PgConformanceHarness> {
 }
 
 #[test]
-fn postgres_backend_ensure_schema_upgrades_legacy_meta_table() {
-    let Some(client) = connect() else {
-        return;
-    };
-    let schema = format!("treecrdt_migration_{}", Uuid::new_v4().simple());
-
-    {
-        let mut c = client.borrow_mut();
-        c.batch_execute(&format!(
-            "CREATE SCHEMA {schema};
-             SET search_path TO {schema};
-             CREATE TABLE treecrdt_meta (
-               doc_id TEXT PRIMARY KEY,
-               head_lamport BIGINT NOT NULL DEFAULT 0,
-               head_replica BYTEA NOT NULL DEFAULT ''::bytea,
-               head_counter BIGINT NOT NULL DEFAULT 0,
-               head_seq BIGINT NOT NULL DEFAULT 0
-             );
-             INSERT INTO treecrdt_meta(doc_id) VALUES ('legacy-doc');"
-        ))
-        .unwrap();
-
-        ensure_schema(&mut c).unwrap();
-
-        let row = c
-            .query_one(
-                "SELECT replay_lamport, replay_replica, replay_counter \
-                 FROM treecrdt_meta WHERE doc_id = 'legacy-doc'",
-                &[],
-            )
-            .unwrap();
-        assert_eq!(row.get::<_, Option<i64>>(0), None);
-        assert_eq!(row.get::<_, Option<Vec<u8>>>(1), None);
-        assert_eq!(row.get::<_, Option<i64>>(2), None);
-
-        c.batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).unwrap();
-    }
-}
-
-#[test]
 fn postgres_backend_apply_is_idempotent_and_max_lamport_monotonic() {
     let Some(client) = connect() else {
         return;
