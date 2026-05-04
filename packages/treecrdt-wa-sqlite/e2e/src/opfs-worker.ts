@@ -49,9 +49,12 @@ async function createAdapter(
   try {
     console.info(`[opfs-worker] creating client storage=${clientStorage} base=${effectiveBase}`);
     client = await createTreecrdtClient({
-      storage: clientStorage,
-      baseUrl: effectiveBase,
-      filename,
+      storage:
+        clientStorage === 'opfs'
+          ? { type: 'opfs', filename, fallback: 'throw' }
+          : { type: 'memory' },
+      runtime: { type: clientStorage === 'opfs' ? 'dedicated-worker' : 'direct' },
+      assets: { baseUrl: effectiveBase },
       docId,
     });
     // sanity check to ensure DB is valid

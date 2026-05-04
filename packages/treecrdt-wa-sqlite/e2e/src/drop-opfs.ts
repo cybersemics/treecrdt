@@ -14,10 +14,9 @@ export async function runDropStorageE2E(): Promise<{ ok: true } | { ok: false; e
 
   const filename = `/drop-test-${crypto.randomUUID()}.db`;
   const client = await createTreecrdtClient({
-    storage: 'opfs',
-    filename,
-    preferWorker: true,
-    baseUrl,
+    storage: { type: 'opfs', filename, fallback: 'throw' },
+    runtime: { type: 'dedicated-worker' },
+    assets: { baseUrl },
   });
 
   try {

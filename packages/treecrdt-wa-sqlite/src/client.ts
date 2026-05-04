@@ -81,15 +81,9 @@ export type TreecrdtClientAuthApi = {
 };
 
 export type ClientOptions = {
-  storage?: StorageMode | 'auto' | TreecrdtStorage;
+  storage?: TreecrdtStorage;
   runtime?: TreecrdtRuntime;
   assets?: TreecrdtAssets;
-  /** @deprecated Use assets.baseUrl. */
-  baseUrl?: string; // where wa-sqlite assets live; defaults to import.meta.env.BASE_URL + wa-sqlite/
-  /** @deprecated Use storage: { type: 'opfs', filename }. */
-  filename?: string; // only for opfs; defaults to /treecrdt.db
-  /** @deprecated Use runtime: { type: 'dedicated-worker' } or runtime: { type: 'direct' }. */
-  preferWorker?: boolean; // when true (default for opfs), use a worker instead of main-thread SQLite
   docId?: string; // used for v0 sync opRef derivation inside the extension
 };
 
@@ -103,43 +97,39 @@ type NormalizedStorageOptions = {
 type NormalizedRuntimeOptions = TreecrdtRuntime;
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
-  const raw = opts.storage;
-  if (raw && typeof raw === 'object') {
-    if (raw.type === 'memory') {
-      return { type: 'memory', requireOpfs: false, fallback: 'memory' };
-    }
-    if (raw.type === 'opfs') {
-      const fallback = raw.fallback ?? 'throw';
-      return {
-        type: 'opfs',
-        filename: raw.filename ?? opts.filename,
-        requireOpfs: fallback === 'throw',
-        fallback,
-      };
-    }
-    const fallback = raw.fallback ?? 'memory';
+  const raw = opts.storage ?? { type: 'auto' };
+  if (!raw || typeof raw !== 'object') {
+    throw new Error(
+      'createTreecrdtClient storage must use object options, e.g. { type: "memory" } or { type: "opfs" }',
+    );
+  }
+
+  if (raw.type === 'memory') {
+    return { type: 'memory', requireOpfs: false, fallback: 'memory' };
+  }
+  if (raw.type === 'opfs') {
+    const fallback = raw.fallback ?? 'throw';
     return {
-      type: 'auto',
-      filename: raw.filename ?? opts.filename,
+      type: 'opfs',
+      filename: raw.filename,
       requireOpfs: fallback === 'throw',
       fallback,
     };
   }
-
-  if (raw === 'memory') {
-    return { type: 'memory', requireOpfs: false, fallback: 'memory' };
+  if (raw.type !== 'auto') {
+    throw new Error('createTreecrdtClient storage.type must be "memory", "opfs", or "auto"');
   }
-  if (raw === 'opfs') {
-    return { type: 'opfs', filename: opts.filename, requireOpfs: true, fallback: 'throw' };
-  }
-  return { type: 'auto', filename: opts.filename, requireOpfs: false, fallback: 'memory' };
+  const fallback = raw.fallback ?? 'memory';
+  return {
+    type: 'auto',
+    filename: raw.filename,
+    requireOpfs: fallback === 'throw',
+    fallback,
+  };
 }
 
 function normalizeRuntimeOptions(opts: ClientOptions): NormalizedRuntimeOptions {
-  if (opts.runtime) return opts.runtime;
-  if (opts.preferWorker === true) return { type: 'dedicated-worker' };
-  if (opts.preferWorker === false) return { type: 'direct' };
-  return { type: 'auto' };
+  return opts.runtime ?? { type: 'auto' };
 }
 
 export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<TreecrdtClient> {
@@ -148,7 +138,6 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
   const docId = opts.docId ?? 'treecrdt';
   const rawBase =
     opts.assets?.baseUrl ??
-    opts.baseUrl ??
     (typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL
       ? (import.meta as any).env.BASE_URL
       : '/');

@@ -31,7 +31,7 @@ export default function App() {
 
     (async () => {
       try {
-        const c = await createTreecrdtClient({ storage: 'memory' });
+        const c = await createTreecrdtClient({ storage: { type: 'memory' } });
         setClient(c);
       } catch (err) {
         console.error('Failed to init wa-sqlite', err);

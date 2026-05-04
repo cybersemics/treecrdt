@@ -37,6 +37,14 @@ export type SyncBenchResult = {
 
 type StorageKind = 'browser-memory' | 'browser-opfs-coop-sync';
 
+const memoryStorage = { type: 'memory' } as const;
+
+function storageOptionsForMode(mode: 'memory' | 'opfs', filename?: string) {
+  return mode === 'opfs'
+    ? { type: 'opfs' as const, filename, fallback: 'throw' as const }
+    : memoryStorage;
+}
+
 function hexToBytes(hex: string): Uint8Array {
   return nodeIdToBytes16(hex);
 }
@@ -76,8 +84,8 @@ function makeBackend(
 
 async function runAllE2e(): Promise<void> {
   const docId = `e2e-sync-all-${crypto.randomUUID()}`;
-  const a = await createTreecrdtClient({ storage: 'memory', docId });
-  const b = await createTreecrdtClient({ storage: 'memory', docId });
+  const a = await createTreecrdtClient({ storage: memoryStorage, docId });
+  const b = await createTreecrdtClient({ storage: memoryStorage, docId });
   try {
     const root = '0'.repeat(32);
     const aOps = [
@@ -143,8 +151,8 @@ async function runAllE2e(): Promise<void> {
 
 async function runChildrenE2e(): Promise<void> {
   const docId = `e2e-sync-children-${crypto.randomUUID()}`;
-  const a = await createTreecrdtClient({ storage: 'memory', docId });
-  const b = await createTreecrdtClient({ storage: 'memory', docId });
+  const a = await createTreecrdtClient({ storage: memoryStorage, docId });
+  const b = await createTreecrdtClient({ storage: memoryStorage, docId });
   try {
     const parentAHex = 'a0'.repeat(16);
     const parentBHex = 'b0'.repeat(16);
@@ -221,8 +229,8 @@ async function runLargeFanoutAllE2e(): Promise<void> {
   const codewordsPerMessage = 4096;
 
   const docId = `e2e-sync-large-fanout${fanout}-${crypto.randomUUID()}`;
-  const a = await createTreecrdtClient({ storage: 'memory', docId });
-  const b = await createTreecrdtClient({ storage: 'memory', docId });
+  const a = await createTreecrdtClient({ storage: memoryStorage, docId });
+  const b = await createTreecrdtClient({ storage: memoryStorage, docId });
 
   try {
     const root = '0'.repeat(32);
@@ -271,7 +279,7 @@ export async function runTreecrdtMaterializationEventE2E(): Promise<{
   children: string[];
 }> {
   const docId = `e2e-materialization-event-${crypto.randomUUID()}`;
-  const client = await createTreecrdtClient({ storage: 'memory', docId });
+  const client = await createTreecrdtClient({ storage: memoryStorage, docId });
   try {
     const root = '0'.repeat(32);
     const parent = nodeIdFromInt(101);
@@ -310,17 +318,16 @@ export async function runTreecrdtMaterializationEventE2E(): Promise<{
   }
 }
 
-async function runAuthLocalWriteCase(opts: {
-  storage: 'memory' | 'opfs';
-  preferWorker?: boolean;
-}): Promise<{
+async function runAuthLocalWriteCase(opts: { storage: 'memory' | 'opfs' }): Promise<{
   rollback: { exists: boolean; eventCount: number; opCount: number };
   success: { exists: boolean; eventCount: number; opCount: number; authorizedBeforeEvent: boolean };
 }> {
   const docId = `e2e-auth-local-write-${opts.storage}-${crypto.randomUUID()}`;
+  // Keep this OPFS test filename short; long generated names can fail before the auth path runs.
+  const filename = `/auth-${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}.db`;
   const client = await createTreecrdtClient({
-    storage: opts.storage,
-    preferWorker: opts.preferWorker,
+    storage: storageOptionsForMode(opts.storage, filename),
+    runtime: { type: opts.storage === 'opfs' ? 'dedicated-worker' : 'direct' },
     docId,
   });
   const root = '0'.repeat(32);
@@ -383,7 +390,7 @@ export async function runTreecrdtAuthLocalWriteE2E(): Promise<{
   worker: Awaited<ReturnType<typeof runAuthLocalWriteCase>>;
 }> {
   const direct = await runAuthLocalWriteCase({ storage: 'memory' });
-  const worker = await runAuthLocalWriteCase({ storage: 'opfs', preferWorker: true });
+  const worker = await runAuthLocalWriteCase({ storage: 'opfs' });
   return { ok: true, direct, worker };
 }
 
@@ -550,8 +557,8 @@ export async function closeSharedOpfsCrossTabClient(): Promise<void> {
 
 export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
   const docId = `e2e-sync-subscribe-${crypto.randomUUID()}`;
-  const a = await createTreecrdtClient({ storage: 'memory', docId });
-  const b = await createTreecrdtClient({ storage: 'memory', docId });
+  const a = await createTreecrdtClient({ storage: memoryStorage, docId });
+  const b = await createTreecrdtClient({ storage: memoryStorage, docId });
 
   try {
     const root = '0'.repeat(32);
@@ -725,11 +732,19 @@ async function runBenchOnce(
 ): Promise<number> {
   const docId = `bench-sync-${workload}-${size}-${crypto.randomUUID()}`;
   const mode = storage === 'browser-opfs-coop-sync' ? 'opfs' : 'memory';
-  const preferWorker = mode === 'opfs';
   const filenameA = mode === 'opfs' ? `/bench-sync-a-${crypto.randomUUID()}.db` : undefined;
   const filenameB = mode === 'opfs' ? `/bench-sync-b-${crypto.randomUUID()}.db` : undefined;
-  const a = await createTreecrdtClient({ storage: mode, preferWorker, filename: filenameA, docId });
-  const b = await createTreecrdtClient({ storage: mode, preferWorker, filename: filenameB, docId });
+  const runtime = { type: mode === 'opfs' ? 'dedicated-worker' : 'direct' } as const;
+  const a = await createTreecrdtClient({
+    storage: storageOptionsForMode(mode, filenameA),
+    runtime,
+    docId,
+  });
+  const b = await createTreecrdtClient({
+    storage: storageOptionsForMode(mode, filenameB),
+    runtime,
+    docId,
+  });
 
   try {
     await Promise.all([a.ops.appendMany(bench.opsA), b.ops.appendMany(bench.opsB)]);
