@@ -207,7 +207,7 @@ export default function App() {
     authMaterial,
     syncAuth,
     refreshAuthMaterial,
-    localIdentityChainPromiseRef,
+    resetLocalIdentityChain,
     replica,
     selfPeerId,
     viewRootId,
@@ -1117,7 +1117,7 @@ export default function App() {
               setIdentityKeyBlobImportText,
               deviceSigningKeyBlobImportText,
               setDeviceSigningKeyBlobImportText,
-              localIdentityChainPromiseRef,
+              resetLocalIdentityChain,
             }}
             treeParentRef={treeParentRef}
             treeVirtualizer={treeVirtualizer}

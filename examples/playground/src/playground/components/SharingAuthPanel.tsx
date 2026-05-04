@@ -52,7 +52,7 @@ type SharingAuthPanelProps = {
   deviceSigningKeyBlobImportText: string;
   setDeviceSigningKeyBlobImportText: React.Dispatch<React.SetStateAction<string>>;
 
-  localIdentityChainPromiseRef: PlaygroundAuthApi["localIdentityChainPromiseRef"];
+  resetLocalIdentityChain: PlaygroundAuthApi["resetLocalIdentityChain"];
 
   client: unknown | null;
   pendingOps: PlaygroundAuthApi["pendingOps"];
@@ -189,7 +189,7 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     setIdentityKeyBlobImportText,
     deviceSigningKeyBlobImportText,
     setDeviceSigningKeyBlobImportText,
-    localIdentityChainPromiseRef,
+    resetLocalIdentityChain,
   } = props;
 
   const deviceWrapKeyB64 = getDeviceWrapKeyB64();
@@ -467,7 +467,7 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
               setAuthError={setAuthError}
               onImport={(value) => {
                 setSealedIdentityKeyB64(value);
-                localIdentityChainPromiseRef.current = null;
+                resetLocalIdentityChain();
               }}
             />
 
@@ -485,7 +485,7 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
               setAuthError={setAuthError}
               onImport={(value) => {
                 setSealedDeviceSigningKeyB64(value);
-                localIdentityChainPromiseRef.current = null;
+                resetLocalIdentityChain();
               }}
             />
           </div>
