@@ -17,7 +17,6 @@ import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import {
   clearAuthMaterial,
-  createLocalIdentityChainV1,
   createCapabilityTokenV1,
   decodeInvitePayload,
   encodeInvitePayload,
@@ -216,9 +215,7 @@ export type PlaygroundAuthApi = {
   authMaterial: StoredAuthMaterial;
   syncAuth: SyncAuth<Operation> | null;
   refreshAuthMaterial: () => Promise<StoredAuthMaterial>;
-  localIdentityChainPromiseRef: React.MutableRefObject<
-    Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
-  >;
+  resetLocalIdentityChain: () => void;
 
   replica: Uint8Array | null;
   selfPeerId: string | null;
@@ -482,11 +479,11 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
   const {
     syncAuth,
-    localIdentityChainPromiseRef,
     replica,
     selfPeerId,
     getLocalWriteOptions,
     clearAuthSession,
+    resetLocalIdentityChain,
   } = usePlaygroundAuthSession({
     authEnabled,
     client,
@@ -1334,7 +1331,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     authMaterial,
     syncAuth,
     refreshAuthMaterial,
-    localIdentityChainPromiseRef,
+    resetLocalIdentityChain,
     replica,
     selfPeerId,
     viewRootId,

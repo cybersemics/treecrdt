@@ -26,13 +26,11 @@ type UsePlaygroundAuthSessionOptions = {
 
 export type PlaygroundAuthSessionState = {
   syncAuth: SyncAuth<Operation> | null;
-  localIdentityChainPromiseRef: React.MutableRefObject<
-    Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
-  >;
   replica: Uint8Array | null;
   selfPeerId: string | null;
   getLocalWriteOptions: () => LocalWriteOptions | undefined;
   clearAuthSession: () => void;
+  resetLocalIdentityChain: () => void;
 };
 
 export function usePlaygroundAuthSession(
@@ -82,6 +80,10 @@ export function usePlaygroundAuthSession(
     () => hardRevokedTokenIds.map((hex) => hexToBytes16(hex)),
     [hardRevokedTokenIds],
   );
+
+  const resetLocalIdentityChain = React.useCallback(() => {
+    localIdentityChainPromiseRef.current = null;
+  }, []);
 
   const clearAuthSession = React.useCallback(() => {
     localAuthSessionRef.current = null;
@@ -180,10 +182,10 @@ export function usePlaygroundAuthSession(
 
   return {
     syncAuth,
-    localIdentityChainPromiseRef,
     replica,
     selfPeerId,
     getLocalWriteOptions,
     clearAuthSession,
+    resetLocalIdentityChain,
   };
 }
