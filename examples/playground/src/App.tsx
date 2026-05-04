@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Operation } from "@treecrdt/interface";
-import type { MaterializationEvent } from "@treecrdt/interface/engine";
+import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
@@ -245,7 +245,7 @@ export default function App() {
     openMintingPeerTab,
     openNewIsolatedPeerTab,
     openShareForNode,
-    verifyLocalOps,
+    getLocalWriteOptions,
     copyToClipboard,
     onAuthGrantMessage,
   } = usePlaygroundAuth({
@@ -452,6 +452,10 @@ export default function App() {
   };
 
   const { index, childrenByParent } = treeState;
+  const getLocalWriter = React.useCallback((): BoundTreecrdtEngineLocal | null => {
+    if (!client || !replica) return null;
+    return client.local.forReplica(replica, getLocalWriteOptions());
+  }, [client, getLocalWriteOptions, replica]);
 
   const {
     peers,
@@ -465,7 +469,7 @@ export default function App() {
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    notifyLocalUpdate,
+    queueLocalOpsForSync,
     handleSync,
     handleScopedSync,
     postBroadcastMessage,
@@ -493,20 +497,13 @@ export default function App() {
     onRemoteOpsImported: recordOps,
   });
 
-  const recordLocalOps = React.useCallback(
+  const handleCommittedLocalOps = React.useCallback(
     (ops: Operation[]) => {
-      notifyLocalUpdate(ops);
+      // The local write already committed. This only feeds playground sync and debug UI state.
+      queueLocalOpsForSync(ops);
       recordOps(ops, { assumeSorted: true });
     },
-    [notifyLocalUpdate, recordOps]
-  );
-
-  const acceptLocalOps = React.useCallback(
-    async (ops: Operation[]) => {
-      await verifyLocalOps(ops);
-      recordLocalOps(ops);
-    },
-    [recordLocalOps, verifyLocalOps]
+    [queueLocalOpsForSync, recordOps]
   );
 
   const grantSubtreeToReplicaPubkey = React.useCallback(
@@ -712,13 +709,14 @@ export default function App() {
   };
 
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {
-    if (!client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (!localWriter) return;
     if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
     setBusy(true);
     try {
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
-      const op = await client.local.move(replica, nodeId, newParent, placement);
-      await acceptLocalOps([op]);
+      const op = await localWriter.move(nodeId, newParent, placement);
+      handleCommittedLocalOps([op]);
     } catch (err) {
       console.error("Failed to append move op", err);
       setError("Failed to move node (see console)");
@@ -728,7 +726,8 @@ export default function App() {
   };
 
   const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
-    if (!client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
     const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
@@ -736,8 +735,9 @@ export default function App() {
     const startedAtMs = Date.now();
     const progressStep = normalizedCount >= 1_000 ? 50 : normalizedCount >= 200 ? 20 : normalizedCount >= 50 ? 5 : 1;
     setBulkAddProgress({ total: normalizedCount, completed: 0, phase: "creating", startedAtMs });
+    const ops: Operation[] = [];
+    let opsRecorded = false;
     try {
-      const ops: Operation[] = [];
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
@@ -748,7 +748,7 @@ export default function App() {
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload));
+          ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
           const completed = i + 1;
           if (completed === normalizedCount || completed % progressStep === 0) {
             setBulkAddProgress((prev) =>
@@ -795,7 +795,7 @@ export default function App() {
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(await client.local.insert(replica, targetParent, nodeId, { type: "last" }, encryptedPayload));
+          ops.push(await localWriter.insert(targetParent, nodeId, { type: "last" }, encryptedPayload));
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
@@ -812,9 +812,11 @@ export default function App() {
         prev ? { ...prev, completed: normalizedCount, phase: "applying" } : prev
       );
 
-      await acceptLocalOps(ops);
+      handleCommittedLocalOps(ops);
+      opsRecorded = true;
       expandPathTo(parentId);
     } catch (err) {
+      if (!opsRecorded && ops.length > 0) handleCommittedLocalOps(ops);
       console.error("Failed to add nodes", err);
       setError("Failed to add nodes (see console)");
     } finally {
@@ -824,7 +826,8 @@ export default function App() {
   };
 
   const handleInsert = async (parentId: string) => {
-    if (!client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
@@ -832,8 +835,8 @@ export default function App() {
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
-      const op = await client.local.insert(replica, parentId, nodeId, { type: "last" }, encryptedPayload);
-      await acceptLocalOps([op]);
+      const op = await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload);
+      handleCommittedLocalOps([op]);
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
       }
@@ -850,12 +853,14 @@ export default function App() {
     const run = payloadWriteQueueRef.current
       .catch(() => undefined)
       .then(async () => {
-        if (nodeId === ROOT_ID || !client || !replica) return;
+        if (nodeId === ROOT_ID) return;
+        const localWriter = getLocalWriter();
+        if (!localWriter) return;
         try {
           const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
           const encryptedPayload = await encryptPayloadBytes(payload);
-          const op = await client.local.payload(replica, nodeId, encryptedPayload);
-          await acceptLocalOps([op]);
+          const op = await localWriter.payload(nodeId, encryptedPayload);
+          handleCommittedLocalOps([op]);
         } catch (err) {
           console.error("Failed to write payload", err);
           setError("Failed to write payload (see console)");
@@ -866,11 +871,12 @@ export default function App() {
   };
 
   const handleDelete = async (nodeId: string) => {
-    if (nodeId === ROOT_ID || !client || !replica) return;
+    const localWriter = getLocalWriter();
+    if (nodeId === ROOT_ID || !localWriter) return;
     setBusy(true);
     try {
-      const op = await client.local.delete(replica, nodeId);
-      await acceptLocalOps([op]);
+      const op = await localWriter.delete(nodeId);
+      handleCommittedLocalOps([op]);
     } catch (err) {
       console.error("Failed to delete node", err);
       setError("Failed to delete node (see console)");

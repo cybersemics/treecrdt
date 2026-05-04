@@ -18,8 +18,11 @@ import {
   nodeIdToBytes16,
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
-import type { TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
-import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import {
+  createMaterializationDispatcher,
+  createTreecrdtEngineLocal,
+} from '@treecrdt/interface/engine';
 import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
@@ -165,10 +168,16 @@ async function createWorkerClient(opts: {
   >();
   let terminalError: Error | null = null;
   let closed = false;
+  let callQueue: Promise<void> = Promise.resolve();
 
   const closedError = new Error(CLIENT_CLOSED_ERROR);
+  const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
+    promise.then(
+      () => undefined,
+      () => undefined,
+    );
 
-  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+  const callRaw = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
     if (closed) return Promise.reject(closedError);
     const id = nextId++;
     if (terminalError) return Promise.reject(terminalError);
@@ -176,6 +185,11 @@ async function createWorkerClient(opts: {
       pending.set(id, { resolve, reject });
       worker.postMessage({ id, method, params } satisfies RpcRequest<M>);
     });
+  };
+  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+    const run = callQueue.then(() => callRaw(method, params));
+    callQueue = settleQueue(run);
+    return run;
   };
 
   const onMessage = (ev: MessageEvent<RpcResponse | RpcPushMessage>) => {
@@ -287,19 +301,6 @@ async function createDirectClient(opts: {
     exec: (sql) => db.exec(sql),
     getText: (sql, params = []) => dbGetText(db, sql, params),
   };
-  const localWriters = new Map<string, TreecrdtSqliteWriter>();
-  const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
-  const localWriterFor = (replica: ReplicaId) => {
-    const key = localWriterKey(replica);
-    const existing = localWriters.get(key);
-    if (existing) return existing;
-    const next = createTreecrdtSqliteWriter(runner, {
-      replica,
-      onMaterialized: materialized.emitEvent,
-    });
-    localWriters.set(key, next);
-    return next;
-  };
   const wrapError = (stage: string, err: unknown) =>
     new Error(
       JSON.stringify({
@@ -396,31 +397,6 @@ async function createDirectClient(opts: {
           const [rawReplica] = params as RpcParams<'replicaMaxCounter'>;
           return (await adapter.replicaMaxCounter(Uint8Array.from(rawReplica))) as any;
         }
-        case 'localInsert': {
-          const [replica, parent, node, placement, payload] = params as RpcParams<'localInsert'>;
-          return (await localWriterFor(Uint8Array.from(replica)).insert(
-            parent,
-            node,
-            placement,
-            payload ? { payload } : {},
-          )) as any;
-        }
-        case 'localMove': {
-          const [replica, node, newParent, placement] = params as RpcParams<'localMove'>;
-          return (await localWriterFor(Uint8Array.from(replica)).move(
-            node,
-            newParent,
-            placement,
-          )) as any;
-        }
-        case 'localDelete': {
-          const [replica, node] = params as RpcParams<'localDelete'>;
-          return (await localWriterFor(Uint8Array.from(replica)).delete(node)) as any;
-        }
-        case 'localPayload': {
-          const [replica, node, payload] = params as RpcParams<'localPayload'>;
-          return (await localWriterFor(Uint8Array.from(replica)).payload(node, payload)) as any;
-        }
         case 'close': {
           if (db.close) await db.close();
           return undefined as any;
@@ -486,6 +462,19 @@ function makeTreecrdtClientFromCall(opts: {
     exec: (sql) => call('sqlExec', [sql]).then(() => undefined),
     getText: (sql, params = []) => call('sqlGetText', [sql, params]),
   };
+  const localWriters = new Map<string, TreecrdtSqliteWriter>();
+  const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
+  const localWriterFor = (replica: ReplicaId) => {
+    const key = localWriterKey(replica);
+    const existing = localWriters.get(key);
+    if (existing) return existing;
+    const next = createTreecrdtSqliteWriter(runner, {
+      replica,
+      onMaterialized: materialized.emitEvent,
+    });
+    localWriters.set(key, next);
+    return next;
+  };
 
   const opsSinceImpl = async (lamport: number, root?: string) => {
     const rows = await call('opsSince', [lamport, root]);
@@ -529,33 +518,34 @@ function makeTreecrdtClientFromCall(opts: {
     node: string,
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null,
-  ) => {
-    const rid = Array.from(replica);
-    return (await call('localInsert', [
-      rid,
-      parent,
-      node,
-      placement,
-      payload,
-    ])) as unknown as Operation;
-  };
+    writeOpts?: LocalWriteOptions,
+  ) =>
+    localWriterFor(replica).insert(parent, node, placement, {
+      ...writeOpts,
+      ...(payload ? { payload } : {}),
+    });
   const localMoveImpl = async (
     replica: ReplicaId,
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
-  ) => {
-    const rid = Array.from(replica);
-    return (await call('localMove', [rid, node, newParent, placement])) as unknown as Operation;
-  };
-  const localDeleteImpl = async (replica: ReplicaId, node: string) => {
-    const rid = Array.from(replica);
-    return (await call('localDelete', [rid, node])) as unknown as Operation;
-  };
-  const localPayloadImpl = async (replica: ReplicaId, node: string, payload: Uint8Array | null) => {
-    const rid = Array.from(replica);
-    return (await call('localPayload', [rid, node, payload])) as unknown as Operation;
-  };
+    writeOpts?: LocalWriteOptions,
+  ) => localWriterFor(replica).move(node, newParent, placement, writeOpts);
+  const localDeleteImpl = async (replica: ReplicaId, node: string, writeOpts?: LocalWriteOptions) =>
+    localWriterFor(replica).delete(node, writeOpts);
+  const localPayloadImpl = async (
+    replica: ReplicaId,
+    node: string,
+    payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
+  ) => localWriterFor(replica).payload(node, payload, writeOpts);
+
+  const local = createTreecrdtEngineLocal({
+    insert: localInsertImpl,
+    move: localMoveImpl,
+    delete: localDeleteImpl,
+    payload: localPayloadImpl,
+  });
 
   const closeImpl = async () => {
     if (closePromise) return await closePromise;
@@ -601,12 +591,7 @@ function makeTreecrdtClientFromCall(opts: {
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createLazyAuthApi({ runner, docId: opts.docId }),
-    local: {
-      insert: localInsertImpl,
-      move: localMoveImpl,
-      delete: localDeleteImpl,
-      payload: localPayloadImpl,
-    },
+    local,
     onMaterialized: materialized.onMaterialized,
     close: closeImpl,
     drop: opts.drop,

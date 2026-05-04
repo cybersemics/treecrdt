@@ -11,7 +11,10 @@ mod reads;
 mod schema;
 mod store;
 
-pub use local_ops::{local_delete, local_insert, local_move, local_payload};
+pub use local_ops::{
+    local_delete, local_insert, local_move, local_payload, prepare_local_delete_tx,
+    prepare_local_insert_tx, prepare_local_move_tx, prepare_local_payload_tx, PreparedLocalOpTx,
+};
 pub use reads::{
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children,
     list_op_refs_children_with_parent_payload, max_lamport, ops_since, replica_max_counter,

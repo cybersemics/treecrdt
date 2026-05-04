@@ -69,6 +69,20 @@ export type WriteOptions = {
   writeId?: string;
 };
 
+export type LocalWriteAuthSession = {
+  authorizeLocalOps: (ops: readonly Operation[]) => Promise<unknown>;
+};
+
+export type LocalWriteOptions = {
+  /**
+   * Authorizes the minted local op before it is exposed to callers as committed.
+   *
+   * SQLite clients wrap this in a savepoint so auth failures roll back the local
+   * op and defer materialization events until auth succeeds.
+   */
+  authSession?: LocalWriteAuthSession;
+};
+
 export type TreecrdtEngineOps = {
   append: (op: Operation, opts?: WriteOptions) => Promise<void>;
   appendMany: (ops: Operation[], opts?: WriteOptions) => Promise<void>;
@@ -102,6 +116,28 @@ export type TreecrdtEngineMeta = {
   replicaMaxCounter: (replica: ReplicaId) => Promise<number>;
 };
 
+export type BoundTreecrdtEngineLocal = {
+  insert: (
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
+  ) => Promise<Operation>;
+  move: (
+    node: string,
+    newParent: string,
+    placement: TreecrdtSqlitePlacement,
+    opts?: LocalWriteOptions,
+  ) => Promise<Operation>;
+  delete: (node: string, opts?: LocalWriteOptions) => Promise<Operation>;
+  payload: (
+    node: string,
+    payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
+  ) => Promise<Operation>;
+};
+
 export type TreecrdtEngineLocal = {
   insert: (
     replica: ReplicaId,
@@ -109,16 +145,56 @@ export type TreecrdtEngineLocal = {
     node: string,
     placement: TreecrdtSqlitePlacement,
     payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
   ) => Promise<Operation>;
   move: (
     replica: ReplicaId,
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
+    opts?: LocalWriteOptions,
   ) => Promise<Operation>;
-  delete: (replica: ReplicaId, node: string) => Promise<Operation>;
-  payload: (replica: ReplicaId, node: string, payload: Uint8Array | null) => Promise<Operation>;
+  delete: (replica: ReplicaId, node: string, opts?: LocalWriteOptions) => Promise<Operation>;
+  payload: (
+    replica: ReplicaId,
+    node: string,
+    payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
+  ) => Promise<Operation>;
+  forReplica: (replica: ReplicaId, opts?: LocalWriteOptions) => BoundTreecrdtEngineLocal;
 };
+
+export type TreecrdtEngineLocalMethods = Omit<TreecrdtEngineLocal, 'forReplica'>;
+
+export function createBoundTreecrdtEngineLocal(
+  local: TreecrdtEngineLocalMethods,
+  replica: ReplicaId,
+  defaults: LocalWriteOptions = {},
+): BoundTreecrdtEngineLocal {
+  const hasDefaults = Object.keys(defaults).length > 0;
+  const mergeOptions = (opts?: LocalWriteOptions): LocalWriteOptions | undefined => {
+    if (!hasDefaults) return opts;
+    return { ...defaults, ...opts };
+  };
+
+  return {
+    insert: (parent, node, placement, payload, opts) =>
+      local.insert(replica, parent, node, placement, payload, mergeOptions(opts)),
+    move: (node, newParent, placement, opts) =>
+      local.move(replica, node, newParent, placement, mergeOptions(opts)),
+    delete: (node, opts) => local.delete(replica, node, mergeOptions(opts)),
+    payload: (node, payload, opts) => local.payload(replica, node, payload, mergeOptions(opts)),
+  };
+}
+
+export function createTreecrdtEngineLocal(
+  methods: TreecrdtEngineLocalMethods,
+): TreecrdtEngineLocal {
+  return {
+    ...methods,
+    forReplica: (replica, opts) => createBoundTreecrdtEngineLocal(methods, replica, opts),
+  };
+}
 
 /**
  * Common high-level engine surface shared across the Node and wa-sqlite backends.

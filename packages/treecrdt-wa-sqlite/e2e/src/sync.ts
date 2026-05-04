@@ -13,6 +13,7 @@ import {
   type SyncBenchWorkload,
 } from '@treecrdt/benchmark';
 import type { Operation } from '@treecrdt/interface';
+import type { LocalWriteOptions } from '@treecrdt/interface/engine';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import {
   createInMemoryConnectedPeers,
@@ -307,6 +308,83 @@ export async function runTreecrdtMaterializationEventE2E(): Promise<{
   } finally {
     await client.close();
   }
+}
+
+async function runAuthLocalWriteCase(opts: {
+  storage: 'memory' | 'opfs';
+  preferWorker?: boolean;
+}): Promise<{
+  rollback: { exists: boolean; eventCount: number; opCount: number };
+  success: { exists: boolean; eventCount: number; opCount: number; authorizedBeforeEvent: boolean };
+}> {
+  const docId = `e2e-auth-local-write-${opts.storage}-${crypto.randomUUID()}`;
+  const client = await createTreecrdtClient({
+    storage: opts.storage,
+    preferWorker: opts.preferWorker,
+    docId,
+  });
+  const root = '0'.repeat(32);
+  const replica = replicaFromLabel('auth-local-write');
+  const rollbackNode = nodeIdFromInt(201);
+  const successNode = nodeIdFromInt(202);
+  const events: unknown[] = [];
+  const unsubscribe = client.onMaterialized((event) => events.push(event));
+
+  try {
+    const rejectAuth: LocalWriteOptions['authSession'] = {
+      authorizeLocalOps: async () => {
+        throw new Error('local auth denied');
+      },
+    };
+
+    try {
+      await client.local.insert(replica, root, rollbackNode, { type: 'last' }, null, {
+        authSession: rejectAuth,
+      });
+      throw new Error('expected local auth denial');
+    } catch (err) {
+      if (!(err instanceof Error) || !err.message.includes('local auth denied')) throw err;
+    }
+
+    const rollback = {
+      exists: await client.tree.exists(rollbackNode),
+      eventCount: events.length,
+      opCount: (await client.ops.all()).length,
+    };
+
+    let authorizedBeforeEvent = false;
+    const allowAuth: LocalWriteOptions['authSession'] = {
+      authorizeLocalOps: async () => {
+        authorizedBeforeEvent = events.length === 0;
+      },
+    };
+
+    await client.local.insert(replica, root, successNode, { type: 'last' }, null, {
+      authSession: allowAuth,
+    });
+
+    const success = {
+      exists: await client.tree.exists(successNode),
+      eventCount: events.length,
+      opCount: (await client.ops.all()).length,
+      authorizedBeforeEvent,
+    };
+
+    return { rollback, success };
+  } finally {
+    unsubscribe();
+    await client.close();
+  }
+}
+
+export async function runTreecrdtAuthLocalWriteE2E(): Promise<{
+  ok: true;
+  direct: Awaited<ReturnType<typeof runAuthLocalWriteCase>>;
+  worker: Awaited<ReturnType<typeof runAuthLocalWriteCase>>;
+}> {
+  const direct = await runAuthLocalWriteCase({ storage: 'memory' });
+  const worker = await runAuthLocalWriteCase({ storage: 'opfs', preferWorker: true });
+  return { ok: true, direct, worker };
 }
 
 export async function runTreecrdtSyncLargeFanoutE2E(): Promise<{ ok: true }> {
@@ -622,6 +700,7 @@ declare global {
   interface Window {
     runTreecrdtSyncE2E?: typeof runTreecrdtSyncE2E;
     runTreecrdtMaterializationEventE2E?: typeof runTreecrdtMaterializationEventE2E;
+    runTreecrdtAuthLocalWriteE2E?: typeof runTreecrdtAuthLocalWriteE2E;
     runTreecrdtSyncLargeFanoutE2E?: typeof runTreecrdtSyncLargeFanoutE2E;
     runTreecrdtSyncSubscribeE2E?: typeof runTreecrdtSyncSubscribeE2E;
     runTreecrdtSyncBench?: typeof runTreecrdtSyncBench;
@@ -631,6 +710,7 @@ declare global {
 if (typeof window !== 'undefined') {
   window.runTreecrdtSyncE2E = runTreecrdtSyncE2E;
   window.runTreecrdtMaterializationEventE2E = runTreecrdtMaterializationEventE2E;
+  window.runTreecrdtAuthLocalWriteE2E = runTreecrdtAuthLocalWriteE2E;
   window.runTreecrdtSyncLargeFanoutE2E = runTreecrdtSyncLargeFanoutE2E;
   window.runTreecrdtSyncSubscribeE2E = runTreecrdtSyncSubscribeE2E;
   window.runTreecrdtSyncBench = runTreecrdtSyncBench;

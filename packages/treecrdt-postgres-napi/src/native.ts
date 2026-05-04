@@ -36,6 +36,12 @@ export type NativeLocalOpResult = {
   outcome: NativeMaterializationOutcome;
 };
 
+export type NativePreparedLocalOpTx = {
+  op(): NativeOp;
+  commit(): NativeLocalOpResult;
+  rollback(): void;
+};
+
 export type NativeBackend = {
   maxLamport(): bigint;
   listOpRefsAll(): Uint8Array[];
@@ -71,6 +77,14 @@ export type NativeBackend = {
     after: Uint8Array | null,
     payload: Uint8Array | null,
   ): NativeLocalOpResult;
+  prepareLocalInsert(
+    replica: Uint8Array,
+    parent: Uint8Array,
+    node: Uint8Array,
+    placement: string,
+    after: Uint8Array | null,
+    payload: Uint8Array | null,
+  ): NativePreparedLocalOpTx;
   localMove(
     replica: Uint8Array,
     node: Uint8Array,
@@ -78,12 +92,25 @@ export type NativeBackend = {
     placement: string,
     after: Uint8Array | null,
   ): NativeLocalOpResult;
+  prepareLocalMove(
+    replica: Uint8Array,
+    node: Uint8Array,
+    newParent: Uint8Array,
+    placement: string,
+    after: Uint8Array | null,
+  ): NativePreparedLocalOpTx;
   localDelete(replica: Uint8Array, node: Uint8Array): NativeLocalOpResult;
+  prepareLocalDelete(replica: Uint8Array, node: Uint8Array): NativePreparedLocalOpTx;
   localPayload(
     replica: Uint8Array,
     node: Uint8Array,
     payload: Uint8Array | null,
   ): NativeLocalOpResult;
+  prepareLocalPayload(
+    replica: Uint8Array,
+    node: Uint8Array,
+    payload: Uint8Array | null,
+  ): NativePreparedLocalOpTx;
 };
 
 export type NativeFactory = {

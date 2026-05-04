@@ -164,7 +164,7 @@ type PlaygroundSyncApi = {
   liveAllEnabled: boolean;
   setLiveAllEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   toggleLiveChildren: (parentId: string) => void;
-  notifyLocalUpdate: (ops?: Operation[]) => void;
+  queueLocalOpsForSync: (ops?: Operation[]) => void;
   handleSync: (filter: Filter) => Promise<void>;
   handleScopedSync: () => Promise<void>;
   postBroadcastMessage: (
@@ -445,7 +445,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     });
   };
 
-  const notifyLocalUpdate = (ops?: Operation[]) => {
+  const queueLocalOpsForSync = (ops?: Operation[]) => {
     void syncPeerRef.current?.notifyLocalUpdate(ops);
     queueRemoteUploadHints(ops);
     if (remoteLivePushRunningRef.current) {
@@ -1227,7 +1227,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    notifyLocalUpdate,
+    queueLocalOpsForSync,
     handleSync,
     handleScopedSync,
     postBroadcastMessage,
