@@ -72,6 +72,32 @@ function syncFilterLabel(filter: Filter, action = 'sync'): string {
     : `${action}(children ${bytesToHex(filter.children.parent).slice(0, 8)}…)`;
 }
 
+async function syncFiltersWithTransport(
+  peer: SyncPeer<Operation>,
+  peerId: string,
+  transport: DuplexTransport<any>,
+  filters: readonly Filter[],
+  opts: {
+    autoSync?: boolean;
+    multipleTargets?: boolean;
+    codewordsPerMessage?: number;
+    label?: string;
+  } = {},
+) {
+  const perPeerTimeoutMs = syncTimeoutMsForPeer(peerId, {
+    autoSync: opts.autoSync,
+    multipleTargets: opts.multipleTargets,
+  });
+  const codewordsPerMessage = opts.codewordsPerMessage ?? 2048;
+  for (const filter of filters) {
+    await withTimeout(
+      peer.syncOnce(transport, filter, syncOnceOptionsForPeer(peerId, codewordsPerMessage)),
+      perPeerTimeoutMs,
+      `${syncFilterLabel(filter, opts.label)} with ${peerId.slice(0, 8)}… timed out`,
+    );
+  }
+}
+
 type PlaygroundSyncApi = {
   peers: PeerInfo[];
   remoteSyncStatus: RemoteSyncStatus;
@@ -247,18 +273,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       label?: string;
     } = {},
   ) => {
-    const perPeerTimeoutMs = syncTimeoutMsForPeer(peerId, {
-      autoSync: opts.autoSync,
-      multipleTargets: opts.multipleTargets,
-    });
-    const codewordsPerMessage = opts.codewordsPerMessage ?? 2048;
-    for (const filter of filters) {
-      await withTimeout(
-        peer.syncOnce(conn.transport, filter, syncOnceOptionsForPeer(peerId, codewordsPerMessage)),
-        perPeerTimeoutMs,
-        `${syncFilterLabel(filter, opts.label)} with ${peerId.slice(0, 8)}… timed out`,
-      );
-    }
+    await syncFiltersWithTransport(peer, peerId, conn.transport, filters, opts);
   };
 
   const syncFiltersWithTargets = async (filters: readonly Filter[], label: string) => {
@@ -576,11 +591,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         );
       },
       runSync: async ({ peer, peerId, transport, filter }) => {
-        await withTimeout(
-          peer.syncOnce(transport, filter, syncOnceOptionsForPeer(peerId, 1024)),
-          syncTimeoutMsForPeer(peerId, { autoSync: true }),
-          `live sync with ${peerId.slice(0, 8)}… timed out`,
-        );
+        await syncFiltersWithTransport(peer, peerId, transport, [filter], {
+          autoSync: true,
+          codewordsPerMessage: 1024,
+          label: 'live sync',
+        });
       },
       onWorkStart: beginLiveWork,
       onWorkEnd: endLiveWork,
