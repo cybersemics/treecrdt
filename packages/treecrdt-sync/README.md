@@ -9,10 +9,47 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@treecrdt/dis
 - You want a single dependency to **open a websocket** to a sync server and run reconciliation against a SQLite-backed client store.
 - You are fine with the built-in discovery + WebSocket + protobuf wiring.
 
+## Recommended app path
+
+Use `connectTreecrdtSyncController` when app writes may happen before sync startup has fully
+settled. It buffers local ops through `start()`, keeps failed pushes queued for retry, and
+reports lifecycle status.
+
+```ts
+import { connectTreecrdtSyncController } from '@treecrdt/sync';
+
+const sync = await connectTreecrdtSyncController(client, {
+  baseUrl,
+  auth: authSession?.syncAuth,
+  controller: {
+    onStatus: (status) => console.log(status.state, status.pendingOps),
+    onError: console.error,
+  },
+});
+
+await sync.start();
+
+const op = await client.local.insert(replica, parent, node, { type: 'last' }, payload);
+await sync.pushLocalOps([op]);
+```
+
+`pushLocalOps` is safe before `start()` too:
+
+```ts
+const op = await client.local.payload(replica, node, payload);
+await sync.pushLocalOps([op]); // queued if startup is not ready yet
+await sync.start(); // queued ops flush as part of startup
+```
+
+For custom transports or tests, create a low-level sync handle with
+`createTreecrdtWebSocketSyncFromTransport` and wrap it with `createTreecrdtSyncController`.
+
 ## When not to
 
 - You only need the protocol types and `SyncPeer` (use **`@treecrdt/sync-protocol`**).
 - You use a custom transport, no discovery, or an in-memory backend (depend on the protocol and/or **`@treecrdt/discovery`** as needed).
+- You want exact low-level control over each `syncOnce`, `startLive`, and direct push call; use
+  `connectTreecrdtWebSocketSync` directly.
 
 ## Repo location
 

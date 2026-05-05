@@ -60,10 +60,9 @@ export type TreecrdtWebSocketSync = {
   startLive: (opts?: SyncSubscribeOptions) => Promise<void>;
   stopLive: () => void;
   /**
-   /**
-    * Upload local ops to the peer. For local→remote only; pass ops from your edit API (not from onChange).
-    * No-ops if empty. For full sync, use syncOnce instead.
-    */
+   * Upload local ops to the peer. For local-to-remote only; pass ops from your edit API, not from
+   * `onChange`. No-ops if empty. For full reconciliation, use `syncOnce`.
+   */
   pushLocalOps: (ops?: readonly Operation[]) => Promise<void>;
   close: () => Promise<void>;
 };
