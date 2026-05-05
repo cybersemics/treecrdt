@@ -7,7 +7,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { Operation } from '@treecrdt/interface';
-import { createScopeController, type ScopeController, type SyncScope } from '@treecrdt/sync';
+import { createInboundSync, type InboundSync, type SyncScope } from '@treecrdt/sync';
 import type { Filter, SyncMessage, SyncPeer } from '@treecrdt/sync-protocol';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 
@@ -34,8 +34,8 @@ export function usePlaygroundLiveSubscriptions(opts: {
   const [liveAllEnabled, setLiveAllEnabled] = useState(false);
   const liveChildrenParentsRef = useRef<Set<string>>(new Set());
   const liveAllEnabledRef = useRef(false);
-  const scopeControllerRef = useRef<ScopeController<Operation> | null>(null);
-  const scopeControllerPeerRef = useRef<SyncPeer<Operation> | null>(null);
+  const inboundSyncRef = useRef<InboundSync<Operation> | null>(null);
+  const inboundSyncPeerRef = useRef<SyncPeer<Operation> | null>(null);
   const liveAllScopeRef = useRef<SyncScope | null>(null);
   const liveChildScopesRef = useRef<Map<string, SyncScope>>(new Map());
   const liveBusyCountRef = useRef(0);
@@ -50,19 +50,19 @@ export function usePlaygroundLiveSubscriptions(opts: {
     setLiveBusy(liveBusyCountRef.current > 0);
   };
 
-  const ensureScopeController = () => {
+  const ensureInboundSync = () => {
     const peer = syncPeerRef.current;
     if (!peer) return null;
-    if (scopeControllerRef.current && scopeControllerPeerRef.current === peer) {
-      return scopeControllerRef.current;
+    if (inboundSyncRef.current && inboundSyncPeerRef.current === peer) {
+      return inboundSyncRef.current;
     }
 
-    scopeControllerRef.current?.close();
+    inboundSyncRef.current?.close();
     liveAllScopeRef.current = null;
     liveChildScopesRef.current.clear();
 
-    const controller = createScopeController<Operation>({
-      peer,
+    const inbound = createInboundSync<Operation>({
+      localPeer: peer,
       subscribeOptions: (peerId) => syncOnceOptionsForPeer(peerId, 1024),
       onWorkStart: beginLiveWork,
       onWorkEnd: endLiveWork,
@@ -71,15 +71,15 @@ export function usePlaygroundLiveSubscriptions(opts: {
         setSyncError(formatSyncError(error));
       },
     });
-    scopeControllerRef.current = controller;
-    scopeControllerPeerRef.current = peer;
-    return controller;
+    inboundSyncRef.current = inbound;
+    inboundSyncPeerRef.current = peer;
+    return inbound;
   };
 
   const ensureLiveAllScope = () => {
-    const controller = ensureScopeController();
-    if (!controller) return;
-    const scope = liveAllScopeRef.current ?? controller.scope({ all: {} });
+    const inbound = ensureInboundSync();
+    if (!inbound) return;
+    const scope = liveAllScopeRef.current ?? inbound.scope({ all: {} });
     liveAllScopeRef.current = scope;
     scope.startLive();
   };
@@ -90,15 +90,15 @@ export function usePlaygroundLiveSubscriptions(opts: {
   };
 
   const ensureLiveChildScope = (parentId: string) => {
-    const controller = ensureScopeController();
-    if (!controller) return;
+    const inbound = ensureInboundSync();
+    if (!inbound) return;
     const existing = liveChildScopesRef.current.get(parentId);
     if (existing) {
       existing.startLive();
       return;
     }
 
-    const scope = controller.scope({ children: { parent: hexToBytes16(parentId) } });
+    const scope = inbound.scope({ children: { parent: hexToBytes16(parentId) } });
     liveChildScopesRef.current.set(parentId, scope);
     scope.startLive();
   };
@@ -115,15 +115,15 @@ export function usePlaygroundLiveSubscriptions(opts: {
     for (const parentId of liveChildrenParentsRef.current) ensureLiveChildScope(parentId);
   };
 
-  const setLivePeer = (peerId: string, conn: PlaygroundSyncConnection) => {
-    const controller = ensureScopeController();
-    if (!controller) return;
-    controller.setPeer(peerId, conn.transport as DuplexTransport<SyncMessage<Operation>>);
+  const addLivePeer = (peerId: string, conn: PlaygroundSyncConnection) => {
+    const inbound = ensureInboundSync();
+    if (!inbound) return;
+    inbound.addPeer(peerId, conn.transport as DuplexTransport<SyncMessage<Operation>>);
     startDesiredScopes();
   };
 
-  const deleteLivePeer = (peerId: string) => {
-    scopeControllerRef.current?.deletePeer(peerId);
+  const removeLivePeer = (peerId: string) => {
+    inboundSyncRef.current?.removePeer(peerId);
   };
 
   const toggleLiveChildren = (parentId: string) => {
@@ -136,9 +136,9 @@ export function usePlaygroundLiveSubscriptions(opts: {
   };
 
   const resetLiveWork = () => {
-    scopeControllerRef.current?.close();
-    scopeControllerRef.current = null;
-    scopeControllerPeerRef.current = null;
+    inboundSyncRef.current?.close();
+    inboundSyncRef.current = null;
+    inboundSyncPeerRef.current = null;
     liveAllScopeRef.current = null;
     liveChildScopesRef.current.clear();
     liveBusyCountRef.current = 0;
@@ -176,8 +176,8 @@ export function usePlaygroundLiveSubscriptions(opts: {
     liveAllEnabledRef,
     beginLiveWork,
     endLiveWork,
-    setLivePeer,
-    deleteLivePeer,
+    addLivePeer,
+    removeLivePeer,
     resetLiveWork,
   };
 }
