@@ -11,14 +11,14 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@treecrdt/dis
 
 ## Recommended app path
 
-Use `connectTreecrdtSyncController` when app writes may happen before sync startup has fully
+Use `connectSyncController` when app writes may happen before sync startup has fully
 settled. It buffers local ops through `start()`, keeps failed pushes queued for retry, and
 reports lifecycle status.
 
 ```ts
-import { connectTreecrdtSyncController } from '@treecrdt/sync';
+import { connectSyncController } from '@treecrdt/sync';
 
-const sync = await connectTreecrdtSyncController(client, {
+const sync = await connectSyncController(client, {
   baseUrl,
   auth: authSession?.syncAuth,
   controller: {
@@ -42,18 +42,18 @@ await sync.start(); // queued ops flush as part of startup
 ```
 
 For custom transports or tests, create a low-level sync handle with
-`createTreecrdtWebSocketSyncFromTransport` and wrap it with `createTreecrdtSyncController`.
+`createTreecrdtWebSocketSyncFromTransport` and wrap it with `createSyncController`.
 
 ## Multi-peer apps
 
-Use `createTreecrdtMultiPeerSyncController` when one `SyncPeer` owns several transports, such as
+Use `createSyncController` with a `peer` when one `SyncPeer` owns several transports, such as
 local-tab mesh peers plus a remote websocket server. The app still manages transport discovery, but
 the controller owns local-op upload queues, dedupe, offline retry, and fallback reconciliation.
 
 ```ts
-import { createTreecrdtMultiPeerSyncController } from '@treecrdt/sync';
+import { createSyncController } from '@treecrdt/sync';
 
-const remoteSync = createTreecrdtMultiPeerSyncController({
+const remoteSync = createSyncController({
   peer,
   opKey: (op) => `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`,
   isOnline: () => navigator.onLine,

@@ -11,10 +11,7 @@ import {
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtWebSocketSync } from '../src/types.js';
 
-import {
-  createTreecrdtMultiPeerSyncController,
-  createTreecrdtSyncController,
-} from '../src/controller.js';
+import { createSyncController } from '../src/controller.js';
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
 import { ROOT, createInMemoryTestClient, orderKeyFromPosition } from './test-helpers.js';
@@ -139,7 +136,7 @@ test('controller queues local ops before start and flushes after startup', async
 
   const sync = createConnectedInMemorySync(aClient, bClient, docId);
   const statuses: string[] = [];
-  const controller = createTreecrdtSyncController(sync, {
+  const controller = createSyncController(sync, {
     live: false,
     onStatus: (status) => statuses.push(`${status.state}:${status.pendingOps}`),
   });
@@ -165,7 +162,7 @@ test('controller keeps failed pushes queued for retry', async () => {
   const op = makeInsertOp();
   const { pushed, sync } = createFakeSync({ failPushes: 1 });
   const errors: unknown[] = [];
-  const controller = createTreecrdtSyncController(sync, {
+  const controller = createSyncController(sync, {
     live: false,
     onError: (err) => errors.push(err),
   });
@@ -186,7 +183,7 @@ test('controller keeps failed pushes queued for retry', async () => {
 test('controller retries startup and flushes ops queued before failed start', async () => {
   const op = makeInsertOp();
   const { pushed, sync } = createFakeSync({ failPushes: 1 });
-  const controller = createTreecrdtSyncController(sync, { live: false });
+  const controller = createSyncController(sync, { live: false });
 
   await controller.pushLocalOps([op]);
   await expect(controller.start()).rejects.toThrow('push failed');
@@ -202,7 +199,7 @@ test('controller retries startup and flushes ops queued before failed start', as
 test('controller close stops future flushes and rejects new work', async () => {
   const op = makeInsertOp();
   const { pushed, sync } = createFakeSync();
-  const controller = createTreecrdtSyncController(sync, { live: false });
+  const controller = createSyncController(sync, { live: false });
 
   await controller.pushLocalOps([op]);
   await controller.close();
@@ -217,7 +214,7 @@ test('controller close stops future flushes and rejects new work', async () => {
 test('multi-peer controller queues local ops until a selected peer is available', async () => {
   const op = makeInsertOp();
   const { peer, pushed } = createFakePeer();
-  const controller = createTreecrdtMultiPeerSyncController({
+  const controller = createSyncController({
     peer,
     opKey: opUploadKey,
     shouldSyncPeer: (peerId) => peerId.startsWith('remote:'),
@@ -246,7 +243,7 @@ test('multi-peer controller keeps failed direct pushes queued', async () => {
   const op = makeInsertOp();
   const { peer, pushed } = createFakePeer({ failPushes: 1 });
   const errors: unknown[] = [];
-  const controller = createTreecrdtMultiPeerSyncController({
+  const controller = createSyncController({
     peer,
     opKey: opUploadKey,
     onError: ({ error }) => errors.push(error),
@@ -269,7 +266,7 @@ test('multi-peer controller keeps failed direct pushes queued', async () => {
 test('multi-peer controller runs fallback sync when no exact ops are available', async () => {
   const filter = { children: { parent: nodeIdFromInt(42) } };
   const { peer, synced } = createFakePeer();
-  const controller = createTreecrdtMultiPeerSyncController({
+  const controller = createSyncController({
     peer,
     getFallbackFilters: () => [filter],
   });

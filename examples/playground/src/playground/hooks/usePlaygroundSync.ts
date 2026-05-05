@@ -6,10 +6,7 @@ import {
   type ResolveWebSocketAttachmentResult,
 } from '@treecrdt/discovery';
 import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
-import {
-  createTreecrdtMultiPeerSyncController,
-  type TreecrdtMultiPeerSyncController,
-} from '@treecrdt/sync';
+import { createSyncController, type MultiPeerSyncController } from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
   BroadcastPresenceAckMessageV1,
@@ -147,7 +144,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const syncPeerRef = useRef<SyncPeer<Operation> | null>(null);
   const syncConnRef = useRef<Map<string, PlaygroundSyncConnection>>(new Map());
-  const remoteSyncControllerRef = useRef<TreecrdtMultiPeerSyncController<Operation> | null>(null);
+  const remoteSyncControllerRef = useRef<MultiPeerSyncController<Operation> | null>(null);
   const {
     liveBusy,
     liveChildrenParents,
@@ -585,7 +582,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const connections = new Map<string, { transport: DuplexTransport<any>; detach: () => void }>();
     syncConnRef.current = connections;
 
-    const remoteSyncController = createTreecrdtMultiPeerSyncController<Operation>({
+    const remoteSyncController = createSyncController<Operation>({
       peer: sharedPeer,
       opKey: localOpUploadKey,
       isOnline: () => onlineRef.current,

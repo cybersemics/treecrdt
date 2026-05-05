@@ -15,21 +15,15 @@ import type {
   TreecrdtWebSocketSyncClient,
 } from './types.js';
 
-export type TreecrdtSyncControllerState =
-  | 'idle'
-  | 'starting'
-  | 'live'
-  | 'stopped'
-  | 'error'
-  | 'closed';
+export type SyncControllerState = 'idle' | 'starting' | 'live' | 'stopped' | 'error' | 'closed';
 
-export type TreecrdtSyncControllerStatus = {
-  state: TreecrdtSyncControllerState;
+export type SyncControllerStatus = {
+  state: SyncControllerState;
   pendingOps: number;
   error?: unknown;
 };
 
-export type TreecrdtSyncControllerOptions = {
+export type SyncControllerOptions = {
   /**
    * Initial reconciliation to run before the controller is considered live-ready.
    * Pass `false` to skip initial reconciliation.
@@ -43,15 +37,15 @@ export type TreecrdtSyncControllerOptions = {
    * Optional safety-net reconciliation while the controller is running.
    */
   reconcileIntervalMs?: number;
-  onStatus?: (status: TreecrdtSyncControllerStatus) => void;
+  onStatus?: (status: SyncControllerStatus) => void;
   onError?: (error: unknown) => void;
 };
 
-export type ConnectTreecrdtSyncControllerOptions = ConnectTreecrdtWebSocketSyncOptions & {
-  controller?: TreecrdtSyncControllerOptions;
+export type ConnectSyncControllerOptions = ConnectTreecrdtWebSocketSyncOptions & {
+  controller?: SyncControllerOptions;
 };
 
-export type TreecrdtMultiPeerSyncControllerStatus = {
+export type MultiPeerSyncControllerStatus = {
   peerCount: number;
   pendingOps: number;
   needsFullSync: boolean;
@@ -59,21 +53,21 @@ export type TreecrdtMultiPeerSyncControllerStatus = {
   scheduled: boolean;
 };
 
-export type TreecrdtMultiPeerRunPushContext<Op = Operation> = {
+export type MultiPeerRunPushContext<Op = Operation> = {
   peer: SyncPeer<Op>;
   peerId: string;
   transport: DuplexTransport<SyncMessage<Op>>;
   ops: readonly Op[];
 };
 
-export type TreecrdtMultiPeerRunSyncContext<Op = Operation> = {
+export type MultiPeerRunSyncContext<Op = Operation> = {
   peer: SyncPeer<Op>;
   peerId: string;
   transport: DuplexTransport<SyncMessage<Op>>;
   filter: Filter;
 };
 
-export type TreecrdtMultiPeerSyncControllerOptions<Op = Operation> = {
+export type MultiPeerSyncControllerOptions<Op = Operation> = {
   peer: SyncPeer<Op>;
   /**
    * Stable key used to coalesce repeated local write hints before upload.
@@ -96,21 +90,21 @@ export type TreecrdtMultiPeerSyncControllerOptions<Op = Operation> = {
   /**
    * Override low-level push execution for app-specific timeouts, batching, or logging.
    */
-  runPush?: (ctx: TreecrdtMultiPeerRunPushContext<Op>) => Promise<void>;
+  runPush?: (ctx: MultiPeerRunPushContext<Op>) => Promise<void>;
   /**
    * Override fallback reconciliation for app-specific timeouts or syncOnce options.
    */
-  runSync?: (ctx: TreecrdtMultiPeerRunSyncContext<Op>) => Promise<void>;
+  runSync?: (ctx: MultiPeerRunSyncContext<Op>) => Promise<void>;
   pushOptions?: (peerId: string) => SyncPushOptions | undefined;
   syncOptions?: (peerId: string, filter: Filter) => SyncOnceOptions | undefined;
   onWorkStart?: () => void;
   onWorkEnd?: () => void;
   onError?: (ctx: { peerId: string; error: unknown }) => void;
-  onStatus?: (status: TreecrdtMultiPeerSyncControllerStatus) => void;
+  onStatus?: (status: MultiPeerSyncControllerStatus) => void;
 };
 
-export type TreecrdtMultiPeerSyncController<Op = Operation> = {
-  readonly status: TreecrdtMultiPeerSyncControllerStatus;
+export type MultiPeerSyncController<Op = Operation> = {
+  readonly status: MultiPeerSyncControllerStatus;
   readonly pendingOpCount: number;
   readonly peerCount: number;
   setPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
@@ -121,8 +115,8 @@ export type TreecrdtMultiPeerSyncController<Op = Operation> = {
   close: () => void;
 };
 
-export type TreecrdtSyncController = {
-  readonly status: TreecrdtSyncControllerStatus;
+export type SyncController = {
+  readonly status: SyncControllerStatus;
   readonly pendingOpCount: number;
   start: () => Promise<void>;
   stopLive: () => void;
@@ -134,10 +128,10 @@ export type TreecrdtSyncController = {
 };
 
 function statusSnapshot(
-  state: TreecrdtSyncControllerState,
+  state: SyncControllerState,
   pendingOps: number,
   error?: unknown,
-): TreecrdtSyncControllerStatus {
+): SyncControllerStatus {
   return error === undefined ? { state, pendingOps } : { state, pendingOps, error };
 }
 
@@ -147,7 +141,7 @@ function multiPeerStatusSnapshot<Op>(
   needsFullSync: boolean,
   running: boolean,
   scheduled: boolean,
-): TreecrdtMultiPeerSyncControllerStatus {
+): MultiPeerSyncControllerStatus {
   return {
     peerCount: peers.size,
     pendingOps: pendingOps.length,
@@ -164,11 +158,11 @@ function multiPeerStatusSnapshot<Op>(
  * relying on app code to remember whether the transport is ready yet. Failed flushes keep ops
  * queued for an explicit retry or the next successful start.
  */
-export function createTreecrdtSyncController(
+function createSingleTransportSyncController(
   sync: TreecrdtWebSocketSync,
-  options: TreecrdtSyncControllerOptions = {},
-): TreecrdtSyncController {
-  let state: TreecrdtSyncControllerState = 'idle';
+  options: SyncControllerOptions = {},
+): SyncController {
+  let state: SyncControllerState = 'idle';
   let lastError: unknown;
   let readyToFlush = false;
   let startPromise: Promise<void> | null = null;
@@ -181,7 +175,7 @@ export function createTreecrdtSyncController(
     options.onStatus?.(statusSnapshot(state, pendingOps.length, lastError));
   };
 
-  const setState = (next: TreecrdtSyncControllerState, error?: unknown) => {
+  const setState = (next: SyncControllerState, error?: unknown) => {
     state = next;
     if (error !== undefined) lastError = error;
     else if (next !== 'error') lastError = undefined;
@@ -198,7 +192,7 @@ export function createTreecrdtSyncController(
   };
 
   const assertOpen = () => {
-    if (closed) throw new Error('TreecrdtSyncController: closed');
+    if (closed) throw new Error('SyncController: closed');
   };
 
   const clearReconcileTimer = () => {
@@ -332,7 +326,7 @@ export function createTreecrdtSyncController(
     }
   };
 
-  const controller: TreecrdtSyncController = {
+  const controller: SyncController = {
     get status() {
       return statusSnapshot(state, pendingOps.length, lastError);
     },
@@ -359,9 +353,9 @@ export function createTreecrdtSyncController(
  * the same time. This controller centralizes the remote upload/reconcile queue so UI code only
  * registers peer transports and reports local ops returned by the edit API.
  */
-export function createTreecrdtMultiPeerSyncController<Op = Operation>(
-  options: TreecrdtMultiPeerSyncControllerOptions<Op>,
-): TreecrdtMultiPeerSyncController<Op> {
+function createMultiPeerSyncController<Op = Operation>(
+  options: MultiPeerSyncControllerOptions<Op>,
+): MultiPeerSyncController<Op> {
   const peers = new Map<string, DuplexTransport<SyncMessage<Op>>>();
   const pendingOps: Op[] = [];
   const pendingOpKeys = new Set<string>();
@@ -406,12 +400,12 @@ export function createTreecrdtMultiPeerSyncController<Op = Operation>(
 
   const runPush =
     options.runPush ??
-    ((ctx: TreecrdtMultiPeerRunPushContext<Op>) =>
+    ((ctx: MultiPeerRunPushContext<Op>) =>
       ctx.peer.pushOps(ctx.transport, ctx.ops, options.pushOptions?.(ctx.peerId)));
 
   const runSync =
     options.runSync ??
-    ((ctx: TreecrdtMultiPeerRunSyncContext<Op>) =>
+    ((ctx: MultiPeerRunSyncContext<Op>) =>
       ctx.peer.syncOnce(ctx.transport, ctx.filter, options.syncOptions?.(ctx.peerId, ctx.filter)));
 
   const scheduleFlush = () => {
@@ -503,7 +497,7 @@ export function createTreecrdtMultiPeerSyncController<Op = Operation>(
     }
   };
 
-  const controller: TreecrdtMultiPeerSyncController<Op> = {
+  const controller: MultiPeerSyncController<Op> = {
     get status() {
       return multiPeerStatusSnapshot(peers, pendingOps, needsFullSync, running, scheduled);
     },
@@ -549,11 +543,39 @@ export function createTreecrdtMultiPeerSyncController<Op = Operation>(
   return controller;
 }
 
-export async function connectTreecrdtSyncController(
+function isMultiPeerSyncControllerOptions<Op>(
+  value: TreecrdtWebSocketSync | MultiPeerSyncControllerOptions<Op>,
+): value is MultiPeerSyncControllerOptions<Op> {
+  return typeof value === 'object' && value !== null && 'peer' in value;
+}
+
+/**
+ * Create the app-facing sync controller.
+ *
+ * Pass a low-level WebSocket sync handle for the common single-transport lifecycle controller, or
+ * pass `{ peer, ... }` when one SyncPeer owns multiple transports.
+ */
+export function createSyncController(
+  sync: TreecrdtWebSocketSync,
+  options?: SyncControllerOptions,
+): SyncController;
+export function createSyncController<Op = Operation>(
+  options: MultiPeerSyncControllerOptions<Op>,
+): MultiPeerSyncController<Op>;
+export function createSyncController<Op = Operation>(
+  syncOrOptions: TreecrdtWebSocketSync | MultiPeerSyncControllerOptions<Op>,
+  options: SyncControllerOptions = {},
+): SyncController | MultiPeerSyncController<Op> {
+  return isMultiPeerSyncControllerOptions(syncOrOptions)
+    ? createMultiPeerSyncController(syncOrOptions)
+    : createSingleTransportSyncController(syncOrOptions, options);
+}
+
+export async function connectSyncController(
   client: TreecrdtWebSocketSyncClient,
-  options: ConnectTreecrdtSyncControllerOptions,
-): Promise<TreecrdtSyncController> {
+  options: ConnectSyncControllerOptions,
+): Promise<SyncController> {
   const { controller: controllerOptions, ...connectOptions } = options;
   const sync = await connectTreecrdtWebSocketSync(client, connectOptions);
-  return createTreecrdtSyncController(sync, controllerOptions);
+  return createSyncController(sync, controllerOptions);
 }
