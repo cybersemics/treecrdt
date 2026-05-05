@@ -68,16 +68,15 @@ export type TreecrdtAuthSessionOptions = Omit<
   | 'localPublicKey'
   | 'localCapabilityTokens'
   | 'localRevocationRecords'
-> &
-  {
-    /** Doc used to warm local auth material before the session is handed to sync. */
-    docId: string;
-    /** Backend-owned auth dependencies, e.g. subtree scope checks and proof-material stores. */
-    backend?: TreecrdtAuthSessionBackend;
-    identity?: TreecrdtAuthSessionIdentity;
-    trust: TreecrdtAuthSessionTrust;
-    local: TreecrdtAuthSessionLocal;
-  };
+> & {
+  /** Doc used to warm local auth material before the session is handed to sync. */
+  docId: string;
+  /** Backend-owned auth dependencies, e.g. subtree scope checks and proof-material stores. */
+  backend?: TreecrdtAuthSessionBackend;
+  identity?: TreecrdtAuthSessionIdentity;
+  trust: TreecrdtAuthSessionTrust;
+  local: TreecrdtAuthSessionLocal;
+};
 
 export type TreecrdtAuthSession = {
   syncAuth: SyncAuth<Operation>;
@@ -97,14 +96,7 @@ export type TreecrdtAuthSession = {
  * awaiting `ready` before passing it into sync startup, avoiding per-app warmup wrappers.
  */
 export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): TreecrdtAuthSession {
-  const {
-    docId,
-    backend,
-    identity,
-    trust,
-    local,
-    ...authOptsBase
-  } = opts;
+  const { docId, backend, identity, trust, local, ...authOptsBase } = opts;
   if (!trust?.issuerPublicKeys) throw new Error('auth session requires trust.issuerPublicKeys');
   if (!local?.privateKey) throw new Error('auth session requires local.privateKey');
   if (!local?.publicKey) throw new Error('auth session requires local.publicKey');
