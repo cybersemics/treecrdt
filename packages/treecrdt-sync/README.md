@@ -46,25 +46,25 @@ For custom transports or tests, create a low-level sync handle with
 
 ## Multi-peer apps
 
-Use `createSyncController` with a `peer` when one `SyncPeer` owns several transports, such as
+Use `createOutboundSync` with a `localPeer` when one `SyncPeer` owns several transports, such as
 local-tab mesh peers plus a remote websocket server. The app still manages transport discovery, but
-the controller owns local-op upload queues, dedupe, offline retry, and fallback reconciliation.
+outbound sync owns local-op upload queues, dedupe, offline retry, and fallback reconciliation.
 
 ```ts
-import { createSyncController } from '@treecrdt/sync';
+import { createOutboundSync } from '@treecrdt/sync';
 
-const remoteSync = createSyncController({
-  peer,
+const outbound = createOutboundSync({
+  localPeer: peer,
   opKey: (op) => `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`,
   isOnline: () => navigator.onLine,
   shouldSyncPeer: (peerId) => peerId.startsWith('remote:'),
 });
 
-remoteSync.setPeer('remote:server', websocketTransport);
+outbound.addPeer('remote:server', websocketTransport);
 
 const op = await client.local.payload(replica, node, payload);
 await peer.notifyLocalUpdate([op]); // local mesh fanout
-remoteSync.queueLocalOps([op]); // remote websocket upload/retry
+outbound.queueLocalOps([op]); // remote websocket upload/retry
 ```
 
 ## When not to
