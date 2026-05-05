@@ -1,6 +1,7 @@
 export { connectTreecrdtWebSocketSync } from './connect.js';
 export { createOutboundSync } from './controller.js';
 export { createTreecrdtWebSocketSyncFromTransport } from './create-sync-from-transport.js';
+export { createScopeController } from './scope-controller.js';
 export type {
   ConnectTreecrdtWebSocketSyncOptions,
   CreateTreecrdtWebSocketSyncFromTransportOptions,
@@ -12,3 +13,10 @@ export type {
   TreecrdtWebSocketSync,
   TreecrdtWebSocketSyncClient,
 } from './types.js';
+export type {
+  ScopeController,
+  ScopeControllerErrorContext,
+  ScopeControllerErrorPhase,
+  ScopeControllerOptions,
+  SyncScope,
+} from './scope-controller.js';
