@@ -11,7 +11,10 @@ import {
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtWebSocketSync } from '../src/types.js';
 
-import { createTreecrdtSyncController } from '../src/controller.js';
+import {
+  createTreecrdtMultiPeerSyncController,
+  createTreecrdtSyncController,
+} from '../src/controller.js';
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
 import { ROOT, createInMemoryTestClient, orderKeyFromPosition } from './test-helpers.js';
@@ -99,6 +102,34 @@ function createFakeSync(opts: { failPushes?: number; failStarts?: number } = {})
   return { pushed, sync };
 }
 
+function opUploadKey(op: Operation): string {
+  return `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter.toString()}`;
+}
+
+function createFakePeer(opts: { failPushes?: number; failSyncs?: number } = {}) {
+  let failPushes = opts.failPushes ?? 0;
+  let failSyncs = opts.failSyncs ?? 0;
+  const pushed: Operation[][] = [];
+  const synced: unknown[] = [];
+  const peer = {
+    pushOps: vi.fn(async (_transport: unknown, ops: readonly Operation[]) => {
+      if (failPushes > 0) {
+        failPushes -= 1;
+        throw new Error('direct push failed');
+      }
+      pushed.push([...ops]);
+    }),
+    syncOnce: vi.fn(async (_transport: unknown, filter: unknown) => {
+      if (failSyncs > 0) {
+        failSyncs -= 1;
+        throw new Error('fallback sync failed');
+      }
+      synced.push(filter);
+    }),
+  } as unknown as SyncPeer<Operation>;
+  return { peer, pushed, synced };
+}
+
 test('controller queues local ops before start and flushes after startup', async () => {
   const docId = `sync-controller-queue-${Math.random().toString(16).slice(2)}`;
   const op = makeInsertOp();
@@ -181,4 +212,72 @@ test('controller close stops future flushes and rejects new work', async () => {
   expect(sync.close).toHaveBeenCalledTimes(1);
   await expect(controller.start()).rejects.toThrow('closed');
   await expect(controller.pushLocalOps([makeInsertOp(2)])).rejects.toThrow('closed');
+});
+
+test('multi-peer controller queues local ops until a selected peer is available', async () => {
+  const op = makeInsertOp();
+  const { peer, pushed } = createFakePeer();
+  const controller = createTreecrdtMultiPeerSyncController({
+    peer,
+    opKey: opUploadKey,
+    shouldSyncPeer: (peerId) => peerId.startsWith('remote:'),
+  });
+
+  controller.queueLocalOps([op, op]);
+  await controller.flush();
+
+  expect(controller.pendingOpCount).toBe(1);
+  expect(pushed).toHaveLength(0);
+
+  controller.setPeer('local:tab', {} as any);
+  await controller.flush();
+
+  expect(controller.pendingOpCount).toBe(1);
+  expect(pushed).toHaveLength(0);
+
+  controller.setPeer('remote:server', {} as any);
+  await controller.flush();
+
+  expect(controller.pendingOpCount).toBe(0);
+  expect(pushed).toEqual([[op]]);
+});
+
+test('multi-peer controller keeps failed direct pushes queued', async () => {
+  const op = makeInsertOp();
+  const { peer, pushed } = createFakePeer({ failPushes: 1 });
+  const errors: unknown[] = [];
+  const controller = createTreecrdtMultiPeerSyncController({
+    peer,
+    opKey: opUploadKey,
+    onError: ({ error }) => errors.push(error),
+  });
+  controller.setPeer('remote:server', {} as any);
+
+  controller.queueLocalOps([op]);
+  await controller.flush();
+
+  expect(controller.pendingOpCount).toBe(1);
+  expect(errors).toHaveLength(1);
+  expect(pushed).toHaveLength(0);
+
+  await controller.flush();
+
+  expect(controller.pendingOpCount).toBe(0);
+  expect(pushed).toEqual([[op]]);
+});
+
+test('multi-peer controller runs fallback sync when no exact ops are available', async () => {
+  const filter = { children: { parent: nodeIdFromInt(42) } };
+  const { peer, synced } = createFakePeer();
+  const controller = createTreecrdtMultiPeerSyncController({
+    peer,
+    getFallbackFilters: () => [filter],
+  });
+  controller.setPeer('remote:server', {} as any);
+
+  controller.queueLocalOps();
+  await controller.flush();
+
+  expect(controller.pendingOpCount).toBe(0);
+  expect(synced).toEqual([filter]);
 });

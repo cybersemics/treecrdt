@@ -38,6 +38,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../packages/treecrdt-ts
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-sync
       '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../../packages/sync-protocol/protocol

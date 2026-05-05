@@ -1,5 +1,13 @@
 import type { Operation } from '@treecrdt/interface';
-import type { Filter, SyncOnceOptions, SyncSubscribeOptions } from '@treecrdt/sync-protocol';
+import type {
+  Filter,
+  SyncMessage,
+  SyncOnceOptions,
+  SyncPeer,
+  SyncPushOptions,
+  SyncSubscribeOptions,
+} from '@treecrdt/sync-protocol';
+import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 import { connectTreecrdtWebSocketSync } from './connect.js';
 import type {
   ConnectTreecrdtWebSocketSyncOptions,
@@ -43,6 +51,76 @@ export type ConnectTreecrdtSyncControllerOptions = ConnectTreecrdtWebSocketSyncO
   controller?: TreecrdtSyncControllerOptions;
 };
 
+export type TreecrdtMultiPeerSyncControllerStatus = {
+  peerCount: number;
+  pendingOps: number;
+  needsFullSync: boolean;
+  running: boolean;
+  scheduled: boolean;
+};
+
+export type TreecrdtMultiPeerRunPushContext<Op = Operation> = {
+  peer: SyncPeer<Op>;
+  peerId: string;
+  transport: DuplexTransport<SyncMessage<Op>>;
+  ops: readonly Op[];
+};
+
+export type TreecrdtMultiPeerRunSyncContext<Op = Operation> = {
+  peer: SyncPeer<Op>;
+  peerId: string;
+  transport: DuplexTransport<SyncMessage<Op>>;
+  filter: Filter;
+};
+
+export type TreecrdtMultiPeerSyncControllerOptions<Op = Operation> = {
+  peer: SyncPeer<Op>;
+  /**
+   * Stable key used to coalesce repeated local write hints before upload.
+   */
+  opKey?: (op: Op) => string;
+  /**
+   * Allows apps to keep queued work while offline instead of turning transient offline state into
+   * sync errors.
+   */
+  isOnline?: () => boolean;
+  /**
+   * Select which attached transports should receive queued local writes. Useful when one SyncPeer
+   * owns both local-tab mesh transports and a remote websocket transport.
+   */
+  shouldSyncPeer?: (peerId: string) => boolean;
+  /**
+   * Filters to reconcile when callers request a fallback sync without exact local ops.
+   */
+  getFallbackFilters?: () => readonly Filter[];
+  /**
+   * Override low-level push execution for app-specific timeouts, batching, or logging.
+   */
+  runPush?: (ctx: TreecrdtMultiPeerRunPushContext<Op>) => Promise<void>;
+  /**
+   * Override fallback reconciliation for app-specific timeouts or syncOnce options.
+   */
+  runSync?: (ctx: TreecrdtMultiPeerRunSyncContext<Op>) => Promise<void>;
+  pushOptions?: (peerId: string) => SyncPushOptions | undefined;
+  syncOptions?: (peerId: string, filter: Filter) => SyncOnceOptions | undefined;
+  onWorkStart?: () => void;
+  onWorkEnd?: () => void;
+  onError?: (ctx: { peerId: string; error: unknown }) => void;
+  onStatus?: (status: TreecrdtMultiPeerSyncControllerStatus) => void;
+};
+
+export type TreecrdtMultiPeerSyncController<Op = Operation> = {
+  readonly status: TreecrdtMultiPeerSyncControllerStatus;
+  readonly pendingOpCount: number;
+  readonly peerCount: number;
+  setPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
+  deletePeer: (peerId: string) => void;
+  clearPeers: () => void;
+  queueLocalOps: (ops?: readonly Op[]) => void;
+  flush: () => Promise<void>;
+  close: () => void;
+};
+
 export type TreecrdtSyncController = {
   readonly status: TreecrdtSyncControllerStatus;
   readonly pendingOpCount: number;
@@ -61,6 +139,22 @@ function statusSnapshot(
   error?: unknown,
 ): TreecrdtSyncControllerStatus {
   return error === undefined ? { state, pendingOps } : { state, pendingOps, error };
+}
+
+function multiPeerStatusSnapshot<Op>(
+  peers: ReadonlyMap<string, DuplexTransport<SyncMessage<Op>>>,
+  pendingOps: readonly Op[],
+  needsFullSync: boolean,
+  running: boolean,
+  scheduled: boolean,
+): TreecrdtMultiPeerSyncControllerStatus {
+  return {
+    peerCount: peers.size,
+    pendingOps: pendingOps.length,
+    needsFullSync,
+    running,
+    scheduled,
+  };
 }
 
 /**
@@ -252,6 +346,203 @@ export function createTreecrdtSyncController(
     syncOnce,
     onChange: sync.onChange,
     close,
+  };
+
+  emitStatus();
+  return controller;
+}
+
+/**
+ * Queue local writes for a single {@link SyncPeer} that is attached to multiple transports.
+ *
+ * Apps can use one low-level peer for local-tab mesh subscriptions and remote websocket upload at
+ * the same time. This controller centralizes the remote upload/reconcile queue so UI code only
+ * registers peer transports and reports local ops returned by the edit API.
+ */
+export function createTreecrdtMultiPeerSyncController<Op = Operation>(
+  options: TreecrdtMultiPeerSyncControllerOptions<Op>,
+): TreecrdtMultiPeerSyncController<Op> {
+  const peers = new Map<string, DuplexTransport<SyncMessage<Op>>>();
+  const pendingOps: Op[] = [];
+  const pendingOpKeys = new Set<string>();
+  let needsFullSync = false;
+  let running = false;
+  let scheduled = false;
+  let closed = false;
+
+  const emitStatus = () => {
+    options.onStatus?.(
+      multiPeerStatusSnapshot(peers, pendingOps, needsFullSync, running, scheduled),
+    );
+  };
+
+  const addPendingOps = (ops: readonly Op[]) => {
+    for (const op of ops) {
+      const key = options.opKey?.(op);
+      if (key !== undefined) {
+        if (pendingOpKeys.has(key)) continue;
+        pendingOpKeys.add(key);
+      }
+      pendingOps.push(op);
+    }
+  };
+
+  const restorePendingOps = (ops: readonly Op[]) => {
+    if (ops.length === 0) return;
+    const existing = pendingOps.splice(0, pendingOps.length);
+    pendingOpKeys.clear();
+    addPendingOps(ops);
+    addPendingOps(existing);
+  };
+
+  const takePendingOps = () => {
+    const ops = pendingOps.splice(0, pendingOps.length);
+    pendingOpKeys.clear();
+    return ops;
+  };
+
+  const selectedPeers = () =>
+    Array.from(peers.entries()).filter(([peerId]) => options.shouldSyncPeer?.(peerId) ?? true);
+
+  const runPush =
+    options.runPush ??
+    ((ctx: TreecrdtMultiPeerRunPushContext<Op>) =>
+      ctx.peer.pushOps(ctx.transport, ctx.ops, options.pushOptions?.(ctx.peerId)));
+
+  const runSync =
+    options.runSync ??
+    ((ctx: TreecrdtMultiPeerRunSyncContext<Op>) =>
+      ctx.peer.syncOnce(ctx.transport, ctx.filter, options.syncOptions?.(ctx.peerId, ctx.filter)));
+
+  const scheduleFlush = () => {
+    if (closed) return;
+    if (running) {
+      scheduled = true;
+      emitStatus();
+      return;
+    }
+    if (scheduled) {
+      emitStatus();
+      return;
+    }
+    scheduled = true;
+    emitStatus();
+    queueMicrotask(() => {
+      void controller.flush();
+    });
+  };
+
+  const flush = async () => {
+    if (closed) return;
+    if (running) {
+      scheduled = true;
+      emitStatus();
+      return;
+    }
+    if (!scheduled && (pendingOps.length > 0 || needsFullSync)) scheduled = true;
+    if (!scheduled) {
+      emitStatus();
+      return;
+    }
+
+    running = true;
+    options.onWorkStart?.();
+    emitStatus();
+    try {
+      while (scheduled && !closed) {
+        scheduled = false;
+        if (options.isOnline && !options.isOnline()) {
+          emitStatus();
+          return;
+        }
+
+        const targets = selectedPeers();
+        if (targets.length === 0) {
+          emitStatus();
+          return;
+        }
+
+        const ops = takePendingOps();
+        const syncNeeded = needsFullSync;
+        needsFullSync = false;
+        if (!syncNeeded && ops.length === 0) {
+          emitStatus();
+          continue;
+        }
+
+        let failed = false;
+        for (const [peerId, transport] of targets) {
+          try {
+            if (ops.length > 0) {
+              await runPush({ peer: options.peer, peerId, transport, ops });
+            } else {
+              const filters = options.getFallbackFilters?.() ?? [{ all: {} }];
+              for (const filter of filters) {
+                await runSync({ peer: options.peer, peerId, transport, filter });
+              }
+            }
+          } catch (error) {
+            failed = true;
+            options.onError?.({ peerId, error });
+          }
+        }
+
+        if (failed) {
+          restorePendingOps(ops);
+          if (syncNeeded) needsFullSync = true;
+          emitStatus();
+          return;
+        }
+
+        emitStatus();
+      }
+    } finally {
+      running = false;
+      options.onWorkEnd?.();
+      emitStatus();
+    }
+  };
+
+  const controller: TreecrdtMultiPeerSyncController<Op> = {
+    get status() {
+      return multiPeerStatusSnapshot(peers, pendingOps, needsFullSync, running, scheduled);
+    },
+    get pendingOpCount() {
+      return pendingOps.length;
+    },
+    get peerCount() {
+      return peers.size;
+    },
+    setPeer: (peerId, transport) => {
+      if (closed) return;
+      peers.set(peerId, transport);
+      emitStatus();
+      if (pendingOps.length > 0 || needsFullSync) scheduleFlush();
+    },
+    deletePeer: (peerId) => {
+      peers.delete(peerId);
+      emitStatus();
+    },
+    clearPeers: () => {
+      peers.clear();
+      emitStatus();
+    },
+    queueLocalOps: (ops = []) => {
+      if (closed) return;
+      if (ops.length > 0) addPendingOps(ops);
+      else needsFullSync = true;
+      scheduleFlush();
+    },
+    flush,
+    close: () => {
+      closed = true;
+      scheduled = false;
+      needsFullSync = false;
+      pendingOps.splice(0, pendingOps.length);
+      pendingOpKeys.clear();
+      peers.clear();
+      emitStatus();
+    },
   };
 
   emitStatus();

@@ -44,6 +44,29 @@ await sync.start(); // queued ops flush as part of startup
 For custom transports or tests, create a low-level sync handle with
 `createTreecrdtWebSocketSyncFromTransport` and wrap it with `createTreecrdtSyncController`.
 
+## Multi-peer apps
+
+Use `createTreecrdtMultiPeerSyncController` when one `SyncPeer` owns several transports, such as
+local-tab mesh peers plus a remote websocket server. The app still manages transport discovery, but
+the controller owns local-op upload queues, dedupe, offline retry, and fallback reconciliation.
+
+```ts
+import { createTreecrdtMultiPeerSyncController } from '@treecrdt/sync';
+
+const remoteSync = createTreecrdtMultiPeerSyncController({
+  peer,
+  opKey: (op) => `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`,
+  isOnline: () => navigator.onLine,
+  shouldSyncPeer: (peerId) => peerId.startsWith('remote:'),
+});
+
+remoteSync.setPeer('remote:server', websocketTransport);
+
+const op = await client.local.payload(replica, node, payload);
+await peer.notifyLocalUpdate([op]); // local mesh fanout
+remoteSync.queueLocalOps([op]); // remote websocket upload/retry
+```
+
 ## When not to
 
 - You only need the protocol types and `SyncPeer` (use **`@treecrdt/sync-protocol`**).
