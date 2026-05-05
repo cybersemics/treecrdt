@@ -18,8 +18,9 @@ export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; 
 
   // --- Direct client (memory)
   const directClient = await createTreecrdtClient({
-    storage: 'memory',
-    baseUrl,
+    storage: { type: 'memory' },
+    runtime: { type: 'direct' },
+    assets: { baseUrl },
   });
   await directClient.close();
 
@@ -36,7 +37,11 @@ export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; 
   if (!directDoubleClose.ok) return directDoubleClose;
 
   // --- Direct client: drop then call
-  const directDrop = await createTreecrdtClient({ storage: 'memory', baseUrl });
+  const directDrop = await createTreecrdtClient({
+    storage: { type: 'memory' },
+    runtime: { type: 'direct' },
+    assets: { baseUrl },
+  });
   await directDrop.drop();
   const directAppendAfterDrop = await directDrop.ops.append(op).then(
     () => ({ ok: false as const, error: 'append after drop should have rejected' }),
@@ -55,10 +60,9 @@ export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; 
   if (support.available) {
     const filename = `/closed-test-${crypto.randomUUID()}.db`;
     const workerClient = await createTreecrdtClient({
-      storage: 'opfs',
-      filename,
-      preferWorker: true,
-      baseUrl,
+      storage: { type: 'opfs', filename, fallback: 'throw' },
+      runtime: { type: 'dedicated-worker' },
+      assets: { baseUrl },
     });
     await workerClient.close();
 

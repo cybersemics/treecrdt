@@ -113,16 +113,25 @@ export async function opfsStorageExists(filename: string): Promise<boolean> {
   return false;
 }
 
+export type OpfsVfsKind = 'coop-sync' | 'any-context';
+
 export type OpfsVfsOptions = {
   name?: string;
+  kind?: OpfsVfsKind;
 };
 
 /**
- * Create the OPFS cooperative sync VFS bound to the provided wa-sqlite Module.
- * Uses a local copy of wa-sqlite's OPFSCoopSyncVFS example to avoid reaching into vendor paths.
+ * Create an OPFS VFS bound to the provided wa-sqlite Module.
+ * Uses local copies of wa-sqlite's example VFS implementations to avoid reaching into vendor paths.
  */
 export async function createOpfsVfs(module: any, opts: OpfsVfsOptions = {}): Promise<any> {
   const name = opts.name ?? 'opfs';
+  if (opts.kind === 'any-context') {
+    // @ts-ignore vendored module lacks type declarations
+    const { OPFSAnyContextVFS } = await import('./vendor/OPFSAnyContextVFS.js');
+    return OPFSAnyContextVFS.create(name, module, { lockPolicy: 'exclusive' });
+  }
+
   // @ts-ignore vendored module lacks type declarations
   const { OPFSCoopSyncVFS } = await import('./vendor/OPFSCoopSyncVFS.js');
   return OPFSCoopSyncVFS.create(name, module);
@@ -133,6 +142,7 @@ export type OpenOptions = {
   filename?: string;
   storage: 'memory' | 'opfs';
   sqliteApi: { Factory: (module: any) => any };
+  opfsVfs?: OpfsVfsKind;
 };
 
 /**
@@ -151,7 +161,7 @@ export async function openWithStorage(
     if (!support.available) {
       throw new Error(`OPFS unsupported: ${support.reason ?? 'unknown reason'}`);
     }
-    const vfs = await createOpfsVfs(module, { name: 'opfs' });
+    const vfs = await createOpfsVfs(module, { name: 'opfs', kind: opts.opfsVfs });
     sqlite3.vfs_register(vfs, true);
     file = filename === ':memory:' ? '/treecrdt.db' : filename;
   }

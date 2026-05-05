@@ -13,7 +13,7 @@ export type RpcInitParams = {
   docId: string;
 };
 
-export type RpcInitResult = { storage: RpcStorageMode; opfsError?: string };
+export type RpcInitResult = { storage: RpcStorageMode; filename: string; opfsError?: string };
 
 export type RpcSchema = {
   init: {
@@ -27,6 +27,7 @@ export type RpcSchema = {
     params: [ops: Operation[]];
     result: MaterializationOutcome;
   };
+  broadcastMaterialized: { params: [event: MaterializationEvent]; result: void };
   opsSince: { params: [lamport: number, root?: string]; result: unknown[] };
   opRefsAll: { params: []; result: unknown[] };
   opRefsChildren: { params: [parent: string]; result: unknown[] };
