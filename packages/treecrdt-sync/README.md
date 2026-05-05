@@ -64,7 +64,7 @@ outbound.addPeer('remote:server', websocketTransport);
 
 const op = await client.local.payload(replica, node, payload);
 await peer.notifyLocalUpdate([op]); // local mesh fanout
-outbound.queueLocalOps([op]); // remote websocket upload/retry
+outbound.queue([op]); // remote websocket upload/retry
 ```
 
 ## When not to

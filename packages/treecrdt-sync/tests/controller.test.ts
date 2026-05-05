@@ -220,7 +220,7 @@ test('outbound sync queues local ops until a selected peer is available', async 
     shouldSyncPeer: (peerId) => peerId.startsWith('remote:'),
   });
 
-  controller.queueLocalOps([op, op]);
+  controller.queue([op, op]);
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(1);
@@ -250,7 +250,7 @@ test('outbound sync keeps failed direct pushes queued', async () => {
   });
   controller.addPeer('remote:server', {} as any);
 
-  controller.queueLocalOps([op]);
+  controller.queue([op]);
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(1);
@@ -272,7 +272,7 @@ test('outbound sync runs fallback sync when no exact ops are available', async (
   });
   controller.addPeer('remote:server', {} as any);
 
-  controller.queueLocalOps();
+  controller.queue();
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(0);

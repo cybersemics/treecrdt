@@ -110,7 +110,7 @@ export type OutboundSync<Op = Operation> = {
   addPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
   removePeer: (peerId: string) => void;
   clearPeers: () => void;
-  queueLocalOps: (ops?: readonly Op[]) => void;
+  queue: (ops?: readonly Op[]) => void;
   flush: () => Promise<void>;
   close: () => void;
 };
@@ -525,7 +525,7 @@ export function createOutboundSync<Op = Operation>(
       peers.clear();
       emitStatus();
     },
-    queueLocalOps: (ops = []) => {
+    queue: (ops = []) => {
       if (closed) return;
       if (ops.length > 0) addPendingOps(ops);
       else needsFullSync = true;
