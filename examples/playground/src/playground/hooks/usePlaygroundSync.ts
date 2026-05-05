@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
-import { createOutboundSync, type OutboundSync } from '@treecrdt/sync';
+import {
+  createOutboundSync,
+  createScopeController,
+  type OutboundSync,
+  type ScopeController,
+} from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
   BroadcastPresenceAckMessageV1,
@@ -259,33 +264,35 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     setSyncBusy(true);
     setSyncError(null);
+    let manualSyncController: ScopeController<Operation> | null = null;
     try {
-      const targets = selectSyncTargetIds(connections);
-      let successes = 0;
-      let lastErr: unknown = null;
-      for (const peerId of targets) {
-        const conn = connections.get(peerId);
-        if (!conn) continue;
-        try {
-          await syncFiltersWithTransport(peer, peerId, conn.transport, filters, {
+      const targets = selectSyncTargetIds(connections).filter((peerId) => connections.has(peerId));
+      manualSyncController = createScopeController<Operation>({
+        peer,
+        selectSyncPeerIds: () => targets,
+        runSync: async ({ peer, peerId, transport, filter }) => {
+          await syncFiltersWithTransport(peer, peerId, transport, [filter], {
             multipleTargets: targets.length > 1,
+            label,
           });
-          successes += 1;
-        } catch (err) {
-          lastErr = err;
-          console.error(`${label} failed for peer`, peerId, err);
-          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
-        }
+        },
+        onError: ({ peerId, error }) => {
+          console.error(`${label} failed for peer`, peerId, error);
+          manualSyncController?.deletePeer(peerId);
+          if (isCapabilityRevokedError(error)) return;
+          dropPeerConnection(peerId);
+        },
+      });
+      for (const [peerId, conn] of connections) {
+        manualSyncController.setPeer(peerId, conn.transport);
       }
-      if (successes === 0) {
-        if (lastErr) throw lastErr;
-        throw new Error('No peers responded to sync.');
-      }
+      for (const filter of filters) await manualSyncController.scope(filter).syncOnce();
       await refreshMeta();
     } catch (err) {
       console.error(`${label} failed`, err);
       setSyncError(formatSyncError(err));
     } finally {
+      manualSyncController?.close();
       setSyncBusy(false);
     }
   };

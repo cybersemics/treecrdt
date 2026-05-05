@@ -18,9 +18,19 @@ export type ScopeControllerErrorContext<Op = unknown> = {
   peer: SyncPeer<Op>;
 };
 
+export type ScopeControllerRunSyncContext<Op = unknown> = {
+  peer: SyncPeer<Op>;
+  peerId: string;
+  transport: DuplexTransport<SyncMessage<Op>>;
+  filter: Filter;
+  syncOptions?: SyncOnceOptions;
+};
+
 export type ScopeControllerOptions<Op = unknown> = {
   peer: SyncPeer<Op>;
   shouldSyncPeer?: (peerId: string) => boolean;
+  selectSyncPeerIds?: (peerIds: readonly string[]) => readonly string[];
+  runSync?: (ctx: ScopeControllerRunSyncContext<Op>) => Promise<void>;
   syncOptions?: (peerId: string, filter: Filter) => SyncOnceOptions | undefined;
   subscribeOptions?: (peerId: string, filter: Filter) => SyncSubscribeOptions | undefined;
   onWorkStart?: () => void;
@@ -57,6 +67,32 @@ export function createScopeController<Op = unknown>(
   const shouldSyncPeer = (peerId: string) => options.shouldSyncPeer?.(peerId) ?? true;
   const selectedPeers = () =>
     Array.from(peers.entries()).filter(([peerId]) => shouldSyncPeer(peerId));
+  const selectedSyncPeers = () => {
+    const selected = selectedPeers();
+    const peerIds = selected.map(([peerId]) => peerId);
+    const orderedPeerIds = options.selectSyncPeerIds?.(peerIds) ?? peerIds;
+    const seen = new Set<string>();
+
+    return orderedPeerIds.flatMap((peerId) => {
+      if (seen.has(peerId) || !shouldSyncPeer(peerId)) return [];
+      seen.add(peerId);
+      const transport = peers.get(peerId);
+      return transport ? ([[peerId, transport]] as const) : [];
+    });
+  };
+
+  const runSync = async (
+    peerId: string,
+    transport: DuplexTransport<SyncMessage<Op>>,
+    filter: Filter,
+  ) => {
+    const syncOptions = options.syncOptions?.(peerId, filter);
+    if (options.runSync) {
+      await options.runSync({ peer: options.peer, peerId, transport, filter, syncOptions });
+      return;
+    }
+    await options.peer.syncOnce(transport, filter, syncOptions);
+  };
 
   class SyncScopeHandle implements SyncScope {
     private readonly subscriptions = new Map<string, SyncSubscription>();
@@ -76,7 +112,7 @@ export function createScopeController<Op = unknown>(
 
     async syncOnce() {
       if (this.isClosed || closed) return;
-      const targets = selectedPeers();
+      const targets = selectedSyncPeers();
       if (targets.length === 0) throw new Error('No peers available for scoped sync.');
 
       let successes = 0;
@@ -85,11 +121,7 @@ export function createScopeController<Op = unknown>(
       try {
         for (const [peerId, transport] of targets) {
           try {
-            await options.peer.syncOnce(
-              transport,
-              this.filter,
-              options.syncOptions?.(peerId, this.filter),
-            );
+            await runSync(peerId, transport, this.filter);
             successes += 1;
           } catch (error) {
             lastError = error;
