@@ -1,13 +1,13 @@
 export { connectTreecrdtWebSocketSync } from './connect.js';
-export { connectSyncController, createSyncController } from './controller.js';
+export { connectSyncController, createOutboundSync, createSyncController } from './controller.js';
 export { createTreecrdtWebSocketSyncFromTransport } from './create-sync-from-transport.js';
 export type {
   ConnectSyncControllerOptions,
-  MultiPeerRunPushContext,
-  MultiPeerRunSyncContext,
-  MultiPeerSyncController,
-  MultiPeerSyncControllerOptions,
-  MultiPeerSyncControllerStatus,
+  OutboundSync,
+  OutboundSyncOptions,
+  OutboundSyncRunPushContext,
+  OutboundSyncRunSyncContext,
+  OutboundSyncStatus,
   SyncController,
   SyncControllerOptions,
   SyncControllerState,

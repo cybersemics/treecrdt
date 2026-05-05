@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
-import { createSyncController, type MultiPeerSyncController } from '@treecrdt/sync';
+import { createOutboundSync, type OutboundSync } from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
   BroadcastPresenceAckMessageV1,
@@ -162,7 +162,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const onlineRef = useRef(true);
   useEffect(() => {
     onlineRef.current = online;
-    if (online) void remoteSyncControllerRef.current?.flush();
+    if (online) void outboundSyncRef.current?.flush();
   }, [online]);
 
   const autoSyncJoinInitial = useRef(autoSyncJoin).current;
@@ -174,7 +174,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const syncPeerRef = useRef<SyncPeer<Operation> | null>(null);
   const syncConnRef = useRef<Map<string, PlaygroundSyncConnection>>(new Map());
-  const remoteSyncControllerRef = useRef<MultiPeerSyncController<Operation> | null>(null);
+  const outboundSyncRef = useRef<OutboundSync<Operation> | null>(null);
   const {
     liveBusy,
     liveChildrenParents,
@@ -206,7 +206,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const queueLocalOpsForSync = (ops?: Operation[]) => {
     void syncPeerRef.current?.notifyLocalUpdate(ops);
-    remoteSyncControllerRef.current?.queueLocalOps(ops);
+    outboundSyncRef.current?.queueLocalOps(ops);
   };
 
   const dropPeerConnection = (peerId: string) => {
@@ -230,7 +230,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       // ignore
     }
     connections.delete(peerId);
-    remoteSyncControllerRef.current?.deletePeer(peerId);
+    outboundSyncRef.current?.removePeer(peerId);
     stopLiveAllForPeer(peerId);
     stopLiveChildrenForPeer(peerId);
 
@@ -557,8 +557,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const connections = new Map<string, { transport: DuplexTransport<any>; detach: () => void }>();
     syncConnRef.current = connections;
 
-    const remoteSyncController = createSyncController<Operation>({
-      peer: sharedPeer,
+    const outboundSync = createOutboundSync<Operation>({
+      localPeer: sharedPeer,
       opKey: localOpUploadKey,
       isOnline: () => onlineRef.current,
       shouldSyncPeer: isRemotePeerId,
@@ -567,17 +567,17 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (liveAllEnabledRef.current || liveChildren.length === 0) return [{ all: {} }];
         return liveChildren.map(childrenFilter);
       },
-      runPush: async ({ peer, peerId, transport, ops }) => {
+      runPush: async ({ localPeer, peerId, transport, ops }) => {
         await withTimeout(
-          peer.pushOps(transport, ops, {
+          localPeer.pushOps(transport, ops, {
             maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
           }),
           syncTimeoutMsForPeer(peerId, { autoSync: true }),
           `live push with ${peerId.slice(0, 8)}… timed out`,
         );
       },
-      runSync: async ({ peer, peerId, transport, filter }) => {
-        await syncFiltersWithTransport(peer, peerId, transport, [filter], {
+      runSync: async ({ localPeer, peerId, transport, filter }) => {
+        await syncFiltersWithTransport(localPeer, peerId, transport, [filter], {
           autoSync: true,
           codewordsPerMessage: 1024,
           label: 'live sync',
@@ -591,7 +591,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         if (!isCapabilityRevokedError(error)) dropPeerConnection(peerId);
       },
     });
-    remoteSyncControllerRef.current = remoteSyncController;
+    outboundSyncRef.current = outboundSync;
 
     const maybeStartLiveForPeer = (peerId: string) => {
       if (!isRemotePeerId(peerId)) {
@@ -623,7 +623,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           onPeerTransport: (peerId, transport) => {
             const detach = sharedPeer.attach(transport);
             connections.set(peerId, { transport, detach });
-            remoteSyncController.setPeer(peerId, transport);
+            outboundSync.addPeer(peerId, transport);
             maybeStartLiveForPeer(peerId);
             if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
               autoSyncPeerIdRef.current = peerId;
@@ -633,7 +633,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           },
           onPeerDisconnected: (peerId) => {
             connections.delete(peerId);
-            remoteSyncController.deletePeer(peerId);
+            outboundSync.removePeer(peerId);
             stopLiveAllForPeer(peerId);
             stopLiveChildrenForPeer(peerId);
             removeMeshPeer(peerId);
@@ -668,7 +668,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
             docId,
             sharedPeer,
             connections,
-            remoteSyncController,
+            outboundSync,
             isCurrent: () => syncConnRef.current === connections,
             setRemoteSyncStatus,
             setSyncError,
@@ -691,9 +691,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       stopRemoteSocket?.();
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
       if (syncPeerRef.current === sharedPeer) syncPeerRef.current = null;
-      remoteSyncController.close();
-      if (remoteSyncControllerRef.current === remoteSyncController) {
-        remoteSyncControllerRef.current = null;
+      outboundSync.close();
+      if (outboundSyncRef.current === outboundSync) {
+        outboundSyncRef.current = null;
       }
       channel?.close();
       resetLiveWork();

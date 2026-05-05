@@ -11,7 +11,7 @@ import {
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtWebSocketSync } from '../src/types.js';
 
-import { createSyncController } from '../src/controller.js';
+import { createOutboundSync, createSyncController } from '../src/controller.js';
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
 import { ROOT, createInMemoryTestClient, orderKeyFromPosition } from './test-helpers.js';
@@ -211,11 +211,11 @@ test('controller close stops future flushes and rejects new work', async () => {
   await expect(controller.pushLocalOps([makeInsertOp(2)])).rejects.toThrow('closed');
 });
 
-test('multi-peer controller queues local ops until a selected peer is available', async () => {
+test('outbound sync queues local ops until a selected peer is available', async () => {
   const op = makeInsertOp();
   const { peer, pushed } = createFakePeer();
-  const controller = createSyncController({
-    peer,
+  const controller = createOutboundSync({
+    localPeer: peer,
     opKey: opUploadKey,
     shouldSyncPeer: (peerId) => peerId.startsWith('remote:'),
   });
@@ -226,29 +226,29 @@ test('multi-peer controller queues local ops until a selected peer is available'
   expect(controller.pendingOpCount).toBe(1);
   expect(pushed).toHaveLength(0);
 
-  controller.setPeer('local:tab', {} as any);
+  controller.addPeer('local:tab', {} as any);
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(1);
   expect(pushed).toHaveLength(0);
 
-  controller.setPeer('remote:server', {} as any);
+  controller.addPeer('remote:server', {} as any);
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(0);
   expect(pushed).toEqual([[op]]);
 });
 
-test('multi-peer controller keeps failed direct pushes queued', async () => {
+test('outbound sync keeps failed direct pushes queued', async () => {
   const op = makeInsertOp();
   const { peer, pushed } = createFakePeer({ failPushes: 1 });
   const errors: unknown[] = [];
-  const controller = createSyncController({
-    peer,
+  const controller = createOutboundSync({
+    localPeer: peer,
     opKey: opUploadKey,
     onError: ({ error }) => errors.push(error),
   });
-  controller.setPeer('remote:server', {} as any);
+  controller.addPeer('remote:server', {} as any);
 
   controller.queueLocalOps([op]);
   await controller.flush();
@@ -263,14 +263,14 @@ test('multi-peer controller keeps failed direct pushes queued', async () => {
   expect(pushed).toEqual([[op]]);
 });
 
-test('multi-peer controller runs fallback sync when no exact ops are available', async () => {
+test('outbound sync runs fallback sync when no exact ops are available', async () => {
   const filter = { children: { parent: nodeIdFromInt(42) } };
   const { peer, synced } = createFakePeer();
-  const controller = createSyncController({
-    peer,
+  const controller = createOutboundSync({
+    localPeer: peer,
     getFallbackFilters: () => [filter],
   });
-  controller.setPeer('remote:server', {} as any);
+  controller.addPeer('remote:server', {} as any);
 
   controller.queueLocalOps();
   await controller.flush();

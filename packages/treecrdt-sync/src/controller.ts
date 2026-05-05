@@ -45,7 +45,7 @@ export type ConnectSyncControllerOptions = ConnectTreecrdtWebSocketSyncOptions &
   controller?: SyncControllerOptions;
 };
 
-export type MultiPeerSyncControllerStatus = {
+export type OutboundSyncStatus = {
   peerCount: number;
   pendingOps: number;
   needsFullSync: boolean;
@@ -53,22 +53,22 @@ export type MultiPeerSyncControllerStatus = {
   scheduled: boolean;
 };
 
-export type MultiPeerRunPushContext<Op = Operation> = {
-  peer: SyncPeer<Op>;
+export type OutboundSyncRunPushContext<Op = Operation> = {
+  localPeer: SyncPeer<Op>;
   peerId: string;
   transport: DuplexTransport<SyncMessage<Op>>;
   ops: readonly Op[];
 };
 
-export type MultiPeerRunSyncContext<Op = Operation> = {
-  peer: SyncPeer<Op>;
+export type OutboundSyncRunSyncContext<Op = Operation> = {
+  localPeer: SyncPeer<Op>;
   peerId: string;
   transport: DuplexTransport<SyncMessage<Op>>;
   filter: Filter;
 };
 
-export type MultiPeerSyncControllerOptions<Op = Operation> = {
-  peer: SyncPeer<Op>;
+export type OutboundSyncOptions<Op = Operation> = {
+  localPeer: SyncPeer<Op>;
   /**
    * Stable key used to coalesce repeated local write hints before upload.
    */
@@ -90,25 +90,25 @@ export type MultiPeerSyncControllerOptions<Op = Operation> = {
   /**
    * Override low-level push execution for app-specific timeouts, batching, or logging.
    */
-  runPush?: (ctx: MultiPeerRunPushContext<Op>) => Promise<void>;
+  runPush?: (ctx: OutboundSyncRunPushContext<Op>) => Promise<void>;
   /**
    * Override fallback reconciliation for app-specific timeouts or syncOnce options.
    */
-  runSync?: (ctx: MultiPeerRunSyncContext<Op>) => Promise<void>;
+  runSync?: (ctx: OutboundSyncRunSyncContext<Op>) => Promise<void>;
   pushOptions?: (peerId: string) => SyncPushOptions | undefined;
   syncOptions?: (peerId: string, filter: Filter) => SyncOnceOptions | undefined;
   onWorkStart?: () => void;
   onWorkEnd?: () => void;
   onError?: (ctx: { peerId: string; error: unknown }) => void;
-  onStatus?: (status: MultiPeerSyncControllerStatus) => void;
+  onStatus?: (status: OutboundSyncStatus) => void;
 };
 
-export type MultiPeerSyncController<Op = Operation> = {
-  readonly status: MultiPeerSyncControllerStatus;
+export type OutboundSync<Op = Operation> = {
+  readonly status: OutboundSyncStatus;
   readonly pendingOpCount: number;
   readonly peerCount: number;
-  setPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
-  deletePeer: (peerId: string) => void;
+  addPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
+  removePeer: (peerId: string) => void;
   clearPeers: () => void;
   queueLocalOps: (ops?: readonly Op[]) => void;
   flush: () => Promise<void>;
@@ -135,13 +135,13 @@ function statusSnapshot(
   return error === undefined ? { state, pendingOps } : { state, pendingOps, error };
 }
 
-function multiPeerStatusSnapshot<Op>(
+function outboundSyncStatusSnapshot<Op>(
   peers: ReadonlyMap<string, DuplexTransport<SyncMessage<Op>>>,
   pendingOps: readonly Op[],
   needsFullSync: boolean,
   running: boolean,
   scheduled: boolean,
-): MultiPeerSyncControllerStatus {
+): OutboundSyncStatus {
   return {
     peerCount: peers.size,
     pendingOps: pendingOps.length,
@@ -353,9 +353,9 @@ function createSingleTransportSyncController(
  * the same time. This controller centralizes the remote upload/reconcile queue so UI code only
  * registers peer transports and reports local ops returned by the edit API.
  */
-function createMultiPeerSyncController<Op = Operation>(
-  options: MultiPeerSyncControllerOptions<Op>,
-): MultiPeerSyncController<Op> {
+export function createOutboundSync<Op = Operation>(
+  options: OutboundSyncOptions<Op>,
+): OutboundSync<Op> {
   const peers = new Map<string, DuplexTransport<SyncMessage<Op>>>();
   const pendingOps: Op[] = [];
   const pendingOpKeys = new Set<string>();
@@ -366,7 +366,7 @@ function createMultiPeerSyncController<Op = Operation>(
 
   const emitStatus = () => {
     options.onStatus?.(
-      multiPeerStatusSnapshot(peers, pendingOps, needsFullSync, running, scheduled),
+      outboundSyncStatusSnapshot(peers, pendingOps, needsFullSync, running, scheduled),
     );
   };
 
@@ -400,13 +400,17 @@ function createMultiPeerSyncController<Op = Operation>(
 
   const runPush =
     options.runPush ??
-    ((ctx: MultiPeerRunPushContext<Op>) =>
-      ctx.peer.pushOps(ctx.transport, ctx.ops, options.pushOptions?.(ctx.peerId)));
+    ((ctx: OutboundSyncRunPushContext<Op>) =>
+      ctx.localPeer.pushOps(ctx.transport, ctx.ops, options.pushOptions?.(ctx.peerId)));
 
   const runSync =
     options.runSync ??
-    ((ctx: MultiPeerRunSyncContext<Op>) =>
-      ctx.peer.syncOnce(ctx.transport, ctx.filter, options.syncOptions?.(ctx.peerId, ctx.filter)));
+    ((ctx: OutboundSyncRunSyncContext<Op>) =>
+      ctx.localPeer.syncOnce(
+        ctx.transport,
+        ctx.filter,
+        options.syncOptions?.(ctx.peerId, ctx.filter),
+      ));
 
   const scheduleFlush = () => {
     if (closed) return;
@@ -468,11 +472,11 @@ function createMultiPeerSyncController<Op = Operation>(
         for (const [peerId, transport] of targets) {
           try {
             if (ops.length > 0) {
-              await runPush({ peer: options.peer, peerId, transport, ops });
+              await runPush({ localPeer: options.localPeer, peerId, transport, ops });
             } else {
               const filters = options.getFallbackFilters?.() ?? [{ all: {} }];
               for (const filter of filters) {
-                await runSync({ peer: options.peer, peerId, transport, filter });
+                await runSync({ localPeer: options.localPeer, peerId, transport, filter });
               }
             }
           } catch (error) {
@@ -497,9 +501,9 @@ function createMultiPeerSyncController<Op = Operation>(
     }
   };
 
-  const controller: MultiPeerSyncController<Op> = {
+  const controller: OutboundSync<Op> = {
     get status() {
-      return multiPeerStatusSnapshot(peers, pendingOps, needsFullSync, running, scheduled);
+      return outboundSyncStatusSnapshot(peers, pendingOps, needsFullSync, running, scheduled);
     },
     get pendingOpCount() {
       return pendingOps.length;
@@ -507,13 +511,13 @@ function createMultiPeerSyncController<Op = Operation>(
     get peerCount() {
       return peers.size;
     },
-    setPeer: (peerId, transport) => {
+    addPeer: (peerId, transport) => {
       if (closed) return;
       peers.set(peerId, transport);
       emitStatus();
       if (pendingOps.length > 0 || needsFullSync) scheduleFlush();
     },
-    deletePeer: (peerId) => {
+    removePeer: (peerId) => {
       peers.delete(peerId);
       emitStatus();
     },
@@ -543,32 +547,18 @@ function createMultiPeerSyncController<Op = Operation>(
   return controller;
 }
 
-function isMultiPeerSyncControllerOptions<Op>(
-  value: TreecrdtWebSocketSync | MultiPeerSyncControllerOptions<Op>,
-): value is MultiPeerSyncControllerOptions<Op> {
-  return typeof value === 'object' && value !== null && 'peer' in value;
-}
-
 /**
  * Create the app-facing sync controller.
- *
- * Pass a low-level WebSocket sync handle for the common single-transport lifecycle controller, or
- * pass `{ peer, ... }` when one SyncPeer owns multiple transports.
  */
 export function createSyncController(
   sync: TreecrdtWebSocketSync,
   options?: SyncControllerOptions,
 ): SyncController;
-export function createSyncController<Op = Operation>(
-  options: MultiPeerSyncControllerOptions<Op>,
-): MultiPeerSyncController<Op>;
-export function createSyncController<Op = Operation>(
-  syncOrOptions: TreecrdtWebSocketSync | MultiPeerSyncControllerOptions<Op>,
+export function createSyncController(
+  sync: TreecrdtWebSocketSync,
   options: SyncControllerOptions = {},
-): SyncController | MultiPeerSyncController<Op> {
-  return isMultiPeerSyncControllerOptions(syncOrOptions)
-    ? createMultiPeerSyncController(syncOrOptions)
-    : createSingleTransportSyncController(syncOrOptions, options);
+): SyncController {
+  return createSingleTransportSyncController(sync, options);
 }
 
 export async function connectSyncController(

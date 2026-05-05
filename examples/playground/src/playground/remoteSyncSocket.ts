@@ -4,7 +4,7 @@ import {
   resolveWebSocketAttachment,
   type ResolveWebSocketAttachmentResult,
 } from '@treecrdt/discovery';
-import type { MultiPeerSyncController } from '@treecrdt/sync';
+import type { OutboundSync } from '@treecrdt/sync';
 import type { SyncPeer } from '@treecrdt/sync-protocol';
 import { createBrowserWebSocketTransport } from '@treecrdt/sync-protocol/browser';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
@@ -35,7 +35,7 @@ export type StartPlaygroundRemoteSyncSocketOptions = {
   docId: string;
   sharedPeer: SyncPeer<Operation>;
   connections: Map<string, RemoteSyncConnection>;
-  remoteSyncController: MultiPeerSyncController<Operation>;
+  outboundSync: OutboundSync<Operation>;
   isCurrent: () => boolean;
   setRemoteSyncStatus: Dispatch<SetStateAction<RemoteSyncStatus>>;
   setSyncError: Dispatch<SetStateAction<string | null>>;
@@ -104,7 +104,7 @@ export function startPlaygroundRemoteSyncSocket(
         );
         const detach = opts.sharedPeer.attach(transport);
         opts.connections.set(remotePeerId, { transport, detach });
-        opts.remoteSyncController.setPeer(remotePeerId, transport);
+        opts.outboundSync.addPeer(remotePeerId, transport);
         opts.setRemotePeer({ id: remotePeerId, lastSeen: Date.now() });
         opts.maybeStartLiveForPeer(remotePeerId);
         opts.onAutoSyncPeerReady(remotePeerId);
