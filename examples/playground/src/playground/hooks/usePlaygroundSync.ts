@@ -3,10 +3,10 @@ import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
 import {
+  createInboundSync,
   createOutboundSync,
-  createScopeController,
+  type InboundSync,
   type OutboundSync,
-  type ScopeController,
 } from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
@@ -191,8 +191,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllEnabledRef,
     beginLiveWork,
     endLiveWork,
-    setLivePeer,
-    deleteLivePeer,
+    addLivePeer,
+    removeLivePeer,
     resetLiveWork,
   } = usePlaygroundLiveSubscriptions({
     syncPeerRef,
@@ -231,7 +231,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     }
     connections.delete(peerId);
     outboundSyncRef.current?.removePeer(peerId);
-    deleteLivePeer(peerId);
+    removeLivePeer(peerId);
 
     if (isRemotePeerId(peerId)) setRemotePeer(null);
     else removeMeshPeer(peerId);
@@ -264,35 +264,35 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     setSyncBusy(true);
     setSyncError(null);
-    let manualSyncController: ScopeController<Operation> | null = null;
+    let manualInboundSync: InboundSync<Operation> | null = null;
     try {
       const targets = selectSyncTargetIds(connections).filter((peerId) => connections.has(peerId));
-      manualSyncController = createScopeController<Operation>({
-        peer,
-        selectSyncPeerIds: () => targets,
-        runSync: async ({ peer, peerId, transport, filter }) => {
-          await syncFiltersWithTransport(peer, peerId, transport, [filter], {
+      manualInboundSync = createInboundSync<Operation>({
+        localPeer: peer,
+        selectPeers: () => targets,
+        runSync: async ({ localPeer, peerId, transport, filter }) => {
+          await syncFiltersWithTransport(localPeer, peerId, transport, [filter], {
             multipleTargets: targets.length > 1,
             label,
           });
         },
         onError: ({ peerId, error }) => {
           console.error(`${label} failed for peer`, peerId, error);
-          manualSyncController?.deletePeer(peerId);
+          manualInboundSync?.removePeer(peerId);
           if (isCapabilityRevokedError(error)) return;
           dropPeerConnection(peerId);
         },
       });
       for (const [peerId, conn] of connections) {
-        manualSyncController.setPeer(peerId, conn.transport);
+        manualInboundSync.addPeer(peerId, conn.transport);
       }
-      for (const filter of filters) await manualSyncController.scope(filter).syncOnce();
+      for (const filter of filters) await manualInboundSync.scope(filter).syncOnce();
       await refreshMeta();
     } catch (err) {
       console.error(`${label} failed`, err);
       setSyncError(formatSyncError(err));
     } finally {
-      manualSyncController?.close();
+      manualInboundSync?.close();
       setSyncBusy(false);
     }
   };
@@ -586,7 +586,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       }
       const conn = connections.get(peerId);
       if (!conn) return;
-      setLivePeer(peerId, conn);
+      addLivePeer(peerId, conn);
     };
 
     const mesh = channel
@@ -621,7 +621,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           onPeerDisconnected: (peerId) => {
             connections.delete(peerId);
             outboundSync.removePeer(peerId);
-            deleteLivePeer(peerId);
+            removeLivePeer(peerId);
             removeMeshPeer(peerId);
           },
           onBroadcastMessage: (data) => {

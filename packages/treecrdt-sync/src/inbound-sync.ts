@@ -8,34 +8,34 @@ import type {
 } from '@treecrdt/sync-protocol';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 
-export type ScopeControllerErrorPhase = 'sync' | 'ready' | 'live';
+export type InboundSyncErrorPhase = 'sync' | 'ready' | 'live';
 
-export type ScopeControllerErrorContext<Op = unknown> = {
+export type InboundSyncErrorContext<Op = unknown> = {
   peerId: string;
   filter: Filter;
   error: unknown;
-  phase: ScopeControllerErrorPhase;
-  peer: SyncPeer<Op>;
+  phase: InboundSyncErrorPhase;
+  localPeer: SyncPeer<Op>;
 };
 
-export type ScopeControllerRunSyncContext<Op = unknown> = {
-  peer: SyncPeer<Op>;
+export type InboundSyncRunSyncContext<Op = unknown> = {
+  localPeer: SyncPeer<Op>;
   peerId: string;
   transport: DuplexTransport<SyncMessage<Op>>;
   filter: Filter;
   syncOptions?: SyncOnceOptions;
 };
 
-export type ScopeControllerOptions<Op = unknown> = {
-  peer: SyncPeer<Op>;
+export type InboundSyncOptions<Op = unknown> = {
+  localPeer: SyncPeer<Op>;
   shouldSyncPeer?: (peerId: string) => boolean;
-  selectSyncPeerIds?: (peerIds: readonly string[]) => readonly string[];
-  runSync?: (ctx: ScopeControllerRunSyncContext<Op>) => Promise<void>;
+  selectPeers?: (peerIds: readonly string[]) => readonly string[];
+  runSync?: (ctx: InboundSyncRunSyncContext<Op>) => Promise<void>;
   syncOptions?: (peerId: string, filter: Filter) => SyncOnceOptions | undefined;
   subscribeOptions?: (peerId: string, filter: Filter) => SyncSubscribeOptions | undefined;
   onWorkStart?: () => void;
   onWorkEnd?: () => void;
-  onError?: (ctx: ScopeControllerErrorContext<Op>) => void;
+  onError?: (ctx: InboundSyncErrorContext<Op>) => void;
 };
 
 export type SyncScope = {
@@ -48,18 +48,16 @@ export type SyncScope = {
   close: () => void;
 };
 
-export type ScopeController<Op = unknown> = {
+export type InboundSync<Op = unknown> = {
   readonly peerCount: number;
-  setPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
-  deletePeer: (peerId: string) => void;
+  addPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
+  removePeer: (peerId: string) => void;
   clearPeers: () => void;
   scope: (filter: Filter) => SyncScope;
   close: () => void;
 };
 
-export function createScopeController<Op = unknown>(
-  options: ScopeControllerOptions<Op>,
-): ScopeController<Op> {
+export function createInboundSync<Op = unknown>(options: InboundSyncOptions<Op>): InboundSync<Op> {
   const peers = new Map<string, DuplexTransport<SyncMessage<Op>>>();
   const scopes = new Set<SyncScopeHandle>();
   let closed = false;
@@ -70,7 +68,7 @@ export function createScopeController<Op = unknown>(
   const selectedSyncPeers = () => {
     const selected = selectedPeers();
     const peerIds = selected.map(([peerId]) => peerId);
-    const orderedPeerIds = options.selectSyncPeerIds?.(peerIds) ?? peerIds;
+    const orderedPeerIds = options.selectPeers?.(peerIds) ?? peerIds;
     const seen = new Set<string>();
 
     return orderedPeerIds.flatMap((peerId) => {
@@ -88,10 +86,16 @@ export function createScopeController<Op = unknown>(
   ) => {
     const syncOptions = options.syncOptions?.(peerId, filter);
     if (options.runSync) {
-      await options.runSync({ peer: options.peer, peerId, transport, filter, syncOptions });
+      await options.runSync({
+        localPeer: options.localPeer,
+        peerId,
+        transport,
+        filter,
+        syncOptions,
+      });
       return;
     }
-    await options.peer.syncOnce(transport, filter, syncOptions);
+    await options.localPeer.syncOnce(transport, filter, syncOptions);
   };
 
   class SyncScopeHandle implements SyncScope {
@@ -126,7 +130,7 @@ export function createScopeController<Op = unknown>(
           } catch (error) {
             lastError = error;
             options.onError?.({
-              peer: options.peer,
+              localPeer: options.localPeer,
               peerId,
               filter: this.filter,
               error,
@@ -164,12 +168,12 @@ export function createScopeController<Op = unknown>(
       scopes.delete(this);
     }
 
-    setPeer(peerId: string, transport: DuplexTransport<SyncMessage<Op>>) {
+    addPeer(peerId: string, transport: DuplexTransport<SyncMessage<Op>>) {
       if (!this.isLive || this.isClosed || closed) return;
       this.startPeer(peerId, transport);
     }
 
-    deletePeer(peerId: string) {
+    removePeer(peerId: string) {
       this.stopPeer(peerId);
     }
 
@@ -185,7 +189,7 @@ export function createScopeController<Op = unknown>(
       options.onWorkStart?.();
 
       let ready = false;
-      const sub = options.peer.subscribe(transport, this.filter, {
+      const sub = options.localPeer.subscribe(transport, this.filter, {
         immediate: true,
         intervalMs: 0,
         ...options.subscribeOptions?.(peerId, this.filter),
@@ -196,7 +200,7 @@ export function createScopeController<Op = unknown>(
         if (!ready || this.isClosed || closed) return;
         this.stopPeer(peerId);
         options.onError?.({
-          peer: options.peer,
+          localPeer: options.localPeer,
           peerId,
           filter: this.filter,
           error,
@@ -211,7 +215,7 @@ export function createScopeController<Op = unknown>(
         } catch (error) {
           this.stopPeer(peerId);
           options.onError?.({
-            peer: options.peer,
+            localPeer: options.localPeer,
             peerId,
             filter: this.filter,
             error,
@@ -236,29 +240,29 @@ export function createScopeController<Op = unknown>(
     }
   }
 
-  const controller: ScopeController<Op> = {
+  const inbound: InboundSync<Op> = {
     get peerCount() {
       return peers.size;
     },
-    setPeer: (peerId, transport) => {
+    addPeer: (peerId, transport) => {
       if (closed) return;
       const previous = peers.get(peerId);
       peers.set(peerId, transport);
       if (previous && previous !== transport) {
-        for (const scope of scopes) scope.deletePeer(peerId);
+        for (const scope of scopes) scope.removePeer(peerId);
       }
-      for (const scope of scopes) scope.setPeer(peerId, transport);
+      for (const scope of scopes) scope.addPeer(peerId, transport);
     },
-    deletePeer: (peerId) => {
+    removePeer: (peerId) => {
       peers.delete(peerId);
-      for (const scope of scopes) scope.deletePeer(peerId);
+      for (const scope of scopes) scope.removePeer(peerId);
     },
     clearPeers: () => {
       peers.clear();
       for (const scope of scopes) scope.clearPeers();
     },
     scope: (filter) => {
-      if (closed) throw new Error('ScopeController: closed');
+      if (closed) throw new Error('InboundSync: closed');
       const scope = new SyncScopeHandle(filter);
       scopes.add(scope);
       return scope;
@@ -271,5 +275,5 @@ export function createScopeController<Op = unknown>(
     },
   };
 
-  return controller;
+  return inbound;
 }
