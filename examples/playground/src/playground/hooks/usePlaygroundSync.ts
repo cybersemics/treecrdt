@@ -186,16 +186,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllEnabledRef,
     beginLiveWork,
     endLiveWork,
-    startLiveAll,
-    stopLiveAllForPeer,
-    stopAllLiveAll,
-    startLiveChildren,
-    stopLiveChildrenForPeer,
-    stopAllLiveChildren,
+    setLivePeer,
+    deleteLivePeer,
     resetLiveWork,
   } = usePlaygroundLiveSubscriptions({
     syncPeerRef,
-    syncConnRef,
     setSyncError,
     authCanSyncAll,
   });
@@ -231,8 +226,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     }
     connections.delete(peerId);
     outboundSyncRef.current?.removePeer(peerId);
-    stopLiveAllForPeer(peerId);
-    stopLiveChildrenForPeer(peerId);
+    deleteLivePeer(peerId);
 
     if (isRemotePeerId(peerId)) setRemotePeer(null);
     else removeMeshPeer(peerId);
@@ -583,8 +577,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         const mesh = presenceMeshRef.current;
         if (!mesh || !mesh.isPeerReady(peerId)) return;
       }
-      if (liveAllEnabledRef.current) startLiveAll(peerId);
-      for (const parentId of liveChildrenParentsRef.current) startLiveChildren(peerId, parentId);
+      const conn = connections.get(peerId);
+      if (!conn) return;
+      setLivePeer(peerId, conn);
     };
 
     const mesh = channel
@@ -619,8 +614,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           onPeerDisconnected: (peerId) => {
             connections.delete(peerId);
             outboundSync.removePeer(peerId);
-            stopLiveAllForPeer(peerId);
-            stopLiveChildrenForPeer(peerId);
+            deleteLivePeer(peerId);
             removeMeshPeer(peerId);
           },
           onBroadcastMessage: (data) => {
@@ -669,8 +663,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         : undefined;
 
     return () => {
-      stopAllLiveAll();
-      stopAllLiveChildren();
       if (presenceMeshRef.current === mesh) presenceMeshRef.current = null;
       mesh?.stop();
       stopRemoteSocket?.();
