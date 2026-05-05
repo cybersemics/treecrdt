@@ -127,11 +127,24 @@ export type SyncMessage<Op> = {
   payload: SyncMessagePayload<Op>;
 };
 
+/**
+ * Storage contract used by the sync protocol.
+ *
+ * `applyOps` is a read-after-write boundary: once it resolves, the newly applied
+ * ops must be observable through this backend's read methods for the same doc.
+ * The protocol relies on that when resolving `syncOnce` and live subscription
+ * delivery; callers should not need a separate public flush/settle step to read
+ * their own completed write.
+ */
 export interface SyncBackend<Op> {
   docId: string;
   maxLamport(): Promise<bigint>;
   listOpRefs(filter: Filter): Promise<OpRef[]>;
   getOpsByOpRefs(opRefs: OpRef[]): Promise<Op[]>;
+  /**
+   * Persist/apply ops and resolve only after those ops are visible to
+   * `maxLamport`, `listOpRefs`, and `getOpsByOpRefs`.
+   */
   applyOps(ops: Op[]): Promise<void>;
 
   /**

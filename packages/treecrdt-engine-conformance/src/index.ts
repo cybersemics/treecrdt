@@ -2048,23 +2048,9 @@ async function scenarioSyncAuthExcludedRootNotSynced(
       { maxCodewords: 10_000, codewordsPerMessage: 256 },
     );
 
-    // `syncOnce` does not guarantee the responder has fully applied the initiator's ops when using async backends
-    // (e.g. wa-sqlite worker/OPFS). Poll briefly for the update to become visible.
-    const expectedHex = bytesToHex(updated);
-    const deadline = Date.now() + 2_000;
-    while (true) {
-      const ops = await a.ops.all();
-      const latest = latestPayloadForNode(ops, publicNode);
-      if (latest && bytesToHex(latest) === expectedHex) break;
-      if (Date.now() > deadline) {
-        assertBytesEqual(
-          latest ?? null,
-          updated,
-          'expected payload update to propagate to full peer',
-        );
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
+    const ops = await a.ops.all();
+    const latest = latestPayloadForNode(ops, publicNode);
+    assertBytesEqual(latest ?? null, updated, 'expected payload update to propagate to full peer');
   } finally {
     detach();
   }
