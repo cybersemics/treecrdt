@@ -247,21 +247,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     return recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
   };
 
-  const syncFiltersWithPeer = async (
-    peer: SyncPeer<Operation>,
-    peerId: string,
-    conn: PlaygroundSyncConnection,
-    filters: readonly Filter[],
-    opts: {
-      autoSync?: boolean;
-      multipleTargets?: boolean;
-      codewordsPerMessage?: number;
-      label?: string;
-    } = {},
-  ) => {
-    await syncFiltersWithTransport(peer, peerId, conn.transport, filters, opts);
-  };
-
   const syncFiltersWithTargets = async (filters: readonly Filter[], label: string) => {
     if (!onlineRef.current) {
       setSyncError('Offline: toggle Online to sync.');
@@ -288,7 +273,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
         const conn = connections.get(peerId);
         if (!conn) continue;
         try {
-          await syncFiltersWithPeer(peer, peerId, conn, filters, {
+          await syncFiltersWithTransport(peer, peerId, conn.transport, filters, {
             multipleTargets: targets.length > 1,
           });
           successes += 1;
@@ -382,7 +367,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       setSyncError(null);
       try {
         const filter: Filter = authCanSyncAll ? { all: {} } : childrenFilter(viewRootId);
-        await syncFiltersWithPeer(peer, peerId, conn, [filter], {
+        await syncFiltersWithTransport(peer, peerId, conn.transport, [filter], {
           autoSync: true,
           label: 'auto sync',
         });
