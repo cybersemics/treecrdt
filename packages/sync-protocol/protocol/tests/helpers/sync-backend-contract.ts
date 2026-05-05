@@ -36,6 +36,39 @@ export function defineSyncBackendContract(
   label: string,
   createHarness: () => Promise<SyncBackendHarness> | SyncBackendHarness,
 ): void {
+  test(`${label}: applyOps is read-after-write visible after resolve`, async () => {
+    const harness = await createHarness();
+    try {
+      const docId = `doc-apply-visible-${randomUUID()}`;
+      const backend = await harness.openBackend(docId);
+      const replica = replicaFromLabel('v');
+      const op = makeOp(replica, 1, 7, {
+        type: 'insert',
+        parent: root,
+        node: nodeIdFromInt(7),
+        orderKey: orderKeyFromPosition(0),
+      });
+
+      await backend.applyOps([op]);
+
+      const refs = await backend.listOpRefs({ all: {} });
+      expect(refs.map(bytesToHex)).toEqual([bytesToHex(deriveOpRefV0(docId, op.meta.id))]);
+      const [stored] = await backend.getOpsByOpRefs(refs);
+      if (!stored) throw new Error('expected stored op');
+      expect(stored.meta.id.counter).toBe(op.meta.id.counter);
+      expect(bytesToHex(stored.meta.id.replica)).toBe(bytesToHex(op.meta.id.replica));
+      expect(stored.meta.lamport).toBe(op.meta.lamport);
+      expect(stored.kind.type).toBe('insert');
+      if (stored.kind.type !== 'insert') throw new Error('expected insert op');
+      expect(stored.kind.parent).toBe(root);
+      expect(stored.kind.node).toBe(nodeIdFromInt(7));
+      expect(bytesToHex(stored.kind.orderKey)).toBe(bytesToHex(orderKeyFromPosition(0)));
+      expect(await backend.maxLamport()).toBe(7n);
+    } finally {
+      await harness.close?.();
+    }
+  });
+
   test(`${label}: getOpsByOpRefs preserves request order and errors on missing`, async () => {
     const harness = await createHarness();
     try {
