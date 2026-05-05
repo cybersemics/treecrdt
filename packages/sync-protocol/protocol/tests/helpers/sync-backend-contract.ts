@@ -53,7 +53,16 @@ export function defineSyncBackendContract(
 
       const refs = await backend.listOpRefs({ all: {} });
       expect(refs.map(bytesToHex)).toEqual([bytesToHex(deriveOpRefV0(docId, op.meta.id))]);
-      expect(await backend.getOpsByOpRefs(refs)).toEqual([op]);
+      const [stored] = await backend.getOpsByOpRefs(refs);
+      if (!stored) throw new Error('expected stored op');
+      expect(stored.meta.id.counter).toBe(op.meta.id.counter);
+      expect(bytesToHex(stored.meta.id.replica)).toBe(bytesToHex(op.meta.id.replica));
+      expect(stored.meta.lamport).toBe(op.meta.lamport);
+      expect(stored.kind.type).toBe('insert');
+      if (stored.kind.type !== 'insert') throw new Error('expected insert op');
+      expect(stored.kind.parent).toBe(root);
+      expect(stored.kind.node).toBe(nodeIdFromInt(7));
+      expect(bytesToHex(stored.kind.orderKey)).toBe(bytesToHex(orderKeyFromPosition(0)));
       expect(await backend.maxLamport()).toBe(7n);
     } finally {
       await harness.close?.();
