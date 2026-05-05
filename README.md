@@ -3,13 +3,14 @@
 Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared TypeScript interface.
 
 ## Layout
+
 - `packages/treecrdt-core`: core CRDT library with traits for storage/indexing/access control.
 - `packages/treecrdt-sqlite-ext`: SQLite/wa-sqlite extension harness that will implement the core traits.
 - `packages/treecrdt-wasm`: bridge for wasm-bindgen and browser/node builds.
 - `packages/treecrdt-wasm-js`: TS/JS wrapper for the treecrdt-wasm build
 - `packages/treecrdt-ts`: TypeScript interface definitions shared by bindings and the sync layer.
-- `packages/treecrdt-sqlite-node`: TreeCRDT bundled for Node.js use
-- `packages/treecrdt-wa-sqlite`: TreeCRDT bunlded for browser use
+- `packages/treecrdt-sqlite-node`: TreeCRDT SQLite client for Node.js use
+- `packages/treecrdt-wa-sqlite`: TreeCRDT SQLite client for browser use
 - `packages/treecrdt-benchmark`: Benchmark utilities
 - `packages/discovery`: bootstrap contract for resolving docs to attachment plans
 - `packages/treecrdt-sync`: high-level **client** sync for WebSocket + discovery + SQLite `SyncBackend` (npm: `@treecrdt/sync`). Builds on `@treecrdt/sync-protocol` and `@treecrdt/discovery`.
@@ -20,6 +21,7 @@ Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared Typ
 - `packages/sync-protocol/server/postgres-node`: Node sync server wired to Postgres backend
 
 ## Quick start
+
 ```
 pnpm install
 pnpm build
@@ -27,12 +29,22 @@ pnpm test
 ```
 
 ## Benchmarks
+
 For benchmark commands, product-facing note/sync scenarios, and the sync target matrix (`direct`, local Postgres sync server, remote sync server), see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+## SQLite Clients
+
+TreeCRDT intentionally keeps separate SQLite app entrypoints for Node and browser runtimes:
+`@treecrdt/sqlite-node` for `better-sqlite3`/native extension usage, and
+`@treecrdt/wa-sqlite` for browser wa-sqlite/WASM usage. See
+[docs/SQLITE_CLIENTS.md](docs/SQLITE_CLIENTS.md) for the import-surface decision and examples.
+
 ## Playground
+
 - Live demo (GitHub Pages): https://cybersemics.github.io/treecrdt/
 
 ### Local playground with a real sync server
+
 If you want the most useful local setup, start the sync server first and then point the playground at it:
 
 ```sh
@@ -72,4 +84,5 @@ For full sync-server configuration and environment variables, see:
 - `examples/playground/README.md`
 
 ## Contribute
+
 Contributions are welcome!
