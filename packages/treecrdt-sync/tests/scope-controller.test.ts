@@ -157,3 +157,23 @@ test('scope controller syncOnce reconciles all available peers', async () => {
   expect(peer.syncOnce).toHaveBeenNthCalledWith(1, expect.anything(), filter, undefined);
   expect(peer.syncOnce).toHaveBeenNthCalledWith(2, expect.anything(), filter, undefined);
 });
+
+test('scope controller syncOnce supports custom peer ordering and sync execution', async () => {
+  const { peer } = createFakePeer();
+  const calls: string[] = [];
+  const controller = createScopeController({
+    peer,
+    selectSyncPeerIds: (peerIds) => [...peerIds].reverse().slice(0, 1),
+    runSync: async ({ peerId }) => {
+      calls.push(peerId);
+    },
+  });
+  const filter = { all: {} };
+  controller.setPeer('peer-a', {} as any);
+  controller.setPeer('peer-b', {} as any);
+
+  await controller.scope(filter).syncOnce();
+
+  expect(calls).toEqual(['peer-b']);
+  expect(peer.syncOnce).not.toHaveBeenCalled();
+});

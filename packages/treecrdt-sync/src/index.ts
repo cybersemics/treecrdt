@@ -18,5 +18,6 @@ export type {
   ScopeControllerErrorContext,
   ScopeControllerErrorPhase,
   ScopeControllerOptions,
+  ScopeControllerRunSyncContext,
   SyncScope,
 } from './scope-controller.js';
