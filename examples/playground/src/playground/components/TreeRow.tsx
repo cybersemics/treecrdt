@@ -8,6 +8,7 @@ import {
   MdExpandMore,
   MdGroup,
   MdHome,
+  MdImage,
   MdKeyboardArrowDown,
   MdKeyboardArrowUp,
   MdLockOpen,
@@ -27,6 +28,7 @@ import {
 } from "../capabilities";
 import { ROOT_ID } from "../constants";
 import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
+import { formatPayloadBytes, SUPPORTED_IMAGE_MIME_TYPES, type PayloadDisplay } from "../payloadCodec";
 import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
 
 type MembersMenuLayout = {
@@ -44,6 +46,9 @@ export function TreeRow({
   liveChildren,
   onToggle,
   onSetValue,
+  onSetImagePayload,
+  onClearPayload,
+  onImagePayloadLoaded,
   onAddChild,
   onDelete,
   onMove,
@@ -75,6 +80,9 @@ export function TreeRow({
   liveChildren: boolean;
   onToggle: (id: string) => void;
   onSetValue: (id: string, value: string) => void | Promise<void>;
+  onSetImagePayload: (id: string, file: File) => void | Promise<void>;
+  onClearPayload: (id: string) => void | Promise<void>;
+  onImagePayloadLoaded: (id: string, payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
   onAddChild: (id: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
@@ -141,7 +149,10 @@ export function TreeRow({
   const [membersMenuLayout, setMembersMenuLayout] = useState<MembersMenuLayout | null>(null);
   const membersButtonRef = useRef<HTMLButtonElement | null>(null);
   const membersMenuRef = useRef<HTMLDivElement | null>(null);
-  const canEditValue = canWritePayload && !isRoot;
+  const imagePayload = node.payload.kind === "image" ? node.payload : null;
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const canEditValue = canWritePayload && !isRoot && !imagePayload;
+  const canReplacePayload = canWritePayload && !isRoot;
   const canInsertChild = canWriteStructure;
   const canMoveStructure = canWriteStructure;
   const canMoveToDocRoot = canWriteStructure && scopeRootId === ROOT_ID;
@@ -357,6 +368,68 @@ export function TreeRow({
             <div className="min-w-0">
               {isRoot ? (
                 <div className="truncate text-sm font-semibold text-white">{node.label}</div>
+              ) : imagePayload ? (
+                <div className="flex min-w-0 flex-col gap-2">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="flex h-16 w-20 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-700 bg-slate-900/70">
+                      {imagePayload.url ? (
+                        <img
+                          data-testid="node-image-payload"
+                          data-node-id={node.id}
+                          src={imagePayload.url}
+                          alt={imagePayload.name ?? "TreeCRDT image payload"}
+                          className="h-full w-full object-cover"
+                          onLoad={() => onImagePayloadLoaded(node.id, imagePayload)}
+                        />
+                      ) : (
+                        <MdImage className="text-[24px] text-slate-500" aria-hidden />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-white" title={node.label}>
+                        {node.label}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-slate-400">
+                        {imagePayload.mime} · {formatPayloadBytes(imagePayload.size)}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <input
+                          ref={imageInputRef}
+                          data-testid="row-image-replace-input"
+                          type="file"
+                          accept={SUPPORTED_IMAGE_MIME_TYPES.join(",")}
+                          className="hidden"
+                          disabled={!canReplacePayload}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] ?? null;
+                            if (!file) return;
+                            void Promise.resolve(onSetImagePayload(node.id, file)).finally(() => {
+                              if (imageInputRef.current) imageInputRef.current.value = "";
+                            });
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                          onClick={() => imageInputRef.current?.click()}
+                          disabled={!canReplacePayload}
+                          title={canReplacePayload ? "Replace image payload" : "Read-only (no write_payload permission)"}
+                        >
+                          Replace image
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-rose-400 hover:text-white disabled:opacity-50"
+                          onClick={() => void onClearPayload(node.id)}
+                          disabled={!canReplacePayload}
+                          title={canReplacePayload ? "Clear image payload" : "Read-only (no write_payload permission)"}
+                        >
+                          Clear payload
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               ) : isEditing ? (
                 <form
                   className="flex items-center gap-2"

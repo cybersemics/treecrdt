@@ -1,6 +1,7 @@
 import React from "react";
 import { MdExpandLess, MdExpandMore } from "react-icons/md";
 
+import { formatPayloadBytes, SUPPORTED_IMAGE_MIME_TYPES } from "../payloadCodec";
 import type { BulkAddProgress } from "../types";
 
 import { ParentPicker } from "./ParentPicker";
@@ -13,6 +14,8 @@ export function ComposerPanel({
   setParentChoice,
   newNodeValue,
   setNewNodeValue,
+  selectedImageFile,
+  setSelectedImageFile,
   nodeCount,
   setNodeCount,
   maxNodeCount,
@@ -32,12 +35,14 @@ export function ComposerPanel({
   setParentChoice: (next: string) => void;
   newNodeValue: string;
   setNewNodeValue: React.Dispatch<React.SetStateAction<string>>;
+  selectedImageFile: File | null;
+  setSelectedImageFile: React.Dispatch<React.SetStateAction<File | null>>;
   nodeCount: number;
   setNodeCount: React.Dispatch<React.SetStateAction<number>>;
   maxNodeCount: number;
   fanout: number;
   setFanout: React.Dispatch<React.SetStateAction<number>>;
-  onAddNodes: (parentId: string, count: number, opts: { fanout: number }) => void | Promise<void>;
+  onAddNodes: (parentId: string, count: number, opts: { fanout: number; imageFile?: File | null }) => void | Promise<void>;
   ready: boolean;
   busy: boolean;
   bulkAddProgress: BulkAddProgress | null;
@@ -47,6 +52,7 @@ export function ComposerPanel({
   const containerPadding = composerOpen ? "p-5" : "p-3";
   const headerMargin = composerOpen ? "mb-3" : "mb-0";
   const [progressNowMs, setProgressNowMs] = React.useState(() => Date.now());
+  const imageInputRef = React.useRef<HTMLInputElement | null>(null);
 
   React.useEffect(() => {
     if (!bulkAddProgress) return;
@@ -76,6 +82,8 @@ export function ComposerPanel({
     ? bulkAddProgress.phase === "creating"
       ? `Loading ${Math.round(progressRatio * 100)}%`
       : "Finishing..."
+    : selectedImageFile
+    ? "Add image node"
     : `Add node${nodeCount > 1 ? "s" : ""}`;
 
   return (
@@ -101,7 +109,13 @@ export function ComposerPanel({
             className="flex min-w-0 flex-col gap-3 md:flex-row md:items-end"
             onSubmit={(e) => {
               e.preventDefault();
-              void onAddNodes(parentChoice, nodeCount, { fanout });
+              void Promise.resolve(
+                onAddNodes(parentChoice, selectedImageFile ? 1 : nodeCount, { fanout, imageFile: selectedImageFile })
+              ).then(() => {
+                if (!selectedImageFile) return;
+                setSelectedImageFile(null);
+                if (imageInputRef.current) imageInputRef.current.value = "";
+              });
             }}
           >
             <ParentPicker nodeList={nodeList} value={parentChoice} onChange={setParentChoice} disabled={!ready} />
@@ -113,8 +127,40 @@ export function ComposerPanel({
                 onChange={(e) => setNewNodeValue(e.target.value)}
                 placeholder="Stored as payload bytes"
                 className="min-w-0 w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                disabled={!ready || busy || !canWritePayload}
+                disabled={!ready || busy || !canWritePayload || Boolean(selectedImageFile)}
               />
+            </label>
+            <label className="min-w-0 w-full space-y-2 text-sm text-slate-200 md:w-56">
+              <span>Image payload</span>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept={SUPPORTED_IMAGE_MIME_TYPES.join(",")}
+                className="min-w-0 w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-xs text-slate-200 file:mr-3 file:rounded-md file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
+                disabled={!ready || busy || !canWritePayload}
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  setSelectedImageFile(file);
+                  if (file) setNodeCount(1);
+                }}
+              />
+              {selectedImageFile ? (
+                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                  <span className="truncate" title={selectedImageFile.name}>
+                    {selectedImageFile.name} · {formatPayloadBytes(selectedImageFile.size)}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                    onClick={() => {
+                      setSelectedImageFile(null);
+                      if (imageInputRef.current) imageInputRef.current.value = "";
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              ) : null}
             </label>
             <label className="flex flex-col text-sm text-slate-200">
               <span>Node count</span>
@@ -132,7 +178,7 @@ export function ComposerPanel({
                   setNodeCount(Math.max(0, Math.min(maxNodeCount, Math.floor(next))));
                 }}
                 className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                disabled={!ready || busy}
+                disabled={!ready || busy || Boolean(selectedImageFile)}
               />
             </label>
             <label className="flex flex-col text-sm text-slate-200">
@@ -141,7 +187,7 @@ export function ComposerPanel({
                 value={fanout}
                 onChange={(e) => setFanout(Number(e.target.value) || 0)}
                 className="w-28 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/50"
-                disabled={!ready || busy}
+                disabled={!ready || busy || Boolean(selectedImageFile)}
                 title="Fanout > 0 distributes nodes in a k-ary tree; 0 inserts all nodes under the chosen parent."
               >
                 <option value={0}>Flat</option>
@@ -156,7 +202,7 @@ export function ComposerPanel({
             <button
               type="submit"
               className="flex-shrink-0 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition hover:-translate-y-0.5 hover:bg-accent/90 disabled:opacity-50"
-              disabled={!ready || busy || nodeCount <= 0 || !canWriteStructure}
+              disabled={!ready || busy || nodeCount <= 0 || !canWriteStructure || (Boolean(selectedImageFile) && !canWritePayload)}
               aria-busy={bulkAddProgress ? true : undefined}
             >
               {submitLabel}

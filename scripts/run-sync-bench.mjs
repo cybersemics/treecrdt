@@ -160,6 +160,7 @@ async function main() {
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-cold-start --count=10000 --profile-transport
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --profile-hello
   pnpm benchmark:sync:local -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --direct-send-threshold=64
+  pnpm benchmark:sync:direct -- --workloads=sync-image-payload-cold-start --counts=65536,262144,1048576
   pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --direct-send-threshold=64 --max-ops-per-batch=500
   pnpm benchmark:sync:remote prime -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --server-fixture-cache=rebuild
   pnpm benchmark:sync:remote -- --workloads=sync-balanced-children-payloads-cold-start --count=10000 --first-view --server-fixture-cache=reuse
@@ -185,6 +186,7 @@ Notes:
   - add --profile-hello to capture responder-side hello stage timings; local child-process runs parse server trace output, direct and in-process runs collect it in-process
   - add --direct-send-threshold=N to experiment with a clean-slate shortcut that skips the RIBLT round when the requested local filter is empty and the responder has at most N scoped ops
   - add --max-ops-per-batch=N to force smaller opsBatch messages when stress-testing upload paths or remote seed behavior
+  - image payload sync benches use SYNC_BENCH_IMAGE_PAYLOAD_BYTES (default 64KiB,256KiB,1MiB) and report payloadBytes in result.extra
   - add --post-seed-wait-ms=N to probe whether immediate post-upload backlog is skewing first-view timings
   - extra args are forwarded to packages/treecrdt-sqlite-node/scripts/bench-sync.ts`);
     return;
@@ -217,6 +219,7 @@ Notes:
     ["-C", "packages/treecrdt-benchmark", "run", "build"],
     ["-C", "packages/sync-protocol/protocol", "run", "build"],
     ["-C", "packages/sync-protocol/material/sqlite", "run", "build"],
+    ["-C", "packages/sync-protocol/material/postgres", "run", "build"],
     ["-C", "packages/sync-protocol/server/postgres-node", "run", "build"],
     ["-C", "packages/treecrdt-sqlite-node", "run", "build"],
   ];

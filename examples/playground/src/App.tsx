@@ -20,6 +20,7 @@ import { usePlaygroundOpsLog } from "./playground/hooks/usePlaygroundOpsLog";
 import { usePlaygroundPayloads } from "./playground/hooks/usePlaygroundPayloads";
 import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
 import { materializationRefreshPlan } from "./playground/materializationEvents";
+import { encodeImageFilePayload, type PayloadDisplay } from "./playground/payloadCodec";
 import {
   ensureOpfsKey,
   initialDocId,
@@ -38,6 +39,7 @@ import type {
   BulkAddProgress,
   CollapseState,
   DisplayNode,
+  ImagePayloadViewMetric,
   Status,
   StorageMode,
   SyncTransportMode,
@@ -103,10 +105,12 @@ export default function App() {
   const [nodeCount, setNodeCount] = useState(1);
   const [fanout, setFanout] = useState(10);
   const [newNodeValue, setNewNodeValue] = useState("");
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [syncServerUrl, setSyncServerUrl] = useState<string>(() => initialSyncServerUrl());
   const [syncTransportMode, setSyncTransportMode] = useState<SyncTransportMode>(() => initialSyncTransportMode());
+  const [lastImageViewMetric, setLastImageViewMetric] = useState<ImagePayloadViewMetric | null>(null);
   const [composerOpen, setComposerOpen] = useState(() => {
     if (typeof window === "undefined") return true;
     const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
@@ -276,6 +280,7 @@ export default function App() {
 
   const payloadWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const childrenLoadInFlightRef = useRef<Set<string>>(new Set());
+  const imageColdSyncStartRef = useRef<number | null>(null);
 
   const ensureChildrenLoaded = React.useCallback(
     async (parentId: string, opts: { force?: boolean; nextClient?: TreecrdtClient } = {}) => {
@@ -433,6 +438,26 @@ export default function App() {
     return client.onMaterialized(applyMaterializationEvent);
   }, [client, applyMaterializationEvent]);
 
+  const markImageColdSyncStart = React.useCallback(() => {
+    imageColdSyncStartRef.current = typeof performance === "undefined" ? Date.now() : performance.now();
+  }, []);
+
+  const handleImagePayloadLoaded = React.useCallback(
+    (nodeId: string, payload: Extract<PayloadDisplay, { kind: "image" }>) => {
+      const now = typeof performance === "undefined" ? Date.now() : performance.now();
+      const start = imageColdSyncStartRef.current;
+      setLastImageViewMetric({
+        nodeId,
+        mime: payload.mime,
+        name: payload.name,
+        bytes: payload.size,
+        coldMs: start === null ? null : Math.max(0, now - start),
+        loadedAtMs: Date.now(),
+      });
+    },
+    []
+  );
+
   const openNewPeerTab = () => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -570,8 +595,8 @@ export default function App() {
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
-      const { label, value } = payloadDisplayForNode(entry.id);
-      acc.push({ node: { id: entry.id, label, value }, depth: entry.depth });
+      const payload = payloadDisplayForNode(entry.id);
+      acc.push({ node: { id: entry.id, label: payload.label, value: payload.value, payload }, depth: entry.depth });
       if (isCollapsed(entry.id)) continue;
       const kids = childrenByParent[entry.id] ?? [];
       for (let i = kids.length - 1; i >= 0; i--) {
@@ -695,12 +720,15 @@ export default function App() {
       childrenByParent: { [ROOT_ID]: [] },
     });
     resetPayloadCache();
+    imageColdSyncStartRef.current = null;
+    setLastImageViewMetric(null);
     setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
     lamportRef.current = 0;
     setHeadLamport(0);
     setTotalNodes(null);
     setParentChoice(ROOT_ID);
     setNewNodeValue("");
+    setSelectedImageFile(null);
     setBulkAddProgress(null);
     setError(null);
     const closingClient = clientRef.current;
@@ -727,11 +755,16 @@ export default function App() {
     }
   };
 
-  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
+  const handleAddNodes = async (
+    parentId: string,
+    count: number,
+    opts: { fanout?: number; imageFile?: File | null } = {}
+  ) => {
     const localWriter = getLocalWriter();
     if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
-    const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
+    if (opts.imageFile && !canWritePayload) return;
+    const normalizedCount = opts.imageFile ? 1 : Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
     setBusy(true);
     const startedAtMs = Date.now();
@@ -740,15 +773,16 @@ export default function App() {
     const ops: Operation[] = [];
     let opsRecorded = false;
     try {
-      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
-      const valueBase = canWritePayload ? newNodeValue.trim() : "";
+      const fanoutLimit = opts.imageFile ? 0 : Math.max(0, Math.floor(opts.fanout ?? fanout));
+      const imagePayload = opts.imageFile ? await encodeImageFilePayload(opts.imageFile) : null;
+      const valueBase = canWritePayload && !opts.imageFile ? newNodeValue.trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
 
       if (fanoutLimit <= 0) {
         for (let i = 0; i < normalizedCount; i++) {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const payload = shouldSetValue ? textEncoder.encode(value) : null;
+          const payload = imagePayload ?? (shouldSetValue ? textEncoder.encode(value) : null);
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
           const completed = i + 1;
@@ -820,7 +854,7 @@ export default function App() {
     } catch (err) {
       if (!opsRecorded && ops.length > 0) handleCommittedLocalOps(ops);
       console.error("Failed to add nodes", err);
-      setError("Failed to add nodes (see console)");
+      setError(err instanceof Error ? err.message : "Failed to add nodes (see console)");
     } finally {
       setBulkAddProgress(null);
       setBusy(false);
@@ -866,6 +900,46 @@ export default function App() {
         } catch (err) {
           console.error("Failed to write payload", err);
           setError("Failed to write payload (see console)");
+        }
+      });
+    payloadWriteQueueRef.current = run.catch(() => undefined);
+    return run;
+  };
+
+  const handleSetImagePayload = (nodeId: string, file: File): Promise<void> => {
+    const run = payloadWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (nodeId === ROOT_ID || !canWritePayload) return;
+        const localWriter = getLocalWriter();
+        if (!localWriter) return;
+        try {
+          const payload = await encodeImageFilePayload(file);
+          const encryptedPayload = await encryptPayloadBytes(payload);
+          const op = await localWriter.payload(nodeId, encryptedPayload);
+          handleCommittedLocalOps([op]);
+        } catch (err) {
+          console.error("Failed to write image payload", err);
+          setError(err instanceof Error ? err.message : "Failed to write image payload (see console)");
+        }
+      });
+    payloadWriteQueueRef.current = run.catch(() => undefined);
+    return run;
+  };
+
+  const handleClearPayload = (nodeId: string): Promise<void> => {
+    const run = payloadWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (nodeId === ROOT_ID || !canWritePayload) return;
+        const localWriter = getLocalWriter();
+        if (!localWriter) return;
+        try {
+          const op = await localWriter.payload(nodeId, null);
+          handleCommittedLocalOps([op]);
+        } catch (err) {
+          console.error("Failed to clear payload", err);
+          setError("Failed to clear payload (see console)");
         }
       });
     payloadWriteQueueRef.current = run.catch(() => undefined);
@@ -1031,6 +1105,8 @@ export default function App() {
             setParentChoice={setParentChoice}
             newNodeValue={newNodeValue}
             setNewNodeValue={setNewNodeValue}
+            selectedImageFile={selectedImageFile}
+            setSelectedImageFile={setSelectedImageFile}
             nodeCount={nodeCount}
             setNodeCount={setNodeCount}
             maxNodeCount={MAX_COMPOSER_NODE_COUNT}
@@ -1056,7 +1132,10 @@ export default function App() {
             liveBusy={liveBusy}
             peerCount={peers.length}
             authCanSyncAll={authCanSyncAll}
-            onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
+            onSync={() => {
+              markImageColdSyncStart();
+              void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
+            }}
             liveAllEnabled={liveAllEnabled}
             setLiveAllEnabled={setLiveAllEnabled}
             showPeersPanel={showPeersPanel}
@@ -1129,6 +1208,9 @@ export default function App() {
             openShareForNode={openShareForNode}
             grantSubtreeToReplicaPubkey={grantSubtreeToReplicaPubkey}
             onSetValue={handleSetValue}
+            onSetImagePayload={handleSetImagePayload}
+            onClearPayload={handleClearPayload}
+            onImagePayloadLoaded={handleImagePayloadLoaded}
             onAddChild={(id) => {
               setParentChoice(id);
               void handleInsert(id);
@@ -1153,6 +1235,7 @@ export default function App() {
             liveChildrenParents={liveChildrenParents}
             meta={index}
             childrenByParent={childrenByParent}
+            imagePayloadMetric={lastImageViewMetric}
           />
         </section>
 
@@ -1173,6 +1256,7 @@ export default function App() {
         toast={toast}
         setToast={setToast}
         onSync={() => {
+          markImageColdSyncStart();
           void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
         }}
         canSync={status === "ready" && !busy && !syncBusy && peers.length > 0 && online}

@@ -13,11 +13,13 @@ export type SyncBenchWorkload =
   | 'sync-children-cold-start'
   | 'sync-children-payloads'
   | 'sync-children-payloads-cold-start'
+  | 'sync-image-payload-cold-start'
   | 'sync-root-children-fanout10'
   | 'sync-one-missing';
 
 export const DEFAULT_SYNC_BENCH_SIZES = [100, 1000, 10_000] as const;
 export const DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES = [1110] as const;
+export const DEFAULT_SYNC_BENCH_IMAGE_PAYLOAD_BYTES = [64 * 1024, 256 * 1024, 1024 * 1024] as const;
 export const DEFAULT_SYNC_BENCH_FANOUT = 10;
 export const DEFAULT_SYNC_BENCH_PAGE_SIZE = 10;
 export const DEFAULT_SYNC_BENCH_PAYLOAD_BYTES = 512;
@@ -46,6 +48,9 @@ export const ALL_SYNC_BENCH_WORKLOADS = [
 export const DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS = [
   'sync-root-children-fanout10',
 ] as const satisfies readonly SyncBenchWorkload[];
+export const IMAGE_SYNC_BENCH_WORKLOADS = [
+  'sync-image-payload-cold-start',
+] as const satisfies readonly SyncBenchWorkload[];
 
 export const SYNC_BENCH_DEFAULT_MAX_CODEWORDS = 200_000;
 export const SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE = 2048;
@@ -59,6 +64,13 @@ export function syncBenchRootChildrenSizesFromEnv(): number[] {
   return (
     envIntList('SYNC_BENCH_ROOT_CHILDREN_SIZES') ??
     Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_SIZES)
+  );
+}
+
+export function syncBenchImagePayloadBytesFromEnv(): number[] {
+  return (
+    envIntList('SYNC_BENCH_IMAGE_PAYLOAD_BYTES') ??
+    Array.from(DEFAULT_SYNC_BENCH_IMAGE_PAYLOAD_BYTES)
   );
 }
 
@@ -393,6 +405,42 @@ export function buildSyncBenchCase(opts: {
       extra: { opsPerPeer: treeSize, missingCounter, missingNode },
       expectedFinalOpsA: treeSize,
       expectedFinalOpsB: treeSize,
+    };
+  }
+
+  if (workload === 'sync-image-payload-cold-start') {
+    const imagePayloadBytes = opts.payloadBytes ?? size;
+    if (!Number.isInteger(imagePayloadBytes) || imagePayloadBytes <= 0) {
+      throw new Error(`sync-image-payload-cold-start requires payloadBytes > 0`);
+    }
+
+    const imageNode = nodeIdFromInt(1);
+    const insert = makeOp(replicas.s, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: imageNode,
+      orderKey: orderKeyFromPosition(0),
+    });
+    const payload = makeOp(replicas.p, 1, 2, {
+      type: 'payload',
+      node: imageNode,
+      payload: payloadBytesFromSeed(90_000, imagePayloadBytes),
+    });
+    const opsB = [insert, payload];
+
+    return {
+      name: `sync-image-payload-cold-start-${imagePayloadBytes}`,
+      opsA: [],
+      opsB,
+      filter: { all: {} },
+      totalOps: opsB.length,
+      extra: {
+        payloadBytes: imagePayloadBytes,
+        imagePayload: true,
+        coldStart: true,
+      },
+      expectedFinalOpsA: opsB.length,
+      expectedFinalOpsB: opsB.length,
     };
   }
 

@@ -1,12 +1,24 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { base64urlDecode } from '@treecrdt/auth';
 import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from '@treecrdt/crypto';
 import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { loadOrCreateDocPayloadKeyB64 } from '../../auth';
 import { ROOT_ID } from '../constants';
+import {
+  browserImageObjectUrlFactory,
+  decodePlaygroundPayload,
+  PayloadImageObjectUrlCache,
+  type PayloadDisplay,
+} from '../payloadCodec';
 
 type PayloadRecord = {
+  payload: Uint8Array | null;
+  encrypted?: boolean;
+  display: PayloadDisplay;
+};
+
+type PayloadPlainRecord = {
   payload: Uint8Array | null;
   encrypted?: boolean;
 };
@@ -21,7 +33,7 @@ function bytesEqual(left: Uint8Array | null, right: Uint8Array | null): boolean 
   return true;
 }
 
-function payloadRecordsEqual(left: PayloadRecord | undefined, right: PayloadRecord): boolean {
+function payloadRecordsEqual(left: PayloadRecord | undefined, right: PayloadPlainRecord): boolean {
   if (!left) return false;
   return (
     Boolean(left.encrypted) === Boolean(right.encrypted) && bytesEqual(left.payload, right.payload)
@@ -34,15 +46,27 @@ export function usePlaygroundPayloads(opts: {
 }) {
   const { docId, setError } = opts;
   const [payloadVersion, setPayloadVersion] = useState(0);
-  const textDecoder = useMemo(() => new TextDecoder(), []);
   const docPayloadKeyRef = useRef<Uint8Array | null>(null);
   const payloadByNodeRef = useRef<Map<string, PayloadRecord>>(new Map());
   const payloadEventQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const imageUrlCacheRef = useRef(
+    typeof window === 'undefined'
+      ? null
+      : (() => {
+          const factory = browserImageObjectUrlFactory();
+          return factory ? new PayloadImageObjectUrlCache(factory) : null;
+        })(),
+  );
 
   const resetPayloadCache = React.useCallback(() => {
     payloadEventQueueRef.current = Promise.resolve();
+    imageUrlCacheRef.current?.clear();
     payloadByNodeRef.current = new Map();
     setPayloadVersion((v) => v + 1);
+  }, []);
+
+  useEffect(() => {
+    return () => imageUrlCacheRef.current?.clear();
   }, []);
 
   const refreshDocPayloadKey = React.useCallback(async () => {
@@ -75,8 +99,8 @@ export function usePlaygroundPayloads(opts: {
     return next;
   }, [refreshDocPayloadKey]);
 
-  const decodePayloadRecord = React.useCallback(
-    async (raw: Uint8Array | null): Promise<PayloadRecord> => {
+  const decryptPayloadRecord = React.useCallback(
+    async (raw: Uint8Array | null): Promise<PayloadPlainRecord> => {
       if (raw === null) return { payload: null, encrypted: false };
       try {
         const key = await requireDocPayloadKey();
@@ -93,20 +117,57 @@ export function usePlaygroundPayloads(opts: {
     [docId, requireDocPayloadKey],
   );
 
+  const buildPayloadRecord = React.useCallback(
+    (node: string, plain: PayloadPlainRecord): PayloadRecord => {
+      const decoded = decodePlaygroundPayload(plain.payload);
+      if (decoded.kind === 'empty') {
+        imageUrlCacheRef.current?.revoke(node);
+        const display: PayloadDisplay = plain.encrypted
+          ? { kind: 'encrypted', label: '(encrypted)', value: '' }
+          : { kind: 'empty', label: node, value: '' };
+        return { ...plain, display };
+      }
+      if (decoded.kind === 'text') {
+        imageUrlCacheRef.current?.revoke(node);
+        const label = decoded.value.length === 0 ? '(empty)' : decoded.value;
+        return {
+          ...plain,
+          display: { kind: 'text', label, value: decoded.value },
+        };
+      }
+
+      const url = imageUrlCacheRef.current?.set(node, decoded) ?? '';
+      const label = decoded.name?.trim() || `${decoded.mime} image`;
+      return {
+        ...plain,
+        display: {
+          kind: 'image',
+          label,
+          value: '',
+          mime: decoded.mime,
+          name: decoded.name,
+          size: decoded.size,
+          url,
+        },
+      };
+    },
+    [],
+  );
+
   const applyPayloadUpdatesFromRaw = React.useCallback(
     async (updates: Iterable<{ node: string; payload: Uint8Array | null }>) => {
       let changed = false;
       const payloads = payloadByNodeRef.current;
       for (const { node, payload } of updates) {
         if (node === ROOT_ID) continue;
-        const next = await decodePayloadRecord(payload);
-        if (payloadRecordsEqual(payloads.get(node), next)) continue;
-        payloads.set(node, next);
+        const nextPlain = await decryptPayloadRecord(payload);
+        if (payloadRecordsEqual(payloads.get(node), nextPlain)) continue;
+        payloads.set(node, buildPayloadRecord(node, nextPlain));
         changed = true;
       }
       if (changed) setPayloadVersion((v) => v + 1);
     },
-    [decodePayloadRecord],
+    [buildPayloadRecord, decryptPayloadRecord],
   );
 
   const refreshPayloadsForNodes = React.useCallback(
@@ -144,17 +205,12 @@ export function usePlaygroundPayloads(opts: {
   );
 
   const payloadDisplayForNode = React.useCallback(
-    (id: string): { label: string; value: string } => {
-      if (id === ROOT_ID) return { label: 'Root', value: '' };
+    (id: string): PayloadDisplay => {
+      if (id === ROOT_ID) return { kind: 'root', label: 'Root', value: '' };
       const record = payloadByNodeRef.current.get(id);
-      const payload = record?.payload ?? null;
-      if (payload === null) {
-        return { label: record?.encrypted ? '(encrypted)' : id, value: '' };
-      }
-      const value = textDecoder.decode(payload);
-      return { label: value.length === 0 ? '(empty)' : value, value };
+      return record?.display ?? { kind: 'empty', label: id, value: '' };
     },
-    [payloadVersion, textDecoder],
+    [payloadVersion],
   );
 
   return {

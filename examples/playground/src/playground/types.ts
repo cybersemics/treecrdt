@@ -1,7 +1,19 @@
+import type { PayloadDisplay } from "./payloadCodec";
+
 export type DisplayNode = {
   id: string;
   label: string;
   value: string;
+  payload: PayloadDisplay;
+};
+
+export type ImagePayloadViewMetric = {
+  nodeId: string;
+  mime: string;
+  name?: string;
+  bytes: number;
+  coldMs: number | null;
+  loadedAtMs: number;
 };
 
 export type NodeMeta = {

@@ -5,10 +5,17 @@ import type { Operation } from "@treecrdt/interface";
 import { deriveOpRefV0 } from "@treecrdt/sync-protocol";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync-protocol/protobuf";
 import { startWebSocketSyncServer } from "../../../packages/sync-protocol/server/core/dist/index.js";
+import {
+  decodePlaygroundPayload,
+  encodeImagePayload,
+  isSupportedImageMime,
+  PayloadImageObjectUrlCache,
+} from "../src/playground/payloadCodec";
 
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const REMOTE_PLACEHOLDER = "https://bootstrap-host or ws://localhost:8787";
+const TEST_TEXT_ENCODER = new TextEncoder();
 
 type TestSyncServer = {
   host: string;
@@ -193,6 +200,27 @@ function uniqueDocId(prefix: string): string {
   // Date.now() alone can collide (ms resolution) and Math.random can be deterministically seeded.
   const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
   return `${prefix}-${suffix}`;
+}
+
+async function makeBrowserImageUpload(
+  page: import("@playwright/test").Page,
+  opts: { mime: "image/png" | "image/jpeg"; name: string }
+): Promise<{ name: string; mimeType: string; buffer: Buffer }> {
+  const dataUrl = await page.evaluate((mime) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 2;
+    canvas.height = 2;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2d canvas unavailable");
+    ctx.fillStyle = "#0ea5e9";
+    ctx.fillRect(0, 0, 2, 2);
+    ctx.fillStyle = "#f97316";
+    ctx.fillRect(1, 1, 1, 1);
+    return canvas.toDataURL(mime, 0.86);
+  }, opts.mime);
+  const [, base64] = dataUrl.split(",");
+  if (!base64) throw new Error(`failed to create ${opts.mime} data URL`);
+  return { name: opts.name, mimeType: opts.mime, buffer: Buffer.from(base64, "base64") };
 }
 
 async function waitForReady(page: import("@playwright/test").Page, path: string) {
@@ -431,6 +459,70 @@ async function clickSyncAllowRevokedCapabilityTokenError(page: import("@playwrig
   }
 }
 
+test.describe("playground payload codec", () => {
+  test("keeps raw text payloads compatible", () => {
+    const decoded = decodePlaygroundPayload(TEST_TEXT_ENCODER.encode("plain text"));
+    expect(decoded).toMatchObject({ kind: "text", value: "plain text" });
+  });
+
+  test("roundtrips binary image payload envelopes", () => {
+    const imageBytes = new Uint8Array([0, 1, 2, 3, 250, 251]);
+    const encoded = encodeImagePayload({
+      mime: "image/png",
+      name: "pixel.png",
+      bytes: imageBytes,
+    });
+    const decoded = decodePlaygroundPayload(encoded);
+    expect(decoded).toMatchObject({
+      kind: "image",
+      mime: "image/png",
+      name: "pixel.png",
+      size: imageBytes.byteLength,
+    });
+    expect(decoded.kind === "image" ? Array.from(decoded.bytes) : []).toEqual(Array.from(imageBytes));
+  });
+
+  test("rejects SVG and unsupported image MIME types", () => {
+    expect(isSupportedImageMime("image/svg+xml")).toBe(false);
+    expect(() =>
+      encodeImagePayload({
+        mime: "image/svg+xml",
+        name: "unsafe.svg",
+        bytes: new Uint8Array([1, 2, 3]),
+      })
+    ).toThrow(/unsupported/i);
+  });
+
+  test("falls back to text for corrupt image envelopes", () => {
+    const encoded = encodeImagePayload({
+      mime: "image/jpeg",
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+    encoded[11] = 255;
+    const decoded = decodePlaygroundPayload(encoded);
+    expect(decoded.kind).toBe("text");
+  });
+
+  test("revokes stale image object URLs", () => {
+    const decoded = decodePlaygroundPayload(encodeImagePayload({ mime: "image/webp", bytes: new Uint8Array([1, 2, 3]) }));
+    if (decoded.kind !== "image") throw new Error("expected image payload");
+
+    let nextId = 0;
+    const revoked: string[] = [];
+    const cache = new PayloadImageObjectUrlCache({
+      createObjectURL: () => `blob:test-${++nextId}`,
+      revokeObjectURL: (url) => revoked.push(url),
+    });
+
+    const first = cache.set("node", decoded);
+    const second = cache.set("node", decoded);
+    expect(revoked).toEqual([first]);
+
+    cache.clear();
+    expect(revoked).toEqual([first, second]);
+  });
+});
+
 test("playground mints a fresh default doc", async ({ browser }) => {
   const freshProfile = `pw-doc-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const freshContext = await browser.newContext();
@@ -509,6 +601,66 @@ test("live payload editing commits each keystroke without clobbering the draft",
   await page.getByTitle("Toggle operations panel").click();
   const opsPanel = page.locator("aside", { hasText: "Operations" });
   await expect(opsPanel.getByText("Ops: 8")).toBeVisible({ timeout: 30_000 });
+});
+
+test("local image payload upload renders a thumbnail", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  const doc = uniqueDocId("pw-playground-image-local");
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}&auth=0`);
+
+  const file = await makeBrowserImageUpload(page, { mime: "image/png", name: "local-pixel.png" });
+  await page.getByLabel("Image payload").setInputFiles(file);
+  await page.getByRole("button", { name: "Add image node", exact: true }).click();
+
+  const image = page.getByTestId("node-image-payload");
+  await expect(image).toBeVisible({ timeout: 30_000 });
+  await expect(image).toHaveAttribute("alt", "local-pixel.png");
+  await expect(page.getByTestId("image-sync-diagnostic")).toContainText("image/png", { timeout: 30_000 });
+  await expect(page.getByTestId("image-sync-diagnostic")).toContainText("local-pixel.png");
+});
+
+test("remote cold sync renders a JPEG image payload and reports time to view", async ({ browser }) => {
+  test.setTimeout(120_000);
+
+  const doc = uniqueDocId("pw-playground-image-remote");
+  const server = await startInMemorySyncServer();
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const remotePath = `/?doc=${encodeURIComponent(doc)}&auth=0&transport=remote&sync=${encodeURIComponent(server.wsUrl)}`;
+
+  try {
+    await Promise.all([waitForReady(pageA, remotePath), waitForReady(pageB, remotePath)]);
+
+    const file = await makeBrowserImageUpload(pageA, { mime: "image/jpeg", name: "cold-view.jpg" });
+    await pageA.getByLabel("Image payload").setInputFiles(file);
+    await pageA.getByRole("button", { name: "Add image node", exact: true }).click();
+    await expect(pageA.getByTestId("node-image-payload")).toBeVisible({ timeout: 30_000 });
+
+    await Promise.all([clickSync(pageA, "A image upload"), server.waitForDocOps(doc, 1)]);
+    await expect(pageB.getByTestId("node-image-payload")).toHaveCount(0);
+
+    await Promise.all([clickSync(pageB, "B image download"), server.waitForServedOps(doc, 1)]);
+    const image = pageB.getByTestId("node-image-payload");
+    await expect(image).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(
+        async () =>
+          await image.evaluate((node) => {
+            const img = node as HTMLImageElement;
+            return img.complete && img.naturalWidth > 0;
+          }),
+        { timeout: 30_000 }
+      )
+      .toBe(true);
+
+    const diagnostic = pageB.getByTestId("image-sync-diagnostic");
+    await expect(diagnostic).toContainText("image/jpeg", { timeout: 30_000 });
+    await expect(diagnostic).toContainText(/cold view \d+ms/);
+  } finally {
+    await Promise.all([context.close(), server.close()]);
+  }
 });
 
 test("switching remote sync server URL reconnects to the new endpoint", async ({ page }) => {

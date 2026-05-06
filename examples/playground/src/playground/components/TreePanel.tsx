@@ -16,7 +16,8 @@ import {
 
 import { ROOT_ID } from "../constants";
 import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
-import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
+import { formatPayloadBytes, type PayloadDisplay } from "../payloadCodec";
+import type { CollapseState, DisplayNode, ImagePayloadViewMetric, NodeMeta, PeerInfo } from "../types";
 
 import { PeersPanel } from "./PeersPanel";
 import { SharingAuthPanel } from "./SharingAuthPanel";
@@ -61,6 +62,9 @@ export function TreePanel({
   openShareForNode,
   grantSubtreeToReplicaPubkey,
   onSetValue,
+  onSetImagePayload,
+  onClearPayload,
+  onImagePayloadLoaded,
   onAddChild,
   onDelete,
   onMove,
@@ -82,6 +86,7 @@ export function TreePanel({
   liveChildrenParents,
   meta,
   childrenByParent,
+  imagePayloadMetric,
 }: {
   totalNodes: number | null;
   loadedNodes: number;
@@ -124,6 +129,9 @@ export function TreePanel({
     supersedesTokenIds?: string[];
   }) => Promise<boolean>;
   onSetValue: (nodeId: string, value: string) => void | Promise<void>;
+  onSetImagePayload: (nodeId: string, file: File) => void | Promise<void>;
+  onClearPayload: (nodeId: string) => void | Promise<void>;
+  onImagePayloadLoaded: (nodeId: string, payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
   onAddChild: (nodeId: string) => void;
   onDelete: (nodeId: string) => void;
   onMove: (nodeId: string, direction: "up" | "down") => void;
@@ -145,6 +153,7 @@ export function TreePanel({
   liveChildrenParents: Set<string>;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
+  imagePayloadMetric: ImagePayloadViewMetric | null;
 }) {
   const measureTreeElement = React.useCallback(
     (element: Element | null) => {
@@ -323,6 +332,16 @@ export function TreePanel({
           {syncError}
         </div>
       )}
+      {imagePayloadMetric ? (
+        <div
+          data-testid="image-sync-diagnostic"
+          className="mb-3 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-50"
+        >
+          Image payload loaded: {imagePayloadMetric.mime} · {formatPayloadBytes(imagePayloadMetric.bytes)}
+          {imagePayloadMetric.name ? ` · ${imagePayloadMetric.name}` : ""}
+          {imagePayloadMetric.coldMs !== null ? ` · cold view ${Math.round(imagePayloadMetric.coldMs)}ms` : ""}
+        </div>
+      ) : null}
       {showPeersPanel && <PeersPanel {...peersPanelProps} />}
       {showAuthPanel && <SharingAuthPanel {...sharingAuthPanelProps} />}
       <div ref={treeParentRef} className="max-h-[560px] overflow-auto">
@@ -345,6 +364,9 @@ export function TreePanel({
                   onToggle={toggleCollapse}
                   onShare={openShareForNode}
                   onSetValue={onSetValue}
+                  onSetImagePayload={onSetImagePayload}
+                  onClearPayload={onClearPayload}
+                  onImagePayloadLoaded={onImagePayloadLoaded}
                   onAddChild={onAddChild}
                   onDelete={onDelete}
                   onMove={onMove}

@@ -24,8 +24,10 @@ import {
   ALL_SYNC_BENCH_WORKLOADS,
   buildSyncBenchCase,
   DEFAULT_SYNC_BENCH_FANOUT,
+  DEFAULT_SYNC_BENCH_IMAGE_PAYLOAD_BYTES,
   DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS,
   DEFAULT_SYNC_BENCH_WORKLOADS,
+  IMAGE_SYNC_BENCH_WORKLOADS,
   SYNC_BENCH_DEFAULT_CODEWORDS_PER_MESSAGE,
   SYNC_BENCH_DEFAULT_MAX_CODEWORDS,
   maxLamport,
@@ -215,6 +217,7 @@ const DEFAULT_STORAGES: readonly StorageKind[] = ['memory', 'file'];
 const ALL_WORKLOADS: readonly SyncBenchWorkload[] = [
   ...ALL_SYNC_BENCH_WORKLOADS,
   ...DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS,
+  ...IMAGE_SYNC_BENCH_WORKLOADS,
 ];
 const SYNC_SERVER_START_TIMEOUT_MS = Math.max(
   1_000,
@@ -2370,14 +2373,21 @@ async function main() {
 
   const iterationsOverride = parseIterationsOverride(argv);
   const warmupIterationsOverride = parseWarmupIterationsOverride(argv);
+  const parsedConfig = parseConfigFromArgv(argv, iterationsOverride);
   const config =
-    parseConfigFromArgv(argv, iterationsOverride) ??
+    parsedConfig ??
     SYNC_BENCH_CONFIG.map(
       ([size, iterations]) => [size, iterationsOverride ?? iterations] as ConfigEntry,
     );
   const rootConfig = SYNC_BENCH_ROOT_CONFIG.map(
     ([size, iterations]) => [size, iterationsOverride ?? iterations] as ConfigEntry,
   );
+  const imagePayloadConfig =
+    parsedConfig ??
+    DEFAULT_SYNC_BENCH_IMAGE_PAYLOAD_BYTES.map(
+      (size) =>
+        [size, iterationsOverride ?? recommendedIterationsForCustomSize(size)] as ConfigEntry,
+    );
   const targets = parseTargets(argv);
   const storages = parseStorages(argv);
   const workloads = parseWorkloads(argv);
@@ -2407,7 +2417,12 @@ async function main() {
       }
       const primeCases = targets.flatMap((target) =>
         workloads.flatMap((workload) => {
-          const entries = workload === 'sync-root-children-fanout10' ? rootConfig : config;
+          const entries =
+            workload === 'sync-root-children-fanout10'
+              ? rootConfig
+              : workload === 'sync-image-payload-cold-start'
+                ? imagePayloadConfig
+                : config;
           return entries.map(([size]) => ({
             target,
             workload,
@@ -2450,7 +2465,12 @@ async function main() {
     for (const target of targets) {
       for (const storage of storages) {
         for (const workload of workloads) {
-          const entries = workload === 'sync-root-children-fanout10' ? rootConfig : config;
+          const entries =
+            workload === 'sync-root-children-fanout10'
+              ? rootConfig
+              : workload === 'sync-image-payload-cold-start'
+                ? imagePayloadConfig
+                : config;
           for (const [size, iterations] of entries) {
             cases.push({
               target,
