@@ -702,6 +702,29 @@ test("switching to remote transport does not auto-fill a default sync URL", asyn
     .toEqual({ sync: null, transport: "remote" });
 });
 
+test("remote sync preset fills the server URL without typing", async ({ page }) => {
+  const doc = uniqueDocId("pw-playground-sync-preset");
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+
+  await page.getByRole("button", { name: /Connections/ }).click();
+  await page.getByRole("button", { name: "Sync enabled", exact: true }).click();
+
+  const remoteInput = page.getByPlaceholder(REMOTE_PLACEHOLDER);
+  await expect(remoteInput).toHaveValue("");
+
+  await page.getByRole("button", { name: "Local WebSocket", exact: true }).click();
+  await expect(remoteInput).toHaveValue("ws://localhost:8787");
+  await expect
+    .poll(async () => {
+      const url = new URL(page.url());
+      return {
+        sync: url.searchParams.get("sync"),
+        transport: url.searchParams.get("transport"),
+      };
+    })
+    .toEqual({ sync: "ws://localhost:8787", transport: "hybrid" });
+});
+
 test("remote sync settings persist into a shareable URL", async ({ browser, page }) => {
   test.setTimeout(120_000);
 
