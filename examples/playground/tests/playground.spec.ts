@@ -607,26 +607,14 @@ test("new device syncs a large image payload and renders it", async ({ browser }
   test.setTimeout(240_000);
 
   const doc = uniqueDocId("pw-playground-image-large-device");
-  const profileB = `pw-large-image-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const context = await browser.newContext();
   const pageA = await context.newPage();
-  const pageB = await context.newPage();
   const localPath = `/?doc=${encodeURIComponent(doc)}&auth=1&transport=local`;
-  const joinPath = `${localPath}&profile=${encodeURIComponent(profileB)}&join=1`;
 
   try {
-    await Promise.all([waitForReady(pageA, localPath), waitForReady(pageB, joinPath)]);
+    await waitForReady(pageA, localPath);
     await expectAuthEnabledByDefault(pageA);
     await waitForLocalAuthTokens(pageA);
-
-    const inviteLink = await shareSubtreeInvite(pageA, ROOT_ID);
-    await joinViaInviteLink(pageB, inviteLink);
-    await Promise.all([
-      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
-      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
-    ]);
-    await clickSyncWithRetryOnTransientAuthError(pageA, "A invite warmup");
-    await clickSyncWithRetryOnTransientAuthError(pageB, "B invite warmup");
 
     await pageA.getByLabel("Image payload").setInputFiles(LARGE_IMAGE_FIXTURE);
     await pageA.getByRole("button", { name: "Add image node", exact: true }).click();
@@ -636,12 +624,17 @@ test("new device syncs a large image payload and renders it", async ({ browser }
     await expect(localImage).toHaveAttribute("alt", "large-image.jpg");
     await expect(pageA.getByTestId("image-sync-diagnostic")).toContainText("large-image.jpg", { timeout: 30_000 });
 
-    await clickSyncWithRetryOnTransientAuthError(pageA, "A large image upload", { timeout: 120_000 });
-    await clickSyncWithRetryOnTransientAuthError(pageB, "B large image download", { timeout: 120_000 });
+    const [pageB] = await Promise.all([
+      pageA.waitForEvent("popup"),
+      pageA.getByRole("button", { name: "New device (isolated)", exact: true }).click(),
+    ]);
+    await pageB.bringToFront();
+    await expect(pageB.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
 
     const remoteImage = pageB.getByTestId("node-image-payload");
-    await expectImagePayloadLoaded(remoteImage, 60_000);
+    await expectImagePayloadLoaded(remoteImage, 120_000);
     await expect(remoteImage).toHaveAttribute("alt", "large-image.jpg");
+    await expect(pageB.getByTestId("sync-error")).toHaveCount(0);
 
     const diagnostic = pageB.getByTestId("image-sync-diagnostic");
     await expect(diagnostic).toContainText("image/jpeg", { timeout: 30_000 });

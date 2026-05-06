@@ -518,6 +518,7 @@ export default function App() {
     viewRootId,
     getLoadedParentIds,
     refreshMeta,
+    onSyncTransferStart: markImageColdSyncStart,
     onAuthGrantMessage,
     onRemoteOpsImported: recordOps,
   });
@@ -1132,10 +1133,7 @@ export default function App() {
             liveBusy={liveBusy}
             peerCount={peers.length}
             authCanSyncAll={authCanSyncAll}
-            onSync={() => {
-              markImageColdSyncStart();
-              void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
-            }}
+            onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
             liveAllEnabled={liveAllEnabled}
             setLiveAllEnabled={setLiveAllEnabled}
             showPeersPanel={showPeersPanel}
@@ -1255,10 +1253,7 @@ export default function App() {
       <PlaygroundToast
         toast={toast}
         setToast={setToast}
-        onSync={() => {
-          markImageColdSyncStart();
-          void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
-        }}
+        onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
         canSync={status === "ready" && !busy && !syncBusy && peers.length > 0 && online}
         onDetails={() => setShowAuthPanel(true)}
       />

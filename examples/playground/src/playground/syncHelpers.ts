@@ -8,7 +8,7 @@ import {
 } from '@treecrdt/discovery';
 
 import {
-  PLAYGROUND_PEER_TIMEOUT_MS,
+  PLAYGROUND_AUTO_SYNC_TIMEOUT_MS,
   PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS,
   PLAYGROUND_SYNC_MAX_CODEWORDS,
   PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
@@ -146,7 +146,9 @@ export function syncTimeoutMsForPeer(
   opts: { autoSync?: boolean; multipleTargets?: boolean } = {},
 ) {
   if (isRemotePeerId(peerId)) return PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS;
-  if (opts.autoSync) return PLAYGROUND_PEER_TIMEOUT_MS;
+  // Auto-sync is a non-abortable background transfer. Use the same generous budget as remote sync
+  // so large payloads do not get marked failed while the underlying sync keeps making progress.
+  if (opts.autoSync) return PLAYGROUND_AUTO_SYNC_TIMEOUT_MS;
   return opts.multipleTargets ? 8_000 : 15_000;
 }
 
