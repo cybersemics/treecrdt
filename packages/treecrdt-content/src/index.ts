@@ -7,25 +7,30 @@ const MAX_IMAGE_CONTENT_METADATA_BYTES = 16 * 1024;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-export const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export const SUPPORTED_IMAGE_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+] as const;
 
 export type SupportedImageMime = (typeof SUPPORTED_IMAGE_MIME_TYPES)[number];
 
 export type TreecrdtTextContent = {
-  kind: "text";
+  kind: 'text';
   text: string;
   bytes: Uint8Array;
 };
 
 export type TreecrdtImageContent = {
-  kind: "image";
+  kind: 'image';
   mime: SupportedImageMime;
   name?: string;
   size: number;
   bytes: Uint8Array;
 };
 
-export type TreecrdtContent = { kind: "empty" } | TreecrdtTextContent | TreecrdtImageContent;
+export type TreecrdtContent = { kind: 'empty' } | TreecrdtTextContent | TreecrdtImageContent;
 
 export type TreecrdtImageContentInput = {
   mime: string;
@@ -34,7 +39,7 @@ export type TreecrdtImageContentInput = {
 };
 
 export type TreecrdtImageContentMetadata = {
-  kind: "image";
+  kind: 'image';
   mime: SupportedImageMime;
   name?: string;
   size: number;
@@ -54,7 +59,9 @@ export class TreecrdtContentObjectUrlCache {
     this.revoke(key);
     const bytes = new Uint8Array(image.bytes.byteLength);
     bytes.set(image.bytes);
-    const url = this.factory.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: image.mime }));
+    const url = this.factory.createObjectURL(
+      new Blob([bytes.buffer as ArrayBuffer], { type: image.mime }),
+    );
     this.urls.set(key, url);
     return url;
   }
@@ -73,8 +80,9 @@ export class TreecrdtContentObjectUrlCache {
 }
 
 export function browserContentObjectUrlFactory(): TreecrdtContentObjectUrlFactory | null {
-  if (typeof URL === "undefined") return null;
-  if (typeof URL.createObjectURL !== "function" || typeof URL.revokeObjectURL !== "function") return null;
+  if (typeof URL === 'undefined') return null;
+  if (typeof URL.createObjectURL !== 'function' || typeof URL.revokeObjectURL !== 'function')
+    return null;
   return {
     createObjectURL: (blob) => URL.createObjectURL(blob),
     revokeObjectURL: (url) => URL.revokeObjectURL(url),
@@ -86,9 +94,9 @@ export function isSupportedImageMime(mime: string): mime is SupportedImageMime {
 }
 
 export function formatContentBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
-  const units = ["KiB", "MiB", "GiB"] as const;
+  const units = ['KiB', 'MiB', 'GiB'] as const;
   let value = bytes / 1024;
   for (let i = 0; i < units.length; i += 1) {
     const unit = units[i]!;
@@ -101,9 +109,12 @@ export function formatContentBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-export function validateImageContentFile(file: File, maxBytes = TREECRDT_CONTENT_IMAGE_MAX_BYTES): void {
+export function validateImageContentFile(
+  file: File,
+  maxBytes = TREECRDT_CONTENT_IMAGE_MAX_BYTES,
+): void {
   if (!isSupportedImageMime(file.type)) {
-    throw new Error("Unsupported image type. Use PNG, JPEG, WebP, or GIF.");
+    throw new Error('Unsupported image type. Use PNG, JPEG, WebP, or GIF.');
   }
   if (file.size > maxBytes) {
     throw new Error(`Image is too large. The upload limit is ${formatContentBytes(maxBytes)}.`);
@@ -126,11 +137,11 @@ export async function encodeImageFileContent(file: File): Promise<Uint8Array> {
 
 export function encodeImageContent(input: TreecrdtImageContentInput): Uint8Array {
   if (!isSupportedImageMime(input.mime)) {
-    throw new Error(`Unsupported image content MIME type: ${input.mime || "(empty)"}`);
+    throw new Error(`Unsupported image content MIME type: ${input.mime || '(empty)'}`);
   }
 
   const metadata: TreecrdtImageContentMetadata = {
-    kind: "image",
+    kind: 'image',
     mime: input.mime,
     size: input.bytes.byteLength,
   };
@@ -139,30 +150,30 @@ export function encodeImageContent(input: TreecrdtImageContentInput): Uint8Array
 
   const metadataBytes = textEncoder.encode(JSON.stringify(metadata));
   if (metadataBytes.byteLength > MAX_IMAGE_CONTENT_METADATA_BYTES) {
-    throw new Error("Image content metadata is too large.");
+    throw new Error('Image content metadata is too large.');
   }
 
   const headerLength = IMAGE_CONTENT_MAGIC.byteLength + IMAGE_CONTENT_METADATA_BYTES;
   // Image content uses a compact envelope so callers can distinguish it from legacy text bytes.
   const out = new Uint8Array(headerLength + metadataBytes.byteLength + input.bytes.byteLength);
   out.set(IMAGE_CONTENT_MAGIC, 0);
-  new DataView(out.buffer, out.byteOffset + IMAGE_CONTENT_MAGIC.byteLength, IMAGE_CONTENT_METADATA_BYTES).setUint32(
-    0,
-    metadataBytes.byteLength,
-    false,
-  );
+  new DataView(
+    out.buffer,
+    out.byteOffset + IMAGE_CONTENT_MAGIC.byteLength,
+    IMAGE_CONTENT_METADATA_BYTES,
+  ).setUint32(0, metadataBytes.byteLength, false);
   out.set(metadataBytes, headerLength);
   out.set(input.bytes, headerLength + metadataBytes.byteLength);
   return out;
 }
 
 export function decodeContent(bytes: Uint8Array | null): TreecrdtContent {
-  if (bytes === null) return { kind: "empty" };
+  if (bytes === null) return { kind: 'empty' };
 
   const image = decodeImageEnvelope(bytes);
   if (image) return image;
 
-  return { kind: "text", text: textDecoder.decode(bytes), bytes };
+  return { kind: 'text', text: textDecoder.decode(bytes), bytes };
 }
 
 function decodeImageEnvelope(bytes: Uint8Array): TreecrdtImageContent | null {
@@ -184,19 +195,19 @@ function decodeImageEnvelope(bytes: Uint8Array): TreecrdtImageContent | null {
   try {
     const metadataRaw = textDecoder.decode(bytes.slice(payloadOffsetBase, payloadOffset));
     const metadata = JSON.parse(metadataRaw) as Partial<TreecrdtImageContentMetadata>;
-    if (metadata.kind !== "image") return null;
-    if (typeof metadata.mime !== "string" || !isSupportedImageMime(metadata.mime)) return null;
+    if (metadata.kind !== 'image') return null;
+    if (typeof metadata.mime !== 'string' || !isSupportedImageMime(metadata.mime)) return null;
     const size = metadata.size;
-    if (typeof size !== "number" || !Number.isInteger(size) || size < 0) return null;
+    if (typeof size !== 'number' || !Number.isInteger(size) || size < 0) return null;
     const imageBytes = bytes.slice(payloadOffset);
     if (size !== imageBytes.byteLength) return null;
     const decoded: TreecrdtImageContent = {
-      kind: "image",
+      kind: 'image',
       mime: metadata.mime,
       size,
       bytes: imageBytes,
     };
-    if (typeof metadata.name === "string" && metadata.name.trim().length > 0) {
+    if (typeof metadata.name === 'string' && metadata.name.trim().length > 0) {
       decoded.name = metadata.name.trim();
     }
     return decoded;
