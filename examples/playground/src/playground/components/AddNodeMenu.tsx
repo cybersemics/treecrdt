@@ -10,7 +10,14 @@ type MenuLayout = {
   maxHeight: number;
 };
 
-type AddMode = "menu" | "text" | "bulk";
+const RANDOM_IMAGE_SIZES = [
+  { key: "1024", label: "1024 x 1024", width: 1024, height: 1024 },
+  { key: "2048", label: "2048 x 2048", width: 2048, height: 2048 },
+  { key: "640", label: "640 x 420", width: 640, height: 420 },
+] as const;
+
+type RandomImageSizeKey = (typeof RANDOM_IMAGE_SIZES)[number]["key"];
+type AddMode = "menu" | "text" | "random" | "bulk";
 
 export function AddNodeMenu({
   parentId,
@@ -43,6 +50,7 @@ export function AddNodeMenu({
   const [bulkValue, setBulkValue] = React.useState("");
   const [bulkCount, setBulkCount] = React.useState(100);
   const [bulkFanout, setBulkFanout] = React.useState(10);
+  const [randomImageSize, setRandomImageSize] = React.useState<RandomImageSizeKey>("1024");
   const [selectedImage, setSelectedImage] = React.useState<File | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [randomBusy, setRandomBusy] = React.useState(false);
@@ -148,23 +156,26 @@ export function AddNodeMenu({
     setRandomBusy(true);
     setError(null);
     try {
+      const size = RANDOM_IMAGE_SIZES.find((entry) => entry.key === randomImageSize) ?? RANDOM_IMAGE_SIZES[0];
       const seed =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const response = await fetch(`https://picsum.photos/seed/treecrdt-${seed}/640/420`, {
+      const response = await fetch(`https://picsum.photos/seed/treecrdt-${seed}/${size.width}/${size.height}`, {
         cache: "no-store",
       });
       if (!response.ok) throw new Error(`random image request failed (${response.status})`);
       const blob = await response.blob();
-      const file = new File([blob], `random-${seed}.jpg`, { type: blob.type || "image/jpeg" });
+      const file = new File([blob], `random-${seed}-${size.width}x${size.height}.jpg`, {
+        type: blob.type || "image/jpeg",
+      });
       await submitImage(file);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRandomBusy(false);
     }
-  }, [submitImage]);
+  }, [randomImageSize, submitImage]);
 
   const parentContext = parentLabel ? `Under ${parentLabel}` : "Add under selected parent";
   const buttonClass =
@@ -228,10 +239,10 @@ export function AddNodeMenu({
                   />
                   <MenuAction
                     icon={<MdShuffle />}
-                    label={randomBusy ? "Fetching random image..." : "Random image"}
-                    detail="Download a Picsum JPEG and create an image child."
+                    label="Random image"
+                    detail="Choose a sample size and create an image child."
                     disabled={!canWritePayload || randomBusy}
-                    onClick={() => void fetchRandomImage()}
+                    onClick={() => setMode("random")}
                   />
                   <MenuAction
                     icon={<MdAccountTree />}
@@ -265,6 +276,41 @@ export function AddNodeMenu({
                     </MenuButton>
                     <MenuButton type="submit" primary>
                       Create text node
+                    </MenuButton>
+                  </div>
+                </form>
+              ) : null}
+              {mode === "random" ? (
+                <form
+                  className="space-y-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void fetchRandomImage();
+                  }}
+                >
+                  <label className="block space-y-1">
+                    <span className="text-[11px] font-semibold text-slate-300">Random image size</span>
+                    <select
+                      value={randomImageSize}
+                      onChange={(event) => setRandomImageSize(event.target.value as RandomImageSizeKey)}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-white outline-none focus:border-accent focus:ring-2 focus:ring-accent/40"
+                    >
+                      {RANDOM_IMAGE_SIZES.map((size) => (
+                        <option key={size.key} value={size.key}>
+                          {size.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-400">
+                    Uses Picsum as a disposable JPEG source. Larger sizes are useful for manual cold-sync/image-load experiments.
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <MenuButton type="button" onClick={() => setMode("menu")}>
+                      Back
+                    </MenuButton>
+                    <MenuButton type="submit" primary disabled={randomBusy}>
+                      {randomBusy ? "Fetching..." : "Create random image"}
                     </MenuButton>
                   </div>
                 </form>
@@ -374,22 +420,25 @@ function MenuAction({
 function MenuButton({
   type,
   primary,
+  disabled,
   onClick,
   children,
 }: {
   type: "button" | "submit";
   primary?: boolean;
+  disabled?: boolean;
   onClick?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <button
       type={type}
+      disabled={disabled}
       onClick={onClick}
       className={
         primary
-          ? "rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white transition hover:bg-accent/90"
-          : "rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+          ? "rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white transition hover:bg-accent/90 disabled:opacity-50"
+          : "rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
       }
     >
       {children}
