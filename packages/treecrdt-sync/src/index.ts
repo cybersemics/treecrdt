@@ -3,6 +3,10 @@ export { connectSyncController, createOutboundSync, createSyncController } from 
 export { createTreecrdtWebSocketSyncFromTransport } from './create-sync-from-transport.js';
 export type {
   ConnectSyncControllerOptions,
+  ConnectTreecrdtWebSocketSyncOptions,
+  CreateTreecrdtWebSocketSyncFromTransportOptions,
+  MaterializationEvent,
+  MaterializationListener,
   OutboundSync,
   OutboundSyncOptions,
   OutboundSyncRunPushContext,
@@ -12,12 +16,6 @@ export type {
   SyncControllerOptions,
   SyncControllerState,
   SyncControllerStatus,
-} from './controller.js';
-export type {
-  ConnectTreecrdtWebSocketSyncOptions,
-  CreateTreecrdtWebSocketSyncFromTransportOptions,
-  MaterializationEvent,
-  MaterializationListener,
   TreecrdtWebSocketSync,
   TreecrdtWebSocketSyncClient,
 } from './types.js';

@@ -1,131 +1,21 @@
 import type { Operation } from '@treecrdt/interface';
-import type {
-  Filter,
-  SyncMessage,
-  SyncOnceOptions,
-  SyncPeer,
-  SyncPushOptions,
-  SyncSubscribeOptions,
-} from '@treecrdt/sync-protocol';
+import type { Filter, SyncMessage, SyncOnceOptions } from '@treecrdt/sync-protocol';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 import { connectTreecrdtWebSocketSync } from './connect.js';
 import type {
-  ConnectTreecrdtWebSocketSyncOptions,
+  ConnectSyncControllerOptions,
+  OutboundSync,
+  OutboundSyncOptions,
+  OutboundSyncRunPushContext,
+  OutboundSyncRunSyncContext,
+  OutboundSyncStatus,
+  SyncController,
+  SyncControllerOptions,
+  SyncControllerState,
+  SyncControllerStatus,
   TreecrdtWebSocketSync,
   TreecrdtWebSocketSyncClient,
 } from './types.js';
-
-export type SyncControllerState = 'idle' | 'starting' | 'live' | 'stopped' | 'error' | 'closed';
-
-export type SyncControllerStatus = {
-  state: SyncControllerState;
-  pendingOps: number;
-  error?: unknown;
-};
-
-export type SyncControllerOptions = {
-  /**
-   * Initial reconciliation to run before the controller is considered live-ready.
-   * Pass `false` to skip initial reconciliation.
-   */
-  initialSync?: false | { filter?: Filter; opts?: SyncOnceOptions };
-  /**
-   * Live subscription options. Pass `false` for explicit push/reconcile only.
-   */
-  live?: false | SyncSubscribeOptions;
-  /**
-   * Optional safety-net reconciliation while the controller is running.
-   */
-  reconcileIntervalMs?: number;
-  onStatus?: (status: SyncControllerStatus) => void;
-  onError?: (error: unknown) => void;
-};
-
-export type ConnectSyncControllerOptions = ConnectTreecrdtWebSocketSyncOptions & {
-  controller?: SyncControllerOptions;
-};
-
-export type OutboundSyncStatus = {
-  peerCount: number;
-  pendingOps: number;
-  needsFullSync: boolean;
-  running: boolean;
-  scheduled: boolean;
-};
-
-export type OutboundSyncRunPushContext<Op = Operation> = {
-  localPeer: SyncPeer<Op>;
-  peerId: string;
-  transport: DuplexTransport<SyncMessage<Op>>;
-  ops: readonly Op[];
-};
-
-export type OutboundSyncRunSyncContext<Op = Operation> = {
-  localPeer: SyncPeer<Op>;
-  peerId: string;
-  transport: DuplexTransport<SyncMessage<Op>>;
-  filter: Filter;
-};
-
-export type OutboundSyncOptions<Op = Operation> = {
-  localPeer: SyncPeer<Op>;
-  /**
-   * Stable key used to coalesce repeated local write hints before upload.
-   */
-  opKey?: (op: Op) => string;
-  /**
-   * Allows apps to keep queued work while offline instead of turning transient offline state into
-   * sync errors.
-   */
-  isOnline?: () => boolean;
-  /**
-   * Select which attached transports should receive queued local writes. Useful when one SyncPeer
-   * owns both local-tab mesh transports and a remote websocket transport.
-   */
-  shouldSyncPeer?: (peerId: string) => boolean;
-  /**
-   * Filters to reconcile when callers request a fallback sync without exact local ops.
-   */
-  getFallbackFilters?: () => readonly Filter[];
-  /**
-   * Override low-level push execution for app-specific timeouts, batching, or logging.
-   */
-  runPush?: (ctx: OutboundSyncRunPushContext<Op>) => Promise<void>;
-  /**
-   * Override fallback reconciliation for app-specific timeouts or syncOnce options.
-   */
-  runSync?: (ctx: OutboundSyncRunSyncContext<Op>) => Promise<void>;
-  pushOptions?: (peerId: string) => SyncPushOptions | undefined;
-  syncOptions?: (peerId: string, filter: Filter) => SyncOnceOptions | undefined;
-  onWorkStart?: () => void;
-  onWorkEnd?: () => void;
-  onError?: (ctx: { peerId: string; error: unknown }) => void;
-  onStatus?: (status: OutboundSyncStatus) => void;
-};
-
-export type OutboundSync<Op = Operation> = {
-  readonly status: OutboundSyncStatus;
-  readonly pendingOpCount: number;
-  readonly peerCount: number;
-  addPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
-  removePeer: (peerId: string) => void;
-  clearPeers: () => void;
-  queue: (ops?: readonly Op[]) => void;
-  flush: () => Promise<void>;
-  close: () => void;
-};
-
-export type SyncController = {
-  readonly status: SyncControllerStatus;
-  readonly pendingOpCount: number;
-  start: () => Promise<void>;
-  stopLive: () => void;
-  pushLocalOps: (ops?: readonly Operation[]) => Promise<void>;
-  flushPendingOps: () => Promise<void>;
-  syncOnce: (filter?: Filter, opts?: SyncOnceOptions) => Promise<void>;
-  onChange: TreecrdtWebSocketSync['onChange'];
-  close: () => Promise<void>;
-};
 
 function statusSnapshot(
   state: SyncControllerState,
