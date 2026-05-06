@@ -597,7 +597,7 @@ test("local image payload upload renders a thumbnail", async ({ page }) => {
   await page.getByRole("button", { name: "Close" }).click();
 });
 
-test("random image menu defaults to a 1024 square payload", async ({ page }) => {
+test("random image menu sorts sizes and defaults to a 1024 square payload", async ({ page }) => {
   const doc = uniqueDocId("pw-playground-random-image-size");
   await waitForReady(page, `/?doc=${encodeURIComponent(doc)}&auth=0`);
 
@@ -606,7 +606,7 @@ test("random image menu defaults to a 1024 square payload", async ({ page }) => 
 
   const sizeSelect = page.getByLabel("Random image size");
   await expect(sizeSelect).toHaveValue("1024");
-  await expect(sizeSelect).toContainText("2048 x 2048");
+  await expect(sizeSelect.locator("option")).toHaveText(["640 x 420", "1024 x 1024", "2048 x 2048"]);
 });
 
 test("remote cold sync renders a JPEG image payload", async ({ browser }) => {

@@ -11,9 +11,9 @@ type MenuLayout = {
 };
 
 const RANDOM_IMAGE_SIZES = [
+  { key: "640", label: "640 x 420", width: 640, height: 420 },
   { key: "1024", label: "1024 x 1024", width: 1024, height: 1024 },
   { key: "2048", label: "2048 x 2048", width: 2048, height: 2048 },
-  { key: "640", label: "640 x 420", width: 640, height: 420 },
 ] as const;
 
 type RandomImageSizeKey = (typeof RANDOM_IMAGE_SIZES)[number]["key"];
