@@ -1,6 +1,7 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { createHash } from "node:crypto";
 import http from "node:http";
+import { fileURLToPath } from "node:url";
 import type { Operation } from "@treecrdt/interface";
 import { deriveOpRefV0 } from "@treecrdt/sync-protocol";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync-protocol/protobuf";
@@ -9,6 +10,7 @@ import { startWebSocketSyncServer } from "../../../packages/sync-protocol/server
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const REMOTE_PLACEHOLDER = "https://bootstrap-host or ws://localhost:8787";
+const LARGE_IMAGE_FIXTURE = fileURLToPath(new URL("./assets/large-image.jpg", import.meta.url));
 
 type TestSyncServer = {
   host: string;
@@ -216,6 +218,20 @@ async function makeBrowserImageUpload(
   return { name: opts.name, mimeType: opts.mime, buffer: Buffer.from(base64, "base64") };
 }
 
+async function expectImagePayloadLoaded(image: Locator, timeout = 30_000) {
+  await expect(image).toBeVisible({ timeout });
+  await expect
+    .poll(
+      async () =>
+        await image.evaluate((node) => {
+          const img = node as HTMLImageElement;
+          return img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
+        }),
+      { timeout }
+    )
+    .toBe(true);
+}
+
 async function waitForReady(page: import("@playwright/test").Page, path: string) {
   await page.goto(path);
   await expect(page.getByText("Ready (memory)")).toBeVisible({ timeout: 60_000 });
@@ -382,14 +398,14 @@ async function joinViaInviteLink(page: import("@playwright/test").Page, inviteLi
   await waitForLocalAuthTokens(page);
 }
 
-async function clickSync(page: import("@playwright/test").Page, label: string) {
+async function clickSync(page: import("@playwright/test").Page, label: string, timeout = 30_000) {
   const syncBtn = page.getByRole("button", { name: "Sync", exact: true });
   const syncError = page.getByTestId("sync-error");
   await syncBtn.click();
   await Promise.race([
-    expect(syncBtn).toBeEnabled({ timeout: 30_000 }),
+    expect(syncBtn).toBeEnabled({ timeout }),
     (async () => {
-      await syncError.waitFor({ state: "visible", timeout: 30_000 });
+      await syncError.waitFor({ state: "visible", timeout });
       throw new Error(`sync error (${label}): ${await syncError.textContent()}`);
     })(),
   ]);
@@ -413,12 +429,13 @@ async function clickSyncWithRetryOnTransientAuthError(
   opts?: {
     attempts?: number;
     onRetry?: () => Promise<void>;
+    timeout?: number;
   }
 ) {
   const attempts = Math.max(1, opts?.attempts ?? 4);
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      await clickSync(page, label);
+      await clickSync(page, label, opts?.timeout);
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -576,23 +593,68 @@ test("remote cold sync renders a JPEG image payload and reports time to view", a
 
     await Promise.all([clickSync(pageB, "B image download"), server.waitForServedOps(doc, 1)]);
     const image = pageB.getByTestId("node-image-payload");
-    await expect(image).toBeVisible({ timeout: 30_000 });
-    await expect
-      .poll(
-        async () =>
-          await image.evaluate((node) => {
-            const img = node as HTMLImageElement;
-            return img.complete && img.naturalWidth > 0;
-          }),
-        { timeout: 30_000 }
-      )
-      .toBe(true);
+    await expectImagePayloadLoaded(image);
 
     const diagnostic = pageB.getByTestId("image-sync-diagnostic");
     await expect(diagnostic).toContainText("image/jpeg", { timeout: 30_000 });
     await expect(diagnostic).toContainText(/cold view \d+ms/);
   } finally {
     await Promise.all([context.close(), server.close()]);
+  }
+});
+
+test("new device syncs a large image payload and renders it", async ({ browser }) => {
+  test.setTimeout(240_000);
+
+  const doc = uniqueDocId("pw-playground-image-large-device");
+  const profileB = `pw-large-image-b-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  const localPath = `/?doc=${encodeURIComponent(doc)}&auth=1&transport=local`;
+  const joinPath = `${localPath}&profile=${encodeURIComponent(profileB)}&join=1`;
+
+  try {
+    await Promise.all([waitForReady(pageA, localPath), waitForReady(pageB, joinPath)]);
+    await expectAuthEnabledByDefault(pageA);
+    await waitForLocalAuthTokens(pageA);
+
+    const inviteLink = await shareSubtreeInvite(pageA, ROOT_ID);
+    await joinViaInviteLink(pageB, inviteLink);
+    await Promise.all([
+      expect(pageA.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+      expect(pageB.getByRole("button", { name: "Sync", exact: true })).toBeEnabled({ timeout: 30_000 }),
+    ]);
+    await clickSyncWithRetryOnTransientAuthError(pageA, "A invite warmup");
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B invite warmup");
+
+    await pageA.getByLabel("Image payload").setInputFiles(LARGE_IMAGE_FIXTURE);
+    await pageA.getByRole("button", { name: "Add image node", exact: true }).click();
+
+    const localImage = pageA.getByTestId("node-image-payload");
+    await expectImagePayloadLoaded(localImage, 60_000);
+    await expect(localImage).toHaveAttribute("alt", "large-image.jpg");
+    await expect(pageA.getByTestId("image-sync-diagnostic")).toContainText("large-image.jpg", { timeout: 30_000 });
+
+    await clickSyncWithRetryOnTransientAuthError(pageA, "A large image upload", { timeout: 120_000 });
+    await clickSyncWithRetryOnTransientAuthError(pageB, "B large image download", { timeout: 120_000 });
+
+    const remoteImage = pageB.getByTestId("node-image-payload");
+    await expectImagePayloadLoaded(remoteImage, 60_000);
+    await expect(remoteImage).toHaveAttribute("alt", "large-image.jpg");
+
+    const diagnostic = pageB.getByTestId("image-sync-diagnostic");
+    await expect(diagnostic).toContainText("image/jpeg", { timeout: 30_000 });
+    await expect(diagnostic).toContainText("large-image.jpg");
+    await expect(diagnostic).toContainText(/cold view \d+ms/);
+
+    await remoteImage.click();
+    const preview = pageB.getByTestId("image-payload-preview");
+    await expectImagePayloadLoaded(preview, 60_000);
+    await expect(preview).toHaveAttribute("alt", "large-image.jpg");
+    await pageB.getByRole("button", { name: "Close" }).click();
+  } finally {
+    await context.close();
   }
 });
 
