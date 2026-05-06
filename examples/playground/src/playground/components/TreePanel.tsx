@@ -1,4 +1,5 @@
 import React from "react";
+import { formatContentBytes } from "@treecrdt/content";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { IoMdGitBranch } from "react-icons/io";
 import {
@@ -16,8 +17,7 @@ import {
 
 import { ROOT_ID } from "../constants";
 import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
-import { formatPayloadBytes, type PayloadDisplay } from "../payloadCodec";
-import type { CollapseState, DisplayNode, ImagePayloadViewMetric, NodeMeta, PeerInfo } from "../types";
+import type { CollapseState, DisplayNode, ImagePayloadViewMetric, NodeMeta, PayloadDisplay, PeerInfo } from "../types";
 
 import { PeersPanel } from "./PeersPanel";
 import { SharingAuthPanel } from "./SharingAuthPanel";
@@ -155,6 +155,7 @@ export function TreePanel({
   childrenByParent: Record<string, string[]>;
   imagePayloadMetric: ImagePayloadViewMetric | null;
 }) {
+  const [previewImage, setPreviewImage] = React.useState<Extract<PayloadDisplay, { kind: "image" }> | null>(null);
   const measureTreeElement = React.useCallback(
     (element: Element | null) => {
       if (!element) return;
@@ -337,7 +338,7 @@ export function TreePanel({
           data-testid="image-sync-diagnostic"
           className="mb-3 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-50"
         >
-          Image payload loaded: {imagePayloadMetric.mime} · {formatPayloadBytes(imagePayloadMetric.bytes)}
+          Image payload loaded: {imagePayloadMetric.mime} · {formatContentBytes(imagePayloadMetric.bytes)}
           {imagePayloadMetric.name ? ` · ${imagePayloadMetric.name}` : ""}
           {imagePayloadMetric.coldMs !== null ? ` · cold view ${Math.round(imagePayloadMetric.coldMs)}ms` : ""}
         </div>
@@ -367,6 +368,7 @@ export function TreePanel({
                   onSetImagePayload={onSetImagePayload}
                   onClearPayload={onClearPayload}
                   onImagePayloadLoaded={onImagePayloadLoaded}
+                  onOpenImagePreview={setPreviewImage}
                   onAddChild={onAddChild}
                   onDelete={onDelete}
                   onMove={onMove}
@@ -397,6 +399,41 @@ export function TreePanel({
           })}
         </div>
       </div>
+      {previewImage ? (
+        <div
+          className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/90 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image payload preview"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div className="max-h-full w-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-700 bg-slate-900/90 px-4 py-3 text-sm text-slate-100">
+              <div className="min-w-0">
+                <div className="truncate font-semibold">{previewImage.name ?? "TreeCRDT image payload"}</div>
+                <div className="text-xs text-slate-400">
+                  {previewImage.mime} · {formatContentBytes(previewImage.size)} · inline TreeCRDT content
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                onClick={() => setPreviewImage(null)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex max-h-[calc(100vh-8rem)] items-center justify-center overflow-hidden rounded-2xl border border-slate-700 bg-black/70 shadow-2xl shadow-black/60">
+              <img
+                data-testid="image-payload-preview"
+                src={previewImage.url}
+                alt={previewImage.name ?? "TreeCRDT image payload preview"}
+                className="max-h-[calc(100vh-8rem)] w-auto max-w-full object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

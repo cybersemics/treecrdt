@@ -5,17 +5,10 @@ import type { Operation } from "@treecrdt/interface";
 import { deriveOpRefV0 } from "@treecrdt/sync-protocol";
 import { treecrdtSyncV0ProtobufCodec } from "@treecrdt/sync-protocol/protobuf";
 import { startWebSocketSyncServer } from "../../../packages/sync-protocol/server/core/dist/index.js";
-import {
-  decodePlaygroundPayload,
-  encodeImagePayload,
-  isSupportedImageMime,
-  PayloadImageObjectUrlCache,
-} from "../src/playground/payloadCodec";
 
 const ROOT_ID = "00000000000000000000000000000000";
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const REMOTE_PLACEHOLDER = "https://bootstrap-host or ws://localhost:8787";
-const TEST_TEXT_ENCODER = new TextEncoder();
 
 type TestSyncServer = {
   host: string;
@@ -459,70 +452,6 @@ async function clickSyncAllowRevokedCapabilityTokenError(page: import("@playwrig
   }
 }
 
-test.describe("playground payload codec", () => {
-  test("keeps raw text payloads compatible", () => {
-    const decoded = decodePlaygroundPayload(TEST_TEXT_ENCODER.encode("plain text"));
-    expect(decoded).toMatchObject({ kind: "text", value: "plain text" });
-  });
-
-  test("roundtrips binary image payload envelopes", () => {
-    const imageBytes = new Uint8Array([0, 1, 2, 3, 250, 251]);
-    const encoded = encodeImagePayload({
-      mime: "image/png",
-      name: "pixel.png",
-      bytes: imageBytes,
-    });
-    const decoded = decodePlaygroundPayload(encoded);
-    expect(decoded).toMatchObject({
-      kind: "image",
-      mime: "image/png",
-      name: "pixel.png",
-      size: imageBytes.byteLength,
-    });
-    expect(decoded.kind === "image" ? Array.from(decoded.bytes) : []).toEqual(Array.from(imageBytes));
-  });
-
-  test("rejects SVG and unsupported image MIME types", () => {
-    expect(isSupportedImageMime("image/svg+xml")).toBe(false);
-    expect(() =>
-      encodeImagePayload({
-        mime: "image/svg+xml",
-        name: "unsafe.svg",
-        bytes: new Uint8Array([1, 2, 3]),
-      })
-    ).toThrow(/unsupported/i);
-  });
-
-  test("falls back to text for corrupt image envelopes", () => {
-    const encoded = encodeImagePayload({
-      mime: "image/jpeg",
-      bytes: new Uint8Array([1, 2, 3]),
-    });
-    encoded[11] = 255;
-    const decoded = decodePlaygroundPayload(encoded);
-    expect(decoded.kind).toBe("text");
-  });
-
-  test("revokes stale image object URLs", () => {
-    const decoded = decodePlaygroundPayload(encodeImagePayload({ mime: "image/webp", bytes: new Uint8Array([1, 2, 3]) }));
-    if (decoded.kind !== "image") throw new Error("expected image payload");
-
-    let nextId = 0;
-    const revoked: string[] = [];
-    const cache = new PayloadImageObjectUrlCache({
-      createObjectURL: () => `blob:test-${++nextId}`,
-      revokeObjectURL: (url) => revoked.push(url),
-    });
-
-    const first = cache.set("node", decoded);
-    const second = cache.set("node", decoded);
-    expect(revoked).toEqual([first]);
-
-    cache.clear();
-    expect(revoked).toEqual([first, second]);
-  });
-});
-
 test("playground mints a fresh default doc", async ({ browser }) => {
   const freshProfile = `pw-doc-fresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const freshContext = await browser.newContext();
@@ -616,6 +545,10 @@ test("local image payload upload renders a thumbnail", async ({ page }) => {
   const image = page.getByTestId("node-image-payload");
   await expect(image).toBeVisible({ timeout: 30_000 });
   await expect(image).toHaveAttribute("alt", "local-pixel.png");
+  await image.click();
+  await expect(page.getByTestId("image-payload-preview")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("image-payload-preview")).toHaveAttribute("alt", "local-pixel.png");
+  await page.getByRole("button", { name: "Close" }).click();
   await expect(page.getByTestId("image-sync-diagnostic")).toContainText("image/png", { timeout: 30_000 });
   await expect(page.getByTestId("image-sync-diagnostic")).toContainText("local-pixel.png");
 });

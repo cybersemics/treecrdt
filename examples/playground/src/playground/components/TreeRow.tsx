@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatContentBytes, SUPPORTED_IMAGE_MIME_TYPES, validateImageContentFile } from "@treecrdt/content";
 import { createPortal } from "react-dom";
 import {
   MdAdd,
@@ -28,8 +29,7 @@ import {
 } from "../capabilities";
 import { ROOT_ID } from "../constants";
 import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
-import { formatPayloadBytes, SUPPORTED_IMAGE_MIME_TYPES, type PayloadDisplay } from "../payloadCodec";
-import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
+import type { CollapseState, DisplayNode, NodeMeta, PayloadDisplay, PeerInfo } from "../types";
 
 type MembersMenuLayout = {
   top: number;
@@ -49,6 +49,7 @@ export function TreeRow({
   onSetImagePayload,
   onClearPayload,
   onImagePayloadLoaded,
+  onOpenImagePreview,
   onAddChild,
   onDelete,
   onMove,
@@ -83,6 +84,7 @@ export function TreeRow({
   onSetImagePayload: (id: string, file: File) => void | Promise<void>;
   onClearPayload: (id: string) => void | Promise<void>;
   onImagePayloadLoaded: (id: string, payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
+  onOpenImagePreview: (payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
   onAddChild: (id: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
@@ -145,6 +147,8 @@ export function TreeRow({
   const [showMembersMenu, setShowMembersMenu] = useState(false);
   const [manualRecipientKey, setManualRecipientKey] = useState("");
   const [manualGrantActions, setManualGrantActions] = useState<CapabilityAction[]>(DEFAULT_MEMBER_CAPABILITY_ACTIONS);
+  const [imageDropActive, setImageDropActive] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
   const [memberGrantActions, setMemberGrantActions] = useState<Record<string, CapabilityAction[]>>({});
   const [membersMenuLayout, setMembersMenuLayout] = useState<MembersMenuLayout | null>(null);
   const membersButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -244,6 +248,16 @@ export function TreeRow({
       onGrantToReplicaPubkey,
       onToggleHardRevokedTokenId,
     ]
+  );
+
+  const replaceImageFromFile = useCallback(
+    async (file: File | null) => {
+      if (!file || !canReplacePayload) return;
+      validateImageContentFile(file);
+      await onSetImagePayload(node.id, file);
+      setImageError(null);
+    },
+    [canReplacePayload, node.id, onSetImagePayload]
   );
 
   const updateMembersMenuLayout = useCallback(() => {
@@ -371,7 +385,34 @@ export function TreeRow({
               ) : imagePayload ? (
                 <div className="flex min-w-0 flex-col gap-2">
                   <div className="flex min-w-0 items-start gap-3">
-                    <div className="flex h-16 w-20 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-700 bg-slate-900/70">
+                    <button
+                      type="button"
+                      className={`flex h-20 w-28 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-slate-900/70 transition ${
+                        imageDropActive ? "border-accent ring-2 ring-accent/40" : "border-slate-700 hover:border-accent"
+                      }`}
+                      title="Open image preview. Drop another image here to replace it."
+                      aria-label="Open image preview"
+                      onClick={() => onOpenImagePreview(imagePayload)}
+                      onDragEnter={(e) => {
+                        e.preventDefault();
+                        if (canReplacePayload) setImageDropActive(true);
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (!canReplacePayload) return;
+                        e.dataTransfer.dropEffect = "copy";
+                        setImageDropActive(true);
+                      }}
+                      onDragLeave={() => setImageDropActive(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setImageDropActive(false);
+                        const file = e.dataTransfer.files?.[0] ?? null;
+                        void replaceImageFromFile(file).catch((err) => {
+                          setImageError(err instanceof Error ? err.message : String(err));
+                        });
+                      }}
+                    >
                       {imagePayload.url ? (
                         <img
                           data-testid="node-image-payload"
@@ -384,14 +425,15 @@ export function TreeRow({
                       ) : (
                         <MdImage className="text-[24px] text-slate-500" aria-hidden />
                       )}
-                    </div>
+                    </button>
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-white" title={node.label}>
                         {node.label}
                       </div>
                       <div className="mt-0.5 text-[11px] text-slate-400">
-                        {imagePayload.mime} · {formatPayloadBytes(imagePayload.size)}
+                        {imagePayload.mime} · {formatContentBytes(imagePayload.size)} · inline content · complete
                       </div>
+                      {imageError ? <div className="mt-1 text-[11px] font-semibold text-rose-200">{imageError}</div> : null}
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         <input
                           ref={imageInputRef}
@@ -402,10 +444,13 @@ export function TreeRow({
                           disabled={!canReplacePayload}
                           onChange={(e) => {
                             const file = e.target.files?.[0] ?? null;
-                            if (!file) return;
-                            void Promise.resolve(onSetImagePayload(node.id, file)).finally(() => {
-                              if (imageInputRef.current) imageInputRef.current.value = "";
-                            });
+                            void replaceImageFromFile(file)
+                              .catch((err) => {
+                                setImageError(err instanceof Error ? err.message : String(err));
+                              })
+                              .finally(() => {
+                                if (imageInputRef.current) imageInputRef.current.value = "";
+                              });
                           }}
                         />
                         <button

@@ -1,4 +1,19 @@
-import type { PayloadDisplay } from "./payloadCodec";
+import type { SupportedImageMime } from "@treecrdt/content";
+
+export type PayloadDisplay =
+  | { kind: "root"; label: string; value: "" }
+  | { kind: "empty"; label: string; value: "" }
+  | { kind: "encrypted"; label: string; value: "" }
+  | { kind: "text"; label: string; value: string }
+  | {
+      kind: "image";
+      label: string;
+      value: "";
+      mime: SupportedImageMime;
+      name?: string;
+      size: number;
+      url: string;
+    };
 
 export type DisplayNode = {
   id: string;

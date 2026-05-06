@@ -1,16 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { base64urlDecode } from '@treecrdt/auth';
+import {
+  TreecrdtContentObjectUrlCache,
+  browserContentObjectUrlFactory,
+  decodeContent,
+} from '@treecrdt/content';
 import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from '@treecrdt/crypto';
 import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { loadOrCreateDocPayloadKeyB64 } from '../../auth';
 import { ROOT_ID } from '../constants';
-import {
-  browserImageObjectUrlFactory,
-  decodePlaygroundPayload,
-  PayloadImageObjectUrlCache,
-  type PayloadDisplay,
-} from '../payloadCodec';
+import type { PayloadDisplay } from '../types';
 
 type PayloadRecord = {
   payload: Uint8Array | null;
@@ -53,8 +53,8 @@ export function usePlaygroundPayloads(opts: {
     typeof window === 'undefined'
       ? null
       : (() => {
-          const factory = browserImageObjectUrlFactory();
-          return factory ? new PayloadImageObjectUrlCache(factory) : null;
+          const factory = browserContentObjectUrlFactory();
+          return factory ? new TreecrdtContentObjectUrlCache(factory) : null;
         })(),
   );
 
@@ -119,7 +119,7 @@ export function usePlaygroundPayloads(opts: {
 
   const buildPayloadRecord = React.useCallback(
     (node: string, plain: PayloadPlainRecord): PayloadRecord => {
-      const decoded = decodePlaygroundPayload(plain.payload);
+      const decoded = decodeContent(plain.payload);
       if (decoded.kind === 'empty') {
         imageUrlCacheRef.current?.revoke(node);
         const display: PayloadDisplay = plain.encrypted
@@ -129,10 +129,10 @@ export function usePlaygroundPayloads(opts: {
       }
       if (decoded.kind === 'text') {
         imageUrlCacheRef.current?.revoke(node);
-        const label = decoded.value.length === 0 ? '(empty)' : decoded.value;
+        const label = decoded.text.length === 0 ? '(empty)' : decoded.text;
         return {
           ...plain,
-          display: { kind: 'text', label, value: decoded.value },
+          display: { kind: 'text', label, value: decoded.text },
         };
       }
 

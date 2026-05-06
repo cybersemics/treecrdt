@@ -1,7 +1,7 @@
 import React from "react";
+import { formatContentBytes, SUPPORTED_IMAGE_MIME_TYPES, validateImageContentFile } from "@treecrdt/content";
 import { MdExpandLess, MdExpandMore } from "react-icons/md";
 
-import { formatPayloadBytes, SUPPORTED_IMAGE_MIME_TYPES } from "../payloadCodec";
 import type { BulkAddProgress } from "../types";
 
 import { ParentPicker } from "./ParentPicker";
@@ -52,7 +52,19 @@ export function ComposerPanel({
   const containerPadding = composerOpen ? "p-5" : "p-3";
   const headerMargin = composerOpen ? "mb-3" : "mb-0";
   const [progressNowMs, setProgressNowMs] = React.useState(() => Date.now());
+  const [imageDragActive, setImageDragActive] = React.useState(false);
+  const [imageInputError, setImageInputError] = React.useState<string | null>(null);
   const imageInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const selectImageFile = React.useCallback(
+    (file: File | null) => {
+      if (file) validateImageContentFile(file);
+      setSelectedImageFile(file);
+      if (file) setNodeCount(1);
+      setImageInputError(null);
+    },
+    [setNodeCount, setSelectedImageFile]
+  );
 
   React.useEffect(() => {
     if (!bulkAddProgress) return;
@@ -130,8 +142,40 @@ export function ComposerPanel({
                 disabled={!ready || busy || !canWritePayload || Boolean(selectedImageFile)}
               />
             </label>
-            <label className="min-w-0 w-full space-y-2 text-sm text-slate-200 md:w-56">
+            <label
+              className={`min-w-0 w-full space-y-2 rounded-xl border border-dashed px-3 py-2 text-sm text-slate-200 transition md:w-60 ${
+                imageDragActive
+                  ? "border-accent bg-accent/10"
+                  : "border-slate-700 bg-slate-900/30 hover:border-slate-600"
+              }`}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                if (!ready || busy || !canWritePayload) return;
+                setImageDragActive(true);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (!ready || busy || !canWritePayload) return;
+                e.dataTransfer.dropEffect = "copy";
+                setImageDragActive(true);
+              }}
+              onDragLeave={() => setImageDragActive(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setImageDragActive(false);
+                if (!ready || busy || !canWritePayload) return;
+                const file = e.dataTransfer.files?.[0] ?? null;
+                if (!file) return;
+                try {
+                  selectImageFile(file);
+                  if (imageInputRef.current) imageInputRef.current.value = "";
+                } catch (err) {
+                  setImageInputError(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
               <span>Image payload</span>
+              <span className="block text-[11px] text-slate-400">Drop an image here, or pick one.</span>
               <input
                 ref={imageInputRef}
                 type="file"
@@ -140,14 +184,19 @@ export function ComposerPanel({
                 disabled={!ready || busy || !canWritePayload}
                 onChange={(e) => {
                   const file = e.target.files?.[0] ?? null;
-                  setSelectedImageFile(file);
-                  if (file) setNodeCount(1);
+                  try {
+                    selectImageFile(file);
+                  } catch (err) {
+                    setSelectedImageFile(null);
+                    if (imageInputRef.current) imageInputRef.current.value = "";
+                    setImageInputError(err instanceof Error ? err.message : String(err));
+                  }
                 }}
               />
               {selectedImageFile ? (
                 <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
                   <span className="truncate" title={selectedImageFile.name}>
-                    {selectedImageFile.name} · {formatPayloadBytes(selectedImageFile.size)}
+                    {selectedImageFile.name} · {formatContentBytes(selectedImageFile.size)}
                   </span>
                   <button
                     type="button"
@@ -161,6 +210,7 @@ export function ComposerPanel({
                   </button>
                 </div>
               ) : null}
+              {imageInputError ? <div className="text-[11px] font-semibold text-rose-200">{imageInputError}</div> : null}
             </label>
             <label className="flex flex-col text-sm text-slate-200">
               <span>Node count</span>

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { encodeImageFileContent, encodeTextContent } from "@treecrdt/content";
 import { type Operation } from "@treecrdt/interface";
 import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
@@ -20,7 +21,6 @@ import { usePlaygroundOpsLog } from "./playground/hooks/usePlaygroundOpsLog";
 import { usePlaygroundPayloads } from "./playground/hooks/usePlaygroundPayloads";
 import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
 import { materializationRefreshPlan } from "./playground/materializationEvents";
-import { encodeImageFilePayload, type PayloadDisplay } from "./playground/payloadCodec";
 import {
   ensureOpfsKey,
   initialDocId,
@@ -40,6 +40,7 @@ import type {
   CollapseState,
   DisplayNode,
   ImagePayloadViewMetric,
+  PayloadDisplay,
   Status,
   StorageMode,
   SyncTransportMode,
@@ -262,7 +263,6 @@ export default function App() {
     refreshDocPayloadKey,
   });
 
-  const textEncoder = useMemo(() => new TextEncoder(), []);
   const { ops, recordOps, resetOps } = usePlaygroundOpsLog({
     client,
     status,
@@ -774,7 +774,7 @@ export default function App() {
     let opsRecorded = false;
     try {
       const fanoutLimit = opts.imageFile ? 0 : Math.max(0, Math.floor(opts.fanout ?? fanout));
-      const imagePayload = opts.imageFile ? await encodeImageFilePayload(opts.imageFile) : null;
+      const imagePayload = opts.imageFile ? await encodeImageFileContent(opts.imageFile) : null;
       const valueBase = canWritePayload && !opts.imageFile ? newNodeValue.trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
 
@@ -782,7 +782,7 @@ export default function App() {
         for (let i = 0; i < normalizedCount; i++) {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const payload = imagePayload ?? (shouldSetValue ? textEncoder.encode(value) : null);
+          const payload = imagePayload ?? (shouldSetValue ? encodeTextContent(value) : null);
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
           const completed = i + 1;
@@ -829,7 +829,7 @@ export default function App() {
 
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const payload = shouldSetValue ? textEncoder.encode(value) : null;
+          const payload = shouldSetValue ? encodeTextContent(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await localWriter.insert(targetParent, nodeId, { type: "last" }, encryptedPayload));
 
@@ -868,7 +868,7 @@ export default function App() {
     setBusy(true);
     try {
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
-      const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
+      const payload = valueBase.length > 0 ? encodeTextContent(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload);
@@ -893,7 +893,7 @@ export default function App() {
         const localWriter = getLocalWriter();
         if (!localWriter) return;
         try {
-          const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
+          const payload = value.trim().length === 0 ? null : encodeTextContent(value);
           const encryptedPayload = await encryptPayloadBytes(payload);
           const op = await localWriter.payload(nodeId, encryptedPayload);
           handleCommittedLocalOps([op]);
@@ -914,7 +914,7 @@ export default function App() {
         const localWriter = getLocalWriter();
         if (!localWriter) return;
         try {
-          const payload = await encodeImageFilePayload(file);
+          const payload = await encodeImageFileContent(file);
           const encryptedPayload = await encryptPayloadBytes(payload);
           const op = await localWriter.payload(nodeId, encryptedPayload);
           handleCommittedLocalOps([op]);
