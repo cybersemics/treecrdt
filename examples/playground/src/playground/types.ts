@@ -22,15 +22,6 @@ export type DisplayNode = {
   payload: PayloadDisplay;
 };
 
-export type ImagePayloadViewMetric = {
-  nodeId: string;
-  mime: string;
-  name?: string;
-  bytes: number;
-  coldMs: number | null;
-  loadedAtMs: number;
-};
-
 export type NodeMeta = {
   parentId: string | null;
   order: number;

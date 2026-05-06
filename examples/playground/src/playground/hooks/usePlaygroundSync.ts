@@ -94,7 +94,6 @@ type UsePlaygroundSyncOptions = {
   viewRootId: string;
   getLoadedParentIds: () => string[];
   refreshMeta: () => Promise<void>;
-  onSyncTransferStart?: () => void;
   onAuthGrantMessage?: (grant: AuthGrantMessageV1) => void;
   onRemoteOpsImported: (ops: Operation[]) => Promise<void> | void;
 };
@@ -119,7 +118,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     viewRootId,
     getLoadedParentIds,
     refreshMeta,
-    onSyncTransferStart,
     onAuthGrantMessage,
     onRemoteOpsImported,
   } = opts;
@@ -324,7 +322,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     setSyncBusy(true);
     setSyncError(null);
     try {
-      onSyncTransferStart?.();
       const now = Date.now();
       const recentPeerIds = peers
         .filter((p) => now - p.lastSeen < 5_000)
@@ -390,7 +387,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     setSyncBusy(true);
     setSyncError(null);
     try {
-      onSyncTransferStart?.();
       const now = Date.now();
       const recentPeerIds = peers
         .filter((p) => now - p.lastSeen < 5_000)
@@ -493,7 +489,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       setSyncBusy(true);
       setSyncError(null);
       try {
-        onSyncTransferStart?.();
         if (authCanSyncAll) {
           await withTimeout(
             peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 2048)),
@@ -541,7 +536,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     autoSyncJoinTick,
     joinMode,
     refreshMeta,
-    onSyncTransferStart,
     syncBusy,
     viewRootId,
   ]);

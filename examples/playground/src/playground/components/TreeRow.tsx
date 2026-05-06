@@ -48,7 +48,6 @@ export function TreeRow({
   onSetValue,
   onSetImagePayload,
   onClearPayload,
-  onImagePayloadLoaded,
   onOpenImagePreview,
   onAddChild,
   onDelete,
@@ -83,7 +82,6 @@ export function TreeRow({
   onSetValue: (id: string, value: string) => void | Promise<void>;
   onSetImagePayload: (id: string, file: File) => void | Promise<void>;
   onClearPayload: (id: string) => void | Promise<void>;
-  onImagePayloadLoaded: (id: string, payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
   onOpenImagePreview: (payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
   onAddChild: (id: string) => void;
   onDelete: (id: string) => void;
@@ -420,7 +418,6 @@ export function TreeRow({
                           src={imagePayload.url}
                           alt={imagePayload.name ?? "TreeCRDT image payload"}
                           className="h-full w-full object-cover"
-                          onLoad={() => onImagePayloadLoaded(node.id, imagePayload)}
                         />
                       ) : (
                         <MdImage className="text-[24px] text-slate-500" aria-hidden />

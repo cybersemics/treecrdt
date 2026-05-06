@@ -39,8 +39,6 @@ import type {
   BulkAddProgress,
   CollapseState,
   DisplayNode,
-  ImagePayloadViewMetric,
-  PayloadDisplay,
   Status,
   StorageMode,
   SyncTransportMode,
@@ -111,7 +109,6 @@ export default function App() {
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [syncServerUrl, setSyncServerUrl] = useState<string>(() => initialSyncServerUrl());
   const [syncTransportMode, setSyncTransportMode] = useState<SyncTransportMode>(() => initialSyncTransportMode());
-  const [lastImageViewMetric, setLastImageViewMetric] = useState<ImagePayloadViewMetric | null>(null);
   const [composerOpen, setComposerOpen] = useState(() => {
     if (typeof window === "undefined") return true;
     const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
@@ -280,7 +277,6 @@ export default function App() {
 
   const payloadWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const childrenLoadInFlightRef = useRef<Set<string>>(new Set());
-  const imageColdSyncStartRef = useRef<number | null>(null);
 
   const ensureChildrenLoaded = React.useCallback(
     async (parentId: string, opts: { force?: boolean; nextClient?: TreecrdtClient } = {}) => {
@@ -438,26 +434,6 @@ export default function App() {
     return client.onMaterialized(applyMaterializationEvent);
   }, [client, applyMaterializationEvent]);
 
-  const markImageColdSyncStart = React.useCallback(() => {
-    imageColdSyncStartRef.current = typeof performance === "undefined" ? Date.now() : performance.now();
-  }, []);
-
-  const handleImagePayloadLoaded = React.useCallback(
-    (nodeId: string, payload: Extract<PayloadDisplay, { kind: "image" }>) => {
-      const now = typeof performance === "undefined" ? Date.now() : performance.now();
-      const start = imageColdSyncStartRef.current;
-      setLastImageViewMetric({
-        nodeId,
-        mime: payload.mime,
-        name: payload.name,
-        bytes: payload.size,
-        coldMs: start === null ? null : Math.max(0, now - start),
-        loadedAtMs: Date.now(),
-      });
-    },
-    []
-  );
-
   const openNewPeerTab = () => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -518,7 +494,6 @@ export default function App() {
     viewRootId,
     getLoadedParentIds,
     refreshMeta,
-    onSyncTransferStart: markImageColdSyncStart,
     onAuthGrantMessage,
     onRemoteOpsImported: recordOps,
   });
@@ -721,8 +696,6 @@ export default function App() {
       childrenByParent: { [ROOT_ID]: [] },
     });
     resetPayloadCache();
-    imageColdSyncStartRef.current = null;
-    setLastImageViewMetric(null);
     setCollapse({ defaultCollapsed: true, overrides: new Set([ROOT_ID]) });
     lamportRef.current = 0;
     setHeadLamport(0);
@@ -1208,7 +1181,6 @@ export default function App() {
             onSetValue={handleSetValue}
             onSetImagePayload={handleSetImagePayload}
             onClearPayload={handleClearPayload}
-            onImagePayloadLoaded={handleImagePayloadLoaded}
             onAddChild={(id) => {
               setParentChoice(id);
               void handleInsert(id);
@@ -1233,7 +1205,6 @@ export default function App() {
             liveChildrenParents={liveChildrenParents}
             meta={index}
             childrenByParent={childrenByParent}
-            imagePayloadMetric={lastImageViewMetric}
           />
         </section>
 

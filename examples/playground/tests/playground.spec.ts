@@ -566,11 +566,9 @@ test("local image payload upload renders a thumbnail", async ({ page }) => {
   await expect(page.getByTestId("image-payload-preview")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("image-payload-preview")).toHaveAttribute("alt", "local-pixel.png");
   await page.getByRole("button", { name: "Close" }).click();
-  await expect(page.getByTestId("image-sync-diagnostic")).toContainText("image/png", { timeout: 30_000 });
-  await expect(page.getByTestId("image-sync-diagnostic")).toContainText("local-pixel.png");
 });
 
-test("remote cold sync renders a JPEG image payload and reports time to view", async ({ browser }) => {
+test("remote cold sync renders a JPEG image payload", async ({ browser }) => {
   test.setTimeout(120_000);
 
   const doc = uniqueDocId("pw-playground-image-remote");
@@ -594,10 +592,7 @@ test("remote cold sync renders a JPEG image payload and reports time to view", a
     await Promise.all([clickSync(pageB, "B image download"), server.waitForServedOps(doc, 1)]);
     const image = pageB.getByTestId("node-image-payload");
     await expectImagePayloadLoaded(image);
-
-    const diagnostic = pageB.getByTestId("image-sync-diagnostic");
-    await expect(diagnostic).toContainText("image/jpeg", { timeout: 30_000 });
-    await expect(diagnostic).toContainText(/cold view \d+ms/);
+    await expect(image).toHaveAttribute("alt", "cold-view.jpg");
   } finally {
     await Promise.all([context.close(), server.close()]);
   }
@@ -622,7 +617,6 @@ test("new device syncs a large image payload and renders it", async ({ browser }
     const localImage = pageA.getByTestId("node-image-payload");
     await expectImagePayloadLoaded(localImage, 60_000);
     await expect(localImage).toHaveAttribute("alt", "large-image.jpg");
-    await expect(pageA.getByTestId("image-sync-diagnostic")).toContainText("large-image.jpg", { timeout: 30_000 });
 
     const [pageB] = await Promise.all([
       pageA.waitForEvent("popup"),
@@ -635,11 +629,6 @@ test("new device syncs a large image payload and renders it", async ({ browser }
     await expectImagePayloadLoaded(remoteImage, 120_000);
     await expect(remoteImage).toHaveAttribute("alt", "large-image.jpg");
     await expect(pageB.getByTestId("sync-error")).toHaveCount(0);
-
-    const diagnostic = pageB.getByTestId("image-sync-diagnostic");
-    await expect(diagnostic).toContainText("image/jpeg", { timeout: 30_000 });
-    await expect(diagnostic).toContainText("large-image.jpg");
-    await expect(diagnostic).toContainText(/cold view \d+ms/);
 
     await remoteImage.click();
     const preview = pageB.getByTestId("image-payload-preview");
