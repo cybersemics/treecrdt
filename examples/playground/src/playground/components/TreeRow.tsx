@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatContentBytes, SUPPORTED_IMAGE_MIME_TYPES, validateImageContentFile } from "@treecrdt/content";
 import { createPortal } from "react-dom";
 import {
-  MdAdd,
   MdChevronRight,
   MdCheck,
   MdDeleteOutline,
@@ -30,6 +29,7 @@ import {
 import { ROOT_ID } from "../constants";
 import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
 import type { CollapseState, DisplayNode, NodeMeta, PayloadDisplay, PeerInfo } from "../types";
+import { AddNodeMenu } from "./AddNodeMenu";
 
 type MembersMenuLayout = {
   top: number;
@@ -49,7 +49,6 @@ export function TreeRow({
   onSetImagePayload,
   onClearPayload,
   onOpenImagePreview,
-  onAddChild,
   onDelete,
   onMove,
   onMoveToRoot,
@@ -57,6 +56,9 @@ export function TreeRow({
   privateRoots,
   onTogglePrivateRoot,
   onShare,
+  onAddTextNode,
+  onAddImageNode,
+  onAddBulkNodes,
   peers,
   selfPeerId,
   busy,
@@ -71,6 +73,7 @@ export function TreeRow({
   canWritePayload,
   canWriteStructure,
   canDelete,
+  maxNodeCount,
   meta,
   childrenByParent,
 }: {
@@ -83,7 +86,9 @@ export function TreeRow({
   onSetImagePayload: (id: string, file: File) => void | Promise<void>;
   onClearPayload: (id: string) => void | Promise<void>;
   onOpenImagePreview: (payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
-  onAddChild: (id: string) => void;
+  onAddTextNode: (parentId: string, value: string) => void | Promise<void>;
+  onAddImageNode: (parentId: string, file: File) => void | Promise<void>;
+  onAddBulkNodes: (parentId: string, count: number, fanout: number, value: string) => void | Promise<void>;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
   onMoveToRoot: (id: string) => void;
@@ -110,6 +115,7 @@ export function TreeRow({
   canWritePayload: boolean;
   canWriteStructure: boolean;
   canDelete: boolean;
+  maxNodeCount: number;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
@@ -155,7 +161,6 @@ export function TreeRow({
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const canEditValue = canWritePayload && !isRoot && !imagePayload;
   const canReplacePayload = canWritePayload && !isRoot;
-  const canInsertChild = canWriteStructure;
   const canMoveStructure = canWriteStructure;
   const canMoveToDocRoot = canWriteStructure && scopeRootId === ROOT_ID;
   const showMembersButton = !isRoot && isPrivate;
@@ -853,15 +858,19 @@ export function TreeRow({
           >
             <MdOutlineRssFeed className="text-[20px]" />
           </button>
-          <button
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-            onClick={() => onAddChild(node.id)}
-            aria-label="Add child"
-            title={canInsertChild ? "Add child" : "Read-only (no write_structure permission)"}
-            disabled={!canInsertChild}
-          >
-            <MdAdd className="text-[22px]" />
-          </button>
+          <AddNodeMenu
+            parentId={node.id}
+            parentLabel={node.label}
+            variant="row"
+            ready
+            busy={busy}
+            canWritePayload={canWritePayload}
+            canWriteStructure={canWriteStructure}
+            maxNodeCount={maxNodeCount}
+            onAddText={onAddTextNode}
+            onAddImage={onAddImageNode}
+            onAddBulk={onAddBulkNodes}
+          />
           {!isRoot && (
             <>
               <button
