@@ -54,6 +54,7 @@ export function ComposerPanel({
   const [progressNowMs, setProgressNowMs] = React.useState(() => Date.now());
   const [imageDragActive, setImageDragActive] = React.useState(false);
   const [imageInputError, setImageInputError] = React.useState<string | null>(null);
+  const [randomImageBusy, setRandomImageBusy] = React.useState(false);
   const imageInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const selectImageFile = React.useCallback(
@@ -65,6 +66,30 @@ export function ComposerPanel({
     },
     [setNodeCount, setSelectedImageFile]
   );
+
+  const fetchRandomImage = React.useCallback(async () => {
+    setRandomImageBusy(true);
+    setImageInputError(null);
+    try {
+      const seed =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const response = await fetch(`https://picsum.photos/seed/treecrdt-${seed}/640/420`, {
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`random image request failed (${response.status})`);
+      const blob = await response.blob();
+      const type = blob.type || "image/jpeg";
+      const file = new File([blob], `random-${seed}.jpg`, { type });
+      selectImageFile(file);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    } catch (err) {
+      setImageInputError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRandomImageBusy(false);
+    }
+  }, [selectImageFile]);
 
   React.useEffect(() => {
     if (!bulkAddProgress) return;
@@ -193,6 +218,15 @@ export function ComposerPanel({
                   }
                 }}
               />
+              <button
+                type="button"
+                className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                onClick={() => void fetchRandomImage()}
+                disabled={!ready || busy || !canWritePayload || randomImageBusy}
+                title="Fetch a random JPEG from picsum.photos into the image payload slot"
+              >
+                {randomImageBusy ? "Fetching..." : "Random image"}
+              </button>
               {selectedImageFile ? (
                 <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
                   <span className="truncate" title={selectedImageFile.name}>
