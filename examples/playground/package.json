@@ -17,6 +17,7 @@
     "@treecrdt/crypto": "workspace:*",
     "@treecrdt/discovery": "workspace:*",
     "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync": "workspace:*",
     "@treecrdt/sync-protocol": "workspace:*",
     "@treecrdt/sync-sqlite": "workspace:*",
     "@treecrdt/wa-sqlite": "workspace:*",

@@ -1,27 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
-import {
-  resolveWebSocketAttachment,
-  type ResolveWebSocketAttachmentResult,
-} from '@treecrdt/discovery';
-import {
-  SyncPeer,
-  deriveOpRefV0,
-  type Filter,
-  type SyncAuth,
-} from '@treecrdt/sync-protocol';
+import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
+import { createOutboundSync, type OutboundSync } from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
   BroadcastPresenceAckMessageV1,
   BroadcastPresenceMessageV1,
 } from '@treecrdt/sync-protocol/browser';
-import {
-  createBroadcastPresenceMesh,
-  createBrowserWebSocketTransport,
-} from '@treecrdt/sync-protocol/browser';
+import { createBroadcastPresenceMesh } from '@treecrdt/sync-protocol/browser';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
-import { wrapDuplexTransportWithCodec, type DuplexTransport } from '@treecrdt/sync-protocol/transport';
+import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';
@@ -38,16 +27,12 @@ import {
   type PlaygroundSyncConnection,
 } from './usePlaygroundLiveSubscriptions';
 import { usePlaygroundSyncPeers } from './usePlaygroundSyncPeers';
+import { startPlaygroundRemoteSyncSocket } from '../remoteSyncSocket';
 import {
-  formatRemoteConnectDetail,
-  formatRemoteErrorDetail,
-  formatRemoteRouteDetail,
   formatSyncError,
-  getBrowserDiscoveryRouteCache,
   isCapabilityRevokedError,
   isDiscoveryBootstrapUrl,
   isRemotePeerId,
-  isTransientRemoteConnectError,
   localOpUploadKey,
   normalizeSyncServerUrl,
   previewDiscoveryHost,
@@ -55,6 +40,50 @@ import {
   syncTimeoutMsForPeer,
   withTimeout,
 } from '../syncHelpers';
+
+const RECENT_SYNC_TARGET_MS = 5_000;
+const NODE_ID_HEX_RE = /^[0-9a-f]{32}$/i;
+
+function isNodeIdHex(id: string): boolean {
+  return NODE_ID_HEX_RE.test(id);
+}
+
+function childrenFilter(parentId: string): Filter {
+  return { children: { parent: hexToBytes16(parentId) } };
+}
+
+function syncFilterLabel(filter: Filter, action = 'sync'): string {
+  return 'all' in filter
+    ? action
+    : `${action}(children ${bytesToHex(filter.children.parent).slice(0, 8)}…)`;
+}
+
+async function syncFiltersWithTransport(
+  peer: SyncPeer<Operation>,
+  peerId: string,
+  transport: DuplexTransport<any>,
+  filters: readonly Filter[],
+  opts: {
+    autoSync?: boolean;
+    multipleTargets?: boolean;
+    codewordsPerMessage?: number;
+    label?: string;
+  } = {},
+) {
+  const perPeerTimeoutMs = syncTimeoutMsForPeer(peerId, {
+    autoSync: opts.autoSync,
+    multipleTargets: opts.multipleTargets,
+  });
+  const codewordsPerMessage = opts.codewordsPerMessage ?? 2048;
+  for (const filter of filters) {
+    await withTimeout(
+      peer.syncOnce(transport, filter, syncOnceOptionsForPeer(peerId, codewordsPerMessage)),
+      perPeerTimeoutMs,
+      `${syncFilterLabel(filter, opts.label)} with ${peerId.slice(0, 8)}… timed out`,
+    );
+  }
+}
+
 type PlaygroundSyncApi = {
   peers: PeerInfo[];
   remoteSyncStatus: RemoteSyncStatus;
@@ -67,7 +96,7 @@ type PlaygroundSyncApi = {
   liveAllEnabled: boolean;
   setLiveAllEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   toggleLiveChildren: (parentId: string) => void;
-  queueLocalOpsForSync: (ops?: Operation[]) => void;
+  queueOpsForSync: (ops?: Operation[]) => void;
   handleSync: (filter: Filter) => Promise<void>;
   handleScopedSync: () => Promise<void>;
   postBroadcastMessage: (
@@ -133,6 +162,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const onlineRef = useRef(true);
   useEffect(() => {
     onlineRef.current = online;
+    if (online) void outboundSyncRef.current?.flush();
   }, [online]);
 
   const autoSyncJoinInitial = useRef(autoSyncJoin).current;
@@ -144,6 +174,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const syncPeerRef = useRef<SyncPeer<Operation> | null>(null);
   const syncConnRef = useRef<Map<string, PlaygroundSyncConnection>>(new Map());
+  const outboundSyncRef = useRef<OutboundSync<Operation> | null>(null);
   const {
     liveBusy,
     liveChildrenParents,
@@ -168,111 +199,14 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     setSyncError,
     authCanSyncAll,
   });
-  const remoteLivePushScheduledRef = useRef(false);
-  const remoteLivePushRunningRef = useRef(false);
-  const remoteLivePushNeedsFullSyncRef = useRef(false);
-  const remoteLivePushPendingOpsRef = useRef<Map<string, Operation>>(new Map());
   const autoSyncDoneRef = useRef(false);
   const autoSyncInFlightRef = useRef(false);
   const autoSyncAttemptRef = useRef(0);
   const autoSyncPeerIdRef = useRef<string | null>(null);
-  const queueRemoteUploadHints = (ops?: Operation[]) => {
-    if (!ops || ops.length === 0) {
-      remoteLivePushNeedsFullSyncRef.current = true;
-      return;
-    }
 
-    const pendingOps = remoteLivePushPendingOpsRef.current;
-    for (const op of ops) {
-      pendingOps.set(localOpUploadKey(op), op);
-    }
-  };
-
-  const queueLocalOpsForSync = (ops?: Operation[]) => {
+  const queueOpsForSync = (ops?: Operation[]) => {
     void syncPeerRef.current?.notifyLocalUpdate(ops);
-    queueRemoteUploadHints(ops);
-    if (remoteLivePushRunningRef.current) {
-      remoteLivePushScheduledRef.current = true;
-      return;
-    }
-    remoteLivePushScheduledRef.current = true;
-    remoteLivePushRunningRef.current = true;
-    beginLiveWork();
-    void (async () => {
-      try {
-        while (remoteLivePushScheduledRef.current) {
-          remoteLivePushScheduledRef.current = false;
-          if (!onlineRef.current) continue;
-
-          const peer = syncPeerRef.current;
-          if (!peer) continue;
-
-          const connections = syncConnRef.current;
-          const remotePeerIds = Array.from(connections.keys()).filter(isRemotePeerId);
-          if (remotePeerIds.length === 0) continue;
-
-          const liveChildren = Array.from(liveChildrenParentsRef.current).filter((id) =>
-            /^[0-9a-f]{32}$/i.test(id),
-          );
-          const pendingOps = Array.from(remoteLivePushPendingOpsRef.current.values());
-          const needsFullSync = remoteLivePushNeedsFullSyncRef.current;
-          remoteLivePushPendingOpsRef.current.clear();
-          remoteLivePushNeedsFullSyncRef.current = false;
-          if (
-            !needsFullSync &&
-            pendingOps.length === 0 &&
-            !liveAllEnabledRef.current &&
-            liveChildren.length === 0
-          )
-            continue;
-
-          for (const peerId of remotePeerIds) {
-            const conn = connections.get(peerId);
-            if (!conn) continue;
-            try {
-              if (pendingOps.length > 0) {
-                await withTimeout(
-                  peer.pushOps(conn.transport, pendingOps, {
-                    maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-                  }),
-                  syncTimeoutMsForPeer(peerId, { autoSync: true }),
-                  `live push with ${peerId.slice(0, 8)}… timed out`,
-                );
-                continue;
-              }
-
-              if (needsFullSync || (liveAllEnabledRef.current && liveChildren.length === 0)) {
-                await withTimeout(
-                  peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 1024)),
-                  syncTimeoutMsForPeer(peerId, { autoSync: true }),
-                  `live sync with ${peerId.slice(0, 8)}… timed out`,
-                );
-                continue;
-              }
-
-              for (const parentId of liveChildren) {
-                await withTimeout(
-                  peer.syncOnce(
-                    conn.transport,
-                    { children: { parent: hexToBytes16(parentId) } },
-                    syncOnceOptionsForPeer(peerId, 1024),
-                  ),
-                  syncTimeoutMsForPeer(peerId, { autoSync: true }),
-                  `live sync(children ${parentId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`,
-                );
-              }
-            } catch (err) {
-              console.error('Remote live sync push failed', err);
-              setSyncError(formatSyncError(err));
-              if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
-            }
-          }
-        }
-      } finally {
-        remoteLivePushRunningRef.current = false;
-        endLiveWork();
-      }
-    })();
+    outboundSyncRef.current?.queue(ops);
   };
 
   const dropPeerConnection = (peerId: string) => {
@@ -296,6 +230,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       // ignore
     }
     connections.delete(peerId);
+    outboundSyncRef.current?.removePeer(peerId);
     stopLiveAllForPeer(peerId);
     stopLiveChildrenForPeer(peerId);
 
@@ -303,7 +238,16 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     else removeMeshPeer(peerId);
   };
 
-  const handleSync = async (filter: Filter) => {
+  const selectSyncTargetIds = (connections: ReadonlyMap<string, PlaygroundSyncConnection>) => {
+    const now = Date.now();
+    const recentPeerIds = peers
+      .filter((p) => now - p.lastSeen < RECENT_SYNC_TARGET_MS)
+      .sort((a, b) => b.lastSeen - a.lastSeen)
+      .map((p) => p.id);
+    return recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
+  };
+
+  const syncFiltersWithTargets = async (filters: readonly Filter[], label: string) => {
     if (!onlineRef.current) {
       setSyncError('Offline: toggle Online to sync.');
       return;
@@ -322,30 +266,20 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     setSyncBusy(true);
     setSyncError(null);
     try {
-      const now = Date.now();
-      const recentPeerIds = peers
-        .filter((p) => now - p.lastSeen < 5_000)
-        .sort((a, b) => b.lastSeen - a.lastSeen)
-        .map((p) => p.id);
-      const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
+      const targets = selectSyncTargetIds(connections);
       let successes = 0;
       let lastErr: unknown = null;
       for (const peerId of targets) {
         const conn = connections.get(peerId);
         if (!conn) continue;
-        const perPeerTimeoutMs = syncTimeoutMsForPeer(peerId, {
-          multipleTargets: targets.length > 1,
-        });
         try {
-          await withTimeout(
-            peer.syncOnce(conn.transport, filter, syncOnceOptionsForPeer(peerId, 2048)),
-            perPeerTimeoutMs,
-            `sync with ${peerId.slice(0, 8)}… timed out`,
-          );
+          await syncFiltersWithTransport(peer, peerId, conn.transport, filters, {
+            multipleTargets: targets.length > 1,
+          });
           successes += 1;
         } catch (err) {
           lastErr = err;
-          console.error('Sync failed for peer', peerId, err);
+          console.error(`${label} failed for peer`, peerId, err);
           if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
         }
       }
@@ -355,82 +289,25 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       }
       await refreshMeta();
     } catch (err) {
-      console.error('Sync failed', err);
+      console.error(`${label} failed`, err);
       setSyncError(formatSyncError(err));
     } finally {
       setSyncBusy(false);
     }
   };
 
+  const handleSync = async (filter: Filter) => {
+    await syncFiltersWithTargets([filter], 'Sync');
+  };
+
   const handleScopedSync = async () => {
     const parents = new Set(getLoadedParentIds());
     parents.add(viewRootId);
     if (viewRootId !== ROOT_ID) parents.delete(ROOT_ID);
-    const parentIds = Array.from(parents).filter((id) => /^[0-9a-f]{32}$/i.test(id));
+    const parentIds = Array.from(parents).filter(isNodeIdHex);
     parentIds.sort();
 
-    if (!onlineRef.current) {
-      setSyncError('Offline: toggle Online to sync.');
-      return;
-    }
-    const peer = syncPeerRef.current;
-    if (!peer) {
-      setSyncError('Sync peer is not ready yet.');
-      return;
-    }
-    const connections = syncConnRef.current;
-    if (connections.size === 0) {
-      setSyncError('No peers discovered yet.');
-      return;
-    }
-
-    setSyncBusy(true);
-    setSyncError(null);
-    try {
-      const now = Date.now();
-      const recentPeerIds = peers
-        .filter((p) => now - p.lastSeen < 5_000)
-        .sort((a, b) => b.lastSeen - a.lastSeen)
-        .map((p) => p.id);
-      const targets = recentPeerIds.length > 0 ? recentPeerIds : Array.from(connections.keys());
-      let successes = 0;
-      let lastErr: unknown = null;
-      for (const peerId of targets) {
-        const conn = connections.get(peerId);
-        if (!conn) continue;
-        const perPeerTimeoutMs = syncTimeoutMsForPeer(peerId, {
-          multipleTargets: targets.length > 1,
-        });
-        try {
-          for (const parentId of parentIds) {
-            await withTimeout(
-              peer.syncOnce(
-                conn.transport,
-                { children: { parent: hexToBytes16(parentId) } },
-                syncOnceOptionsForPeer(peerId, 2048),
-              ),
-              perPeerTimeoutMs,
-              `sync(children ${parentId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`,
-            );
-          }
-          successes += 1;
-        } catch (err) {
-          lastErr = err;
-          console.error('Scoped sync failed for peer', peerId, err);
-          if (!isCapabilityRevokedError(err)) dropPeerConnection(peerId);
-        }
-      }
-      if (successes === 0) {
-        if (lastErr) throw lastErr;
-        throw new Error('No peers responded to sync.');
-      }
-      await refreshMeta();
-    } catch (err) {
-      console.error('Scoped sync failed', err);
-      setSyncError(formatSyncError(err));
-    } finally {
-      setSyncBusy(false);
-    }
+    await syncFiltersWithTargets(parentIds.map(childrenFilter), 'Scoped sync');
   };
 
   const postBroadcastMessage = (
@@ -478,7 +355,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     if (!authCanSyncAll) {
       const clean = viewRootId.toLowerCase();
-      if (clean === ROOT_ID || !/^[0-9a-f]{32}$/.test(clean)) return;
+      if (clean === ROOT_ID || !isNodeIdHex(clean)) return;
     }
 
     if (autoSyncAttemptRef.current >= 3) return;
@@ -489,23 +366,11 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       setSyncBusy(true);
       setSyncError(null);
       try {
-        if (authCanSyncAll) {
-          await withTimeout(
-            peer.syncOnce(conn.transport, { all: {} }, syncOnceOptionsForPeer(peerId, 2048)),
-            syncTimeoutMsForPeer(peerId, { autoSync: true }),
-            `auto sync with ${peerId.slice(0, 8)}… timed out`,
-          );
-        } else {
-          await withTimeout(
-            peer.syncOnce(
-              conn.transport,
-              { children: { parent: hexToBytes16(viewRootId) } },
-              syncOnceOptionsForPeer(peerId, 2048),
-            ),
-            syncTimeoutMsForPeer(peerId, { autoSync: true }),
-            `auto sync(children ${viewRootId.slice(0, 8)}…) with ${peerId.slice(0, 8)}… timed out`,
-          );
-        }
+        const filter: Filter = authCanSyncAll ? { all: {} } : childrenFilter(viewRootId);
+        await syncFiltersWithTransport(peer, peerId, conn.transport, [filter], {
+          autoSync: true,
+          label: 'auto sync',
+        });
 
         await refreshMeta();
 
@@ -677,6 +542,42 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const connections = new Map<string, { transport: DuplexTransport<any>; detach: () => void }>();
     syncConnRef.current = connections;
 
+    const outboundSync = createOutboundSync<Operation>({
+      localPeer: sharedPeer,
+      opKey: localOpUploadKey,
+      isOnline: () => onlineRef.current,
+      shouldSyncPeer: isRemotePeerId,
+      getFallbackFilters: () => {
+        const liveChildren = Array.from(liveChildrenParentsRef.current).filter(isNodeIdHex);
+        if (liveAllEnabledRef.current || liveChildren.length === 0) return [{ all: {} }];
+        return liveChildren.map(childrenFilter);
+      },
+      runPush: async ({ localPeer, peerId, transport, ops }) => {
+        await withTimeout(
+          localPeer.pushOps(transport, ops, {
+            maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+          }),
+          syncTimeoutMsForPeer(peerId, { autoSync: true }),
+          `live push with ${peerId.slice(0, 8)}… timed out`,
+        );
+      },
+      runSync: async ({ localPeer, peerId, transport, filter }) => {
+        await syncFiltersWithTransport(localPeer, peerId, transport, [filter], {
+          autoSync: true,
+          codewordsPerMessage: 1024,
+          label: 'live sync',
+        });
+      },
+      onWorkStart: beginLiveWork,
+      onWorkEnd: endLiveWork,
+      onError: ({ peerId, error }) => {
+        console.error('Remote live sync failed', error);
+        setSyncError(formatSyncError(error));
+        if (!isCapabilityRevokedError(error)) dropPeerConnection(peerId);
+      },
+    });
+    outboundSyncRef.current = outboundSync;
+
     const maybeStartLiveForPeer = (peerId: string) => {
       if (!isRemotePeerId(peerId)) {
         const mesh = presenceMeshRef.current;
@@ -707,6 +608,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           onPeerTransport: (peerId, transport) => {
             const detach = sharedPeer.attach(transport);
             connections.set(peerId, { transport, detach });
+            outboundSync.addPeer(peerId, transport);
             maybeStartLiveForPeer(peerId);
             if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
               autoSyncPeerIdRef.current = peerId;
@@ -716,6 +618,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           },
           onPeerDisconnected: (peerId) => {
             connections.delete(peerId);
+            outboundSync.removePeer(peerId);
             stopLiveAllForPeer(peerId);
             stopLiveChildrenForPeer(peerId);
             removeMeshPeer(peerId);
@@ -743,148 +646,41 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     presenceMeshRef.current = mesh;
 
-    let remoteSocket: WebSocket | null = null;
-    let remotePeerId: string | null = null;
-    let disposed = false;
-    let remoteOpened = false;
-    let resolvedRemote: ResolveWebSocketAttachmentResult | null = null;
-    const discoveryRouteCache = getBrowserDiscoveryRouteCache();
-
-    if (remoteSyncUrl.length > 0) {
-      void (async () => {
-        try {
-          setSyncError((prev) => (isTransientRemoteConnectError(prev) ? null : prev));
-          const bootstrapHost = isDiscoveryBootstrapUrl(remoteSyncUrl)
-            ? previewDiscoveryHost(remoteSyncUrl)
-            : undefined;
-          resolvedRemote = await resolveWebSocketAttachment({
-            endpoint: remoteSyncUrl,
+    const stopRemoteSocket =
+      remoteSyncUrl.length > 0
+        ? startPlaygroundRemoteSyncSocket({
+            remoteSyncUrl,
             docId,
-            cache: discoveryRouteCache,
-            fetch:
-              typeof window !== 'undefined' && typeof window.fetch === 'function'
-                ? window.fetch.bind(window)
-                : undefined,
-          });
-          if (disposed || syncConnRef.current !== connections) return;
-          const remoteUrl = resolvedRemote.url;
-          const connectVerb =
-            resolvedRemote.source === 'network'
-              ? 'Resolved attachment, connecting to'
-              : resolvedRemote.source === 'cache'
-                ? 'Using cached route to'
-                : 'Connecting to';
-          setRemoteSyncStatus({
-            state: 'connecting',
-            detail: formatRemoteConnectDetail(connectVerb, remoteUrl.host, bootstrapHost),
-          });
-          remotePeerId = `remote:${remoteUrl.host}`;
-          remoteSocket = new WebSocket(remoteUrl.toString());
-          remoteSocket.binaryType = 'arraybuffer';
-
-          remoteSocket.addEventListener('open', () => {
-            if (disposed || syncConnRef.current !== connections) return;
-            if (!remoteSocket || remoteSocket.readyState !== WebSocket.OPEN || !remotePeerId)
-              return;
-            remoteOpened = true;
-            setSyncError((prev) => (isTransientRemoteConnectError(prev) ? null : prev));
-            setRemoteSyncStatus({
-              detail: formatRemoteRouteDetail(remoteUrl.host, { bootstrapHost }),
-              state: 'connected',
-            });
-            const wire = createBrowserWebSocketTransport(remoteSocket);
-            const transport = wrapDuplexTransportWithCodec<Uint8Array, any>(
-              wire,
-              treecrdtSyncV0ProtobufCodec as any,
-            );
-            const detach = sharedPeer.attach(transport);
-            syncConnRef.current.set(remotePeerId, { transport, detach });
-            setRemotePeer({ id: remotePeerId, lastSeen: Date.now() });
-            maybeStartLiveForPeer(remotePeerId);
-
-            if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
-              autoSyncPeerIdRef.current = remotePeerId;
+            sharedPeer,
+            connections,
+            outboundSync,
+            isCurrent: () => syncConnRef.current === connections,
+            setRemoteSyncStatus,
+            setSyncError,
+            setRemotePeer,
+            maybeStartLiveForPeer,
+            onAutoSyncPeerReady: (peerId) => {
+              if (!autoSyncJoinInitial || !joinMode || autoSyncDoneRef.current) return;
+              autoSyncPeerIdRef.current = peerId;
               bumpAutoSyncJoinTick((t) => t + 1);
-            }
-          });
-
-          remoteSocket.addEventListener('message', () => {
-            if (disposed || syncConnRef.current !== connections) return;
-            if (!remotePeerId) return;
-            setRemotePeer({ id: remotePeerId, lastSeen: Date.now() });
-            setRemoteSyncStatus((prev) =>
-              prev.state === 'connected'
-                ? {
-                    detail: formatRemoteRouteDetail(remoteUrl.host, { bootstrapHost }),
-                    state: 'connected',
-                  }
-                : prev,
-            );
-          });
-
-          remoteSocket.addEventListener('close', () => {
-            if (syncConnRef.current !== connections) return;
-            if (!disposed) {
-              setRemoteSyncStatus({
-                detail: formatRemoteErrorDetail(
-                  remoteOpened ? 'disconnected' : 'could_not_connect',
-                  remoteUrl.host,
-                  bootstrapHost,
-                ),
-                state: 'error',
-              });
-            }
-            if (!remoteOpened && resolvedRemote?.source === 'cache' && resolvedRemote.cacheKey) {
-              void discoveryRouteCache?.delete(resolvedRemote.cacheKey);
-            }
-            if (!remotePeerId) return;
-            dropPeerConnection(remotePeerId);
-          });
-
-          remoteSocket.addEventListener('error', () => {
-            if (syncConnRef.current !== connections) return;
-            setRemoteSyncStatus({
-              detail: formatRemoteErrorDetail(
-                remoteOpened ? 'connection_error' : 'could_not_reach',
-                remoteUrl.host,
-                bootstrapHost,
-              ),
-              state: 'error',
-            });
-            if (!remoteOpened && resolvedRemote?.source === 'cache' && resolvedRemote.cacheKey) {
-              void discoveryRouteCache?.delete(resolvedRemote.cacheKey);
-            }
-            setSyncError((prev) => prev ?? `Remote sync socket error (${remoteUrl.host})`);
-          });
-        } catch (err) {
-          if (disposed || syncConnRef.current !== connections) return;
-          setRemoteSyncStatus({
-            state: isDiscoveryBootstrapUrl(remoteSyncUrl) ? 'error' : 'invalid',
-            detail: formatSyncError(err),
-          });
-          setSyncError(formatSyncError(err));
-        }
-      })();
-    }
+            },
+            dropPeerConnection,
+          })
+        : undefined;
 
     return () => {
-      disposed = true;
       stopAllLiveAll();
       stopAllLiveChildren();
       if (presenceMeshRef.current === mesh) presenceMeshRef.current = null;
       mesh?.stop();
-      if (remoteSocket) {
-        try {
-          remoteSocket.close();
-        } catch {
-          // ignore
-        }
-      }
+      stopRemoteSocket?.();
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
       if (syncPeerRef.current === sharedPeer) syncPeerRef.current = null;
+      outboundSync.close();
+      if (outboundSyncRef.current === outboundSync) {
+        outboundSyncRef.current = null;
+      }
       channel?.close();
-      remoteLivePushScheduledRef.current = false;
-      remoteLivePushRunningRef.current = false;
       resetLiveWork();
       connections.clear();
       resetPeers();
@@ -918,7 +714,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    queueLocalOpsForSync,
+    queueOpsForSync,
     handleSync,
     handleScopedSync,
     postBroadcastMessage,
