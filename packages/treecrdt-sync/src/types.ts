@@ -15,7 +15,8 @@ import type {
 import type { DiscoveryRouteCache } from '@treecrdt/discovery';
 
 /**
- * {@link TreecrdtEngine} (e.g. wa-sqlite) plus the materialization API used to proxy `onChange`.
+ * {@link TreecrdtEngine} (e.g. wa-sqlite) plus the SQLite sync backend surface from
+ * `@treecrdt/sync-sqlite`.
  */
 export type TreecrdtWebSocketSyncClient = TreecrdtEngine & TreecrdtSyncBackendClient;
 
@@ -50,20 +51,13 @@ export type ConnectTreecrdtWebSocketSyncOptions = {
 };
 
 export type TreecrdtWebSocketSync = {
-  /**
-   * Materialization subscription; forwards to `client.onMaterialized` with the same
-   * `MaterializationEvent` shape. Do not register the same logic on the client as well, or
-   * listeners will run twice.
-   */
-  onChange: (listener: MaterializationListener) => () => void;
   syncOnce: (filter?: Filter, opts?: SyncOnceOptions) => Promise<void>;
   startLive: (opts?: SyncSubscribeOptions) => Promise<void>;
   stopLive: () => void;
   /**
-   /**
-    * Upload local ops to the peer. For local→remote only; pass ops from your edit API (not from onChange).
-    * No-ops if empty. For full sync, use syncOnce instead.
-    */
+   * Upload local ops to the peer. For local→remote only; pass ops from your edit API.
+   * No-ops if empty. For full sync, use syncOnce instead.
+   */
   pushLocalOps: (ops?: readonly Operation[]) => Promise<void>;
   close: () => Promise<void>;
 };

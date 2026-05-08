@@ -27,14 +27,14 @@ function noopTransport() {
   return wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
 }
 
-test('onChange receives writeIds from appendMany(…, { writeId })', async () => {
+test('onMaterialized receives writeIds from appendMany(…, { writeId })', async () => {
   const docId = `write-id-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
   const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
 
   const events: MaterializationEvent[] = [];
-  const u = sync.onChange((e) => {
+  const u = client.onMaterialized((e) => {
     events.push(e);
   });
 
@@ -62,13 +62,13 @@ test('onChange receives writeIds from appendMany(…, { writeId })', async () =>
   expect(withWrite!.writeIds).toEqual(['my-batch-42']);
 });
 
-test('onChange receives writeIds from append(…, { writeId })', async () => {
+test('onMaterialized receives writeIds from append(…, { writeId })', async () => {
   const docId = `write-id-s-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
   const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
   const seen: string[] = [];
-  const u = sync.onChange((e) => {
+  const u = client.onMaterialized((e) => {
     if (e.writeIds?.[0]) seen.push(e.writeIds[0]!);
   });
   const n1 = nodeIdFromInt(1);
