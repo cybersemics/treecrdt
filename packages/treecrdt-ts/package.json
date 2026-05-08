@@ -1,7 +1,6 @@
 {
   "name": "@treecrdt/interface",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -38,5 +37,18 @@
   },
   "devDependencies": {
     "typescript": "^5.3.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cybersemics/treecrdt.git",
+    "directory": "packages/treecrdt-ts"
+  },
+  "bugs": {
+    "url": "https://github.com/cybersemics/treecrdt/issues"
+  },
+  "homepage": "https://github.com/cybersemics/treecrdt#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }

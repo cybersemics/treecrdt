@@ -84,6 +84,7 @@ jobs:
         pnpm -C packages/sync-protocol/protocol run build
         pnpm -C packages/treecrdt-auth run build
         pnpm -C packages/sync-protocol/material/sqlite run build
+        pnpm -C packages/discovery run build
         pnpm -C packages/treecrdt-sync run build
         pnpm -C packages/treecrdt-crypto run build
         pnpm -C packages/treecrdt-wa-sqlite run build:ts

@@ -5,7 +5,9 @@
   "workspaces": [
     "packages/*",
     "packages/sync-protocol/*",
-    "packages/sync-protocol/*/*"
+    "packages/sync-protocol/*/*",
+    "packages/treecrdt-wa-sqlite/e2e",
+    "examples/*"
   ],
   "scripts": {
     "lint": "echo \"TODO: add linting\"",
@@ -50,11 +52,16 @@
     "sync-server:postgres": "pnpm --filter @treecrdt/sync-server-postgres-node dev",
     "sync-server:postgres:local": "node scripts/run-sync-server-postgres-local.mjs",
     "sync-server:postgres:db:start": "node scripts/run-sync-server-postgres-db-start.mjs",
-    "sync-server:postgres:db:stop": "node scripts/run-sync-server-postgres-db-stop.mjs"
+    "sync-server:postgres:db:stop": "node scripts/run-sync-server-postgres-db-stop.mjs",
+    "changeset": "changeset",
+    "version-packages": "changeset version && pnpm install --lockfile-only",
+    "build:publish": "pnpm --filter @treecrdt/wa-sqlite-vendor run build && pnpm --filter @treecrdt/wa-sqlite... --filter @treecrdt/sync... --filter @treecrdt/sync-server-postgres-node... --filter @treecrdt/discovery-server-node... run build",
+    "release": "pnpm run build:publish && changeset publish"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.61.0",
     "@bufbuild/protoc-gen-es": "^2.10.2",
+    "@changesets/cli": "^2.31.0",
     "prettier": "^3.8.1",
     "ws": "^8.18.3"
   }
