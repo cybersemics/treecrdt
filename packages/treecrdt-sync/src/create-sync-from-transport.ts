@@ -88,10 +88,7 @@ export function createTreecrdtWebSocketSyncFromTransport(
     if (closed) throw new Error('TreecrdtWebSocketSync: connection is closed');
   };
 
-  const onChange: TreecrdtWebSocketSync['onChange'] = (listener) => client.onMaterialized(listener);
-
   const handle: TreecrdtWebSocketSync = {
-    onChange,
     syncOnce: async (filter: Filter = { all: {} }, opts: SyncOnceOptions = {}) => {
       assertOpen();
       await peer.syncOnce(transport, filter, mergeSyncOnceOptions(opts));
