@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { encodeImageFileContent, encodeTextContent } from "@treecrdt/content";
 import { type Operation } from "@treecrdt/interface";
 import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
@@ -9,7 +10,6 @@ import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
 import { MAX_COMPOSER_NODE_COUNT, ROOT_ID } from "./playground/constants";
-import { ComposerPanel } from "./playground/components/ComposerPanel";
 import { OpsPanel } from "./playground/components/OpsPanel";
 import { PlaygroundHeader } from "./playground/components/PlaygroundHeader";
 import { ShareSubtreeDialog } from "./playground/components/ShareSubtreeDialog";
@@ -32,7 +32,7 @@ import {
   persistOpfsKey,
   persistStorage,
 } from "./playground/persist";
-import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
+import { getPlaygroundProfileId } from "./playground/storage";
 import { applyChildrenLoaded, flattenForSelectState } from "./playground/treeState";
 import type {
   BulkAddProgress,
@@ -93,28 +93,16 @@ export default function App() {
   const [sessionKey, setSessionKey] = useState<string>(() =>
     initialStorage() === "opfs" ? ensureOpfsKey() : makeSessionKey()
   );
-  const [parentChoice, setParentChoice] = useState(ROOT_ID);
   const [collapse, setCollapse] = useState<CollapseState>(() => ({
     defaultCollapsed: true,
     overrides: new Set([ROOT_ID]),
   }));
   const [busy, setBusy] = useState(false);
   const [bulkAddProgress, setBulkAddProgress] = useState<BulkAddProgress | null>(null);
-  const [nodeCount, setNodeCount] = useState(1);
-  const [fanout, setFanout] = useState(10);
-  const [newNodeValue, setNewNodeValue] = useState("");
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [syncServerUrl, setSyncServerUrl] = useState<string>(() => initialSyncServerUrl());
   const [syncTransportMode, setSyncTransportMode] = useState<SyncTransportMode>(() => initialSyncTransportMode());
-  const [composerOpen, setComposerOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
-    const stored = window.localStorage.getItem(key);
-    if (stored === "0") return false;
-    if (stored === "1") return true;
-    return false;
-  });
   const [online, setOnline] = useState(true);
 
   const joinMode =
@@ -122,12 +110,6 @@ export default function App() {
   const autoSyncJoin =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).get("autosync") === "1";
   const profileId = useMemo(() => getPlaygroundProfileId(), []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
-    window.localStorage.setItem(key, composerOpen ? "1" : "0");
-  }, [composerOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -258,7 +240,6 @@ export default function App() {
     refreshDocPayloadKey,
   });
 
-  const textEncoder = useMemo(() => new TextEncoder(), []);
   const { ops, recordOps, resetOps } = usePlaygroundOpsLog({
     client,
     status,
@@ -527,7 +508,6 @@ export default function App() {
       overrides.add(viewRootId);
       return { ...prev, overrides };
     });
-    setParentChoice((prev) => (prev === ROOT_ID ? viewRootId : prev));
     void ensureChildrenLoaded(viewRootId);
   }, [ensureChildrenLoaded, viewRootId]);
 
@@ -570,8 +550,8 @@ export default function App() {
     while (stack.length > 0) {
       const entry = stack.pop();
       if (!entry) break;
-      const { label, value } = payloadDisplayForNode(entry.id);
-      acc.push({ node: { id: entry.id, label, value }, depth: entry.depth });
+      const payload = payloadDisplayForNode(entry.id);
+      acc.push({ node: { id: entry.id, label: payload.label, value: payload.value, payload }, depth: entry.depth });
       if (isCollapsed(entry.id)) continue;
       const kids = childrenByParent[entry.id] ?? [];
       for (let i = kids.length - 1; i >= 0; i--) {
@@ -699,8 +679,6 @@ export default function App() {
     lamportRef.current = 0;
     setHeadLamport(0);
     setTotalNodes(null);
-    setParentChoice(ROOT_ID);
-    setNewNodeValue("");
     setBulkAddProgress(null);
     setError(null);
     const closingClient = clientRef.current;
@@ -727,11 +705,16 @@ export default function App() {
     }
   };
 
-  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
+  const handleAddNodes = async (
+    parentId: string,
+    count: number,
+    opts: { fanout?: number; imageFile?: File | null; value?: string } = {}
+  ) => {
     const localWriter = getLocalWriter();
     if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
-    const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
+    if (opts.imageFile && !canWritePayload) return;
+    const normalizedCount = opts.imageFile ? 1 : Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
     setBusy(true);
     const startedAtMs = Date.now();
@@ -740,15 +723,16 @@ export default function App() {
     const ops: Operation[] = [];
     let opsRecorded = false;
     try {
-      const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
-      const valueBase = canWritePayload ? newNodeValue.trim() : "";
+      const fanoutLimit = opts.imageFile ? 0 : Math.max(0, Math.floor(opts.fanout ?? 0));
+      const imagePayload = opts.imageFile ? await encodeImageFileContent(opts.imageFile) : null;
+      const valueBase = canWritePayload && !opts.imageFile ? (opts.value ?? "").trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
 
       if (fanoutLimit <= 0) {
         for (let i = 0; i < normalizedCount; i++) {
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const payload = shouldSetValue ? textEncoder.encode(value) : null;
+          const payload = imagePayload ?? (shouldSetValue ? encodeTextContent(value) : null);
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
           const completed = i + 1;
@@ -795,7 +779,7 @@ export default function App() {
 
           const nodeId = makeNodeId();
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const payload = shouldSetValue ? textEncoder.encode(value) : null;
+          const payload = shouldSetValue ? encodeTextContent(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
           ops.push(await localWriter.insert(targetParent, nodeId, { type: "last" }, encryptedPayload));
 
@@ -820,21 +804,21 @@ export default function App() {
     } catch (err) {
       if (!opsRecorded && ops.length > 0) handleCommittedLocalOps(ops);
       console.error("Failed to add nodes", err);
-      setError("Failed to add nodes (see console)");
+      setError(err instanceof Error ? err.message : "Failed to add nodes (see console)");
     } finally {
       setBulkAddProgress(null);
       setBusy(false);
     }
   };
 
-  const handleInsert = async (parentId: string) => {
+  const handleInsert = async (parentId: string, value = "") => {
     const localWriter = getLocalWriter();
     if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
-      const valueBase = canWritePayload ? newNodeValue.trim() : "";
-      const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
+      const valueBase = canWritePayload ? value.trim() : "";
+      const payload = valueBase.length > 0 ? encodeTextContent(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
       const op = await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload);
@@ -851,6 +835,14 @@ export default function App() {
     }
   };
 
+  const handleAddImageNode = async (parentId: string, file: File) => {
+    await handleAddNodes(parentId, 1, { imageFile: file });
+  };
+
+  const handleAddBulkNodes = async (parentId: string, count: number, fanout: number, value: string) => {
+    await handleAddNodes(parentId, count, { fanout, value });
+  };
+
   const handleSetValue = (nodeId: string, value: string): Promise<void> => {
     const run = payloadWriteQueueRef.current
       .catch(() => undefined)
@@ -859,13 +851,53 @@ export default function App() {
         const localWriter = getLocalWriter();
         if (!localWriter) return;
         try {
-          const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
+          const payload = value.trim().length === 0 ? null : encodeTextContent(value);
           const encryptedPayload = await encryptPayloadBytes(payload);
           const op = await localWriter.payload(nodeId, encryptedPayload);
           handleCommittedLocalOps([op]);
         } catch (err) {
           console.error("Failed to write payload", err);
           setError("Failed to write payload (see console)");
+        }
+      });
+    payloadWriteQueueRef.current = run.catch(() => undefined);
+    return run;
+  };
+
+  const handleSetImagePayload = (nodeId: string, file: File): Promise<void> => {
+    const run = payloadWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (nodeId === ROOT_ID || !canWritePayload) return;
+        const localWriter = getLocalWriter();
+        if (!localWriter) return;
+        try {
+          const payload = await encodeImageFileContent(file);
+          const encryptedPayload = await encryptPayloadBytes(payload);
+          const op = await localWriter.payload(nodeId, encryptedPayload);
+          handleCommittedLocalOps([op]);
+        } catch (err) {
+          console.error("Failed to write image payload", err);
+          setError(err instanceof Error ? err.message : "Failed to write image payload (see console)");
+        }
+      });
+    payloadWriteQueueRef.current = run.catch(() => undefined);
+    return run;
+  };
+
+  const handleClearPayload = (nodeId: string): Promise<void> => {
+    const run = payloadWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (nodeId === ROOT_ID || !canWritePayload) return;
+        const localWriter = getLocalWriter();
+        if (!localWriter) return;
+        try {
+          const op = await localWriter.payload(nodeId, null);
+          handleCommittedLocalOps([op]);
+        } catch (err) {
+          console.error("Failed to clear payload", err);
+          setError("Failed to clear payload (see console)");
         }
       });
     payloadWriteQueueRef.current = run.catch(() => undefined);
@@ -1023,27 +1055,6 @@ export default function App() {
 
       <div className="grid min-w-0 gap-6 md:grid-cols-3">
         <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} min-w-0 space-y-4`}>
-          <ComposerPanel
-            composerOpen={composerOpen}
-            setComposerOpen={setComposerOpen}
-            nodeList={nodeList}
-            parentChoice={parentChoice}
-            setParentChoice={setParentChoice}
-            newNodeValue={newNodeValue}
-            setNewNodeValue={setNewNodeValue}
-            nodeCount={nodeCount}
-            setNodeCount={setNodeCount}
-            maxNodeCount={MAX_COMPOSER_NODE_COUNT}
-            fanout={fanout}
-            setFanout={setFanout}
-            onAddNodes={handleAddNodes}
-            ready={status === "ready"}
-            busy={busy}
-            bulkAddProgress={bulkAddProgress}
-            canWritePayload={canWritePayload}
-            canWriteStructure={canWriteStructure}
-          />
-
           <TreePanel
             totalNodes={totalNodes}
             loadedNodes={Math.max(0, nodeList.length - 1)}
@@ -1057,6 +1068,7 @@ export default function App() {
             peerCount={peers.length}
             authCanSyncAll={authCanSyncAll}
             onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
+            bulkAddProgress={bulkAddProgress}
             liveAllEnabled={liveAllEnabled}
             setLiveAllEnabled={setLiveAllEnabled}
             showPeersPanel={showPeersPanel}
@@ -1128,11 +1140,12 @@ export default function App() {
             toggleCollapse={toggleCollapse}
             openShareForNode={openShareForNode}
             grantSubtreeToReplicaPubkey={grantSubtreeToReplicaPubkey}
+            onAddTextNode={handleInsert}
+            onAddImageNode={handleAddImageNode}
+            onAddBulkNodes={handleAddBulkNodes}
             onSetValue={handleSetValue}
-            onAddChild={(id) => {
-              setParentChoice(id);
-              void handleInsert(id);
-            }}
+            onSetImagePayload={handleSetImagePayload}
+            onClearPayload={handleClearPayload}
             onDelete={handleDelete}
             onMove={handleMove}
             onMoveToRoot={handleMoveToRoot}
@@ -1150,6 +1163,7 @@ export default function App() {
             canWritePayload={canWritePayload}
             canWriteStructure={canWriteStructure}
             canDelete={canDelete}
+            maxNodeCount={MAX_COMPOSER_NODE_COUNT}
             liveChildrenParents={liveChildrenParents}
             meta={index}
             childrenByParent={childrenByParent}
@@ -1172,9 +1186,7 @@ export default function App() {
       <PlaygroundToast
         toast={toast}
         setToast={setToast}
-        onSync={() => {
-          void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
-        }}
+        onSync={() => void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync())}
         canSync={status === "ready" && !busy && !syncBusy && peers.length > 0 && online}
         onDetails={() => setShowAuthPanel(true)}
       />

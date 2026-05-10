@@ -29,6 +29,9 @@ importers:
       '@treecrdt/auth':
         specifier: workspace:*
         version: link:../../packages/treecrdt-auth
+      '@treecrdt/content':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-content
       '@treecrdt/crypto':
         specifier: workspace:*
         version: link:../../packages/treecrdt-crypto
@@ -302,6 +305,15 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+
+  packages/treecrdt-content:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
 
   packages/treecrdt-crypto:
     dependencies:

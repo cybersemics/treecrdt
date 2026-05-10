@@ -3,6 +3,8 @@ import path from 'node:path';
 import {
   DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS,
   DEFAULT_SYNC_BENCH_WORKLOADS,
+  IMAGE_SYNC_BENCH_WORKLOADS,
+  syncBenchImagePayloadBytesFromEnv,
   syncBenchRootChildrenSizesFromEnv,
   syncBenchSizesFromEnv,
 } from '@treecrdt/benchmark';
@@ -18,12 +20,21 @@ test('wa-sqlite sync OPFS benchmarks', async ({ page }) => {
   await page.waitForFunction(() => typeof window.runTreecrdtSyncBench === 'function');
 
   const rootChildrenSizes = syncBenchRootChildrenSizesFromEnv();
+  const imagePayloadBytes = syncBenchImagePayloadBytesFromEnv();
   const sizes = syncBenchSizesFromEnv();
   const baseWorkloads = Array.from(DEFAULT_SYNC_BENCH_WORKLOADS);
   const rootChildrenWorkloads = Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS);
+  const imageWorkloads = Array.from(IMAGE_SYNC_BENCH_WORKLOADS);
 
   const results = await page.evaluate(
-    async ({ rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads }) => {
+    async ({
+      rootChildrenSizes,
+      imagePayloadBytes,
+      sizes,
+      baseWorkloads,
+      rootChildrenWorkloads,
+      imageWorkloads,
+    }) => {
       const runner = window.runTreecrdtSyncBench;
       if (!runner) throw new Error('runTreecrdtSyncBench not available');
       const base = await runner('browser-opfs-coop-sync', sizes, baseWorkloads);
@@ -32,9 +43,21 @@ test('wa-sqlite sync OPFS benchmarks', async ({ page }) => {
         rootChildrenSizes,
         rootChildrenWorkloads,
       );
-      return [...base, ...rootChildren];
+      const imagePayloads = await runner(
+        'browser-opfs-coop-sync',
+        imagePayloadBytes,
+        imageWorkloads,
+      );
+      return [...base, ...rootChildren, ...imagePayloads];
     },
-    { rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads },
+    {
+      rootChildrenSizes,
+      imagePayloadBytes,
+      sizes,
+      baseWorkloads,
+      rootChildrenWorkloads,
+      imageWorkloads,
+    },
   );
 
   expect(Array.isArray(results)).toBeTruthy();
@@ -62,19 +85,36 @@ test('wa-sqlite sync memory (browser) benchmarks', async ({ page }) => {
   await page.waitForFunction(() => typeof window.runTreecrdtSyncBench === 'function');
 
   const rootChildrenSizes = syncBenchRootChildrenSizesFromEnv();
+  const imagePayloadBytes = syncBenchImagePayloadBytesFromEnv();
   const sizes = syncBenchSizesFromEnv();
   const baseWorkloads = Array.from(DEFAULT_SYNC_BENCH_WORKLOADS);
   const rootChildrenWorkloads = Array.from(DEFAULT_SYNC_BENCH_ROOT_CHILDREN_WORKLOADS);
+  const imageWorkloads = Array.from(IMAGE_SYNC_BENCH_WORKLOADS);
 
   const results = await page.evaluate(
-    async ({ rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads }) => {
+    async ({
+      rootChildrenSizes,
+      imagePayloadBytes,
+      sizes,
+      baseWorkloads,
+      rootChildrenWorkloads,
+      imageWorkloads,
+    }) => {
       const runner = window.runTreecrdtSyncBench;
       if (!runner) throw new Error('runTreecrdtSyncBench not available');
       const base = await runner('browser-memory', sizes, baseWorkloads);
       const rootChildren = await runner('browser-memory', rootChildrenSizes, rootChildrenWorkloads);
-      return [...base, ...rootChildren];
+      const imagePayloads = await runner('browser-memory', imagePayloadBytes, imageWorkloads);
+      return [...base, ...rootChildren, ...imagePayloads];
     },
-    { rootChildrenSizes, sizes, baseWorkloads, rootChildrenWorkloads },
+    {
+      rootChildrenSizes,
+      imagePayloadBytes,
+      sizes,
+      baseWorkloads,
+      rootChildrenWorkloads,
+      imageWorkloads,
+    },
   );
 
   expect(Array.isArray(results)).toBeTruthy();
