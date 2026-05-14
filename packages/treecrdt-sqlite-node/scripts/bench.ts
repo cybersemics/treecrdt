@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { makeWorkload, quantile, runBenchmark } from '@justthrowaway/benchmark';
-import { repoRootFromImportMeta, writeResult } from '@justthrowaway/benchmark/node';
+import { makeWorkload, quantile, runBenchmark } from '@justtemporary/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@justtemporary/benchmark/node';
 import { createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
 
 type StorageKind = 'memory' | 'file';

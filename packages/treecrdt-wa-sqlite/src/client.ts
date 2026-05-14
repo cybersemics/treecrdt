@@ -1,5 +1,5 @@
 import { clearOpfsStorage, detectOpfsSupport } from './opfs.js';
-import type { Operation, ReplicaId } from '@justthrowaway/interface';
+import type { Operation, ReplicaId } from '@justtemporary/interface';
 import {
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
@@ -11,24 +11,24 @@ import {
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
-} from '@justthrowaway/interface/sqlite';
+} from '@justtemporary/interface/sqlite';
 import {
   bytesToHex,
   nodeIdFromBytes16,
   nodeIdToBytes16,
   replicaIdToBytes,
-} from '@justthrowaway/interface/ids';
+} from '@justtemporary/interface/ids';
 import type {
   LocalWriteOptions,
   MaterializationEvent,
   TreecrdtEngine,
   WriteOptions,
-} from '@justthrowaway/interface/engine';
+} from '@justtemporary/interface/engine';
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
-} from '@justthrowaway/interface/engine';
-import type { TreecrdtSqliteAuthApi } from '@justthrowaway/sync-sqlite/auth';
+} from '@justtemporary/interface/engine';
+import type { TreecrdtSqliteAuthApi } from '@justtemporary/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
 import type {
@@ -68,7 +68,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   drop: () => Promise<void>;
 };
 
-type TreecrdtSqliteAuthModule = typeof import('@justthrowaway/sync-sqlite/auth');
+type TreecrdtSqliteAuthModule = typeof import('@justtemporary/sync-sqlite/auth');
 
 export type TreecrdtClientAuthApi = {
   createSession: (
@@ -254,7 +254,7 @@ let sqliteAuthModulePromise: Promise<TreecrdtSqliteAuthModule> | null = null;
 function loadSqliteAuthModule(): Promise<TreecrdtSqliteAuthModule> {
   // Auth is an opt-in capability path for browser clients. Apps that only open
   // local trees do not need auth sessions or proof material until they call client.auth.*.
-  sqliteAuthModulePromise ??= import('@justthrowaway/sync-sqlite/auth');
+  sqliteAuthModulePromise ??= import('@justtemporary/sync-sqlite/auth');
   return sqliteAuthModulePromise;
 }
 

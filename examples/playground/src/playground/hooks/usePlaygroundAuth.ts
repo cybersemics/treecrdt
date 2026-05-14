@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { Operation } from "@justthrowaway/interface";
-import type { LocalWriteOptions } from "@justthrowaway/interface/engine";
-import { bytesToHex } from "@justthrowaway/interface/ids";
+import type { Operation } from "@justtemporary/interface";
+import type { LocalWriteOptions } from "@justtemporary/interface/engine";
+import { bytesToHex } from "@justtemporary/interface/ids";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -10,10 +10,10 @@ import {
   deriveTokenIdV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
-} from "@justthrowaway/auth";
-import { createTreecrdtSqliteSyncDiagnostics } from "@justthrowaway/sync-sqlite";
-import type { SyncAuth } from "@justthrowaway/sync-protocol";
-import type { TreecrdtClient } from "@justthrowaway/wa-sqlite/client";
+} from "@justtemporary/auth";
+import { createTreecrdtSqliteSyncDiagnostics } from "@justtemporary/sync-sqlite";
+import type { SyncAuth } from "@justtemporary/sync-protocol";
+import type { TreecrdtClient } from "@justtemporary/wa-sqlite/client";
 
 import {
   clearAuthMaterial,

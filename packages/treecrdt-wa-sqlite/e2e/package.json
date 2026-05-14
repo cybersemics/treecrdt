@@ -1,10 +1,10 @@
 {
-  "name": "@justthrowaway/wa-sqlite-demo",
+  "name": "@justtemporary/wa-sqlite-demo",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "build:vendor:wa-sqlite": "pnpm --filter @justthrowaway/wa-sqlite-vendor build",
+    "build:vendor:wa-sqlite": "pnpm --filter @justtemporary/wa-sqlite-vendor build",
     "build:wa-sqlite": "pnpm run build:vendor:wa-sqlite && pnpm -C .. run build:ts",
     "build": "vite build",
     "build:app:path": "vite build --base /base-path/",
@@ -15,16 +15,16 @@
     "bench": "pnpm -C ../../treecrdt-benchmark run build && pnpm run build && playwright test tests/bench-opfs.spec.ts tests/bench-sync.spec.ts --reporter=line"
   },
   "dependencies": {
-    "@justthrowaway/benchmark": "workspace:*",
-    "@justthrowaway/engine-conformance": "workspace:*",
-    "@justthrowaway/sync-protocol": "workspace:*",
-    "@justthrowaway/wa-sqlite": "workspace:*",
+    "@justtemporary/benchmark": "workspace:*",
+    "@justtemporary/engine-conformance": "workspace:*",
+    "@justtemporary/sync-protocol": "workspace:*",
+    "@justtemporary/wa-sqlite": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
-    "@justthrowaway/wa-sqlite-vendor": "workspace:*",
+    "@justtemporary/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
     "@types/react": "^18.3.27",
     "@types/react-dom": "^18.3.7",

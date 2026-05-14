@@ -1,11 +1,11 @@
-import type { Operation } from '@justthrowaway/interface';
-import { bytesToHex } from '@justthrowaway/interface/ids';
+import type { Operation } from '@justtemporary/interface';
+import { bytesToHex } from '@justtemporary/interface/ids';
 import {
   createStringStoreRouteCache,
   isDiscoveryBootstrapUrl,
   normalizeDirectSyncWebSocketUrl,
   type DiscoveryRouteCache,
-} from '@justthrowaway/discovery';
+} from '@justtemporary/discovery';
 
 import {
   PLAYGROUND_PEER_TIMEOUT_MS,

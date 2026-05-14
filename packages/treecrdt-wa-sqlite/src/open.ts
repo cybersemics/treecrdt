@@ -2,8 +2,8 @@ import { createOpfsVfs, type OpfsVfsKind } from './opfs.js';
 import { createWaSqliteApi } from './index.js';
 import type { Database } from './index.js';
 import { makeDbAdapter } from './db.js';
-import type { TreecrdtAdapter } from '@justthrowaway/interface';
-import type { MaterializationEvent } from '@justthrowaway/interface/engine';
+import type { TreecrdtAdapter } from '@justtemporary/interface';
+import type { MaterializationEvent } from '@justtemporary/interface/engine';
 
 export type OpenTreecrdtDbOptions = {
   baseUrl: string;

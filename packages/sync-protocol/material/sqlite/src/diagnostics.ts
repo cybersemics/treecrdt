@@ -1,6 +1,6 @@
-import type { Operation } from '@justthrowaway/interface';
-import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
-import type { PendingOp } from '@justthrowaway/sync-protocol';
+import type { Operation } from '@justtemporary/interface';
+import type { SqliteRunner } from '@justtemporary/interface/sqlite';
+import type { PendingOp } from '@justtemporary/sync-protocol';
 
 import { createPendingOpsStore } from './proof-material/index.js';
 

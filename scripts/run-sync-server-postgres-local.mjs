@@ -34,7 +34,7 @@ if (!(await canConnect(postgresHost, postgresPort))) {
   process.exit(1);
 }
 
-const child = spawn("pnpm", ["--filter", "@justthrowaway/sync-server-postgres-node", "dev"], {
+const child = spawn("pnpm", ["--filter", "@justtemporary/sync-server-postgres-node", "dev"], {
   stdio: "inherit",
   env: process.env,
   shell: process.platform === "win32",

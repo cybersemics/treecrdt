@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 import { defineProofMaterialStoreContract } from '../../protocol/tests/helpers/proof-material-contract.ts';
 import { definePendingProofMaterialStoreContract } from '../../protocol/tests/helpers/pending-proof-material-contract.ts';
 import { defineReplayOnlyAuthStoreContract } from '../../protocol/tests/helpers/replay-only-auth-contract.ts';
-import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
+import type { SqliteRunner } from '@justtemporary/interface/sqlite';
 
 import {
   createCapabilityMaterialStore,

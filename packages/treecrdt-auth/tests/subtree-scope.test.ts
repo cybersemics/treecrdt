@@ -1,24 +1,24 @@
 import { expect, test } from 'vitest';
 
-import type { Operation } from '@justthrowaway/interface';
+import type { Operation } from '@justtemporary/interface';
 import {
   bytesToHex,
   nodeIdToBytes16,
   replicaIdToBytes,
   ROOT_NODE_ID_HEX,
   TRASH_NODE_ID_HEX,
-} from '@justthrowaway/interface/ids';
-import { makeOp, nodeIdFromInt } from '@justthrowaway/benchmark';
+} from '@justtemporary/interface/ids';
+import { makeOp, nodeIdFromInt } from '@justtemporary/benchmark';
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
 import { encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
-import { deriveOpRefV0 } from '@justthrowaway/sync-protocol';
-import { createInMemoryConnectedPeers } from '@justthrowaway/sync-protocol/in-memory';
-import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
+import { deriveOpRefV0 } from '@justtemporary/sync-protocol';
+import { createInMemoryConnectedPeers } from '@justtemporary/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
 import { coseSign1Ed25519 } from '../dist/cose.js';
 import { createTreecrdtCoseCwtAuth } from '../dist/treecrdt-auth.js';
-import type { Filter, OpAuth, OpRef, PendingOp, SyncBackend } from '@justthrowaway/sync-protocol';
+import type { Filter, OpAuth, OpRef, PendingOp, SyncBackend } from '@justtemporary/sync-protocol';
 
 ed25519Hashes.sha512 = sha512;
 

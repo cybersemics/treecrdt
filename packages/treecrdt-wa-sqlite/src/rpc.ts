@@ -1,5 +1,5 @@
-import type { Operation } from '@justthrowaway/interface';
-import type { MaterializationEvent, MaterializationOutcome } from '@justthrowaway/interface/engine';
+import type { Operation } from '@justtemporary/interface';
+import type { MaterializationEvent, MaterializationOutcome } from '@justtemporary/interface/engine';
 
 export type RpcStorageMode = 'memory' | 'opfs';
 

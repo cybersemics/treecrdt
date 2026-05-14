@@ -3,9 +3,9 @@ import type {
   SerializeNodeId,
   SerializeReplica,
   TreecrdtAdapter,
-} from '@justthrowaway/interface';
-import { emptyMaterializationOutcome } from '@justthrowaway/interface/engine';
-import { nodeIdToBytes16 } from '@justthrowaway/interface/ids';
+} from '@justtemporary/interface';
+import { emptyMaterializationOutcome } from '@justtemporary/interface/engine';
+import { nodeIdToBytes16 } from '@justtemporary/interface/ids';
 
 import {
   nativeOpToSqliteRow,

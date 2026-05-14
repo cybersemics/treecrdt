@@ -1,7 +1,7 @@
 import { utf8ToBytes } from '@noble/hashes/utils';
 
-import type { Operation } from '@justthrowaway/interface';
-import { nodeIdToBytes16, replicaIdToBytes } from '@justthrowaway/interface/ids';
+import type { Operation } from '@justtemporary/interface';
+import { nodeIdToBytes16, replicaIdToBytes } from '@justtemporary/interface/ids';
 
 import { signEd25519, verifyEd25519 } from '../ed25519.js';
 import { concatBytes, u32be, u64be, u8 } from './bytes.js';

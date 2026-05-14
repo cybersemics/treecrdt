@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 
 import { expect, test } from 'vitest';
 
-import type { Operation } from '@justthrowaway/interface';
-import { bytesToHex, nodeIdToBytes16 } from '@justthrowaway/interface/ids';
-import { makeOp, nodeIdFromInt } from '@justthrowaway/benchmark';
+import type { Operation } from '@justtemporary/interface';
+import { bytesToHex, nodeIdToBytes16 } from '@justtemporary/interface/ids';
+import { makeOp, nodeIdFromInt } from '@justtemporary/benchmark';
 
 import { treecrdtSyncV0ProtobufCodec } from '../dist/protobuf.js';
 import { SyncPeer } from '../dist/sync.js';

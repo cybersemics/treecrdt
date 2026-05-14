@@ -5,11 +5,11 @@ import {
   runWorkloads,
   type BenchmarkResult,
   type WorkloadName,
-} from '@justthrowaway/benchmark';
-import { createTreecrdtClient, type TreecrdtClient } from '@justthrowaway/wa-sqlite/client';
-import type { TreecrdtAdapter } from '@justthrowaway/interface';
-import { emptyMaterializationOutcome } from '@justthrowaway/interface/engine';
-import { bytesToHex } from '@justthrowaway/interface/ids';
+} from '@justtemporary/benchmark';
+import { createTreecrdtClient, type TreecrdtClient } from '@justtemporary/wa-sqlite/client';
+import type { TreecrdtAdapter } from '@justtemporary/interface';
+import { emptyMaterializationOutcome } from '@justtemporary/interface/engine';
+import { bytesToHex } from '@justtemporary/interface/ids';
 
 type StorageKind = 'browser-opfs-coop-sync' | 'browser-memory';
 

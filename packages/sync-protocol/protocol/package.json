@@ -1,5 +1,5 @@
 {
-  "name": "@justthrowaway/sync-protocol",
+  "name": "@justtemporary/sync-protocol",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -41,11 +41,11 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.10.2",
     "@noble/hashes": "^1.8.0",
-    "@justthrowaway/interface": "workspace:*",
-    "@justthrowaway/riblt-wasm": "workspace:*"
+    "@justtemporary/interface": "workspace:*",
+    "@justtemporary/riblt-wasm": "workspace:*"
   },
   "devDependencies": {
-    "@justthrowaway/benchmark": "workspace:*",
+    "@justtemporary/benchmark": "workspace:*",
     "@types/node": "^20.19.25",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"

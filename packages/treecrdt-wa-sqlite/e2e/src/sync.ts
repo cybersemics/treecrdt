@@ -1,4 +1,4 @@
-import { createTreecrdtClient, type TreecrdtClient } from '@justthrowaway/wa-sqlite/client';
+import { createTreecrdtClient, type TreecrdtClient } from '@justtemporary/wa-sqlite/client';
 import {
   buildFanoutInsertTreeOps,
   buildSyncBenchCase,
@@ -11,17 +11,17 @@ import {
   SYNC_BENCH_DEFAULT_SUBSCRIBE_CODEWORDS_PER_MESSAGE,
   syncBenchTiming,
   type SyncBenchWorkload,
-} from '@justthrowaway/benchmark';
-import type { Operation } from '@justthrowaway/interface';
-import type { LocalWriteOptions, MaterializationEvent } from '@justthrowaway/interface/engine';
-import { bytesToHex, nodeIdToBytes16 } from '@justthrowaway/interface/ids';
+} from '@justtemporary/benchmark';
+import type { Operation } from '@justtemporary/interface';
+import type { LocalWriteOptions, MaterializationEvent } from '@justtemporary/interface/engine';
+import { bytesToHex, nodeIdToBytes16 } from '@justtemporary/interface/ids';
 import {
   createInMemoryConnectedPeers,
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
-} from '@justthrowaway/sync-protocol/in-memory';
-import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
-import type { Filter } from '@justthrowaway/sync-protocol';
+} from '@justtemporary/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
+import type { Filter } from '@justtemporary/sync-protocol';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
 export type SyncBenchResult = {

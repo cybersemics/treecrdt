@@ -3,8 +3,8 @@ import type {
   SerializeNodeId,
   SerializeReplica,
   Operation,
-} from '@justthrowaway/interface';
-import { nodeIdToBytes16, replicaIdToBytes } from '@justthrowaway/interface/ids';
+} from '@justtemporary/interface';
+import { nodeIdToBytes16, replicaIdToBytes } from '@justtemporary/interface/ids';
 import { envInt, quantile } from './stats.js';
 import type { WorkloadName } from './workloads.js';
 

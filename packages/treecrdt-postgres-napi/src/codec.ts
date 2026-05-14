@@ -1,11 +1,11 @@
-import type { Operation, SerializeNodeId, SerializeReplica } from '@justthrowaway/interface';
+import type { Operation, SerializeNodeId, SerializeReplica } from '@justtemporary/interface';
 import {
   decodeReplicaId,
   nodeIdFromBytes16,
   nodeIdToBytes16,
   replicaIdToBytes,
-} from '@justthrowaway/interface/ids';
-import type { MaterializationOutcome } from '@justthrowaway/interface/engine';
+} from '@justtemporary/interface/ids';
+import type { MaterializationOutcome } from '@justtemporary/interface/engine';
 
 import type { NativeMaterializationOutcome, NativeOp } from './native.js';
 

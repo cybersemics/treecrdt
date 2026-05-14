@@ -1,5 +1,5 @@
-import type { Operation } from '@justthrowaway/interface';
-import { bytesToHex, nodeIdToBytes16, ROOT_NODE_ID_HEX } from '@justthrowaway/interface/ids';
+import type { Operation } from '@justtemporary/interface';
+import { bytesToHex, nodeIdToBytes16, ROOT_NODE_ID_HEX } from '@justtemporary/interface/ids';
 
 import { getField, toNumber } from './claims.js';
 

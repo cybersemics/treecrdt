@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 
-import { bytesToHex } from '@justthrowaway/interface/ids';
+import { bytesToHex } from '@justtemporary/interface/ids';
 
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';

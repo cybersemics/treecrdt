@@ -3,12 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { treecrdt as treecrdtWaSqliteAssets } from '@justthrowaway/wa-sqlite/vite-plugin';
+import { treecrdt as treecrdtWaSqliteAssets } from '@justtemporary/wa-sqlite/vite-plugin';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const vendorPkgRoot = (() => {
   const require = createRequire(import.meta.url);
-  const pkgJson = require.resolve('@justthrowaway/wa-sqlite-vendor/package.json');
+  const pkgJson = require.resolve('@justtemporary/wa-sqlite-vendor/package.json');
   return path.dirname(pkgJson);
 })();
 const vendorWaSqliteRoot = path.join(vendorPkgRoot, 'wa-sqlite');

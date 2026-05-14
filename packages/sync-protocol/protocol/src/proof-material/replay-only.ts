@@ -1,5 +1,5 @@
-import type { Operation } from '@justthrowaway/interface';
-import { replicaIdToBytes } from '@justthrowaway/interface/ids';
+import type { Operation } from '@justtemporary/interface';
+import { replicaIdToBytes } from '@justtemporary/interface/ids';
 
 import { isAnyAuthCapability } from '../auth-capabilities.js';
 import type { SyncAuth } from '../auth.js';
@@ -44,7 +44,7 @@ export function createReplayOnlySyncAuth(opts: {
     verifyOps: async () => {
       // This adapter is intentionally replay-only. It persists auth metadata
       // for already-accepted ops, but leaves real verification to the auth
-      // policy layer (for example @justthrowaway/auth COSE+CWT auth).
+      // policy layer (for example @justtemporary/auth COSE+CWT auth).
     },
 
     onVerifiedOps: async (ops, auth) => {

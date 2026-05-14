@@ -1,9 +1,9 @@
-import { resolveWebSocketAttachment } from '@justthrowaway/discovery';
-import { createBrowserWebSocketTransport } from '@justthrowaway/sync-protocol/browser';
-import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
-import { wrapDuplexTransportWithCodec } from '@justthrowaway/sync-protocol/transport';
-import type { Operation } from '@justthrowaway/interface';
-import type { SyncMessage } from '@justthrowaway/sync-protocol';
+import { resolveWebSocketAttachment } from '@justtemporary/discovery';
+import { createBrowserWebSocketTransport } from '@justtemporary/sync-protocol/browser';
+import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
+import { wrapDuplexTransportWithCodec } from '@justtemporary/sync-protocol/transport';
+import type { Operation } from '@justtemporary/interface';
+import type { SyncMessage } from '@justtemporary/sync-protocol';
 import { createTreecrdtWebSocketSyncFromTransport } from './create-sync-from-transport.js';
 import type {
   ConnectTreecrdtWebSocketSyncOptions,
@@ -11,7 +11,7 @@ import type {
   TreecrdtWebSocketSync,
   TreecrdtWebSocketSyncClient,
 } from './types.js';
-import type { DuplexTransport } from '@justthrowaway/sync-protocol/transport';
+import type { DuplexTransport } from '@justtemporary/sync-protocol/transport';
 
 /**
  * Resolves when the socket is OPEN. Rejects on `error` or `close` before open (so the handshake

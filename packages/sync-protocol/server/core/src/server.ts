@@ -2,10 +2,10 @@ import http from 'node:http';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
-import type { SyncBackend, SyncMessage, SyncPeerOptions } from '@justthrowaway/sync-protocol';
-import { SyncPeer } from '@justthrowaway/sync-protocol';
-import type { DuplexTransport, WireCodec } from '@justthrowaway/sync-protocol/transport';
-import { wrapDuplexTransportWithCodec } from '@justthrowaway/sync-protocol/transport';
+import type { SyncBackend, SyncMessage, SyncPeerOptions } from '@justtemporary/sync-protocol';
+import { SyncPeer } from '@justtemporary/sync-protocol';
+import type { DuplexTransport, WireCodec } from '@justtemporary/sync-protocol/transport';
+import { wrapDuplexTransportWithCodec } from '@justtemporary/sync-protocol/transport';
 
 type Awaitable<T> = T | Promise<T>;
 type UpgradeSocket = {

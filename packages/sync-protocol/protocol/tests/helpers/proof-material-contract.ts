@@ -8,7 +8,7 @@ import type {
   OpRef,
   SyncCapabilityMaterialStore,
   SyncOpAuthStore,
-} from '@justthrowaway/sync-protocol';
+} from '@justtemporary/sync-protocol';
 
 type ProofMaterialDocStores = {
   opAuth: SyncOpAuthStore;

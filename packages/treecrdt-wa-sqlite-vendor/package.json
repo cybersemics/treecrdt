@@ -1,5 +1,5 @@
 {
-  "name": "@justthrowaway/wa-sqlite-vendor",
+  "name": "@justtemporary/wa-sqlite-vendor",
   "version": "0.0.1",
   "private": true,
   "type": "module",

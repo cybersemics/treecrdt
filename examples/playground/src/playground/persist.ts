@@ -1,4 +1,4 @@
-import { bytesToHex } from "@justthrowaway/interface/ids";
+import { bytesToHex } from "@justtemporary/interface/ids";
 
 import type { StorageMode, SyncTransportMode } from "./types";
 import { prefixPlaygroundStorageKey } from "./storage";

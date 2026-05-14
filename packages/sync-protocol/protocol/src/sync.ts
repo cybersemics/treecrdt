@@ -1,4 +1,4 @@
-import { RibltDecoder16, RibltEncoder16 } from '@justthrowaway/riblt-wasm';
+import { RibltDecoder16, RibltEncoder16 } from '@justtemporary/riblt-wasm';
 
 import {
   AUTH_CAPABILITY_NAME,

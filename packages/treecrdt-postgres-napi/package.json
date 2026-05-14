@@ -1,5 +1,5 @@
 {
-  "name": "@justthrowaway/postgres-napi",
+  "name": "@justtemporary/postgres-napi",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -26,12 +26,12 @@
     "benchmark": "pnpm -C ../treecrdt-benchmark run build && pnpm run build && tsx ./scripts/bench.ts"
   },
   "dependencies": {
-    "@justthrowaway/interface": "workspace:*",
-    "@justthrowaway/sync-protocol": "workspace:*"
+    "@justtemporary/interface": "workspace:*",
+    "@justtemporary/sync-protocol": "workspace:*"
   },
   "devDependencies": {
-    "@justthrowaway/benchmark": "workspace:*",
-    "@justthrowaway/engine-conformance": "workspace:*",
+    "@justtemporary/benchmark": "workspace:*",
+    "@justtemporary/engine-conformance": "workspace:*",
     "@types/node": "^20.19.25",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",

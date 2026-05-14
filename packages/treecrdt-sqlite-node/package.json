@@ -1,5 +1,5 @@
 {
-  "name": "@justthrowaway/sqlite-node",
+  "name": "@justtemporary/sqlite-node",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -24,22 +24,22 @@
     "better-sqlite3": "^9.0.0"
   },
   "dependencies": {
-    "@justthrowaway/interface": "workspace:*",
-    "@justthrowaway/sync-sqlite": "workspace:*"
+    "@justtemporary/interface": "workspace:*",
+    "@justtemporary/sync-sqlite": "workspace:*"
   },
   "devDependencies": {
     "@noble/ed25519": "^3.0.0",
     "@noble/hashes": "^1.8.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^20.19.25",
-    "@justthrowaway/auth": "workspace:*",
-    "@justthrowaway/benchmark": "workspace:*",
-    "@justthrowaway/postgres-napi": "workspace:*",
-    "@justthrowaway/engine-conformance": "workspace:*",
-    "@justthrowaway/sync-protocol": "workspace:*",
-    "@justthrowaway/sync-sqlite": "workspace:*",
-    "@justthrowaway/sync": "workspace:*",
-    "@justthrowaway/sync-server-postgres-node": "workspace:*",
+    "@justtemporary/auth": "workspace:*",
+    "@justtemporary/benchmark": "workspace:*",
+    "@justtemporary/postgres-napi": "workspace:*",
+    "@justtemporary/engine-conformance": "workspace:*",
+    "@justtemporary/sync-protocol": "workspace:*",
+    "@justtemporary/sync-sqlite": "workspace:*",
+    "@justtemporary/sync": "workspace:*",
+    "@justtemporary/sync-server-postgres-node": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "cborg": "^4.3.2",
     "@types/ws": "^8.18.1",

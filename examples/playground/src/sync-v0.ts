@@ -1,4 +1,4 @@
-import { nodeIdToBytes16 } from "@justthrowaway/interface/ids";
+import { nodeIdToBytes16 } from "@justtemporary/interface/ids";
 
 export type AuthGrantMessageV1 = {
   t: "auth_grant_v1";

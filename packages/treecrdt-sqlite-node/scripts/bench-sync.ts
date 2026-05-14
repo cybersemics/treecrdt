@@ -1,7 +1,7 @@
 /**
  * Runner for the "sqlite-node-sync" benchmark family.
  *
- * The sync workloads themselves live in `@justthrowaway/benchmark`, but this script
+ * The sync workloads themselves live in `@justtemporary/benchmark`, but this script
  * owns the concrete Node runtime used to measure them:
  * - a sqlite-node receiving client (`memory` or `file`)
  * - direct peers or Postgres-backed sync-server targets
@@ -31,29 +31,29 @@ import {
   maxLamport,
   quantile,
   type SyncBenchWorkload,
-} from '@justthrowaway/benchmark';
-import { repoRootFromImportMeta, writeResult } from '@justthrowaway/benchmark/node';
-import type { Operation } from '@justthrowaway/interface';
-import { nodeIdToBytes16 } from '@justthrowaway/interface/ids';
+} from '@justtemporary/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@justtemporary/benchmark/node';
+import type { Operation } from '@justtemporary/interface';
+import { nodeIdToBytes16 } from '@justtemporary/interface/ids';
 import {
   SyncPeer,
   installHelloTraceSink,
   type Filter,
   type HelloTraceRecord,
   type SyncBackend,
-} from '@justthrowaway/sync-protocol';
+} from '@justtemporary/sync-protocol';
 import {
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
-} from '@justthrowaway/sync-protocol/in-memory';
-import { createTreecrdtSyncBackendFromClient } from '@justthrowaway/sync-sqlite/backend';
-import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
+} from '@justtemporary/sync-protocol/in-memory';
+import { createTreecrdtSyncBackendFromClient } from '@justtemporary/sync-sqlite/backend';
+import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
 import {
   createInMemoryDuplex,
   wrapDuplexTransportWithCodec,
   type DuplexTransport,
-} from '@justthrowaway/sync-protocol/transport';
-import { startSyncServer } from '@justthrowaway/sync-server-postgres-node';
+} from '@justtemporary/sync-protocol/transport';
+import { startSyncServer } from '@justtemporary/sync-server-postgres-node';
 
 import { createTreecrdtClient, createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
 import {

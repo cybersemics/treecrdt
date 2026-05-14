@@ -1,14 +1,14 @@
 import { expect, test } from 'vitest';
-import { bytesToHex, nodeIdToBytes16 } from '@justthrowaway/interface/ids';
-import { makeOp, maxLamport, nodeIdFromInt } from '@justthrowaway/benchmark';
-import { createTreecrdtSyncBackendFromClient } from '@justthrowaway/sync-sqlite/backend';
-import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
-import { SyncPeer, deriveOpRefV0 } from '@justthrowaway/sync-protocol';
+import { bytesToHex, nodeIdToBytes16 } from '@justtemporary/interface/ids';
+import { makeOp, maxLamport, nodeIdFromInt } from '@justtemporary/benchmark';
+import { createTreecrdtSyncBackendFromClient } from '@justtemporary/sync-sqlite/backend';
+import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
+import { SyncPeer, deriveOpRefV0 } from '@justtemporary/sync-protocol';
 import {
   createInMemoryDuplex,
   wrapDuplexTransportWithCodec,
-} from '@justthrowaway/sync-protocol/transport';
-import type { Operation } from '@justthrowaway/interface';
+} from '@justtemporary/sync-protocol/transport';
+import type { Operation } from '@justtemporary/interface';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';

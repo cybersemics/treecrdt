@@ -3,7 +3,7 @@ import { utf8ToBytes } from '@noble/hashes/utils';
 
 import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
-import { bytesToHex, nodeIdToBytes16, ROOT_NODE_ID_HEX } from '@justthrowaway/interface/ids';
+import { bytesToHex, nodeIdToBytes16, ROOT_NODE_ID_HEX } from '@justtemporary/interface/ids';
 
 import {
   coseDecodeSign1,

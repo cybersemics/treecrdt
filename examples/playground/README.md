@@ -1,6 +1,6 @@
 # TreeCRDT playground (Vite + React)
 
-A small, self-contained demo that exercises the `@justthrowaway/wa-sqlite` adapter inside a Vite + React + Tailwind UI. It runs the TreeCRDT SQLite extension in wa-sqlite and lets you insert, move, and delete nodes in an expandable tree while watching the underlying operation log.
+A small, self-contained demo that exercises the `@justtemporary/wa-sqlite` adapter inside a Vite + React + Tailwind UI. It runs the TreeCRDT SQLite extension in wa-sqlite and lets you insert, move, and delete nodes in an expandable tree while watching the underlying operation log.
 
 ## Features
 
@@ -8,13 +8,13 @@ A small, self-contained demo that exercises the `@justthrowaway/wa-sqlite` adapt
 - Collapsible tree with per-node controls and a composer form to target any parent.
 - Live CRDT operation log with lamport/counter metadata.
 - Labels are stored in `localStorage`; structure lives in an in-memory wa-sqlite DB.
-- Draft sync UI (v0) using `@justthrowaway/sync-protocol` over `BroadcastChannel` (same-origin). The app wires peers and transports in-app; for a single-package remote sync entrypoint in other apps, see `@justthrowaway/sync` (WebSocket + discovery + SQLite backend).
+- Draft sync UI (v0) using `@justtemporary/sync-protocol` over `BroadcastChannel` (same-origin). The app wires peers and transports in-app; for a single-package remote sync entrypoint in other apps, see `@justtemporary/sync` (WebSocket + discovery + SQLite backend).
 - Optional auth/ACL demo (COSE_Sign1 + CWT subtree capabilities) with invite links, per-op signatures, and a pending-op inspector.
 
 ## Running locally
 
 ```bash
-pnpm install --filter @justthrowaway/playground
+pnpm install --filter @justtemporary/playground
 pnpm -C examples/playground dev
 ```
 
@@ -92,12 +92,12 @@ Open the `Auth` panel (key icon) and:
 - The invited tab can only write within the granted scope; out-of-scope writes are rejected (fail-closed).
 - If ops arrive out-of-order and scope can’t be determined yet, they show up as “pending ops” until ancestry context arrives.
 
-The Vite app uses `@justthrowaway/wa-sqlite/vite-plugin` to copy wa-sqlite artifacts from `@justthrowaway/wa-sqlite-vendor` into `public/wa-sqlite` on startup.
+The Vite app uses `@justtemporary/wa-sqlite/vite-plugin` to copy wa-sqlite artifacts from `@justtemporary/wa-sqlite-vendor` into `public/wa-sqlite` on startup.
 
 If you see `SQLiteError: no such function: treecrdt_set_doc_id`, your wa-sqlite build is stale relative to `packages/treecrdt-sqlite-ext`. Rebuild wa-sqlite and reload:
 
 ```bash
-pnpm --filter @justthrowaway/wa-sqlite-vendor rebuild
+pnpm --filter @justtemporary/wa-sqlite-vendor rebuild
 ```
 
 The example does not depend on the npm `wa-sqlite` package; it consumes the repo's git submodule build directly via the copy step above.

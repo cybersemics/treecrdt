@@ -30,24 +30,24 @@ flowchart TD
 
   %% TypeScript packages (pnpm workspace)
   subgraph TS["TypeScript packages (pnpm workspace)"]
-    iface["@justthrowaway/interface"]
-    discovery["@justthrowaway/discovery"]
-    discovery_server["@justthrowaway/discovery-server-node"]
-    sync_protocol["@justthrowaway/sync-protocol"]
-    sync_client["@justthrowaway/sync"]
-    sync_sqlite["@justthrowaway/sync-sqlite"]
-    sync_postgres["@justthrowaway/sync-postgres"]
-    sync_server_core["@justthrowaway/sync-server-core"]
-    sync_server_pg["@justthrowaway/sync-server-postgres-node"]
-    auth["@justthrowaway/auth"]
-    crypto["@justthrowaway/crypto"]
-    wa_vendor["@justthrowaway/wa-sqlite-vendor"]
-    wa["@justthrowaway/wa-sqlite"]
-    wasm_pkg["@justthrowaway/wasm"]
-    riblt_pkg["@justthrowaway/riblt-wasm"]
-    sqlite_node["@justthrowaway/sqlite-node"]
-    conformance["@justthrowaway/engine-conformance"]
-    bench["@justthrowaway/benchmark"]
+    iface["@justtemporary/interface"]
+    discovery["@justtemporary/discovery"]
+    discovery_server["@justtemporary/discovery-server-node"]
+    sync_protocol["@justtemporary/sync-protocol"]
+    sync_client["@justtemporary/sync"]
+    sync_sqlite["@justtemporary/sync-sqlite"]
+    sync_postgres["@justtemporary/sync-postgres"]
+    sync_server_core["@justtemporary/sync-server-core"]
+    sync_server_pg["@justtemporary/sync-server-postgres-node"]
+    auth["@justtemporary/auth"]
+    crypto["@justtemporary/crypto"]
+    wa_vendor["@justtemporary/wa-sqlite-vendor"]
+    wa["@justtemporary/wa-sqlite"]
+    wasm_pkg["@justtemporary/wasm"]
+    riblt_pkg["@justtemporary/riblt-wasm"]
+    sqlite_node["@justtemporary/sqlite-node"]
+    conformance["@justtemporary/engine-conformance"]
+    bench["@justtemporary/benchmark"]
   end
 
   %% Runtime dependencies
@@ -104,13 +104,13 @@ flowchart TD
 - These traits are the seam for SQLite/wa-sqlite implementations; extension just implements them over tables/indexes.
 
 ## WASM + TypeScript bindings
-- `treecrdt-wasm`: wasm-bindgen surface mapping to `@justthrowaway/interface`.
-- `@justthrowaway/interface`: TS types for operations, storage adapters, sync protocol, access control.
+- `treecrdt-wasm`: wasm-bindgen surface mapping to `@justtemporary/interface`.
+- `@justtemporary/interface`: TS types for operations, storage adapters, sync protocol, access control.
 - Provide both in-memory adapter and SQLite-backed adapter (via wa-sqlite) to satisfy the interface.
 
 ## Sync engine concept
-- **Protocol & runtime** (`@justthrowaway/sync-protocol`, `packages/sync-protocol/protocol`): transport-agnostic peer, codecs, in-memory test helpers, and generated Protobuf types.
-- **Client integration** (`@justthrowaway/sync`, `packages/treecrdt-sync`): optional wiring for spec `WebSocket` clients (browser global, or `webSocketCtor` e.g. from `undici` in Node; see `packages/treecrdt-sync` README)—uses `@justthrowaway/discovery` to resolve docs to websocket URLs, `@justthrowaway/sync-protocol` for the wire session, and `@justthrowaway/sync-sqlite` for a `SyncBackend` backed by the SQLite material layer. App code that wants full control can depend on the protocol and discovery packages only.
+- **Protocol & runtime** (`@justtemporary/sync-protocol`, `packages/sync-protocol/protocol`): transport-agnostic peer, codecs, in-memory test helpers, and generated Protobuf types.
+- **Client integration** (`@justtemporary/sync`, `packages/treecrdt-sync`): optional wiring for spec `WebSocket` clients (browser global, or `webSocketCtor` e.g. from `undici` in Node; see `packages/treecrdt-sync` README)—uses `@justtemporary/discovery` to resolve docs to websocket URLs, `@justtemporary/sync-protocol` for the wire session, and `@justtemporary/sync-sqlite` for a `SyncBackend` backed by the SQLite material layer. App code that wants full control can depend on the protocol and discovery packages only.
 - Transport-agnostic: push/pull batches with causal metadata + optional subtree filters.
 - Progress hooks for UI, resumable checkpoints via lamport/head.
 - Access control enforced at responder using subtree filters and ACL callbacks.

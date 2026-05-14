@@ -1,11 +1,11 @@
 import { create, fromBinary, toBinary, type MessageInitShape } from '@bufbuild/protobuf';
-import type { Operation } from '@justthrowaway/interface';
+import type { Operation } from '@justtemporary/interface';
 import {
   nodeIdFromBytes16,
   nodeIdToBytes16 as nodeIdToBytes16Impl,
   replicaIdFromBytes,
   replicaIdToBytes,
-} from '@justthrowaway/interface/ids';
+} from '@justtemporary/interface/ids';
 
 import type { WireCodec } from './transport/index.js';
 import type {

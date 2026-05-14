@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest';
 
-import type { Operation } from '@justthrowaway/interface';
+import type { Operation } from '@justtemporary/interface';
 
 import { createReplayOnlySyncAuth } from '../dist/index.js';
 import type { Capability } from '../dist/types.js';

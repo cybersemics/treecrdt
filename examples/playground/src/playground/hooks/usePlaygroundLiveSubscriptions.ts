@@ -6,9 +6,9 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
-import type { Operation } from '@justthrowaway/interface';
-import type { SyncPeer, SyncSubscription } from '@justthrowaway/sync-protocol';
-import type { DuplexTransport } from '@justthrowaway/sync-protocol/transport';
+import type { Operation } from '@justtemporary/interface';
+import type { SyncPeer, SyncSubscription } from '@justtemporary/sync-protocol';
+import type { DuplexTransport } from '@justtemporary/sync-protocol/transport';
 
 import { hexToBytes16 } from '../../sync-v0';
 import { formatSyncError, syncOnceOptionsForPeer } from '../syncHelpers';

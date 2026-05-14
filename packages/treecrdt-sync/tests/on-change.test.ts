@@ -2,9 +2,9 @@ import { expect, test, vi } from 'vitest';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
-import type { Operation } from '@justthrowaway/interface';
-import type { DuplexTransport } from '@justthrowaway/sync-protocol/transport';
-import type { SyncMessage } from '@justthrowaway/sync-protocol';
+import type { Operation } from '@justtemporary/interface';
+import type { DuplexTransport } from '@justtemporary/sync-protocol/transport';
+import type { SyncMessage } from '@justtemporary/sync-protocol';
 
 test('onChange delegates to client.onMaterialized', () => {
   const unsub = vi.fn();

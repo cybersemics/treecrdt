@@ -1,6 +1,6 @@
-# @justthrowaway/sync
+# @justtemporary/sync
 
-High-level **client** library for TreeCRDT sync v0. It combines **`@justthrowaway/discovery`** ([`packages/discovery`](../discovery), resolve a `docId` to a websocket URL), **`@justthrowaway/sync-protocol`** ([`packages/sync-protocol/protocol`](../sync-protocol/protocol), v0 `SyncPeer`, codecs, transports), and **`@justthrowaway/sync-sqlite`** ([`packages/sync-protocol/material/sqlite`](../sync-protocol/material/sqlite), material layer → `SyncBackend`).
+High-level **client** library for TreeCRDT sync v0. It combines **`@justtemporary/discovery`** ([`packages/discovery`](../discovery), resolve a `docId` to a websocket URL), **`@justtemporary/sync-protocol`** ([`packages/sync-protocol/protocol`](../sync-protocol/protocol), v0 `SyncPeer`, codecs, transports), and **`@justtemporary/sync-sqlite`** ([`packages/sync-protocol/material/sqlite`](../sync-protocol/material/sqlite), material layer → `SyncBackend`).
 
 `connectTreecrdtWebSocketSync` needs a spec `WebSocket` client: the global in browsers, or **`webSocketCtor`** (e.g. `import { WebSocket } from "undici"`) in Node. For a fully custom path, use **`createTreecrdtWebSocketSyncFromTransport`**, which only needs a `DuplexTransport` (no `WebSocket`).
 
@@ -11,8 +11,8 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@justthrowawa
 
 ## When not to
 
-- You only need the protocol types and `SyncPeer` (use **`@justthrowaway/sync-protocol`**).
-- You use a custom transport, no discovery, or an in-memory backend (depend on the protocol and/or **`@justthrowaway/discovery`** as needed).
+- You only need the protocol types and `SyncPeer` (use **`@justtemporary/sync-protocol`**).
+- You use a custom transport, no discovery, or an in-memory backend (depend on the protocol and/or **`@justtemporary/discovery`** as needed).
 
 ## Repo location
 

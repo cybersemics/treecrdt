@@ -1,10 +1,10 @@
-import type { Operation } from '@justthrowaway/interface';
+import type { Operation } from '@justtemporary/interface';
 import {
   bytesToHex,
   nodeIdToBytes16,
   replicaIdToBytes,
   ROOT_NODE_ID_HEX,
-} from '@justthrowaway/interface/ids';
+} from '@justtemporary/interface/ids';
 
 import {
   AUTH_CAPABILITY_NAME,
@@ -21,7 +21,7 @@ import {
   type OpRef,
   type SyncAuth,
   type SyncCapabilityMaterialStore,
-} from '@justthrowaway/sync-protocol';
+} from '@justtemporary/sync-protocol';
 
 import { base64urlDecode, base64urlEncode } from '../base64url.js';
 import { deriveTokenIdV1 } from '../cose.js';

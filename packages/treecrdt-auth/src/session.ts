@@ -1,4 +1,4 @@
-import type { Operation } from '@justthrowaway/interface';
+import type { Operation } from '@justtemporary/interface';
 import type {
   Capability,
   Hello,
@@ -6,7 +6,7 @@ import type {
   SyncAuth,
   SyncAuthHelloContext,
   SyncAuthOpsContext,
-} from '@justthrowaway/sync-protocol';
+} from '@justtemporary/sync-protocol';
 
 import {
   createTreecrdtIdentityChainCapabilityV1,

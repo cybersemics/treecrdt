@@ -1,4 +1,4 @@
-import type { WorkloadName } from '@justthrowaway/benchmark';
+import type { WorkloadName } from '@justtemporary/benchmark';
 
 export type BenchResult = {
   implementation: string;

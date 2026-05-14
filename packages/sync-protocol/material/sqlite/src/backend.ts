@@ -1,8 +1,8 @@
-import type { Operation } from '@justthrowaway/interface';
-import { bytesToHex, hexToBytes } from '@justthrowaway/interface/ids';
-import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
-import { deriveOpRefV0 } from '@justthrowaway/sync-protocol';
-import type { Filter, OpRef, SyncBackend } from '@justthrowaway/sync-protocol';
+import type { Operation } from '@justtemporary/interface';
+import { bytesToHex, hexToBytes } from '@justtemporary/interface/ids';
+import type { SqliteRunner } from '@justtemporary/interface/sqlite';
+import { deriveOpRefV0 } from '@justtemporary/sync-protocol';
+import type { Filter, OpRef, SyncBackend } from '@justtemporary/sync-protocol';
 
 import { createPendingOpsStore } from './proof-material/index.js';
 

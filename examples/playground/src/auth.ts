@@ -8,7 +8,7 @@ import {
   sealTreecrdtIssuerKeyV1,
   sealTreecrdtLocalIdentityV1,
   type TreecrdtDeviceWrapKeyV1,
-} from "@justthrowaway/crypto";
+} from "@justtemporary/crypto";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -18,7 +18,7 @@ import {
   issueTreecrdtCapabilityTokenV1,
   randomEd25519SecretKey,
   type TreecrdtIdentityChainV1,
-} from "@justthrowaway/auth";
+} from "@justtemporary/auth";
 
 import { prefixPlaygroundStorageKey } from "./playground/storage";
 
