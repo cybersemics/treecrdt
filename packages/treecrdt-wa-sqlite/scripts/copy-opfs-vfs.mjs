@@ -15,6 +15,15 @@ const vendorRoot = (() => {
     return path.join(repoRoot, 'packages/treecrdt-wa-sqlite-vendor/wa-sqlite');
   }
 })();
+const vendorDistRoot = (() => {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgJson = require.resolve('@justthrowaway/wa-sqlite-vendor/package.json');
+    return path.join(path.dirname(pkgJson), 'dist');
+  } catch {
+    return path.join(repoRoot, 'packages/treecrdt-wa-sqlite-vendor/dist');
+  }
+})();
 
 const sources = [
   {
@@ -49,11 +58,42 @@ const sources = [
     name: 'sqlite-constants.js',
   },
 ];
+const assetSources = [
+  {
+    src: path.join(vendorDistRoot, 'wa-sqlite.mjs'),
+    name: 'wa-sqlite.mjs',
+    binary: true,
+  },
+  {
+    src: path.join(vendorDistRoot, 'wa-sqlite.wasm'),
+    name: 'wa-sqlite.wasm',
+    binary: true,
+  },
+  {
+    src: path.join(vendorDistRoot, 'wa-sqlite-async.mjs'),
+    name: 'wa-sqlite-async.mjs',
+    binary: true,
+  },
+  {
+    src: path.join(vendorDistRoot, 'wa-sqlite-async.wasm'),
+    name: 'wa-sqlite-async.wasm',
+    binary: true,
+  },
+  {
+    src: path.join(vendorRoot, 'src/sqlite-api.js'),
+    name: 'sqlite-api.js',
+  },
+  {
+    src: path.join(vendorRoot, 'src/sqlite-constants.js'),
+    name: 'sqlite-constants.js',
+  },
+];
 
 const targetDirs = [
   path.join(repoRoot, 'packages/treecrdt-wa-sqlite/src/vendor'),
   path.join(repoRoot, 'packages/treecrdt-wa-sqlite/dist/vendor'),
 ];
+const assetTargetDir = path.join(repoRoot, 'packages/treecrdt-wa-sqlite/dist/wa-sqlite');
 
 async function copyFile(from, to, transform) {
   const content = await fs.readFile(from, 'utf8');
@@ -71,6 +111,19 @@ async function copyFile(from, to, transform) {
   return true;
 }
 
+async function copyBinaryFile(from, to) {
+  try {
+    const [fromStat, toStat] = await Promise.all([fs.stat(from), fs.stat(to)]);
+    if (fromStat.size === toStat.size && fromStat.mtimeMs <= toStat.mtimeMs) return false;
+  } catch {
+    // destination missing or stat failed; copy below
+  }
+
+  await fs.mkdir(path.dirname(to), { recursive: true });
+  await fs.copyFile(from, to);
+  return true;
+}
+
 async function main() {
   try {
     let changed = 0;
@@ -80,8 +133,12 @@ async function main() {
       );
       changed += results.filter(Boolean).length;
     }
+    for (const { src, name, transform, binary } of assetSources) {
+      const to = path.join(assetTargetDir, name);
+      changed += binary ? await copyBinaryFile(src, to) : await copyFile(src, to, transform);
+    }
     console.info(
-      `[copy-opfs-vfs] synced ${sources.length} files to ${targetDirs.length} dirs (${changed} changed)`,
+      `[copy-opfs-vfs] synced ${sources.length} OPFS files to ${targetDirs.length} dirs and ${assetSources.length} wa-sqlite assets (${changed} changed)`,
     );
   } catch (err) {
     console.error('[copy-opfs-vfs] failed to copy OPFS VFS artifacts', err);
