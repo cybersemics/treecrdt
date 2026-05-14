@@ -69,6 +69,9 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
     name: 'treecrdt-wa-sqlite-assets',
     config() {
       return {
+        optimizeDeps: {
+          exclude: ['@justtemporary/wa-sqlite/client', '@treecrdt/wa-sqlite/client'],
+        },
         worker: {
           format: 'es',
         },
