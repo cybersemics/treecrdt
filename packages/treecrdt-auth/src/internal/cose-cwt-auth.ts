@@ -1,10 +1,10 @@
-import type { Operation } from '@treecrdt/interface';
+import type { Operation } from '@justthrowaway/interface';
 import {
   bytesToHex,
   nodeIdToBytes16,
   replicaIdToBytes,
   ROOT_NODE_ID_HEX,
-} from '@treecrdt/interface/ids';
+} from '@justthrowaway/interface/ids';
 
 import {
   AUTH_CAPABILITY_NAME,
@@ -21,7 +21,7 @@ import {
   type OpRef,
   type SyncAuth,
   type SyncCapabilityMaterialStore,
-} from '@treecrdt/sync-protocol';
+} from '@justthrowaway/sync-protocol';
 
 import { base64urlDecode, base64urlEncode } from '../base64url.js';
 import { deriveTokenIdV1 } from '../cose.js';

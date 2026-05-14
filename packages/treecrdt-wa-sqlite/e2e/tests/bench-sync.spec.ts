@@ -5,8 +5,8 @@ import {
   DEFAULT_SYNC_BENCH_WORKLOADS,
   syncBenchRootChildrenSizesFromEnv,
   syncBenchSizesFromEnv,
-} from '@treecrdt/benchmark';
-import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
+} from '@justthrowaway/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@justthrowaway/benchmark/node';
 import type { SyncBenchResult } from '../src/sync.js';
 
 test.skip(!!process.env.CI, 'Raw browser benchmarks run in the benchmark workflow.');

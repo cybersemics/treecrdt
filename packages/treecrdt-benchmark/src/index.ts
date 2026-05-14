@@ -3,8 +3,8 @@ import type {
   SerializeNodeId,
   SerializeReplica,
   Operation,
-} from '@treecrdt/interface';
-import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+} from '@justthrowaway/interface';
+import { nodeIdToBytes16, replicaIdToBytes } from '@justthrowaway/interface/ids';
 import { envInt, quantile } from './stats.js';
 import type { WorkloadName } from './workloads.js';
 

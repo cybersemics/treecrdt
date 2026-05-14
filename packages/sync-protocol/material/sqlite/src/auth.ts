@@ -1,4 +1,4 @@
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
 import {
   createTreecrdtAuthSession,
   describeTreecrdtCapabilityTokenV1,
@@ -9,7 +9,7 @@ import {
   type TreecrdtCapabilityRevocationOptions,
   type TreecrdtCapabilityTokenV1,
   type TreecrdtScopeEvaluator,
-} from '@treecrdt/auth';
+} from '@justthrowaway/auth';
 
 import {
   createCapabilityMaterialStore,

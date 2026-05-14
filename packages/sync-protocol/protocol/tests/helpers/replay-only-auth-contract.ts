@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, test } from 'vitest';
 
-import type { Operation } from '@treecrdt/interface';
-import { bytesToHex } from '@treecrdt/interface/ids';
+import type { Operation } from '@justthrowaway/interface';
+import { bytesToHex } from '@justthrowaway/interface/ids';
 import {
   createReplayOnlySyncAuth,
   deriveOpRefV0,
@@ -12,10 +12,10 @@ import {
   type OpRef,
   type SyncAuth,
   type SyncBackend,
-} from '@treecrdt/sync-protocol';
-import { createInMemoryConnectedPeers } from '@treecrdt/sync-protocol/in-memory';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
-import type { Capability, SyncAuthMaterialStore } from '@treecrdt/sync-protocol';
+} from '@justthrowaway/sync-protocol';
+import { createInMemoryConnectedPeers } from '@justthrowaway/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
+import type { Capability, SyncAuthMaterialStore } from '@justthrowaway/sync-protocol';
 
 type ReplayAuthHarness = {
   createDocStores: (

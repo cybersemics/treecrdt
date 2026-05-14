@@ -1,7 +1,7 @@
 import { expect, test, vi } from 'vitest';
 
-import type { Operation } from '@treecrdt/interface';
-import type { SyncBackend } from '@treecrdt/sync-protocol';
+import type { Operation } from '@justthrowaway/interface';
+import type { SyncBackend } from '@justthrowaway/sync-protocol';
 
 import { createPostgresNodeDocStore } from '../dist/server.js';
 

@@ -1,9 +1,9 @@
-import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
-import type { Operation, ReplicaId } from '@treecrdt/interface';
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { MaterializationEvent, TreecrdtEngine } from '@justthrowaway/interface/engine';
+import type { Operation, ReplicaId } from '@justthrowaway/interface';
+import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@justthrowaway/interface/ids';
+import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
 
-import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
+import type { Filter, OpRef, SyncBackend } from '@justthrowaway/sync-protocol';
 import {
   createTreecrdtCoseCwtAuth,
   createTreecrdtSqliteSubtreeScopeEvaluator,
@@ -11,14 +11,14 @@ import {
   issueTreecrdtCapabilityTokenV1,
   randomEd25519SecretKey,
   type TreecrdtScopeEvaluator,
-} from '@treecrdt/auth';
-import { createInMemoryConnectedPeers } from '@treecrdt/sync-protocol/in-memory';
+} from '@justthrowaway/auth';
+import { createInMemoryConnectedPeers } from '@justthrowaway/sync-protocol/in-memory';
 import {
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
-} from '@treecrdt/sync-protocol/in-memory';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
-import { createOpAuthStore, createPendingOpsStore } from '@treecrdt/sync-sqlite';
+} from '@justthrowaway/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
+import { createOpAuthStore, createPendingOpsStore } from '@justthrowaway/sync-sqlite';
 
 export function conformanceSlugify(input: string): string {
   return input

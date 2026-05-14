@@ -9,7 +9,7 @@ const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
 const vendorRoot = (() => {
   try {
     const require = createRequire(import.meta.url);
-    const pkgJson = require.resolve('@treecrdt/wa-sqlite-vendor/package.json');
+    const pkgJson = require.resolve('@justthrowaway/wa-sqlite-vendor/package.json');
     return path.join(path.dirname(pkgJson), 'wa-sqlite');
   } catch {
     return path.join(repoRoot, 'packages/treecrdt-wa-sqlite-vendor/wa-sqlite');

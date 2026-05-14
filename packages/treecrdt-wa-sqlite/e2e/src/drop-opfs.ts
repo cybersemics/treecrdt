@@ -1,6 +1,6 @@
-import { createTreecrdtClient } from '@treecrdt/wa-sqlite/client';
-import { detectOpfsSupport, opfsStorageExists } from '@treecrdt/wa-sqlite/opfs';
-import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
+import { createTreecrdtClient } from '@justthrowaway/wa-sqlite/client';
+import { detectOpfsSupport, opfsStorageExists } from '@justthrowaway/wa-sqlite/opfs';
+import { makeOp, nodeIdFromInt } from '@justthrowaway/benchmark';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
 export async function runDropStorageE2E(): Promise<{ ok: true } | { ok: false; error: string }> {

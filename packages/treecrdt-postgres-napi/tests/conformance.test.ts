@@ -2,15 +2,15 @@ import { randomUUID } from 'node:crypto';
 
 import { describe, expect, test, vi } from 'vitest';
 
-import type { Operation } from '@treecrdt/interface';
-import type { TreecrdtEngine } from '@treecrdt/interface/engine';
-import { bytesToHex } from '@treecrdt/interface/ids';
-import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
+import type { Operation } from '@justthrowaway/interface';
+import type { TreecrdtEngine } from '@justthrowaway/interface/engine';
+import { bytesToHex } from '@justthrowaway/interface/ids';
+import { deriveOpRefV0 } from '@justthrowaway/sync-protocol';
 import {
   conformanceSlugify,
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
-} from '@treecrdt/engine-conformance';
+} from '@justthrowaway/engine-conformance';
 
 import { createTreecrdtPostgresClient } from '../dist/index.js';
 

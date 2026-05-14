@@ -1,6 +1,6 @@
-import type { Operation } from '@treecrdt/interface';
-import { bytesToHex, hexToBytes, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { Operation } from '@justthrowaway/interface';
+import { bytesToHex, hexToBytes, replicaIdToBytes } from '@justthrowaway/interface/ids';
+import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
 import {
   deriveOpRefV0,
   type Capability,
@@ -10,11 +10,11 @@ import {
   type SyncCapabilityMaterialStore,
   type SyncOpAuthStore,
   type SyncPendingOpsStore,
-} from '@treecrdt/sync-protocol';
+} from '@justthrowaway/sync-protocol';
 import {
   decodeTreecrdtSyncV0Operation,
   encodeTreecrdtSyncV0Operation,
-} from '@treecrdt/sync-protocol/protobuf';
+} from '@justthrowaway/sync-protocol/protobuf';
 
 function hexToBytesStrict(hex: string, expectedLen: number, field: string): Uint8Array {
   const clean = hex.trim();

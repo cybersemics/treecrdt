@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/sync-sqlite",
+  "name": "@justthrowaway/sync-sqlite",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -31,9 +31,9 @@
     "test": "pnpm -C ../../../treecrdt-ts run build && pnpm -C ../../protocol run build && pnpm -C ../../../treecrdt-auth run build && pnpm run build && vitest run"
   },
   "dependencies": {
-    "@treecrdt/auth": "workspace:*",
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync-protocol": "workspace:*"
+    "@justthrowaway/auth": "workspace:*",
+    "@justthrowaway/interface": "workspace:*",
+    "@justthrowaway/sync-protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

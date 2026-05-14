@@ -223,7 +223,7 @@ Use `benchmark:sync:bootstrap` when you want to isolate the one-time discovery
 layer from the steady-state sync path.
 
 The benchmark target can be a standalone bootstrap server such as
-`@treecrdt/discovery-server-node`, not just a colocated sync-server route.
+`@justthrowaway/discovery-server-node`, not just a colocated sync-server route.
 
 It measures:
 

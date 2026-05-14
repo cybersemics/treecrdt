@@ -1,6 +1,6 @@
-import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
-import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
-import { bytesToHex, hexToBytes, normalizeNodeId } from '@treecrdt/interface/ids';
+import type { Operation, TreecrdtAdapter } from '@justthrowaway/interface';
+import { emptyMaterializationOutcome } from '@justthrowaway/interface/engine';
+import { bytesToHex, hexToBytes, normalizeNodeId } from '@justthrowaway/interface/ids';
 import { WasmTree } from '../pkg/treecrdt_wasm.js';
 import { createHash } from 'node:crypto';
 

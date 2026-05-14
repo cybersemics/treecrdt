@@ -1,13 +1,13 @@
-# @treecrdt/discovery
+# @justthrowaway/discovery
 
 Connect-time bootstrap contract for resolving a doc to an attachment plan.
 
-This package is intentionally separate from `@treecrdt/sync-protocol` and the CRDT core.
+This package is intentionally separate from `@justthrowaway/sync-protocol` and the CRDT core.
 It covers:
 
 - `resolveDoc`: return an attachment plan for a known doc
 - cache helpers for "resolve once, reconnect directly later"
-- shared types used by standalone bootstrap servers such as `@treecrdt/discovery-server-node`
+- shared types used by standalone bootstrap servers such as `@justthrowaway/discovery-server-node`
 
 Typical flow:
 

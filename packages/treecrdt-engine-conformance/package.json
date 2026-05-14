@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/engine-conformance",
+  "name": "@justthrowaway/engine-conformance",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -19,10 +19,10 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@treecrdt/auth": "workspace:*",
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync-protocol": "workspace:*",
-    "@treecrdt/sync-sqlite": "workspace:*"
+    "@justthrowaway/auth": "workspace:*",
+    "@justthrowaway/interface": "workspace:*",
+    "@justthrowaway/sync-protocol": "workspace:*",
+    "@justthrowaway/sync-sqlite": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

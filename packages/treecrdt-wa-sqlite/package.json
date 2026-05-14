@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/wa-sqlite",
+  "name": "@justthrowaway/wa-sqlite",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -38,13 +38,13 @@
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync-sqlite": "workspace:*"
+    "@justthrowaway/interface": "workspace:*",
+    "@justthrowaway/sync-sqlite": "workspace:*"
   },
   "devDependencies": {
-    "@treecrdt/wa-sqlite-vendor": "workspace:*",
+    "@justthrowaway/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
-    "@treecrdt/benchmark": "workspace:*",
+    "@justthrowaway/benchmark": "workspace:*",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   },

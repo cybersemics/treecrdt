@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/benchmark",
+  "name": "@justthrowaway/benchmark",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -23,7 +23,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*",
+    "@justthrowaway/interface": "workspace:*",
     "commander": "^14.0.2"
   },
   "devDependencies": {

@@ -1,11 +1,11 @@
-import type { Operation, ReplicaId } from '@treecrdt/interface';
-import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import type { Operation, ReplicaId } from '@justthrowaway/interface';
+import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from '@justthrowaway/interface/ids';
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
-} from '@treecrdt/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
-import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
+} from '@justthrowaway/interface/engine';
+import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@justthrowaway/interface/engine';
+import type { TreecrdtSqlitePlacement } from '@justthrowaway/interface/sqlite';
 
 import {
   nativeToMaterializationOutcome,
@@ -44,7 +44,7 @@ function placementToArgs(placement: TreecrdtSqlitePlacement): {
 /**
  * Postgres-backed TreeCRDT client (Node-only), implemented via the Rust N-API adapter.
  *
- * This mirrors the high-level `createTreecrdtClient` shape from `@treecrdt/sqlite-node` so apps
+ * This mirrors the high-level `createTreecrdtClient` shape from `@justthrowaway/sqlite-node` so apps
  * can swap storage backends with minimal changes.
  */
 export async function createTreecrdtPostgresClient(

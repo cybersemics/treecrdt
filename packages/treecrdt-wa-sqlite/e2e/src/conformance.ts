@@ -1,10 +1,10 @@
-import { createTreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { createTreecrdtClient } from '@justthrowaway/wa-sqlite/client';
 import {
   conformanceHashKey,
   conformanceSlugify,
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
-} from '@treecrdt/engine-conformance';
+} from '@justthrowaway/engine-conformance';
 
 type StorageKind = 'memory' | 'opfs';
 

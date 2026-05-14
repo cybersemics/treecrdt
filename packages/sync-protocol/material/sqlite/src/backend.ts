@@ -1,8 +1,8 @@
-import type { Operation } from '@treecrdt/interface';
-import { bytesToHex, hexToBytes } from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
-import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
-import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
+import type { Operation } from '@justthrowaway/interface';
+import { bytesToHex, hexToBytes } from '@justthrowaway/interface/ids';
+import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
+import { deriveOpRefV0 } from '@justthrowaway/sync-protocol';
+import type { Filter, OpRef, SyncBackend } from '@justthrowaway/sync-protocol';
 
 import { createPendingOpsStore } from './proof-material/index.js';
 

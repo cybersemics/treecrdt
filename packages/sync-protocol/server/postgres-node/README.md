@@ -77,7 +77,7 @@ WebSocket endpoint:
 
 ## Client apps (TypeScript)
 
-To connect a browser or Node client to a server like this one, the repo provides **`@treecrdt/sync`** (`packages/treecrdt-sync`): discovery-based URL resolution, WebSocket transport, and a SQLite-backed `SyncBackend` via `@treecrdt/sync-sqlite`. Lower-level control uses **`@treecrdt/sync-protocol`** and **`@treecrdt/discovery`** directly.
+To connect a browser or Node client to a server like this one, the repo provides **`@justthrowaway/sync`** (`packages/treecrdt-sync`): discovery-based URL resolution, WebSocket transport, and a SQLite-backed `SyncBackend` via `@justthrowaway/sync-sqlite`. Lower-level control uses **`@justthrowaway/sync-protocol`** and **`@justthrowaway/discovery`** directly.
 
 ## Notes
 

@@ -6,7 +6,7 @@ import {
   conformanceSlugify,
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
-} from '@treecrdt/engine-conformance';
+} from '@justthrowaway/engine-conformance';
 import {
   createTreecrdtClient,
   defaultExtensionPath,

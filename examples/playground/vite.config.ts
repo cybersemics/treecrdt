@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { treecrdt } from "@treecrdt/wa-sqlite/vite-plugin";
+import { treecrdt } from "@justthrowaway/wa-sqlite/vite-plugin";
 
 // Setting base to "./" keeps asset paths relative, which works on GitHub Pages.
 export default defineConfig({

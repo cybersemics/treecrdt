@@ -39,7 +39,7 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
   const vendorPkgRoot = (() => {
     try {
       const require = createRequire(import.meta.url);
-      const pkgJson = require.resolve('@treecrdt/wa-sqlite-vendor/package.json');
+      const pkgJson = require.resolve('@justthrowaway/wa-sqlite-vendor/package.json');
       return path.dirname(pkgJson);
     } catch {
       return path.resolve(here, '../../treecrdt-wa-sqlite-vendor');

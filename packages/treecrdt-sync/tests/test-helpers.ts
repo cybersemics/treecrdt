@@ -1,8 +1,8 @@
-import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
-import type { Change } from '@treecrdt/interface/engine';
-import { bytesToHex } from '@treecrdt/interface/ids';
-import type { Operation, WriteOptions } from '@treecrdt/interface';
-import { deriveOpRefV0, type OpRef } from '@treecrdt/sync-protocol';
+import { createMaterializationDispatcher } from '@justthrowaway/interface/engine';
+import type { Change } from '@justthrowaway/interface/engine';
+import { bytesToHex } from '@justthrowaway/interface/ids';
+import type { Operation, WriteOptions } from '@justthrowaway/interface';
+import { deriveOpRefV0, type OpRef } from '@justthrowaway/sync-protocol';
 
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
 

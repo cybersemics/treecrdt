@@ -1,5 +1,5 @@
-import type { Operation } from '@treecrdt/interface';
-import { bytesToHex, nodeIdToBytes16, ROOT_NODE_ID_HEX } from '@treecrdt/interface/ids';
+import type { Operation } from '@justthrowaway/interface';
+import { bytesToHex, nodeIdToBytes16, ROOT_NODE_ID_HEX } from '@justthrowaway/interface/ids';
 
 import { getField, toNumber } from './claims.js';
 

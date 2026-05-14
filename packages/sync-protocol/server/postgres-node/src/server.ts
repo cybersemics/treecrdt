@@ -2,21 +2,21 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from '@treecrdt/auth';
-import type { Operation } from '@treecrdt/interface';
-import { createReplayOnlySyncAuth, deriveOpRefV0 } from '@treecrdt/sync-protocol';
-import type { SyncBackend, SyncPeer, SyncPeerOptions } from '@treecrdt/sync-protocol';
-import { createCapabilityMaterialStore, createOpAuthStore } from '@treecrdt/sync-postgres';
-import type { PostgresCapabilityMaterialStore, PostgresOpAuthStore } from '@treecrdt/sync-postgres';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from '@justthrowaway/auth';
+import type { Operation } from '@justthrowaway/interface';
+import { createReplayOnlySyncAuth, deriveOpRefV0 } from '@justthrowaway/sync-protocol';
+import type { SyncBackend, SyncPeer, SyncPeerOptions } from '@justthrowaway/sync-protocol';
+import { createCapabilityMaterialStore, createOpAuthStore } from '@justthrowaway/sync-postgres';
+import type { PostgresCapabilityMaterialStore, PostgresOpAuthStore } from '@justthrowaway/sync-postgres';
+import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
 import type {
   WebSocketSyncServerDocHandle,
   WebSocketSyncServerDocProvider,
   WebSocketSyncServerHooks,
   WebSocketSyncServerUpgradeContext,
   WebSocketSyncServerUpgradeHook,
-} from '@treecrdt/sync-server-core';
-import { startWebSocketSyncServer } from '@treecrdt/sync-server-core';
+} from '@justthrowaway/sync-server-core';
+import { startWebSocketSyncServer } from '@justthrowaway/sync-server-core';
 import { Client as PgClient, Pool as PgPool } from 'pg';
 
 type Awaitable<T> = T | Promise<T>;
@@ -597,7 +597,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const port = Number(opts.port ?? 8787);
   const backendModule = ensureNonEmptyString(
     'backendModule',
-    opts.backendModule ?? '@treecrdt/postgres-napi',
+    opts.backendModule ?? '@justthrowaway/postgres-napi',
   );
   const postgresUrl = ensureNonEmptyString('postgresUrl', opts.postgresUrl);
   const maxCodewords = opts.maxCodewords == null ? undefined : Number(opts.maxCodewords);
@@ -620,7 +620,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   );
   const rateLimitMaxUpgrades = Number(opts.rateLimitMaxUpgrades ?? 0);
   const rateLimitWindowMs = Number(opts.rateLimitWindowMs ?? 60_000);
-  const packageName = opts.packageName?.trim() || '@treecrdt/sync-server-postgres-node';
+  const packageName = opts.packageName?.trim() || '@justthrowaway/sync-server-postgres-node';
   const packageVersion = opts.packageVersion?.trim() || undefined;
   const gitSha = opts.gitSha?.trim() || undefined;
   const gitDirty = Boolean(opts.gitDirty);

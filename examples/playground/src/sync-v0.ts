@@ -1,4 +1,4 @@
-import { nodeIdToBytes16 } from "@treecrdt/interface/ids";
+import { nodeIdToBytes16 } from "@justthrowaway/interface/ids";
 
 export type AuthGrantMessageV1 = {
   t: "auth_grant_v1";

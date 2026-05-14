@@ -1,4 +1,4 @@
-import type { MaterializationEvent } from '@treecrdt/interface/engine';
+import type { MaterializationEvent } from '@justthrowaway/interface/engine';
 
 type PayloadUpdate = { node: string; payload: Uint8Array | null };
 

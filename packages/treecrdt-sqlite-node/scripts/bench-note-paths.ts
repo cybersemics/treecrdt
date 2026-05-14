@@ -9,10 +9,10 @@ import {
   quantile,
   runBenchmark,
   type BenchmarkWorkload,
-} from '@treecrdt/benchmark';
-import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
-import type { Operation, ReplicaId } from '@treecrdt/interface';
-import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
+} from '@justthrowaway/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@justthrowaway/benchmark/node';
+import type { Operation, ReplicaId } from '@justthrowaway/interface';
+import { nodeIdToBytes16 } from '@justthrowaway/interface/ids';
 
 import { createTreecrdtClient, createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
 

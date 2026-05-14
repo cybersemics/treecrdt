@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/wasm",
+  "name": "@justthrowaway/wasm",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -16,11 +16,11 @@
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@justthrowaway/interface": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",
-    "@treecrdt/benchmark": "workspace:*",
+    "@justthrowaway/benchmark": "workspace:*",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }

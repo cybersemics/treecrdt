@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { benchTiming, buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
-import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
+import { benchTiming, buildWorkloads, runWorkloads } from '@justthrowaway/benchmark';
+import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@justthrowaway/benchmark/node';
 
 import { createPostgresNapiAdapterFactory } from '../src/index.js';
 

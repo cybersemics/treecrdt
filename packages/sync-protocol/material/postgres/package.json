@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/sync-postgres",
+  "name": "@justthrowaway/sync-postgres",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -23,8 +23,8 @@
     "test": "pnpm -C ../../protocol run build && pnpm run build && vitest run"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync-protocol": "workspace:*",
+    "@justthrowaway/interface": "workspace:*",
+    "@justthrowaway/sync-protocol": "workspace:*",
     "pg": "^8.16.3"
   },
   "devDependencies": {

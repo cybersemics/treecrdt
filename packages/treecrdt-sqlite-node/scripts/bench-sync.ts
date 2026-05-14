@@ -1,7 +1,7 @@
 /**
  * Runner for the "sqlite-node-sync" benchmark family.
  *
- * The sync workloads themselves live in `@treecrdt/benchmark`, but this script
+ * The sync workloads themselves live in `@justthrowaway/benchmark`, but this script
  * owns the concrete Node runtime used to measure them:
  * - a sqlite-node receiving client (`memory` or `file`)
  * - direct peers or Postgres-backed sync-server targets
@@ -31,29 +31,29 @@ import {
   maxLamport,
   quantile,
   type SyncBenchWorkload,
-} from '@treecrdt/benchmark';
-import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
-import type { Operation } from '@treecrdt/interface';
-import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
+} from '@justthrowaway/benchmark';
+import { repoRootFromImportMeta, writeResult } from '@justthrowaway/benchmark/node';
+import type { Operation } from '@justthrowaway/interface';
+import { nodeIdToBytes16 } from '@justthrowaway/interface/ids';
 import {
   SyncPeer,
   installHelloTraceSink,
   type Filter,
   type HelloTraceRecord,
   type SyncBackend,
-} from '@treecrdt/sync-protocol';
+} from '@justthrowaway/sync-protocol';
 import {
   makeQueuedSyncBackend,
   type FlushableSyncBackend,
-} from '@treecrdt/sync-protocol/in-memory';
-import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
-import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+} from '@justthrowaway/sync-protocol/in-memory';
+import { createTreecrdtSyncBackendFromClient } from '@justthrowaway/sync-sqlite/backend';
+import { treecrdtSyncV0ProtobufCodec } from '@justthrowaway/sync-protocol/protobuf';
 import {
   createInMemoryDuplex,
   wrapDuplexTransportWithCodec,
   type DuplexTransport,
-} from '@treecrdt/sync-protocol/transport';
-import { startSyncServer } from '@treecrdt/sync-server-postgres-node';
+} from '@justthrowaway/sync-protocol/transport';
+import { startSyncServer } from '@justthrowaway/sync-server-postgres-node';
 
 import { createTreecrdtClient, createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
 import {

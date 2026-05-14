@@ -2,12 +2,12 @@ name: Deploy Playground
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 env:
   EM_VERSION: 4.0.21
-  EM_CACHE_FOLDER: "emsdk-cache"
+  EM_CACHE_FOLDER: 'emsdk-cache'
 
 permissions:
   contents: read
@@ -15,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: 'pages'
   cancel-in-progress: true
 
 jobs:
@@ -96,7 +96,7 @@ jobs:
         run: pnpm run build
 
       - name: Build playground (with dependencies)
-        run: pnpm --filter @treecrdt/playground... run build
+        run: pnpm --filter @justthrowaway/playground... run build
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

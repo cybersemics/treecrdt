@@ -3,8 +3,8 @@ import {
   TRASH_NODE_ID_HEX,
   bytesToHex,
   nodeIdToBytes16,
-} from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+} from '@justthrowaway/interface/ids';
+import type { SqliteRunner } from '@justthrowaway/interface/sqlite';
 
 import type { TreecrdtScopeEvaluator } from './treecrdt-auth.js';
 

@@ -1,10 +1,10 @@
 /// <reference lib="webworker" />
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
-import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type { Operation } from '@treecrdt/interface';
-import type { TreecrdtAdapter } from '@treecrdt/interface';
-import type { MaterializationEvent } from '@treecrdt/interface/engine';
+import { nodeIdToBytes16, replicaIdToBytes } from '@justthrowaway/interface/ids';
+import type { Operation } from '@justthrowaway/interface';
+import type { TreecrdtAdapter } from '@justthrowaway/interface';
+import type { MaterializationEvent } from '@justthrowaway/interface/engine';
 import type { RpcInitResult, RpcMethod, RpcRequest, RpcSqlParams } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import { clearOpfsStorage } from './opfs.js';

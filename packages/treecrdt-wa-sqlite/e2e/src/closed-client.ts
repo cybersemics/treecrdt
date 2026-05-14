@@ -1,6 +1,6 @@
-import { createTreecrdtClient, CLIENT_CLOSED_ERROR } from '@treecrdt/wa-sqlite/client';
-import { detectOpfsSupport } from '@treecrdt/wa-sqlite/opfs';
-import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
+import { createTreecrdtClient, CLIENT_CLOSED_ERROR } from '@justthrowaway/wa-sqlite/client';
+import { detectOpfsSupport } from '@justthrowaway/wa-sqlite/opfs';
+import { makeOp, nodeIdFromInt } from '@justthrowaway/benchmark';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
 export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; error: string }> {

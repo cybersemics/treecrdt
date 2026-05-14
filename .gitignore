@@ -3,6 +3,7 @@ benchmarks/**/*
 node_modules/
 dist/
 package-lock.json
+.npmrc.local
 *.log
 *.tsbuildinfo
 *.node

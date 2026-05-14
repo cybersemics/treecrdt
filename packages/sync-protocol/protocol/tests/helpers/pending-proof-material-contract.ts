@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, test } from 'vitest';
 
-import type { Operation } from '@treecrdt/interface';
-import { bytesToHex } from '@treecrdt/interface/ids';
-import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
-import type { PendingOp, SyncPendingOpsStore } from '@treecrdt/sync-protocol';
+import type { Operation } from '@justthrowaway/interface';
+import { bytesToHex } from '@justthrowaway/interface/ids';
+import { deriveOpRefV0 } from '@justthrowaway/sync-protocol';
+import type { PendingOp, SyncPendingOpsStore } from '@justthrowaway/sync-protocol';
 
 type PendingProofMaterialHarness = {
   createPendingStore: (

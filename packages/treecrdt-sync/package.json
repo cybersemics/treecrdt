@@ -1,5 +1,5 @@
 {
-  "name": "@treecrdt/sync",
+  "name": "@justthrowaway/sync",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -19,13 +19,13 @@
     "test": "pnpm -C ../treecrdt-ts run build && pnpm -C ../sync-protocol/protocol run build && pnpm -C ../treecrdt-auth run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm run build && vitest run"
   },
   "dependencies": {
-    "@treecrdt/discovery": "workspace:*",
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync-protocol": "workspace:*",
-    "@treecrdt/sync-sqlite": "workspace:*"
+    "@justthrowaway/discovery": "workspace:*",
+    "@justthrowaway/interface": "workspace:*",
+    "@justthrowaway/sync-protocol": "workspace:*",
+    "@justthrowaway/sync-sqlite": "workspace:*"
   },
   "devDependencies": {
-    "@treecrdt/benchmark": "workspace:*",
+    "@justthrowaway/benchmark": "workspace:*",
     "@types/node": "^20.19.25",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"
