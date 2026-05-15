@@ -74,8 +74,10 @@ function decodeLocalOpResult(
 function emitLocalOutcome(
   outcome: MaterializationOutcome,
   emit?: (event: MaterializationEvent) => void,
+  writeId?: string,
 ): void {
-  if (outcome.changes.length > 0) emit?.({ ...outcome });
+  if (outcome.changes.length > 0)
+    emit?.({ ...outcome, ...(writeId ? { writeIds: [writeId] } : {}) });
 }
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
@@ -617,7 +619,7 @@ export function createTreecrdtSqliteWriter(
         await sqliteGetJson<any>(runner, sql, params),
         sql,
       );
-      emitLocalOutcome(outcome, opts.onMaterialized);
+      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
       return op;
     }
 
@@ -632,7 +634,7 @@ export function createTreecrdtSqliteWriter(
       await authSession.authorizeLocalOps([op]);
       await sqliteExec(runner, `RELEASE ${savepoint}`);
       released = true;
-      emitLocalOutcome(outcome, opts.onMaterialized);
+      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
       return op;
     } catch (err) {
       if (!released) {

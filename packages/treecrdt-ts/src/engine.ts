@@ -74,6 +74,9 @@ export type LocalWriteAuthSession = {
 };
 
 export type LocalWriteOptions = {
+  /** Echoed on the materialization event emitted by this local write. */
+  writeId?: string;
+
   /**
    * Authorizes the minted local op before it is exposed to callers as committed.
    *
