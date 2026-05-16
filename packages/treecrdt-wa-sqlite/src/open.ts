@@ -1,5 +1,5 @@
 import { createOpfsVfs, type OpfsVfsKind } from './opfs.js';
-import { createWaSqliteApi } from './index.js';
+import { createWaSqliteApi } from './adapter.js';
 import type { Database } from './types.js';
 import { makeDbAdapter } from './db.js';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
