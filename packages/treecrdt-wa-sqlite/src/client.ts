@@ -907,6 +907,6 @@ function makeTreecrdtClientFromCall(opts: {
   };
 }
 
-function encodeReplica(replica: Operation['meta']['id']['replica']): Uint8Array {
+function encodeReplica(replica: ReplicaId): Uint8Array {
   return replicaIdToBytes(replica);
 }
