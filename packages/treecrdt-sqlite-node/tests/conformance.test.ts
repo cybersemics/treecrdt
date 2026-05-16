@@ -37,6 +37,7 @@ test('conformance registry includes materialization-event scenarios', () => {
   expect(names).toContain('materialization events: structural batch');
   expect(names).toContain('materialization events: payload coalescing');
   expect(names).toContain('materialization events: defensive restore');
+  expect(names).toContain('local ops: materialization events include writeId');
 });
 
 test('sqlite auth-aware local write rolls back on auth failure', async () => {
