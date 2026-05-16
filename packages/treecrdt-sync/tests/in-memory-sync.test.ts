@@ -11,6 +11,7 @@ import {
 import type { Operation } from '@treecrdt/interface';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
+import { DEFAULT_MAX_OPS_PER_BATCH } from '../src/constants.js';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
 import { ROOT, createInMemoryTestClient, orderKeyFromPosition } from './test-helpers.js';
 
@@ -95,6 +96,52 @@ test('syncOnce pulls an insert from a remote peer (in-memory transport)', async 
       return nodeIdToBytes16(first!.kind.node);
     })(),
   ).toEqual(nodeIdToBytes16(nodeId));
+});
+
+test('syncOnce defaults split inbound applies into modest batches', async () => {
+  const docId = `sync-default-batches-${Math.random().toString(16).slice(2)}`;
+  const totalOps = DEFAULT_MAX_OPS_PER_BATCH * 2 + 1;
+  const remoteOps = Array.from({ length: totalOps }, (_, index) =>
+    makeOp(replicas.b, index + 1, index + 1, {
+      type: 'insert',
+      parent: ROOT,
+      node: nodeIdFromInt(index + 1),
+      orderKey: orderKeyFromPosition(index),
+    }),
+  );
+  const { client: aClient, getOps: getAllA } = createInMemoryTestClient(docId, []);
+  const { client: bClient } = createInMemoryTestClient(docId, remoteOps);
+  const appendBatchSizes: number[] = [];
+  const appendMany = aClient.ops.appendMany.bind(aClient.ops);
+  aClient.ops.appendMany = async (ops, writeOpts) => {
+    appendBatchSizes.push(ops.length);
+    return appendMany(ops, writeOpts);
+  };
+
+  const [wireA, wireB] = createInMemoryDuplex<Uint8Array>();
+  const transportA = wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
+  const transportB = wrapDuplexTransportWithCodec(wireB, treecrdtSyncV0ProtobufCodec);
+  const backendB = createTreecrdtSyncBackendFromClient(bClient, docId, {
+    maxLamport: () => headAsBigint(bClient),
+  });
+  const peerB = new SyncPeer(backendB, {
+    maxCodewords: 100_000,
+    deriveOpRef: (op, ctx) =>
+      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
+  });
+  const detachB = peerB.attach(transportB);
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, detachB);
+
+  try {
+    await sync.syncOnce({ all: {} }, { maxCodewords: 100_000 });
+  } finally {
+    await sync.close();
+  }
+
+  expect((await getAllA()).length).toBe(totalOps);
+  expect(appendBatchSizes.length).toBeGreaterThan(1);
+  expect(Math.max(...appendBatchSizes)).toBeLessThanOrEqual(DEFAULT_MAX_OPS_PER_BATCH);
+  expect(appendBatchSizes.reduce((sum, size) => sum + size, 0)).toBe(totalOps);
 });
 
 test('syncOnce pulls insert, move, payload, and delete operations', async () => {
