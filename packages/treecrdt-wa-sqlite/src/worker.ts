@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { dbGetText } from './sql.js';
-import type { Database } from './index.js';
+import type { Database } from './types.js';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';

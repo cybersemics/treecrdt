@@ -1,4 +1,4 @@
-import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite';
 import {
   buildFanoutInsertTreeOps,
   buildSyncBenchCase,

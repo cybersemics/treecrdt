@@ -18,19 +18,13 @@ import {
   nodeIdToBytes16,
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
-import type {
-  LocalWriteOptions,
-  MaterializationEvent,
-  TreecrdtEngine,
-  WriteOptions,
-} from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, MaterializationEvent, WriteOptions } from '@treecrdt/interface/engine';
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
 } from '@treecrdt/interface/engine';
 import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
-import type { Database } from './index.js';
 import type {
   RpcMethod,
   RpcParams,
@@ -40,61 +34,29 @@ import type {
   RpcResult,
 } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
+import type {
+  ClientMaterializationDispatcher,
+  ClientMaterializationDispatcherOptions,
+  ClientMode,
+  ClientOptions,
+  CrossTabMaterializationMessage,
+  CrossTabMaterializationScope,
+  Database,
+  MessagePortProxy,
+  NormalizedRuntimeOptions,
+  NormalizedStorageOptions,
+  RpcCall,
+  RuntimeMode,
+  SharedWorkerFactory,
+  StorageMode,
+  TreecrdtClient,
+  TreecrdtClientAuthApi,
+  TreecrdtRuntime,
+  TreecrdtSqliteAuthModule,
+  WorkerProxy,
+} from './types.js';
 
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
-
-export type StorageMode = 'memory' | 'opfs';
-export type ClientMode = 'direct' | 'worker';
-export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
-export type TreecrdtStorage =
-  | { type: 'memory' }
-  | { type: 'opfs'; filename?: string; fallback?: 'throw' | 'memory' }
-  | { type: 'auto'; filename?: string; fallback?: 'memory' | 'throw' };
-export type TreecrdtRuntime =
-  | { type: 'auto' }
-  | { type: 'direct' }
-  | { type: 'dedicated-worker'; workerUrl?: string | URL }
-  | { type: 'shared-worker'; workerUrl?: string | URL; name?: string };
-export type TreecrdtAssets = {
-  baseUrl?: string;
-};
-
-export type TreecrdtClient = TreecrdtEngine & {
-  mode: ClientMode;
-  runtime: RuntimeMode;
-  storage: StorageMode;
-  runner: SqliteRunner;
-  auth: TreecrdtClientAuthApi;
-  drop: () => Promise<void>;
-};
-
-type TreecrdtSqliteAuthModule = typeof import('@treecrdt/sync-sqlite/auth');
-
-export type TreecrdtClientAuthApi = {
-  createSession: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['createSession']>
-  ) => Promise<ReturnType<TreecrdtSqliteAuthApi['createSession']>>;
-  describeCapabilityToken: TreecrdtSqliteAuthApi['describeCapabilityToken'];
-  evaluateScope: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['evaluateScope']>
-  ) => Promise<Awaited<ReturnType<TreecrdtSqliteAuthApi['evaluateScope']>>>;
-};
-
-export type ClientOptions = {
-  storage?: TreecrdtStorage;
-  runtime?: TreecrdtRuntime;
-  assets?: TreecrdtAssets;
-  docId?: string; // used for v0 sync opRef derivation inside the extension
-};
-
-type NormalizedStorageOptions = {
-  type: StorageMode | 'auto';
-  filename?: string;
-  requireOpfs: boolean;
-  fallback: 'memory' | 'throw';
-};
-
-type NormalizedRuntimeOptions = TreecrdtRuntime;
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
   const raw = opts.storage ?? { type: 'auto' };
@@ -209,43 +171,6 @@ function defaultSharedWorkerName(docId: string, filename?: string): string {
 }
 
 // --- Worker client
-
-type WorkerProxy = {
-  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
-  terminate: () => void;
-  addEventListener: (type: 'message' | 'error', fn: (ev: any) => void) => void;
-  removeEventListener: (type: 'message' | 'error', fn: (ev: any) => void) => void;
-};
-
-type MessagePortProxy = {
-  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
-  start: () => void;
-  close: () => void;
-  addEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
-  removeEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
-};
-
-type RpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise<RpcResult<M>>;
-type SharedWorkerFactory = (options?: WorkerOptions & { name?: string }) => SharedWorker;
-type ClientMaterializationDispatcher = ReturnType<typeof createMaterializationDispatcher> & {
-  enableCrossTab: (scope: CrossTabMaterializationScope) => void;
-  emitIncomingEvent: (event: MaterializationEvent) => void;
-  close: () => void;
-};
-type ClientMaterializationDispatcherOptions = {
-  broadcast?: (event: MaterializationEvent) => void;
-};
-type CrossTabMaterializationScope = {
-  docId: string;
-  filename: string;
-};
-type CrossTabMaterializationMessage = {
-  type: 'treecrdt-materialized-v1';
-  sourceId: string;
-  docId: string;
-  filename: string;
-  event: MaterializationEvent;
-};
 
 const CROSS_TAB_MATERIALIZED_MESSAGE = 'treecrdt-materialized-v1';
 

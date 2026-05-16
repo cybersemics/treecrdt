@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { base64urlDecode } from '@treecrdt/auth';
 import { encryptTreecrdtPayloadV1, maybeDecryptTreecrdtPayloadV1 } from '@treecrdt/crypto';
-import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import type { TreecrdtClient } from '@treecrdt/wa-sqlite';
 
 import { loadOrCreateDocPayloadKeyB64 } from '../../auth';
 import { ROOT_ID } from '../constants';

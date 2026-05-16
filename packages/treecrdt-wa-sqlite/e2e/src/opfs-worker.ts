@@ -6,7 +6,7 @@ import {
   type BenchmarkResult,
   type WorkloadName,
 } from '@treecrdt/benchmark';
-import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
 import { bytesToHex } from '@treecrdt/interface/ids';
