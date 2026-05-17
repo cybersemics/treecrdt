@@ -226,7 +226,6 @@ type MessagePortProxy = {
 };
 
 type RpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise<RpcResult<M>>;
-type SharedWorkerFactory = (options?: WorkerOptions & { name?: string }) => SharedWorker;
 type ClientMaterializationDispatcher = ReturnType<typeof createMaterializationDispatcher> & {
   enableCrossTab: (scope: CrossTabMaterializationScope) => void;
   emitIncomingEvent: (event: MaterializationEvent) => void;
@@ -631,11 +630,10 @@ async function createSharedWorkerClient(opts: {
 }
 
 async function createDefaultSharedWorker(name: string): Promise<SharedWorker> {
-  // Vite's ?sharedworker wrapper bundles the module and still lets us pass a runtime name.
-  const { default: createWorker } = (await import('./shared-worker.js?sharedworker')) as {
-    default: SharedWorkerFactory;
-  };
-  return createWorker({ name });
+  return new SharedWorker(
+    new URL('./shared-worker.js', import.meta.url),
+    /* @vite-ignore */ { name, type: 'module' } as WorkerOptions & { name: string },
+  );
 }
 
 // --- Direct client (main-thread, used for memory or opt-in opfs)
