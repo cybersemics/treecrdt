@@ -30,24 +30,24 @@ flowchart TD
 
   %% TypeScript packages (pnpm workspace)
   subgraph TS["TypeScript packages (pnpm workspace)"]
-    iface["@justtemporary/interface"]
-    discovery["@justtemporary/discovery"]
-    discovery_server["@justtemporary/discovery-server-node"]
-    sync_protocol["@justtemporary/sync-protocol"]
-    sync_client["@justtemporary/sync"]
-    sync_sqlite["@justtemporary/sync-sqlite"]
-    sync_postgres["@justtemporary/sync-postgres"]
-    sync_server_core["@justtemporary/sync-server-core"]
-    sync_server_pg["@justtemporary/sync-server-postgres-node"]
-    auth["@justtemporary/auth"]
-    crypto["@justtemporary/crypto"]
-    wa_vendor["@justtemporary/wa-sqlite-vendor"]
-    wa["@justtemporary/wa-sqlite"]
-    wasm_pkg["@justtemporary/wasm"]
-    riblt_pkg["@justtemporary/riblt-wasm"]
-    sqlite_node["@justtemporary/sqlite-node"]
-    conformance["@justtemporary/engine-conformance"]
-    bench["@justtemporary/benchmark"]
+    iface["@treecrdt/interface"]
+    discovery["@treecrdt/discovery"]
+    discovery_server["@treecrdt/discovery-server-node"]
+    sync_protocol["@treecrdt/sync-protocol"]
+    sync_client["@treecrdt/sync"]
+    sync_sqlite["@treecrdt/sync-sqlite"]
+    sync_postgres["@treecrdt/sync-postgres"]
+    sync_server_core["@treecrdt/sync-server-core"]
+    sync_server_pg["@treecrdt/sync-server-postgres-node"]
+    auth["@treecrdt/auth"]
+    crypto["@treecrdt/crypto"]
+    wa_vendor["@treecrdt/wa-sqlite-vendor"]
+    wa["@treecrdt/wa-sqlite"]
+    wasm_pkg["@treecrdt/wasm"]
+    riblt_pkg["@treecrdt/riblt-wasm"]
+    sqlite_node["@treecrdt/sqlite-node"]
+    conformance["@treecrdt/engine-conformance"]
+    bench["@treecrdt/benchmark"]
   end
 
   %% Runtime dependencies
@@ -104,13 +104,13 @@ flowchart TD
 - These traits are the seam for SQLite/wa-sqlite implementations; extension just implements them over tables/indexes.
 
 ## WASM + TypeScript bindings
-- `treecrdt-wasm`: wasm-bindgen surface mapping to `@justtemporary/interface`.
-- `@justtemporary/interface`: TS types for operations, storage adapters, sync protocol, access control.
+- `treecrdt-wasm`: wasm-bindgen surface mapping to `@treecrdt/interface`.
+- `@treecrdt/interface`: TS types for operations, storage adapters, sync protocol, access control.
 - Provide both in-memory adapter and SQLite-backed adapter (via wa-sqlite) to satisfy the interface.
 
 ## Sync engine concept
-- **Protocol & runtime** (`@justtemporary/sync-protocol`, `packages/sync-protocol/protocol`): transport-agnostic peer, codecs, in-memory test helpers, and generated Protobuf types.
-- **Client integration** (`@justtemporary/sync`, `packages/treecrdt-sync`): optional wiring for spec `WebSocket` clients (browser global, or `webSocketCtor` e.g. from `undici` in Node; see `packages/treecrdt-sync` README)—uses `@justtemporary/discovery` to resolve docs to websocket URLs, `@justtemporary/sync-protocol` for the wire session, and `@justtemporary/sync-sqlite` for a `SyncBackend` backed by the SQLite material layer. App code that wants full control can depend on the protocol and discovery packages only.
+- **Protocol & runtime** (`@treecrdt/sync-protocol`, `packages/sync-protocol/protocol`): transport-agnostic peer, codecs, in-memory test helpers, and generated Protobuf types.
+- **Client integration** (`@treecrdt/sync`, `packages/treecrdt-sync`): optional wiring for spec `WebSocket` clients (browser global, or `webSocketCtor` e.g. from `undici` in Node; see `packages/treecrdt-sync` README)—uses `@treecrdt/discovery` to resolve docs to websocket URLs, `@treecrdt/sync-protocol` for the wire session, and `@treecrdt/sync-sqlite` for a `SyncBackend` backed by the SQLite material layer. App code that wants full control can depend on the protocol and discovery packages only.
 - Transport-agnostic: push/pull batches with causal metadata + optional subtree filters.
 - Progress hooks for UI, resumable checkpoints via lamport/head.
 - Access control enforced at responder using subtree filters and ACL callbacks.

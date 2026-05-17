@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import type { Operation } from '@justtemporary/interface';
-import { createTreecrdtClient, type TreecrdtClient } from '@justtemporary/wa-sqlite/client';
-import { makeOp } from '@justtemporary/benchmark';
+import type { Operation } from '@treecrdt/interface';
+import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { makeOp } from '@treecrdt/benchmark';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
 type ViewOp = Operation & { asText: string };

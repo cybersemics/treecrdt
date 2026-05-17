@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { buildWorkloads, runWorkloads } from '@justtemporary/benchmark';
-import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@justtemporary/benchmark/node';
+import { buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
+import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import { createWaSqliteApi } from '../dist/index.js';
 import { makeDbAdapter } from '../dist/db.js';
 
@@ -10,7 +10,7 @@ async function loadSqlite3(repoRoot: string): Promise<any> {
   const vendorPkgRoot = (() => {
     try {
       const require = createRequire(import.meta.url);
-      const pkgJson = require.resolve('@justtemporary/wa-sqlite-vendor/package.json');
+      const pkgJson = require.resolve('@treecrdt/wa-sqlite-vendor/package.json');
       return path.dirname(pkgJson);
     } catch {
       return path.join(repoRoot, 'packages/treecrdt-wa-sqlite-vendor');

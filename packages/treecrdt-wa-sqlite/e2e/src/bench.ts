@@ -1,4 +1,4 @@
-import type { WorkloadName } from '@justtemporary/benchmark';
+import type { WorkloadName } from '@treecrdt/benchmark';
 
 export type BenchResult = {
   implementation: string;

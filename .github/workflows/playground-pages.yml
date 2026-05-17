@@ -96,7 +96,7 @@ jobs:
         run: pnpm run build
 
       - name: Build playground (with dependencies)
-        run: pnpm --filter @justtemporary/playground... run build
+        run: pnpm --filter @treecrdt/playground... run build
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

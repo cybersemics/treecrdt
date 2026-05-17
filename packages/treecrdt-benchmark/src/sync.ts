@@ -1,5 +1,5 @@
-import type { Operation, OperationKind, ReplicaId } from '@justtemporary/interface';
-import { nodeIdToBytes16 } from '@justtemporary/interface/ids';
+import type { Operation, OperationKind, ReplicaId } from '@treecrdt/interface';
+import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import { envIntList } from './stats.js';
 import { benchTiming } from './timing.js';
 

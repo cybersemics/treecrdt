@@ -1,7 +1,7 @@
 import React from "react";
-import type { Operation } from "@justtemporary/interface";
-import { bytesToHex } from "@justtemporary/interface/ids";
-import { deriveKeyIdV1 } from "@justtemporary/auth";
+import type { Operation } from "@treecrdt/interface";
+import { bytesToHex } from "@treecrdt/interface/ids";
+import { deriveKeyIdV1 } from "@treecrdt/auth";
 import type { Virtualizer } from "@tanstack/react-virtual";
 
 import { renderKind } from "../ops";

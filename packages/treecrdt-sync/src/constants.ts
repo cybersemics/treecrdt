@@ -1,4 +1,4 @@
-import type { SyncOnceOptions, SyncSubscribeOptions } from '@justtemporary/sync-protocol';
+import type { SyncOnceOptions, SyncSubscribeOptions } from '@treecrdt/sync-protocol';
 
 /** Default batching limits for one-shot `syncOnce` and live `subscribe`. */
 export const DEFAULT_SYNC_ONCE: Required<

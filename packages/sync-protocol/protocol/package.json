@@ -1,5 +1,5 @@
 {
-  "name": "@justtemporary/sync-protocol",
+  "name": "@treecrdt/sync-protocol",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -41,11 +41,11 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.10.2",
     "@noble/hashes": "^1.8.0",
-    "@justtemporary/interface": "workspace:*",
-    "@justtemporary/riblt-wasm": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/riblt-wasm": "workspace:*"
   },
   "devDependencies": {
-    "@justtemporary/benchmark": "workspace:*",
+    "@treecrdt/benchmark": "workspace:*",
     "@types/node": "^20.19.25",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"

@@ -1,28 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Operation } from '@justtemporary/interface';
-import { bytesToHex } from '@justtemporary/interface/ids';
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
 import {
   resolveWebSocketAttachment,
   type ResolveWebSocketAttachmentResult,
-} from '@justtemporary/discovery';
+} from '@treecrdt/discovery';
 import {
   SyncPeer,
   deriveOpRefV0,
   type Filter,
   type SyncAuth,
-} from '@justtemporary/sync-protocol';
-import { createTreecrdtSyncBackendFromClient } from '@justtemporary/sync-sqlite';
+} from '@treecrdt/sync-protocol';
+import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
   BroadcastPresenceAckMessageV1,
   BroadcastPresenceMessageV1,
-} from '@justtemporary/sync-protocol/browser';
+} from '@treecrdt/sync-protocol/browser';
 import {
   createBroadcastPresenceMesh,
   createBrowserWebSocketTransport,
-} from '@justtemporary/sync-protocol/browser';
-import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
-import { wrapDuplexTransportWithCodec, type DuplexTransport } from '@justtemporary/sync-protocol/transport';
-import type { TreecrdtClient } from '@justtemporary/wa-sqlite/client';
+} from '@treecrdt/sync-protocol/browser';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+import { wrapDuplexTransportWithCodec, type DuplexTransport } from '@treecrdt/sync-protocol/transport';
+import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
 
 import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';
 import {

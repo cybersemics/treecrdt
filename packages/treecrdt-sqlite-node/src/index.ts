@@ -11,23 +11,23 @@ import {
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
-} from '@justtemporary/interface/sqlite';
+} from '@treecrdt/interface/sqlite';
 import {
   bytesToHex,
   nodeIdFromBytes16,
   nodeIdToBytes16,
   replicaIdToBytes,
-} from '@justtemporary/interface/ids';
-import type { Operation, ReplicaId, TreecrdtAdapter } from '@justtemporary/interface';
+} from '@treecrdt/interface/ids';
+import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
-} from '@justtemporary/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@justtemporary/interface/engine';
+} from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
   type TreecrdtSqliteAuthApi,
-} from '@justtemporary/sync-sqlite/auth';
+} from '@treecrdt/sync-sqlite/auth';
 
 export type LoadOptions = {
   extensionPath?: string;
@@ -118,7 +118,7 @@ export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {})
 }
 
 /**
- * High-level engine API (matches `@justtemporary/wa-sqlite` client shape).
+ * High-level engine API (matches `@treecrdt/wa-sqlite` client shape).
  *
  * This is the recommended surface for applications: it exposes local op minting via the SQLite
  * extension UDFs and typed reads (decoded ops/opRefs/tree rows).

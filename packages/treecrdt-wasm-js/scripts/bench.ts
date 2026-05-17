@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { benchTiming, buildWorkloads, runWorkloads } from '@justtemporary/benchmark';
-import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@justtemporary/benchmark/node';
+import { benchTiming, buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
+import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import { createWasmAdapter } from '../dist/index.js';
 
 async function main() {

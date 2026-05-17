@@ -1,5 +1,5 @@
 {
-  "name": "@justtemporary/riblt-wasm",
+  "name": "@treecrdt/riblt-wasm",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",

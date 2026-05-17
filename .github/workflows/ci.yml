@@ -90,7 +90,7 @@ jobs:
           pnpm -C packages/treecrdt-wa-sqlite run build:ts
 
       - name: Typecheck playground
-        run: pnpm --filter @justtemporary/playground run typecheck
+        run: pnpm --filter @treecrdt/playground run typecheck
 
       - name: Check Rust formatting
         run: pnpm run fmt:check:rust
@@ -142,7 +142,7 @@ jobs:
         run: pnpm run test:browser
 
       - name: Run playground e2e tests
-        run: pnpm --filter @justtemporary/playground run test:e2e
+        run: pnpm --filter @treecrdt/playground run test:e2e
 
       - name: Run native node tests
         run: pnpm run test:native-node
@@ -198,7 +198,7 @@ jobs:
 
       - name: Build TypeScript deps for postgres backend tests
         run: |
-          pnpm --filter @justtemporary/postgres-napi... --filter @justtemporary/sync-server-postgres-node... run build
+          pnpm --filter @treecrdt/postgres-napi... --filter @treecrdt/sync-server-postgres-node... run build
 
       - name: Run postgres backend tests
         env:

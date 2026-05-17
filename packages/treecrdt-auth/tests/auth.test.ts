@@ -3,14 +3,14 @@ import { createHash } from 'node:crypto';
 import { expect, test } from 'vitest';
 import { encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
-import type { Operation } from '@justtemporary/interface';
-import { bytesToHex, nodeIdToBytes16 } from '@justtemporary/interface/ids';
-import { makeOp, nodeIdFromInt } from '@justtemporary/benchmark';
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
 
-import { createInMemoryConnectedPeers } from '@justtemporary/sync-protocol/in-memory';
-import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
+import { createInMemoryConnectedPeers } from '@treecrdt/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import { base64urlEncode } from '../dist/base64url.js';
 import { coseSign1Ed25519, deriveTokenIdV1 } from '../dist/cose.js';
 import {
@@ -26,7 +26,7 @@ import {
   issueTreecrdtRevocationRecordV1,
   verifyTreecrdtRevocationRecordV1,
 } from '../dist/treecrdt-auth.js';
-import type { Capability, Filter, OpRef, SyncBackend } from '@justtemporary/sync-protocol';
+import type { Capability, Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 
 ed25519Hashes.sha512 = sha512;
 

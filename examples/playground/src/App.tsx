@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { type Operation } from "@justtemporary/interface";
-import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@justtemporary/interface/engine";
-import { bytesToHex } from "@justtemporary/interface/ids";
-import { createTreecrdtClient, type TreecrdtClient } from "@justtemporary/wa-sqlite/client";
-import { detectOpfsSupport } from "@justtemporary/wa-sqlite/opfs";
+import { type Operation } from "@treecrdt/interface";
+import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
+import { bytesToHex } from "@treecrdt/interface/ids";
+import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
+import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
 
 import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";

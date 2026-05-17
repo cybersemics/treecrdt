@@ -1,5 +1,5 @@
 import { clearOpfsStorage, detectOpfsSupport } from './opfs.js';
-import type { Operation, ReplicaId } from '@justtemporary/interface';
+import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
@@ -11,24 +11,24 @@ import {
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
-} from '@justtemporary/interface/sqlite';
+} from '@treecrdt/interface/sqlite';
 import {
   bytesToHex,
   nodeIdFromBytes16,
   nodeIdToBytes16,
   replicaIdToBytes,
-} from '@justtemporary/interface/ids';
+} from '@treecrdt/interface/ids';
 import type {
   LocalWriteOptions,
   MaterializationEvent,
   TreecrdtEngine,
   WriteOptions,
-} from '@justtemporary/interface/engine';
+} from '@treecrdt/interface/engine';
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
-} from '@justtemporary/interface/engine';
-import type { TreecrdtSqliteAuthApi } from '@justtemporary/sync-sqlite/auth';
+} from '@treecrdt/interface/engine';
+import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
 import type {
@@ -68,7 +68,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   drop: () => Promise<void>;
 };
 
-type TreecrdtSqliteAuthModule = typeof import('@justtemporary/sync-sqlite/auth');
+type TreecrdtSqliteAuthModule = typeof import('@treecrdt/sync-sqlite/auth');
 
 export type TreecrdtClientAuthApi = {
   createSession: (
@@ -253,7 +253,7 @@ let sqliteAuthModulePromise: Promise<TreecrdtSqliteAuthModule> | null = null;
 function loadSqliteAuthModule(): Promise<TreecrdtSqliteAuthModule> {
   // Auth is an opt-in capability path for browser clients. Apps that only open
   // local trees do not need auth sessions or proof material until they call client.auth.*.
-  sqliteAuthModulePromise ??= import('@justtemporary/sync-sqlite/auth');
+  sqliteAuthModulePromise ??= import('@treecrdt/sync-sqlite/auth');
   return sqliteAuthModulePromise;
 }
 

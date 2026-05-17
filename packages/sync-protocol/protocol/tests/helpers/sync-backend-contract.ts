@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, test } from 'vitest';
 
-import type { Operation, ReplicaId } from '@justtemporary/interface';
-import { bytesToHex, nodeIdToBytes16 } from '@justtemporary/interface/ids';
-import { makeOp, nodeIdFromInt } from '@justtemporary/benchmark';
-import { deriveOpRefV0, type SyncBackend } from '@justtemporary/sync-protocol';
+import type { Operation, ReplicaId } from '@treecrdt/interface';
+import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
+import { deriveOpRefV0, type SyncBackend } from '@treecrdt/sync-protocol';
 
 type SyncBackendHarness = {
   openBackend: (docId: string) => Promise<SyncBackend<Operation>> | SyncBackend<Operation>;

@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { base64urlDecode } from '@justtemporary/auth';
-import { installHelloTraceSink, type HelloTraceRecord } from '@justtemporary/sync-protocol';
+import { base64urlDecode } from '@treecrdt/auth';
+import { installHelloTraceSink, type HelloTraceRecord } from '@treecrdt/sync-protocol';
 
 import { startSyncServer } from './server.js';
 

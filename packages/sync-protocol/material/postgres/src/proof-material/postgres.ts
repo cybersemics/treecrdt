@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 
-import type { Operation } from '@justtemporary/interface';
-import { bytesToHex } from '@justtemporary/interface/ids';
+import type { Operation } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
 import type {
   Capability,
   OpAuth,
@@ -9,12 +9,12 @@ import type {
   SyncCapabilityMaterialStore,
   SyncOpAuthStore,
   SyncPendingOpsStore,
-} from '@justtemporary/sync-protocol';
-import { deriveOpRefV0 } from '@justtemporary/sync-protocol';
+} from '@treecrdt/sync-protocol';
+import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
 import {
   decodeTreecrdtSyncV0Operation,
   encodeTreecrdtSyncV0Operation,
-} from '@justtemporary/sync-protocol/protobuf';
+} from '@treecrdt/sync-protocol/protobuf';
 
 export type PostgresOpAuthStore = {
   init: () => Promise<void>;

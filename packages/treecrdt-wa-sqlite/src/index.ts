@@ -1,6 +1,6 @@
-import type { TreecrdtAdapter } from '@justtemporary/interface';
-import { createTreecrdtSqliteAdapter, type SqliteRunner } from '@justtemporary/interface/sqlite';
-import type { MaterializationEvent } from '@justtemporary/interface/engine';
+import type { TreecrdtAdapter } from '@treecrdt/interface';
+import { createTreecrdtSqliteAdapter, type SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import { dbGetText } from './sql.js';
 import type { Database } from './types.js';
 

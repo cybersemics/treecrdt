@@ -1,11 +1,11 @@
-import type { Operation, SerializeNodeId, SerializeReplica } from '@justtemporary/interface';
+import type { Operation, SerializeNodeId, SerializeReplica } from '@treecrdt/interface';
 import {
   decodeReplicaId,
   nodeIdFromBytes16,
   nodeIdToBytes16,
   replicaIdToBytes,
-} from '@justtemporary/interface/ids';
-import type { MaterializationOutcome } from '@justtemporary/interface/engine';
+} from '@treecrdt/interface/ids';
+import type { MaterializationOutcome } from '@treecrdt/interface/engine';
 
 import type { NativeMaterializationOutcome, NativeOp } from './native.js';
 

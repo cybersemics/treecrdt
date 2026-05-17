@@ -1,4 +1,4 @@
-import type { RibltCodeword16 } from '@justtemporary/riblt-wasm';
+import type { RibltCodeword16 } from '@treecrdt/riblt-wasm';
 import type { ErrorCode, RibltFailureReason } from './gen/sync/v0/messages_pb.js';
 
 export { ErrorCode, RibltFailureReason } from './gen/sync/v0/messages_pb.js';

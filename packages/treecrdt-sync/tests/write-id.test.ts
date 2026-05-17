@@ -1,10 +1,10 @@
 import { expect, test } from 'vitest';
-import { makeOp, nodeIdFromInt } from '@justtemporary/benchmark';
-import { treecrdtSyncV0ProtobufCodec } from '@justtemporary/sync-protocol/protobuf';
-import { wrapDuplexTransportWithCodec } from '@justtemporary/sync-protocol/transport';
-import { createInMemoryDuplex } from '@justtemporary/sync-protocol/transport';
-import type { Operation } from '@justtemporary/interface';
-import type { MaterializationEvent } from '@justtemporary/interface/engine';
+import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+import { wrapDuplexTransportWithCodec } from '@treecrdt/sync-protocol/transport';
+import { createInMemoryDuplex } from '@treecrdt/sync-protocol/transport';
+import type { Operation } from '@treecrdt/interface';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import { ROOT, createInMemoryTestClientWithWriteId, orderKeyFromPosition } from './test-helpers.js';

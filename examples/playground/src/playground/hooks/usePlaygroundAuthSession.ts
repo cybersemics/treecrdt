@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { Operation } from "@justtemporary/interface";
-import type { LocalWriteOptions } from "@justtemporary/interface/engine";
-import { bytesToHex } from "@justtemporary/interface/ids";
-import { base64urlDecode, type TreecrdtAuthSession } from "@justtemporary/auth";
-import type { SyncAuth } from "@justtemporary/sync-protocol";
-import type { TreecrdtClient } from "@justtemporary/wa-sqlite/client";
+import type { Operation } from "@treecrdt/interface";
+import type { LocalWriteOptions } from "@treecrdt/interface/engine";
+import { bytesToHex } from "@treecrdt/interface/ids";
+import { base64urlDecode, type TreecrdtAuthSession } from "@treecrdt/auth";
+import type { SyncAuth } from "@treecrdt/sync-protocol";
+import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
 
 import { createLocalIdentityChainV1, type StoredAuthMaterial } from "../../auth";
 import { hexToBytes16 } from "../../sync-v0";

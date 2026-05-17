@@ -1,4 +1,4 @@
-import { createPostgresNapiSyncBackendFactory as createBaseFactory } from "@justtemporary/postgres-napi";
+import { createPostgresNapiSyncBackendFactory as createBaseFactory } from "@treecrdt/postgres-napi";
 
 import { wrapBackendWithProfiler } from "./backend-profiler.mjs";
 

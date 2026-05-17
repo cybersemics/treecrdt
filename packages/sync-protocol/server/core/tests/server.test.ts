@@ -3,9 +3,9 @@ import http from 'node:http';
 import { test, expect } from 'vitest';
 import WebSocket from 'ws';
 
-import { SyncPeer, type SyncBackend, type SyncMessage } from '@justtemporary/sync-protocol';
-import type { WireCodec } from '@justtemporary/sync-protocol/transport';
-import { wrapDuplexTransportWithCodec } from '@justtemporary/sync-protocol/transport';
+import { SyncPeer, type SyncBackend, type SyncMessage } from '@treecrdt/sync-protocol';
+import type { WireCodec } from '@treecrdt/sync-protocol/transport';
+import { wrapDuplexTransportWithCodec } from '@treecrdt/sync-protocol/transport';
 
 import { startWebSocketSyncServer } from '../dist/index.js';
 
@@ -243,7 +243,7 @@ test('status endpoint returns provided status payload', async () => {
     },
     statusInfo: async () => ({
       ok: true,
-      service: '@justtemporary/sync-server-postgres-node',
+      service: '@treecrdt/sync-server-postgres-node',
       version: '0.0.1',
       gitSha: 'abc123',
     }),
@@ -254,7 +254,7 @@ test('status endpoint returns provided status payload', async () => {
     expect(status.status).toBe(200);
     expect(JSON.parse(status.body)).toEqual({
       ok: true,
-      service: '@justtemporary/sync-server-postgres-node',
+      service: '@treecrdt/sync-server-postgres-node',
       version: '0.0.1',
       gitSha: 'abc123',
     });

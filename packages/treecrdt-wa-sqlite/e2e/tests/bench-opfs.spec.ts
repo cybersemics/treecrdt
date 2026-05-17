@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
-import { repoRootFromImportMeta, writeResult } from '@justtemporary/benchmark/node';
+import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { BenchResult } from '../src/bench.js';
 
 test.skip(!!process.env.CI, 'Raw browser benchmarks run in the benchmark workflow.');

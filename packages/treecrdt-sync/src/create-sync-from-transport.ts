@@ -1,5 +1,5 @@
-import type { Operation } from '@justtemporary/interface';
-import { createTreecrdtSyncBackendFromClient } from '@justtemporary/sync-sqlite/backend';
+import type { Operation } from '@treecrdt/interface';
+import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import {
   SyncPeer,
   deriveOpRefV0,
@@ -8,14 +8,14 @@ import {
   type SyncOnceOptions,
   type SyncPeerOptions,
   type SyncSubscribeOptions,
-} from '@justtemporary/sync-protocol';
+} from '@treecrdt/sync-protocol';
 import { DEFAULT_LIVE_SUBSCRIBE, DEFAULT_SYNC_ONCE } from './constants.js';
 import type {
   CreateTreecrdtWebSocketSyncFromTransportOptions,
   TreecrdtWebSocketSync,
   TreecrdtWebSocketSyncClient,
 } from './types.js';
-import type { DuplexTransport } from '@justtemporary/sync-protocol/transport';
+import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 
 function mergeSyncOnceOptions(opts: SyncOnceOptions = {}): SyncOnceOptions {
   return {

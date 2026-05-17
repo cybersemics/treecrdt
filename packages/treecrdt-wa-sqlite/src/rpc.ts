@@ -1,5 +1,5 @@
-import type { Operation } from '@justtemporary/interface';
-import type { MaterializationEvent, MaterializationOutcome } from '@justtemporary/interface/engine';
+import type { Operation } from '@treecrdt/interface';
+import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 
 export type RpcStorageMode = 'memory' | 'opfs';
 

@@ -1,5 +1,5 @@
 {
-  "name": "@justtemporary/sync-server-core",
+  "name": "@treecrdt/sync-server-core",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -19,7 +19,7 @@
     "test": "pnpm -C ../../protocol run build && pnpm run build && vitest run"
   },
   "dependencies": {
-    "@justtemporary/sync-protocol": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

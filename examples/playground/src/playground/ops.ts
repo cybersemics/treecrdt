@@ -1,5 +1,5 @@
-import type { Operation, OperationKind } from "@justtemporary/interface";
-import { bytesToHex } from "@justtemporary/interface/ids";
+import type { Operation, OperationKind } from "@treecrdt/interface";
+import { bytesToHex } from "@treecrdt/interface/ids";
 
 function replicaKey(replica: Operation["meta"]["id"]["replica"]): string {
   return bytesToHex(replica);

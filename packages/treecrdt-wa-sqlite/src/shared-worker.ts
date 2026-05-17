@@ -1,9 +1,9 @@
 /// <reference lib="webworker" />
 import { dbGetText } from './sql.js';
 import type { Database } from './index.js';
-import { nodeIdToBytes16, replicaIdToBytes } from '@justtemporary/interface/ids';
-import type { Operation, TreecrdtAdapter } from '@justtemporary/interface';
-import type { MaterializationEvent } from '@justtemporary/interface/engine';
+import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import type {
   RpcInitResult,
   RpcMethod,

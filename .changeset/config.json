@@ -8,14 +8,14 @@
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
   "ignore": [
-    "@justtemporary/benchmark",
-    "@justtemporary/crypto",
-    "@justtemporary/engine-conformance",
-    "@justtemporary/playground",
-    "@justtemporary/postgres-napi",
-    "@justtemporary/sqlite-node",
-    "@justtemporary/wa-sqlite-demo",
-    "@justtemporary/wa-sqlite-vendor",
-    "@justtemporary/wasm"
+    "@treecrdt/benchmark",
+    "@treecrdt/crypto",
+    "@treecrdt/engine-conformance",
+    "@treecrdt/playground",
+    "@treecrdt/postgres-napi",
+    "@treecrdt/sqlite-node",
+    "@treecrdt/wa-sqlite-demo",
+    "@treecrdt/wa-sqlite-vendor",
+    "@treecrdt/wasm"
   ]
 }

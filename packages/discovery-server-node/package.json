@@ -1,5 +1,5 @@
 {
-  "name": "@justtemporary/discovery-server-node",
+  "name": "@treecrdt/discovery-server-node",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
@@ -16,12 +16,12 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "pnpm --filter @justtemporary/discovery-server-node^... run build && tsx src/cli.ts",
+    "dev": "pnpm --filter @treecrdt/discovery-server-node^... run build && tsx src/cli.ts",
     "build": "tsc -p tsconfig.json",
     "test": "pnpm -C ../discovery run build && pnpm run build && vitest run"
   },
   "dependencies": {
-    "@justtemporary/discovery": "workspace:*"
+    "@treecrdt/discovery": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",

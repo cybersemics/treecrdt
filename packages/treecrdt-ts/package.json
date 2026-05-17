@@ -1,5 +1,5 @@
 {
-  "name": "@justtemporary/interface",
+  "name": "@treecrdt/interface",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/src/index.js",

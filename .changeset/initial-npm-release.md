@@ -1,16 +1,16 @@
 ---
-'@justtemporary/auth': minor
-'@justtemporary/discovery': minor
-'@justtemporary/discovery-server-node': minor
-'@justtemporary/interface': minor
-'@justtemporary/riblt-wasm': minor
-'@justtemporary/sync': minor
-'@justtemporary/sync-postgres': minor
-'@justtemporary/sync-protocol': minor
-'@justtemporary/sync-server-core': minor
-'@justtemporary/sync-server-postgres-node': minor
-'@justtemporary/sync-sqlite': minor
-'@justtemporary/wa-sqlite': minor
+'@treecrdt/auth': minor
+'@treecrdt/discovery': minor
+'@treecrdt/discovery-server-node': minor
+'@treecrdt/interface': minor
+'@treecrdt/riblt-wasm': minor
+'@treecrdt/sync': minor
+'@treecrdt/sync-postgres': minor
+'@treecrdt/sync-protocol': minor
+'@treecrdt/sync-server-core': minor
+'@treecrdt/sync-server-postgres-node': minor
+'@treecrdt/sync-sqlite': minor
+'@treecrdt/wa-sqlite': minor
 ---
 
 Initial npm release for the public TreeCRDT runtime, browser storage, and sync packages.

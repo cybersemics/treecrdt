@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest';
 
-import { bytesToHex, nodeIdToBytes16 } from '@justtemporary/interface/ids';
-import type { SqliteRunner } from '@justtemporary/interface/sqlite';
-import { deriveOpRefV0, type OpRef } from '@justtemporary/sync-protocol';
+import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import { deriveOpRefV0, type OpRef } from '@treecrdt/sync-protocol';
 
 import { createTreecrdtSyncBackendFromClient } from '../dist/backend.js';
 

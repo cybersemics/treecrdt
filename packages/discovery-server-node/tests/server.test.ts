@@ -126,7 +126,7 @@ test('status endpoint reports configured bootstrap settings', async () => {
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({
       ok: true,
-      service: '@justtemporary/discovery-server-node',
+      service: '@treecrdt/discovery-server-node',
       resolveDocPath: '/bootstrap',
       publicHttpBaseUrl: 'https://bootstrap.example.com',
       publicWebSocketBaseUrl: 'wss://us.sync.example.com',

@@ -1,6 +1,6 @@
 import http from 'node:http';
 
-import type { ResolveDocRequest, ResolveDocResponse } from '@justtemporary/discovery';
+import type { ResolveDocRequest, ResolveDocResponse } from '@treecrdt/discovery';
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -150,7 +150,7 @@ export async function startDiscoveryServer(
     ['ws:', 'wss:', 'http:', 'https:'],
   );
   const cacheTtlMs = opts.cacheTtlMs == null ? 60 * 60 * 1000 : Number(opts.cacheTtlMs);
-  const packageName = opts.packageName?.trim() || '@justtemporary/discovery-server-node';
+  const packageName = opts.packageName?.trim() || '@treecrdt/discovery-server-node';
   const packageVersion = opts.packageVersion?.trim() || undefined;
   const gitSha = opts.gitSha?.trim() || undefined;
   const gitDirty = Boolean(opts.gitDirty);

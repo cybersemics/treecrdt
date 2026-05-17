@@ -26,30 +26,30 @@ importers:
 
   examples/playground:
     dependencies:
-      '@justtemporary/auth':
-        specifier: workspace:*
-        version: link:../../packages/treecrdt-auth
-      '@justtemporary/crypto':
-        specifier: workspace:*
-        version: link:../../packages/treecrdt-crypto
-      '@justtemporary/discovery':
-        specifier: workspace:*
-        version: link:../../packages/discovery
-      '@justtemporary/interface':
-        specifier: workspace:*
-        version: link:../../packages/treecrdt-ts
-      '@justtemporary/sync-protocol':
-        specifier: workspace:*
-        version: link:../../packages/sync-protocol/protocol
-      '@justtemporary/sync-sqlite':
-        specifier: workspace:*
-        version: link:../../packages/sync-protocol/material/sqlite
-      '@justtemporary/wa-sqlite':
-        specifier: workspace:*
-        version: link:../../packages/treecrdt-wa-sqlite
       '@tanstack/react-virtual':
         specifier: ^3.13.13
         version: 3.13.13(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-auth
+      '@treecrdt/crypto':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-crypto
+      '@treecrdt/discovery':
+        specifier: workspace:*
+        version: link:../../packages/discovery
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-ts
+      '@treecrdt/sync-protocol':
+        specifier: workspace:*
+        version: link:../../packages/sync-protocol/protocol
+      '@treecrdt/sync-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/sync-protocol/material/sqlite
+      '@treecrdt/wa-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-wa-sqlite
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -60,12 +60,12 @@ importers:
         specifier: ^5.5.0
         version: 5.5.0(react@18.3.1)
     devDependencies:
-      '@justtemporary/wa-sqlite-vendor':
-        specifier: workspace:*
-        version: link:../../packages/treecrdt-wa-sqlite-vendor
       '@playwright/test':
         specifier: ^1.57.0
         version: 1.57.0
+      '@treecrdt/wa-sqlite-vendor':
+        specifier: workspace:*
+        version: link:../../packages/treecrdt-wa-sqlite-vendor
       '@types/react':
         specifier: ^18.3.27
         version: 18.3.27
@@ -102,7 +102,7 @@ importers:
 
   packages/discovery-server-node:
     dependencies:
-      '@justtemporary/discovery':
+      '@treecrdt/discovery':
         specifier: workspace:*
         version: link:../discovery
     devDependencies:
@@ -121,10 +121,10 @@ importers:
 
   packages/sync-protocol/material/postgres:
     dependencies:
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../../treecrdt-ts
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../../protocol
       pg:
@@ -146,13 +146,13 @@ importers:
 
   packages/sync-protocol/material/sqlite:
     dependencies:
-      '@justtemporary/auth':
+      '@treecrdt/auth':
         specifier: workspace:*
         version: link:../../../treecrdt-auth
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../../treecrdt-ts
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../../protocol
     devDependencies:
@@ -177,17 +177,17 @@ importers:
       '@bufbuild/protobuf':
         specifier: ^2.10.2
         version: 2.10.2
-      '@justtemporary/interface':
-        specifier: workspace:*
-        version: link:../../treecrdt-ts
-      '@justtemporary/riblt-wasm':
-        specifier: workspace:*
-        version: link:../../treecrdt-riblt-wasm-js
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../../treecrdt-ts
+      '@treecrdt/riblt-wasm':
+        specifier: workspace:*
+        version: link:../../treecrdt-riblt-wasm-js
     devDependencies:
-      '@justtemporary/benchmark':
+      '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../../treecrdt-benchmark
       '@types/node':
@@ -202,7 +202,7 @@ importers:
 
   packages/sync-protocol/server/core:
     dependencies:
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../../protocol
       ws:
@@ -224,19 +224,19 @@ importers:
 
   packages/sync-protocol/server/postgres-node:
     dependencies:
-      '@justtemporary/auth':
+      '@treecrdt/auth':
         specifier: workspace:*
         version: link:../../../treecrdt-auth
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../../treecrdt-ts
-      '@justtemporary/sync-postgres':
+      '@treecrdt/sync-postgres':
         specifier: workspace:*
         version: link:../../material/postgres
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../../protocol
-      '@justtemporary/sync-server-core':
+      '@treecrdt/sync-server-core':
         specifier: workspace:*
         version: link:../core
       pg:
@@ -261,23 +261,23 @@ importers:
 
   packages/treecrdt-auth:
     dependencies:
-      '@justtemporary/interface':
-        specifier: workspace:*
-        version: link:../treecrdt-ts
-      '@justtemporary/sync-protocol':
-        specifier: workspace:*
-        version: link:../sync-protocol/protocol
       '@noble/ed25519':
         specifier: ^3.0.0
         version: 3.0.0
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
+      '@treecrdt/interface':
+        specifier: workspace:*
+        version: link:../treecrdt-ts
+      '@treecrdt/sync-protocol':
+        specifier: workspace:*
+        version: link:../sync-protocol/protocol
       cborg:
         specifier: ^4.3.2
         version: 4.3.2
     devDependencies:
-      '@justtemporary/benchmark':
+      '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
       '@types/node':
@@ -292,7 +292,7 @@ importers:
 
   packages/treecrdt-benchmark:
     dependencies:
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
       commander:
@@ -330,16 +330,16 @@ importers:
 
   packages/treecrdt-engine-conformance:
     dependencies:
-      '@justtemporary/auth':
+      '@treecrdt/auth':
         specifier: workspace:*
         version: link:../treecrdt-auth
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../sync-protocol/protocol
-      '@justtemporary/sync-sqlite':
+      '@treecrdt/sync-sqlite':
         specifier: workspace:*
         version: link:../sync-protocol/material/sqlite
     devDependencies:
@@ -349,17 +349,17 @@ importers:
 
   packages/treecrdt-postgres-napi:
     dependencies:
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../sync-protocol/protocol
     devDependencies:
-      '@justtemporary/benchmark':
+      '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
-      '@justtemporary/engine-conformance':
+      '@treecrdt/engine-conformance':
         specifier: workspace:*
         version: link:../treecrdt-engine-conformance
       '@types/node':
@@ -389,40 +389,40 @@ importers:
 
   packages/treecrdt-sqlite-node:
     dependencies:
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
-      '@justtemporary/sync-sqlite':
+      '@treecrdt/sync-sqlite':
         specifier: workspace:*
         version: link:../sync-protocol/material/sqlite
     devDependencies:
-      '@justtemporary/auth':
-        specifier: workspace:*
-        version: link:../treecrdt-auth
-      '@justtemporary/benchmark':
-        specifier: workspace:*
-        version: link:../treecrdt-benchmark
-      '@justtemporary/engine-conformance':
-        specifier: workspace:*
-        version: link:../treecrdt-engine-conformance
-      '@justtemporary/postgres-napi':
-        specifier: workspace:*
-        version: link:../treecrdt-postgres-napi
-      '@justtemporary/sync':
-        specifier: workspace:*
-        version: link:../treecrdt-sync
-      '@justtemporary/sync-protocol':
-        specifier: workspace:*
-        version: link:../sync-protocol/protocol
-      '@justtemporary/sync-server-postgres-node':
-        specifier: workspace:*
-        version: link:../sync-protocol/server/postgres-node
       '@noble/ed25519':
         specifier: ^3.0.0
         version: 3.0.0
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
+      '@treecrdt/auth':
+        specifier: workspace:*
+        version: link:../treecrdt-auth
+      '@treecrdt/benchmark':
+        specifier: workspace:*
+        version: link:../treecrdt-benchmark
+      '@treecrdt/engine-conformance':
+        specifier: workspace:*
+        version: link:../treecrdt-engine-conformance
+      '@treecrdt/postgres-napi':
+        specifier: workspace:*
+        version: link:../treecrdt-postgres-napi
+      '@treecrdt/sync':
+        specifier: workspace:*
+        version: link:../treecrdt-sync
+      '@treecrdt/sync-protocol':
+        specifier: workspace:*
+        version: link:../sync-protocol/protocol
+      '@treecrdt/sync-server-postgres-node':
+        specifier: workspace:*
+        version: link:../sync-protocol/server/postgres-node
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -453,20 +453,20 @@ importers:
 
   packages/treecrdt-sync:
     dependencies:
-      '@justtemporary/discovery':
+      '@treecrdt/discovery':
         specifier: workspace:*
         version: link:../discovery
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../sync-protocol/protocol
-      '@justtemporary/sync-sqlite':
+      '@treecrdt/sync-sqlite':
         specifier: workspace:*
         version: link:../sync-protocol/material/sqlite
     devDependencies:
-      '@justtemporary/benchmark':
+      '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
       '@types/node':
@@ -487,17 +487,17 @@ importers:
 
   packages/treecrdt-wa-sqlite:
     dependencies:
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
-      '@justtemporary/sync-sqlite':
+      '@treecrdt/sync-sqlite':
         specifier: workspace:*
         version: link:../sync-protocol/material/sqlite
     devDependencies:
-      '@justtemporary/benchmark':
+      '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
-      '@justtemporary/wa-sqlite-vendor':
+      '@treecrdt/wa-sqlite-vendor':
         specifier: workspace:*
         version: link:../treecrdt-wa-sqlite-vendor
       '@types/node':
@@ -514,16 +514,16 @@ importers:
 
   packages/treecrdt-wa-sqlite/e2e:
     dependencies:
-      '@justtemporary/benchmark':
+      '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../../treecrdt-benchmark
-      '@justtemporary/engine-conformance':
+      '@treecrdt/engine-conformance':
         specifier: workspace:*
         version: link:../../treecrdt-engine-conformance
-      '@justtemporary/sync-protocol':
+      '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../../sync-protocol/protocol
-      '@justtemporary/wa-sqlite':
+      '@treecrdt/wa-sqlite':
         specifier: workspace:*
         version: link:..
       react:
@@ -533,12 +533,12 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
     devDependencies:
-      '@justtemporary/wa-sqlite-vendor':
-        specifier: workspace:*
-        version: link:../../treecrdt-wa-sqlite-vendor
       '@playwright/test':
         specifier: ^1.57.0
         version: 1.57.0
+      '@treecrdt/wa-sqlite-vendor':
+        specifier: workspace:*
+        version: link:../../treecrdt-wa-sqlite-vendor
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25
@@ -560,11 +560,11 @@ importers:
 
   packages/treecrdt-wasm-js:
     dependencies:
-      '@justtemporary/interface':
+      '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
     devDependencies:
-      '@justtemporary/benchmark':
+      '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
       '@types/node':

@@ -1,18 +1,18 @@
-import type { Operation } from '@justtemporary/interface';
+import type { Operation } from '@treecrdt/interface';
 import type {
   MaterializationEvent,
   MaterializationListener,
   TreecrdtEngine,
-} from '@justtemporary/interface/engine';
-import type { TreecrdtSyncBackendClient } from '@justtemporary/sync-sqlite/backend';
+} from '@treecrdt/interface/engine';
+import type { TreecrdtSyncBackendClient } from '@treecrdt/sync-sqlite/backend';
 import type {
   Filter,
   SyncAuth,
   SyncPeerOptions,
   SyncOnceOptions,
   SyncSubscribeOptions,
-} from '@justtemporary/sync-protocol';
-import type { DiscoveryRouteCache } from '@justtemporary/discovery';
+} from '@treecrdt/sync-protocol';
+import type { DiscoveryRouteCache } from '@treecrdt/discovery';
 
 /**
  * {@link TreecrdtEngine} (e.g. wa-sqlite) plus the materialization API used to proxy `onChange`.

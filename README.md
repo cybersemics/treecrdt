@@ -12,8 +12,8 @@ Tree CRDT workspace targeting SQLite/wa-sqlite + WASM bindings with a shared Typ
 - `packages/treecrdt-wa-sqlite`: TreeCRDT bunlded for browser use
 - `packages/treecrdt-benchmark`: Benchmark utilities
 - `packages/discovery`: bootstrap contract for resolving docs to attachment plans
-- `packages/treecrdt-sync`: high-level **client** sync for WebSocket + discovery + SQLite `SyncBackend` (npm: `@justtemporary/sync`). Builds on `@justtemporary/sync-protocol` and `@justtemporary/discovery`.
-- `packages/sync-protocol/protocol`: sync protocol/runtime core, transport-agnostic (npm: `@justtemporary/sync-protocol`)
+- `packages/treecrdt-sync`: high-level **client** sync for WebSocket + discovery + SQLite `SyncBackend` (npm: `@treecrdt/sync`). Builds on `@treecrdt/sync-protocol` and `@treecrdt/discovery`.
+- `packages/sync-protocol/protocol`: sync protocol/runtime core, transport-agnostic (npm: `@treecrdt/sync-protocol`)
 - `packages/sync-protocol/material/sqlite`: SQLite-backed sync adapters and proof-material stores
 - `packages/sync-protocol/material/postgres`: Postgres-backed sync proof-material stores
 - `packages/sync-protocol/server/core`: shared WebSocket sync server runtime
