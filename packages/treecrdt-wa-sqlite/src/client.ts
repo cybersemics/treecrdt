@@ -630,10 +630,10 @@ async function createSharedWorkerClient(opts: {
 }
 
 async function createDefaultSharedWorker(name: string): Promise<SharedWorker> {
-  return new SharedWorker(new URL('./shared-worker.js', import.meta.url), {
-    name,
-    type: 'module',
-  });
+  return new SharedWorker(
+    new URL('./shared-worker.js', import.meta.url),
+    /* @vite-ignore */ { name, type: 'module' } as WorkerOptions & { name: string },
+  );
 }
 
 // --- Direct client (main-thread, used for memory or opt-in opfs)
