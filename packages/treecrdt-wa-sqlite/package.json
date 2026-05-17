@@ -33,8 +33,10 @@
   ],
   "scripts": {
     "prep:opfs": "node ./scripts/copy-opfs-vfs.mjs",
-    "build:ts": "pnpm run prep:opfs && tsc -p tsconfig.json",
-    "build": "pnpm run build:ts",
+    "prep:opfs:sources": "node ./scripts/copy-opfs-vfs.mjs --sources-only",
+    "prep:wa-sqlite-assets": "node ./scripts/copy-opfs-vfs.mjs --assets-only",
+    "build:ts": "pnpm run prep:opfs:sources && tsc -p tsconfig.json",
+    "build": "pnpm run build:ts && pnpm run prep:wa-sqlite-assets",
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
   },
   "dependencies": {

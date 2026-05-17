@@ -5,6 +5,13 @@ import path from 'node:path';
 import { repoRootFromImportMeta } from '../../../scripts/repo-root.mjs';
 
 const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
+const sourcesOnly = process.argv.includes('--sources-only');
+const assetsOnly = process.argv.includes('--assets-only');
+
+if (sourcesOnly && assetsOnly) {
+  console.error('[copy-opfs-vfs] --sources-only and --assets-only are mutually exclusive');
+  process.exit(1);
+}
 
 const vendorRoot = (() => {
   try {
@@ -127,18 +134,25 @@ async function copyBinaryFile(from, to) {
 async function main() {
   try {
     let changed = 0;
-    for (const { src, name, transform } of sources) {
-      const results = await Promise.all(
-        targetDirs.map((dir) => copyFile(src, path.join(dir, name), transform)),
-      );
-      changed += results.filter(Boolean).length;
+    if (!assetsOnly) {
+      for (const { src, name, transform } of sources) {
+        const results = await Promise.all(
+          targetDirs.map((dir) => copyFile(src, path.join(dir, name), transform)),
+        );
+        changed += results.filter(Boolean).length;
+      }
     }
-    for (const { src, name, transform, binary } of assetSources) {
-      const to = path.join(assetTargetDir, name);
-      changed += binary ? await copyBinaryFile(src, to) : await copyFile(src, to, transform);
+    if (!sourcesOnly) {
+      for (const { src, name, transform, binary } of assetSources) {
+        const to = path.join(assetTargetDir, name);
+        changed += binary ? await copyBinaryFile(src, to) : await copyFile(src, to, transform);
+      }
     }
+    const copiedSources = assetsOnly ? 0 : sources.length;
+    const copiedAssets = sourcesOnly ? 0 : assetSources.length;
+    const copiedTargetDirs = assetsOnly ? 0 : targetDirs.length;
     console.info(
-      `[copy-opfs-vfs] synced ${sources.length} OPFS files to ${targetDirs.length} dirs and ${assetSources.length} wa-sqlite assets (${changed} changed)`,
+      `[copy-opfs-vfs] synced ${copiedSources} OPFS files to ${copiedTargetDirs} dirs and ${copiedAssets} wa-sqlite assets (${changed} changed)`,
     );
   } catch (err) {
     console.error('[copy-opfs-vfs] failed to copy OPFS VFS artifacts', err);
