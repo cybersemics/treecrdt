@@ -1,7 +1,6 @@
 {
   "name": "@treecrdt/sync-server-core",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,5 +27,18 @@
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cybersemics/treecrdt.git",
+    "directory": "packages/sync-protocol/server/core"
+  },
+  "bugs": {
+    "url": "https://github.com/cybersemics/treecrdt/issues"
+  },
+  "homepage": "https://github.com/cybersemics/treecrdt#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }

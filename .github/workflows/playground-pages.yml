@@ -2,12 +2,12 @@ name: Deploy Playground
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 env:
   EM_VERSION: 4.0.21
-  EM_CACHE_FOLDER: "emsdk-cache"
+  EM_CACHE_FOLDER: 'emsdk-cache'
 
 permissions:
   contents: read
@@ -15,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: 'pages'
   cancel-in-progress: true
 
 jobs:
@@ -61,7 +61,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 10.26.1
 
       - name: Get pnpm store directory
         shell: bash
@@ -77,7 +77,7 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Setup Emscripten
         uses: actions/cache@v4

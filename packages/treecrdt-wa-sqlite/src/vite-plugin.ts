@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 type Plugin = {
   name: string;
   apply?: 'serve' | 'build' | ((...args: any[]) => boolean);
+  config?: () => Record<string, unknown>;
   configResolved?: () => void | Promise<void>;
   buildStart?: () => void | Promise<void>;
 };
@@ -36,30 +36,16 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
     new Set(outDirsRaw.filter((d) => typeof d === 'string' && d.length > 0)),
   );
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const vendorPkgRoot = (() => {
-    try {
-      const require = createRequire(import.meta.url);
-      const pkgJson = require.resolve('@treecrdt/wa-sqlite-vendor/package.json');
-      return path.dirname(pkgJson);
-    } catch {
-      return path.resolve(here, '../../treecrdt-wa-sqlite-vendor');
-    }
-  })();
-  const vendorWaSqliteRoot = path.join(vendorPkgRoot, 'wa-sqlite');
-  const vendorDistRoot = path.join(vendorPkgRoot, 'dist');
+  const packagedAssetsRoot = path.resolve(here, '../dist/wa-sqlite');
 
   let copied: Promise<void> | null = null;
   const copyOnce = async () => {
     if (copied) return copied;
     copied = (async () => {
-      const srcDir = vendorDistRoot;
-      const srcExtra = path.join(vendorWaSqliteRoot, 'src');
+      const srcDir = packagedAssetsRoot;
       await Promise.all(outDirs.map((dir) => fs.mkdir(dir, { recursive: true })));
       for (const file of defaultFiles) {
-        const from =
-          file.endsWith('.js') && !file.startsWith('wa-sqlite')
-            ? path.join(srcExtra, file)
-            : path.join(srcDir, file);
+        const from = path.join(srcDir, file);
         const fromStat = await fs.stat(from);
 
         await Promise.all(
@@ -81,6 +67,16 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
 
   return {
     name: 'treecrdt-wa-sqlite-assets',
+    config() {
+      return {
+        optimizeDeps: {
+          exclude: ['@treecrdt/wa-sqlite/client'],
+        },
+        worker: {
+          format: 'es',
+        },
+      };
+    },
     async configResolved() {
       await copyOnce();
     },

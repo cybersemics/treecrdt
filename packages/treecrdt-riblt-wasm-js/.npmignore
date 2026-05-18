@@ -1,0 +1,2 @@
+# npm should use package.json "files" for this package.
+# The generated wasm-pack directories are gitignored but must be published.
