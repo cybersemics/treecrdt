@@ -1,5 +1,11 @@
 # @treecrdt/discovery-server-node
 
+## 0.1.1
+
+### Patch Changes
+
+- f6d73ac: Validate the npm release workflow after enabling public package publishing.
+
 ## 0.1.0
 
 ### Minor Changes
