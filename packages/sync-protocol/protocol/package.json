@@ -1,7 +1,6 @@
 {
   "name": "@treecrdt/sync-protocol",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -50,5 +49,18 @@
     "@types/node": "^20.19.25",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cybersemics/treecrdt.git",
+    "directory": "packages/sync-protocol/protocol"
+  },
+  "bugs": {
+    "url": "https://github.com/cybersemics/treecrdt/issues"
+  },
+  "homepage": "https://github.com/cybersemics/treecrdt#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }

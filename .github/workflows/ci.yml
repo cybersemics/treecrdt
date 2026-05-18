@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
 env:
@@ -16,135 +16,136 @@ jobs:
       PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
-    - name: Install Rust WASM targets
-      run: |
-        rustup target add wasm32-unknown-unknown
-        rustup target add wasm32-unknown-emscripten
+      - name: Install Rust WASM targets
+        run: |
+          rustup target add wasm32-unknown-unknown
+          rustup target add wasm32-unknown-emscripten
 
-    - name: Cache Rust dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-    - name: Install wasm-pack
-      shell: bash
-      run: |
-        if ! command -v wasm-pack >/dev/null 2>&1; then
-          cargo install wasm-pack --locked
-        fi
+      - name: Install wasm-pack
+        shell: bash
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            cargo install wasm-pack --locked
+          fi
 
-    - name: Use Node.js 20.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.x'
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
 
-    - name: Install pnpm
-      uses: pnpm/action-setup@v4
-      with:
-        version: 8
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
 
-    - name: Get pnpm store directory
-      shell: bash
-      run: |
-        echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
 
-    - name: Setup pnpm cache
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.STORE_PATH }}
-        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-        restore-keys: |
-          ${{ runner.os }}-pnpm-store-
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
 
-    - name: Install dependencies
-      run: pnpm install
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-    - name: Build TypeScript deps for playground typecheck
-      run: |
-        pnpm -C packages/treecrdt-ts run build
-        pnpm -C packages/treecrdt-riblt-wasm-js run build
-        pnpm -C packages/sync-protocol/protocol run build
-        pnpm -C packages/treecrdt-auth run build
-        pnpm -C packages/sync-protocol/material/sqlite run build
-        pnpm -C packages/treecrdt-sync run build
-        pnpm -C packages/treecrdt-crypto run build
-        pnpm -C packages/treecrdt-wa-sqlite run build:ts
+      - name: Build TypeScript deps for playground typecheck
+        run: |
+          pnpm -C packages/treecrdt-ts run build
+          pnpm -C packages/treecrdt-riblt-wasm-js run build
+          pnpm -C packages/sync-protocol/protocol run build
+          pnpm -C packages/treecrdt-auth run build
+          pnpm -C packages/sync-protocol/material/sqlite run build
+          pnpm -C packages/discovery run build
+          pnpm -C packages/treecrdt-sync run build
+          pnpm -C packages/treecrdt-crypto run build
+          pnpm -C packages/treecrdt-wa-sqlite run build:ts
 
-    - name: Typecheck playground
-      run: pnpm --filter @treecrdt/playground run typecheck
+      - name: Typecheck playground
+        run: pnpm --filter @treecrdt/playground run typecheck
 
-    - name: Check Rust formatting
-      run: pnpm run fmt:check:rust
+      - name: Check Rust formatting
+        run: pnpm run fmt:check:rust
 
-    - name: Check TypeScript formatting
-      run: pnpm run fmt:check:ts
+      - name: Check TypeScript formatting
+        run: pnpm run fmt:check:ts
 
-    - name: Run Clippy linter
-      run: pnpm run clippy
+      - name: Run Clippy linter
+        run: pnpm run clippy
 
-    - name: Run Rust tests
-      run: cargo test --workspace --all-targets
+      - name: Run Rust tests
+        run: cargo test --workspace --all-targets
 
-    - name: Detect Playwright version
-      id: pw-version
-      shell: bash
-      run: |
-        PW_VER=$(node -p "require('./packages/treecrdt-wa-sqlite/e2e/package.json').devDependencies['@playwright/test']")
-        echo "PLAYWRIGHT_VERSION=$PW_VER" >> "$GITHUB_ENV"
+      - name: Detect Playwright version
+        id: pw-version
+        shell: bash
+        run: |
+          PW_VER=$(node -p "require('./packages/treecrdt-wa-sqlite/e2e/package.json').devDependencies['@playwright/test']")
+          echo "PLAYWRIGHT_VERSION=$PW_VER" >> "$GITHUB_ENV"
 
-    - name: Setup Emscripten
-      uses: actions/cache@v4
-      with:
-        path: ${{env.EM_CACHE_FOLDER}}
-        key: ${{env.EM_VERSION}}-${{ runner.os }}
-    - uses: mymindstorm/setup-emsdk@v14
-      with:
-        version: ${{env.EM_VERSION}}
-        actions-cache-folder: ${{env.EM_CACHE_FOLDER}}
-    - run: emcc -v
+      - name: Setup Emscripten
+        uses: actions/cache@v4
+        with:
+          path: ${{env.EM_CACHE_FOLDER}}
+          key: ${{env.EM_VERSION}}-${{ runner.os }}
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{env.EM_VERSION}}
+          actions-cache-folder: ${{env.EM_CACHE_FOLDER}}
+      - run: emcc -v
 
-    - name: Cache Playwright browsers
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-        key: ${{ runner.os }}-playwright-${{ env.PLAYWRIGHT_VERSION }}
-        restore-keys: |
-          ${{ runner.os }}-playwright-
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: ${{ runner.os }}-playwright-${{ env.PLAYWRIGHT_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
-    - name: Install Playwright browsers (chromium only)
-      env:
-        PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-      run: pnpm -C packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
+      - name: Install Playwright browsers (chromium only)
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+        run: pnpm -C packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
 
-    - name: Build project
-      run: pnpm run build
+      - name: Build project
+        run: pnpm run build
 
-    - name: Run browser tests
-      run: pnpm run test:browser
+      - name: Run browser tests
+        run: pnpm run test:browser
 
-    - name: Run playground e2e tests
-      run: pnpm --filter @treecrdt/playground run test:e2e
+      - name: Run playground e2e tests
+        run: pnpm --filter @treecrdt/playground run test:e2e
 
-    - name: Run native node tests
-      run: pnpm run test:native-node
+      - name: Run native node tests
+        run: pnpm run test:native-node
 
   postgres-backend-tests:
     runs-on: ubuntu-latest
@@ -164,45 +165,45 @@ jobs:
           --health-retries 10
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Install Rust WASM target
-      run: rustup target add wasm32-unknown-unknown
+      - name: Install Rust WASM target
+        run: rustup target add wasm32-unknown-unknown
 
-    - name: Install wasm-pack
-      shell: bash
-      run: |
-        if ! command -v wasm-pack >/dev/null 2>&1; then
-          cargo install wasm-pack --locked
-        fi
+      - name: Install wasm-pack
+        shell: bash
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            cargo install wasm-pack --locked
+          fi
 
-    - name: Use Node.js 20.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.x'
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
 
-    - name: Install pnpm
-      uses: pnpm/action-setup@v4
-      with:
-        version: 8
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
 
-    - name: Install dependencies
-      run: pnpm install
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-    - name: Build TypeScript deps for postgres backend tests
-      run: |
-        pnpm --filter @treecrdt/postgres-napi... --filter @treecrdt/sync-server-postgres-node... run build
+      - name: Build TypeScript deps for postgres backend tests
+        run: |
+          pnpm --filter @treecrdt/postgres-napi... --filter @treecrdt/sync-server-postgres-node... run build
 
-    - name: Run postgres backend tests
-      env:
-        TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/treecrdt
-      run: |
-        pnpm -C packages/treecrdt-postgres-napi test
-        pnpm -C packages/sync-protocol/material/postgres test
-        pnpm -C packages/sync-protocol/server/postgres-node test
+      - name: Run postgres backend tests
+        env:
+          TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/treecrdt
+        run: |
+          pnpm -C packages/treecrdt-postgres-napi test
+          pnpm -C packages/sync-protocol/material/postgres test
+          pnpm -C packages/sync-protocol/server/postgres-node test

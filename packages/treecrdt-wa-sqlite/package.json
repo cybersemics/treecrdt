@@ -1,7 +1,6 @@
 {
   "name": "@treecrdt/wa-sqlite",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,10 +33,11 @@
   ],
   "scripts": {
     "prep:opfs": "node ./scripts/copy-opfs-vfs.mjs",
-    "build:ts": "pnpm run prep:opfs && tsc -p tsconfig.json",
-    "build": "pnpm run build:ts",
-    "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
-    "postinstall": "pnpm run prep:opfs"
+    "prep:opfs:sources": "node ./scripts/copy-opfs-vfs.mjs --sources-only",
+    "prep:wa-sqlite-assets": "node ./scripts/copy-opfs-vfs.mjs --assets-only",
+    "build:ts": "pnpm run prep:opfs:sources && tsc -p tsconfig.json",
+    "build": "pnpm run build:ts && pnpm run prep:wa-sqlite-assets",
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",
@@ -49,5 +49,18 @@
     "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cybersemics/treecrdt.git",
+    "directory": "packages/treecrdt-wa-sqlite"
+  },
+  "bugs": {
+    "url": "https://github.com/cybersemics/treecrdt/issues"
+  },
+  "homepage": "https://github.com/cybersemics/treecrdt#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }
