@@ -1,12 +1,6 @@
 /// <reference lib="webworker" />
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import type {
-  RpcInitResult,
-  RpcMethod,
-  RpcParams,
-  RpcRequest,
-  RpcResult,
-} from './rpc.js';
+import type { RpcInitResult, RpcMethod, RpcParams, RpcRequest, RpcResult } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import {
   CommonWorkerSession,

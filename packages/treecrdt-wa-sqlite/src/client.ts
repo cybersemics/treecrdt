@@ -18,7 +18,11 @@ import {
   nodeIdToBytes16,
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
-import type { LocalWriteOptions, MaterializationEvent, WriteOptions } from '@treecrdt/interface/engine';
+import type {
+  LocalWriteOptions,
+  MaterializationEvent,
+  WriteOptions,
+} from '@treecrdt/interface/engine';
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,

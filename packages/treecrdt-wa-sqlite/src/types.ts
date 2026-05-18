@@ -84,7 +84,10 @@ export type MessagePortProxy = {
   removeEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
 };
 
-export type RpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise<RpcResult<M>>;
+export type RpcCall = <M extends RpcMethod>(
+  method: M,
+  params: RpcParams<M>,
+) => Promise<RpcResult<M>>;
 export type SharedWorkerFactory = (options?: WorkerOptions & { name?: string }) => SharedWorker;
 export type CrossTabMaterializationScope = {
   docId: string;

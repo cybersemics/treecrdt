@@ -11,12 +11,7 @@ export type {
   TreecrdtStorage,
 } from './types.js';
 
-export type {
-  OpfsSupport,
-  OpfsVfsKind,
-  OpfsVfsOptions,
-  OpenOptions,
-} from './opfs.js';
+export type { OpfsSupport, OpfsVfsKind, OpfsVfsOptions, OpenOptions } from './opfs.js';
 export {
   clearOpfsStorage,
   createOpfsVfs,
