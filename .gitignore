@@ -11,3 +11,4 @@ package-lock.json
 .turbo/
 tmp/
 benchmarks/
+emsdk-cache/
