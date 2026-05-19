@@ -4,14 +4,14 @@ import type { LocalWriteOptions } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { base64urlDecode, type TreecrdtAuthSession } from "@treecrdt/auth";
 import type { SyncAuth } from "@treecrdt/sync-protocol";
-import type { TreecrdtClient } from "@treecrdt/wa-sqlite";
+import type { TreecrdtSqliteAuthApi } from "@treecrdt/sync-sqlite/auth";
 
 import { createLocalIdentityChainV1, type StoredAuthMaterial } from "../../auth";
 import { hexToBytes16 } from "../../sync-v0";
 
 type UsePlaygroundAuthSessionOptions = {
   authEnabled: boolean;
-  client: TreecrdtClient | null;
+  authApi: TreecrdtSqliteAuthApi | null;
   docId: string;
   authMaterial: StoredAuthMaterial;
   hardRevokedTokenIds: string[];
@@ -38,7 +38,7 @@ export function usePlaygroundAuthSession(
 ): PlaygroundAuthSessionState {
   const {
     authEnabled,
-    client,
+    authApi,
     docId,
     authMaterial,
     hardRevokedTokenIds,
@@ -94,7 +94,7 @@ export function usePlaygroundAuthSession(
     let cancelled = false;
     setSyncAuth(null);
 
-    if (!authEnabled || !client) {
+    if (!authEnabled || !authApi) {
       localAuthSessionRef.current = null;
       return () => {
         cancelled = true;
@@ -118,7 +118,7 @@ export function usePlaygroundAuthSession(
         const localPk = base64urlDecode(localPkB64);
         const localTokens = localTokensB64.map((t) => base64urlDecode(t));
 
-        const authSession = await client.auth.createSession({
+        const authSession = await authApi.createSession({
           docId,
           trust: { issuerPublicKeys: [issuerPk] },
           local: {
@@ -155,7 +155,7 @@ export function usePlaygroundAuthSession(
     };
   }, [
     authEnabled,
-    client,
+    authApi,
     docId,
     authMaterial.issuerPkB64,
     authMaterial.localSkB64,

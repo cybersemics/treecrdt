@@ -6,7 +6,6 @@ export type {
   StorageMode,
   TreecrdtAssets,
   TreecrdtClient,
-  TreecrdtClientAuthApi,
   TreecrdtRuntime,
   TreecrdtStorage,
 } from './types.js';

@@ -490,9 +490,6 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
-      '@treecrdt/sync-sqlite':
-        specifier: workspace:*
-        version: link:../sync-protocol/material/sqlite
     devDependencies:
       '@treecrdt/benchmark':
         specifier: workspace:*
