@@ -3,21 +3,24 @@ import { detectOpfsSupport } from '@treecrdt/wa-sqlite/opfs';
 import { nodeIdFromInt } from '@treecrdt/benchmark';
 import { replicaFromLabel } from './op-helpers.js';
 
+export type LifecycleRuntime = 'direct' | 'dedicated-worker';
+
 const rootId = '0'.repeat(32);
 const parentId = nodeIdFromInt(901);
 const childId = nodeIdFromInt(902);
-const replica = replicaFromLabel('direct-opfs-reload');
+const replica = replicaFromLabel('lifecycle');
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 let openClient: TreecrdtClient | null = null;
 
-type DirectOpfsReloadOptions = {
+type LifecycleOptions = {
   docId: string;
   filename: string;
+  runtime: LifecycleRuntime;
 };
 
-export type DirectOpfsReloadState = {
+export type LifecycleState = {
   parentId: string;
   childId: string;
   mode: string;
@@ -33,15 +36,15 @@ export type DirectOpfsReloadState = {
   childPayload: string | null;
 };
 
-async function createDirectOpfsClient(opts: DirectOpfsReloadOptions): Promise<TreecrdtClient> {
+async function createOpfsLifecycleClient(opts: LifecycleOptions): Promise<TreecrdtClient> {
   return createTreecrdtClient({
     docId: opts.docId,
     storage: { type: 'opfs', filename: opts.filename, fallback: 'throw' },
-    runtime: { type: 'direct' },
+    runtime: { type: opts.runtime },
   });
 }
 
-async function summarizeDirectOpfsState(client: TreecrdtClient): Promise<DirectOpfsReloadState> {
+async function summarizeLifecycleState(client: TreecrdtClient): Promise<LifecycleState> {
   const parentPayload = await client.tree.getPayload(parentId);
   const childPayload = await client.tree.getPayload(childId);
   return {
@@ -61,43 +64,43 @@ async function summarizeDirectOpfsState(client: TreecrdtClient): Promise<DirectO
   };
 }
 
-export function getDirectOpfsSupport(): ReturnType<typeof detectOpfsSupport> {
+export function getLifecycleOpfsSupport(): ReturnType<typeof detectOpfsSupport> {
   return detectOpfsSupport();
 }
 
-export async function dropDirectOpfsReloadStore(opts: DirectOpfsReloadOptions): Promise<void> {
+export async function dropLifecycleStore(opts: LifecycleOptions): Promise<void> {
   const clientToClose = openClient;
   openClient = null;
   await clientToClose?.close().catch(() => {});
 
-  const client = await createDirectOpfsClient(opts);
+  const client = await createOpfsLifecycleClient(opts);
   await client.drop();
 }
 
-export async function writeDirectOpfsReloadTree(
-  opts: DirectOpfsReloadOptions & { closeBeforeReload?: boolean },
-): Promise<DirectOpfsReloadState> {
+export async function writeLifecycleTree(
+  opts: LifecycleOptions & { closeBeforeReload?: boolean },
+): Promise<LifecycleState> {
   const prior = openClient;
   openClient = null;
   await prior?.close().catch(() => {});
 
-  const client = await createDirectOpfsClient(opts);
+  const client = await createOpfsLifecycleClient(opts);
   await client.local.insert(
     replica,
     rootId,
     parentId,
     { type: 'last' },
-    textEncoder.encode('direct opfs parent'),
+    textEncoder.encode('browser lifecycle parent'),
   );
   await client.local.insert(
     replica,
     parentId,
     childId,
     { type: 'last' },
-    textEncoder.encode('direct opfs child'),
+    textEncoder.encode('browser lifecycle child'),
   );
 
-  const state = await summarizeDirectOpfsState(client);
+  const state = await summarizeLifecycleState(client);
   if (opts.closeBeforeReload) {
     await client.close();
   } else {
@@ -106,16 +109,14 @@ export async function writeDirectOpfsReloadTree(
   return state;
 }
 
-export async function readDirectOpfsReloadTree(
-  opts: DirectOpfsReloadOptions,
-): Promise<DirectOpfsReloadState> {
+export async function readLifecycleTree(opts: LifecycleOptions): Promise<LifecycleState> {
   const prior = openClient;
   openClient = null;
   await prior?.close().catch(() => {});
 
-  const client = await createDirectOpfsClient(opts);
+  const client = await createOpfsLifecycleClient(opts);
   try {
-    return await summarizeDirectOpfsState(client);
+    return await summarizeLifecycleState(client);
   } finally {
     await client.close();
   }
@@ -123,20 +124,20 @@ export async function readDirectOpfsReloadTree(
 
 declare global {
   interface Window {
-    __treecrdtDirectOpfsReload?: {
-      support: typeof getDirectOpfsSupport;
-      drop: typeof dropDirectOpfsReloadStore;
-      write: typeof writeDirectOpfsReloadTree;
-      read: typeof readDirectOpfsReloadTree;
+    __treecrdtLifecycle?: {
+      support: typeof getLifecycleOpfsSupport;
+      drop: typeof dropLifecycleStore;
+      write: typeof writeLifecycleTree;
+      read: typeof readLifecycleTree;
     };
   }
 }
 
 if (typeof window !== 'undefined') {
-  window.__treecrdtDirectOpfsReload = {
-    support: getDirectOpfsSupport,
-    drop: dropDirectOpfsReloadStore,
-    write: writeDirectOpfsReloadTree,
-    read: readDirectOpfsReloadTree,
+  window.__treecrdtLifecycle = {
+    support: getLifecycleOpfsSupport,
+    drop: dropLifecycleStore,
+    write: writeLifecycleTree,
+    read: readLifecycleTree,
   };
 }

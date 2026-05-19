@@ -4,8 +4,8 @@ import App from './src/App.js';
 import './src/bench';
 import './src/conformance';
 import './src/closed-client';
-import './src/direct-opfs-reload';
 import './src/drop-opfs';
+import './src/lifecycle';
 import './src/responsiveness';
 import './src/sync';
 
