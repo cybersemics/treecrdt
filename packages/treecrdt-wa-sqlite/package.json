@@ -9,14 +9,6 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./client": {
-      "import": "./dist/client.js",
-      "types": "./dist/client.d.ts"
-    },
-    "./types": {
-      "import": "./dist/types.js",
-      "types": "./dist/types.d.ts"
-    },
     "./opfs": {
       "import": "./dist/opfs.js",
       "types": "./dist/opfs.d.ts"

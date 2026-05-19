@@ -70,7 +70,7 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
     config() {
       return {
         optimizeDeps: {
-          exclude: ['@treecrdt/wa-sqlite/client'],
+          exclude: ['@treecrdt/wa-sqlite'],
         },
         worker: {
           format: 'es',
