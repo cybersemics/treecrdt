@@ -56,7 +56,7 @@
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm install --lockfile-only",
     "build:publish": "pnpm --filter @treecrdt/wa-sqlite-vendor run build && pnpm --filter @treecrdt/wa-sqlite... --filter @treecrdt/sync... --filter @treecrdt/sync-server-postgres-node... --filter @treecrdt/discovery-server-node... run build",
-    "release": "pnpm run build:publish && changeset publish"
+    "release": "pnpm run build:publish && changeset publish && node scripts/set-npm-public-access.mjs"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.61.0",

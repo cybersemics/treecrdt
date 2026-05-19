@@ -583,6 +583,10 @@ async function createDirectClient(opts: {
     storage,
     docId: opts.docId,
     requireOpfs,
+    // The coop-sync OPFS VFS depends on createSyncAccessHandle, which is only
+    // available in workers. Direct browser clients run on the window thread, so
+    // OPFS needs the async any-context VFS.
+    opfsVfs: storage === 'opfs' ? 'any-context' : undefined,
     onMaterialized: materialized.emitEvent,
   });
   const db = opened.db;
