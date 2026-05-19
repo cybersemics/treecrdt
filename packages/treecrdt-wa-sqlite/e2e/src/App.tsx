@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
-import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite';
 import { makeOp } from '@treecrdt/benchmark';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 

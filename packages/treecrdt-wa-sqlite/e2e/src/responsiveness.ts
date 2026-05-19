@@ -1,4 +1,4 @@
-import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { replicaFromLabel } from './op-helpers.js';
 

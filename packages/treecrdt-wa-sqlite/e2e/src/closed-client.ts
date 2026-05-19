@@ -1,5 +1,4 @@
-import { createTreecrdtClient, CLIENT_CLOSED_ERROR } from '@treecrdt/wa-sqlite/client';
-import { detectOpfsSupport } from '@treecrdt/wa-sqlite/opfs';
+import { CLIENT_CLOSED_ERROR, createTreecrdtClient, detectOpfsSupport } from '@treecrdt/wa-sqlite';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 

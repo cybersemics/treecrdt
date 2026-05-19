@@ -4,7 +4,7 @@ import type { LocalWriteOptions } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { base64urlDecode, type TreecrdtAuthSession } from "@treecrdt/auth";
 import type { SyncAuth } from "@treecrdt/sync-protocol";
-import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
+import type { TreecrdtClient } from "@treecrdt/wa-sqlite";
 
 import { createLocalIdentityChainV1, type StoredAuthMaterial } from "../../auth";
 import { hexToBytes16 } from "../../sync-v0";

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
-import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import type { TreecrdtClient } from '@treecrdt/wa-sqlite';
 
 import { compareOps, mergeSortedOps, opKey } from '../ops';
 import type { Status } from '../types';
