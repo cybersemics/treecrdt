@@ -1,12 +1,57 @@
 import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
 
+export type MaterializationSource = {
+  /**
+   * Operation that caused the visible change.
+   *
+   * `replica` is a low-level CRDT replica id, not an auth/user identity.
+   */
+  operation: {
+    id: {
+      replica: Uint8Array;
+      counter: number;
+    };
+    /** Lamport timestamp assigned to the operation. */
+    lamport: number;
+  };
+  /** Future auth metadata for the operation signer, when available. */
+  signer?: {
+    publicKey: Uint8Array;
+  };
+};
+
+type ChangeSource = {
+  /**
+   * Operation source metadata when the materializer can attribute the visible change to one exact op.
+   *
+   * Conservative catch-up/rebuild paths may omit this when a visible change is derived from rebuilt
+   * state instead of a single operation.
+   */
+  source?: MaterializationSource;
+};
+
 export type Change =
-  | { kind: 'insert'; node: string; parentAfter: string; payload: Uint8Array | null }
-  | { kind: 'move'; node: string; parentBefore: string | null; parentAfter: string }
-  | { kind: 'delete'; node: string; parentBefore: string | null }
-  | { kind: 'restore'; node: string; parentAfter: string | null; payload: Uint8Array | null }
-  | { kind: 'payload'; node: string; payload: Uint8Array | null };
+  | ({
+      kind: 'insert';
+      node: string;
+      parentAfter: string;
+      payload: Uint8Array | null;
+    } & ChangeSource)
+  | ({
+      kind: 'move';
+      node: string;
+      parentBefore: string | null;
+      parentAfter: string;
+    } & ChangeSource)
+  | ({ kind: 'delete'; node: string; parentBefore: string | null } & ChangeSource)
+  | ({
+      kind: 'restore';
+      node: string;
+      parentAfter: string | null;
+      payload: Uint8Array | null;
+    } & ChangeSource)
+  | ({ kind: 'payload'; node: string; payload: Uint8Array | null } & ChangeSource);
 
 /**
  * Coalesced result of advancing materialized state to `headSeq`.

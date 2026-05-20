@@ -1,6 +1,11 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
 import { emptyMaterializationOutcome } from './engine.js';
-import type { LocalWriteOptions, MaterializationEvent, MaterializationOutcome } from './engine.js';
+import type {
+  LocalWriteOptions,
+  MaterializationEvent,
+  MaterializationOutcome,
+  MaterializationSource,
+} from './engine.js';
 import {
   decodeNodeId,
   decodeReplicaId,
@@ -722,17 +727,38 @@ function decodeSqlitePayload(raw: unknown): Uint8Array | null {
   return Uint8Array.from(raw as any);
 }
 
+function decodeSqliteMaterializationSource(raw: unknown): MaterializationSource | undefined {
+  if (raw == null) return undefined;
+  const value = raw as any;
+  const operation = value.operation as any;
+  const operationId = operation?.id as any;
+  return {
+    operation: {
+      id: {
+        replica: decodeReplicaId(operationId.replica),
+        counter: Number(operationId.counter),
+      },
+      lamport: Number(operation.lamport),
+    },
+    ...(value.signer?.publicKey
+      ? { signer: { publicKey: Uint8Array.from(value.signer.publicKey) } }
+      : {}),
+  };
+}
+
 export function decodeSqliteMaterializationOutcome(raw: unknown): MaterializationOutcome {
   const value = (raw ?? {}) as any;
   const rawChanges = Array.isArray(value.changes) ? value.changes : [];
   const changes = rawChanges.map((change: any) => {
     const kind = String(change.kind);
+    const source = decodeSqliteMaterializationSource(change.source);
     if (kind === 'insert') {
       return {
         kind,
         node: decodeNodeId(change.node),
         parentAfter: decodeNodeId(change.parentAfter),
         payload: decodeSqlitePayload(change.payload),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'move') {
@@ -741,6 +767,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         node: decodeNodeId(change.node),
         parentBefore: change.parentBefore == null ? null : decodeNodeId(change.parentBefore),
         parentAfter: decodeNodeId(change.parentAfter),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'delete') {
@@ -748,6 +775,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         kind,
         node: decodeNodeId(change.node),
         parentBefore: change.parentBefore == null ? null : decodeNodeId(change.parentBefore),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'restore') {
@@ -756,6 +784,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         node: decodeNodeId(change.node),
         parentAfter: change.parentAfter == null ? null : decodeNodeId(change.parentAfter),
         payload: decodeSqlitePayload(change.payload),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'payload') {
@@ -763,6 +792,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         kind,
         node: decodeNodeId(change.node),
         payload: decodeSqlitePayload(change.payload),
+        ...(source ? { source } : {}),
       };
     }
     throw new Error(`unknown materialization change kind: ${kind}`);

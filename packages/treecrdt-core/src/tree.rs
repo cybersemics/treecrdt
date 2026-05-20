@@ -12,7 +12,7 @@ use crate::traits::{
 };
 use crate::types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
-    NodeExport, NodeSnapshotExport, PreparedLocalOp,
+    MaterializationSource, NodeExport, NodeSnapshotExport, PreparedLocalOp,
 };
 use crate::version_vector::VersionVector;
 
@@ -20,6 +20,23 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
+}
+
+fn attach_source_if_missing(
+    change: &mut MaterializationChange,
+    next_source: Option<MaterializationSource>,
+) {
+    match change {
+        MaterializationChange::Insert { source, .. }
+        | MaterializationChange::Move { source, .. }
+        | MaterializationChange::Delete { source, .. }
+        | MaterializationChange::Restore { source, .. }
+        | MaterializationChange::Payload { source, .. } => {
+            if source.is_none() {
+                *source = next_source;
+            }
+        }
+    }
 }
 
 /// Generic Tree CRDT facade that wires clock and storage together.
@@ -170,6 +187,7 @@ where
                     node,
                     parent_after: parent,
                     payload: payload_after,
+                    source: None,
                 }],
             },
         })
@@ -218,6 +236,7 @@ where
                     node,
                     parent_before: old_parent,
                     parent_after: new_parent,
+                    source: None,
                 }],
             },
         })
@@ -241,6 +260,7 @@ where
                 changes: vec![MaterializationChange::Delete {
                     node,
                     parent_before: old_parent.filter(|parent| *parent != NodeId::TRASH),
+                    source: None,
                 }],
             },
         })
@@ -276,6 +296,7 @@ where
                 changes: vec![MaterializationChange::Payload {
                     node,
                     payload: payload_after,
+                    source: None,
                 }],
             },
         })
@@ -315,7 +336,7 @@ where
             self.op_count += 1;
             self.head = Some(op.clone());
 
-            let changes = direct_materialization_changes(snapshot.parent, &op.kind);
+            let changes = direct_materialization_changes(snapshot.parent, &op);
             return Ok(Some(ApplyDelta {
                 snapshot: NodeSnapshotExport {
                     parent: snapshot.parent,
@@ -343,17 +364,21 @@ where
         seq: &mut u64,
     ) -> Result<Option<ApplyDelta>> {
         *seq = (*seq).saturating_add(1);
-        let snapshot = self.apply_remote_with_delta(op.clone())?.map(|delta| NodeSnapshot {
-            parent: delta.snapshot.parent,
-            order_key: delta.snapshot.order_key,
-        });
-        let Some(snapshot) = snapshot else {
+        let delta = self.apply_remote_with_delta(op.clone())?;
+        let Some(delta) = delta else {
             *seq = (*seq).saturating_sub(1);
             return Ok(None);
         };
-        let changes = direct_materialization_changes(snapshot.parent, &op.kind);
+        let snapshot = NodeSnapshot {
+            parent: delta.snapshot.parent,
+            order_key: delta.snapshot.order_key,
+        };
         Ok(Some(self.finalize_materialized_apply(
-            snapshot, &op, index, *seq, changes,
+            snapshot,
+            &op,
+            index,
+            *seq,
+            delta.changes,
         )?))
     }
 
@@ -378,7 +403,7 @@ where
         self.op_count = seq;
         self.head = Some(op.clone());
 
-        let changes = direct_materialization_changes(snapshot.parent, &op.kind);
+        let changes = direct_materialization_changes(snapshot.parent, &op);
         self.finalize_materialized_apply(snapshot, &op, index, seq, changes)
     }
 
@@ -422,11 +447,14 @@ where
         let mut starts = parents;
         starts.push(op_node);
         let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
-        changes.extend(
-            tombstone_changed
-                .into_iter()
-                .filter_map(materialization_change_from_tombstone_delta),
-        );
+        let source = Some(MaterializationSource::from_op(op));
+        for change in &mut changes {
+            attach_source_if_missing(change, source.clone());
+        }
+
+        changes.extend(tombstone_changed.into_iter().filter_map(|delta| {
+            materialization_change_from_tombstone_delta(delta, source.clone())
+        }));
 
         Ok(ApplyDelta {
             snapshot: NodeSnapshotExport {
@@ -465,12 +493,14 @@ where
             index.record(*parent, op_id, seq)?;
         }
 
+        let source = Some(MaterializationSource::from_op(op));
         let mut changes = plan.changes.clone();
-        changes.extend(
-            tombstone_changed
-                .into_iter()
-                .filter_map(materialization_change_from_tombstone_delta),
-        );
+        for change in &mut changes {
+            attach_source_if_missing(change, source.clone());
+        }
+        changes.extend(tombstone_changed.into_iter().filter_map(|delta| {
+            materialization_change_from_tombstone_delta(delta, source.clone())
+        }));
 
         Ok(MaterializationOutcome {
             head_seq: seq,
