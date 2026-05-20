@@ -36,8 +36,7 @@
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync-sqlite": "workspace:*"
+    "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
     "@treecrdt/wa-sqlite-vendor": "workspace:*",

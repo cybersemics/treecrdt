@@ -27,7 +27,6 @@ import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
 } from '@treecrdt/interface/engine';
-import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
 import type {
   RpcMethod,
@@ -54,9 +53,7 @@ import type {
   SharedWorkerFactory,
   StorageMode,
   TreecrdtClient,
-  TreecrdtClientAuthApi,
   TreecrdtRuntime,
-  TreecrdtSqliteAuthModule,
   WorkerProxy,
 } from './types.js';
 
@@ -177,32 +174,6 @@ function defaultSharedWorkerName(docId: string, filename?: string): string {
 // --- Worker client
 
 const CROSS_TAB_MATERIALIZED_MESSAGE = 'treecrdt-materialized-v1';
-
-let sqliteAuthModulePromise: Promise<TreecrdtSqliteAuthModule> | null = null;
-
-function loadSqliteAuthModule(): Promise<TreecrdtSqliteAuthModule> {
-  // Auth is an opt-in capability path for browser clients. Apps that only open
-  // local trees do not need auth sessions or proof material until they call client.auth.*.
-  sqliteAuthModulePromise ??= import('@treecrdt/sync-sqlite/auth');
-  return sqliteAuthModulePromise;
-}
-
-function createLazyAuthApi(opts: { runner: SqliteRunner; docId: string }): TreecrdtClientAuthApi {
-  let authApiPromise: Promise<TreecrdtSqliteAuthApi> | null = null;
-  const getAuthApi = () => {
-    authApiPromise ??= loadSqliteAuthModule().then(({ createTreecrdtSqliteAuthApi }) =>
-      createTreecrdtSqliteAuthApi(opts),
-    );
-    return authApiPromise;
-  };
-
-  return {
-    createSession: async (...args) => (await getAuthApi()).createSession(...args),
-    describeCapabilityToken: async (...args) =>
-      (await getAuthApi()).describeCapabilityToken(...args),
-    evaluateScope: async (...args) => await (await getAuthApi()).evaluateScope(...args),
-  };
-}
 
 function createClientMaterializationDispatcher(
   opts: ClientMaterializationDispatcherOptions = {},
@@ -906,7 +877,6 @@ function makeTreecrdtClientFromCall(opts: {
       getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
-    auth: createLazyAuthApi({ runner, docId: opts.docId }),
     local,
     onMaterialized: materialized.onMaterialized,
     close: closeImpl,

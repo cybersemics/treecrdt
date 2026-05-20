@@ -1,7 +1,6 @@
 import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
-import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import type { RpcMethod, RpcParams, RpcRequest, RpcResult } from './rpc.js';
 
 // Minimal wa-sqlite surface needed by the adapter. Exported so consumers
@@ -37,20 +36,7 @@ export type TreecrdtClient = TreecrdtEngine & {
   runtime: RuntimeMode;
   storage: StorageMode;
   runner: SqliteRunner;
-  auth: TreecrdtClientAuthApi;
   drop: () => Promise<void>;
-};
-
-export type TreecrdtSqliteAuthModule = typeof import('@treecrdt/sync-sqlite/auth');
-
-export type TreecrdtClientAuthApi = {
-  createSession: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['createSession']>
-  ) => Promise<ReturnType<TreecrdtSqliteAuthApi['createSession']>>;
-  describeCapabilityToken: TreecrdtSqliteAuthApi['describeCapabilityToken'];
-  evaluateScope: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['evaluateScope']>
-  ) => Promise<Awaited<ReturnType<TreecrdtSqliteAuthApi['evaluateScope']>>>;
 };
 
 export type ClientOptions = {
