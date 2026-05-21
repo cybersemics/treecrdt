@@ -56,6 +56,36 @@ type ReadSampleResult = {
   finalChildCount: number;
 };
 
+type PayloadSeedOptions = {
+  nodeInt?: number;
+  payloadBytes: number;
+  replicaLabel?: string;
+};
+
+type PayloadSeedResult = {
+  ok: true;
+  node: string;
+  payloadBytes: number;
+};
+
+type PayloadReadSampleOptions = {
+  node: string;
+  payloadBytes: number;
+  samples: number;
+  intervalMs?: number;
+};
+
+type PayloadReadSampleResult = {
+  ok: true;
+  samples: number;
+  payloadBytes: number;
+  durationsMs: number[];
+  minMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+};
+
 let responsivenessClient: TreecrdtClient | null = null;
 let writeStatus: WriteBatchStatus = { state: 'idle' };
 let writePromise: Promise<WriteBatchResult> | null = null;
@@ -68,6 +98,15 @@ function orderKeyFromOffset(offset: number): Uint8Array {
   const bytes = new Uint8Array(4);
   new DataView(bytes.buffer).setUint32(0, offset + 1, false);
   return bytes;
+}
+
+function payloadBytesFromSeed(seed: number, size: number): Uint8Array {
+  if (!Number.isInteger(size) || size <= 0) throw new Error(`invalid payload size: ${size}`);
+  const payload = new Uint8Array(size);
+  for (let i = 0; i < payload.length; i += 1) {
+    payload[i] = (seed + i * 31) % 251;
+  }
+  return payload;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -233,6 +272,54 @@ export async function sampleResponsivenessReads(
   };
 }
 
+export async function seedResponsivenessPayload(
+  opts: PayloadSeedOptions,
+): Promise<PayloadSeedResult> {
+  const client = ensureClient();
+  const replica = replicaFromLabel(opts.replicaLabel ?? 'responsiveness-payload');
+  const nodeInt = opts.nodeInt ?? 900_000;
+  const node = nodeIdFromInt(nodeInt);
+  await client.ops.append(
+    makeOp(replica, 1, 1, {
+      type: 'insert',
+      parent: rootNode(),
+      node,
+      orderKey: orderKeyFromOffset(nodeInt),
+      payload: payloadBytesFromSeed(nodeInt, opts.payloadBytes),
+    }),
+  );
+  return { ok: true, node, payloadBytes: opts.payloadBytes };
+}
+
+export async function sampleResponsivenessPayloadReads(
+  opts: PayloadReadSampleOptions,
+): Promise<PayloadReadSampleResult> {
+  const client = ensureClient();
+  const intervalMs = opts.intervalMs ?? 0;
+  const durationsMs: number[] = [];
+
+  for (let i = 0; i < opts.samples; i += 1) {
+    const start = performance.now();
+    const payload = await client.tree.getPayload(opts.node);
+    durationsMs.push(performance.now() - start);
+    if (!payload) throw new Error(`missing payload for node ${opts.node}`);
+    if (payload.byteLength !== opts.payloadBytes) {
+      throw new Error(
+        `payload length mismatch for node ${opts.node}: expected ${opts.payloadBytes}, got ${payload.byteLength}`,
+      );
+    }
+    if (intervalMs > 0) await sleep(intervalMs);
+  }
+
+  return {
+    ok: true,
+    samples: opts.samples,
+    payloadBytes: opts.payloadBytes,
+    durationsMs,
+    ...summarizeDurations(durationsMs),
+  };
+}
+
 export async function closeResponsivenessClient(): Promise<void> {
   const client = responsivenessClient;
   responsivenessClient = null;
@@ -248,6 +335,8 @@ declare global {
     __treecrdtResponsivenessWriteStatus?: typeof responsivenessWriteStatus;
     __waitTreecrdtResponsivenessWrites?: typeof waitResponsivenessWrites;
     __sampleTreecrdtResponsivenessReads?: typeof sampleResponsivenessReads;
+    __seedTreecrdtResponsivenessPayload?: typeof seedResponsivenessPayload;
+    __sampleTreecrdtResponsivenessPayloadReads?: typeof sampleResponsivenessPayloadReads;
     __closeTreecrdtResponsivenessClient?: typeof closeResponsivenessClient;
   }
 }
@@ -258,5 +347,7 @@ if (typeof window !== 'undefined') {
   window.__treecrdtResponsivenessWriteStatus = responsivenessWriteStatus;
   window.__waitTreecrdtResponsivenessWrites = waitResponsivenessWrites;
   window.__sampleTreecrdtResponsivenessReads = sampleResponsivenessReads;
+  window.__seedTreecrdtResponsivenessPayload = seedResponsivenessPayload;
+  window.__sampleTreecrdtResponsivenessPayloadReads = sampleResponsivenessPayloadReads;
   window.__closeTreecrdtResponsivenessClient = closeResponsivenessClient;
 }

@@ -22,10 +22,28 @@ type WriteMetrics = {
   batchDurationsMs: number[];
 };
 
+type PayloadSeedMetrics = {
+  ok: true;
+  node: string;
+  payloadBytes: number;
+};
+
+type PayloadReadMetrics = {
+  ok: true;
+  samples: number;
+  payloadBytes: number;
+  durationsMs: number[];
+  minMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+};
+
 const totalOps = Number(process.env.TREECRDT_RESPONSIVENESS_TOTAL_OPS ?? 5_000);
-const batchSize = Number(process.env.TREECRDT_RESPONSIVENESS_BATCH_SIZE ?? 500);
+const batchSize = Number(process.env.TREECRDT_RESPONSIVENESS_BATCH_SIZE ?? totalOps);
 const samples = Number(process.env.TREECRDT_RESPONSIVENESS_READ_SAMPLES ?? 20);
 const intervalMs = Number(process.env.TREECRDT_RESPONSIVENESS_READ_INTERVAL_MS ?? 0);
+const payloadBytes = Number(process.env.TREECRDT_RESPONSIVENESS_PAYLOAD_BYTES ?? 64 * 1024);
 
 async function waitForHarness(page: Page) {
   await page.goto('/');
@@ -34,6 +52,8 @@ async function waitForHarness(page: Page) {
       typeof window.__openTreecrdtResponsivenessClient === 'function' &&
       typeof window.__startTreecrdtResponsivenessWriteBatches === 'function' &&
       typeof window.__sampleTreecrdtResponsivenessReads === 'function' &&
+      typeof window.__seedTreecrdtResponsivenessPayload === 'function' &&
+      typeof window.__sampleTreecrdtResponsivenessPayloadReads === 'function' &&
       typeof window.__waitTreecrdtResponsivenessWrites === 'function',
   );
 }
@@ -68,6 +88,36 @@ async function sampleReads(
       return await sample({ samples, intervalMs });
     },
     { samples: opts.samples ?? samples, intervalMs: opts.intervalMs ?? intervalMs },
+  );
+}
+
+async function seedPayload(
+  page: Page,
+  opts: { payloadBytes: number; nodeInt?: number },
+): Promise<PayloadSeedMetrics> {
+  return page.evaluate(async (payloadOpts) => {
+    const seed = window.__seedTreecrdtResponsivenessPayload;
+    if (!seed) throw new Error('__seedTreecrdtResponsivenessPayload not available');
+    return await seed(payloadOpts);
+  }, opts);
+}
+
+async function samplePayloadReads(
+  page: Page,
+  opts: { node: string; payloadBytes: number; samples?: number; intervalMs?: number },
+): Promise<PayloadReadMetrics> {
+  return page.evaluate(
+    async ({ node, payloadBytes, samples, intervalMs }) => {
+      const sample = window.__sampleTreecrdtResponsivenessPayloadReads;
+      if (!sample) throw new Error('__sampleTreecrdtResponsivenessPayloadReads not available');
+      return await sample({ node, payloadBytes, samples, intervalMs });
+    },
+    {
+      node: opts.node,
+      payloadBytes: opts.payloadBytes,
+      samples: opts.samples ?? samples,
+      intervalMs: opts.intervalMs ?? intervalMs,
+    },
   );
 }
 
@@ -118,9 +168,14 @@ test.describe('worker read responsiveness under write pressure', () => {
         expect(writerSummary).toEqual({ mode: 'worker', runtime, storage: 'opfs' });
         expect(readerSummary).toEqual({ mode: 'worker', runtime, storage: 'opfs' });
 
+        const payloadSeed = await seedPayload(writerPage, { payloadBytes });
         await startWrites(writerPage, { batchCount, batchSize });
-        const [reads, writes] = await Promise.all([
+        const [reads, payloadReads, writes] = await Promise.all([
           sampleReads(readerPage),
+          samplePayloadReads(readerPage, {
+            node: payloadSeed.node,
+            payloadBytes: payloadSeed.payloadBytes,
+          }),
           waitWrites(writerPage),
         ]);
         const afterWrites = await sampleReads(readerPage, { samples: 1, intervalMs: 0 });
@@ -140,6 +195,11 @@ test.describe('worker read responsiveness under write pressure', () => {
             readP95Ms: reads.p95Ms,
             readMaxMs: reads.maxMs,
             readSamples: reads.durationsMs,
+            payloadBytes: payloadReads.payloadBytes,
+            payloadReadP50Ms: payloadReads.p50Ms,
+            payloadReadP95Ms: payloadReads.p95Ms,
+            payloadReadMaxMs: payloadReads.maxMs,
+            payloadReadSamples: payloadReads.durationsMs,
             finalChildCount: reads.finalChildCount,
             finalChildCountAfterWrites: afterWrites.finalChildCount,
           }),
@@ -147,9 +207,12 @@ test.describe('worker read responsiveness under write pressure', () => {
 
         expect(writes.totalOps).toBe(batchCount * batchSize);
         expect(reads.samples).toBe(samples);
+        expect(payloadReads.samples).toBe(samples);
+        expect(payloadReads.payloadBytes).toBe(payloadBytes);
         // This is a liveness guard, not a benchmark threshold. Stress runs can tighten it locally.
         expect(reads.maxMs).toBeLessThan(30_000);
-        expect(afterWrites.finalChildCount).toBe(writes.totalOps);
+        expect(payloadReads.maxMs).toBeLessThan(30_000);
+        expect(afterWrites.finalChildCount).toBe(writes.totalOps + 1);
       } finally {
         await Promise.allSettled([closeClient(writerPage), closeClient(readerPage)]);
         await Promise.allSettled([writerPage.close(), readerPage.close()]);

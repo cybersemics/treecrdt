@@ -39,9 +39,9 @@ export type RpcSchema = {
   };
   treeDump: { params: []; result: unknown[] };
   treeNodeCount: { params: []; result: number };
-  treeParent: { params: [node: string]; result: number[] | null };
+  treeParent: { params: [node: string]; result: Uint8Array | null };
   treeExists: { params: [node: string]; result: boolean };
-  treePayload: { params: [node: string]; result: number[] | null };
+  treePayload: { params: [node: string]; result: Uint8Array | null };
   headLamport: { params: []; result: number };
   replicaMaxCounter: { params: [replica: number[]]; result: number };
   close: { params: []; result: void };
@@ -66,3 +66,29 @@ export type RpcPushMessage = {
   type: 'materialized';
   event: MaterializationEvent;
 };
+
+export function rpcBinaryResult(bytes: Uint8Array | null): Uint8Array | null {
+  if (bytes === null) return null;
+  const buffer = bytes.buffer;
+  if (
+    buffer instanceof ArrayBuffer &&
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === buffer.byteLength
+  ) {
+    return bytes;
+  }
+  return Uint8Array.from(bytes);
+}
+
+export function transferablesForRpcBinaryResult(result: unknown): Transferable[] {
+  if (!(result instanceof Uint8Array)) return [];
+  const buffer = result.buffer;
+  if (
+    buffer instanceof ArrayBuffer &&
+    result.byteOffset === 0 &&
+    result.byteLength === buffer.byteLength
+  ) {
+    return [buffer];
+  }
+  return [];
+}
