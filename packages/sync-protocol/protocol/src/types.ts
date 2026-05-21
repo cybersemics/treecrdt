@@ -71,6 +71,11 @@ export type RibltStatus = {
 export type OpAuth = {
   sig: Bytes;
   proofRef?: Bytes;
+  claims?: OpAuthClaims;
+};
+
+export type OpAuthClaims = {
+  authoredAtMs?: number;
 };
 
 export type PendingOpReason = 'missing_context';

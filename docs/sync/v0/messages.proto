@@ -118,6 +118,15 @@ message OpAuth {
 
   // Optional reference to an authorization proof (e.g. token id / hash).
   bytes proof_ref = 3;
+
+  // Optional signed claims about the operation.
+  OpAuthClaims claims = 4;
+}
+
+// Signed claims carried alongside an operation signature.
+message OpAuthClaims {
+  // Author's claimed wall-clock authoring time in unix milliseconds.
+  optional uint64 authored_at_ms = 1;
 }
 
 // Push-based subscription for live updates.

@@ -43,12 +43,14 @@ function makePending(
   sigFill: number,
   proofFill?: number,
   message?: string,
+  authoredAtMs?: number,
 ): PendingOp<Operation> {
   return {
     op: makeInsertOp(replicaFill, counter),
     auth: {
       sig: new Uint8Array(64).fill(sigFill),
       ...(proofFill === undefined ? {} : { proofRef: new Uint8Array(16).fill(proofFill) }),
+      ...(authoredAtMs === undefined ? {} : { claims: { authoredAtMs } }),
     },
     reason: 'missing_context',
     ...(message ? { message } : {}),
@@ -71,6 +73,7 @@ function normalizePending(value: PendingOp<Operation>) {
     kind,
     sigHex: bytesToHex(value.auth.sig),
     proofRefHex: value.auth.proofRef ? bytesToHex(value.auth.proofRef) : null,
+    claims: value.auth.claims ?? null,
     reason: value.reason,
     message: value.message ?? null,
   };
@@ -95,7 +98,7 @@ export function definePendingProofMaterialStoreContract(
     try {
       const docId = `doc-pending-${randomUUID()}`;
       const pending = await harness.createPendingStore(docId);
-      const first = makePending(7, 1, 9, 4, 'need ancestry');
+      const first = makePending(7, 1, 9, 4, 'need ancestry', 1_700_000_000_001);
       const second = makePending(7, 2, 8);
 
       await pending.init();
