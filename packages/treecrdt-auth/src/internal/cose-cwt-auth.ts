@@ -21,6 +21,7 @@ import {
   type OpRef,
   type SyncAuth,
   type SyncCapabilityMaterialStore,
+  type SyncVerifiedOpMetadata,
 } from '@treecrdt/sync-protocol';
 
 import { base64urlDecode, base64urlEncode } from '../base64url.js';
@@ -45,7 +46,12 @@ import {
   type CapabilityGrant,
   type TreecrdtCapabilityRevocationCheckContext,
 } from './capability.js';
-import { signTreecrdtOpV1, verifyTreecrdtOpV1 } from './op-sig.js';
+import {
+  signTreecrdtOpV1,
+  signTreecrdtOpV2,
+  verifyTreecrdtOpV1,
+  verifyTreecrdtOpV2,
+} from './op-sig.js';
 import { getField } from './claims.js';
 import {
   capAllowsNode,
@@ -88,7 +94,11 @@ export type TreecrdtCoseCwtAuthOptions = {
   ) => boolean | Promise<boolean>;
   allowUnsigned?: boolean;
   requireProofRef?: boolean;
+  /** Include a signed `claims.authoredAtMs` value on locally authored ops. Defaults to true. */
+  includeAuthoredAt?: boolean;
   now?: () => number;
+  /** Wall-clock source for authoredAtMs claims. */
+  nowMs?: () => number;
 };
 
 export type TreecrdtCoseCwtParseRevocationCheckContext =
@@ -109,8 +119,10 @@ export type TreecrdtCoseCwtRevocationCheckContext =
 
 export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): SyncAuth<Operation> {
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
+  const nowMs = opts.nowMs ?? (() => Date.now());
   const allowUnsigned = opts.allowUnsigned ?? false;
   const requireProofRef = opts.requireProofRef ?? false;
+  const includeAuthoredAt = opts.includeAuthoredAt ?? true;
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
@@ -650,12 +662,24 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           });
           proofRef = selected.tokenId;
         }
-        const sig = await signTreecrdtOpV1({
-          docId: ctx.docId,
-          op,
-          privateKey: opts.localPrivateKey,
-        });
-        const entry: OpAuth = { sig, ...(proofRef ? { proofRef } : {}) };
+        const claims = includeAuthoredAt ? { authoredAtMs: nowMs() } : undefined;
+        const sig = claims
+          ? await signTreecrdtOpV2({
+              docId: ctx.docId,
+              op,
+              privateKey: opts.localPrivateKey,
+              claims,
+            })
+          : await signTreecrdtOpV1({
+              docId: ctx.docId,
+              op,
+              privateKey: opts.localPrivateKey,
+            });
+        const entry: OpAuth = {
+          sig,
+          ...(proofRef ? { proofRef } : {}),
+          ...(claims ? { claims } : {}),
+        };
         opAuthByOpRefHex.set(opRefHex, entry);
         out[i] = entry;
       }
@@ -691,6 +715,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const dispositions: Array<
         { status: 'allow' } | { status: 'pending_context'; message?: string }
       > = [];
+      const verified: Array<SyncVerifiedOpMetadata | undefined> = [];
       const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
@@ -755,13 +780,25 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         });
         if (scopeRes === 'deny') throw new Error('capability does not allow op');
 
-        const ok = await verifyTreecrdtOpV1({
-          docId: ctx.docId,
-          op,
-          signature: a.sig,
-          publicKey: replica,
-        });
+        const ok = a.claims
+          ? await verifyTreecrdtOpV2({
+              docId: ctx.docId,
+              op,
+              signature: a.sig,
+              publicKey: replica,
+              claims: a.claims,
+            })
+          : await verifyTreecrdtOpV1({
+              docId: ctx.docId,
+              op,
+              signature: a.sig,
+              publicKey: replica,
+            });
         if (!ok) throw new Error('invalid op signature');
+        verified.push({
+          signer: { publicKey: Uint8Array.from(replica) },
+          ...(a.claims ? { claims: a.claims } : {}),
+        });
         const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
         opAuthByOpRefHex.set(bytesToHex(opRef), a);
         if (opts.opAuthStore) toPersist.push({ opRef, auth: a });
@@ -781,13 +818,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           await ensureOpAuthStoreReady();
           await opts.opAuthStore.storeOpAuth(toPersist);
         }
-        return { dispositions };
+        return { dispositions, verified };
       }
 
       if (opts.opAuthStore && toPersist.length > 0) {
         await ensureOpAuthStoreReady();
         await opts.opAuthStore.storeOpAuth(toPersist);
       }
+      return { dispositions, verified };
     },
   };
 }

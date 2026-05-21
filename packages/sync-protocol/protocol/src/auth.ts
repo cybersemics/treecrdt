@@ -1,4 +1,4 @@
-import type { Capability, Hello, HelloAck, OpAuth } from './types.js';
+import type { Capability, Hello, HelloAck, OpAuth, SyncVerifiedOpMetadata } from './types.js';
 import type { Filter } from './types.js';
 
 export type SyncOpPurpose = 'reconcile' | 'subscribe' | 'reprocess_pending';
@@ -9,6 +9,8 @@ export type SyncAuthOpDisposition =
 
 export type SyncAuthVerifyOpsResult = {
   dispositions: SyncAuthOpDisposition[];
+  /** Verified metadata aligned with the ops passed to verifyOps. */
+  verified?: readonly (SyncVerifiedOpMetadata | undefined)[];
 };
 
 export type SyncAuthOpsContext = {

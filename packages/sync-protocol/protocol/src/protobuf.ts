@@ -14,6 +14,7 @@ import type {
   Hello,
   HelloAck,
   OpAuth,
+  OpAuthClaims,
   OpRef,
   OpsBatch,
   RibltCodewords,
@@ -355,16 +356,32 @@ function toProtoOpAuth(auth: OpAuth) {
   return create(OpAuthSchema, {
     sig: auth.sig,
     ...(auth.proofRef ? { proofRef: auth.proofRef } : {}),
+    ...(auth.claims ? { claims: toProtoOpAuthClaims(auth.claims) } : {}),
   });
+}
+
+function toProtoOpAuthClaims(claims: OpAuthClaims) {
+  return {
+    ...(claims.authoredAtMs !== undefined ? { authoredAtMs: BigInt(claims.authoredAtMs) } : {}),
+  };
+}
+
+function fromProtoOpAuthClaims(claims: any): OpAuthClaims | undefined {
+  if (!claims) return undefined;
+  const out: OpAuthClaims = {};
+  if (claims.authoredAtMs !== undefined) out.authoredAtMs = Number(claims.authoredAtMs);
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function fromProtoOpAuth(auth: any): OpAuth {
   const sig = auth.sig as Uint8Array | undefined;
   const proofRef = auth.proofRef as Uint8Array | undefined;
+  const claims = fromProtoOpAuthClaims(auth.claims);
   if (!sig) throw new Error('OpAuth.sig missing');
   return {
     sig,
     ...(proofRef && proofRef.length > 0 ? { proofRef } : {}),
+    ...(claims ? { claims } : {}),
   };
 }
 

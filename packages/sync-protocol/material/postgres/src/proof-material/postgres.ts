@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
   op_ref BYTEA NOT NULL,
   sig BYTEA NOT NULL,
   proof_ref BYTEA,
+  claims_json TEXT,
   created_at_ms BIGINT NOT NULL,
   PRIMARY KEY (doc_id, op_ref)
 );
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   op BYTEA NOT NULL,
   sig BYTEA NOT NULL,
   proof_ref BYTEA,
+  claims_json TEXT,
   reason TEXT NOT NULL,
   message TEXT,
   created_at_ms BIGINT NOT NULL,
@@ -69,8 +71,26 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
 );
 `;
 
+const OP_AUTH_MIGRATIONS_SQL = `
+ALTER TABLE treecrdt_sync_op_auth ADD COLUMN IF NOT EXISTS claims_json TEXT;
+`;
+
+const PENDING_MIGRATIONS_SQL = `
+ALTER TABLE treecrdt_sync_pending_ops ADD COLUMN IF NOT EXISTS claims_json TEXT;
+`;
+
 function toBytes(value: Uint8Array | Buffer): Uint8Array {
   return Uint8Array.from(value);
+}
+
+function encodeOpAuthClaims(auth: OpAuth): string | null {
+  return auth.claims ? JSON.stringify(auth.claims) : null;
+}
+
+function decodeOpAuthClaims(json: string | null): OpAuth['claims'] | undefined {
+  if (!json) return undefined;
+  const value = JSON.parse(json) as { authoredAtMs?: unknown };
+  return typeof value.authoredAtMs === 'number' ? { authoredAtMs: value.authoredAtMs } : undefined;
 }
 
 function dedupeLatestByKey<T>(values: T[], keyOf: (value: T) => string): T[] {
@@ -88,19 +108,20 @@ function insertOpAuthSql(entryCount: number): string {
 
   const rows: string[] = [];
   for (let i = 0; i < entryCount; i += 1) {
-    const base = i * 5;
+    const base = i * 6;
     rows.push(
-      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5})`,
+      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5}, $${base + 6})`,
     );
   }
 
   return `
-INSERT INTO treecrdt_sync_op_auth (doc_id, op_ref, sig, proof_ref, created_at_ms)
+INSERT INTO treecrdt_sync_op_auth (doc_id, op_ref, sig, proof_ref, claims_json, created_at_ms)
 VALUES ${rows.join(',\n')}
 ON CONFLICT (doc_id, op_ref)
 DO UPDATE SET
   sig = EXCLUDED.sig,
   proof_ref = EXCLUDED.proof_ref,
+  claims_json = EXCLUDED.claims_json,
   created_at_ms = EXCLUDED.created_at_ms
 `;
 }
@@ -114,7 +135,7 @@ function selectOpAuthByRefsSql(opRefCount: number): string {
     (_value, index) => `$${index + 2}::bytea`,
   ).join(', ');
   return `
-SELECT op_ref, sig, proof_ref
+SELECT op_ref, sig, proof_ref, claims_json
 FROM treecrdt_sync_op_auth
 WHERE doc_id = $1 AND op_ref IN (${placeholders})
 `;
@@ -130,6 +151,7 @@ export function createOpAuthStore(opts: {
   return {
     init: async () => {
       await pool.query(OP_AUTH_SCHEMA_SQL);
+      await pool.query(OP_AUTH_MIGRATIONS_SQL);
     },
     forDoc: (docId: string): SyncOpAuthStore => ({
       storeOpAuth: async (entries) => {
@@ -138,7 +160,14 @@ export function createOpAuthStore(opts: {
 
         const params: Array<string | number | Uint8Array | null> = [];
         for (const entry of deduped) {
-          params.push(docId, entry.opRef, entry.auth.sig, entry.auth.proofRef ?? null, nowMs());
+          params.push(
+            docId,
+            entry.opRef,
+            entry.auth.sig,
+            entry.auth.proofRef ?? null,
+            encodeOpAuthClaims(entry.auth),
+            nowMs(),
+          );
         }
 
         await pool.query(insertOpAuthSql(deduped.length), params);
@@ -151,6 +180,7 @@ export function createOpAuthStore(opts: {
           op_ref: Buffer;
           sig: Buffer;
           proof_ref: Buffer | null;
+          claims_json: string | null;
         }>(selectOpAuthByRefsSql(opRefs.length), [docId, ...opRefs]);
 
         const byOpRefHex = new Map<string, OpAuth>();
@@ -158,7 +188,12 @@ export function createOpAuthStore(opts: {
           const opRef = toBytes(row.op_ref);
           const sig = toBytes(row.sig);
           const proofRef = row.proof_ref ? toBytes(row.proof_ref) : undefined;
-          byOpRefHex.set(bytesToHex(opRef), { sig, ...(proofRef ? { proofRef } : {}) });
+          const claims = decodeOpAuthClaims(row.claims_json);
+          byOpRefHex.set(bytesToHex(opRef), {
+            sig,
+            ...(proofRef ? { proofRef } : {}),
+            ...(claims ? { claims } : {}),
+          });
         }
 
         return opRefs.map((opRef) => byOpRefHex.get(bytesToHex(opRef)) ?? null);
@@ -196,20 +231,21 @@ function insertPendingOpsSql(entryCount: number): string {
 
   const rows: string[] = [];
   for (let i = 0; i < entryCount; i += 1) {
-    const base = i * 8;
+    const base = i * 9;
     rows.push(
-      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5}::bytea, $${base + 6}, $${base + 7}, $${base + 8})`,
+      `($${base + 1}, $${base + 2}::bytea, $${base + 3}::bytea, $${base + 4}::bytea, $${base + 5}::bytea, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`,
     );
   }
 
   return `
-INSERT INTO treecrdt_sync_pending_ops (doc_id, op_ref, op, sig, proof_ref, reason, message, created_at_ms)
+INSERT INTO treecrdt_sync_pending_ops (doc_id, op_ref, op, sig, proof_ref, claims_json, reason, message, created_at_ms)
 VALUES ${rows.join(',\n')}
 ON CONFLICT (doc_id, op_ref)
 DO UPDATE SET
   op = EXCLUDED.op,
   sig = EXCLUDED.sig,
   proof_ref = EXCLUDED.proof_ref,
+  claims_json = EXCLUDED.claims_json,
   reason = EXCLUDED.reason,
   message = EXCLUDED.message,
   created_at_ms = EXCLUDED.created_at_ms
@@ -272,10 +308,12 @@ export function createPendingOpsStore(opts: {
   return {
     init: async () => {
       await pool.query(PENDING_SCHEMA_SQL);
+      await pool.query(PENDING_MIGRATIONS_SQL);
     },
     forDoc: (docId: string): SyncPendingOpsStore<Operation> => ({
       init: async () => {
         await pool.query(PENDING_SCHEMA_SQL);
+        await pool.query(PENDING_MIGRATIONS_SQL);
       },
       storePendingOps: async (entries) => {
         if (entries.length === 0) return;
@@ -291,6 +329,7 @@ export function createPendingOpsStore(opts: {
             encodeTreecrdtSyncV0Operation(entry.op),
             entry.auth.sig,
             entry.auth.proofRef ?? null,
+            encodeOpAuthClaims(entry.auth),
             entry.reason,
             entry.message ?? null,
             nowMs(),
@@ -304,11 +343,12 @@ export function createPendingOpsStore(opts: {
           op: Buffer;
           sig: Buffer;
           proof_ref: Buffer | null;
+          claims_json: string | null;
           reason: string;
           message: string | null;
         }>(
           `
-SELECT op, sig, proof_ref, reason, message
+SELECT op, sig, proof_ref, claims_json, reason, message
 FROM treecrdt_sync_pending_ops
 WHERE doc_id = $1
 ORDER BY created_at_ms ASC, op_ref ASC
@@ -316,20 +356,24 @@ ORDER BY created_at_ms ASC, op_ref ASC
           [docId],
         );
 
-        return res.rows.map((row) => ({
-          op: decodeTreecrdtSyncV0Operation(toBytes(row.op)),
-          auth: {
-            sig: toBytes(row.sig),
-            ...(row.proof_ref ? { proofRef: toBytes(row.proof_ref) } : {}),
-          },
-          reason:
-            row.reason === 'missing_context'
-              ? 'missing_context'
-              : (() => {
-                  throw new Error(`unexpected pending reason: ${row.reason}`);
-                })(),
-          ...(row.message ? { message: row.message } : {}),
-        }));
+        return res.rows.map((row) => {
+          const claims = decodeOpAuthClaims(row.claims_json);
+          return {
+            op: decodeTreecrdtSyncV0Operation(toBytes(row.op)),
+            auth: {
+              sig: toBytes(row.sig),
+              ...(row.proof_ref ? { proofRef: toBytes(row.proof_ref) } : {}),
+              ...(claims ? { claims } : {}),
+            },
+            reason:
+              row.reason === 'missing_context'
+                ? 'missing_context'
+                : (() => {
+                    throw new Error(`unexpected pending reason: ${row.reason}`);
+                  })(),
+            ...(row.message ? { message: row.message } : {}),
+          };
+        });
       },
       listPendingOpRefs: async () => {
         const res = await pool.query<{ op_ref: Buffer }>(

@@ -6,8 +6,10 @@ import type {
   MaterializationOutcome,
   MaterializationSigner,
   MaterializationSource,
+  WriteOptions,
 } from './engine.js';
 import {
+  bytesToHex,
   decodeNodeId,
   decodeReplicaId,
   hexToBytes,
@@ -104,12 +106,36 @@ function localWriteAuthSigner(
   return decodeMaterializationSigner(authSession.signer);
 }
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
+function materializationSourceKey(source: MaterializationSource): string {
+  return `${bytesToHex(source.operation.id.replica)}:${source.operation.id.counter}`;
+}
+
+export function annotateOutcomeSources(
+  outcome: MaterializationOutcome,
+  sources?: WriteOptions['materializationSources'],
+): MaterializationOutcome {
+  if (!sources || sources.length === 0) return outcome;
+  const byOpId = new Map<string, MaterializationSource>();
+  for (const source of sources) byOpId.set(materializationSourceKey(source), source);
+  if (byOpId.size === 0) return outcome;
+
+  return {
+    ...outcome,
+    changes: outcome.changes.map((change) => {
+      const source = change.source;
+      if (!source) return change;
+      const verifiedSource = byOpId.get(materializationSourceKey(source));
+      if (!verifiedSource) return change;
+      return {
+        ...change,
+        source: {
+          ...source,
+          ...(verifiedSource.signer ? { signer: verifiedSource.signer } : {}),
+          ...(verifiedSource.time ? { time: verifiedSource.time } : {}),
+        },
+      };
+    }),
+  };
 }
 
 function annotateOutcomeSigner(
@@ -118,24 +144,18 @@ function annotateOutcomeSigner(
   signer?: MaterializationSigner,
 ): MaterializationOutcome {
   if (!signer) return outcome;
-  const opReplica = replicaIdToBytes(op.meta.id.replica);
-  const opCounter = op.meta.id.counter;
-  return {
-    ...outcome,
-    changes: outcome.changes.map((change) => {
-      const source = change.source;
-      if (!source) return change;
-      if (source.operation.id.counter !== opCounter) return change;
-      if (!bytesEqual(source.operation.id.replica, opReplica)) return change;
-      return {
-        ...change,
-        source: {
-          ...source,
-          signer,
+  return annotateOutcomeSources(outcome, [
+    {
+      operation: {
+        id: {
+          replica: replicaIdToBytes(op.meta.id.replica),
+          counter: op.meta.id.counter,
         },
-      };
-    }),
-  };
+        lamport: op.meta.lamport,
+      },
+      signer,
+    },
+  ]);
 }
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);

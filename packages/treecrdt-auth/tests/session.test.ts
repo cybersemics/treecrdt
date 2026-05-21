@@ -38,6 +38,7 @@ test('auth session warms sync auth and exposes ready state', async () => {
   expect(session.getState().status).toBe('loading');
   await session.ready;
   expect(session.getState().status).toBe('ready');
+  expect(session.signer.publicKey).toEqual(testKey(5));
 });
 
 test('auth session advertises async local identity chain without app-side wrappers', async () => {

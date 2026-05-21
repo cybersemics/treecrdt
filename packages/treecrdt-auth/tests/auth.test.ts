@@ -335,6 +335,85 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   );
 });
 
+test('auth: signOps signs authoredAt claims', async () => {
+  const docId = 'doc-auth-authored-at';
+  const root = '0'.repeat(32);
+  const authoredAtMs = 1_700_000_000_123;
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+
+  const token = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ['write_structure'],
+  });
+
+  const authWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [token],
+    requireProofRef: true,
+    nowMs: () => authoredAtMs,
+  });
+
+  const authVerifier = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+  });
+
+  const helloCaps = await authWriter.helloCapabilities?.({ docId });
+  await authVerifier.onHello?.(
+    { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
+    { docId },
+  );
+
+  const op = makeOp(writerPk, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
+  const auth = await authWriter.signOps?.([op], ctx);
+  expect(auth?.[0]?.claims).toEqual({ authoredAtMs });
+
+  const verifyRes = await authVerifier.verifyOps?.([op], auth, ctx);
+  expect(verifyRes?.dispositions).toEqual([{ status: 'allow' }]);
+  expect(verifyRes?.verified?.[0]?.signer?.publicKey).toEqual(writerPk);
+  expect(verifyRes?.verified?.[0]?.claims).toEqual({ authoredAtMs });
+
+  await expect(
+    authVerifier.verifyOps?.(
+      [op],
+      [{ ...auth![0]!, claims: { authoredAtMs: authoredAtMs + 1 } }],
+      ctx,
+    ),
+  ).rejects.toThrow(/invalid op signature/i);
+
+  await expect(
+    authVerifier.verifyOps?.(
+      [op],
+      [
+        {
+          sig: auth![0]!.sig,
+          ...(auth![0]!.proofRef ? { proofRef: auth![0]!.proofRef } : {}),
+        },
+      ],
+      ctx,
+    ),
+  ).rejects.toThrow(/invalid op signature/i);
+});
+
 test('auth ignores foreign peer capability tokens during hello and still verifies known authors', async () => {
   const docId = 'doc-auth-ignore-foreign-hello-cap';
   const root = '0'.repeat(32);
@@ -411,7 +490,7 @@ test('auth ignores foreign peer capability tokens during hello and still verifie
   ).resolves.toEqual([true]);
   await expect(
     authVerifier.verifyOps?.([op], auth, { docId, purpose: 'reconcile', filterId: 'all' }),
-  ).resolves.toBeUndefined();
+  ).resolves.toMatchObject({ dispositions: [{ status: 'allow' }] });
 });
 
 test('auth re-advertises trusted author capability tokens from the capability store after restart', async () => {
@@ -509,7 +588,7 @@ test('auth re-advertises trusted author capability tokens from the capability st
   const signed = await authWriter.signOps?.([op], { docId, purpose: 'reconcile', filterId: 'all' });
   await expect(
     authJoiner.verifyOps?.([op], signed, { docId, purpose: 'reconcile', filterId: 'all' }),
-  ).resolves.toBeUndefined();
+  ).resolves.toMatchObject({ dispositions: [{ status: 'allow' }] });
 });
 
 test('auth: replayed author capability tokens do not widen peer filter scope', async () => {

@@ -5,7 +5,12 @@ import {
   isAnyAuthCapability,
   isAuthCapability,
 } from './auth-capabilities.js';
-import type { SyncAuth, SyncAuthVerifyOpsResult, SyncOpPurpose } from './auth.js';
+import type {
+  SyncAuth,
+  SyncAuthOpDisposition,
+  SyncAuthVerifyOpsResult,
+  SyncOpPurpose,
+} from './auth.js';
 import {
   buildInitiatorHelloCapabilities,
   capabilitySetFingerprint,
@@ -31,6 +36,7 @@ import type {
   RibltStatus,
   Subscribe,
   SubscribeAck,
+  SyncVerifiedOpMetadata,
   SyncBackend,
   SyncMessage,
   Unsubscribe,
@@ -63,6 +69,31 @@ function deferred<T>(): Pending<T> {
   // awaiting code reaches it (we still propagate failures via awaits/races).
   void promise.catch(() => {});
   return { promise, resolve, reject };
+}
+
+function parseVerifyOpsResult(
+  verifyRes: void | SyncAuthVerifyOpsResult,
+  opCount: number,
+): {
+  dispositions?: readonly SyncAuthOpDisposition[];
+  verified?: readonly (SyncVerifiedOpMetadata | undefined)[];
+} {
+  if (verifyRes === undefined) return {};
+  const dispositions =
+    (verifyRes as SyncAuthVerifyOpsResult)?.dispositions ??
+    (() => {
+      throw new Error('verifyOps must return void or { dispositions: [...] }');
+    })();
+  if (dispositions.length !== opCount) {
+    throw new Error(`verifyOps returned ${dispositions.length} dispositions for ${opCount} ops`);
+  }
+
+  const verified = (verifyRes as SyncAuthVerifyOpsResult).verified;
+  if (verified && verified.length !== opCount) {
+    throw new Error(`verifyOps returned ${verified.length} metadata entries for ${opCount} ops`);
+  }
+
+  return { dispositions, verified };
 }
 
 type ResponderSession<Op> = {
@@ -1708,18 +1739,7 @@ export class SyncPeer<Op> {
       purpose,
       filterId: batch.filterId,
     });
-    const dispositions =
-      verifyRes === undefined
-        ? undefined
-        : ((verifyRes as SyncAuthVerifyOpsResult)?.dispositions ??
-          (() => {
-            throw new Error('verifyOps must return void or { dispositions: [...] }');
-          })());
-    if (dispositions && dispositions.length !== batch.ops.length) {
-      throw new Error(
-        `verifyOps returned ${dispositions.length} dispositions for ${batch.ops.length} ops`,
-      );
-    }
+    const { dispositions, verified } = parseVerifyOpsResult(verifyRes, batch.ops.length);
     if (auth && auth.length > 0) {
       await this.auth?.onVerifiedOps?.(batch.ops, auth, {
         docId: this.backend.docId,
@@ -1730,12 +1750,14 @@ export class SyncPeer<Op> {
 
     const pending: PendingOp<Op>[] = [];
     const allowedOps: Op[] = [];
+    const allowedMetadata: (SyncVerifiedOpMetadata | undefined)[] = [];
 
     for (let i = 0; i < batch.ops.length; i += 1) {
       const op = batch.ops[i]!;
       const d = dispositions?.[i];
       if (!d || d.status === 'allow') {
         allowedOps.push(op);
+        allowedMetadata.push(verified?.[i]);
         continue;
       }
       if (d.status !== 'pending_context') {
@@ -1761,7 +1783,7 @@ export class SyncPeer<Op> {
       await this.backend.storePendingOps(pending);
     }
 
-    await this.backend.applyOps(allowedOps);
+    await this.backend.applyOps(allowedOps, verified ? { verified: allowedMetadata } : undefined);
     if (allowedOps.length > 0) void this.notifyLocalUpdate(allowedOps);
     await this.reprocessPendingOps();
 
@@ -1825,17 +1847,11 @@ export class SyncPeer<Op> {
             continue;
           }
 
-          const dispositions =
-            res === undefined
-              ? undefined
-              : ((res as SyncAuthVerifyOpsResult)?.dispositions ??
-                (() => {
-                  throw new Error('verifyOps must return void or { dispositions: [...] }');
-                })());
+          const { dispositions, verified } = parseVerifyOpsResult(res, 1);
           const d = dispositions?.[0];
           if (d && d.status === 'pending_context') continue;
 
-          await this.backend.applyOps([p.op]);
+          await this.backend.applyOps([p.op], verified ? { verified } : undefined);
           await this.backend.deletePendingOps!([p.op]);
           progress = true;
           appliedOps.push(p.op);

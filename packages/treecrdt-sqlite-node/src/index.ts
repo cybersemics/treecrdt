@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  annotateOutcomeSources,
   createTreecrdtSqliteAdapter,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
@@ -221,11 +222,17 @@ export function createTreecrdtClient(
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
         const outcome = await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
+        materialized.emitOutcome(
+          annotateOutcomeSources(outcome, writeOpts?.materializationSources),
+          writeOpts?.writeId,
+        );
       },
       appendMany: async (ops, writeOpts?: WriteOptions) => {
         const outcome = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
+        materialized.emitOutcome(
+          annotateOutcomeSources(outcome, writeOpts?.materializationSources),
+          writeOpts?.writeId,
+        );
       },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,

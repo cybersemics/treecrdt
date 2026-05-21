@@ -29,6 +29,26 @@ function hexToBytesStrict(hex: string, expectedLen: number, field: string): Uint
   return bytes;
 }
 
+function encodeOpAuthClaims(auth: OpAuth): string | null {
+  return auth.claims ? JSON.stringify(auth.claims) : null;
+}
+
+function decodeOpAuthClaims(json: string | null): OpAuth['claims'] | undefined {
+  if (!json) return undefined;
+  const value = JSON.parse(json) as { authoredAtMs?: unknown };
+  return typeof value.authoredAtMs === 'number' ? { authoredAtMs: value.authoredAtMs } : undefined;
+}
+
+async function ensureAuthClaimsColumn(runner: SqliteRunner, table: string): Promise<void> {
+  const text = await runner.getText(
+    `SELECT COALESCE(json_group_array(name), '[]') FROM pragma_table_info('${table}')`,
+  );
+  const names = text ? (JSON.parse(text) as string[]) : [];
+  if (!names.includes('claims_json')) {
+    await runner.exec(`ALTER TABLE ${table} ADD COLUMN claims_json TEXT`);
+  }
+}
+
 export type SqlitePendingOpsStore = SyncPendingOpsStore<Operation>;
 export type SqliteOpAuthStore = SyncOpAuthStore & {
   init: () => Promise<void>;
@@ -44,6 +64,7 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   op BLOB NOT NULL,                  -- protobuf bytes (sync/v0 Operation)
   sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
   proof_ref BLOB,                    -- 16 bytes (token id), nullable
+  claims_json TEXT,                  -- JSON-encoded signed OpAuth claims, nullable
   reason TEXT NOT NULL,              -- e.g. "missing_context"
   message TEXT,
   created_at_ms INTEGER NOT NULL,
@@ -57,6 +78,7 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
   op_ref BLOB NOT NULL,              -- 16 bytes
   sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
   proof_ref BLOB,                    -- 16 bytes (token id), nullable
+  claims_json TEXT,                  -- JSON-encoded signed OpAuth claims, nullable
   created_at_ms INTEGER NOT NULL,
   PRIMARY KEY (doc_id, op_ref)
 );
@@ -81,8 +103,8 @@ export function createPendingOpsStore(opts: {
 
   const insertSql = `
 INSERT OR REPLACE INTO treecrdt_sync_pending_ops
-  (doc_id, op_ref, op, sig, proof_ref, reason, message, created_at_ms)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+  (doc_id, op_ref, op, sig, proof_ref, claims_json, reason, message, created_at_ms)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
 RETURNING 1
 `;
 
@@ -93,6 +115,7 @@ FROM (
     'op_hex', hex(op),
     'sig_hex', hex(sig),
     'proof_ref_hex', CASE WHEN proof_ref IS NULL THEN NULL ELSE hex(proof_ref) END,
+    'claims_json', claims_json,
     'reason', reason,
     'message', message
   ) AS obj
@@ -123,6 +146,7 @@ RETURNING 1
   return {
     init: async () => {
       await opts.runner.exec(PENDING_SCHEMA_SQL);
+      await ensureAuthClaimsColumn(opts.runner, 'treecrdt_sync_pending_ops');
     },
 
     storePendingOps: async (pending) => {
@@ -139,6 +163,7 @@ RETURNING 1
           opBytes,
           p.auth.sig,
           proofRef,
+          encodeOpAuthClaims(p.auth),
           p.reason,
           message,
           nowMs(),
@@ -153,6 +178,7 @@ RETURNING 1
         op_hex: string;
         sig_hex: string;
         proof_ref_hex: string | null;
+        claims_json: string | null;
         reason: string;
         message: string | null;
       }>;
@@ -165,6 +191,7 @@ RETURNING 1
         const proofRef = r.proof_ref_hex
           ? hexToBytesStrict(r.proof_ref_hex, 16, 'pending proof_ref')
           : undefined;
+        const claims = decodeOpAuthClaims(r.claims_json);
 
         if (r.reason !== 'missing_context') {
           throw new Error(`unexpected pending reason: ${r.reason}`);
@@ -172,7 +199,7 @@ RETURNING 1
 
         return {
           op,
-          auth: { sig, ...(proofRef ? { proofRef } : {}) },
+          auth: { sig, ...(proofRef ? { proofRef } : {}), ...(claims ? { claims } : {}) },
           reason: 'missing_context',
           ...(r.message ? { message: r.message } : {}),
         } satisfies PendingOp<Operation>;
@@ -204,8 +231,8 @@ export function createOpAuthStore(opts: {
 
   const insertSql = `
 INSERT OR REPLACE INTO treecrdt_sync_op_auth
-  (doc_id, op_ref, sig, proof_ref, created_at_ms)
-VALUES (?1, ?2, ?3, ?4, ?5)
+  (doc_id, op_ref, sig, proof_ref, claims_json, created_at_ms)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 RETURNING 1
 `;
 
@@ -219,7 +246,8 @@ FROM (
   SELECT json_object(
     'op_ref_hex', hex(op_ref),
     'sig_hex', hex(sig),
-    'proof_ref_hex', CASE WHEN proof_ref IS NULL THEN NULL ELSE hex(proof_ref) END
+    'proof_ref_hex', CASE WHEN proof_ref IS NULL THEN NULL ELSE hex(proof_ref) END,
+    'claims_json', claims_json
   ) AS obj
   FROM treecrdt_sync_op_auth
   WHERE doc_id = ?1 AND op_ref IN (${placeholders})
@@ -230,6 +258,7 @@ FROM (
   return {
     init: async () => {
       await opts.runner.exec(OP_AUTH_SCHEMA_SQL);
+      await ensureAuthClaimsColumn(opts.runner, 'treecrdt_sync_op_auth');
     },
 
     storeOpAuth: async (entries) => {
@@ -237,7 +266,14 @@ FROM (
 
       for (const e of entries) {
         const proofRef = e.auth.proofRef ?? null;
-        await opts.runner.getText(insertSql, [opts.docId, e.opRef, e.auth.sig, proofRef, nowMs()]);
+        await opts.runner.getText(insertSql, [
+          opts.docId,
+          e.opRef,
+          e.auth.sig,
+          proofRef,
+          encodeOpAuthClaims(e.auth),
+          nowMs(),
+        ]);
       }
     },
 
@@ -251,6 +287,7 @@ FROM (
         op_ref_hex: string;
         sig_hex: string;
         proof_ref_hex: string | null;
+        claims_json: string | null;
       }>;
 
       const byHex = new Map<string, OpAuth>();
@@ -260,7 +297,12 @@ FROM (
         const proofRef = r.proof_ref_hex
           ? hexToBytesStrict(r.proof_ref_hex, 16, 'op_auth proof_ref')
           : undefined;
-        byHex.set(opRefHex, { sig, ...(proofRef ? { proofRef } : {}) });
+        const claims = decodeOpAuthClaims(r.claims_json);
+        byHex.set(opRefHex, {
+          sig,
+          ...(proofRef ? { proofRef } : {}),
+          ...(claims ? { claims } : {}),
+        });
       }
 
       return opRefs.map((ref) => byHex.get(bytesToHex(ref)) ?? null);

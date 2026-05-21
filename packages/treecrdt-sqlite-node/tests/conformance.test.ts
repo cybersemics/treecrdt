@@ -7,6 +7,7 @@ import {
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
+import type { Operation } from '@treecrdt/interface';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import {
   createTreecrdtClient,
@@ -91,6 +92,46 @@ test('sqlite auth-aware local write emits materialization after auth succeeds', 
     expect(events[0]!.changes[0]!.source?.signer?.publicKey).toEqual(signerPublicKey);
     expect(await client.tree.exists(node)).toBe(true);
     expect(await client.ops.all()).toHaveLength(1);
+  } finally {
+    unsubscribe();
+    await client.close();
+  }
+});
+
+test('sqlite append emits provided materialization source metadata', async () => {
+  const client = await createNodeEngine({ docId: 'sqlite-append-source-metadata' });
+  const events: MaterializationEvent[] = [];
+  const unsubscribe = client.onMaterialized((event) => events.push(event));
+  const node = nodeIdFromInt(12);
+  const signerPublicKey = Uint8Array.from({ length: 32 }, (_, i) => 255 - i);
+  const authoredAtMs = 1_700_000_000_789;
+  const op: Operation = {
+    meta: { id: { replica, counter: 1 }, lamport: 1 },
+    kind: {
+      type: 'insert',
+      parent: root,
+      node,
+      orderKey: new Uint8Array([1]),
+    },
+  };
+
+  try {
+    await client.ops.append(op, {
+      materializationSources: [
+        {
+          operation: {
+            id: { replica: op.meta.id.replica, counter: op.meta.id.counter },
+            lamport: op.meta.lamport,
+          },
+          signer: { publicKey: signerPublicKey },
+          time: { authoredAtMs },
+        },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.changes[0]!.source?.signer?.publicKey).toEqual(signerPublicKey);
+    expect(events[0]!.changes[0]!.source?.time).toEqual({ authoredAtMs });
   } finally {
     unsubscribe();
     await client.close();

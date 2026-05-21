@@ -5,6 +5,11 @@ export type MaterializationSigner = {
   publicKey: Uint8Array;
 };
 
+export type MaterializationTime = {
+  /** Signed wall-clock authoring claim, when the auth layer verified one. */
+  authoredAtMs?: number;
+};
+
 export type MaterializationSource = {
   /**
    * Operation that caused the visible change.
@@ -21,6 +26,8 @@ export type MaterializationSource = {
   };
   /** Auth signer metadata for the operation, when available. */
   signer?: MaterializationSigner;
+  /** Authenticated timing metadata for the operation, when available. */
+  time?: MaterializationTime;
 };
 
 type ChangeSource = {
@@ -114,6 +121,13 @@ export function createMaterializationDispatcher(): MaterializationDispatcher {
 
 export type WriteOptions = {
   writeId?: string;
+  /**
+   * Optional source metadata aligned with the ops passed to append/appendMany.
+   *
+   * This lets sync/auth adapters preserve verified op metadata on materialization events without
+   * putting app metadata into TreeCRDT payloads.
+   */
+  materializationSources?: readonly MaterializationSource[];
 };
 
 export type LocalWriteAuthSession = {

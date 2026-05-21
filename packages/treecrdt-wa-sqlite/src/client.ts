@@ -1,6 +1,7 @@
 import { clearOpfsStorage, detectOpfsSupport } from './opfs.js';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
+  annotateOutcomeSources,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -855,11 +856,17 @@ function makeTreecrdtClientFromCall(opts: {
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
         const outcome = await call('append', [op]);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
+        materialized.emitOutcome(
+          annotateOutcomeSources(outcome, writeOpts?.materializationSources),
+          writeOpts?.writeId,
+        );
       },
       appendMany: async (ops, writeOpts?: WriteOptions) => {
         const outcome = await call('appendMany', [ops]);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
+        materialized.emitOutcome(
+          annotateOutcomeSources(outcome, writeOpts?.materializationSources),
+          writeOpts?.writeId,
+        );
       },
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
