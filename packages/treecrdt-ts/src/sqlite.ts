@@ -4,6 +4,7 @@ import type {
   LocalWriteOptions,
   MaterializationEvent,
   MaterializationOutcome,
+  MaterializationSigner,
   MaterializationSource,
 } from './engine.js';
 import {
@@ -83,6 +84,58 @@ function emitLocalOutcome(
 ): void {
   if (outcome.changes.length > 0)
     emit?.({ ...outcome, ...(writeId ? { writeIds: [writeId] } : {}) });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function decodeMaterializationSigner(raw: unknown): MaterializationSigner | undefined {
+  if (!isRecord(raw)) return undefined;
+  const publicKey = raw.publicKey;
+  if (publicKey instanceof Uint8Array) return { publicKey: Uint8Array.from(publicKey) };
+  if (Array.isArray(publicKey)) return { publicKey: Uint8Array.from(publicKey) };
+  return undefined;
+}
+
+function localWriteAuthSigner(
+  authSession: NonNullable<LocalWriteOptions['authSession']>,
+): MaterializationSigner | undefined {
+  return decodeMaterializationSigner(authSession.signer);
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function annotateOutcomeSigner(
+  outcome: MaterializationOutcome,
+  op: Operation,
+  signer?: MaterializationSigner,
+): MaterializationOutcome {
+  if (!signer) return outcome;
+  const opReplica = replicaIdToBytes(op.meta.id.replica);
+  const opCounter = op.meta.id.counter;
+  return {
+    ...outcome,
+    changes: outcome.changes.map((change) => {
+      const source = change.source;
+      if (!source) return change;
+      if (source.operation.id.counter !== opCounter) return change;
+      if (!bytesEqual(source.operation.id.replica, opReplica)) return change;
+      return {
+        ...change,
+        source: {
+          ...source,
+          signer,
+        },
+      };
+    }),
+  };
 }
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
@@ -639,7 +692,11 @@ export function createTreecrdtSqliteWriter(
       await authSession.authorizeLocalOps([op]);
       await sqliteExec(runner, `RELEASE ${savepoint}`);
       released = true;
-      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
+      emitLocalOutcome(
+        annotateOutcomeSigner(outcome, op, localWriteAuthSigner(authSession)),
+        opts.onMaterialized,
+        writeOpts?.writeId,
+      );
       return op;
     } catch (err) {
       if (!released) {

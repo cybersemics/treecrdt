@@ -7,6 +7,7 @@ import {
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import {
   createTreecrdtClient,
   defaultExtensionPath,
@@ -68,9 +69,11 @@ test('sqlite auth-aware local write rolls back on auth failure', async () => {
 
 test('sqlite auth-aware local write emits materialization after auth succeeds', async () => {
   const client = await createNodeEngine({ docId: 'sqlite-auth-local-success' });
-  const events: unknown[] = [];
+  const events: MaterializationEvent[] = [];
   const unsubscribe = client.onMaterialized((event) => events.push(event));
+  const signerPublicKey = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
   const authSession = {
+    signer: { publicKey: signerPublicKey },
     authorizeLocalOps: vi.fn(async () => {
       expect(events).toHaveLength(0);
     }),
@@ -85,6 +88,7 @@ test('sqlite auth-aware local write emits materialization after auth succeeds', 
     expect(op.kind.type).toBe('insert');
     expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
     expect(events).toHaveLength(1);
+    expect(events[0]!.changes[0]!.source?.signer?.publicKey).toEqual(signerPublicKey);
     expect(await client.tree.exists(node)).toBe(true);
     expect(await client.ops.all()).toHaveLength(1);
   } finally {
