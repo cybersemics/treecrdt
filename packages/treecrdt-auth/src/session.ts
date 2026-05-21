@@ -56,28 +56,6 @@ export type TreecrdtAuthSessionLocal = {
 
 export type TreecrdtAuthSessionLocalAuthorizeOptions = Partial<SyncAuthOpsContext>;
 
-type LegacyTreecrdtAuthSessionOptions = Pick<
-  TreecrdtCoseCwtAuthOptions,
-  'scopeEvaluator' | 'capabilityStore' | 'opAuthStore' | 'onPeerIdentityChain'
-> &
-  Partial<
-    Pick<
-      TreecrdtCoseCwtAuthOptions,
-      | 'issuerPublicKeys'
-      | 'localPrivateKey'
-      | 'localPublicKey'
-      | 'localCapabilityTokens'
-      | 'localRevocationRecords'
-    >
-  > & {
-    /** Prefer `identity.local`; kept so existing callers do not need to migrate immediately. */
-    localIdentityChain?:
-      | TreecrdtIdentityChainV1
-      | (() => MaybePromise<TreecrdtIdentityChainV1 | null | undefined>);
-    /** Prefer `identity.onLocalError`; kept so existing callers do not need to migrate immediately. */
-    onIdentityChainError?: (error: unknown) => void;
-  };
-
 export type TreecrdtAuthSessionOptions = Omit<
   TreecrdtCoseCwtAuthOptions,
   | 'localIdentityChain'
@@ -90,16 +68,15 @@ export type TreecrdtAuthSessionOptions = Omit<
   | 'localPublicKey'
   | 'localCapabilityTokens'
   | 'localRevocationRecords'
-> &
-  LegacyTreecrdtAuthSessionOptions & {
-    /** Doc used to warm local auth material before the session is handed to sync. */
-    docId: string;
-    /** Backend-owned auth dependencies, e.g. subtree scope checks and proof-material stores. */
-    backend?: TreecrdtAuthSessionBackend;
-    identity?: TreecrdtAuthSessionIdentity;
-    trust?: TreecrdtAuthSessionTrust;
-    local?: TreecrdtAuthSessionLocal;
-  };
+> & {
+  /** Doc used to warm local auth material before the session is handed to sync. */
+  docId: string;
+  /** Backend-owned auth dependencies, e.g. subtree scope checks and proof-material stores. */
+  backend?: TreecrdtAuthSessionBackend;
+  identity?: TreecrdtAuthSessionIdentity;
+  trust: TreecrdtAuthSessionTrust;
+  local: TreecrdtAuthSessionLocal;
+};
 
 export type TreecrdtAuthSession = {
   syncAuth: SyncAuth<Operation>;
@@ -119,46 +96,25 @@ export type TreecrdtAuthSession = {
  * awaiting `ready` before passing it into sync startup, avoiding per-app warmup wrappers.
  */
 export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): TreecrdtAuthSession {
-  const {
-    docId,
-    backend,
-    identity,
-    trust,
-    local,
-    localIdentityChain,
-    onIdentityChainError,
-    scopeEvaluator,
-    capabilityStore,
-    opAuthStore,
-    onPeerIdentityChain,
-    issuerPublicKeys,
-    localPrivateKey,
-    localPublicKey,
-    localCapabilityTokens,
-    localRevocationRecords,
-    ...authOptsBase
-  } = opts;
-  const resolvedIssuerPublicKeys = trust?.issuerPublicKeys ?? issuerPublicKeys;
-  const resolvedLocalPrivateKey = local?.privateKey ?? localPrivateKey;
-  const resolvedLocalPublicKey = local?.publicKey ?? localPublicKey;
-  if (!resolvedIssuerPublicKeys) throw new Error('auth session requires trust.issuerPublicKeys');
-  if (!resolvedLocalPrivateKey) throw new Error('auth session requires local.privateKey');
-  if (!resolvedLocalPublicKey) throw new Error('auth session requires local.publicKey');
+  const { docId, backend, identity, trust, local, ...authOptsBase } = opts;
+  if (!trust?.issuerPublicKeys) throw new Error('auth session requires trust.issuerPublicKeys');
+  if (!local?.privateKey) throw new Error('auth session requires local.privateKey');
+  if (!local?.publicKey) throw new Error('auth session requires local.publicKey');
 
   const authOpts: TreecrdtCoseCwtAuthOptions = {
     ...authOptsBase,
-    issuerPublicKeys: resolvedIssuerPublicKeys,
-    localPrivateKey: resolvedLocalPrivateKey,
-    localPublicKey: resolvedLocalPublicKey,
-    localCapabilityTokens: local?.capabilityTokens ?? localCapabilityTokens,
-    localRevocationRecords: local?.revocationRecords ?? localRevocationRecords,
-    scopeEvaluator: backend?.scopeEvaluator ?? scopeEvaluator,
-    capabilityStore: backend?.capabilityStore ?? capabilityStore,
-    opAuthStore: backend?.opAuthStore ?? opAuthStore,
-    onPeerIdentityChain: identity?.onPeer ?? onPeerIdentityChain,
+    issuerPublicKeys: trust.issuerPublicKeys,
+    localPrivateKey: local.privateKey,
+    localPublicKey: local.publicKey,
+    localCapabilityTokens: local.capabilityTokens,
+    localRevocationRecords: local.revocationRecords,
+    scopeEvaluator: backend?.scopeEvaluator,
+    capabilityStore: backend?.capabilityStore,
+    opAuthStore: backend?.opAuthStore,
+    onPeerIdentityChain: identity?.onPeer,
   };
-  const resolvedLocalIdentityChain = identity?.local ?? localIdentityChain;
-  const resolvedOnIdentityChainError = identity?.onLocalError ?? onIdentityChainError;
+  const resolvedLocalIdentityChain = identity?.local;
+  const resolvedOnIdentityChainError = identity?.onLocalError;
   const baseAuth = createTreecrdtCoseCwtAuth(authOpts);
   let state: TreecrdtAuthSessionState = { status: 'loading' };
 
