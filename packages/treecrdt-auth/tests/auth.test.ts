@@ -387,7 +387,10 @@ test('auth: signOps signs authoredAt claims', async () => {
   const auth = await authWriter.signOps?.([op], ctx);
   expect(auth?.[0]?.claims).toEqual({ authoredAtMs });
 
-  await expect(authVerifier.verifyOps?.([op], auth, ctx)).resolves.toBeUndefined();
+  const verifyRes = await authVerifier.verifyOps?.([op], auth, ctx);
+  expect(verifyRes?.dispositions).toEqual([{ status: 'allow' }]);
+  expect(verifyRes?.verified?.[0]?.signer?.publicKey).toEqual(writerPk);
+  expect(verifyRes?.verified?.[0]?.claims).toEqual({ authoredAtMs });
 
   await expect(
     authVerifier.verifyOps?.(
@@ -487,7 +490,7 @@ test('auth ignores foreign peer capability tokens during hello and still verifie
   ).resolves.toEqual([true]);
   await expect(
     authVerifier.verifyOps?.([op], auth, { docId, purpose: 'reconcile', filterId: 'all' }),
-  ).resolves.toBeUndefined();
+  ).resolves.toMatchObject({ dispositions: [{ status: 'allow' }] });
 });
 
 test('auth re-advertises trusted author capability tokens from the capability store after restart', async () => {
@@ -585,7 +588,7 @@ test('auth re-advertises trusted author capability tokens from the capability st
   const signed = await authWriter.signOps?.([op], { docId, purpose: 'reconcile', filterId: 'all' });
   await expect(
     authJoiner.verifyOps?.([op], signed, { docId, purpose: 'reconcile', filterId: 'all' }),
-  ).resolves.toBeUndefined();
+  ).resolves.toMatchObject({ dispositions: [{ status: 'allow' }] });
 });
 
 test('auth: replayed author capability tokens do not widen peer filter scope', async () => {

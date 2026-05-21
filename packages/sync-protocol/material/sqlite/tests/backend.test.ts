@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 
+import type { Operation } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import { deriveOpRefV0, type OpRef } from '@treecrdt/sync-protocol';
@@ -13,6 +14,55 @@ function replicaFromLabel(label: string): Uint8Array {
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
 }
+
+test('backend applyOps forwards verified metadata as materialization sources', async () => {
+  const docId = 'doc-backend-materialization-metadata';
+  const replica = replicaFromLabel('writer');
+  const authoredAtMs = 1_700_000_000_456;
+  const op: Operation = {
+    meta: { id: { replica, counter: 7 }, lamport: 12 },
+    kind: {
+      type: 'insert',
+      parent: '00'.repeat(16),
+      node: '44'.repeat(16),
+      orderKey: new Uint8Array([1]),
+    },
+  };
+  let captured: unknown;
+
+  const backend = createTreecrdtSyncBackendFromClient(
+    {
+      opRefs: {
+        all: async () => [],
+        children: async () => [],
+      },
+      ops: {
+        get: async () => [],
+        appendMany: async (_ops, opts) => {
+          captured = opts;
+        },
+      },
+    },
+    docId,
+  );
+
+  await backend.applyOps([op], {
+    verified: [{ signer: { publicKey: replica }, claims: { authoredAtMs } }],
+  });
+
+  expect(captured).toEqual({
+    materializationSources: [
+      {
+        operation: {
+          id: { replica, counter: 7 },
+          lamport: 12,
+        },
+        signer: { publicKey: replica },
+        time: { authoredAtMs },
+      },
+    ],
+  });
+});
 
 test("backend children(parent) includes the parent's latest payload opRef", async () => {
   const docId = 'doc-backend-payload-root';

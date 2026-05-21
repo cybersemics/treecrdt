@@ -21,6 +21,7 @@ import {
   type OpRef,
   type SyncAuth,
   type SyncCapabilityMaterialStore,
+  type SyncVerifiedOpMetadata,
 } from '@treecrdt/sync-protocol';
 
 import { base64urlDecode, base64urlEncode } from '../base64url.js';
@@ -714,6 +715,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const dispositions: Array<
         { status: 'allow' } | { status: 'pending_context'; message?: string }
       > = [];
+      const verified: Array<SyncVerifiedOpMetadata | undefined> = [];
       const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
@@ -793,6 +795,10 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
               publicKey: replica,
             });
         if (!ok) throw new Error('invalid op signature');
+        verified.push({
+          signer: { publicKey: Uint8Array.from(replica) },
+          ...(a.claims ? { claims: a.claims } : {}),
+        });
         const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
         opAuthByOpRefHex.set(bytesToHex(opRef), a);
         if (opts.opAuthStore) toPersist.push({ opRef, auth: a });
@@ -812,13 +818,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           await ensureOpAuthStoreReady();
           await opts.opAuthStore.storeOpAuth(toPersist);
         }
-        return { dispositions };
+        return { dispositions, verified };
       }
 
       if (opts.opAuthStore && toPersist.length > 0) {
         await ensureOpAuthStoreReady();
         await opts.opAuthStore.storeOpAuth(toPersist);
       }
+      return { dispositions, verified };
     },
   };
 }

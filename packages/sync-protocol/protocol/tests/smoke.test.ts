@@ -11,7 +11,13 @@ import { SyncPeer } from '../dist/sync.js';
 import { createInMemoryConnectedPeers } from '../dist/in-memory.js';
 import { wrapDuplexTransportWithCodec } from '../dist/transport/index.js';
 import type { DuplexTransport } from '../dist/transport/index.js';
-import type { Filter, OpRef, SyncBackend, SyncMessage } from '../dist/types.js';
+import type {
+  Filter,
+  OpRef,
+  SyncApplyOpsMetadata,
+  SyncBackend,
+  SyncMessage,
+} from '../dist/types.js';
 
 function opRefFor(docId: string, replica: string, counter: number): OpRef {
   const h = createHash('sha256');
@@ -334,6 +340,15 @@ class CountingListBackend extends MemoryBackend {
   }
 }
 
+class MetadataCaptureBackend extends MemoryBackend {
+  lastApplyMetadata: SyncApplyOpsMetadata | undefined;
+
+  override async applyOps(ops: Operation[], metadata?: SyncApplyOpsMetadata): Promise<void> {
+    this.lastApplyMetadata = metadata;
+    await super.applyOps(ops);
+  }
+}
+
 test('syncOnce does not starve macrotask transports', async () => {
   const docId = 'doc-sync-macrotask';
   const root = '0'.repeat(32);
@@ -363,6 +378,63 @@ test('syncOnce does not starve macrotask transports', async () => {
   await waitUntil(() => b.hasOp(replicaHex.a, 1), {
     message: 'expected b to receive a:1 via macrotask duplex',
   });
+});
+
+test('syncOnce passes verified auth metadata to applyOps', async () => {
+  const docId = 'doc-sync-auth-metadata';
+  const root = '0'.repeat(32);
+  const authoredAtMs = 1_700_000_000_123;
+
+  const a = new MemoryBackend(docId);
+  const b = new MetadataCaptureBackend(docId);
+  const op = makeOp(replicas.a, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(13),
+    orderKey: orderKeyFromPosition(0),
+  });
+
+  await a.applyOps([op]);
+
+  const {
+    peerA: pa,
+    transportA: ta,
+    detach,
+  } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: {
+      auth: {
+        helloCapabilities: async () => [{ name: 'auth.capability', value: 'writer-token' }],
+        signOps: async (ops) =>
+          ops.map(() => ({ sig: new Uint8Array([1]), claims: { authoredAtMs } })),
+      },
+    },
+    peerBOptions: {
+      auth: {
+        helloCapabilities: async () => [{ name: 'auth.capability', value: 'reader-token' }],
+        onHello: async () => [{ name: 'auth.capability', value: 'reader-token' }],
+        verifyOps: async (ops, auth) => ({
+          dispositions: ops.map(() => ({ status: 'allow' as const })),
+          verified: ops.map((verifiedOp, i) => ({
+            signer: { publicKey: verifiedOp.meta.id.replica },
+            claims: auth?.[i]?.claims,
+          })),
+        }),
+      },
+    },
+  });
+
+  try {
+    await pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 });
+
+    expect(b.hasOp(replicaHex.a, 1)).toBe(true);
+    expect(b.lastApplyMetadata?.verified?.[0]?.signer?.publicKey).toEqual(replicas.a);
+    expect(b.lastApplyMetadata?.verified?.[0]?.claims).toEqual({ authoredAtMs });
+  } finally {
+    detach();
+  }
 });
 
 test('syncOnce paces outbound codewords until delayed ribltStatus arrives', async () => {

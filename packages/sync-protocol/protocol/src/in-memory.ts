@@ -2,7 +2,7 @@ import type { SyncPeerOptions } from './sync.js';
 import { SyncPeer } from './sync.js';
 import type { DuplexTransport, WireCodec } from './transport/index.js';
 import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from './transport/index.js';
-import type { Filter, OpRef, SyncBackend, SyncMessage } from './types.js';
+import type { Filter, OpRef, SyncApplyOpsMetadata, SyncBackend, SyncMessage } from './types.js';
 
 export type FlushableSyncBackend<Op> = SyncBackend<Op> & { flush: () => Promise<void> };
 
@@ -12,7 +12,7 @@ export function makeQueuedSyncBackend<Op>(opts: {
   maxLamportFromOps: (ops: Op[]) => number;
   listOpRefs: (filter: Filter) => Promise<OpRef[]>;
   getOpsByOpRefs: (opRefs: OpRef[]) => Promise<Op[]>;
-  applyOps: (ops: Op[]) => Promise<void>;
+  applyOps: (ops: Op[], metadata?: SyncApplyOpsMetadata) => Promise<void>;
 }): FlushableSyncBackend<Op> {
   let maxLamportValue = opts.initialMaxLamport;
   let lastApply = Promise.resolve();
@@ -22,11 +22,11 @@ export function makeQueuedSyncBackend<Op>(opts: {
     maxLamport: async () => BigInt(maxLamportValue),
     listOpRefs: opts.listOpRefs,
     getOpsByOpRefs: opts.getOpsByOpRefs,
-    applyOps: async (ops: Op[]) => {
+    applyOps: async (ops: Op[], metadata?: SyncApplyOpsMetadata) => {
       if (ops.length === 0) return;
       const nextMax = opts.maxLamportFromOps(ops);
       if (nextMax > maxLamportValue) maxLamportValue = nextMax;
-      lastApply = lastApply.then(() => opts.applyOps(ops));
+      lastApply = lastApply.then(() => opts.applyOps(ops, metadata));
       await lastApply;
     },
     flush: async () => lastApply,

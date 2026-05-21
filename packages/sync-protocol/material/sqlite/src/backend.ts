@@ -1,8 +1,9 @@
 import type { Operation } from '@treecrdt/interface';
+import type { MaterializationSource, WriteOptions } from '@treecrdt/interface/engine';
 import { bytesToHex, hexToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
-import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
+import type { Filter, OpRef, SyncApplyOpsMetadata, SyncBackend } from '@treecrdt/sync-protocol';
 
 import { createPendingOpsStore } from './proof-material/index.js';
 
@@ -18,9 +19,37 @@ export type TreecrdtSyncBackendClient = {
   ops: {
     all?: () => Promise<Operation[]>;
     get: (opRefs: OpRef[]) => Promise<Operation[]>;
-    appendMany: (ops: Operation[]) => Promise<unknown>;
+    appendMany: (ops: Operation[], opts?: WriteOptions) => Promise<unknown>;
   };
 };
+
+function materializationSourcesForOps(
+  ops: readonly Operation[],
+  metadata?: SyncApplyOpsMetadata,
+): readonly MaterializationSource[] | undefined {
+  const verified = metadata?.verified;
+  if (!verified) return undefined;
+
+  const sources = ops.map((op, i): MaterializationSource => {
+    const verifiedOp = verified[i];
+    const authoredAtMs = verifiedOp?.claims?.authoredAtMs;
+    return {
+      operation: {
+        id: {
+          replica: op.meta.id.replica,
+          counter: op.meta.id.counter,
+        },
+        lamport: op.meta.lamport,
+      },
+      ...(verifiedOp?.signer
+        ? { signer: { publicKey: Uint8Array.from(verifiedOp.signer.publicKey) } }
+        : {}),
+      ...(authoredAtMs !== undefined ? { time: { authoredAtMs } } : {}),
+    };
+  });
+
+  return sources.some((source) => source.signer || source.time) ? sources : undefined;
+}
 
 async function maybeLoadNodePayloadWriterOpRef(opts: {
   runner: SqliteRunner;
@@ -167,9 +196,13 @@ export function createTreecrdtSyncBackendFromClient(
 
     getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
 
-    applyOps: async (ops) => {
+    applyOps: async (ops, metadata) => {
       if (ops.length === 0) return;
-      await client.ops.appendMany(ops);
+      const materializationSources = materializationSourcesForOps(ops, metadata);
+      await client.ops.appendMany(
+        ops,
+        materializationSources ? { materializationSources } : undefined,
+      );
     },
 
     ...(pending

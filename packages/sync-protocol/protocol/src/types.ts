@@ -78,6 +78,18 @@ export type OpAuthClaims = {
   authoredAtMs?: number;
 };
 
+export type SyncVerifiedOpMetadata = {
+  signer?: {
+    publicKey: Bytes;
+  };
+  claims?: OpAuthClaims;
+};
+
+export type SyncApplyOpsMetadata = {
+  /** Verified metadata aligned with the `ops` argument. */
+  verified?: readonly (SyncVerifiedOpMetadata | undefined)[];
+};
+
 export type PendingOpReason = 'missing_context';
 
 export type PendingOp<Op> = {
@@ -137,7 +149,7 @@ export interface SyncBackend<Op> {
   maxLamport(): Promise<bigint>;
   listOpRefs(filter: Filter): Promise<OpRef[]>;
   getOpsByOpRefs(opRefs: OpRef[]): Promise<Op[]>;
-  applyOps(ops: Op[]): Promise<void>;
+  applyOps(ops: Op[], metadata?: SyncApplyOpsMetadata): Promise<void>;
 
   /**
    * Optional: persist ops that were structurally valid (signatures/capabilities)
