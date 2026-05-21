@@ -1,6 +1,10 @@
 import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
 
+export type MaterializationSigner = {
+  publicKey: Uint8Array;
+};
+
 export type MaterializationSource = {
   /**
    * Operation that caused the visible change.
@@ -15,10 +19,8 @@ export type MaterializationSource = {
     /** Lamport timestamp assigned to the operation. */
     lamport: number;
   };
-  /** Future auth metadata for the operation signer, when available. */
-  signer?: {
-    publicKey: Uint8Array;
-  };
+  /** Auth signer metadata for the operation, when available. */
+  signer?: MaterializationSigner;
 };
 
 type ChangeSource = {
@@ -115,7 +117,14 @@ export type WriteOptions = {
 };
 
 export type LocalWriteAuthSession = {
+  /**
+   * Authorizes local ops before they are exposed as committed.
+   *
+   * If the session has signer metadata available, expose it on `signer` so SQLite writers can
+   * annotate materialization events.
+   */
   authorizeLocalOps: (ops: readonly Operation[]) => Promise<unknown>;
+  signer?: MaterializationSigner;
 };
 
 export type LocalWriteOptions = {
