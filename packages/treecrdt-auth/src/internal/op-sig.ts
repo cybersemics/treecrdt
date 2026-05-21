@@ -7,8 +7,13 @@ import { signEd25519, verifyEd25519 } from '../ed25519.js';
 import { concatBytes, u32be, u64be, u8 } from './bytes.js';
 
 const OP_SIG_V1_DOMAIN = utf8ToBytes('treecrdt/op-sig/v1');
+const OP_SIG_V2_DOMAIN = utf8ToBytes('treecrdt/op-sig/v2');
 
-export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation }): Uint8Array {
+export type TreecrdtOpAuthClaimsV1 = {
+  authoredAtMs?: number;
+};
+
+function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Array {
   const docIdBytes = utf8ToBytes(opts.docId);
   const replicaBytes = replicaIdToBytes(opts.op.meta.id.replica);
 
@@ -80,8 +85,6 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
   }
 
   return concatBytes(
-    OP_SIG_V1_DOMAIN,
-    u8(0),
     u32be(docIdBytes.length),
     docIdBytes,
     u32be(replicaBytes.length),
@@ -90,6 +93,36 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
     u64be(lamport),
     u8(kindTag),
     kindFields,
+  );
+}
+
+function encodeTreecrdtOpAuthClaimsV1(claims: TreecrdtOpAuthClaimsV1): Uint8Array {
+  const parts: Uint8Array[] = [];
+  if (claims.authoredAtMs === undefined) {
+    parts.push(u8(0));
+  } else {
+    if (!Number.isSafeInteger(claims.authoredAtMs) || claims.authoredAtMs < 0) {
+      throw new Error(`authoredAtMs must be a non-negative safe integer: ${claims.authoredAtMs}`);
+    }
+    parts.push(u8(1), u64be(claims.authoredAtMs));
+  }
+  return concatBytes(...parts);
+}
+
+export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation }): Uint8Array {
+  return concatBytes(OP_SIG_V1_DOMAIN, u8(0), encodeTreecrdtOpFields(opts));
+}
+
+export function encodeTreecrdtOpSigInputV2(opts: {
+  docId: string;
+  op: Operation;
+  claims: TreecrdtOpAuthClaimsV1;
+}): Uint8Array {
+  return concatBytes(
+    OP_SIG_V2_DOMAIN,
+    u8(0),
+    encodeTreecrdtOpFields(opts),
+    encodeTreecrdtOpAuthClaimsV1(opts.claims),
   );
 }
 
@@ -102,6 +135,20 @@ export async function signTreecrdtOpV1(opts: {
   return signEd25519(msg, opts.privateKey);
 }
 
+export async function signTreecrdtOpV2(opts: {
+  docId: string;
+  op: Operation;
+  privateKey: Uint8Array;
+  claims: TreecrdtOpAuthClaimsV1;
+}): Promise<Uint8Array> {
+  const msg = encodeTreecrdtOpSigInputV2({
+    docId: opts.docId,
+    op: opts.op,
+    claims: opts.claims,
+  });
+  return signEd25519(msg, opts.privateKey);
+}
+
 export async function verifyTreecrdtOpV1(opts: {
   docId: string;
   op: Operation;
@@ -109,5 +156,20 @@ export async function verifyTreecrdtOpV1(opts: {
   publicKey: Uint8Array;
 }): Promise<boolean> {
   const msg = encodeTreecrdtOpSigInputV1({ docId: opts.docId, op: opts.op });
+  return await verifyEd25519(opts.signature, msg, opts.publicKey);
+}
+
+export async function verifyTreecrdtOpV2(opts: {
+  docId: string;
+  op: Operation;
+  signature: Uint8Array;
+  publicKey: Uint8Array;
+  claims: TreecrdtOpAuthClaimsV1;
+}): Promise<boolean> {
+  const msg = encodeTreecrdtOpSigInputV2({
+    docId: opts.docId,
+    op: opts.op,
+    claims: opts.claims,
+  });
   return await verifyEd25519(opts.signature, msg, opts.publicKey);
 }
