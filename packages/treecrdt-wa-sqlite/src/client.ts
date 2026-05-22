@@ -24,6 +24,7 @@ import type {
   WriteOptions,
 } from '@treecrdt/interface/engine';
 import {
+  addMaterializationWriteId,
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
 } from '@treecrdt/interface/engine';
@@ -190,8 +191,16 @@ function createClientMaterializationDispatcher(
   };
 
   const eventForPeers = (event: MaterializationEvent): MaterializationEvent => {
-    const { writeIds: _writeIds, ...nextEvent } = event;
-    return nextEvent;
+    return {
+      ...event,
+      changes: event.changes.map((change) => {
+        if (!change.source?.writeIds) return change;
+        const { writeIds: _writeIds, ...source } = change.source;
+        if (Object.keys(source).length > 0) return { ...change, source };
+        const { source: _source, ...nextChange } = change;
+        return nextChange;
+      }),
+    };
   };
 
   const broadcast = (event: MaterializationEvent) => {
@@ -214,10 +223,7 @@ function createClientMaterializationDispatcher(
 
   const emitOutcome: ClientMaterializationDispatcher['emitOutcome'] = (outcome, writeId) => {
     if (outcome.changes.length === 0) return;
-    emitEvent({
-      ...outcome,
-      ...(writeId ? { writeIds: [writeId] } : {}),
-    });
+    emitEvent(addMaterializationWriteId(outcome, writeId));
   };
 
   const enableCrossTab = (nextScope: CrossTabMaterializationScope) => {

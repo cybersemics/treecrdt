@@ -137,7 +137,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalInsertWithPayload,
     },
     {
-      name: 'local ops: materialization events include writeId',
+      name: 'local ops: materialization changes include writeId',
       run: scenarioLocalOpsMaterializationWriteId,
     },
     {
@@ -340,6 +340,7 @@ function assertChangeSource(
   const change = event.changes.find((change) => change.node === node);
   assert(change, `${label} change for node`);
   assert(change.source, `${label} source`);
+  assert(change.source.operation, `${label} source operation`);
   assertEqual(change.source.operation.id.counter, op.meta.id.counter, `${label} source counter`);
   assertEqual(change.source.operation.lamport, op.meta.lamport, `${label} source lamport`);
   assertBytesEqual(
@@ -570,7 +571,9 @@ async function scenarioLocalOpsMaterializationWriteId(
     label: string,
   ) => {
     assertEqual(events.length, 1, `${label} should emit one materialization event`);
-    assertArrayEqual(events[0]!.writeIds ?? [], [writeId], `${label} writeIds`);
+    for (const change of events[0]!.changes) {
+      assertArrayEqual(change.source?.writeIds ?? [], [writeId], `${label} change writeIds`);
+    }
     assertEventNodeRefsContain(
       materializationEventNodeRefs(events[0]!),
       expectedRefs,
