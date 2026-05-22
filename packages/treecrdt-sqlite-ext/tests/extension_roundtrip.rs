@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use treecrdt_core::{
-    order_key::allocate_between, MaterializationChange, MaterializationOutcome, NodeId, Operation,
+    order_key::allocate_between, MaterializationChange, MaterializationOutcome,
+    MaterializationSource, MaterializationSourceOperation, NodeId, Operation, OperationId,
     OperationKind, ReplicaId, VersionVector,
 };
 use treecrdt_test_support::{
@@ -44,25 +45,50 @@ enum JsonMaterializationChange {
         node: String,
         parent_after: String,
         payload: Option<Vec<u8>>,
+        source: Option<JsonMaterializationSource>,
     },
     Move {
         node: String,
         parent_before: Option<String>,
         parent_after: String,
+        source: Option<JsonMaterializationSource>,
     },
     Delete {
         node: String,
         parent_before: Option<String>,
+        source: Option<JsonMaterializationSource>,
     },
     Restore {
         node: String,
         parent_after: Option<String>,
         payload: Option<Vec<u8>>,
+        source: Option<JsonMaterializationSource>,
     },
     Payload {
         node: String,
         payload: Option<Vec<u8>>,
+        source: Option<JsonMaterializationSource>,
     },
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonMaterializationSource {
+    operation: JsonMaterializationSourceOperation,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonMaterializationSourceOperation {
+    id: JsonOperationId,
+    lamport: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonOperationId {
+    replica: Vec<u8>,
+    counter: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -84,6 +110,18 @@ fn hex_to_node_id(hex: &str) -> NodeId {
     NodeId(u128::from_str_radix(hex, 16).unwrap())
 }
 
+fn source_to_core(source: Option<JsonMaterializationSource>) -> Option<MaterializationSource> {
+    source.map(|source| MaterializationSource {
+        operation: MaterializationSourceOperation {
+            id: OperationId {
+                replica: ReplicaId::new(source.operation.id.replica),
+                counter: source.operation.id.counter,
+            },
+            lamport: source.operation.lamport,
+        },
+    })
+}
+
 fn json_outcome_to_core(outcome: JsonMaterializationOutcome) -> MaterializationOutcome {
     MaterializationOutcome {
         head_seq: outcome.head_seq,
@@ -95,42 +133,53 @@ fn json_outcome_to_core(outcome: JsonMaterializationOutcome) -> MaterializationO
                     node,
                     parent_after,
                     payload,
+                    source,
                 } => MaterializationChange::Insert {
                     node: hex_to_node_id(&node),
                     parent_after: hex_to_node_id(&parent_after),
                     payload,
+                    source: source_to_core(source),
                 },
                 JsonMaterializationChange::Move {
                     node,
                     parent_before,
                     parent_after,
+                    source,
                 } => MaterializationChange::Move {
                     node: hex_to_node_id(&node),
                     parent_before: parent_before.as_deref().map(hex_to_node_id),
                     parent_after: hex_to_node_id(&parent_after),
+                    source: source_to_core(source),
                 },
                 JsonMaterializationChange::Delete {
                     node,
                     parent_before,
+                    source,
                 } => MaterializationChange::Delete {
                     node: hex_to_node_id(&node),
                     parent_before: parent_before.as_deref().map(hex_to_node_id),
+                    source: source_to_core(source),
                 },
                 JsonMaterializationChange::Restore {
                     node,
                     parent_after,
                     payload,
+                    source,
                 } => MaterializationChange::Restore {
                     node: hex_to_node_id(&node),
                     parent_after: parent_after.as_deref().map(hex_to_node_id),
                     payload,
+                    source: source_to_core(source),
                 },
-                JsonMaterializationChange::Payload { node, payload } => {
-                    MaterializationChange::Payload {
-                        node: hex_to_node_id(&node),
-                        payload,
-                    }
-                }
+                JsonMaterializationChange::Payload {
+                    node,
+                    payload,
+                    source,
+                } => MaterializationChange::Payload {
+                    node: hex_to_node_id(&node),
+                    payload,
+                    source: source_to_core(source),
+                },
             })
             .collect(),
     }

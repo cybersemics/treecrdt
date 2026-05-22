@@ -4,8 +4,9 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use postgres::{Client, NoTls};
 use treecrdt_core::{
-    Error as CoreError, Lamport, MaterializationChange, MaterializationOutcome, NodeId, Operation,
-    OperationId, OperationKind, ReplicaId, Result as CoreResult, VersionVector,
+    Error as CoreError, Lamport, MaterializationChange, MaterializationOutcome,
+    MaterializationSource, NodeId, Operation, OperationId, OperationKind, ReplicaId,
+    Result as CoreResult, VersionVector,
 };
 
 fn map_err(e: impl std::fmt::Display) -> napi::Error {
@@ -80,6 +81,24 @@ pub struct NativeMaterializationChange {
     pub parent_before: Option<Buffer>,
     pub parent_after: Option<Buffer>,
     pub payload: Option<Buffer>,
+    pub source: Option<NativeMaterializationSource>,
+}
+
+#[napi(object)]
+pub struct NativeMaterializationSource {
+    pub operation: NativeMaterializationSourceOperation,
+}
+
+#[napi(object)]
+pub struct NativeMaterializationSourceOperation {
+    pub id: NativeOperationId,
+    pub lamport: BigInt,
+}
+
+#[napi(object)]
+pub struct NativeOperationId {
+    pub replica: Buffer,
+    pub counter: BigInt,
 }
 
 #[napi(object)]
@@ -133,6 +152,20 @@ impl NativePreparedLocalOpTx {
 }
 
 fn outcome_to_native(outcome: MaterializationOutcome) -> NativeMaterializationOutcome {
+    fn source_to_native(
+        source: Option<MaterializationSource>,
+    ) -> Option<NativeMaterializationSource> {
+        source.map(|source| NativeMaterializationSource {
+            operation: NativeMaterializationSourceOperation {
+                id: NativeOperationId {
+                    replica: Buffer::from(source.operation.id.replica.as_bytes().to_vec()),
+                    counter: BigInt::from(source.operation.id.counter),
+                },
+                lamport: BigInt::from(source.operation.lamport),
+            },
+        })
+    }
+
     let changes = outcome
         .changes
         .into_iter()
@@ -141,51 +174,64 @@ fn outcome_to_native(outcome: MaterializationOutcome) -> NativeMaterializationOu
                 node,
                 parent_after,
                 payload,
+                source,
             } => NativeMaterializationChange {
                 kind: "insert".to_string(),
                 node: node_buffer(node),
                 parent_before: None,
                 parent_after: Some(node_buffer(parent_after)),
                 payload: payload.map(Buffer::from),
+                source: source_to_native(source),
             },
             MaterializationChange::Move {
                 node,
                 parent_before,
                 parent_after,
+                source,
             } => NativeMaterializationChange {
                 kind: "move".to_string(),
                 node: node_buffer(node),
                 parent_before: parent_before.map(node_buffer),
                 parent_after: Some(node_buffer(parent_after)),
                 payload: None,
+                source: source_to_native(source),
             },
             MaterializationChange::Delete {
                 node,
                 parent_before,
+                source,
             } => NativeMaterializationChange {
                 kind: "delete".to_string(),
                 node: node_buffer(node),
                 parent_before: parent_before.map(node_buffer),
                 parent_after: None,
                 payload: None,
+                source: source_to_native(source),
             },
             MaterializationChange::Restore {
                 node,
                 parent_after,
                 payload,
+                source,
             } => NativeMaterializationChange {
                 kind: "restore".to_string(),
                 node: node_buffer(node),
                 parent_before: None,
                 parent_after: parent_after.map(node_buffer),
                 payload: payload.map(Buffer::from),
+                source: source_to_native(source),
             },
-            MaterializationChange::Payload { node, payload } => NativeMaterializationChange {
+            MaterializationChange::Payload {
+                node,
+                payload,
+                source,
+            } => NativeMaterializationChange {
                 kind: "payload".to_string(),
                 node: node_buffer(node),
                 parent_before: None,
                 parent_after: None,
                 payload: payload.map(Buffer::from),
+                source: source_to_native(source),
             },
         })
         .collect();

@@ -1007,10 +1007,12 @@ where
                     node: *node,
                     parent_after: final_parent.filter(|parent| *parent != NodeId::TRASH),
                     payload: rebuilt.crdt.payload(*node)?,
+                    source: None,
                 }),
                 (false, true) => patch_changes.push(MaterializationChange::Delete {
                     node: *node,
                     parent_before: previous_parent.filter(|parent| *parent != NodeId::TRASH),
+                    source: None,
                 }),
                 _ => {}
             }

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::ids::{NodeId, OperationId};
+use crate::ids::{Lamport, NodeId, OperationId};
 use crate::ops::Operation;
 use crate::version_vector::VersionVector;
 
@@ -21,6 +21,37 @@ pub struct NodeSnapshotExport {
     pub order_key: Option<Vec<u8>>,
 }
 
+/// Operation source metadata for a materialized visible change.
+///
+/// Materialization changes are coalesced, so this identifies the latest operation that contributed
+/// to the final visible change when core can determine that exactly. Conservative catch-up paths
+/// may omit it when a change is derived from rebuilt state rather than a single operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct MaterializationSource {
+    pub operation: MaterializationSourceOperation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct MaterializationSourceOperation {
+    pub id: OperationId,
+    pub lamport: Lamport,
+}
+
+impl MaterializationSource {
+    pub fn from_op(op: &Operation) -> Self {
+        Self {
+            operation: MaterializationSourceOperation {
+                id: op.meta.id.clone(),
+                lamport: op.meta.lamport,
+            },
+        }
+    }
+}
+
 /// A coalesced visible change produced while advancing materialized state.
 ///
 /// This is intentionally higher-level than raw operations: a replay pass may collapse multiple
@@ -33,24 +64,49 @@ pub enum MaterializationChange {
         node: NodeId,
         parent_after: NodeId,
         payload: Option<Vec<u8>>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source: Option<MaterializationSource>,
     },
     Move {
         node: NodeId,
         parent_before: Option<NodeId>,
         parent_after: NodeId,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source: Option<MaterializationSource>,
     },
     Delete {
         node: NodeId,
         parent_before: Option<NodeId>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source: Option<MaterializationSource>,
     },
     Restore {
         node: NodeId,
         parent_after: Option<NodeId>,
         payload: Option<Vec<u8>>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source: Option<MaterializationSource>,
     },
     Payload {
         node: NodeId,
         payload: Option<Vec<u8>>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source: Option<MaterializationSource>,
     },
 }
 

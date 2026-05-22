@@ -348,6 +348,7 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
                     changes: vec![MaterializationChange::Payload {
                         node: NodeId(2),
                         payload: Some(vec![9]),
+                        source: None,
                     }],
                 },
             })
@@ -436,10 +437,12 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
                         MaterializationChange::Payload {
                             node: NodeId(1),
                             payload: None,
+                            source: None,
                         },
                         MaterializationChange::Payload {
                             node: NodeId(2),
                             payload: None,
+                            source: None,
                         },
                     ],
                 },
@@ -874,6 +877,7 @@ fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
             node: parent,
             parent_after: Some(NodeId::ROOT),
             payload: None,
+            source: None,
         }),
         "catch-up must report rows restored by patching stale backend state"
     );

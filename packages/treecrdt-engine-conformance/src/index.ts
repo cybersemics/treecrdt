@@ -331,6 +331,24 @@ async function captureMaterializationEvents(
   return events;
 }
 
+function assertChangeSource(
+  event: MaterializationEvent,
+  node: string,
+  op: Operation,
+  label: string,
+): void {
+  const change = event.changes.find((change) => change.node === node);
+  assert(change, `${label} change for node`);
+  assert(change.source, `${label} source`);
+  assertEqual(change.source.operation.id.counter, op.meta.id.counter, `${label} source counter`);
+  assertEqual(change.source.operation.lamport, op.meta.lamport, `${label} source lamport`);
+  assertBytesEqual(
+    change.source.operation.id.replica,
+    replicaIdToBytes(op.meta.id.replica),
+    `${label} source replica`,
+  );
+}
+
 function assertBytesEqual(
   actual: Uint8Array | null,
   expected: Uint8Array | null,
@@ -560,31 +578,46 @@ async function scenarioLocalOpsMaterializationWriteId(
     );
   };
 
+  let insertOp: Operation | undefined;
   const insertEvents = await captureMaterializationEvents(engine, async () => {
-    await engine.local.insert(replica, root, node, { type: 'last' }, null, {
+    insertOp = await engine.local.insert(replica, root, node, { type: 'last' }, null, {
       writeId: 'local-insert-42',
     });
   });
   assertWriteIdEvent(insertEvents, 'local-insert-42', [root, node], 'local insert');
+  assertChangeSource(insertEvents[0]!, node, insertOp!, 'local insert');
 
+  let moveOp: Operation | undefined;
   const moveEvents = await captureMaterializationEvents(engine, async () => {
-    await engine.local.move(replica, node, parent, { type: 'last' }, { writeId: 'local-move-42' });
+    moveOp = await engine.local.move(
+      replica,
+      node,
+      parent,
+      { type: 'last' },
+      { writeId: 'local-move-42' },
+    );
   });
   assertWriteIdEvent(moveEvents, 'local-move-42', [root, parent, node], 'local move');
+  assertChangeSource(moveEvents[0]!, node, moveOp!, 'local move');
 
+  let payloadOp: Operation | undefined;
   const payloadEvents = await captureMaterializationEvents(engine, async () => {
-    await engine.local.payload(replica, node, payload, { writeId: 'local-payload-42' });
+    payloadOp = await engine.local.payload(replica, node, payload, { writeId: 'local-payload-42' });
   });
   assertWriteIdEvent(payloadEvents, 'local-payload-42', [node], 'local payload');
+  assertChangeSource(payloadEvents[0]!, node, payloadOp!, 'local payload');
 
+  let deleteOp: Operation | undefined;
   const deleteEvents = await captureMaterializationEvents(engine, async () => {
-    await engine.local.delete(replica, node, { writeId: 'local-delete-42' });
+    deleteOp = await engine.local.delete(replica, node, { writeId: 'local-delete-42' });
   });
   assertWriteIdEvent(deleteEvents, 'local-delete-42', [parent, node], 'local delete');
+  assertChangeSource(deleteEvents[0]!, node, deleteOp!, 'local delete');
 
   const boundLocal = engine.local.forReplica(replica, { writeId: 'bound-local-default-43' });
+  let boundInsertOp: Operation | undefined;
   const boundInsertEvents = await captureMaterializationEvents(engine, async () => {
-    await boundLocal.insert(root, boundNode, { type: 'last' }, nextPayload);
+    boundInsertOp = await boundLocal.insert(root, boundNode, { type: 'last' }, nextPayload);
   });
   assertWriteIdEvent(
     boundInsertEvents,
@@ -592,6 +625,7 @@ async function scenarioLocalOpsMaterializationWriteId(
     [root, boundNode],
     'bound local insert',
   );
+  assertChangeSource(boundInsertEvents[0]!, boundNode, boundInsertOp!, 'bound local insert');
 }
 
 async function scenarioAppendIdempotentAndHeadLamportMonotonic(
