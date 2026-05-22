@@ -1,5 +1,5 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
-import { emptyMaterializationOutcome } from './engine.js';
+import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
   LocalWriteOptions,
   MaterializationEvent,
@@ -81,8 +81,7 @@ function emitLocalOutcome(
   emit?: (event: MaterializationEvent) => void,
   writeId?: string,
 ): void {
-  if (outcome.changes.length > 0)
-    emit?.({ ...outcome, ...(writeId ? { writeIds: [writeId] } : {}) });
+  if (outcome.changes.length > 0) emit?.(addMaterializationWriteId(outcome, writeId));
 }
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
@@ -732,18 +731,30 @@ function decodeSqliteMaterializationSource(raw: unknown): MaterializationSource 
   const value = raw as any;
   const operation = value.operation as any;
   const operationId = operation?.id as any;
-  return {
-    operation: {
-      id: {
-        replica: decodeReplicaId(operationId.replica),
-        counter: Number(operationId.counter),
-      },
-      lamport: Number(operation.lamport),
-    },
+  const source: MaterializationSource = {
+    ...(operation && operationId
+      ? {
+          operation: {
+            id: {
+              replica: decodeReplicaId(operationId.replica),
+              counter: Number(operationId.counter),
+            },
+            lamport: Number(operation.lamport),
+          },
+        }
+      : {}),
+    ...(Array.isArray(value.writeIds) ? { writeIds: value.writeIds.map(String) } : {}),
     ...(value.signer?.publicKey
       ? { signer: { publicKey: Uint8Array.from(value.signer.publicKey) } }
       : {}),
   };
+
+  // Avoid exposing `source: {}` when a backend emits an empty or unknown source object.
+  const hasSource =
+    source.operation !== undefined ||
+    (source.writeIds?.length ?? 0) > 0 ||
+    source.signer !== undefined;
+  return hasSource ? source : undefined;
 }
 
 export function decodeSqliteMaterializationOutcome(raw: unknown): MaterializationOutcome {

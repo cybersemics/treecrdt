@@ -7,7 +7,7 @@ export type MaterializationSource = {
    *
    * `replica` is a low-level CRDT replica id, not an auth/user identity.
    */
-  operation: {
+  operation?: {
     id: {
       replica: Uint8Array;
       counter: number;
@@ -15,6 +15,8 @@ export type MaterializationSource = {
     /** Lamport timestamp assigned to the operation. */
     lamport: number;
   };
+  /** Local write ids supplied to the append/local write API that produced this visible change. */
+  writeIds?: string[];
   /** Future auth metadata for the operation signer, when available. */
   signer?: {
     publicKey: Uint8Array;
@@ -23,10 +25,10 @@ export type MaterializationSource = {
 
 type ChangeSource = {
   /**
-   * Operation source metadata when the materializer can attribute the visible change to one exact op.
+   * Source metadata for the visible change.
    *
-   * Conservative catch-up/rebuild paths may omit this when a visible change is derived from rebuilt
-   * state instead of a single operation.
+   * Conservative catch-up/rebuild paths may omit operation metadata when a visible change is derived
+   * from rebuilt state instead of a single operation.
    */
   source?: MaterializationSource;
 };
@@ -70,11 +72,9 @@ export function emptyMaterializationOutcome(headSeq = 0): MaterializationOutcome
 
 /**
  * Event emitted after write-path materialization, or after read-path recovery advances a pending
- * materialization frontier. `writeIds` echoes optional ids supplied to append APIs.
+ * materialization frontier. Local write ids are echoed on each affected change's `source.writeIds`.
  */
-export type MaterializationEvent = MaterializationOutcome & {
-  writeIds?: string[];
-};
+export type MaterializationEvent = MaterializationOutcome;
 
 export type MaterializationListener = (event: MaterializationEvent) => void;
 
@@ -94,10 +94,7 @@ export function createMaterializationDispatcher(): MaterializationDispatcher {
 
   const emitOutcome = (outcome: MaterializationOutcome, writeId?: string) => {
     if (outcome.changes.length === 0) return;
-    emitEvent({
-      ...outcome,
-      ...(writeId ? { writeIds: [writeId] } : {}),
-    });
+    emitEvent(addMaterializationWriteId(outcome, writeId));
   };
 
   const onMaterialized = (listener: MaterializationListener) => {
@@ -110,6 +107,23 @@ export function createMaterializationDispatcher(): MaterializationDispatcher {
   return { emitEvent, emitOutcome, onMaterialized };
 }
 
+export function addMaterializationWriteId(
+  outcome: MaterializationOutcome,
+  writeId?: string,
+): MaterializationEvent {
+  if (!writeId) return { ...outcome };
+  return {
+    ...outcome,
+    changes: outcome.changes.map((change) => ({
+      ...change,
+      source: {
+        ...change.source,
+        writeIds: [...(change.source?.writeIds ?? []), writeId],
+      },
+    })),
+  };
+}
+
 export type WriteOptions = {
   writeId?: string;
 };
@@ -119,7 +133,7 @@ export type LocalWriteAuthSession = {
 };
 
 export type LocalWriteOptions = {
-  /** Echoed on the materialization event emitted by this local write. */
+  /** Echoed on each materialized change emitted by this local write. */
   writeId?: string;
 
   /**
