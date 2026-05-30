@@ -5,7 +5,7 @@ import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { OpenTreecrdtDbResult } from './open.js';
 import { clearOpfsStorage } from './opfs.js';
-import type { RpcInitResult, RpcSqlParams } from './rpc.js';
+import { rpcBinaryResult, type RpcInitResult, type RpcSqlParams } from './rpc.js';
 
 export function openedToRpcInitResult(opened: OpenTreecrdtDbResult): RpcInitResult {
   return opened.opfsError
@@ -118,7 +118,7 @@ export class CommonWorkerSession {
 
   async treePayload(node: string) {
     const payload = await this.ensureApi().treePayload(nodeIdToBytes16(node));
-    return payload === null ? null : Array.from(payload);
+    return rpcBinaryResult(payload);
   }
 
   async treeNodeCount() {
@@ -127,7 +127,7 @@ export class CommonWorkerSession {
 
   async treeParent(node: string) {
     const result = await this.ensureApi().treeParent(nodeIdToBytes16(node));
-    return result === null ? null : Array.from(result);
+    return rpcBinaryResult(result);
   }
 
   async treeExists(node: string) {

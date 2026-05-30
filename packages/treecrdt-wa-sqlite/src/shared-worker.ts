@@ -1,6 +1,13 @@
 /// <reference lib="webworker" />
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import type { RpcInitResult, RpcMethod, RpcParams, RpcRequest, RpcResult } from './rpc.js';
+import {
+  transferablesForRpcBinaryResult,
+  type RpcInitResult,
+  type RpcMethod,
+  type RpcParams,
+  type RpcRequest,
+  type RpcResult,
+} from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import {
   CommonWorkerSession,
@@ -54,14 +61,21 @@ function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePor
   ports.add(port);
   port.onmessage = (message: MessageEvent<RpcRequest>) => {
     const request = message.data;
-    const respond = (ok: boolean, result?: any, error?: string) => {
-      port.postMessage({ id: request.id, ok, result, error });
+    const respondSuccess = (result?: unknown) => {
+      const transfer =
+        request.method === 'treePayload' || request.method === 'treeParent'
+          ? transferablesForRpcBinaryResult(result)
+          : [];
+      port.postMessage({ id: request.id, ok: true, result }, transfer);
+    };
+    const respondError = (error: string) => {
+      port.postMessage({ id: request.id, ok: false, error });
     };
     const run = callQueue.then(() => handleRequest(port, request));
     callQueue = settleQueue(run);
     run.then(
-      (result) => respond(true, result),
-      (err) => respond(false, null, err instanceof Error ? err.message : String(err)),
+      (result) => respondSuccess(result),
+      (err) => respondError(err instanceof Error ? err.message : String(err)),
     );
   };
   port.start();

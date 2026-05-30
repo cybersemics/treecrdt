@@ -21,6 +21,7 @@ import {
 import type {
   LocalWriteOptions,
   MaterializationEvent,
+  MaterializationOutcome,
   WriteOptions,
 } from '@treecrdt/interface/engine';
 import {
@@ -29,13 +30,14 @@ import {
   createTreecrdtEngineLocal,
 } from '@treecrdt/interface/engine';
 import { dbGetText } from './sql.js';
-import type {
-  RpcMethod,
-  RpcParams,
-  RpcPushMessage,
-  RpcRequest,
-  RpcResponse,
-  RpcResult,
+import {
+  rpcBinaryResult,
+  type RpcMethod,
+  type RpcParams,
+  type RpcPushMessage,
+  type RpcRequest,
+  type RpcResponse,
+  type RpcResult,
 } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import type {
@@ -59,6 +61,8 @@ import type {
 } from './types.js';
 
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
+// Keep long browser appendMany calls from monopolizing the worker queue.
+const APPEND_MANY_RPC_CHUNK_SIZE = 2500;
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
   const raw = opts.storage ?? { type: 'auto' };
@@ -654,14 +658,14 @@ async function createDirectClient(opts: {
         case 'treePayload': {
           const [node] = params as RpcParams<'treePayload'>;
           const payload = await adapter.treePayload(nodeIdToBytes16(node));
-          return (payload === null ? null : Array.from(payload)) as any;
+          return rpcBinaryResult(payload) as any;
         }
         case 'treeNodeCount':
           return (await adapter.treeNodeCount()) as any;
         case 'treeParent': {
           const [node] = params as RpcParams<'treeParent'>;
           const result = await adapter.treeParent(nodeIdToBytes16(node));
-          return result ? Array.from(result) : null;
+          return rpcBinaryResult(result) as any;
         }
         case 'treeExists': {
           const [node] = params as RpcParams<'treeExists'>;
@@ -780,16 +784,31 @@ function makeTreecrdtClientFromCall(opts: {
   const treeParentImpl = async (node: string) => {
     const result = await call('treeParent', [node]);
     if (result === null) return null;
-    return nodeIdFromBytes16(Uint8Array.from(result));
+    return nodeIdFromBytes16(toRpcBytes(result));
   };
   const treeExistsImpl = async (node: string) => Boolean(await call('treeExists', [node]));
   const treeGetPayloadImpl = async (node: string) => {
     const result = await call('treePayload', [node]);
-    return result === null ? null : Uint8Array.from(result);
+    return result === null ? null : toRpcBytes(result);
   };
   const headLamportImpl = async () => Number(await call('headLamport', []));
   const replicaMaxCounterImpl = async (replica: Operation['meta']['id']['replica']) =>
     Number(await call('replicaMaxCounter', [Array.from(encodeReplica(replica))]));
+  const appendManyImpl = async (operations: Operation[], writeOpts?: WriteOptions) => {
+    if (operations.length <= APPEND_MANY_RPC_CHUNK_SIZE) {
+      const outcome = await call('appendMany', [operations]);
+      materialized.emitOutcome(outcome, writeOpts?.writeId);
+      return;
+    }
+
+    const outcomes: MaterializationOutcome[] = [];
+    for (let start = 0; start < operations.length; start += APPEND_MANY_RPC_CHUNK_SIZE) {
+      outcomes.push(
+        await call('appendMany', [operations.slice(start, start + APPEND_MANY_RPC_CHUNK_SIZE)]),
+      );
+    }
+    materialized.emitOutcome(mergeMaterializationOutcomes(outcomes), writeOpts?.writeId);
+  };
   const localInsertImpl = async (
     replica: ReplicaId,
     parent: string,
@@ -863,10 +882,7 @@ function makeTreecrdtClientFromCall(opts: {
         const outcome = await call('append', [op]);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
-      appendMany: async (ops, writeOpts?: WriteOptions) => {
-        const outcome = await call('appendMany', [ops]);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
-      },
+      appendMany: appendManyImpl,
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),
@@ -892,4 +908,16 @@ function makeTreecrdtClientFromCall(opts: {
 
 function encodeReplica(replica: ReplicaId): Uint8Array {
   return replicaIdToBytes(replica);
+}
+
+function toRpcBytes(bytes: Uint8Array | number[]): Uint8Array {
+  return bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+}
+
+function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
+  const last = outcomes[outcomes.length - 1];
+  return {
+    headSeq: last?.headSeq ?? 0,
+    changes: outcomes.flatMap((outcome) => outcome.changes),
+  };
 }
