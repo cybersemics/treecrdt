@@ -17,7 +17,7 @@ export type {
   InboundSync,
   InboundSyncErrorContext,
   InboundSyncErrorPhase,
+  InboundSyncOnceOptions,
   InboundSyncOptions,
-  InboundSyncRunSyncContext,
-  SyncScope,
+  InboundSyncStatus,
 } from './inbound-sync.js';

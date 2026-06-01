@@ -2,12 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
-import {
-  createInboundSync,
-  createOutboundSync,
-  type InboundSync,
-  type OutboundSync,
-} from '@treecrdt/sync';
+import { createOutboundSync, type OutboundSync } from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
   BroadcastPresenceAckMessageV1,
@@ -188,10 +183,9 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    liveChildrenParentsRef,
-    liveAllEnabledRef,
     addLivePeer,
     removeLivePeer,
+    syncInboundOnce,
     resetLiveWork,
   } = usePlaygroundLiveSubscriptions({
     syncPeerRef,
@@ -263,35 +257,18 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     setSyncBusy(true);
     setSyncError(null);
-    let manualInboundSync: InboundSync<Operation> | null = null;
     try {
       const targets = selectSyncTargetIds(connections).filter((peerId) => connections.has(peerId));
-      manualInboundSync = createInboundSync<Operation>({
-        localPeer: peer,
-        selectPeers: () => targets,
-        runSync: async ({ localPeer, peerId, transport, filter }) => {
-          await syncFiltersWithTransport(localPeer, peerId, transport, [filter], {
-            multipleTargets: targets.length > 1,
-            label,
-          });
-        },
-        onError: ({ peerId, error }) => {
-          console.error(`${label} failed for peer`, peerId, error);
-          manualInboundSync?.removePeer(peerId);
-          if (isCapabilityRevokedError(error)) return;
-          dropPeerConnection(peerId);
-        },
+      await syncInboundOnce(filters, {
+        peerIds: targets,
+        syncTimeoutMs: (peerId) =>
+          syncTimeoutMsForPeer(peerId, { multipleTargets: targets.length > 1 }),
       });
-      for (const [peerId, conn] of connections) {
-        manualInboundSync.addPeer(peerId, conn.transport);
-      }
-      for (const filter of filters) await manualInboundSync.scope(filter).syncOnce();
       await refreshMeta();
     } catch (err) {
       console.error(`${label} failed`, err);
       setSyncError(formatSyncError(err));
     } finally {
-      manualInboundSync?.close();
       setSyncBusy(false);
     }
   };
