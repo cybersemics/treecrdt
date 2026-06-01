@@ -152,6 +152,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   } = opts;
 
   const [syncBusy, setSyncBusy] = useState(false);
+  const [outboundBusy, setOutboundBusy] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [remoteSyncStatus, setRemoteSyncStatus] = useState<RemoteSyncStatus>({
     state: 'disabled',
@@ -184,8 +185,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     toggleLiveChildren,
     liveChildrenParentsRef,
     liveAllEnabledRef,
-    beginLiveWork,
-    endLiveWork,
     startLiveAll,
     stopLiveAllForPeer,
     stopAllLiveAll,
@@ -206,7 +205,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
   const queueOpsForSync = (ops?: Operation[]) => {
     void syncPeerRef.current?.notifyLocalUpdate(ops);
-    outboundSyncRef.current?.queue(ops);
+    if (ops && ops.length > 0) outboundSyncRef.current?.queueOps(ops);
   };
 
   const dropPeerConnection = (peerId: string) => {
@@ -546,32 +545,13 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       localPeer: sharedPeer,
       opKey: localOpUploadKey,
       isOnline: () => onlineRef.current,
-      shouldSyncPeer: isRemotePeerId,
-      getFallbackFilters: () => {
-        const liveChildren = Array.from(liveChildrenParentsRef.current).filter(isNodeIdHex);
-        if (liveAllEnabledRef.current || liveChildren.length === 0) return [{ all: {} }];
-        return liveChildren.map(childrenFilter);
-      },
-      runPush: async ({ localPeer, peerId, transport, ops }) => {
-        await withTimeout(
-          localPeer.pushOps(transport, ops, {
-            maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-          }),
-          syncTimeoutMsForPeer(peerId, { autoSync: true }),
-          `live push with ${peerId.slice(0, 8)}… timed out`,
-        );
-      },
-      runSync: async ({ localPeer, peerId, transport, filter }) => {
-        await syncFiltersWithTransport(localPeer, peerId, transport, [filter], {
-          autoSync: true,
-          codewordsPerMessage: 1024,
-          label: 'live sync',
-        });
-      },
-      onWorkStart: beginLiveWork,
-      onWorkEnd: endLiveWork,
+      pushOptions: () => ({
+        maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
+      }),
+      pushTimeoutMs: (peerId) => syncTimeoutMsForPeer(peerId, { autoSync: true }),
+      onStatus: (status) => setOutboundBusy(status.running || status.scheduled),
       onError: ({ peerId, error }) => {
-        console.error('Remote live sync failed', error);
+        console.error('Remote op upload failed', error);
         setSyncError(formatSyncError(error));
         if (!isCapabilityRevokedError(error)) dropPeerConnection(peerId);
       },
@@ -608,7 +588,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           onPeerTransport: (peerId, transport) => {
             const detach = sharedPeer.attach(transport);
             connections.set(peerId, { transport, detach });
-            outboundSync.addPeer(peerId, transport);
             maybeStartLiveForPeer(peerId);
             if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
               autoSyncPeerIdRef.current = peerId;
@@ -618,7 +597,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           },
           onPeerDisconnected: (peerId) => {
             connections.delete(peerId);
-            outboundSync.removePeer(peerId);
             stopLiveAllForPeer(peerId);
             stopLiveChildrenForPeer(peerId);
             removeMeshPeer(peerId);
@@ -706,7 +684,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     peers,
     remoteSyncStatus,
     syncBusy,
-    liveBusy,
+    liveBusy: liveBusy || outboundBusy,
     syncError,
     setSyncError,
     liveChildrenParents,
