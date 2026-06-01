@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Operation } from "@treecrdt/interface";
 import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
-import { createTreecrdtClient, type TreecrdtClient } from "@treecrdt/wa-sqlite/client";
-import { detectOpfsSupport } from "@treecrdt/wa-sqlite/opfs";
+import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from "@treecrdt/wa-sqlite";
 
 import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";

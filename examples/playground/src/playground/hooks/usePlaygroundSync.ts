@@ -11,7 +11,7 @@ import type {
 import { createBroadcastPresenceMesh } from '@treecrdt/sync-protocol/browser';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
-import type { TreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import type { TreecrdtClient } from '@treecrdt/wa-sqlite';
 
 import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';
 import {

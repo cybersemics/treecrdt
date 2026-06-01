@@ -18,13 +18,21 @@ function testIdentityChain(): TreecrdtIdentityChainV1 {
   };
 }
 
+function baseSessionOptions(docId: string) {
+  return {
+    docId,
+    trust: { issuerPublicKeys: [] },
+    local: {
+      privateKey: testKey(4),
+      publicKey: testKey(5),
+    },
+    allowUnsigned: true,
+  };
+}
+
 test('auth session warms sync auth and exposes ready state', async () => {
   const session = createTreecrdtAuthSession({
-    docId: 'doc-auth-session-ready',
-    issuerPublicKeys: [],
-    localPrivateKey: testKey(4),
-    localPublicKey: testKey(5),
-    allowUnsigned: true,
+    ...baseSessionOptions('doc-auth-session-ready'),
   });
 
   expect(session.getState().status).toBe('loading');
@@ -34,12 +42,10 @@ test('auth session warms sync auth and exposes ready state', async () => {
 
 test('auth session advertises async local identity chain without app-side wrappers', async () => {
   const session = createTreecrdtAuthSession({
-    docId: 'doc-auth-session-identity',
-    issuerPublicKeys: [],
-    localPrivateKey: testKey(4),
-    localPublicKey: testKey(5),
-    allowUnsigned: true,
-    localIdentityChain: async () => testIdentityChain(),
+    ...baseSessionOptions('doc-auth-session-identity'),
+    identity: {
+      local: async () => testIdentityChain(),
+    },
   });
 
   await session.ready;
@@ -54,13 +60,7 @@ test('auth session advertises async local identity chain without app-side wrappe
 test('auth session accepts grouped backend and identity options', async () => {
   let listedCapabilities = 0;
   const session = createTreecrdtAuthSession({
-    docId: 'doc-auth-session-grouped',
-    trust: { issuerPublicKeys: [] },
-    local: {
-      privateKey: testKey(4),
-      publicKey: testKey(5),
-    },
-    allowUnsigned: true,
+    ...baseSessionOptions('doc-auth-session-grouped'),
     backend: {
       scopeEvaluator: async () => 'deny',
       capabilityStore: {
@@ -95,15 +95,13 @@ test('auth session accepts grouped backend and identity options', async () => {
 test('auth session treats identity chain provider failures as best-effort', async () => {
   const errors: unknown[] = [];
   const session = createTreecrdtAuthSession({
-    docId: 'doc-auth-session-identity-error',
-    issuerPublicKeys: [],
-    localPrivateKey: testKey(4),
-    localPublicKey: testKey(5),
-    allowUnsigned: true,
-    localIdentityChain: async () => {
-      throw new Error('identity unavailable');
+    ...baseSessionOptions('doc-auth-session-identity-error'),
+    identity: {
+      local: async () => {
+        throw new Error('identity unavailable');
+      },
+      onLocalError: (err) => errors.push(err),
     },
-    onIdentityChainError: (err) => errors.push(err),
   });
 
   await session.ready;

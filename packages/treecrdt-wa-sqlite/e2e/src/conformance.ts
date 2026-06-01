@@ -1,4 +1,4 @@
-import { createTreecrdtClient } from '@treecrdt/wa-sqlite/client';
+import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
 import {
   conformanceHashKey,
   conformanceSlugify,

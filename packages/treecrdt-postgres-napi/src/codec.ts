@@ -5,7 +5,7 @@ import {
   nodeIdToBytes16,
   replicaIdToBytes,
 } from '@treecrdt/interface/ids';
-import type { MaterializationOutcome } from '@treecrdt/interface/engine';
+import type { MaterializationOutcome, MaterializationSource } from '@treecrdt/interface/engine';
 
 import type { NativeMaterializationOutcome, NativeOp } from './native.js';
 
@@ -181,10 +181,26 @@ export function nativeToMaterializationOutcome(
   outcome: NativeMaterializationOutcome,
 ): MaterializationOutcome {
   const payloadOrNull = (payload: Uint8Array | null | undefined) => payload ?? null;
+  const decodeSource = (
+    source: NativeMaterializationOutcome['changes'][number]['source'],
+  ): MaterializationSource | undefined =>
+    source
+      ? {
+          operation: {
+            id: {
+              replica: source.operation.id.replica,
+              counter: parseSafeInteger('source.operation.id.counter', source.operation.id.counter),
+            },
+            lamport: parseSafeInteger('source.operation.lamport', source.operation.lamport),
+          },
+        }
+      : undefined;
+
   return {
     headSeq: parseSafeInteger('headSeq', outcome.headSeq),
     changes: outcome.changes.map((change) => {
       const kind = String(change.kind);
+      const source = decodeSource(change.source);
       if (kind === 'insert') {
         if (!change.parentAfter) throw new Error('native insert change missing parentAfter');
         return {
@@ -192,6 +208,7 @@ export function nativeToMaterializationOutcome(
           node: nodeIdFromBytes16(change.node),
           parentAfter: nodeIdFromBytes16(change.parentAfter),
           payload: payloadOrNull(change.payload),
+          ...(source ? { source } : {}),
         };
       }
       if (kind === 'move') {
@@ -201,6 +218,7 @@ export function nativeToMaterializationOutcome(
           node: nodeIdFromBytes16(change.node),
           parentBefore: change.parentBefore ? nodeIdFromBytes16(change.parentBefore) : null,
           parentAfter: nodeIdFromBytes16(change.parentAfter),
+          ...(source ? { source } : {}),
         };
       }
       if (kind === 'delete') {
@@ -208,6 +226,7 @@ export function nativeToMaterializationOutcome(
           kind,
           node: nodeIdFromBytes16(change.node),
           parentBefore: change.parentBefore ? nodeIdFromBytes16(change.parentBefore) : null,
+          ...(source ? { source } : {}),
         };
       }
       if (kind === 'restore') {
@@ -216,6 +235,7 @@ export function nativeToMaterializationOutcome(
           node: nodeIdFromBytes16(change.node),
           parentAfter: change.parentAfter ? nodeIdFromBytes16(change.parentAfter) : null,
           payload: payloadOrNull(change.payload),
+          ...(source ? { source } : {}),
         };
       }
       if (kind === 'payload') {
@@ -223,6 +243,7 @@ export function nativeToMaterializationOutcome(
           kind,
           node: nodeIdFromBytes16(change.node),
           payload: payloadOrNull(change.payload),
+          ...(source ? { source } : {}),
         };
       }
       throw new Error(`unknown native materialization change kind: ${kind}`);

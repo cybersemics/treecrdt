@@ -21,80 +21,48 @@ import {
 import type {
   LocalWriteOptions,
   MaterializationEvent,
-  TreecrdtEngine,
+  MaterializationOutcome,
   WriteOptions,
 } from '@treecrdt/interface/engine';
 import {
+  addMaterializationWriteId,
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
 } from '@treecrdt/interface/engine';
-import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 import { dbGetText } from './sql.js';
-import type { Database } from './index.js';
-import type {
-  RpcMethod,
-  RpcParams,
-  RpcPushMessage,
-  RpcRequest,
-  RpcResponse,
-  RpcResult,
+import {
+  rpcBinaryResult,
+  type RpcMethod,
+  type RpcParams,
+  type RpcPushMessage,
+  type RpcRequest,
+  type RpcResponse,
+  type RpcResult,
 } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
+import type {
+  ClientMaterializationDispatcher,
+  ClientMaterializationDispatcherOptions,
+  ClientMode,
+  ClientOptions,
+  CrossTabMaterializationMessage,
+  CrossTabMaterializationScope,
+  Database,
+  MessagePortProxy,
+  NormalizedRuntimeOptions,
+  NormalizedStorageOptions,
+  RpcCall,
+  RuntimeMode,
+  SharedWorkerFactory,
+  StorageMode,
+  TreecrdtClient,
+  TreecrdtRuntime,
+  WorkerProxy,
+} from './types.js';
 
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
-
-export type StorageMode = 'memory' | 'opfs';
-export type ClientMode = 'direct' | 'worker';
-export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
-export type TreecrdtStorage =
-  | { type: 'memory' }
-  | { type: 'opfs'; filename?: string; fallback?: 'throw' | 'memory' }
-  | { type: 'auto'; filename?: string; fallback?: 'memory' | 'throw' };
-export type TreecrdtRuntime =
-  | { type: 'auto' }
-  | { type: 'direct' }
-  | { type: 'dedicated-worker'; workerUrl?: string | URL }
-  | { type: 'shared-worker'; workerUrl?: string | URL; name?: string };
-export type TreecrdtAssets = {
-  baseUrl?: string;
-};
-
-export type TreecrdtClient = TreecrdtEngine & {
-  mode: ClientMode;
-  runtime: RuntimeMode;
-  storage: StorageMode;
-  runner: SqliteRunner;
-  auth: TreecrdtClientAuthApi;
-  drop: () => Promise<void>;
-};
-
-type TreecrdtSqliteAuthModule = typeof import('@treecrdt/sync-sqlite/auth');
-
-export type TreecrdtClientAuthApi = {
-  createSession: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['createSession']>
-  ) => Promise<ReturnType<TreecrdtSqliteAuthApi['createSession']>>;
-  describeCapabilityToken: TreecrdtSqliteAuthApi['describeCapabilityToken'];
-  evaluateScope: (
-    ...args: Parameters<TreecrdtSqliteAuthApi['evaluateScope']>
-  ) => Promise<Awaited<ReturnType<TreecrdtSqliteAuthApi['evaluateScope']>>>;
-};
-
-export type ClientOptions = {
-  storage?: TreecrdtStorage;
-  runtime?: TreecrdtRuntime;
-  assets?: TreecrdtAssets;
-  docId?: string; // used for v0 sync opRef derivation inside the extension
-};
-
-type NormalizedStorageOptions = {
-  type: StorageMode | 'auto';
-  filename?: string;
-  requireOpfs: boolean;
-  fallback: 'memory' | 'throw';
-};
-
-type NormalizedRuntimeOptions = TreecrdtRuntime;
+// Keep long browser appendMany calls from monopolizing the worker queue.
+const APPEND_MANY_RPC_CHUNK_SIZE = 2500;
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
   const raw = opts.storage ?? { type: 'auto' };
@@ -210,70 +178,7 @@ function defaultSharedWorkerName(docId: string, filename?: string): string {
 
 // --- Worker client
 
-type WorkerProxy = {
-  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
-  terminate: () => void;
-  addEventListener: (type: 'message' | 'error', fn: (ev: any) => void) => void;
-  removeEventListener: (type: 'message' | 'error', fn: (ev: any) => void) => void;
-};
-
-type MessagePortProxy = {
-  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
-  start: () => void;
-  close: () => void;
-  addEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
-  removeEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
-};
-
-type RpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>) => Promise<RpcResult<M>>;
-type SharedWorkerFactory = (options?: WorkerOptions & { name?: string }) => SharedWorker;
-type ClientMaterializationDispatcher = ReturnType<typeof createMaterializationDispatcher> & {
-  enableCrossTab: (scope: CrossTabMaterializationScope) => void;
-  emitIncomingEvent: (event: MaterializationEvent) => void;
-  close: () => void;
-};
-type ClientMaterializationDispatcherOptions = {
-  broadcast?: (event: MaterializationEvent) => void;
-};
-type CrossTabMaterializationScope = {
-  docId: string;
-  filename: string;
-};
-type CrossTabMaterializationMessage = {
-  type: 'treecrdt-materialized-v1';
-  sourceId: string;
-  docId: string;
-  filename: string;
-  event: MaterializationEvent;
-};
-
 const CROSS_TAB_MATERIALIZED_MESSAGE = 'treecrdt-materialized-v1';
-
-let sqliteAuthModulePromise: Promise<TreecrdtSqliteAuthModule> | null = null;
-
-function loadSqliteAuthModule(): Promise<TreecrdtSqliteAuthModule> {
-  // Auth is an opt-in capability path for browser clients. Apps that only open
-  // local trees do not need auth sessions or proof material until they call client.auth.*.
-  sqliteAuthModulePromise ??= import('@treecrdt/sync-sqlite/auth');
-  return sqliteAuthModulePromise;
-}
-
-function createLazyAuthApi(opts: { runner: SqliteRunner; docId: string }): TreecrdtClientAuthApi {
-  let authApiPromise: Promise<TreecrdtSqliteAuthApi> | null = null;
-  const getAuthApi = () => {
-    authApiPromise ??= loadSqliteAuthModule().then(({ createTreecrdtSqliteAuthApi }) =>
-      createTreecrdtSqliteAuthApi(opts),
-    );
-    return authApiPromise;
-  };
-
-  return {
-    createSession: async (...args) => (await getAuthApi()).createSession(...args),
-    describeCapabilityToken: async (...args) =>
-      (await getAuthApi()).describeCapabilityToken(...args),
-    evaluateScope: async (...args) => await (await getAuthApi()).evaluateScope(...args),
-  };
-}
 
 function createClientMaterializationDispatcher(
   opts: ClientMaterializationDispatcherOptions = {},
@@ -290,8 +195,16 @@ function createClientMaterializationDispatcher(
   };
 
   const eventForPeers = (event: MaterializationEvent): MaterializationEvent => {
-    const { writeIds: _writeIds, ...nextEvent } = event;
-    return nextEvent;
+    return {
+      ...event,
+      changes: event.changes.map((change) => {
+        if (!change.source?.writeIds) return change;
+        const { writeIds: _writeIds, ...source } = change.source;
+        if (Object.keys(source).length > 0) return { ...change, source };
+        const { source: _source, ...nextChange } = change;
+        return nextChange;
+      }),
+    };
   };
 
   const broadcast = (event: MaterializationEvent) => {
@@ -314,10 +227,7 @@ function createClientMaterializationDispatcher(
 
   const emitOutcome: ClientMaterializationDispatcher['emitOutcome'] = (outcome, writeId) => {
     if (outcome.changes.length === 0) return;
-    emitEvent({
-      ...outcome,
-      ...(writeId ? { writeIds: [writeId] } : {}),
-    });
+    emitEvent(addMaterializationWriteId(outcome, writeId));
   };
 
   const enableCrossTab = (nextScope: CrossTabMaterializationScope) => {
@@ -631,11 +541,10 @@ async function createSharedWorkerClient(opts: {
 }
 
 async function createDefaultSharedWorker(name: string): Promise<SharedWorker> {
-  // Vite's ?sharedworker wrapper bundles the module and still lets us pass a runtime name.
-  const { default: createWorker } = (await import('./shared-worker.js?sharedworker')) as {
-    default: SharedWorkerFactory;
-  };
-  return createWorker({ name });
+  return new SharedWorker(
+    new URL('./shared-worker.js', import.meta.url),
+    /* @vite-ignore */ { name, type: 'module' } as WorkerOptions & { name: string },
+  );
 }
 
 // --- Direct client (main-thread, used for memory or opt-in opfs)
@@ -655,6 +564,10 @@ async function createDirectClient(opts: {
     storage,
     docId: opts.docId,
     requireOpfs,
+    // The coop-sync OPFS VFS depends on createSyncAccessHandle, which is only
+    // available in workers. Direct browser clients run on the window thread, so
+    // OPFS needs the async any-context VFS.
+    opfsVfs: storage === 'opfs' ? 'any-context' : undefined,
     onMaterialized: materialized.emitEvent,
   });
   const db = opened.db;
@@ -745,14 +658,14 @@ async function createDirectClient(opts: {
         case 'treePayload': {
           const [node] = params as RpcParams<'treePayload'>;
           const payload = await adapter.treePayload(nodeIdToBytes16(node));
-          return (payload === null ? null : Array.from(payload)) as any;
+          return rpcBinaryResult(payload) as any;
         }
         case 'treeNodeCount':
           return (await adapter.treeNodeCount()) as any;
         case 'treeParent': {
           const [node] = params as RpcParams<'treeParent'>;
           const result = await adapter.treeParent(nodeIdToBytes16(node));
-          return result ? Array.from(result) : null;
+          return rpcBinaryResult(result) as any;
         }
         case 'treeExists': {
           const [node] = params as RpcParams<'treeExists'>;
@@ -871,16 +784,31 @@ function makeTreecrdtClientFromCall(opts: {
   const treeParentImpl = async (node: string) => {
     const result = await call('treeParent', [node]);
     if (result === null) return null;
-    return nodeIdFromBytes16(Uint8Array.from(result));
+    return nodeIdFromBytes16(toRpcBytes(result));
   };
   const treeExistsImpl = async (node: string) => Boolean(await call('treeExists', [node]));
   const treeGetPayloadImpl = async (node: string) => {
     const result = await call('treePayload', [node]);
-    return result === null ? null : Uint8Array.from(result);
+    return result === null ? null : toRpcBytes(result);
   };
   const headLamportImpl = async () => Number(await call('headLamport', []));
   const replicaMaxCounterImpl = async (replica: Operation['meta']['id']['replica']) =>
     Number(await call('replicaMaxCounter', [Array.from(encodeReplica(replica))]));
+  const appendManyImpl = async (operations: Operation[], writeOpts?: WriteOptions) => {
+    if (operations.length <= APPEND_MANY_RPC_CHUNK_SIZE) {
+      const outcome = await call('appendMany', [operations]);
+      materialized.emitOutcome(outcome, writeOpts?.writeId);
+      return;
+    }
+
+    const outcomes: MaterializationOutcome[] = [];
+    for (let start = 0; start < operations.length; start += APPEND_MANY_RPC_CHUNK_SIZE) {
+      outcomes.push(
+        await call('appendMany', [operations.slice(start, start + APPEND_MANY_RPC_CHUNK_SIZE)]),
+      );
+    }
+    materialized.emitOutcome(mergeMaterializationOutcomes(outcomes), writeOpts?.writeId);
+  };
   const localInsertImpl = async (
     replica: ReplicaId,
     parent: string,
@@ -954,10 +882,7 @@ function makeTreecrdtClientFromCall(opts: {
         const outcome = await call('append', [op]);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
-      appendMany: async (ops, writeOpts?: WriteOptions) => {
-        const outcome = await call('appendMany', [ops]);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
-      },
+      appendMany: appendManyImpl,
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),
@@ -974,7 +899,6 @@ function makeTreecrdtClientFromCall(opts: {
       getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
-    auth: createLazyAuthApi({ runner, docId: opts.docId }),
     local,
     onMaterialized: materialized.onMaterialized,
     close: closeImpl,
@@ -982,6 +906,18 @@ function makeTreecrdtClientFromCall(opts: {
   };
 }
 
-function encodeReplica(replica: Operation['meta']['id']['replica']): Uint8Array {
+function encodeReplica(replica: ReplicaId): Uint8Array {
   return replicaIdToBytes(replica);
+}
+
+function toRpcBytes(bytes: Uint8Array | number[]): Uint8Array {
+  return bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+}
+
+function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
+  const last = outcomes[outcomes.length - 1];
+  return {
+    headSeq: last?.headSeq ?? 0,
+    changes: outcomes.flatMap((outcome) => outcome.changes),
+  };
 }

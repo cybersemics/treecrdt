@@ -1,8 +1,8 @@
 use std::slice;
 
 use treecrdt_core::{
-    MaterializationChange, MaterializationFrontier, MaterializationOutcome, NodeId, Operation,
-    ReplicaId,
+    MaterializationChange, MaterializationFrontier, MaterializationOutcome, MaterializationSource,
+    NodeId, Operation, ReplicaId,
 };
 
 pub trait MaterializationConformanceHarness {
@@ -21,6 +21,35 @@ pub trait MaterializationConformanceHarness {
 
 fn changed_nodes(outcome: &MaterializationOutcome) -> Vec<NodeId> {
     outcome.affected_nodes()
+}
+
+fn visible_payload_source(
+    change: &MaterializationChange,
+    target: NodeId,
+    expected_payload: &[u8],
+) -> Option<Option<MaterializationSource>> {
+    match change {
+        MaterializationChange::Insert {
+            node,
+            payload,
+            source,
+            ..
+        }
+        | MaterializationChange::Restore {
+            node,
+            payload,
+            source,
+            ..
+        }
+        | MaterializationChange::Payload {
+            node,
+            payload,
+            source,
+        } if *node == target && payload.as_deref() == Some(expected_payload) => {
+            Some(source.clone())
+        }
+        _ => None,
+    }
 }
 
 pub fn order_key_from_position(position: u16) -> Vec<u8> {
@@ -84,10 +113,15 @@ pub fn representative_remote_batch_matches_shape<H: MaterializationConformanceHa
 
     let outcome = harness.append_ops_with_materialization_outcome(&ops);
     assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, p1, p2, child]);
-    assert!(outcome
+    let payload_source = outcome
         .changes
         .iter()
-        .any(|change| matches!(change, MaterializationChange::Payload { node, payload } if *node == child && payload.as_deref() == Some(&[8]))));
+        .find_map(|change| visible_payload_source(change, child, &[8]))
+        .expect("expected final child payload in materialization outcome");
+    assert_eq!(
+        payload_source,
+        Some(MaterializationSource::from_op(ops.last().unwrap()))
+    );
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![p1, p2]);
     assert_eq!(harness.visible_children(p2), vec![child]);
     assert_eq!(harness.payload(child), Some(vec![8]));

@@ -137,6 +137,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalInsertWithPayload,
     },
     {
+      name: 'local ops: materialization changes include writeId',
+      run: scenarioLocalOpsMaterializationWriteId,
+    },
+    {
       name: 'append/appendMany: idempotent + headLamport monotonic',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
@@ -325,6 +329,25 @@ async function captureMaterializationEvents(
     unsubscribe();
   }
   return events;
+}
+
+function assertChangeSource(
+  event: MaterializationEvent,
+  node: string,
+  op: Operation,
+  label: string,
+): void {
+  const change = event.changes.find((change) => change.node === node);
+  assert(change, `${label} change for node`);
+  assert(change.source, `${label} source`);
+  assert(change.source.operation, `${label} source operation`);
+  assertEqual(change.source.operation.id.counter, op.meta.id.counter, `${label} source counter`);
+  assertEqual(change.source.operation.lamport, op.meta.lamport, `${label} source lamport`);
+  assertBytesEqual(
+    change.source.operation.id.replica,
+    replicaIdToBytes(op.meta.id.replica),
+    `${label} source replica`,
+  );
 }
 
 function assertBytesEqual(
@@ -525,6 +548,87 @@ async function scenarioLocalInsertWithPayload(
   assertEqual(first.kind.type, 'insert', 'ops.all first kind');
   if (first.kind.type !== 'insert') throw new Error(`expected insert op, got ${first.kind.type}`);
   assertBytesEqual(first.kind.payload ?? null, payload, 'ops.all insert payload');
+}
+
+async function scenarioLocalOpsMaterializationWriteId(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(41);
+  const node = nodeIdFromInt(42);
+  const boundNode = nodeIdFromInt(43);
+  const payload = new TextEncoder().encode('payload-42');
+  const nextPayload = new TextEncoder().encode('payload-43');
+
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+
+  const assertWriteIdEvent = (
+    events: MaterializationEvent[],
+    writeId: string,
+    expectedRefs: string[],
+    label: string,
+  ) => {
+    assertEqual(events.length, 1, `${label} should emit one materialization event`);
+    for (const change of events[0]!.changes) {
+      assertArrayEqual(change.source?.writeIds ?? [], [writeId], `${label} change writeIds`);
+    }
+    assertEventNodeRefsContain(
+      materializationEventNodeRefs(events[0]!),
+      expectedRefs,
+      `${label} event refs`,
+    );
+  };
+
+  let insertOp: Operation | undefined;
+  const insertEvents = await captureMaterializationEvents(engine, async () => {
+    insertOp = await engine.local.insert(replica, root, node, { type: 'last' }, null, {
+      writeId: 'local-insert-42',
+    });
+  });
+  assertWriteIdEvent(insertEvents, 'local-insert-42', [root, node], 'local insert');
+  assertChangeSource(insertEvents[0]!, node, insertOp!, 'local insert');
+
+  let moveOp: Operation | undefined;
+  const moveEvents = await captureMaterializationEvents(engine, async () => {
+    moveOp = await engine.local.move(
+      replica,
+      node,
+      parent,
+      { type: 'last' },
+      { writeId: 'local-move-42' },
+    );
+  });
+  assertWriteIdEvent(moveEvents, 'local-move-42', [root, parent, node], 'local move');
+  assertChangeSource(moveEvents[0]!, node, moveOp!, 'local move');
+
+  let payloadOp: Operation | undefined;
+  const payloadEvents = await captureMaterializationEvents(engine, async () => {
+    payloadOp = await engine.local.payload(replica, node, payload, { writeId: 'local-payload-42' });
+  });
+  assertWriteIdEvent(payloadEvents, 'local-payload-42', [node], 'local payload');
+  assertChangeSource(payloadEvents[0]!, node, payloadOp!, 'local payload');
+
+  let deleteOp: Operation | undefined;
+  const deleteEvents = await captureMaterializationEvents(engine, async () => {
+    deleteOp = await engine.local.delete(replica, node, { writeId: 'local-delete-42' });
+  });
+  assertWriteIdEvent(deleteEvents, 'local-delete-42', [parent, node], 'local delete');
+  assertChangeSource(deleteEvents[0]!, node, deleteOp!, 'local delete');
+
+  const boundLocal = engine.local.forReplica(replica, { writeId: 'bound-local-default-43' });
+  let boundInsertOp: Operation | undefined;
+  const boundInsertEvents = await captureMaterializationEvents(engine, async () => {
+    boundInsertOp = await boundLocal.insert(root, boundNode, { type: 'last' }, nextPayload);
+  });
+  assertWriteIdEvent(
+    boundInsertEvents,
+    'bound-local-default-43',
+    [root, boundNode],
+    'bound local insert',
+  );
+  assertChangeSource(boundInsertEvents[0]!, boundNode, boundInsertOp!, 'bound local insert');
 }
 
 async function scenarioAppendIdempotentAndHeadLamportMonotonic(

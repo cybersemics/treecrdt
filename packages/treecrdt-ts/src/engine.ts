@@ -1,12 +1,59 @@
 import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
 
+export type MaterializationSource = {
+  /**
+   * Operation that caused the visible change.
+   *
+   * `replica` is a low-level CRDT replica id, not an auth/user identity.
+   */
+  operation?: {
+    id: {
+      replica: Uint8Array;
+      counter: number;
+    };
+    /** Lamport timestamp assigned to the operation. */
+    lamport: number;
+  };
+  /** Local write ids supplied to the append/local write API that produced this visible change. */
+  writeIds?: string[];
+  /** Future auth metadata for the operation signer, when available. */
+  signer?: {
+    publicKey: Uint8Array;
+  };
+};
+
+type ChangeSource = {
+  /**
+   * Source metadata for the visible change.
+   *
+   * Conservative catch-up/rebuild paths may omit operation metadata when a visible change is derived
+   * from rebuilt state instead of a single operation.
+   */
+  source?: MaterializationSource;
+};
+
 export type Change =
-  | { kind: 'insert'; node: string; parentAfter: string; payload: Uint8Array | null }
-  | { kind: 'move'; node: string; parentBefore: string | null; parentAfter: string }
-  | { kind: 'delete'; node: string; parentBefore: string | null }
-  | { kind: 'restore'; node: string; parentAfter: string | null; payload: Uint8Array | null }
-  | { kind: 'payload'; node: string; payload: Uint8Array | null };
+  | ({
+      kind: 'insert';
+      node: string;
+      parentAfter: string;
+      payload: Uint8Array | null;
+    } & ChangeSource)
+  | ({
+      kind: 'move';
+      node: string;
+      parentBefore: string | null;
+      parentAfter: string;
+    } & ChangeSource)
+  | ({ kind: 'delete'; node: string; parentBefore: string | null } & ChangeSource)
+  | ({
+      kind: 'restore';
+      node: string;
+      parentAfter: string | null;
+      payload: Uint8Array | null;
+    } & ChangeSource)
+  | ({ kind: 'payload'; node: string; payload: Uint8Array | null } & ChangeSource);
 
 /**
  * Coalesced result of advancing materialized state to `headSeq`.
@@ -25,11 +72,9 @@ export function emptyMaterializationOutcome(headSeq = 0): MaterializationOutcome
 
 /**
  * Event emitted after write-path materialization, or after read-path recovery advances a pending
- * materialization frontier. `writeIds` echoes optional ids supplied to append APIs.
+ * materialization frontier. Local write ids are echoed on each affected change's `source.writeIds`.
  */
-export type MaterializationEvent = MaterializationOutcome & {
-  writeIds?: string[];
-};
+export type MaterializationEvent = MaterializationOutcome;
 
 export type MaterializationListener = (event: MaterializationEvent) => void;
 
@@ -49,10 +94,7 @@ export function createMaterializationDispatcher(): MaterializationDispatcher {
 
   const emitOutcome = (outcome: MaterializationOutcome, writeId?: string) => {
     if (outcome.changes.length === 0) return;
-    emitEvent({
-      ...outcome,
-      ...(writeId ? { writeIds: [writeId] } : {}),
-    });
+    emitEvent(addMaterializationWriteId(outcome, writeId));
   };
 
   const onMaterialized = (listener: MaterializationListener) => {
@@ -65,6 +107,23 @@ export function createMaterializationDispatcher(): MaterializationDispatcher {
   return { emitEvent, emitOutcome, onMaterialized };
 }
 
+export function addMaterializationWriteId(
+  outcome: MaterializationOutcome,
+  writeId?: string,
+): MaterializationEvent {
+  if (!writeId) return { ...outcome };
+  return {
+    ...outcome,
+    changes: outcome.changes.map((change) => ({
+      ...change,
+      source: {
+        ...change.source,
+        writeIds: [...(change.source?.writeIds ?? []), writeId],
+      },
+    })),
+  };
+}
+
 export type WriteOptions = {
   writeId?: string;
 };
@@ -74,6 +133,9 @@ export type LocalWriteAuthSession = {
 };
 
 export type LocalWriteOptions = {
+  /** Echoed on each materialized change emitted by this local write. */
+  writeId?: string;
+
   /**
    * Authorizes the minted local op before it is exposed to callers as committed.
    *

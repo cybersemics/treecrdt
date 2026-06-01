@@ -24,6 +24,17 @@ export type NativeMaterializationChange = {
   parentBefore?: Uint8Array | null;
   parentAfter?: Uint8Array | null;
   payload?: Uint8Array | null;
+  source?: NativeMaterializationSource | null;
+};
+
+export type NativeMaterializationSource = {
+  operation: {
+    id: {
+      replica: Uint8Array;
+      counter: bigint | number;
+    };
+    lamport: bigint | number;
+  };
 };
 
 export type NativeMaterializationOutcome = {

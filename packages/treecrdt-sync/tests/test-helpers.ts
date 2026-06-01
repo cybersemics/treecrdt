@@ -125,7 +125,7 @@ export function createInMemoryTestClient(
 
 /**
  * Mock engine: `append` / `appendMany` honor `WriteOptions.writeId` and emit
- * `MaterializationEvent` (including `writeIds`) the same way as the dispatcher used in wa-sqlite.
+ * `MaterializationEvent` per-change write ids the same way as the dispatcher used in wa-sqlite.
  */
 export function createInMemoryTestClientWithWriteId(
   docId: string,
