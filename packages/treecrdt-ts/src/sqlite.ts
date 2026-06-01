@@ -1,6 +1,11 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
-import { emptyMaterializationOutcome } from './engine.js';
-import type { LocalWriteOptions, MaterializationEvent, MaterializationOutcome } from './engine.js';
+import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
+import type {
+  LocalWriteOptions,
+  MaterializationEvent,
+  MaterializationOutcome,
+  MaterializationSource,
+} from './engine.js';
 import {
   decodeNodeId,
   decodeReplicaId,
@@ -74,8 +79,9 @@ function decodeLocalOpResult(
 function emitLocalOutcome(
   outcome: MaterializationOutcome,
   emit?: (event: MaterializationEvent) => void,
+  writeId?: string,
 ): void {
-  if (outcome.changes.length > 0) emit?.({ ...outcome });
+  if (outcome.changes.length > 0) emit?.(addMaterializationWriteId(outcome, writeId));
 }
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
@@ -617,7 +623,7 @@ export function createTreecrdtSqliteWriter(
         await sqliteGetJson<any>(runner, sql, params),
         sql,
       );
-      emitLocalOutcome(outcome, opts.onMaterialized);
+      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
       return op;
     }
 
@@ -632,7 +638,7 @@ export function createTreecrdtSqliteWriter(
       await authSession.authorizeLocalOps([op]);
       await sqliteExec(runner, `RELEASE ${savepoint}`);
       released = true;
-      emitLocalOutcome(outcome, opts.onMaterialized);
+      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
       return op;
     } catch (err) {
       if (!released) {
@@ -720,17 +726,50 @@ function decodeSqlitePayload(raw: unknown): Uint8Array | null {
   return Uint8Array.from(raw as any);
 }
 
+function decodeSqliteMaterializationSource(raw: unknown): MaterializationSource | undefined {
+  if (raw == null) return undefined;
+  const value = raw as any;
+  const operation = value.operation as any;
+  const operationId = operation?.id as any;
+  const source: MaterializationSource = {
+    ...(operation && operationId
+      ? {
+          operation: {
+            id: {
+              replica: decodeReplicaId(operationId.replica),
+              counter: Number(operationId.counter),
+            },
+            lamport: Number(operation.lamport),
+          },
+        }
+      : {}),
+    ...(Array.isArray(value.writeIds) ? { writeIds: value.writeIds.map(String) } : {}),
+    ...(value.signer?.publicKey
+      ? { signer: { publicKey: Uint8Array.from(value.signer.publicKey) } }
+      : {}),
+  };
+
+  // Avoid exposing `source: {}` when a backend emits an empty or unknown source object.
+  const hasSource =
+    source.operation !== undefined ||
+    (source.writeIds?.length ?? 0) > 0 ||
+    source.signer !== undefined;
+  return hasSource ? source : undefined;
+}
+
 export function decodeSqliteMaterializationOutcome(raw: unknown): MaterializationOutcome {
   const value = (raw ?? {}) as any;
   const rawChanges = Array.isArray(value.changes) ? value.changes : [];
   const changes = rawChanges.map((change: any) => {
     const kind = String(change.kind);
+    const source = decodeSqliteMaterializationSource(change.source);
     if (kind === 'insert') {
       return {
         kind,
         node: decodeNodeId(change.node),
         parentAfter: decodeNodeId(change.parentAfter),
         payload: decodeSqlitePayload(change.payload),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'move') {
@@ -739,6 +778,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         node: decodeNodeId(change.node),
         parentBefore: change.parentBefore == null ? null : decodeNodeId(change.parentBefore),
         parentAfter: decodeNodeId(change.parentAfter),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'delete') {
@@ -746,6 +786,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         kind,
         node: decodeNodeId(change.node),
         parentBefore: change.parentBefore == null ? null : decodeNodeId(change.parentBefore),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'restore') {
@@ -754,6 +795,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         node: decodeNodeId(change.node),
         parentAfter: change.parentAfter == null ? null : decodeNodeId(change.parentAfter),
         payload: decodeSqlitePayload(change.payload),
+        ...(source ? { source } : {}),
       };
     }
     if (kind === 'payload') {
@@ -761,6 +803,7 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
         kind,
         node: decodeNodeId(change.node),
         payload: decodeSqlitePayload(change.payload),
+        ...(source ? { source } : {}),
       };
     }
     throw new Error(`unknown materialization change kind: ${kind}`);

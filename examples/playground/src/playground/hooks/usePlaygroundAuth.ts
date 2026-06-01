@@ -12,8 +12,9 @@ import {
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
 import { createTreecrdtSqliteSyncDiagnostics } from "@treecrdt/sync-sqlite";
+import { createTreecrdtSqliteAuthApi } from "@treecrdt/sync-sqlite/auth";
 import type { SyncAuth } from "@treecrdt/sync-protocol";
-import type { TreecrdtClient } from "@treecrdt/wa-sqlite/client";
+import type { TreecrdtClient } from "@treecrdt/wa-sqlite";
 
 import {
   clearAuthMaterial,
@@ -290,6 +291,11 @@ type UsePlaygroundAuthOptions = {
 
 export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAuthApi {
   const { docId, joinMode, client, syncServerUrl, syncTransportMode, onPeerIdentityChain, refreshDocPayloadKey } = opts;
+  const authApi = useMemo(
+    () =>
+      client ? createTreecrdtSqliteAuthApi({ runner: client.runner, docId: client.docId }) : null,
+    [client],
+  );
 
   const [authEnabled, setAuthEnabled] = useState(() => initialAuthEnabled());
   const [revealIdentity, setRevealIdentity] = useState(() => initialRevealIdentity());
@@ -486,7 +492,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     resetLocalIdentityChain,
   } = usePlaygroundAuthSession({
     authEnabled,
-    client,
+    authApi,
     docId,
     authMaterial,
     hardRevokedTokenIds,
@@ -873,8 +879,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
       const issuerPk = base64urlDecode(issuerPkB64);
       const proofTokenBytes = base64urlDecode(proofTokenB64);
-      const proofDesc = client
-        ? await client.auth.describeCapabilityToken({
+      const proofDesc = authApi
+        ? await authApi.describeCapabilityToken({
             tokenBytes: proofTokenBytes,
             trust: { issuerPublicKeys: [issuerPk] },
             docId,
@@ -900,10 +906,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         if (proofScope?.maxDepth !== undefined) {
           throw new Error("This tab can only mint delegated invites for its current subtree scope (maxDepth).");
         }
-        if (!client) {
+        if (!authApi) {
           throw new Error("This tab can only mint delegated invites for its current subtree scope.");
         }
-        const tri = await client.auth.evaluateScope({
+        const tri = await authApi.evaluateScope({
           node: hexToBytes16(rootNodeId),
           scope: {
             root: hexToBytes16(proofRootId),
@@ -1175,8 +1181,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
 
         const issuerPk = base64urlDecode(issuerPkB64);
         const proofTokenBytes = base64urlDecode(proofTokenB64);
-        const proofDesc = client
-          ? await client.auth.describeCapabilityToken({
+        const proofDesc = authApi
+          ? await authApi.describeCapabilityToken({
               tokenBytes: proofTokenBytes,
               trust: { issuerPublicKeys: [issuerPk] },
               docId,
@@ -1199,10 +1205,10 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
           if (proofScope?.maxDepth !== undefined) {
             throw new Error("this tab can only delegate grants for its current subtree scope (maxDepth)");
           }
-          if (!client) {
+          if (!authApi) {
             throw new Error("this tab can only delegate grants for its current subtree scope");
           }
-          const tri = await client.auth.evaluateScope({
+          const tri = await authApi.evaluateScope({
             node: hexToBytes16(rootNodeId),
             scope: {
               root: hexToBytes16(proofRootId),

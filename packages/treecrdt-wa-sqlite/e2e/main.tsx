@@ -5,6 +5,8 @@ import './src/bench';
 import './src/conformance';
 import './src/closed-client';
 import './src/drop-opfs';
+import './src/lifecycle';
+import './src/responsiveness';
 import './src/sync';
 
 const container = document.getElementById('root');

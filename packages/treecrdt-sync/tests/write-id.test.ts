@@ -27,14 +27,14 @@ function noopTransport() {
   return wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
 }
 
-test('onChange receives writeIds from appendMany(…, { writeId })', async () => {
+test('onMaterialized receives per-change writeIds from appendMany(…, { writeId })', async () => {
   const docId = `write-id-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
   const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
 
   const events: MaterializationEvent[] = [];
-  const u = sync.onChange((e) => {
+  const u = client.onMaterialized((e) => {
     events.push(e);
   });
 
@@ -53,23 +53,30 @@ test('onChange receives writeIds from appendMany(…, { writeId })', async () =>
     await sync.close();
   }
 
-  const withWrite = events.find(
-    (e) =>
-      e.writeIds?.[0] === 'my-batch-42' &&
-      e.changes.some((c) => c.kind === 'insert' && c.node === n1),
+  const withWrite = events.find((e) =>
+    e.changes.some(
+      (c) => c.kind === 'insert' && c.node === n1 && c.source?.writeIds?.includes('my-batch-42'),
+    ),
   );
   expect(withWrite).toBeDefined();
-  expect(withWrite!.writeIds).toEqual(['my-batch-42']);
+  expect('writeIds' in withWrite!).toBe(false);
+  expect(withWrite!.changes.every((change) => change.source?.writeIds?.[0] === 'my-batch-42')).toBe(
+    true,
+  );
 });
 
-test('onChange receives writeIds from append(…, { writeId })', async () => {
+test('onMaterialized receives per-change writeIds from append(…, { writeId })', async () => {
   const docId = `write-id-s-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
   const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
   const seen: string[] = [];
-  const u = sync.onChange((e) => {
-    if (e.writeIds?.[0]) seen.push(e.writeIds[0]!);
+  let sawRootWriteIds = false;
+  const u = client.onMaterialized((e) => {
+    sawRootWriteIds ||= 'writeIds' in e;
+    for (const change of e.changes) {
+      if (change.source?.writeIds?.[0]) seen.push(change.source.writeIds[0]!);
+    }
   });
   const n1 = nodeIdFromInt(1);
   const op: Operation = makeOp(r, 1, 1, {
@@ -84,5 +91,6 @@ test('onChange receives writeIds from append(…, { writeId })', async () => {
     u();
     await sync.close();
   }
+  expect(sawRootWriteIds).toBe(false);
   expect(seen).toContain('single-append');
 });

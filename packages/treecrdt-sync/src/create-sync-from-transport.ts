@@ -74,7 +74,7 @@ export function createTreecrdtWebSocketSyncFromTransport(
 
   const peerOpts: SyncPeerOptions<Operation> = {
     maxCodewords: 2_000_000,
-    maxOpsPerBatch: 20_000,
+    maxOpsPerBatch: DEFAULT_SYNC_ONCE.maxOpsPerBatch,
     deriveOpRef: (op, ctx) =>
       deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
     ...extraPeerOptions,
@@ -88,10 +88,7 @@ export function createTreecrdtWebSocketSyncFromTransport(
     if (closed) throw new Error('TreecrdtWebSocketSync: connection is closed');
   };
 
-  const onChange: TreecrdtWebSocketSync['onChange'] = (listener) => client.onMaterialized(listener);
-
   const handle: TreecrdtWebSocketSync = {
-    onChange,
     syncOnce: async (filter: Filter = { all: {} }, opts: SyncOnceOptions = {}) => {
       assertOpen();
       await peer.syncOnce(transport, filter, mergeSyncOnceOptions(opts));

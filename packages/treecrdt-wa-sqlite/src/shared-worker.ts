@@ -1,19 +1,19 @@
 /// <reference lib="webworker" />
-import { dbGetText } from './sql.js';
-import type { Database } from './index.js';
-import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import type {
-  RpcInitResult,
-  RpcMethod,
-  RpcParams,
-  RpcRequest,
-  RpcResult,
-  RpcSqlParams,
+import {
+  transferablesForRpcBinaryResult,
+  type RpcInitResult,
+  type RpcMethod,
+  type RpcParams,
+  type RpcRequest,
+  type RpcResult,
 } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
-import { clearOpfsStorage } from './opfs.js';
+import {
+  CommonWorkerSession,
+  createCommonWorkerRpcHandlers,
+  openedToRpcInitResult,
+} from './common-worker.js';
 
 type SharedWorkerGlobal = typeof globalThis & {
   onconnect: ((ev: MessageEvent) => void) | null;
@@ -26,13 +26,19 @@ type StoredConfig = {
   docId: string;
 };
 
+class SharedCommonWorkerSession extends CommonWorkerSession {
+  storedConfig: StoredConfig | null = null;
+  initResult: RpcInitResult | null = null;
+
+  protected onAfterReset(): void {
+    this.storedConfig = null;
+    this.initResult = null;
+  }
+}
+
 const ports = new Set<MessagePort>();
-let db: Database | null = null;
-let api: TreecrdtAdapter | null = null;
-let storedFilename: string | undefined;
-let storedStorage: 'memory' | 'opfs' = 'memory';
-let storedConfig: StoredConfig | null = null;
-let initResult: RpcInitResult | null = null;
+const session = new SharedCommonWorkerSession();
+const coreHandlers = createCommonWorkerRpcHandlers(session);
 let callQueue: Promise<void> = Promise.resolve();
 
 const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
@@ -55,14 +61,21 @@ function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePor
   ports.add(port);
   port.onmessage = (message: MessageEvent<RpcRequest>) => {
     const request = message.data;
-    const respond = (ok: boolean, result?: any, error?: string) => {
-      port.postMessage({ id: request.id, ok, result, error });
+    const respondSuccess = (result?: unknown) => {
+      const transfer =
+        request.method === 'treePayload' || request.method === 'treeParent'
+          ? transferablesForRpcBinaryResult(result)
+          : [];
+      port.postMessage({ id: request.id, ok: true, result }, transfer);
+    };
+    const respondError = (error: string) => {
+      port.postMessage({ id: request.id, ok: false, error });
     };
     const run = callQueue.then(() => handleRequest(port, request));
     callQueue = settleQueue(run);
     run.then(
-      (result) => respond(true, result),
-      (err) => respond(false, null, err instanceof Error ? err.message : String(err)),
+      (result) => respondSuccess(result),
+      (err) => respondError(err instanceof Error ? err.message : String(err)),
     );
   };
   port.start();
@@ -89,11 +102,11 @@ async function handleRequest<M extends RpcMethod>(
   }
 
   if (request.method === 'drop') {
-    await drop();
+    await session.drop();
     return undefined;
   }
 
-  const methodFn = methods[request.method as keyof typeof methods] as
+  const methodFn = coreHandlers[request.method as keyof typeof coreHandlers] as
     | ((...args: any[]) => Promise<unknown>)
     | undefined;
   if (!methodFn) throw new Error(`unknown method: ${request.method}`);
@@ -107,16 +120,17 @@ async function init(
   docId: string,
 ): Promise<RpcInitResult> {
   const requestedFilename = storageParam === 'opfs' ? (filename ?? '/treecrdt.db') : ':memory:';
-  if (storedConfig && initResult) {
+  if (session.storedConfig && session.initResult) {
+    const cfg = session.storedConfig;
     if (
-      storedConfig.baseUrl !== baseUrl ||
-      storedConfig.requestedFilename !== requestedFilename ||
-      storedConfig.requestedStorage !== storageParam ||
-      storedConfig.docId !== docId
+      cfg.baseUrl !== baseUrl ||
+      cfg.requestedFilename !== requestedFilename ||
+      cfg.requestedStorage !== storageParam ||
+      cfg.docId !== docId
     ) {
       throw new Error('shared worker already initialized with a different TreeCRDT database');
     }
-    return initResult;
+    return session.initResult;
   }
 
   const opened = await openTreecrdtDb({
@@ -128,149 +142,14 @@ async function init(
     opfsVfs: storageParam === 'opfs' ? 'any-context' : undefined,
     onMaterialized: (event) => broadcastMaterialized(event),
   });
-  db = opened.db;
-  api = opened.api;
-  storedFilename = opened.filename;
-  storedStorage = opened.storage;
-  storedConfig = { baseUrl, requestedFilename, requestedStorage: storageParam, docId };
-  initResult = opened.opfsError
-    ? { storage: opened.storage, filename: opened.filename, opfsError: opened.opfsError }
-    : { storage: opened.storage, filename: opened.filename };
-  return initResult;
-}
-
-const methods = {
-  sqlExec,
-  sqlGetText,
-  append,
-  appendMany,
-  opsSince,
-  opRefsAll,
-  opRefsChildren,
-  opsByOpRefs,
-  treeChildren,
-  treeChildrenPage,
-  treeDump,
-  treeNodeCount,
-  treeParent,
-  treeExists,
-  treePayload,
-  headLamport,
-  replicaMaxCounter,
-} as const;
-
-async function sqlExec(sql: string) {
-  await ensureDb().exec(sql);
-  return null;
-}
-
-async function sqlGetText(sql: string, params?: RpcSqlParams): Promise<string | null> {
-  return dbGetText(ensureDb(), sql, params ?? []);
-}
-
-async function append(op: Operation) {
-  return await ensureApi().appendOp(op, nodeIdToBytes16, replicaIdToBytes);
-}
-
-async function appendMany(ops: Operation[]) {
-  return await ensureApi().appendOps!(ops, nodeIdToBytes16, replicaIdToBytes);
-}
-
-async function opsSince(lamport: number, root: string | undefined) {
-  return await ensureApi().opsSince(lamport, root);
-}
-
-async function opRefsAll() {
-  return await ensureApi().opRefsAll();
-}
-
-async function opRefsChildren(parent: string) {
-  return await ensureApi().opRefsChildren(nodeIdToBytes16(parent));
-}
-
-async function opsByOpRefs(opRefs: number[][]) {
-  return await ensureApi().opsByOpRefs(opRefs.map((r) => Uint8Array.from(r)));
-}
-
-async function treeChildren(parent: string) {
-  return await ensureApi().treeChildren(nodeIdToBytes16(parent));
-}
-
-async function treeChildrenPage(
-  parent: string,
-  cursor: { orderKey: number[]; node: number[] } | null,
-  limit: number,
-) {
-  const cursorBytes = cursor
-    ? {
-        orderKey: Uint8Array.from(cursor.orderKey),
-        node: Uint8Array.from(cursor.node),
-      }
-    : null;
-  return await ensureApi().treeChildrenPage!(nodeIdToBytes16(parent), cursorBytes, limit);
-}
-
-async function treeDump() {
-  return await ensureApi().treeDump();
-}
-
-async function treeNodeCount() {
-  return await ensureApi().treeNodeCount();
-}
-
-async function treeParent(node: string) {
-  const result = await ensureApi().treeParent(nodeIdToBytes16(node));
-  return result === null ? null : Array.from(result);
-}
-
-async function treeExists(node: string) {
-  return await ensureApi().treeExists(nodeIdToBytes16(node));
-}
-
-async function treePayload(node: string) {
-  const payload = await ensureApi().treePayload(nodeIdToBytes16(node));
-  return payload === null ? null : Array.from(payload);
-}
-
-async function headLamport() {
-  return await ensureApi().headLamport();
-}
-
-async function replicaMaxCounter(replica: number[]) {
-  return await ensureApi().replicaMaxCounter(Uint8Array.from(replica));
+  session.applyOpened(opened);
+  session.storedConfig = { baseUrl, requestedFilename, requestedStorage: storageParam, docId };
+  session.initResult = openedToRpcInitResult(opened);
+  return session.initResult;
 }
 
 async function close(port: MessagePort) {
   ports.delete(port);
   if (ports.size > 0) return;
-  await closeDbAndReset();
-}
-
-async function drop() {
-  const filename = storedFilename;
-  const storage = storedStorage;
-  await closeDbAndReset();
-  if (storage === 'opfs' && filename) {
-    await clearOpfsStorage(filename);
-  }
-}
-
-async function closeDbAndReset() {
-  if (db?.close) await db.close();
-  db = null;
-  api = null;
-  storedFilename = undefined;
-  storedStorage = 'memory';
-  storedConfig = null;
-  initResult = null;
-}
-
-function ensureApi(): TreecrdtAdapter {
-  if (!db || !api) throw new Error('db not initialized');
-  return api;
-}
-
-function ensureDb(): Database {
-  if (!db) throw new Error('db not initialized');
-  return db;
+  await session.closeDbAndReset();
 }

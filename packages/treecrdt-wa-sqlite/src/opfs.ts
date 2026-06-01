@@ -1,4 +1,4 @@
-import type { Database } from './index.js';
+import type { Database } from './types.js';
 import { makeDbAdapter } from './db.js';
 
 export type OpfsSupport = {

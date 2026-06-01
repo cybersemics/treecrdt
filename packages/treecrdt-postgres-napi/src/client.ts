@@ -61,11 +61,11 @@ export async function createTreecrdtPostgresClient(
 
   const backend = factory.open(docId);
   const materialized = createMaterializationDispatcher();
-  const emitNativeOutcome = (nativeOutcome: NativeMaterializationOutcome) => {
-    materialized.emitOutcome(nativeToMaterializationOutcome(nativeOutcome));
+  const emitNativeOutcome = (nativeOutcome: NativeMaterializationOutcome, writeId?: string) => {
+    materialized.emitOutcome(nativeToMaterializationOutcome(nativeOutcome), writeId);
   };
-  const finishLocalOp = (result: NativeLocalOpResult): Operation => {
-    emitNativeOutcome(result.outcome);
+  const finishLocalOp = (result: NativeLocalOpResult, writeId?: string): Operation => {
+    emitNativeOutcome(result.outcome, writeId);
     return nativeToOperation(result.op);
   };
   const finishPreparedLocalOp = async (
@@ -85,7 +85,7 @@ export async function createTreecrdtPostgresClient(
         throw err;
       }
     }
-    return finishLocalOp(tx.commit());
+    return finishLocalOp(tx.commit(), writeOpts?.writeId);
   };
   const ensureMaterializedImpl = () => {
     emitNativeOutcome(backend.ensureMaterialized());
