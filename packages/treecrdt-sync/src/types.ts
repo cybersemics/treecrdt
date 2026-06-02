@@ -87,6 +87,9 @@ export type OutboundSyncOptions<Op = Operation> = {
   localPeer: SyncPeer<Op>;
   /**
    * Stable key used to coalesce repeated local write hints before upload.
+   *
+   * Defaults to TreeCRDT `Operation.meta.id` when the queued op has the standard operation shape.
+   * Provide this only for custom op shapes or custom coalescing behavior.
    */
   opKey?: (op: Op) => string;
   /**

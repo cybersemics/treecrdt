@@ -1,4 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
 import type { SyncMessage } from '@treecrdt/sync-protocol';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 import type { OutboundSync, OutboundSyncOptions, OutboundSyncStatus } from './types.js';
@@ -37,6 +38,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number | undefined, message: st
   });
 }
 
+function defaultOpKey(op: unknown): string | undefined {
+  const id = (op as { meta?: { id?: { replica?: unknown; counter?: unknown } } })?.meta?.id;
+  if (!(id?.replica instanceof Uint8Array)) return undefined;
+  if (typeof id.counter !== 'number') return undefined;
+  return `${bytesToHex(id.replica)}:${id.counter}`;
+}
+
 /**
  * Queue exact committed local writes for a single {@link SyncPeer} that is attached to one or more
  * outbound transports.
@@ -63,7 +71,7 @@ export function createOutboundSync<Op = Operation>(
 
   const addPendingOps = (ops: readonly Op[]) => {
     for (const op of ops) {
-      const key = options.opKey?.(op);
+      const key = options.opKey?.(op) ?? defaultOpKey(op);
       if (key !== undefined) {
         if (pendingOpKeys.has(key)) continue;
         pendingOpKeys.add(key);

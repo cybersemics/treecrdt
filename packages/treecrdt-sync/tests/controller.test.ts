@@ -1,6 +1,5 @@
 import { expect, test, vi } from 'vitest';
 import type { Operation } from '@treecrdt/interface';
-import { bytesToHex } from '@treecrdt/interface/ids';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import type { SyncPeer } from '@treecrdt/sync-protocol';
 
@@ -26,23 +25,19 @@ function makeInsertOp(counter = 1): Operation {
   });
 }
 
-function opUploadKey(op: Operation): string {
-  return `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter.toString()}`;
-}
-
-function createFakePeer(opts: { failPushes?: number } = {}) {
+function createFakePeer<Op = Operation>(opts: { failPushes?: number } = {}) {
   let failPushes = opts.failPushes ?? 0;
-  const pushed: Operation[][] = [];
+  const pushed: Op[][] = [];
   const peer = {
     notifyLocalUpdate: vi.fn(async () => {}),
-    pushOps: vi.fn(async (_transport: unknown, ops: readonly Operation[]) => {
+    pushOps: vi.fn(async (_transport: unknown, ops: readonly Op[]) => {
       if (failPushes > 0) {
         failPushes -= 1;
         throw new Error('direct push failed');
       }
       pushed.push([...ops]);
     }),
-  } as unknown as SyncPeer<Operation>;
+  } as unknown as SyncPeer<Op>;
   return { peer, pushed };
 }
 
@@ -51,7 +46,6 @@ test('outbound sync queues local ops until an outbound peer is available', async
   const { peer, pushed } = createFakePeer();
   const controller = createOutboundSync({
     localPeer: peer,
-    opKey: opUploadKey,
   });
 
   controller.queueOps([op, op]);
@@ -97,7 +91,6 @@ test('outbound sync keeps failed direct pushes queued', async () => {
   const errors: unknown[] = [];
   const controller = createOutboundSync({
     localPeer: peer,
-    opKey: opUploadKey,
     onError: ({ error }) => errors.push(error),
   });
   controller.addPeer('remote:server', {} as any);
@@ -109,6 +102,29 @@ test('outbound sync keeps failed direct pushes queued', async () => {
   expect(errors).toHaveLength(1);
   expect(pushed).toHaveLength(0);
 
+  await controller.flush();
+
+  expect(controller.pendingOpCount).toBe(0);
+  expect(pushed).toEqual([[op]]);
+});
+
+test('outbound sync accepts custom op keys for non-TreeCRDT op shapes', async () => {
+  type CustomOp = { id: string };
+  const op: CustomOp = { id: 'local-write-1' };
+  const { peer, pushed } = createFakePeer<CustomOp>();
+  const controller = createOutboundSync<CustomOp>({
+    localPeer: peer,
+    opKey: (next) => next.id,
+  });
+
+  controller.queueOps([op, { id: op.id }]);
+  await controller.flush();
+
+  expect(peer.notifyLocalUpdate).toHaveBeenCalledWith([op, { id: op.id }]);
+  expect(controller.pendingOpCount).toBe(1);
+  expect(pushed).toHaveLength(0);
+
+  controller.addPeer('remote:server', {} as any);
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(0);
