@@ -77,7 +77,7 @@ export type CreateTreecrdtWebSocketSyncFromTransportOptions = {
 };
 
 export type OutboundSyncStatus = {
-  peerCount: number;
+  targetCount: number;
   pendingOps: number;
   running: boolean;
   scheduled: boolean;
@@ -97,19 +97,19 @@ export type OutboundSyncOptions<Op = Operation> = {
    * sync errors.
    */
   isOnline?: () => boolean;
-  pushOptions?: (peerId: string) => SyncPushOptions | undefined;
-  pushTimeoutMs?: number | ((peerId: string) => number | undefined);
-  onError?: (ctx: { peerId: string; error: unknown }) => void;
+  pushOptions?: (targetId: string) => SyncPushOptions | undefined;
+  pushTimeoutMs?: number | ((targetId: string) => number | undefined);
+  onError?: (ctx: { targetId: string; error: unknown }) => void;
   onStatus?: (status: OutboundSyncStatus) => void;
 };
 
 export type OutboundSync<Op = Operation> = {
   readonly status: OutboundSyncStatus;
   readonly pendingOpCount: number;
-  readonly peerCount: number;
-  addPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
-  removePeer: (peerId: string) => void;
-  clearPeers: () => void;
+  readonly targetCount: number;
+  addTarget: (targetId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
+  removeTarget: (targetId: string) => void;
+  clearTargets: () => void;
   /**
    * Report exact committed local ops. Wakes live subscriptions on `localPeer` and queues the same
    * ops for registered outbound upload targets.

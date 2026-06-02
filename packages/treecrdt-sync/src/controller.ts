@@ -5,13 +5,13 @@ import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 import type { OutboundSync, OutboundSyncOptions, OutboundSyncStatus } from './types.js';
 
 function outboundSyncStatusSnapshot<Op>(
-  peers: ReadonlyMap<string, DuplexTransport<SyncMessage<Op>>>,
+  targets: ReadonlyMap<string, DuplexTransport<SyncMessage<Op>>>,
   pendingOps: readonly Op[],
   running: boolean,
   scheduled: boolean,
 ): OutboundSyncStatus {
   return {
-    peerCount: peers.size,
+    targetCount: targets.size,
     pendingOps: pendingOps.length,
     running,
     scheduled,
@@ -58,7 +58,7 @@ function defaultOpKey(op: unknown): string | undefined {
 export function createOutboundSync<Op = Operation>(
   options: OutboundSyncOptions<Op>,
 ): OutboundSync<Op> {
-  const peers = new Map<string, DuplexTransport<SyncMessage<Op>>>();
+  const targets = new Map<string, DuplexTransport<SyncMessage<Op>>>();
   const pendingOps: Op[] = [];
   const pendingOpKeys = new Set<string>();
   let running = false;
@@ -66,7 +66,7 @@ export function createOutboundSync<Op = Operation>(
   let closed = false;
 
   const emitStatus = () => {
-    options.onStatus?.(outboundSyncStatusSnapshot(peers, pendingOps, running, scheduled));
+    options.onStatus?.(outboundSyncStatusSnapshot(targets, pendingOps, running, scheduled));
   };
 
   const addPendingOps = (ops: readonly Op[]) => {
@@ -94,9 +94,9 @@ export function createOutboundSync<Op = Operation>(
     return ops;
   };
 
-  const pushTimeoutMs = (peerId: string) =>
+  const pushTimeoutMs = (targetId: string) =>
     typeof options.pushTimeoutMs === 'function'
-      ? options.pushTimeoutMs(peerId)
+      ? options.pushTimeoutMs(targetId)
       : options.pushTimeoutMs;
 
   const scheduleFlush = () => {
@@ -140,8 +140,8 @@ export function createOutboundSync<Op = Operation>(
           return;
         }
 
-        const targets = Array.from(peers.entries());
-        if (targets.length === 0) {
+        const uploadTargets = Array.from(targets.entries());
+        if (uploadTargets.length === 0) {
           emitStatus();
           return;
         }
@@ -153,16 +153,16 @@ export function createOutboundSync<Op = Operation>(
         }
 
         let failed = false;
-        for (const [peerId, transport] of targets) {
+        for (const [targetId, transport] of uploadTargets) {
           try {
             await withTimeout(
-              options.localPeer.pushOps(transport, ops, options.pushOptions?.(peerId)),
-              pushTimeoutMs(peerId),
-              `outbound push with ${peerId.slice(0, 8)} timed out`,
+              options.localPeer.pushOps(transport, ops, options.pushOptions?.(targetId)),
+              pushTimeoutMs(targetId),
+              `outbound push with ${targetId.slice(0, 8)} timed out`,
             );
           } catch (error) {
             failed = true;
-            options.onError?.({ peerId, error });
+            options.onError?.({ targetId, error });
           }
         }
 
@@ -182,26 +182,26 @@ export function createOutboundSync<Op = Operation>(
 
   const controller: OutboundSync<Op> = {
     get status() {
-      return outboundSyncStatusSnapshot(peers, pendingOps, running, scheduled);
+      return outboundSyncStatusSnapshot(targets, pendingOps, running, scheduled);
     },
     get pendingOpCount() {
       return pendingOps.length;
     },
-    get peerCount() {
-      return peers.size;
+    get targetCount() {
+      return targets.size;
     },
-    addPeer: (peerId, transport) => {
+    addTarget: (targetId, transport) => {
       if (closed) return;
-      peers.set(peerId, transport);
+      targets.set(targetId, transport);
       emitStatus();
       if (pendingOps.length > 0) scheduleFlush();
     },
-    removePeer: (peerId) => {
-      peers.delete(peerId);
+    removeTarget: (targetId) => {
+      targets.delete(targetId);
       emitStatus();
     },
-    clearPeers: () => {
-      peers.clear();
+    clearTargets: () => {
+      targets.clear();
       emitStatus();
     },
     queueOps: (ops) => {
@@ -216,7 +216,7 @@ export function createOutboundSync<Op = Operation>(
       scheduled = false;
       pendingOps.splice(0, pendingOps.length);
       pendingOpKeys.clear();
-      peers.clear();
+      targets.clear();
       emitStatus();
     },
   };

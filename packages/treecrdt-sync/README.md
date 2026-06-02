@@ -24,7 +24,7 @@ const outbound = createOutboundSync({
   isOnline: () => navigator.onLine,
 });
 
-outbound.addPeer('remote:server', websocketTransport);
+outbound.addTarget('remote:server', websocketTransport);
 
 const op = await client.local.payload(replica, node, payload);
 outbound.queueOps([op]); // live subscription wakeup + remote websocket upload/retry
