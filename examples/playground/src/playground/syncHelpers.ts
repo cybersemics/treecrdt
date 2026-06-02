@@ -16,22 +16,6 @@ import {
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
 
-export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}
-
 export function normalizeSyncServerUrl(raw: string, docId: string): URL {
   return normalizeDirectSyncWebSocketUrl(raw, docId);
 }
