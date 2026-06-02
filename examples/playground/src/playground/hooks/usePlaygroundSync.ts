@@ -498,7 +498,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       },
     };
 
-    const sharedPeer = new SyncPeer<Operation>(backend, {
+    const localPeer = new SyncPeer<Operation>(backend, {
       maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
       maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
       ...(syncAuth
@@ -507,13 +507,13 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
           }
         : {}),
     });
-    syncPeerRef.current = sharedPeer;
+    syncPeerRef.current = localPeer;
 
     const connections = new Map<string, { transport: DuplexTransport<any>; detach: () => void }>();
     syncConnRef.current = connections;
 
     const outboundSync = createOutboundSync<Operation>({
-      localPeer: sharedPeer,
+      localPeer,
       isOnline: () => onlineRef.current,
       pushOptions: () => ({
         maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
@@ -550,7 +550,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       transport: DuplexTransport<any>,
       opts: { outbound?: boolean; markRemoteSeen?: boolean } = {},
     ) => {
-      const detach = sharedPeer.attach(transport);
+      const detach = localPeer.attach(transport);
       connections.set(peerId, { transport, detach });
       if (opts.outbound) outboundSync.addPeer(peerId, transport);
       if (opts.markRemoteSeen) setRemotePeer({ id: peerId, lastSeen: Date.now() });
@@ -738,7 +738,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       mesh?.stop();
       stopRemoteSocket();
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
-      if (syncPeerRef.current === sharedPeer) syncPeerRef.current = null;
+      if (syncPeerRef.current === localPeer) syncPeerRef.current = null;
       outboundSync.close();
       if (outboundSyncRef.current === outboundSync) {
         outboundSyncRef.current = null;
