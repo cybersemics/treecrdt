@@ -1,6 +1,7 @@
 export { connectTreecrdtWebSocketSync } from './connect.js';
 export { createOutboundSync } from './controller.js';
 export { createTreecrdtWebSocketSyncFromTransport } from './create-sync-from-transport.js';
+export { createInboundSync } from './inbound-sync.js';
 export type {
   ConnectTreecrdtWebSocketSyncOptions,
   CreateTreecrdtWebSocketSyncFromTransportOptions,
@@ -12,3 +13,11 @@ export type {
   TreecrdtWebSocketSync,
   TreecrdtWebSocketSyncClient,
 } from './types.js';
+export type {
+  InboundSync,
+  InboundSyncErrorContext,
+  InboundSyncErrorPhase,
+  InboundSyncOnceOptions,
+  InboundSyncOptions,
+  InboundSyncStatus,
+} from './inbound-sync.js';
