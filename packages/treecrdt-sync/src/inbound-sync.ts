@@ -185,8 +185,7 @@ export function createInboundSync<Op = unknown>(options: InboundSyncOptions<Op>)
       this.subscriptions.set(peerId, sub);
       emitStatus();
 
-      const isCurrent = () =>
-        !this.isClosed && !closed && this.subscriptions.get(peerId) === sub;
+      const isCurrent = () => !this.isClosed && !closed && this.subscriptions.get(peerId) === sub;
 
       void sub.done.catch((error) => {
         if (!ready || !isCurrent()) return;
@@ -235,7 +234,10 @@ export function createInboundSync<Op = unknown>(options: InboundSyncOptions<Op>)
     }
   }
 
-  const syncOnce = async (filters: Filter | readonly Filter[], opts: InboundSyncOnceOptions = {}) => {
+  const syncOnce = async (
+    filters: Filter | readonly Filter[],
+    opts: InboundSyncOnceOptions = {},
+  ) => {
     if (closed) return;
     const filterList = normalizeFilters(filters);
     if (filterList.length === 0) return;
