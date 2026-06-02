@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
+import {
+  resolveWebSocketAttachment,
+  type ResolveWebSocketAttachmentResult,
+} from '@treecrdt/discovery';
 import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
 import { createOutboundSync, type OutboundSync } from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
@@ -8,9 +12,15 @@ import type {
   BroadcastPresenceAckMessageV1,
   BroadcastPresenceMessageV1,
 } from '@treecrdt/sync-protocol/browser';
-import { createBroadcastPresenceMesh } from '@treecrdt/sync-protocol/browser';
+import {
+  createBroadcastPresenceMesh,
+  createBrowserWebSocketTransport,
+} from '@treecrdt/sync-protocol/browser';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
-import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
+import {
+  wrapDuplexTransportWithCodec,
+  type DuplexTransport,
+} from '@treecrdt/sync-protocol/transport';
 import type { TreecrdtClient } from '@treecrdt/wa-sqlite';
 
 import { hexToBytes16, type AuthGrantMessageV1 } from '../../sync-v0';
@@ -27,12 +37,16 @@ import {
   type PlaygroundSyncConnection,
 } from './usePlaygroundLiveSubscriptions';
 import { usePlaygroundSyncPeers } from './usePlaygroundSyncPeers';
-import { startPlaygroundRemoteSyncSocket } from '../remoteSyncSocket';
 import {
+  formatRemoteConnectDetail,
+  formatRemoteErrorDetail,
+  formatRemoteRouteDetail,
   formatSyncError,
+  getBrowserDiscoveryRouteCache,
   isCapabilityRevokedError,
   isDiscoveryBootstrapUrl,
   isRemotePeerId,
+  isTransientRemoteConnectError,
   localOpUploadKey,
   normalizeSyncServerUrl,
   previewDiscoveryHost,
@@ -624,34 +638,148 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     presenceMeshRef.current = mesh;
 
-    const stopRemoteSocket =
-      remoteSyncUrl.length > 0
-        ? startPlaygroundRemoteSyncSocket({
-            remoteSyncUrl,
+    let remoteSocket: WebSocket | null = null;
+    let remotePeerId: string | null = null;
+    let remoteSocketDisposed = false;
+    let remoteOpened = false;
+    let resolvedRemote: ResolveWebSocketAttachmentResult | null = null;
+
+    if (remoteSyncUrl.length > 0) {
+      const discoveryRouteCache = getBrowserDiscoveryRouteCache();
+      const isRemoteSocketCurrent = () =>
+        !remoteSocketDisposed && syncConnRef.current === connections;
+
+      void (async () => {
+        try {
+          setSyncError((prev) => (isTransientRemoteConnectError(prev) ? null : prev));
+          const bootstrapHost = isDiscoveryBootstrapUrl(remoteSyncUrl)
+            ? previewDiscoveryHost(remoteSyncUrl)
+            : undefined;
+          resolvedRemote = await resolveWebSocketAttachment({
+            endpoint: remoteSyncUrl,
             docId,
-            sharedPeer,
-            connections,
-            outboundSync,
-            isCurrent: () => syncConnRef.current === connections,
-            setRemoteSyncStatus,
-            setSyncError,
-            setRemotePeer,
-            maybeStartLiveForPeer,
-            onAutoSyncPeerReady: (peerId) => {
-              if (!autoSyncJoinInitial || !joinMode || autoSyncDoneRef.current) return;
-              autoSyncPeerIdRef.current = peerId;
+            cache: discoveryRouteCache,
+            fetch:
+              typeof window !== 'undefined' && typeof window.fetch === 'function'
+                ? window.fetch.bind(window)
+                : undefined,
+          });
+          if (!isRemoteSocketCurrent()) return;
+
+          const remoteUrl = resolvedRemote.url;
+          const connectVerb =
+            resolvedRemote.source === 'network'
+              ? 'Resolved attachment, connecting to'
+              : resolvedRemote.source === 'cache'
+                ? 'Using cached route to'
+                : 'Connecting to';
+          setRemoteSyncStatus({
+            state: 'connecting',
+            detail: formatRemoteConnectDetail(connectVerb, remoteUrl.host, bootstrapHost),
+          });
+          remotePeerId = `remote:${remoteUrl.host}`;
+          remoteSocket = new WebSocket(remoteUrl.toString());
+          remoteSocket.binaryType = 'arraybuffer';
+
+          remoteSocket.addEventListener('open', () => {
+            if (!isRemoteSocketCurrent()) return;
+            if (!remoteSocket || remoteSocket.readyState !== WebSocket.OPEN || !remotePeerId)
+              return;
+            remoteOpened = true;
+            setSyncError((prev) => (isTransientRemoteConnectError(prev) ? null : prev));
+            setRemoteSyncStatus({
+              detail: formatRemoteRouteDetail(remoteUrl.host, { bootstrapHost }),
+              state: 'connected',
+            });
+            const wire = createBrowserWebSocketTransport(remoteSocket);
+            const transport = wrapDuplexTransportWithCodec<Uint8Array, any>(
+              wire,
+              treecrdtSyncV0ProtobufCodec as any,
+            );
+            const detach = sharedPeer.attach(transport);
+            connections.set(remotePeerId, { transport, detach });
+            outboundSync.addPeer(remotePeerId, transport);
+            setRemotePeer({ id: remotePeerId, lastSeen: Date.now() });
+            maybeStartLiveForPeer(remotePeerId);
+            if (autoSyncJoinInitial && joinMode && !autoSyncDoneRef.current) {
+              autoSyncPeerIdRef.current = remotePeerId;
               bumpAutoSyncJoinTick((t) => t + 1);
-            },
-            dropPeerConnection,
-          })
-        : undefined;
+            }
+          });
+
+          remoteSocket.addEventListener('message', () => {
+            if (!isRemoteSocketCurrent() || !remotePeerId) return;
+            setRemotePeer({ id: remotePeerId, lastSeen: Date.now() });
+            setRemoteSyncStatus((prev) =>
+              prev.state === 'connected'
+                ? {
+                    detail: formatRemoteRouteDetail(remoteUrl.host, { bootstrapHost }),
+                    state: 'connected',
+                  }
+                : prev,
+            );
+          });
+
+          remoteSocket.addEventListener('close', () => {
+            if (syncConnRef.current !== connections) return;
+            if (!remoteSocketDisposed) {
+              setRemoteSyncStatus({
+                detail: formatRemoteErrorDetail(
+                  remoteOpened ? 'disconnected' : 'could_not_connect',
+                  remoteUrl.host,
+                  bootstrapHost,
+                ),
+                state: 'error',
+              });
+            }
+            if (!remoteOpened && resolvedRemote?.source === 'cache' && resolvedRemote.cacheKey) {
+              void discoveryRouteCache?.delete(resolvedRemote.cacheKey);
+            }
+            if (remotePeerId) dropPeerConnection(remotePeerId);
+          });
+
+          remoteSocket.addEventListener('error', () => {
+            if (!isRemoteSocketCurrent()) return;
+            setRemoteSyncStatus({
+              detail: formatRemoteErrorDetail(
+                remoteOpened ? 'connection_error' : 'could_not_reach',
+                remoteUrl.host,
+                bootstrapHost,
+              ),
+              state: 'error',
+            });
+            if (!remoteOpened && resolvedRemote?.source === 'cache' && resolvedRemote.cacheKey) {
+              void discoveryRouteCache?.delete(resolvedRemote.cacheKey);
+            }
+            setSyncError((prev) => prev ?? `Remote sync socket error (${remoteUrl.host})`);
+          });
+        } catch (err) {
+          if (!isRemoteSocketCurrent()) return;
+          setRemoteSyncStatus({
+            state: isDiscoveryBootstrapUrl(remoteSyncUrl) ? 'error' : 'invalid',
+            detail: formatSyncError(err),
+          });
+          setSyncError(formatSyncError(err));
+        }
+      })();
+    }
+
+    const stopRemoteSocket = () => {
+      remoteSocketDisposed = true;
+      if (!remoteSocket) return;
+      try {
+        remoteSocket.close();
+      } catch {
+        // ignore
+      }
+    };
 
     return () => {
       stopAllLiveAll();
       stopAllLiveChildren();
       if (presenceMeshRef.current === mesh) presenceMeshRef.current = null;
       mesh?.stop();
-      stopRemoteSocket?.();
+      stopRemoteSocket();
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
       if (syncPeerRef.current === sharedPeer) syncPeerRef.current = null;
       outboundSync.close();
