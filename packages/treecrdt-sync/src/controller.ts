@@ -99,6 +99,46 @@ export function createOutboundSync<Op = Operation>(
       ? options.pushTimeoutMs(targetId)
       : options.pushTimeoutMs;
 
+  const targetDetaches = new Map<
+    string,
+    { transport: DuplexTransport<SyncMessage<Op>>; detach: () => void }
+  >();
+
+  const detachTarget = (targetId: string, expectedTransport?: DuplexTransport<SyncMessage<Op>>) => {
+    const attached = targetDetaches.get(targetId);
+    if (!attached) return;
+    if (expectedTransport && attached.transport !== expectedTransport) return;
+    targetDetaches.delete(targetId);
+    try {
+      attached.detach();
+    } catch {
+      // ignore
+    }
+  };
+
+  const addTarget = (targetId: string, transport: DuplexTransport<SyncMessage<Op>>) => {
+    if (closed) return;
+    const attached = targetDetaches.get(targetId);
+    if (attached && attached.transport !== transport) detachTarget(targetId);
+    targets.set(targetId, transport);
+    emitStatus();
+    if (pendingOps.length > 0) scheduleFlush();
+  };
+
+  const removeTarget = (targetId: string, expectedTransport?: DuplexTransport<SyncMessage<Op>>) => {
+    const transport = targets.get(targetId);
+    if (expectedTransport && transport !== expectedTransport) return;
+    targets.delete(targetId);
+    detachTarget(targetId, expectedTransport);
+    emitStatus();
+  };
+
+  const clearTargets = () => {
+    targets.clear();
+    for (const targetId of Array.from(targetDetaches.keys())) detachTarget(targetId);
+    emitStatus();
+  };
+
   const scheduleFlush = () => {
     if (closed) return;
     if (running) {
@@ -190,20 +230,21 @@ export function createOutboundSync<Op = Operation>(
     get targetCount() {
       return targets.size;
     },
-    addTarget: (targetId, transport) => {
-      if (closed) return;
-      targets.set(targetId, transport);
-      emitStatus();
-      if (pendingOps.length > 0) scheduleFlush();
+    attachTarget: (targetId, transport) => {
+      if (closed) return () => {};
+      const detach = options.localPeer.attach(transport);
+      let detached = false;
+      addTarget(targetId, transport);
+      targetDetaches.set(targetId, { transport, detach });
+      return () => {
+        if (detached) return;
+        detached = true;
+        removeTarget(targetId, transport);
+      };
     },
-    removeTarget: (targetId) => {
-      targets.delete(targetId);
-      emitStatus();
-    },
-    clearTargets: () => {
-      targets.clear();
-      emitStatus();
-    },
+    addTarget,
+    removeTarget,
+    clearTargets,
     queueOps: (ops) => {
       if (closed || ops.length === 0) return;
       void options.localPeer.notifyLocalUpdate(ops);
@@ -216,8 +257,7 @@ export function createOutboundSync<Op = Operation>(
       scheduled = false;
       pendingOps.splice(0, pendingOps.length);
       pendingOpKeys.clear();
-      targets.clear();
-      emitStatus();
+      clearTargets();
     },
   };
 
