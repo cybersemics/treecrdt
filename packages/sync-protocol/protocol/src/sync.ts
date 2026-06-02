@@ -18,6 +18,7 @@ import {
   peerSupportsDirectSendEmptyReceiver,
   peerSupportsDirectSendSmallScope,
 } from './capabilities.js';
+import { deriveOpRefV0 } from './opref.js';
 import { ErrorCode, RibltFailureReason } from './types.js';
 import type {
   Capability,
@@ -99,7 +100,10 @@ export type SyncPeerOptions<Op = unknown> = {
   requireAuthForFilters?: boolean;
   /** Auth policy hooks for outgoing filters, incoming ops, and post-verify side effects. */
   auth?: SyncAuth<Op>;
-  /** Derive stable op refs from ops so relay fast-forwarding can track delivered entries. */
+  /**
+   * Derive stable op refs from ops so relay fast-forwarding can track delivered entries.
+   * Defaults to TreeCRDT Operation.meta.id when standard TreeCRDT operations are supplied.
+   */
   deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
 };
 
@@ -198,6 +202,13 @@ function bytesToHex(bytes: Uint8Array): string {
   return out;
 }
 
+function defaultDeriveOpRef(op: unknown, ctx: { docId: string }): OpRef | undefined {
+  const id = (op as { meta?: { id?: { replica?: unknown; counter?: unknown } } })?.meta?.id;
+  if (!(id?.replica instanceof Uint8Array)) return undefined;
+  if (typeof id.counter !== 'number' && typeof id.counter !== 'bigint') return undefined;
+  return deriveOpRefV0(ctx.docId, { replica: id.replica, counter: id.counter });
+}
+
 function waitForAbort(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise<void>((resolve) =>
@@ -234,7 +245,7 @@ export class SyncPeer<Op> {
   private readonly directSendThreshold: number;
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
-  private readonly deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
+  private readonly deriveOpRef: (op: Op, ctx: { docId: string }) => OpRef | undefined;
   private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
   private readonly transportPeerCapabilities = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
@@ -281,7 +292,7 @@ export class SyncPeer<Op> {
       throw new Error(`invalid directSendThreshold: ${opts.directSendThreshold}`);
     }
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
-    this.deriveOpRef = opts.deriveOpRef;
+    this.deriveOpRef = opts.deriveOpRef ?? defaultDeriveOpRef;
   }
 
   attach(
@@ -304,9 +315,13 @@ export class SyncPeer<Op> {
   // feed this push loop until the subscription is removed or the transport fails.
   notifyLocalUpdate(ops?: readonly Op[]): Promise<void> {
     if (this.responderSubscriptions.size === 0) return Promise.resolve();
-    if (ops && ops.length > 0 && this.deriveOpRef) {
+    if (ops && ops.length > 0) {
       for (const op of ops) {
         const opRef = this.deriveOpRef(op, { docId: this.backend.docId });
+        if (!opRef) {
+          this.pushNeedsFullScan = true;
+          break;
+        }
         const opRefHex = bytesToHex(opRef);
         this.pendingPushOpsByRefHex.set(opRefHex, { opRef, opRefHex, op });
       }
@@ -331,7 +346,7 @@ export class SyncPeer<Op> {
         this.pushScheduled = false;
         // A full scan means "some subscription-relevant state changed, but we
         // do not have an exact delta set to push from". Delta pushes are only
-        // safe when notifyLocalUpdate supplied concrete ops and deriveOpRef is available.
+        // safe when notifyLocalUpdate supplied concrete ops that can be mapped to op refs.
         const deltaOps =
           this.pushNeedsFullScan || this.pendingPushOpsByRefHex.size === 0
             ? []

@@ -5,7 +5,7 @@ import {
   resolveWebSocketAttachment,
   type ResolveWebSocketAttachmentResult,
 } from '@treecrdt/discovery';
-import { SyncPeer, deriveOpRefV0, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
+import { SyncPeer, type Filter, type SyncAuth } from '@treecrdt/sync-protocol';
 import { createOutboundSync, type OutboundSync } from '@treecrdt/sync';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite';
 import type {
@@ -540,8 +540,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     const sharedPeer = new SyncPeer<Operation>(backend, {
       maxCodewords: PLAYGROUND_SYNC_MAX_CODEWORDS,
       maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,
-      deriveOpRef: (op, ctx) =>
-        deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
       ...(syncAuth
         ? {
             auth: syncAuth,

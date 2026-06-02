@@ -2,7 +2,6 @@ import type { Operation } from '@treecrdt/interface';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import {
   SyncPeer,
-  deriveOpRefV0,
   type Filter,
   type SyncMessage,
   type SyncOnceOptions,
@@ -75,8 +74,6 @@ export function createTreecrdtWebSocketSyncFromTransport(
   const peerOpts: SyncPeerOptions<Operation> = {
     maxCodewords: 2_000_000,
     maxOpsPerBatch: DEFAULT_SYNC_ONCE.maxOpsPerBatch,
-    deriveOpRef: (op, ctx) =>
-      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
     ...extraPeerOptions,
     ...(auth ? { auth } : {}),
   };
