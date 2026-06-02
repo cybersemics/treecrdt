@@ -107,6 +107,14 @@ export type OutboundSync<Op = Operation> = {
   readonly status: OutboundSyncStatus;
   readonly pendingOpCount: number;
   readonly targetCount: number;
+  /**
+   * Attach a remote transport to `localPeer` and register it as an outbound upload target. The
+   * returned cleanup removes the target and detaches the transport.
+   */
+  attachTarget: (targetId: string, transport: DuplexTransport<SyncMessage<Op>>) => () => void;
+  /**
+   * Register an already-attached transport as an outbound upload target.
+   */
   addTarget: (targetId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
   removeTarget: (targetId: string) => void;
   clearTargets: () => void;

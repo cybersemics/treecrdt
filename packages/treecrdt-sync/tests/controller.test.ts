@@ -28,7 +28,9 @@ function makeInsertOp(counter = 1): Operation {
 function createFakePeer<Op = Operation>(opts: { failPushes?: number } = {}) {
   let failPushes = opts.failPushes ?? 0;
   const pushed: Op[][] = [];
+  const detachTransport = vi.fn();
   const peer = {
+    attach: vi.fn(() => detachTransport),
     notifyLocalUpdate: vi.fn(async () => {}),
     pushOps: vi.fn(async (_transport: unknown, ops: readonly Op[]) => {
       if (failPushes > 0) {
@@ -38,7 +40,7 @@ function createFakePeer<Op = Operation>(opts: { failPushes?: number } = {}) {
       pushed.push([...ops]);
     }),
   } as unknown as SyncPeer<Op>;
-  return { peer, pushed };
+  return { detachTransport, peer, pushed };
 }
 
 test('outbound sync queues local ops until an outbound target is available', async () => {
@@ -60,6 +62,45 @@ test('outbound sync queues local ops until an outbound target is available', asy
 
   expect(controller.pendingOpCount).toBe(0);
   expect(pushed).toEqual([[op]]);
+});
+
+test('outbound sync can attach and clean up a remote target', async () => {
+  const op = makeInsertOp();
+  const transport = {} as any;
+  const { detachTransport, peer, pushed } = createFakePeer();
+  const controller = createOutboundSync({
+    localPeer: peer,
+  });
+
+  const detachTarget = controller.attachTarget('remote:server', transport);
+
+  expect(peer.attach).toHaveBeenCalledWith(transport);
+  expect(controller.targetCount).toBe(1);
+
+  controller.queueOps([op]);
+  await controller.flush();
+
+  expect(pushed).toEqual([[op]]);
+
+  detachTarget();
+  detachTarget();
+
+  expect(detachTransport).toHaveBeenCalledTimes(1);
+  expect(controller.targetCount).toBe(0);
+});
+
+test('outbound sync close detaches attached remote targets', () => {
+  const { detachTransport, peer } = createFakePeer();
+  const controller = createOutboundSync({
+    localPeer: peer,
+  });
+
+  controller.attachTarget('remote:server', {} as any);
+  controller.close();
+  controller.close();
+
+  expect(detachTransport).toHaveBeenCalledTimes(1);
+  expect(controller.targetCount).toBe(0);
 });
 
 test('outbound sync keeps queued ops while offline', async () => {

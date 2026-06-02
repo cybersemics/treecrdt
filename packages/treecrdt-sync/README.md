@@ -13,8 +13,8 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@treecrdt/dis
 
 Use `createOutboundSync` with a `localPeer` when one `SyncPeer` owns several transports, such as
 local-tab mesh peers plus a remote websocket server. The app still manages transport discovery, but
-outbound sync owns the committed-local-op hook: it wakes live subscriptions on the `localPeer` and
-queues exact local-op upload for registered outbound targets with dedupe and offline retry.
+outbound sync owns the committed-local-op hook: it attaches remote upload targets, wakes live
+subscriptions on the `localPeer`, and queues exact local-op upload with dedupe and offline retry.
 
 ```ts
 import { createOutboundSync } from '@treecrdt/sync';
@@ -24,14 +24,15 @@ const outbound = createOutboundSync({
   isOnline: () => navigator.onLine,
 });
 
-outbound.addTarget('remote:server', websocketTransport);
+const detachRemote = outbound.attachTarget('remote:server', websocketTransport);
 
 const op = await client.local.payload(replica, node, payload);
 outbound.queueOps([op]); // live subscription wakeup + remote websocket upload/retry
 ```
 
-`queueOps` dedupes standard TreeCRDT `Operation` values by `meta.id`. Pass `opKey` only for a
-custom op shape or custom coalescing behavior.
+Use `addTarget` only when the transport was already attached to the same `localPeer`. `queueOps`
+dedupes standard TreeCRDT `Operation` values by `meta.id`. Pass `opKey` only for a custom op shape
+or custom coalescing behavior.
 
 ## When not to
 

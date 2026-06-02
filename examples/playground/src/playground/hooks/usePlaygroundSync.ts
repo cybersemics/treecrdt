@@ -241,7 +241,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       // ignore
     }
     connections.delete(peerId);
-    outboundSyncRef.current?.removeTarget(peerId);
     stopLiveAllForPeer(peerId);
     stopLiveChildrenForPeer(peerId);
 
@@ -588,9 +587,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       transport: DuplexTransport<any>,
       opts: { outbound?: boolean; markRemoteSeen?: boolean } = {},
     ) => {
-      const detach = localPeer.attach(transport);
+      const detach = opts.outbound
+        ? outboundSync.attachTarget(peerId, transport)
+        : localPeer.attach(transport);
       connections.set(peerId, { transport, detach });
-      if (opts.outbound) outboundSync.addTarget(peerId, transport);
       if (opts.markRemoteSeen) setRemotePeer({ id: peerId, lastSeen: Date.now() });
       maybeStartLiveForPeer(peerId);
       queueAutoSyncForPeer(peerId);
