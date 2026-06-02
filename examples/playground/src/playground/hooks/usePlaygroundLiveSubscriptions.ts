@@ -19,7 +19,7 @@ export type PlaygroundSyncConnection = {
   detach: () => void;
 };
 
-function liveFilterLabel(filter: Filter): string {
+function subscriptionFilterLabel(filter: Filter): string {
   return 'all' in filter ? 'all' : 'children';
 }
 
@@ -41,7 +41,7 @@ export function usePlaygroundLiveSubscriptions(opts: {
   const inboundSyncRef = useRef<InboundSync<Operation> | null>(null);
   const inboundSyncPeerRef = useRef<SyncPeer<Operation> | null>(null);
 
-  const liveFilters = () => {
+  const currentSubscriptionFilters = () => {
     if (liveAllEnabledRef.current) return [{ all: {} } satisfies Filter];
     return Array.from(liveChildrenParentsRef.current).map(childrenFilter);
   };
@@ -61,7 +61,11 @@ export function usePlaygroundLiveSubscriptions(opts: {
       subscribeOptions: (peerId) => syncOnceOptionsForPeer(peerId, 1024),
       onStatus: (status) => setLiveBusy(status.busy),
       onError: ({ peerId, filter, error, phase }) => {
-        console.error(`Inbound sync(${liveFilterLabel(filter)}) ${phase} failed`, peerId, error);
+        console.error(
+          `Inbound sync(${subscriptionFilterLabel(filter)}) ${phase} failed`,
+          peerId,
+          error,
+        );
         setSyncError(formatSyncError(error));
       },
     });
@@ -70,15 +74,15 @@ export function usePlaygroundLiveSubscriptions(opts: {
     return inbound;
   };
 
-  const applyLiveScopes = () => {
-    ensureInboundSync()?.setLiveScopes(liveFilters());
+  const applySubscriptions = () => {
+    ensureInboundSync()?.subscribe(currentSubscriptionFilters());
   };
 
   const addInboundPeer = (peerId: string, conn: PlaygroundSyncConnection) => {
     const inbound = ensureInboundSync();
     if (!inbound) return;
     inbound.addPeer(peerId, conn.transport as DuplexTransport<SyncMessage<Operation>>);
-    inbound.setLiveScopes(liveFilters());
+    inbound.subscribe(currentSubscriptionFilters());
   };
 
   const removeLivePeer = (peerId: string) => {
@@ -112,13 +116,13 @@ export function usePlaygroundLiveSubscriptions(opts: {
 
   useEffect(() => {
     liveChildrenParentsRef.current = liveChildrenParents;
-    applyLiveScopes();
+    applySubscriptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveChildrenParents]);
 
   useEffect(() => {
     liveAllEnabledRef.current = liveAllEnabled;
-    applyLiveScopes();
+    applySubscriptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveAllEnabled]);
 

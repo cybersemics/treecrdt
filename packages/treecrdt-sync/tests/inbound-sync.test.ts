@@ -50,46 +50,46 @@ function createFakePeer() {
 const allFilter: Filter = { all: {} };
 const childFilter: Filter = { children: { parent: new Uint8Array(16) } };
 
-test('inbound sync starts live scopes for existing and future peers', () => {
+test('inbound sync subscribes existing and future peers', () => {
   const { peer } = createFakePeer();
   const inbound = createInboundSync({ localPeer: peer });
   inbound.addPeer('peer-a', {} as any);
 
-  inbound.setLiveScopes([allFilter]);
+  inbound.subscribe(allFilter);
 
   expect(peer.subscribe).toHaveBeenCalledTimes(1);
-  expect(inbound.status.livePeerCount).toBe(1);
+  expect(inbound.status.activeSubscriptionCount).toBe(1);
 
   inbound.addPeer('peer-b', {} as any);
 
   expect(peer.subscribe).toHaveBeenCalledTimes(2);
-  expect(inbound.status.livePeerCount).toBe(2);
+  expect(inbound.status.activeSubscriptionCount).toBe(2);
 });
 
-test('inbound sync declaratively diffs live scopes', () => {
+test('inbound sync declaratively diffs subscription filters', () => {
   const { peer, subscriptions } = createFakePeer();
   const inbound = createInboundSync({ localPeer: peer });
   inbound.addPeer('peer-a', {} as any);
 
-  inbound.setLiveScopes([allFilter]);
-  inbound.setLiveScopes([childFilter]);
+  inbound.subscribe(allFilter);
+  inbound.subscribe(childFilter);
 
   expect(subscriptions[0]!.stopped).toHaveBeenCalledTimes(1);
   expect(peer.subscribe).toHaveBeenCalledTimes(2);
-  expect(inbound.status.liveScopeCount).toBe(1);
-  expect(inbound.status.livePeerCount).toBe(1);
+  expect(inbound.status.subscriptionFilterCount).toBe(1);
+  expect(inbound.status.activeSubscriptionCount).toBe(1);
 
-  inbound.setLiveScopes([]);
+  inbound.subscribe([]);
 
   expect(subscriptions[1]!.stopped).toHaveBeenCalledTimes(1);
-  expect(inbound.status.liveScopeCount).toBe(0);
-  expect(inbound.status.livePeerCount).toBe(0);
+  expect(inbound.status.subscriptionFilterCount).toBe(0);
+  expect(inbound.status.activeSubscriptionCount).toBe(0);
 });
 
 test('inbound sync stops subscriptions when peers are removed', () => {
   const { peer, subscriptions } = createFakePeer();
   const inbound = createInboundSync({ localPeer: peer });
-  inbound.setLiveScopes([allFilter]);
+  inbound.subscribe(allFilter);
   inbound.addPeer('peer-a', {} as any);
 
   expect(subscriptions).toHaveLength(1);
@@ -97,7 +97,7 @@ test('inbound sync stops subscriptions when peers are removed', () => {
   inbound.removePeer('peer-a');
 
   expect(subscriptions[0]!.stopped).toHaveBeenCalledTimes(1);
-  expect(inbound.status.livePeerCount).toBe(0);
+  expect(inbound.status.activeSubscriptionCount).toBe(0);
 });
 
 test('inbound sync suppresses stale subscription failures after peer removal', async () => {
@@ -107,7 +107,7 @@ test('inbound sync suppresses stale subscription failures after peer removal', a
     localPeer: peer,
     onError: ({ error }) => errors.push(error),
   });
-  inbound.setLiveScopes([allFilter]);
+  inbound.subscribe(allFilter);
   inbound.addPeer('peer-a', {} as any);
 
   inbound.removePeer('peer-a');
@@ -125,13 +125,13 @@ test('inbound sync reports ready and live subscription failures', async () => {
     onError: ({ phase, error }) =>
       errors.push(`${phase}:${error instanceof Error ? error.message : String(error)}`),
   });
-  inbound.setLiveScopes([allFilter]);
+  inbound.subscribe(allFilter);
   inbound.addPeer('peer-a', {} as any);
   subscriptions[0]!.rejectReady(new Error('initial catch-up failed'));
   await subscriptions[0]!.ready.catch(() => undefined);
 
   expect(errors).toEqual(['ready:initial catch-up failed']);
-  expect(inbound.status.livePeerCount).toBe(0);
+  expect(inbound.status.activeSubscriptionCount).toBe(0);
 
   inbound.addPeer('peer-b', {} as any);
   subscriptions[1]!.resolveReady();
@@ -140,7 +140,7 @@ test('inbound sync reports ready and live subscription failures', async () => {
   await subscriptions[1]!.done.catch(() => undefined);
 
   expect(errors).toEqual(['ready:initial catch-up failed', 'live:live failed']);
-  expect(inbound.status.livePeerCount).toBe(0);
+  expect(inbound.status.activeSubscriptionCount).toBe(0);
 });
 
 test('inbound sync syncOnce reconciles all available peers', async () => {

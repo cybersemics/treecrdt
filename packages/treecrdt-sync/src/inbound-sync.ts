@@ -21,8 +21,8 @@ export type InboundSyncErrorContext<Op = unknown> = {
 
 export type InboundSyncStatus = {
   peerCount: number;
-  liveScopeCount: number;
-  livePeerCount: number;
+  subscriptionFilterCount: number;
+  activeSubscriptionCount: number;
   busy: boolean;
 };
 
@@ -47,7 +47,7 @@ export type InboundSync<Op = unknown> = {
   removePeer: (peerId: string) => void;
   clearPeers: () => void;
   syncOnce: (filters: Filter | readonly Filter[], opts?: InboundSyncOnceOptions) => Promise<void>;
-  setLiveScopes: (filters: readonly Filter[]) => void;
+  subscribe: (filters: Filter | readonly Filter[]) => void;
   close: () => void;
 };
 
@@ -91,20 +91,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number | undefined, message: st
 
 export function createInboundSync<Op = unknown>(options: InboundSyncOptions<Op>): InboundSync<Op> {
   const peers = new Map<string, DuplexTransport<SyncMessage<Op>>>();
-  const liveScopes = new Map<string, LiveScope>();
+  const subscriptionFilters = new Map<string, SubscriptionFilter>();
   let busyCount = 0;
   let closed = false;
 
-  const livePeerCount = () => {
+  const activeSubscriptionCount = () => {
     let count = 0;
-    for (const scope of liveScopes.values()) count += scope.livePeerCount;
+    for (const subscription of subscriptionFilters.values()) count += subscription.activeCount;
     return count;
   };
 
   const statusSnapshot = (): InboundSyncStatus => ({
     peerCount: peers.size,
-    liveScopeCount: liveScopes.size,
-    livePeerCount: livePeerCount(),
+    subscriptionFilterCount: subscriptionFilters.size,
+    activeSubscriptionCount: activeSubscriptionCount(),
     busy: busyCount > 0,
   });
 
@@ -133,14 +133,14 @@ export function createInboundSync<Op = unknown>(options: InboundSyncOptions<Op>)
     });
   };
 
-  class LiveScope {
+  class SubscriptionFilter {
     private readonly subscriptions = new Map<string, SyncSubscription>();
     private readonly starting = new Set<string>();
     private isClosed = false;
 
     constructor(readonly filter: Filter) {}
 
-    get livePeerCount() {
+    get activeCount() {
       return this.subscriptions.size;
     }
 
@@ -291,49 +291,50 @@ export function createInboundSync<Op = unknown>(options: InboundSyncOptions<Op>)
       const previous = peers.get(peerId);
       peers.set(peerId, transport);
       if (previous && previous !== transport) {
-        for (const scope of liveScopes.values()) scope.removePeer(peerId);
+        for (const subscription of subscriptionFilters.values()) subscription.removePeer(peerId);
       }
-      for (const scope of liveScopes.values()) scope.addPeer(peerId, transport);
+      for (const subscription of subscriptionFilters.values())
+        subscription.addPeer(peerId, transport);
       emitStatus();
     },
     removePeer: (peerId) => {
       peers.delete(peerId);
-      for (const scope of liveScopes.values()) scope.removePeer(peerId);
+      for (const subscription of subscriptionFilters.values()) subscription.removePeer(peerId);
       emitStatus();
     },
     clearPeers: () => {
       peers.clear();
-      for (const scope of liveScopes.values()) scope.stopAll();
+      for (const subscription of subscriptionFilters.values()) subscription.stopAll();
       emitStatus();
     },
     syncOnce,
-    setLiveScopes: (filters) => {
+    subscribe: (filters) => {
       if (closed) return;
       const next = new Map<string, Filter>();
-      for (const filter of filters) {
+      for (const filter of normalizeFilters(filters)) {
         const key = filterKey(filter);
         if (!next.has(key)) next.set(key, filter);
       }
 
-      for (const [key, scope] of Array.from(liveScopes.entries())) {
+      for (const [key, subscription] of Array.from(subscriptionFilters.entries())) {
         if (next.has(key)) continue;
-        scope.close();
-        liveScopes.delete(key);
+        subscription.close();
+        subscriptionFilters.delete(key);
       }
 
       for (const [key, filter] of next) {
-        if (liveScopes.has(key)) continue;
-        const scope = new LiveScope(filter);
-        liveScopes.set(key, scope);
-        scope.startAll();
+        if (subscriptionFilters.has(key)) continue;
+        const subscription = new SubscriptionFilter(filter);
+        subscriptionFilters.set(key, subscription);
+        subscription.startAll();
       }
       emitStatus();
     },
     close: () => {
       if (closed) return;
       closed = true;
-      for (const scope of Array.from(liveScopes.values())) scope.close();
-      liveScopes.clear();
+      for (const subscription of Array.from(subscriptionFilters.values())) subscription.close();
+      subscriptionFilters.clear();
       peers.clear();
       emitStatus();
     },
