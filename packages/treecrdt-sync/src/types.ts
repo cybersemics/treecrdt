@@ -107,6 +107,10 @@ export type OutboundSync<Op = Operation> = {
   addPeer: (peerId: string, transport: DuplexTransport<SyncMessage<Op>>) => void;
   removePeer: (peerId: string) => void;
   clearPeers: () => void;
+  /**
+   * Report exact committed local ops. Wakes live subscriptions on `localPeer` and queues the same
+   * ops for registered outbound upload targets.
+   */
   queueOps: (ops: readonly Op[]) => void;
   flush: () => Promise<void>;
   close: () => void;

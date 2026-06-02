@@ -38,8 +38,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number | undefined, message: st
 }
 
 /**
- * Queue exact local writes for a single {@link SyncPeer} that is attached to one or more outbound
- * transports.
+ * Queue exact committed local writes for a single {@link SyncPeer} that is attached to one or more
+ * outbound transports.
+ *
+ * `queueOps` also notifies the low-level peer about the local update, so apps can report a local
+ * write once instead of separately waking live subscriptions and queueing remote upload.
  *
  * Apps that also use local-tab mesh transports should attach those transports directly to the
  * low-level peer, but only register outbound upload targets with this controller.
@@ -195,6 +198,7 @@ export function createOutboundSync<Op = Operation>(
     },
     queueOps: (ops) => {
       if (closed || ops.length === 0) return;
+      void options.localPeer.notifyLocalUpdate(ops);
       addPendingOps(ops);
       if (pendingOps.length > 0) scheduleFlush();
     },
