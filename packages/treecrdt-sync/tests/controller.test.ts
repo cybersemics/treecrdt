@@ -34,6 +34,7 @@ function createFakePeer(opts: { failPushes?: number } = {}) {
   let failPushes = opts.failPushes ?? 0;
   const pushed: Operation[][] = [];
   const peer = {
+    notifyLocalUpdate: vi.fn(async () => {}),
     pushOps: vi.fn(async (_transport: unknown, ops: readonly Operation[]) => {
       if (failPushes > 0) {
         failPushes -= 1;
@@ -56,6 +57,7 @@ test('outbound sync queues local ops until an outbound peer is available', async
   controller.queueOps([op, op]);
   await controller.flush();
 
+  expect(peer.notifyLocalUpdate).toHaveBeenCalledWith([op, op]);
   expect(controller.pendingOpCount).toBe(1);
   expect(pushed).toHaveLength(0);
 
@@ -125,6 +127,7 @@ test('outbound sync ignores empty op batches', async () => {
   controller.queueOps([]);
   await controller.flush();
 
+  expect(peer.notifyLocalUpdate).not.toHaveBeenCalled();
   expect(controller.pendingOpCount).toBe(0);
   expect(pushed).toEqual([]);
   expect(statuses.at(-1)).toBe(0);

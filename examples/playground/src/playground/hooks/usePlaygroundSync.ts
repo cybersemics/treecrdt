@@ -218,7 +218,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const autoSyncPeerIdRef = useRef<string | null>(null);
 
   const queueOpsForSync = (ops?: Operation[]) => {
-    void syncPeerRef.current?.notifyLocalUpdate(ops);
     if (ops && ops.length > 0) outboundSyncRef.current?.queueOps(ops);
   };
 
