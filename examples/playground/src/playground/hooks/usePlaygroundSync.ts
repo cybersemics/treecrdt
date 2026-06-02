@@ -241,7 +241,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       // ignore
     }
     connections.delete(peerId);
-    outboundSyncRef.current?.removePeer(peerId);
+    outboundSyncRef.current?.removeTarget(peerId);
     stopLiveAllForPeer(peerId);
     stopLiveChildrenForPeer(peerId);
 
@@ -559,10 +559,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       }),
       pushTimeoutMs: (peerId) => syncTimeoutMsForPeer(peerId, { autoSync: true }),
       onStatus: (status) => setOutboundBusy(status.running || status.scheduled),
-      onError: ({ peerId, error }) => {
+      onError: ({ targetId, error }) => {
         console.error('Remote op upload failed', error);
         setSyncError(formatSyncError(error));
-        if (!isCapabilityRevokedError(error)) dropPeerConnection(peerId);
+        if (!isCapabilityRevokedError(error)) dropPeerConnection(targetId);
       },
     });
     outboundSyncRef.current = outboundSync;
@@ -590,7 +590,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     ) => {
       const detach = localPeer.attach(transport);
       connections.set(peerId, { transport, detach });
-      if (opts.outbound) outboundSync.addPeer(peerId, transport);
+      if (opts.outbound) outboundSync.addTarget(peerId, transport);
       if (opts.markRemoteSeen) setRemotePeer({ id: peerId, lastSeen: Date.now() });
       maybeStartLiveForPeer(peerId);
       queueAutoSyncForPeer(peerId);

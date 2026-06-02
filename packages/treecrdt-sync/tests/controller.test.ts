@@ -41,7 +41,7 @@ function createFakePeer<Op = Operation>(opts: { failPushes?: number } = {}) {
   return { peer, pushed };
 }
 
-test('outbound sync queues local ops until an outbound peer is available', async () => {
+test('outbound sync queues local ops until an outbound target is available', async () => {
   const op = makeInsertOp();
   const { peer, pushed } = createFakePeer();
   const controller = createOutboundSync({
@@ -55,7 +55,7 @@ test('outbound sync queues local ops until an outbound peer is available', async
   expect(controller.pendingOpCount).toBe(1);
   expect(pushed).toHaveLength(0);
 
-  controller.addPeer('remote:server', {} as any);
+  controller.addTarget('remote:server', {} as any);
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(0);
@@ -70,7 +70,7 @@ test('outbound sync keeps queued ops while offline', async () => {
     localPeer: peer,
     isOnline: () => online,
   });
-  controller.addPeer('remote:server', {} as any);
+  controller.addTarget('remote:server', {} as any);
 
   controller.queueOps([op]);
   await controller.flush();
@@ -93,7 +93,7 @@ test('outbound sync keeps failed direct pushes queued', async () => {
     localPeer: peer,
     onError: ({ error }) => errors.push(error),
   });
-  controller.addPeer('remote:server', {} as any);
+  controller.addTarget('remote:server', {} as any);
 
   controller.queueOps([op]);
   await controller.flush();
@@ -124,7 +124,7 @@ test('outbound sync accepts custom op keys for non-TreeCRDT op shapes', async ()
   expect(controller.pendingOpCount).toBe(1);
   expect(pushed).toHaveLength(0);
 
-  controller.addPeer('remote:server', {} as any);
+  controller.addTarget('remote:server', {} as any);
   await controller.flush();
 
   expect(controller.pendingOpCount).toBe(0);
@@ -138,7 +138,7 @@ test('outbound sync ignores empty op batches', async () => {
     localPeer: peer,
     onStatus: (status) => statuses.push(status.pendingOps),
   });
-  controller.addPeer('remote:server', {} as any);
+  controller.addTarget('remote:server', {} as any);
 
   controller.queueOps([]);
   await controller.flush();
