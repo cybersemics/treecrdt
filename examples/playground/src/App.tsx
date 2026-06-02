@@ -468,7 +468,7 @@ export default function App() {
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    queueOpsForSync,
+    queueOps,
     handleSync,
     handleScopedSync,
     postBroadcastMessage,
@@ -498,11 +498,11 @@ export default function App() {
 
   const handleCommittedLocalOps = React.useCallback(
     (ops: Operation[]) => {
-      // The local write already committed. This only feeds playground sync and debug UI state.
-      queueOpsForSync(ops);
+      // The local write already committed; publish it to sync and debug UI state.
+      queueOps(ops);
       recordOps(ops, { assumeSorted: true });
     },
-    [queueOpsForSync, recordOps]
+    [queueOps, recordOps]
   );
 
   const grantSubtreeToReplicaPubkey = React.useCallback(

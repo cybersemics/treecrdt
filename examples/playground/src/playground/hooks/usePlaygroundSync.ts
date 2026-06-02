@@ -110,7 +110,7 @@ type PlaygroundSyncApi = {
   liveAllEnabled: boolean;
   setLiveAllEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   toggleLiveChildren: (parentId: string) => void;
-  queueOpsForSync: (ops?: Operation[]) => void;
+  queueOps: (ops: Operation[]) => void;
   handleSync: (filter: Filter) => Promise<void>;
   handleScopedSync: () => Promise<void>;
   postBroadcastMessage: (
@@ -217,8 +217,8 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
   const autoSyncAttemptRef = useRef(0);
   const autoSyncPeerIdRef = useRef<string | null>(null);
 
-  const queueOpsForSync = (ops?: Operation[]) => {
-    if (ops && ops.length > 0) outboundSyncRef.current?.queueOps(ops);
+  const queueOps = (ops: Operation[]) => {
+    outboundSyncRef.current?.queueOps(ops);
   };
 
   const dropPeerConnection = (peerId: string) => {
@@ -819,7 +819,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    queueOpsForSync,
+    queueOps,
     handleSync,
     handleScopedSync,
     postBroadcastMessage,
