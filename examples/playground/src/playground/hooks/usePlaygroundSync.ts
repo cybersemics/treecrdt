@@ -197,7 +197,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    addLivePeer,
+    addInboundPeer,
     removeLivePeer,
     syncInboundOnce,
     resetLiveWork,
@@ -273,6 +273,10 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
     setSyncError(null);
     try {
       const targets = selectSyncTargetIds(connections).filter((peerId) => connections.has(peerId));
+      for (const peerId of targets) {
+        const conn = connections.get(peerId);
+        if (conn) addInboundPeer(peerId, conn);
+      }
       await syncInboundOnce(filters, {
         peerIds: targets,
         syncTimeoutMs: (peerId) =>
@@ -557,7 +561,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       }
       const conn = connections.get(peerId);
       if (!conn) return;
-      addLivePeer(peerId, conn);
+      addInboundPeer(peerId, conn);
     };
 
     const mesh = channel

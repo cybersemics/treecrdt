@@ -7,11 +7,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { Operation } from '@treecrdt/interface';
-import {
-  createInboundSync,
-  type InboundSync,
-  type InboundSyncOnceOptions,
-} from '@treecrdt/sync';
+import { createInboundSync, type InboundSync, type InboundSyncOnceOptions } from '@treecrdt/sync';
 import type { Filter, SyncMessage, SyncPeer } from '@treecrdt/sync-protocol';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 
@@ -78,7 +74,7 @@ export function usePlaygroundLiveSubscriptions(opts: {
     ensureInboundSync()?.setLiveScopes(liveFilters());
   };
 
-  const addLivePeer = (peerId: string, conn: PlaygroundSyncConnection) => {
+  const addInboundPeer = (peerId: string, conn: PlaygroundSyncConnection) => {
     const inbound = ensureInboundSync();
     if (!inbound) return;
     inbound.addPeer(peerId, conn.transport as DuplexTransport<SyncMessage<Operation>>);
@@ -137,7 +133,7 @@ export function usePlaygroundLiveSubscriptions(opts: {
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    addLivePeer,
+    addInboundPeer,
     removeLivePeer,
     syncInboundOnce,
     resetLiveWork,
