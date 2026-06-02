@@ -3,7 +3,7 @@ import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import { makeOp, maxLamport, nodeIdFromInt } from '@treecrdt/benchmark';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
-import { SyncPeer, deriveOpRefV0 } from '@treecrdt/sync-protocol';
+import { SyncPeer } from '@treecrdt/sync-protocol';
 import {
   createInMemoryDuplex,
   wrapDuplexTransportWithCodec,
@@ -44,8 +44,6 @@ async function runSyncOnceInMemory(
   const peerB = new SyncPeer(backendB, {
     maxCodewords: 100_000,
     maxOpsPerBatch: 2_000,
-    deriveOpRef: (op, ctx) =>
-      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
   const detachB = peerB.attach(transportB);
 
@@ -126,8 +124,6 @@ test('syncOnce defaults split inbound applies into modest batches', async () => 
   });
   const peerB = new SyncPeer(backendB, {
     maxCodewords: 100_000,
-    deriveOpRef: (op, ctx) =>
-      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
   const detachB = peerB.attach(transportB);
   const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, detachB);
@@ -248,8 +244,6 @@ test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', 
   const peerB = new SyncPeer(backendB, {
     maxCodewords: 100_000,
     maxOpsPerBatch: 2_000,
-    deriveOpRef: (op, ctx) =>
-      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
   const detachB = peerB.attach(transportB);
   const onCloseB = () => {
@@ -301,8 +295,6 @@ test('pushLocalOps with no ops is a no-op (no syncOnce)', async () => {
   const peerB = new SyncPeer(backendB, {
     maxCodewords: 100_000,
     maxOpsPerBatch: 2_000,
-    deriveOpRef: (op, ctx) =>
-      deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
   const detachB = peerB.attach(transportB);
   const onCloseB = () => {
