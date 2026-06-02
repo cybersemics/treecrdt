@@ -47,7 +47,6 @@ import {
   isDiscoveryBootstrapUrl,
   isRemotePeerId,
   isTransientRemoteConnectError,
-  localOpUploadKey,
   normalizeSyncServerUrl,
   previewDiscoveryHost,
   syncOnceOptionsForPeer,
@@ -556,7 +555,6 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
 
     const outboundSync = createOutboundSync<Operation>({
       localPeer: sharedPeer,
-      opKey: localOpUploadKey,
       isOnline: () => onlineRef.current,
       pushOptions: () => ({
         maxOpsPerBatch: PLAYGROUND_SYNC_MAX_OPS_PER_BATCH,

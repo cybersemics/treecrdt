@@ -21,7 +21,6 @@ import { createOutboundSync } from '@treecrdt/sync';
 
 const outbound = createOutboundSync({
   localPeer: peer,
-  opKey: (op) => `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`,
   isOnline: () => navigator.onLine,
 });
 
@@ -30,6 +29,9 @@ outbound.addPeer('remote:server', websocketTransport);
 const op = await client.local.payload(replica, node, payload);
 outbound.queueOps([op]); // live subscription wakeup + remote websocket upload/retry
 ```
+
+`queueOps` dedupes standard TreeCRDT `Operation` values by `meta.id`. Pass `opKey` only for a
+custom op shape or custom coalescing behavior.
 
 ## When not to
 

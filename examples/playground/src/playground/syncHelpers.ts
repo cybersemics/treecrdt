@@ -1,5 +1,3 @@
-import type { Operation } from '@treecrdt/interface';
-import { bytesToHex } from '@treecrdt/interface/ids';
 import {
   createStringStoreRouteCache,
   isDiscoveryBootstrapUrl,
@@ -148,10 +146,6 @@ export function syncTimeoutMsForPeer(
   if (isRemotePeerId(peerId)) return PLAYGROUND_REMOTE_SYNC_TIMEOUT_MS;
   if (opts.autoSync) return PLAYGROUND_PEER_TIMEOUT_MS;
   return opts.multipleTargets ? 8_000 : 15_000;
-}
-
-export function localOpUploadKey(op: Operation): string {
-  return `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`;
 }
 
 export { isDiscoveryBootstrapUrl };
