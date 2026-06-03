@@ -5,6 +5,7 @@ import {
   type RpcInitResult,
   type RpcMethod,
   type RpcParams,
+  type RpcPushMessage,
   type RpcRequest,
   type RpcResult,
 } from './rpc.js';
@@ -55,12 +56,24 @@ function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePor
   }
 }
 
+function isClientPushMessage(
+  message: RpcRequest | RpcPushMessage,
+): message is RpcPushMessage {
+  return 'type' in message && message.type === 'materialized';
+}
+
 (self as unknown as SharedWorkerGlobal).onconnect = (ev: MessageEvent) => {
   const port = ev.ports[0];
   if (!port) return;
   ports.add(port);
-  port.onmessage = (message: MessageEvent<RpcRequest>) => {
-    const request = message.data;
+  port.onmessage = (message: MessageEvent<RpcRequest | RpcPushMessage>) => {
+    const data = message.data;
+    if (isClientPushMessage(data)) {
+      broadcastMaterialized(data.event, port);
+      return;
+    }
+
+    const request = data;
     const respondSuccess = (result?: unknown) => {
       const transfer =
         request.method === 'treePayload' || request.method === 'treeParent'
@@ -88,12 +101,6 @@ async function handleRequest<M extends RpcMethod>(
   if (request.method === 'init') {
     const [baseUrl, filename, storage, docId] = request.params as RpcParams<'init'>;
     return (await init(baseUrl, filename, storage, docId)) as RpcResult<M>;
-  }
-
-  if (request.method === 'broadcastMaterialized') {
-    const [event] = request.params as RpcParams<'broadcastMaterialized'>;
-    broadcastMaterialized(event, sourcePort);
-    return undefined;
   }
 
   if (request.method === 'close') {

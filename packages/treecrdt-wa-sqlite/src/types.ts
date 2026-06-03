@@ -1,7 +1,7 @@
 import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
-import type { RpcMethod, RpcParams, RpcRequest, RpcResult } from './rpc.js';
+import type { RpcMethod, RpcParams, RpcPushMessage, RpcRequest, RpcResult } from './rpc.js';
 
 // Minimal wa-sqlite surface needed by the adapter. Exported so consumers
 // don't need to import types from wa-sqlite directly.
@@ -63,7 +63,7 @@ export type WorkerProxy = {
 };
 
 export type MessagePortProxy = {
-  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
+  postMessage(msg: RpcRequest | RpcPushMessage, transfer?: Transferable[]): void;
   start: () => void;
   close: () => void;
   addEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
