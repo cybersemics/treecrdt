@@ -12,6 +12,48 @@ async function waitForCrossTabHarness(page: Page) {
 
 type RuntimeChoice = 'auto' | 'dedicated-worker' | 'shared-worker';
 
+type SharedWorkerBroadcastCounts = {
+  push: number;
+  queuedRpc: number;
+};
+
+async function recordSharedWorkerBroadcasts(page: Page) {
+  await page.addInitScript(() => {
+    const NativeSharedWorker = window.SharedWorker;
+    const counts = { push: 0, queuedRpc: 0 };
+    (window as any).__treecrdtSharedWorkerBroadcasts = counts;
+
+    function WrappedSharedWorker(url: string | URL, options?: string | WorkerOptions) {
+      const worker = new NativeSharedWorker(url, options as any);
+      const originalPostMessage = worker.port.postMessage.bind(worker.port);
+      worker.port.postMessage = ((message: unknown, transferOrOptions?: unknown) => {
+        if (message && typeof message === 'object') {
+          const record = message as { method?: unknown; type?: unknown; id?: unknown };
+          if (record.method === 'broadcastMaterialized') counts.queuedRpc += 1;
+          if (record.type === 'materialized' && typeof record.id !== 'number') {
+            counts.push += 1;
+          }
+        }
+        return originalPostMessage(message, transferOrOptions as any);
+      }) as typeof worker.port.postMessage;
+      return worker;
+    }
+
+    WrappedSharedWorker.prototype = NativeSharedWorker.prototype;
+    Object.defineProperty(window, 'SharedWorker', {
+      configurable: true,
+      value: WrappedSharedWorker,
+      writable: true,
+    });
+  });
+}
+
+async function sharedWorkerBroadcastCounts(page: Page): Promise<SharedWorkerBroadcastCounts> {
+  return page.evaluate(
+    () => (window as any).__treecrdtSharedWorkerBroadcasts ?? { push: 0, queuedRpc: 0 },
+  );
+}
+
 async function openClient(page: Page, docId: string, filename: string, runtime: RuntimeChoice) {
   return page.evaluate(
     async ({ docId, filename, runtime }) => {
@@ -92,6 +134,7 @@ for (const scenario of scenarios) {
     pageB.on('console', (msg) => console.log(`[pageB][${msg.type()}] ${msg.text()}`));
 
     try {
+      if (scenario.runtime === 'shared-worker') await recordSharedWorkerBroadcasts(pageA);
       await Promise.all([waitForCrossTabHarness(pageA), waitForCrossTabHarness(pageB)]);
 
       const [summaryA, summaryB] = await Promise.all([
@@ -181,6 +224,12 @@ for (const scenario of scenarios) {
       expect(parentDeletedOnA.existsByNode[child.node]).toBe(true);
       expect(parentDeletedOnA.childrenByParent[root]).not.toContain(parent.node);
       expect(parentDeletedOnA.childrenByParent[root]).toContain(child.node);
+
+      if (scenario.runtime === 'shared-worker') {
+        const broadcasts = await sharedWorkerBroadcastCounts(pageA);
+        expect(broadcasts.queuedRpc).toBe(0);
+        expect(broadcasts.push).toBeGreaterThanOrEqual(1);
+      }
     } finally {
       await Promise.allSettled([closeClient(pageA), closeClient(pageB)]);
       await Promise.allSettled([pageA.close(), pageB.close()]);
