@@ -112,9 +112,11 @@ test('syncOnce defaults split inbound applies into modest batches', async () => 
   const { client: aClient, getOps: getAllA } = createInMemoryTestClient(docId, []);
   const { client: bClient } = createInMemoryTestClient(docId, remoteOps);
   const appendBatchSizes: number[] = [];
+  const appendPriorities: Array<string | undefined> = [];
   const appendMany = aClient.ops.appendMany.bind(aClient.ops);
   aClient.ops.appendMany = async (ops, writeOpts) => {
     appendBatchSizes.push(ops.length);
+    appendPriorities.push(writeOpts?.priority);
     return appendMany(ops, writeOpts);
   };
 
@@ -142,6 +144,7 @@ test('syncOnce defaults split inbound applies into modest batches', async () => 
   expect(appendBatchSizes.length).toBeGreaterThan(1);
   expect(Math.max(...appendBatchSizes)).toBeLessThanOrEqual(DEFAULT_MAX_OPS_PER_BATCH);
   expect(appendBatchSizes.reduce((sum, size) => sum + size, 0)).toBe(totalOps);
+  expect(new Set(appendPriorities)).toEqual(new Set(['background']));
 });
 
 test('syncOnce pulls insert, move, payload, and delete operations', async () => {

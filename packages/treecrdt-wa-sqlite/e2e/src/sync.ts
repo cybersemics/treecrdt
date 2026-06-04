@@ -38,6 +38,7 @@ export type SyncBenchResult = {
 type StorageKind = 'browser-memory' | 'browser-opfs-coop-sync';
 
 const memoryStorage = { type: 'memory' } as const;
+const rootNode = '0'.repeat(32);
 
 function storageOptionsForMode(mode: 'memory' | 'opfs', filename?: string) {
   return mode === 'opfs'
@@ -60,6 +61,25 @@ function hasOp(ops: Operation[], replica: Uint8Array, counter: number): boolean 
   return ops.some(
     (op) => bytesToHex(op.meta.id.replica) === targetHex && op.meta.id.counter === counter,
   );
+}
+
+function makeRootInsertOps(opts: {
+  replica: Uint8Array;
+  startCounter: number;
+  startLamport: number;
+  startNodeInt: number;
+  startPosition: number;
+  count: number;
+}): Operation[] {
+  return Array.from({ length: opts.count }, (_, index) => {
+    const offset = index;
+    return makeOp(opts.replica, opts.startCounter + offset, opts.startLamport + offset, {
+      type: 'insert',
+      parent: rootNode,
+      node: nodeIdFromInt(opts.startNodeInt + offset),
+      orderKey: orderKeyFromPosition(opts.startPosition + offset),
+    });
+  });
 }
 
 function makeBackend(
@@ -392,6 +412,70 @@ export async function runTreecrdtAuthLocalWriteE2E(): Promise<{
   const direct = await runAuthLocalWriteCase({ storage: 'memory' });
   const worker = await runAuthLocalWriteCase({ storage: 'opfs' });
   return { ok: true, direct, worker };
+}
+
+export async function runTreecrdtSharedOpfsInterleavedLocalWriteE2E(): Promise<{
+  ok: true;
+  childCount: number;
+  localExists: boolean;
+  opCount: number;
+}> {
+  const docId = `e2e-shared-opfs-interleaved-local-${crypto.randomUUID()}`;
+  const filename = `/interleave-${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}.db`;
+  const client = await createTreecrdtClient({
+    storage: { type: 'opfs', filename, fallback: 'throw' },
+    runtime: { type: 'shared-worker' },
+    docId,
+  });
+  const remoteReplica = replicaFromLabel('interleaved-remote');
+  const localReplica = replicaFromLabel('interleaved-local');
+  const firstCount = 5_500;
+  const secondCount = 500;
+  const localNode = nodeIdFromInt(1_000_000);
+
+  try {
+    await client.ops.appendMany(
+      makeRootInsertOps({
+        replica: remoteReplica,
+        startCounter: 1,
+        startLamport: 1,
+        startNodeInt: 1,
+        startPosition: 0,
+        count: firstCount,
+      }),
+    );
+    await client.local.insert(localReplica, rootNode, localNode, { type: 'last' }, null);
+    await client.ops.appendMany(
+      makeRootInsertOps({
+        replica: remoteReplica,
+        startCounter: firstCount + 1,
+        startLamport: firstCount + 1,
+        startNodeInt: firstCount + 1,
+        startPosition: firstCount,
+        count: secondCount,
+      }),
+    );
+
+    const [children, localExists, ops] = await Promise.all([
+      client.tree.children(rootNode),
+      client.tree.exists(localNode),
+      client.ops.all(),
+    ]);
+    const expectedCount = firstCount + secondCount + 1;
+    if (children.length !== expectedCount) {
+      throw new Error(
+        `interleaved-local-write: expected ${expectedCount} root children, got ${children.length}`,
+      );
+    }
+    if (!localExists) throw new Error('interleaved-local-write: local node is not materialized');
+    if (ops.length !== expectedCount) {
+      throw new Error(`interleaved-local-write: expected ${expectedCount} ops, got ${ops.length}`);
+    }
+
+    return { ok: true, childCount: children.length, localExists, opCount: ops.length };
+  } finally {
+    await client.close();
+  }
 }
 
 export async function runTreecrdtSyncLargeFanoutE2E(): Promise<{ ok: true }> {
@@ -853,6 +937,7 @@ declare global {
     runTreecrdtSyncE2E?: typeof runTreecrdtSyncE2E;
     runTreecrdtMaterializationEventE2E?: typeof runTreecrdtMaterializationEventE2E;
     runTreecrdtAuthLocalWriteE2E?: typeof runTreecrdtAuthLocalWriteE2E;
+    runTreecrdtSharedOpfsInterleavedLocalWriteE2E?: typeof runTreecrdtSharedOpfsInterleavedLocalWriteE2E;
     runTreecrdtSyncLargeFanoutE2E?: typeof runTreecrdtSyncLargeFanoutE2E;
     runTreecrdtSyncSubscribeE2E?: typeof runTreecrdtSyncSubscribeE2E;
     runTreecrdtSyncBench?: typeof runTreecrdtSyncBench;
@@ -867,6 +952,8 @@ if (typeof window !== 'undefined') {
   window.runTreecrdtSyncE2E = runTreecrdtSyncE2E;
   window.runTreecrdtMaterializationEventE2E = runTreecrdtMaterializationEventE2E;
   window.runTreecrdtAuthLocalWriteE2E = runTreecrdtAuthLocalWriteE2E;
+  window.runTreecrdtSharedOpfsInterleavedLocalWriteE2E =
+    runTreecrdtSharedOpfsInterleavedLocalWriteE2E;
   window.runTreecrdtSyncLargeFanoutE2E = runTreecrdtSyncLargeFanoutE2E;
   window.runTreecrdtSyncSubscribeE2E = runTreecrdtSyncSubscribeE2E;
   window.runTreecrdtSyncBench = runTreecrdtSyncBench;
