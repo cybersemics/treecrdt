@@ -56,9 +56,7 @@ function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePor
   }
 }
 
-function isClientPushMessage(
-  message: RpcRequest | RpcPushMessage,
-): message is RpcPushMessage {
+function isClientPushMessage(message: RpcRequest | RpcPushMessage): message is RpcPushMessage {
   return 'type' in message && message.type === 'materialized';
 }
 
