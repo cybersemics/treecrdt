@@ -11,7 +11,7 @@ export type BenchResult = {
   extra?: Record<string, unknown>;
 };
 
-type StorageKind = 'browser-opfs-coop-sync' | 'browser-memory';
+type StorageKind = 'browser-opfs-coop-sync' | 'browser-opfs-single-owner-wal' | 'browser-memory';
 
 type WorkerRequest = {
   type: 'run';
