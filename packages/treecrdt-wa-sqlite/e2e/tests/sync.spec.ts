@@ -55,3 +55,22 @@ test('auth-aware local writes roll back and defer materialization events e2e', a
     expect(mode.success.authorizedBeforeEvent).toBe(true);
   }
 });
+
+test('shared OPFS applies remote batches around a local write e2e', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto('/');
+  await page.waitForFunction(
+    () => typeof window.runTreecrdtSharedOpfsInterleavedLocalWriteE2E === 'function',
+  );
+
+  const result = await page.evaluate(async () => {
+    const runner = window.runTreecrdtSharedOpfsInterleavedLocalWriteE2E;
+    if (!runner) throw new Error('runTreecrdtSharedOpfsInterleavedLocalWriteE2E not available');
+    return await runner();
+  });
+
+  expect(result.ok).toBe(true);
+  expect(result.childCount).toBe(6001);
+  expect(result.localExists).toBe(true);
+  expect(result.opCount).toBe(6001);
+});
