@@ -1,5 +1,6 @@
 import type { Database } from './types.js';
 import { makeDbAdapter } from './db.js';
+import { initializeTreecrdtExtension } from './extension.js';
 
 export type OpfsSupport = {
   available: boolean;
@@ -32,14 +33,69 @@ export function detectOpfsSupport(): OpfsSupport {
 
 const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal'];
 
+export type ClearOpfsStorageOptions = {
+  vfsKind?: OpfsVfsKind;
+  vfsName?: string;
+};
+
+function hashFilename(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+export function accessHandlePoolVfsNameForFilename(filename: string): string {
+  return `opfs-ahp-${hashFilename(filename)}`;
+}
+
+async function clearAccessHandlePoolStorage(vfsName: string): Promise<void> {
+  if (typeof navigator?.storage?.getDirectory !== 'function') return;
+
+  let root: FileSystemDirectoryHandle;
+  let dir: FileSystemDirectoryHandle;
+  try {
+    root = await navigator.storage.getDirectory();
+    dir = await root.getDirectoryHandle(vfsName);
+  } catch {
+    return;
+  }
+
+  for await (const [name, handle] of dir) {
+    if (handle.kind !== 'file') continue;
+    try {
+      await dir.removeEntry(name);
+    } catch (e) {
+      if ((e as Error)?.name !== 'NotFoundError') throw e;
+    }
+  }
+
+  try {
+    await root.removeEntry(vfsName);
+  } catch (e) {
+    if ((e as Error)?.name !== 'NotFoundError') throw e;
+  }
+}
+
 /**
  * Remove database and related files (journal, wal) from OPFS storage.
  * Call only after the database handle is closed.
  *
  * @param filename - Path used when opening (e.g. /treecrdt.db or /treecrdt-playground.db)
  */
-export async function clearOpfsStorage(filename: string): Promise<void> {
+export async function clearOpfsStorage(
+  filename: string,
+  opts: ClearOpfsStorageOptions = {},
+): Promise<void> {
   if (typeof navigator?.storage?.getDirectory !== 'function') return;
+  if (opts.vfsKind === 'access-handle-pool') {
+    await clearAccessHandlePoolStorage(
+      opts.vfsName ?? accessHandlePoolVfsNameForFilename(filename),
+    );
+    return;
+  }
 
   const path = filename.startsWith('/') ? filename.slice(1) : filename;
   const parts = path.split('/').filter(Boolean);
@@ -113,7 +169,7 @@ export async function opfsStorageExists(filename: string): Promise<boolean> {
   return false;
 }
 
-export type OpfsVfsKind = 'coop-sync' | 'any-context';
+export type OpfsVfsKind = 'coop-sync' | 'any-context' | 'access-handle-pool';
 
 export type OpfsVfsOptions = {
   name?: string;
@@ -126,6 +182,12 @@ export type OpfsVfsOptions = {
  */
 export async function createOpfsVfs(module: any, opts: OpfsVfsOptions = {}): Promise<any> {
   const name = opts.name ?? 'opfs';
+  if (opts.kind === 'access-handle-pool') {
+    // @ts-ignore vendored module lacks type declarations
+    const { AccessHandlePoolVFS } = await import('./vendor/AccessHandlePoolVFS.js');
+    return AccessHandlePoolVFS.create(name, module);
+  }
+
   if (opts.kind === 'any-context') {
     // @ts-ignore vendored module lacks type declarations
     const { OPFSAnyContextVFS } = await import('./vendor/OPFSAnyContextVFS.js');
@@ -168,6 +230,7 @@ export async function openWithStorage(
 
   const handle = await sqlite3.open_v2(file);
   const db = makeDbAdapter(sqlite3, handle);
+  await initializeTreecrdtExtension(module, handle);
   return {
     db,
     close: async () => {

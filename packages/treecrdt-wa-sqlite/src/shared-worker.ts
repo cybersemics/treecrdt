@@ -4,6 +4,7 @@ import {
   transferablesForRpcBinaryResult,
   type RpcInitResult,
   type RpcMethod,
+  type RpcOpfsWriteMode,
   type RpcParams,
   type RpcRequest,
   type RpcResult,
@@ -23,6 +24,7 @@ type StoredConfig = {
   baseUrl: string;
   requestedFilename: string;
   requestedStorage: 'memory' | 'opfs';
+  opfsWriteMode: RpcOpfsWriteMode;
   docId: string;
 };
 
@@ -86,8 +88,8 @@ async function handleRequest<M extends RpcMethod>(
   request: RpcRequest<M>,
 ): Promise<RpcResult<M> | void> {
   if (request.method === 'init') {
-    const [baseUrl, filename, storage, docId] = request.params as RpcParams<'init'>;
-    return (await init(baseUrl, filename, storage, docId)) as RpcResult<M>;
+    const [baseUrl, filename, storage, docId, opfsWriteMode] = request.params as RpcParams<'init'>;
+    return (await init(baseUrl, filename, storage, docId, opfsWriteMode)) as RpcResult<M>;
   }
 
   if (request.method === 'broadcastMaterialized') {
@@ -118,6 +120,7 @@ async function init(
   filename: string | undefined,
   storageParam: 'memory' | 'opfs',
   docId: string,
+  opfsWriteMode: RpcOpfsWriteMode = 'default',
 ): Promise<RpcInitResult> {
   const requestedFilename = storageParam === 'opfs' ? (filename ?? '/treecrdt.db') : ':memory:';
   if (session.storedConfig && session.initResult) {
@@ -126,6 +129,7 @@ async function init(
       cfg.baseUrl !== baseUrl ||
       cfg.requestedFilename !== requestedFilename ||
       cfg.requestedStorage !== storageParam ||
+      cfg.opfsWriteMode !== opfsWriteMode ||
       cfg.docId !== docId
     ) {
       throw new Error('shared worker already initialized with a different TreeCRDT database');
@@ -139,11 +143,18 @@ async function init(
     storage: storageParam,
     docId,
     requireOpfs: false,
+    opfsWriteMode,
     opfsVfs: storageParam === 'opfs' ? 'any-context' : undefined,
     onMaterialized: (event) => broadcastMaterialized(event),
   });
   session.applyOpened(opened);
-  session.storedConfig = { baseUrl, requestedFilename, requestedStorage: storageParam, docId };
+  session.storedConfig = {
+    baseUrl,
+    requestedFilename,
+    requestedStorage: storageParam,
+    opfsWriteMode,
+    docId,
+  };
   session.initResult = openedToRpcInitResult(opened);
   return session.initResult;
 }

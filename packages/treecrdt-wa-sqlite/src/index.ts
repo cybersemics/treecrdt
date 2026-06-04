@@ -2,6 +2,7 @@ export type {
   ClientMode,
   ClientOptions,
   Database,
+  OpfsWriteMode,
   RuntimeMode,
   StorageMode,
   TreecrdtAssets,
@@ -21,4 +22,5 @@ export {
 
 export { CLIENT_CLOSED_ERROR, createTreecrdtClient } from './client.js';
 
+export { initializeTreecrdtExtension } from './extension.js';
 export { createWaSqliteApi } from './adapter.js';

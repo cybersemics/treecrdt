@@ -18,9 +18,20 @@ export type Database = {
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
+export type OpfsWriteMode = 'default' | 'single-owner-wal';
 export type TreecrdtStorage =
   | { type: 'memory' }
-  | { type: 'opfs'; filename?: string; fallback?: 'throw' | 'memory' }
+  | {
+      type: 'opfs';
+      filename?: string;
+      fallback?: 'throw' | 'memory';
+      /**
+       * `single-owner-wal` enables SQLite WAL with exclusive locking. Use it only
+       * when the application guarantees one active TreeCRDT client owns the OPFS
+       * database file.
+       */
+      writeMode?: OpfsWriteMode;
+    }
   | { type: 'auto'; filename?: string; fallback?: 'memory' | 'throw' };
 export type TreecrdtRuntime =
   | { type: 'auto' }
@@ -51,6 +62,7 @@ export type NormalizedStorageOptions = {
   filename?: string;
   requireOpfs: boolean;
   fallback: 'memory' | 'throw';
+  opfsWriteMode: OpfsWriteMode;
 };
 
 export type NormalizedRuntimeOptions = TreecrdtRuntime;
