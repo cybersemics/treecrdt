@@ -50,11 +50,13 @@ export type RpcSchema = {
 export type RpcMethod = keyof RpcSchema;
 export type RpcParams<M extends RpcMethod> = RpcSchema[M]['params'];
 export type RpcResult<M extends RpcMethod> = RpcSchema[M]['result'];
+export type RpcPriority = 'foreground' | 'background';
 
 export type RpcRequest<M extends RpcMethod = RpcMethod> = {
   id: number;
   method: M;
   params: RpcParams<M>;
+  priority?: RpcPriority;
 };
 
 export type RpcResponse<M extends RpcMethod = RpcMethod> =

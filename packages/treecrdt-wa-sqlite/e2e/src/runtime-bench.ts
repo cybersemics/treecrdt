@@ -214,7 +214,7 @@ export async function runRuntimeMixedWriteBench(
 
         const batchStart = performance.now();
         try {
-          await client.ops.appendMany(batch);
+          await client.ops.appendMany(batch, { priority: 'background' });
         } catch (error) {
           throw new Error(`runtime mixed benchmark remote ingest failed: ${errorMessage(error)}`);
         }
@@ -244,7 +244,7 @@ export async function runRuntimeMixedWriteBench(
 
           const batchStart = performance.now();
           try {
-            await client.ops.appendMany(ops);
+            await client.ops.appendMany(ops, { priority: 'background' });
           } catch (error) {
             remoteApplied.reject(error);
             throw error;

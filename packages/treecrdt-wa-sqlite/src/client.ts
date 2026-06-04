@@ -52,6 +52,7 @@ import type {
   NormalizedRuntimeOptions,
   NormalizedStorageOptions,
   RpcCall,
+  RpcCallOptions,
   RuntimeMode,
   SharedWorkerFactory,
   StorageMode,
@@ -63,6 +64,88 @@ import type {
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
 // Keep long browser appendMany calls from monopolizing the worker queue.
 const APPEND_MANY_RPC_CHUNK_SIZE = 2500;
+
+type ScheduledRpcJob = {
+  priority: 'foreground' | 'normal' | 'background';
+  run: () => Promise<any>;
+  resolve: (value: any) => void;
+  reject: (reason: unknown) => void;
+};
+
+function rpcPriority(options?: RpcCallOptions): ScheduledRpcJob['priority'] {
+  return options?.priority ?? 'normal';
+}
+
+function rpcRequest<M extends RpcMethod>(
+  id: number,
+  method: M,
+  params: RpcParams<M>,
+  options?: RpcCallOptions,
+): RpcRequest<M> {
+  return options?.priority
+    ? { id, method, params, priority: options.priority }
+    : { id, method, params };
+}
+
+function createPrioritizedRpcCall(runRaw: RpcCall): RpcCall {
+  const foregroundQueue: ScheduledRpcJob[] = [];
+  const normalQueue: ScheduledRpcJob[] = [];
+  const backgroundQueue: ScheduledRpcJob[] = [];
+  let running = false;
+  let waitingForBackgroundContinuation = false;
+  let normalDrainScheduled = false;
+
+  const scheduleNormalDrain = () => {
+    if (normalDrainScheduled) return;
+    normalDrainScheduled = true;
+    setTimeout(() => {
+      normalDrainScheduled = false;
+      waitingForBackgroundContinuation = false;
+      drain();
+    }, 0);
+  };
+
+  const drain = () => {
+    if (running) return;
+    const job = foregroundQueue.shift() ?? backgroundQueue.shift();
+    // After a background chunk, give the producer one task to enqueue the next chunk before
+    // normal writes run. Foreground reads still bypass immediately.
+    if (!job && waitingForBackgroundContinuation && normalQueue.length > 0) {
+      scheduleNormalDrain();
+      return;
+    }
+    const nextJob = job ?? normalQueue.shift();
+    if (!nextJob) return;
+
+    running = true;
+    nextJob
+      .run()
+      .then(nextJob.resolve, nextJob.reject)
+      .finally(() => {
+        if (nextJob.priority === 'background') waitingForBackgroundContinuation = true;
+        running = false;
+        drain();
+      });
+  };
+
+  return <M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+    options?: RpcCallOptions,
+  ): Promise<RpcResult<M>> =>
+    new Promise<RpcResult<M>>((resolve, reject) => {
+      const job: ScheduledRpcJob = {
+        priority: rpcPriority(options),
+        run: () => runRaw(method, params, options),
+        resolve,
+        reject,
+      };
+      if (job.priority === 'background') backgroundQueue.push(job);
+      else if (job.priority === 'normal') normalQueue.push(job);
+      else foregroundQueue.push(job);
+      drain();
+    });
+}
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
   const raw = opts.storage ?? { type: 'auto' };
@@ -287,29 +370,22 @@ async function createWorkerClient(opts: {
   >();
   let terminalError: Error | null = null;
   let closed = false;
-  let callQueue: Promise<void> = Promise.resolve();
 
   const closedError = new Error(CLIENT_CLOSED_ERROR);
-  const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
-    promise.then(
-      () => undefined,
-      () => undefined,
-    );
-
-  const callRaw = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+  const callRaw = <M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+    options?: RpcCallOptions,
+  ): Promise<RpcResult<M>> => {
     if (closed) return Promise.reject(closedError);
     const id = nextId++;
     if (terminalError) return Promise.reject(terminalError);
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({ id, method, params } satisfies RpcRequest<M>);
+      worker.postMessage(rpcRequest(id, method, params, options));
     });
   };
-  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
-    const run = callQueue.then(() => callRaw(method, params));
-    callQueue = settleQueue(run);
-    return run;
-  };
+  const call = createPrioritizedRpcCall(callRaw);
 
   const onMessage = (ev: MessageEvent<RpcResponse | RpcPushMessage>) => {
     const data = ev.data;
@@ -425,29 +501,22 @@ async function createSharedWorkerClient(opts: {
   >();
   let terminalError: Error | null = null;
   let closed = false;
-  let callQueue: Promise<void> = Promise.resolve();
 
   const closedError = new Error(CLIENT_CLOSED_ERROR);
-  const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
-    promise.then(
-      () => undefined,
-      () => undefined,
-    );
-
-  const callRaw = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+  const callRaw = <M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+    options?: RpcCallOptions,
+  ): Promise<RpcResult<M>> => {
     if (closed) return Promise.reject(closedError);
     const id = nextId++;
     if (terminalError) return Promise.reject(terminalError);
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      port.postMessage({ id, method, params } satisfies RpcRequest<M>);
+      port.postMessage(rpcRequest(id, method, params, options));
     });
   };
-  const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
-    const run = callQueue.then(() => callRaw(method, params));
-    callQueue = settleQueue(run);
-    return run;
-  };
+  const call = createPrioritizedRpcCall(callRaw);
   const materialized = createClientMaterializationDispatcher({
     broadcast: (event) => {
       if (closed || terminalError) return;
@@ -698,7 +767,7 @@ async function createDirectClient(opts: {
       throw wrapError(method, err);
     }
   };
-  const call: RpcCall = (method, params) => {
+  const call: RpcCall = (method, params, _options) => {
     const run = callQueue.then(() => runDirectCall(method, params));
     callQueue = settleQueue(run);
     return run;
@@ -760,18 +829,22 @@ function makeTreecrdtClientFromCall(opts: {
     localWriters.set(key, next);
     return next;
   };
+  const foregroundCallOptions = { priority: 'foreground' } satisfies RpcCallOptions;
 
   const opsSinceImpl = async (lamport: number, root?: string) => {
-    const rows = await call('opsSince', [lamport, root]);
+    const rows = await call('opsSince', [lamport, root], foregroundCallOptions);
     return decodeSqliteOps(rows);
   };
-  const opRefsAllImpl = async () => decodeSqliteOpRefs(await call('opRefsAll', []));
+  const opRefsAllImpl = async () =>
+    decodeSqliteOpRefs(await call('opRefsAll', [], foregroundCallOptions));
   const opRefsChildrenImpl = async (parent: string) =>
-    decodeSqliteOpRefs(await call('opRefsChildren', [parent]));
+    decodeSqliteOpRefs(await call('opRefsChildren', [parent], foregroundCallOptions));
   const opsByOpRefsImpl = async (opRefs: Uint8Array[]) =>
-    decodeSqliteOps(await call('opsByOpRefs', [opRefs.map((r) => Array.from(r))]));
+    decodeSqliteOps(
+      await call('opsByOpRefs', [opRefs.map((r) => Array.from(r))], foregroundCallOptions),
+    );
   const treeChildrenImpl = async (parent: string) =>
-    decodeSqliteNodeIds(await call('treeChildren', [parent]));
+    decodeSqliteNodeIds(await call('treeChildren', [parent], foregroundCallOptions));
   const treeChildrenPageImpl = async (
     parent: string,
     cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
@@ -780,26 +853,34 @@ function makeTreecrdtClientFromCall(opts: {
     const rpcCursor = cursor
       ? { orderKey: Array.from(cursor.orderKey), node: Array.from(cursor.node) }
       : null;
-    return decodeSqliteTreeChildRows(await call('treeChildrenPage', [parent, rpcCursor, limit]));
+    return decodeSqliteTreeChildRows(
+      await call('treeChildrenPage', [parent, rpcCursor, limit], foregroundCallOptions),
+    );
   };
-  const treeDumpImpl = async () => decodeSqliteTreeRows(await call('treeDump', []));
-  const treeNodeCountImpl = async () => Number(await call('treeNodeCount', []));
+  const treeDumpImpl = async () =>
+    decodeSqliteTreeRows(await call('treeDump', [], foregroundCallOptions));
+  const treeNodeCountImpl = async () =>
+    Number(await call('treeNodeCount', [], foregroundCallOptions));
   const treeParentImpl = async (node: string) => {
-    const result = await call('treeParent', [node]);
+    const result = await call('treeParent', [node], foregroundCallOptions);
     if (result === null) return null;
     return nodeIdFromBytes16(toRpcBytes(result));
   };
-  const treeExistsImpl = async (node: string) => Boolean(await call('treeExists', [node]));
+  const treeExistsImpl = async (node: string) =>
+    Boolean(await call('treeExists', [node], foregroundCallOptions));
   const treeGetPayloadImpl = async (node: string) => {
-    const result = await call('treePayload', [node]);
+    const result = await call('treePayload', [node], foregroundCallOptions);
     return result === null ? null : toRpcBytes(result);
   };
-  const headLamportImpl = async () => Number(await call('headLamport', []));
+  const headLamportImpl = async () => Number(await call('headLamport', [], foregroundCallOptions));
   const replicaMaxCounterImpl = async (replica: Operation['meta']['id']['replica']) =>
-    Number(await call('replicaMaxCounter', [Array.from(encodeReplica(replica))]));
+    Number(
+      await call('replicaMaxCounter', [Array.from(encodeReplica(replica))], foregroundCallOptions),
+    );
   const appendManyImpl = async (operations: Operation[], writeOpts?: WriteOptions) => {
+    const callOptions = writeOpts?.priority ? { priority: writeOpts.priority } : undefined;
     if (operations.length <= APPEND_MANY_RPC_CHUNK_SIZE) {
-      const outcome = await call('appendMany', [operations]);
+      const outcome = await call('appendMany', [operations], callOptions);
       materialized.emitOutcome(outcome, writeOpts?.writeId);
       return;
     }
@@ -807,7 +888,11 @@ function makeTreecrdtClientFromCall(opts: {
     const outcomes: MaterializationOutcome[] = [];
     for (let start = 0; start < operations.length; start += APPEND_MANY_RPC_CHUNK_SIZE) {
       outcomes.push(
-        await call('appendMany', [operations.slice(start, start + APPEND_MANY_RPC_CHUNK_SIZE)]),
+        await call(
+          'appendMany',
+          [operations.slice(start, start + APPEND_MANY_RPC_CHUNK_SIZE)],
+          callOptions,
+        ),
       );
     }
     materialized.emitOutcome(mergeMaterializationOutcomes(outcomes), writeOpts?.writeId);
@@ -882,7 +967,8 @@ function makeTreecrdtClientFromCall(opts: {
     runner,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
-        const outcome = await call('append', [op]);
+        const callOptions = writeOpts?.priority ? { priority: writeOpts.priority } : undefined;
+        const outcome = await call('append', [op], callOptions);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       appendMany: appendManyImpl,

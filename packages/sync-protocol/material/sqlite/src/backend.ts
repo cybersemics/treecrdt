@@ -1,5 +1,6 @@
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex, hexToBytes } from '@treecrdt/interface/ids';
+import type { WriteOptions } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -18,7 +19,7 @@ export type TreecrdtSyncBackendClient = {
   ops: {
     all?: () => Promise<Operation[]>;
     get: (opRefs: OpRef[]) => Promise<Operation[]>;
-    appendMany: (ops: Operation[]) => Promise<unknown>;
+    appendMany: (ops: Operation[], opts?: WriteOptions) => Promise<unknown>;
   };
 };
 
@@ -169,7 +170,7 @@ export function createTreecrdtSyncBackendFromClient(
 
     applyOps: async (ops) => {
       if (ops.length === 0) return;
-      await client.ops.appendMany(ops);
+      await client.ops.appendMany(ops, { priority: 'background' });
     },
 
     ...(pending
