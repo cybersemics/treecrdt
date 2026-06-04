@@ -1,14 +1,25 @@
 import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite';
 import { makeOp, nodeIdFromInt, type BenchmarkResult } from '@treecrdt/benchmark';
 import type { Operation } from '@treecrdt/interface';
+import { bytesToHex } from '@treecrdt/interface/ids';
+import { SyncPeer, type SyncBackend } from '@treecrdt/sync-protocol';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+import {
+  createInMemoryDuplex,
+  wrapDuplexTransportWithCodec,
+} from '@treecrdt/sync-protocol/transport';
 import { replicaFromLabel } from './op-helpers.js';
 
 type RuntimeChoice = 'direct' | 'dedicated-worker' | 'shared-worker';
 type StorageChoice = 'memory' | 'opfs';
+type RemoteIngestChoice = 'append-many' | 'sync-peer';
+const READ_PAGE_LIMIT = 50;
+const READ_KIND = 'childrenPage(root, first 50)';
 
 type RuntimeMixedWriteBenchOptions = {
   runtime: RuntimeChoice;
   storage?: StorageChoice;
+  remoteIngest?: RemoteIngestChoice;
   docId?: string;
   filename?: string;
   prefillOps?: number;
@@ -25,6 +36,7 @@ type RuntimeMixedWriteBenchResult = BenchmarkResult & {
   extra: {
     runtime: RuntimeChoice;
     storage: StorageChoice;
+    remoteIngest: RemoteIngestChoice;
     prefillOps: number;
     remoteOps: number;
     remoteBatchSize: number;
@@ -41,11 +53,14 @@ type RuntimeMixedWriteBenchResult = BenchmarkResult & {
     localWriteP95Ms: number;
     localWriteMaxMs: number;
     readSamples: number;
+    readKind: typeof READ_KIND;
+    readPageLimit: number;
     readDurationsMs: number[];
     readMinMs: number;
     readP50Ms: number;
     readP95Ms: number;
     readMaxMs: number;
+    interBatchReadMs: number | null;
     localWriteIntervalMs: number;
     readIntervalMs: number;
     yieldBetweenRemoteBatchesMs: number;
@@ -96,6 +111,16 @@ function summarizeDurations(durationsMs: number[]) {
   };
 }
 
+function deferredPromise<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeInsertOps(opts: {
   replica: Uint8Array;
   count: number;
@@ -122,6 +147,7 @@ export async function runRuntimeMixedWriteBench(
 ): Promise<RuntimeMixedWriteBenchResult> {
   const runtime = opts.runtime;
   const storage = opts.storage ?? 'opfs';
+  const remoteIngest = opts.remoteIngest ?? 'sync-peer';
   const prefillOps = opts.prefillOps ?? 0;
   const remoteOps = opts.remoteOps ?? 2_000;
   const remoteBatchSize = opts.remoteBatchSize ?? 500;
@@ -164,10 +190,15 @@ export async function runRuntimeMixedWriteBench(
     const remoteBatchDurationsMs: number[] = [];
     const localWriteDurationsMs: number[] = [];
     const readDurationsMs: number[] = [];
+    let interBatchReadMs: number | null = null;
+    let interBatchReadDone: Promise<void> | null = null;
     let finalChildCount = 0;
     const start = performance.now();
+    const runMeasuredRead = async () => {
+      await client.tree.childrenPage(rootNode(), null, READ_PAGE_LIMIT);
+    };
 
-    const runRemoteIngest = async () => {
+    const runAppendManyRemoteIngest = async () => {
       for (let batchIndex = 0; batchIndex < remoteBatchCount; batchIndex += 1) {
         const batchStartCounter = batchIndex * remoteBatchSize + 1;
         const remaining = remoteOps - batchIndex * remoteBatchSize;
@@ -195,6 +226,90 @@ export async function runRuntimeMixedWriteBench(
       }
     };
 
+    const runSyncPeerRemoteIngest = async () => {
+      if (remoteOps === 0) return;
+
+      const remoteApplied = deferredPromise();
+      let appliedRemoteOps = 0;
+      const receiverBackend: SyncBackend<Operation> = {
+        docId,
+        maxLamport: async () => BigInt(await client.meta.headLamport()),
+        listOpRefs: async (filter) => {
+          if ('all' in filter) return client.opRefs.all();
+          return client.opRefs.children(bytesToHex(filter.children.parent));
+        },
+        getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
+        applyOps: async (ops) => {
+          if (ops.length === 0) return;
+
+          const batchStart = performance.now();
+          try {
+            await client.ops.appendMany(ops);
+          } catch (error) {
+            remoteApplied.reject(error);
+            throw error;
+          }
+
+          remoteBatchDurationsMs.push(performance.now() - batchStart);
+          const nextAppliedRemoteOps = appliedRemoteOps + ops.length;
+          if (appliedRemoteOps === 0 && nextAppliedRemoteOps < remoteOps) {
+            interBatchReadDone = new Promise<void>((resolve, reject) => {
+              setTimeout(() => {
+                const readStart = performance.now();
+                runMeasuredRead().then(() => {
+                  interBatchReadMs = performance.now() - readStart;
+                  resolve();
+                }, reject);
+              }, 0);
+            });
+          }
+          appliedRemoteOps = nextAppliedRemoteOps;
+          if (appliedRemoteOps >= remoteOps) remoteApplied.resolve();
+        },
+      };
+      const senderBackend: SyncBackend<Operation> = {
+        docId,
+        maxLamport: async () => 0n,
+        listOpRefs: async () => [],
+        getOpsByOpRefs: async () => [],
+        applyOps: async () => {},
+      };
+      const [wireA, wireB] = createInMemoryDuplex<Uint8Array>();
+      const transportA = wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
+      const transportB = wrapDuplexTransportWithCodec(wireB, treecrdtSyncV0ProtobufCodec);
+      const senderPeer = new SyncPeer(senderBackend, { maxOpsPerBatch: remoteBatchSize });
+      const receiverPeer = new SyncPeer(receiverBackend, { maxOpsPerBatch: remoteBatchSize });
+      const detachSender = senderPeer.attach(transportA);
+      const detachReceiver = receiverPeer.attach(transportB);
+
+      try {
+        const ops = makeInsertOps({
+          replica: remoteReplica,
+          count: remoteOps,
+          startCounter: 1,
+          startLamport: prefillOps + 1,
+          startNodeInt: 100_000,
+          startOrderOffset: 100_000,
+        });
+        await senderPeer.pushOps(transportA, ops, {
+          filterId: `runtime-sync-peer-${crypto.randomUUID()}`,
+          maxOpsPerBatch: remoteBatchSize,
+        });
+        await remoteApplied.promise;
+        if (interBatchReadDone) await interBatchReadDone;
+      } catch (error) {
+        throw new Error(
+          `runtime mixed benchmark remote sync ingest failed: ${errorMessage(error)}`,
+        );
+      } finally {
+        detachSender();
+        detachReceiver();
+      }
+    };
+
+    const runRemoteIngest =
+      remoteIngest === 'sync-peer' ? runSyncPeerRemoteIngest : runAppendManyRemoteIngest;
+
     const runLocalWrites = async () => {
       for (let i = 0; i < localWrites; i += 1) {
         if (i > 0 && localWriteIntervalMs > 0) await sleep(localWriteIntervalMs);
@@ -219,7 +334,7 @@ export async function runRuntimeMixedWriteBench(
         if (i > 0 && readIntervalMs > 0) await sleep(readIntervalMs);
         const readStart = performance.now();
         try {
-          finalChildCount = (await client.tree.children(rootNode())).length;
+          await runMeasuredRead();
         } catch (error) {
           throw new Error(`runtime mixed benchmark read sample failed: ${errorMessage(error)}`);
         }
@@ -242,13 +357,14 @@ export async function runRuntimeMixedWriteBench(
     const readSummary = summarizeDurations(readDurationsMs);
 
     return {
-      name: `runtime-mixed-sync-ingest-local-writes-${storage}-${runtime}-prefill-${prefillOps}`,
+      name: `runtime-mixed-${remoteIngest}-ingest-local-writes-${storage}-${runtime}-prefill-${prefillOps}`,
       totalOps,
       durationMs,
       opsPerSec: durationMs > 0 ? (totalOps / durationMs) * 1000 : Infinity,
       extra: {
         runtime,
         storage,
+        remoteIngest,
         prefillOps,
         remoteOps,
         remoteBatchSize,
@@ -265,11 +381,14 @@ export async function runRuntimeMixedWriteBench(
         localWriteP95Ms: localWriteSummary.p95Ms,
         localWriteMaxMs: localWriteSummary.maxMs,
         readSamples,
+        readKind: READ_KIND,
+        readPageLimit: READ_PAGE_LIMIT,
         readDurationsMs,
         readMinMs: readSummary.minMs,
         readP50Ms: readSummary.p50Ms,
         readP95Ms: readSummary.p95Ms,
         readMaxMs: readSummary.maxMs,
+        interBatchReadMs,
         localWriteIntervalMs,
         readIntervalMs,
         yieldBetweenRemoteBatchesMs,

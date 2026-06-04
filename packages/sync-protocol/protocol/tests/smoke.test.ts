@@ -30,6 +30,16 @@ async function tick(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function deferredPromise<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function orderKeyFromPosition(position: number): Uint8Array {
   if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
   const n = position + 1;
@@ -441,6 +451,70 @@ test('syncOnce waits for responder to apply uploaded ops before resolving', asyn
   expect(b.hasOp(replicaHex.a, 1)).toBe(true);
   expect(b.hasOp(replicaHex.a, 2)).toBe(true);
   expect(b.hasOp(replicaHex.a, 3)).toBe(true);
+});
+
+test('incoming opsBatch queue yields to macrotasks between applies', async () => {
+  const docId = 'doc-sync-inbound-apply-yield';
+  const root = '0'.repeat(32);
+  const firstApplyCanFinish = deferredPromise();
+  let applyCalls = 0;
+  let macrotaskRan = false;
+  let secondApplyStartedAfterMacrotask = false;
+
+  class ProbeBackend extends MemoryBackend {
+    override async applyOps(ops: Operation[]): Promise<void> {
+      applyCalls += 1;
+      if (applyCalls === 1) {
+        await firstApplyCanFinish.promise;
+      } else if (applyCalls === 2) {
+        secondApplyStartedAfterMacrotask = macrotaskRan;
+      }
+      await super.applyOps(ops);
+    }
+  }
+
+  const a = new MemoryBackend(docId);
+  const b = new ProbeBackend(docId);
+  const ops = [1, 2, 3].map((counter, index) =>
+    makeOp(replicas.a, counter, counter, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(counter),
+      orderKey: orderKeyFromPosition(index),
+    }),
+  );
+
+  const [wa, wb] = createMacrotaskDuplex<Uint8Array>();
+  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
+  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  pa.attach(ta);
+  pb.attach(tb);
+
+  const pushDone = pa.pushOps(ta, ops, {
+    filterId: 'apply-yield-probe',
+    maxOpsPerBatch: 1,
+  });
+
+  await waitUntil(() => applyCalls === 1, {
+    message: 'expected first inbound apply to start',
+  });
+  await pushDone;
+
+  setImmediate(() => {
+    macrotaskRan = true;
+  });
+  firstApplyCanFinish.resolve();
+
+  await waitUntil(() => applyCalls >= 2, {
+    message: 'expected second inbound apply to start',
+  });
+  expect(secondApplyStartedAfterMacrotask).toBe(true);
+
+  await waitUntil(() => b.hasOp(replicaHex.a, 3), {
+    message: 'expected all pushed ops to apply',
+  });
 });
 
 test('pushOps uploads direct ops without reconcile roundtrips', async () => {
