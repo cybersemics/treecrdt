@@ -3,10 +3,10 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
-import { createWaSqliteApi } from '../dist/index.js';
+import { createWaSqliteApi, initializeTreecrdtExtension } from '../dist/index.js';
 import { makeDbAdapter } from '../dist/db.js';
 
-async function loadSqlite3(repoRoot: string): Promise<any> {
+async function loadSqlite3(repoRoot: string): Promise<{ module: any; sqlite3: any }> {
   const vendorPkgRoot = (() => {
     try {
       const require = createRequire(import.meta.url);
@@ -27,7 +27,7 @@ async function loadSqlite3(repoRoot: string): Promise<any> {
     wasmBinary,
     locateFile: (f: string) => (f.endsWith('.wasm') ? wasmPath : f),
   });
-  return SQLite.Factory(module);
+  return { module, sqlite3: SQLite.Factory(module) };
 }
 
 async function main() {
@@ -38,12 +38,13 @@ async function main() {
   const workloadDefs = buildWorkloads(opts.workloads, opts.sizes);
 
   // wa-sqlite is browser-first; in Node we only exercise the in-memory runtime.
-  const sqlite3 = await loadSqlite3(repoRoot);
+  const { module, sqlite3 } = await loadSqlite3(repoRoot);
   const docId = 'treecrdt-wa-sqlite-bench';
 
   // Probe extension registration once so benchmark timing isn't dominated by setup errors.
   const probeHandle = await sqlite3.open_v2(':memory:');
   try {
+    await initializeTreecrdtExtension(module, probeHandle);
     await sqlite3.exec(probeHandle, 'SELECT treecrdt_ops_since(0)');
   } catch (err) {
     const msg = sqlite3.errmsg ? sqlite3.errmsg(probeHandle) : String(err);
@@ -54,6 +55,7 @@ async function main() {
 
   const adapterFactory = async () => {
     const handle = await sqlite3.open_v2(':memory:');
+    await initializeTreecrdtExtension(module, handle);
     const db = makeDbAdapter(sqlite3, handle);
     const api = createWaSqliteApi(db);
     await api.setDocId(docId);

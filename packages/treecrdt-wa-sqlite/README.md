@@ -3,24 +3,60 @@
 Loader + thin helpers to use the TreeCRDT SQLite extension with wa-sqlite in browser/Node.
 
 ## Build wa-sqlite (extension baked in)
+
 The vendor package builds upstream wa-sqlite with TreeCRDT baked in via Makefile overrides.
+
 ```
 pnpm --filter @treecrdt/wa-sqlite-vendor build
 # builds packages/treecrdt-wa-sqlite-vendor/dist (example apps copy these into public/wa-sqlite/)
 ```
 
-## Use in the demo
-The demo imports the local wa-sqlite build and uses the auto-registered TreeCRDT extension:
-```ts
-import * as SQLite from "wa-sqlite";
-import sqliteWasm from "/wa-sqlite/wa-sqlite.wasm?url";
-import { createWaSqliteApi } from "@treecrdt/wa-sqlite";
+## Create a client
 
-const module = await SQLite.Factory({ wasm: sqliteWasm });
-const db = await module.open(":memory:");
-const api = createWaSqliteApi(db);
+Use `createTreecrdtClient` for browser and worker runtimes:
+
+```ts
+import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
+
+const client = await createTreecrdtClient({
+  storage: { type: 'memory' },
+});
 ```
+
+Low-level callers that open wa-sqlite directly should call
+`initializeTreecrdtExtension(module, handle)` before constructing an adapter with
+`createWaSqliteApi`.
+
 See `src/index.ts` and `src/ui/App.tsx` for helpers and a simple insert+move demo.
 
+## OPFS single-owner WAL mode
+
+`createTreecrdtClient` can opt in to SQLite WAL for OPFS storage:
+
+```ts
+const client = await createTreecrdtClient({
+  storage: {
+    type: 'opfs',
+    filename: '/treecrdt.db',
+    fallback: 'throw',
+    writeMode: 'single-owner-wal',
+  },
+  runtime: { type: 'dedicated-worker' },
+});
+```
+
+This mode runs `PRAGMA locking_mode=EXCLUSIVE` followed by `PRAGMA journal_mode=WAL`
+on wa-sqlite's single-instance `AccessHandlePoolVFS`, then verifies that SQLite
+reports `exclusive` and `wal`. It requires `runtime: { type: 'dedicated-worker' }`
+or `runtime: { type: 'auto' }`.
+
+Use it only when the application guarantees one active TreeCRDT client owns the
+OPFS database file, for example a single-WebView Capacitor app. It is not safe as
+a general browser multi-tab default because another independent client or worker
+can block on the exclusive database owner. `AccessHandlePoolVFS` is also not
+filesystem-transparent, so apps that need direct OPFS import/export should use
+the default OPFS mode instead.
+
 ## Playwright
+
 `pnpm --filter @treecrdt/wa-sqlite test:e2e` runs Vite dev + Playwright and asserts the demo can append/fetch ops via the extension.

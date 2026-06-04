@@ -34,6 +34,12 @@ const vendorDistRoot = (() => {
 
 const sources = [
   {
+    src: path.join(vendorRoot, 'src/examples/AccessHandlePoolVFS.js'),
+    name: 'AccessHandlePoolVFS.js',
+    transform: (content) =>
+      content.replace('../FacadeVFS.js', './FacadeVFS.js').replace('../VFS.js', './VFS.js'),
+  },
+  {
     src: path.join(vendorRoot, 'src/examples/OPFSCoopSyncVFS.js'),
     name: 'OPFSCoopSyncVFS.js',
     transform: (content) =>
