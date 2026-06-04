@@ -5,6 +5,7 @@ import type { BenchmarkResult } from '@treecrdt/benchmark';
 
 type RuntimeChoice = 'direct' | 'dedicated-worker' | 'shared-worker';
 type StorageChoice = 'memory' | 'opfs';
+type RemoteIngestChoice = 'append-many' | 'sync-peer';
 type RuntimeScenario = {
   id: string;
   runtime: RuntimeChoice;
@@ -20,6 +21,7 @@ const defaultScenarios: RuntimeScenario[] = [
 
 const remoteOps = Number(process.env.TREECRDT_RUNTIME_BENCH_REMOTE_OPS ?? 2_000);
 const remoteBatchSize = Number(process.env.TREECRDT_RUNTIME_BENCH_REMOTE_BATCH_SIZE ?? 500);
+const remoteIngest = envRemoteIngest('TREECRDT_RUNTIME_BENCH_REMOTE_INGEST', 'sync-peer');
 const localWrites = Number(process.env.TREECRDT_RUNTIME_BENCH_LOCAL_WRITES ?? 20);
 const readSamples = Number(process.env.TREECRDT_RUNTIME_BENCH_READ_SAMPLES ?? 20);
 const readIntervalMs = Number(process.env.TREECRDT_RUNTIME_BENCH_READ_INTERVAL_MS ?? 0);
@@ -38,6 +40,12 @@ function envNumberList(name: string, fallback: number[]): number[] {
     .map((part) => Number(part.trim()))
     .filter((value) => Number.isFinite(value));
   return values.length > 0 ? values : fallback;
+}
+
+function envRemoteIngest(name: string, fallback: RemoteIngestChoice): RemoteIngestChoice {
+  const raw = process.env[name];
+  if (raw === 'append-many' || raw === 'sync-peer') return raw;
+  return fallback;
 }
 
 function envScenarioList(name: string, fallback: RuntimeScenario[]): RuntimeScenario[] {
@@ -83,6 +91,7 @@ test('wa-sqlite runtime/storage mixed sync-ingest/local-write benchmarks', async
           storage: scenario.storage,
           docId: `runtime-mixed-${scenario.id}-${prefillOps}-${suffix}`,
           filename: `/runtime-mixed-${scenario.id}-${prefillOps}-${suffix}.db`,
+          remoteIngest,
           prefillOps,
           remoteOps,
           remoteBatchSize,
@@ -97,7 +106,10 @@ test('wa-sqlite runtime/storage mixed sync-ingest/local-write benchmarks', async
       expect(result.totalOps).toBe(remoteOps + localWrites);
       expect(result.extra.runtime).toBe(scenario.runtime);
       expect(result.extra.storage).toBe(scenario.storage);
+      expect(result.extra.remoteIngest).toBe(remoteIngest);
       expect(result.extra.finalChildCount).toBe(prefillOps + remoteOps + localWrites);
+      expect(result.extra.readKind).toBe('childrenPage(root, first 50)');
+      expect(result.extra.readPageLimit).toBe(50);
       expect(result.extra.remoteBatchDurationsMs.length).toBe(
         Math.ceil(remoteOps / remoteBatchSize),
       );
