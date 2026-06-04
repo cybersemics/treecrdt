@@ -7,6 +7,7 @@ import './src/closed-client';
 import './src/drop-opfs';
 import './src/lifecycle';
 import './src/responsiveness';
+import './src/runtime-bench';
 import './src/sync';
 
 const container = document.getElementById('root');
