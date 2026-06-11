@@ -3,7 +3,7 @@ import {
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
-import { createTreecrdtClient } from '../dist/index.js';
+import { createTreecrdtClient } from '../dist/index.node.js';
 
 const root = '0'.repeat(32);
 const replica = Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? 1 : 0));

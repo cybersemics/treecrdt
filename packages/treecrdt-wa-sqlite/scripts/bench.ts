@@ -3,7 +3,7 @@ import { buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import { createWaSqliteApi } from '../dist/index.js';
 import { makeDbAdapter } from '../dist/db.js';
-import { loadWaSqlite } from '../dist/load-wa-sqlite.js';
+import { loadWaSqliteNode } from '../dist/node/load-wa-sqlite.js';
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -13,7 +13,7 @@ async function main() {
   const workloadDefs = buildWorkloads(opts.workloads, opts.sizes);
 
   // wa-sqlite is browser-first; in Node we only exercise the in-memory runtime.
-  const { sqlite3 } = await loadWaSqlite();
+  const { sqlite3 } = await loadWaSqliteNode();
   const docId = 'treecrdt-wa-sqlite-bench';
 
   // Probe extension registration once so benchmark timing isn't dominated by setup errors.

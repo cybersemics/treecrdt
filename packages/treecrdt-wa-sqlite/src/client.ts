@@ -39,8 +39,7 @@ import {
   type RpcResponse,
   type RpcResult,
 } from './rpc.js';
-import { openTreecrdtDb } from './open.js';
-import { isNode } from './platform.js';
+import { openTreecrdtDb, type OpenTreecrdtDbOptions, type OpenTreecrdtDbResult } from './open.js';
 import type {
   ClientMaterializationDispatcher,
   ClientMaterializationDispatcherOptions,
@@ -119,20 +118,6 @@ function defaultBrowserAssetsBaseUrl(): string {
   return '/';
 }
 
-function assertNodeClientOptions(
-  storage: NormalizedStorageOptions,
-  runtime: NormalizedRuntimeOptions,
-): void {
-  if (storage.type === 'opfs') {
-    throw new Error(
-      'OPFS is not supported in Node; use storage: { type: "memory" } or @treecrdt/sqlite-node for file persistence',
-    );
-  }
-  if (runtime.type === 'dedicated-worker' || runtime.type === 'shared-worker') {
-    throw new Error('Worker runtimes are browser-only');
-  }
-}
-
 function assertBrowserOpfsRequirements(
   storage: NormalizedStorageOptions,
   support: ReturnType<typeof detectOpfsSupport>,
@@ -155,14 +140,6 @@ function assertBrowserOpfsRequirements(
   }
 }
 
-function resolveNodeEnvironment(opts: ClientOptions): ResolvedClientEnvironment {
-  return {
-    baseUrl: normalizeAssetsBaseUrl(opts.assets?.baseUrl),
-    shouldUseOpfs: false,
-    resolvedRuntime: 'direct',
-  };
-}
-
 function resolveBrowserEnvironment(
   opts: ClientOptions,
   storage: NormalizedStorageOptions,
@@ -179,23 +156,11 @@ function resolveBrowserEnvironment(
   return { baseUrl, shouldUseOpfs, resolvedRuntime };
 }
 
-function resolveClientEnvironment(
-  opts: ClientOptions,
-  storage: NormalizedStorageOptions,
-  runtime: NormalizedRuntimeOptions,
-): ResolvedClientEnvironment {
-  if (isNode()) {
-    assertNodeClientOptions(storage, runtime);
-    return resolveNodeEnvironment(opts);
-  }
-  return resolveBrowserEnvironment(opts, storage, runtime);
-}
-
 export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<TreecrdtClient> {
   const storage = normalizeStorageOptions(opts);
   const runtime = normalizeRuntimeOptions(opts);
   const docId = opts.docId ?? 'treecrdt';
-  const { baseUrl, shouldUseOpfs, resolvedRuntime } = resolveClientEnvironment(
+  const { baseUrl, shouldUseOpfs, resolvedRuntime } = resolveBrowserEnvironment(
     opts,
     storage,
     runtime,
@@ -627,27 +592,39 @@ async function createDefaultSharedWorker(name: string): Promise<SharedWorker> {
 
 // --- Direct client (main-thread, used for memory or opt-in opfs)
 
-async function createDirectClient(opts: {
+export type DirectClientOptions = {
   baseUrl?: string;
   filename?: string;
   storage: StorageMode;
   docId: string;
   requireOpfs?: boolean;
-}): Promise<TreecrdtClient> {
+};
+
+export type OpenDbFn = (opts: OpenTreecrdtDbOptions) => Promise<OpenTreecrdtDbResult>;
+
+async function createDirectClient(opts: DirectClientOptions): Promise<TreecrdtClient> {
+  return buildDirectClient(opts, openTreecrdtDb, {
+    opfsVfs: opts.storage === 'opfs' ? 'any-context' : undefined,
+  });
+}
+
+export async function buildDirectClient(
+  opts: DirectClientOptions,
+  openDb: OpenDbFn,
+  openOverrides: Partial<OpenTreecrdtDbOptions> = {},
+): Promise<TreecrdtClient> {
   const materialized = createClientMaterializationDispatcher();
   const { baseUrl, storage, requireOpfs } = opts;
-  const opened = await openTreecrdtDb({
+  const openOpts: OpenTreecrdtDbOptions = {
     baseUrl,
     filename: opts.filename,
     storage,
     docId: opts.docId,
     requireOpfs,
-    // The coop-sync OPFS VFS depends on createSyncAccessHandle, which is only
-    // available in workers. Direct browser clients run on the window thread, so
-    // OPFS needs the async any-context VFS.
-    opfsVfs: storage === 'opfs' ? 'any-context' : undefined,
     onMaterialized: materialized.emitEvent,
-  });
+    ...openOverrides,
+  };
+  const opened = await openDb(openOpts);
   const db = opened.db;
   const finalStorage: StorageMode = opened.storage;
   const filename = opened.filename;

@@ -2,12 +2,15 @@
   "name": "@treecrdt/wa-sqlite",
   "version": "0.2.0",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.browser.js",
+  "types": "dist/index.browser.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "browser": "./dist/index.browser.js",
+      "node": "./dist/index.node.js",
+      "import": "./dist/index.browser.js",
+      "types": "./dist/index.browser.d.ts",
+      "default": "./dist/index.browser.js"
     },
     "./opfs": {
       "import": "./dist/opfs.js",
