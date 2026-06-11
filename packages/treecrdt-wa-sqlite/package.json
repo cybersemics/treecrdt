@@ -33,17 +33,20 @@
     "prep:wa-sqlite-assets": "node ./scripts/copy-opfs-vfs.mjs --assets-only",
     "build:ts": "pnpm run prep:opfs:sources && tsc -p tsconfig.json",
     "build": "pnpm run build:ts && pnpm run prep:wa-sqlite-assets",
-    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
+    "test": "pnpm -C ../treecrdt-engine-conformance run build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
+    "@treecrdt/engine-conformance": "workspace:*",
     "@treecrdt/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
   },
   "license": "MIT",
   "repository": {

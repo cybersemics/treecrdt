@@ -1,34 +1,9 @@
-import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import { createWaSqliteApi } from '../dist/index.js';
 import { makeDbAdapter } from '../dist/db.js';
-
-async function loadSqlite3(repoRoot: string): Promise<any> {
-  const vendorPkgRoot = (() => {
-    try {
-      const require = createRequire(import.meta.url);
-      const pkgJson = require.resolve('@treecrdt/wa-sqlite-vendor/package.json');
-      return path.dirname(pkgJson);
-    } catch {
-      return path.join(repoRoot, 'packages/treecrdt-wa-sqlite-vendor');
-    }
-  })();
-  const vendorWaSqliteRoot = path.join(vendorPkgRoot, 'wa-sqlite');
-  const vendorDistRoot = path.join(vendorPkgRoot, 'dist');
-
-  const wasmPath = path.join(vendorDistRoot, 'wa-sqlite-async.wasm');
-  const wasmBinary = fs.readFileSync(wasmPath);
-  const mod = await import(path.join(vendorDistRoot, 'wa-sqlite-async.mjs'));
-  const SQLite = await import(path.join(vendorWaSqliteRoot, 'src/sqlite-api.js'));
-  const module = await mod.default({
-    wasmBinary,
-    locateFile: (f: string) => (f.endsWith('.wasm') ? wasmPath : f),
-  });
-  return SQLite.Factory(module);
-}
+import { loadWaSqlite } from '../dist/load-wa-sqlite.js';
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -38,7 +13,7 @@ async function main() {
   const workloadDefs = buildWorkloads(opts.workloads, opts.sizes);
 
   // wa-sqlite is browser-first; in Node we only exercise the in-memory runtime.
-  const sqlite3 = await loadSqlite3(repoRoot);
+  const { sqlite3 } = await loadWaSqlite();
   const docId = 'treecrdt-wa-sqlite-bench';
 
   // Probe extension registration once so benchmark timing isn't dominated by setup errors.

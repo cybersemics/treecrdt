@@ -4,9 +4,11 @@ import type { Database } from './types.js';
 import { makeDbAdapter } from './db.js';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
+import { loadWaSqlite } from './load-wa-sqlite.js';
+import { isNode } from './platform.js';
 
 export type OpenTreecrdtDbOptions = {
-  baseUrl: string;
+  baseUrl?: string;
   filename?: string;
   storage: 'memory' | 'opfs';
   docId: string;
@@ -24,18 +26,17 @@ export type OpenTreecrdtDbResult = {
 };
 
 export async function openTreecrdtDb(opts: OpenTreecrdtDbOptions): Promise<OpenTreecrdtDbResult> {
-  const baseUrl = opts.baseUrl.endsWith('/') ? opts.baseUrl : `${opts.baseUrl}/`;
-  const sqliteModule = await import(/* @vite-ignore */ `${baseUrl}wa-sqlite/wa-sqlite-async.mjs`);
-  const sqliteApi = await import(/* @vite-ignore */ `${baseUrl}wa-sqlite/sqlite-api.js`);
-  const module = await sqliteModule.default({
-    locateFile: (file: string) =>
-      file.endsWith('.wasm') ? `${baseUrl}wa-sqlite/wa-sqlite-async.wasm` : file,
-  });
-  const sqlite3 = sqliteApi.Factory(module);
+  const { sqlite3, module } = await loadWaSqlite({ assetsDir: opts.baseUrl });
 
   let storage: 'memory' | 'opfs' = opts.storage === 'opfs' ? 'opfs' : 'memory';
   let opfsError: string | undefined;
-  if (storage === 'opfs') {
+
+  if (isNode()) {
+    if (opts.storage === 'opfs' && opts.requireOpfs) {
+      throw new Error('OPFS is not supported in Node');
+    }
+    storage = 'memory';
+  } else if (storage === 'opfs') {
     try {
       const vfs = await createOpfsVfs(module, { name: 'opfs', kind: opts.opfsVfs });
       sqlite3.vfs_register(vfs, true);

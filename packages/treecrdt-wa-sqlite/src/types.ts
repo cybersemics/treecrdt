@@ -28,6 +28,7 @@ export type TreecrdtRuntime =
   | { type: 'dedicated-worker'; workerUrl?: string | URL }
   | { type: 'shared-worker'; workerUrl?: string | URL; name?: string };
 export type TreecrdtAssets = {
+  /** Browser: public URL prefix for wa-sqlite assets. Node: optional filesystem directory. */
   baseUrl?: string;
 };
 
