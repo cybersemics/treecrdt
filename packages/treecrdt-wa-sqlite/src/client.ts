@@ -130,12 +130,7 @@ function assertBrowserOpfsRequirements(
   if (storage.type === 'auto' && !support.available && storage.fallback === 'throw') {
     throw unavailable();
   }
-  if (
-    shouldUseOpfs &&
-    resolvedRuntime === 'direct' &&
-    !support.available &&
-    storage.requireOpfs
-  ) {
+  if (shouldUseOpfs && resolvedRuntime === 'direct' && !support.available && storage.requireOpfs) {
     throw unavailable();
   }
 }
@@ -147,8 +142,7 @@ function resolveBrowserEnvironment(
 ): ResolvedClientEnvironment {
   const baseUrl = normalizeAssetsBaseUrl(opts.assets?.baseUrl ?? defaultBrowserAssetsBaseUrl());
   const support = detectOpfsSupport();
-  const shouldUseOpfs =
-    storage.type === 'opfs' || (storage.type === 'auto' && support.available);
+  const shouldUseOpfs = storage.type === 'opfs' || (storage.type === 'auto' && support.available);
   const resolvedRuntime = resolveRuntimeMode(runtime, shouldUseOpfs);
 
   assertBrowserOpfsRequirements(storage, support, shouldUseOpfs, resolvedRuntime);

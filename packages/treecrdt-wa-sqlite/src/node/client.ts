@@ -15,7 +15,9 @@ function normalizeStorageOptions(opts: ClientOptions) {
     );
   }
   if (raw.type !== 'memory' && raw.type !== 'auto') {
-    throw new Error('createTreecrdtClient on Node supports storage: { type: "memory" } or { type: "auto" }');
+    throw new Error(
+      'createTreecrdtClient on Node supports storage: { type: "memory" } or { type: "auto" }',
+    );
   }
 }
 

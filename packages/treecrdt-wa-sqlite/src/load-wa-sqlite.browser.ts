@@ -18,7 +18,9 @@ export async function loadWaSqliteBrowser(
 ): Promise<LoadWaSqliteResult> {
   const baseUrl = opts.assetsDir ?? defaultBrowserBaseUrl();
   const normalized = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  const sqliteModule = await import(/* @vite-ignore */ `${normalized}wa-sqlite/wa-sqlite-async.mjs`);
+  const sqliteModule = await import(
+    /* @vite-ignore */ `${normalized}wa-sqlite/wa-sqlite-async.mjs`
+  );
   const sqliteApi = await import(/* @vite-ignore */ `${normalized}wa-sqlite/sqlite-api.js`);
   const module = await sqliteModule.default({
     locateFile: (file: string) =>
