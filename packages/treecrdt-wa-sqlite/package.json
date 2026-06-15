@@ -37,7 +37,7 @@
     "build:ts": "pnpm run prep:opfs:sources && tsc -p tsconfig.json",
     "build": "pnpm run build:ts && pnpm run prep:wa-sqlite-assets",
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
-    "test": "pnpm -C ../treecrdt-engine-conformance run build && pnpm run build && vitest run"
+    "test": "pnpm --filter @treecrdt/engine-conformance^... run build && pnpm --filter @treecrdt/wa-sqlite-vendor run build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*"
