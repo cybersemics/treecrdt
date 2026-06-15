@@ -1,38 +1,36 @@
-import fs from "node:fs";
-import path from "node:path";
-import { dirnameFromImportMeta, repoRootFromImportMeta } from "../../../scripts/repo-root.mjs";
+import fs from 'node:fs';
+import path from 'node:path';
+import { dirnameFromImportMeta, repoRootFromImportMeta } from '../../../scripts/repo-root.mjs';
 
 const scriptDir = dirnameFromImportMeta(import.meta.url);
 const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
-const targetRelease = path.join(repoRoot, "target", "release", "deps");
+const targetRelease = path.join(repoRoot, 'target', 'release', 'deps');
 
 if (!fs.existsSync(targetRelease)) {
-  console.error("No target/release/deps directory. Run build:ext:native first.");
+  console.error('No target/release/deps directory. Run build:ext:native first.');
   process.exit(1);
 }
 
 const ext = (() => {
   switch (process.platform) {
-    case "darwin":
-      return ".dylib";
-    case "win32":
-      return ".dll";
+    case 'darwin':
+      return '.dylib';
+    case 'win32':
+      return '.dll';
     default:
-      return ".so";
+      return '.so';
   }
 })();
 
 const matches = fs
   .readdirSync(targetRelease)
   .filter(
-    (f) =>
-      f.includes("treecrdt_sqlite_ext") &&
-      (f.endsWith(ext) || f.endsWith(ext.toLowerCase()))
+    (f) => f.includes('treecrdt_sqlite_ext') && (f.endsWith(ext) || f.endsWith(ext.toLowerCase())),
   );
 
 if (matches.length === 0) {
   console.error(
-    `No built extension found in ${targetRelease}. Expected treecrdt_sqlite_ext*${ext}`
+    `No built extension found in ${targetRelease}. Expected treecrdt_sqlite_ext*${ext}`,
   );
   process.exit(1);
 }
@@ -46,24 +44,17 @@ const candidates = matches
   .sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
 
 if (candidates.length > 1) {
-  console.warn(
-    `Multiple built extensions found; using newest: ${candidates[0].file}`
-  );
+  console.warn(`Multiple built extensions found; using newest: ${candidates[0].file}`);
 }
 
 const src = candidates[0].fullPath;
-const destDir = path.resolve(scriptDir, "../native");
+const destDir = path.resolve(scriptDir, '../native');
 fs.mkdirSync(destDir, { recursive: true });
-const destBase = ext === ".dll" ? "treecrdt_sqlite_ext" : "libtreecrdt_sqlite_ext";
-const dest = path.join(destDir, `${destBase}${ext}`);
+const destBase = ext === '.dll' ? 'treecrdt_sqlite_ext' : 'libtreecrdt_sqlite_ext';
+const dest = path.join(destDir, `${destBase}-${process.platform}-${process.arch}${ext}`);
+const legacyDest = path.join(destDir, `${destBase}${ext}`);
 
-try {
-  if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
-  const rel = path.relative(destDir, src);
-  fs.symlinkSync(rel, dest, "file");
-  console.log(`Linked ${dest} -> ${src}`);
-} catch (err) {
-  console.warn(`Failed to create symlink, falling back to copy: ${err}`);
-  fs.copyFileSync(src, dest);
-  console.log(`Copied ${src} -> ${dest}`);
-}
+if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
+if (legacyDest !== dest && fs.existsSync(legacyDest)) fs.rmSync(legacyDest, { force: true });
+fs.copyFileSync(src, dest);
+console.log(`Copied ${src} -> ${dest}`);
