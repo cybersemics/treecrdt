@@ -6,15 +6,26 @@
   "types": "dist/index.browser.d.ts",
   "exports": {
     ".": {
-      "browser": "./dist/index.browser.js",
-      "node": "./dist/index.node.js",
-      "import": "./dist/index.browser.js",
+      "browser": {
+        "types": "./dist/index.browser.d.ts",
+        "import": "./dist/index.browser.js",
+        "default": "./dist/index.browser.js"
+      },
+      "node": {
+        "types": "./dist/index.node.d.ts",
+        "import": "./dist/index.node.js",
+        "default": "./dist/index.node.js"
+      },
       "types": "./dist/index.browser.d.ts",
+      "import": "./dist/index.browser.js",
       "default": "./dist/index.browser.js"
     },
     "./opfs": {
-      "import": "./dist/opfs.js",
-      "types": "./dist/opfs.d.ts"
+      "browser": {
+        "types": "./dist/opfs.d.ts",
+        "import": "./dist/opfs.js",
+        "default": "./dist/opfs.js"
+      }
     },
     "./worker": {
       "import": "./dist/worker.js",
