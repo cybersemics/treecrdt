@@ -6,6 +6,10 @@ export type OpfsSupport = {
   reason?: string;
 };
 
+function hasOpfsGetDirectory(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function';
+}
+
 /**
  * Feature check for OPFS + cross-origin isolation.
  * We require getDirectory + crossOriginIsolated. createSyncAccessHandle is only
@@ -16,7 +20,7 @@ export type OpfsSupport = {
 export function detectOpfsSupport(): OpfsSupport {
   const hasWindow = typeof window !== 'undefined';
   if (!hasWindow) return { available: false, reason: 'No window' };
-  const hasOpfs = typeof navigator?.storage?.getDirectory === 'function';
+  const hasOpfs = hasOpfsGetDirectory();
   const isolated =
     (window as typeof window & { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
   const ok = hasOpfs && isolated;
@@ -39,7 +43,7 @@ const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal'];
  * @param filename - Path used when opening (e.g. /treecrdt.db or /treecrdt-playground.db)
  */
 export async function clearOpfsStorage(filename: string): Promise<void> {
-  if (typeof navigator?.storage?.getDirectory !== 'function') return;
+  if (!hasOpfsGetDirectory()) return;
 
   const path = filename.startsWith('/') ? filename.slice(1) : filename;
   const parts = path.split('/').filter(Boolean);
@@ -78,7 +82,7 @@ export async function clearOpfsStorage(filename: string): Promise<void> {
  * @param filename - Path used when opening (e.g. /treecrdt.db or /drop-test-xxx.db)
  */
 export async function opfsStorageExists(filename: string): Promise<boolean> {
-  if (typeof navigator?.storage?.getDirectory !== 'function') return false;
+  if (!hasOpfsGetDirectory()) return false;
 
   const path = filename.startsWith('/') ? filename.slice(1) : filename;
   const parts = path.split('/').filter(Boolean);

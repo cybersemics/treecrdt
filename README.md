@@ -12,7 +12,7 @@ pnpm test
 
 ## Main Packages
 
-- `@treecrdt/wa-sqlite`: browser SQLite client adapter.
+- `@treecrdt/wa-sqlite`: browser SQLite client adapter (in-memory WASM on Node).
 - `@treecrdt/sync`: client sync over discovery + WebSocket + SQLite backends.
 - `@treecrdt/interface`: shared TypeScript interfaces.
 - `@treecrdt/sync-protocol`: transport-agnostic sync protocol runtime.

@@ -2,16 +2,30 @@
   "name": "@treecrdt/wa-sqlite",
   "version": "0.2.0",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.browser.js",
+  "types": "dist/index.browser.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "browser": {
+        "types": "./dist/index.browser.d.ts",
+        "import": "./dist/index.browser.js",
+        "default": "./dist/index.browser.js"
+      },
+      "node": {
+        "types": "./dist/index.node.d.ts",
+        "import": "./dist/index.node.js",
+        "default": "./dist/index.node.js"
+      },
+      "types": "./dist/index.browser.d.ts",
+      "import": "./dist/index.browser.js",
+      "default": "./dist/index.browser.js"
     },
     "./opfs": {
-      "import": "./dist/opfs.js",
-      "types": "./dist/opfs.d.ts"
+      "browser": {
+        "types": "./dist/opfs.d.ts",
+        "import": "./dist/opfs.js",
+        "default": "./dist/opfs.js"
+      }
     },
     "./worker": {
       "import": "./dist/worker.js",
@@ -33,17 +47,20 @@
     "prep:wa-sqlite-assets": "node ./scripts/copy-opfs-vfs.mjs --assets-only",
     "build:ts": "pnpm run prep:opfs:sources && tsc -p tsconfig.json",
     "build": "pnpm run build:ts && pnpm run prep:wa-sqlite-assets",
-    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
+    "test": "pnpm --filter @treecrdt/wa-sqlite^... run build && pnpm run build && vitest run"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*"
   },
   "devDependencies": {
+    "@treecrdt/engine-conformance": "workspace:*",
     "@treecrdt/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
   },
   "license": "MIT",
   "repository": {

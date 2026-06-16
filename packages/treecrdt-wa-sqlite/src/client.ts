@@ -39,7 +39,7 @@ import {
   type RpcResponse,
   type RpcResult,
 } from './rpc.js';
-import { openTreecrdtDb } from './open.js';
+import { openTreecrdtDb, type OpenTreecrdtDbOptions, type OpenTreecrdtDbResult } from './open.js';
 import type {
   ClientMaterializationDispatcher,
   ClientMaterializationDispatcherOptions,
@@ -100,28 +100,65 @@ function normalizeRuntimeOptions(opts: ClientOptions): NormalizedRuntimeOptions 
   return opts.runtime ?? { type: 'auto' };
 }
 
+type ResolvedClientEnvironment = {
+  baseUrl?: string;
+  shouldUseOpfs: boolean;
+  resolvedRuntime: RuntimeMode;
+};
+
+function normalizeAssetsBaseUrl(baseUrl?: string): string | undefined {
+  if (baseUrl === undefined) return undefined;
+  return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+}
+
+function defaultBrowserAssetsBaseUrl(): string {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL) {
+    return (import.meta as any).env.BASE_URL;
+  }
+  return '/';
+}
+
+function assertBrowserOpfsRequirements(
+  storage: NormalizedStorageOptions,
+  support: ReturnType<typeof detectOpfsSupport>,
+  shouldUseOpfs: boolean,
+  resolvedRuntime: RuntimeMode,
+): void {
+  const unavailable = () =>
+    new Error(`OPFS unavailable in this environment: ${support.reason ?? 'unknown reason'}`);
+
+  if (storage.type === 'auto' && !support.available && storage.fallback === 'throw') {
+    throw unavailable();
+  }
+  if (shouldUseOpfs && resolvedRuntime === 'direct' && !support.available && storage.requireOpfs) {
+    throw unavailable();
+  }
+}
+
+function resolveBrowserEnvironment(
+  opts: ClientOptions,
+  storage: NormalizedStorageOptions,
+  runtime: NormalizedRuntimeOptions,
+): ResolvedClientEnvironment {
+  const baseUrl = normalizeAssetsBaseUrl(opts.assets?.baseUrl ?? defaultBrowserAssetsBaseUrl());
+  const support = detectOpfsSupport();
+  const shouldUseOpfs = storage.type === 'opfs' || (storage.type === 'auto' && support.available);
+  const resolvedRuntime = resolveRuntimeMode(runtime, shouldUseOpfs);
+
+  assertBrowserOpfsRequirements(storage, support, shouldUseOpfs, resolvedRuntime);
+
+  return { baseUrl, shouldUseOpfs, resolvedRuntime };
+}
+
 export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<TreecrdtClient> {
   const storage = normalizeStorageOptions(opts);
   const runtime = normalizeRuntimeOptions(opts);
   const docId = opts.docId ?? 'treecrdt';
-  const rawBase =
-    opts.assets?.baseUrl ??
-    (typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL
-      ? (import.meta as any).env.BASE_URL
-      : '/');
-  const baseUrl = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
-  const support = detectOpfsSupport();
-
-  const shouldUseOpfs = storage.type === 'opfs' || (storage.type === 'auto' && support.available);
-  if (storage.type === 'auto' && !support.available && storage.fallback === 'throw') {
-    throw new Error(`OPFS unavailable in this environment: ${support.reason ?? 'unknown reason'}`);
-  }
-  const resolvedRuntime = resolveRuntimeMode(runtime, shouldUseOpfs);
-
-  // If OPFS is requested, default runtime:auto to a worker path to avoid main-thread sync handles.
-  if (shouldUseOpfs && resolvedRuntime === 'direct' && !support.available && storage.requireOpfs) {
-    throw new Error(`OPFS unavailable in this environment: ${support.reason ?? 'unknown reason'}`);
-  }
+  const { baseUrl, shouldUseOpfs, resolvedRuntime } = resolveBrowserEnvironment(
+    opts,
+    storage,
+    runtime,
+  );
 
   if (resolvedRuntime === 'shared-worker') {
     return createSharedWorkerClient({
@@ -266,7 +303,7 @@ function randomClientId(): string {
 }
 
 async function createWorkerClient(opts: {
-  baseUrl: string;
+  baseUrl?: string;
   filename?: string;
   storage: StorageMode;
   docId: string;
@@ -335,7 +372,7 @@ async function createWorkerClient(opts: {
 
   // init
   const initResult = (await call('init', [
-    opts.baseUrl,
+    opts.baseUrl ?? '/',
     opts.filename,
     opts.storage,
     opts.docId,
@@ -404,7 +441,7 @@ async function createWorkerClient(opts: {
 // --- Shared worker client (one SQLite backend shared by same-origin tabs)
 
 async function createSharedWorkerClient(opts: {
-  baseUrl: string;
+  baseUrl?: string;
   filename?: string;
   storage: StorageMode;
   docId: string;
@@ -480,7 +517,7 @@ async function createSharedWorkerClient(opts: {
   port.start();
 
   const initResult = (await call('init', [
-    opts.baseUrl,
+    opts.baseUrl ?? '/',
     opts.filename,
     opts.storage,
     opts.docId,
@@ -549,27 +586,39 @@ async function createDefaultSharedWorker(name: string): Promise<SharedWorker> {
 
 // --- Direct client (main-thread, used for memory or opt-in opfs)
 
-async function createDirectClient(opts: {
-  baseUrl: string;
+export type DirectClientOptions = {
+  baseUrl?: string;
   filename?: string;
   storage: StorageMode;
   docId: string;
   requireOpfs?: boolean;
-}): Promise<TreecrdtClient> {
+};
+
+export type OpenDbFn = (opts: OpenTreecrdtDbOptions) => Promise<OpenTreecrdtDbResult>;
+
+async function createDirectClient(opts: DirectClientOptions): Promise<TreecrdtClient> {
+  return buildDirectClient(opts, openTreecrdtDb, {
+    opfsVfs: opts.storage === 'opfs' ? 'any-context' : undefined,
+  });
+}
+
+export async function buildDirectClient(
+  opts: DirectClientOptions,
+  openDb: OpenDbFn,
+  openOverrides: Partial<OpenTreecrdtDbOptions> = {},
+): Promise<TreecrdtClient> {
   const materialized = createClientMaterializationDispatcher();
   const { baseUrl, storage, requireOpfs } = opts;
-  const opened = await openTreecrdtDb({
+  const openOpts: OpenTreecrdtDbOptions = {
     baseUrl,
     filename: opts.filename,
     storage,
     docId: opts.docId,
     requireOpfs,
-    // The coop-sync OPFS VFS depends on createSyncAccessHandle, which is only
-    // available in workers. Direct browser clients run on the window thread, so
-    // OPFS needs the async any-context VFS.
-    opfsVfs: storage === 'opfs' ? 'any-context' : undefined,
     onMaterialized: materialized.emitEvent,
-  });
+    ...openOverrides,
+  };
+  const opened = await openDb(openOpts);
   const db = opened.db;
   const finalStorage: StorageMode = opened.storage;
   const filename = opened.filename;
