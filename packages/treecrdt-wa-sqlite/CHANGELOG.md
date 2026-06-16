@@ -1,5 +1,15 @@
 # @treecrdt/wa-sqlite
 
+## 0.3.0
+
+### Minor Changes
+
+- 8dea846: Add Node support for in-memory WASM via `createTreecrdtClient()`, with separate browser and Node entry points resolved through package conditional exports.
+
+### Patch Changes
+
+- 2ed710b: Reduce wa-sqlite worker payload read copies by returning transferable binary RPC results.
+
 ## 0.2.0
 
 ### Minor Changes
