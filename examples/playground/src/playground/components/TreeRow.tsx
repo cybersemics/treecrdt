@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatContentBytes, SUPPORTED_IMAGE_MIME_TYPES, validateImageContentFile } from "@treecrdt/content";
 import { createPortal } from "react-dom";
 import {
-  MdAdd,
   MdChevronRight,
   MdCheck,
   MdDeleteOutline,
   MdExpandMore,
   MdGroup,
   MdHome,
+  MdImage,
   MdKeyboardArrowDown,
   MdKeyboardArrowUp,
   MdLockOpen,
@@ -27,7 +28,8 @@ import {
 } from "../capabilities";
 import { ROOT_ID } from "../constants";
 import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
-import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
+import type { CollapseState, DisplayNode, NodeMeta, PayloadDisplay, PeerInfo } from "../types";
+import { AddNodeMenu } from "./AddNodeMenu";
 
 type MembersMenuLayout = {
   top: number;
@@ -44,7 +46,9 @@ export function TreeRow({
   liveChildren,
   onToggle,
   onSetValue,
-  onAddChild,
+  onSetImagePayload,
+  onClearPayload,
+  onOpenImagePreview,
   onDelete,
   onMove,
   onMoveToRoot,
@@ -52,6 +56,9 @@ export function TreeRow({
   privateRoots,
   onTogglePrivateRoot,
   onShare,
+  onAddTextNode,
+  onAddImageNode,
+  onAddBulkNodes,
   peers,
   selfPeerId,
   busy,
@@ -66,6 +73,7 @@ export function TreeRow({
   canWritePayload,
   canWriteStructure,
   canDelete,
+  maxNodeCount,
   meta,
   childrenByParent,
 }: {
@@ -75,7 +83,12 @@ export function TreeRow({
   liveChildren: boolean;
   onToggle: (id: string) => void;
   onSetValue: (id: string, value: string) => void | Promise<void>;
-  onAddChild: (id: string) => void;
+  onSetImagePayload: (id: string, file: File) => void | Promise<void>;
+  onClearPayload: (id: string) => void | Promise<void>;
+  onOpenImagePreview: (payload: Extract<PayloadDisplay, { kind: "image" }>) => void;
+  onAddTextNode: (parentId: string, value: string) => void | Promise<void>;
+  onAddImageNode: (parentId: string, file: File) => void | Promise<void>;
+  onAddBulkNodes: (parentId: string, count: number, fanout: number, value: string) => void | Promise<void>;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
   onMoveToRoot: (id: string) => void;
@@ -102,6 +115,7 @@ export function TreeRow({
   canWritePayload: boolean;
   canWriteStructure: boolean;
   canDelete: boolean;
+  maxNodeCount: number;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
@@ -137,12 +151,16 @@ export function TreeRow({
   const [showMembersMenu, setShowMembersMenu] = useState(false);
   const [manualRecipientKey, setManualRecipientKey] = useState("");
   const [manualGrantActions, setManualGrantActions] = useState<CapabilityAction[]>(DEFAULT_MEMBER_CAPABILITY_ACTIONS);
+  const [imageDropActive, setImageDropActive] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
   const [memberGrantActions, setMemberGrantActions] = useState<Record<string, CapabilityAction[]>>({});
   const [membersMenuLayout, setMembersMenuLayout] = useState<MembersMenuLayout | null>(null);
   const membersButtonRef = useRef<HTMLButtonElement | null>(null);
   const membersMenuRef = useRef<HTMLDivElement | null>(null);
-  const canEditValue = canWritePayload && !isRoot;
-  const canInsertChild = canWriteStructure;
+  const imagePayload = node.payload.kind === "image" ? node.payload : null;
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const canEditValue = canWritePayload && !isRoot && !imagePayload;
+  const canReplacePayload = canWritePayload && !isRoot;
   const canMoveStructure = canWriteStructure;
   const canMoveToDocRoot = canWriteStructure && scopeRootId === ROOT_ID;
   const showMembersButton = !isRoot && isPrivate;
@@ -233,6 +251,16 @@ export function TreeRow({
       onGrantToReplicaPubkey,
       onToggleHardRevokedTokenId,
     ]
+  );
+
+  const replaceImageFromFile = useCallback(
+    async (file: File | null) => {
+      if (!file || !canReplacePayload) return;
+      validateImageContentFile(file);
+      await onSetImagePayload(node.id, file);
+      setImageError(null);
+    },
+    [canReplacePayload, node.id, onSetImagePayload]
   );
 
   const updateMembersMenuLayout = useCallback(() => {
@@ -357,6 +385,98 @@ export function TreeRow({
             <div className="min-w-0">
               {isRoot ? (
                 <div className="truncate text-sm font-semibold text-white">{node.label}</div>
+              ) : imagePayload ? (
+                <div className="flex min-w-0 flex-col gap-2">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <button
+                      type="button"
+                      className={`flex h-20 w-28 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-slate-900/70 transition ${
+                        imageDropActive ? "border-accent ring-2 ring-accent/40" : "border-slate-700 hover:border-accent"
+                      }`}
+                      title="Open image preview. Drop another image here to replace it."
+                      aria-label="Open image preview"
+                      onClick={() => onOpenImagePreview(imagePayload)}
+                      onDragEnter={(e) => {
+                        e.preventDefault();
+                        if (canReplacePayload) setImageDropActive(true);
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (!canReplacePayload) return;
+                        e.dataTransfer.dropEffect = "copy";
+                        setImageDropActive(true);
+                      }}
+                      onDragLeave={() => setImageDropActive(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setImageDropActive(false);
+                        const file = e.dataTransfer.files?.[0] ?? null;
+                        void replaceImageFromFile(file).catch((err) => {
+                          setImageError(err instanceof Error ? err.message : String(err));
+                        });
+                      }}
+                    >
+                      {imagePayload.url ? (
+                        <img
+                          data-testid="node-image-payload"
+                          data-node-id={node.id}
+                          src={imagePayload.url}
+                          alt={imagePayload.name ?? "TreeCRDT image payload"}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <MdImage className="text-[24px] text-slate-500" aria-hidden />
+                      )}
+                    </button>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-white" title={node.label}>
+                        {node.label}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-slate-400">
+                        {imagePayload.mime} · {formatContentBytes(imagePayload.size)} · inline content · complete
+                      </div>
+                      {imageError ? <div className="mt-1 text-[11px] font-semibold text-rose-200">{imageError}</div> : null}
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <input
+                          ref={imageInputRef}
+                          data-testid="row-image-replace-input"
+                          type="file"
+                          accept={SUPPORTED_IMAGE_MIME_TYPES.join(",")}
+                          className="hidden"
+                          disabled={!canReplacePayload}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] ?? null;
+                            void replaceImageFromFile(file)
+                              .catch((err) => {
+                                setImageError(err instanceof Error ? err.message : String(err));
+                              })
+                              .finally(() => {
+                                if (imageInputRef.current) imageInputRef.current.value = "";
+                              });
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+                          onClick={() => imageInputRef.current?.click()}
+                          disabled={!canReplacePayload}
+                          title={canReplacePayload ? "Replace image payload" : "Read-only (no write_payload permission)"}
+                        >
+                          Replace image
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-rose-400 hover:text-white disabled:opacity-50"
+                          onClick={() => void onClearPayload(node.id)}
+                          disabled={!canReplacePayload}
+                          title={canReplacePayload ? "Clear image payload" : "Read-only (no write_payload permission)"}
+                        >
+                          Clear payload
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               ) : isEditing ? (
                 <form
                   className="flex items-center gap-2"
@@ -738,15 +858,19 @@ export function TreeRow({
           >
             <MdOutlineRssFeed className="text-[20px]" />
           </button>
-          <button
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800/70 bg-slate-900/60 text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
-            onClick={() => onAddChild(node.id)}
-            aria-label="Add child"
-            title={canInsertChild ? "Add child" : "Read-only (no write_structure permission)"}
-            disabled={!canInsertChild}
-          >
-            <MdAdd className="text-[22px]" />
-          </button>
+          <AddNodeMenu
+            parentId={node.id}
+            parentLabel={node.label}
+            variant="row"
+            ready
+            busy={busy}
+            canWritePayload={canWritePayload}
+            canWriteStructure={canWriteStructure}
+            maxNodeCount={maxNodeCount}
+            onAddText={onAddTextNode}
+            onAddImage={onAddImageNode}
+            onAddBulk={onAddBulkNodes}
+          />
           {!isRoot && (
             <>
               <button

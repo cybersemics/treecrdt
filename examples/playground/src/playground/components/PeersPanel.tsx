@@ -3,6 +3,24 @@ import { MdCheckCircle, MdCloudOff, MdCloudQueue, MdErrorOutline, MdSync } from 
 
 import type { PeerInfo, RemoteSyncStatus, SyncTransportMode } from '../types';
 
+const REMOTE_SYNC_PRESETS = [
+  {
+    label: 'Public bootstrap',
+    url: 'https://sync.emhub.net',
+    title: 'Use the shared HTTPS bootstrap endpoint',
+  },
+  {
+    label: 'Local bootstrap',
+    url: 'http://localhost:8788',
+    title: 'Use pnpm discovery-server:local',
+  },
+  {
+    label: 'Local WebSocket',
+    url: 'ws://localhost:8787',
+    title: 'Use pnpm sync-server:postgres:local directly',
+  },
+] as const;
+
 function formatPeerId(id: string): string {
   if (id.startsWith('remote:')) return `remote(${id.slice('remote:'.length)})`;
   return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
@@ -64,6 +82,10 @@ export function PeersPanel({
 }) {
   const requiresRemoteUrl = syncTransportMode !== 'local';
   const hasRemoteUrl = syncServerUrl.trim().length > 0;
+  const applyRemotePreset = (url: string) => {
+    setSyncServerUrl(url);
+    if (syncTransportMode === 'local') setSyncTransportMode('hybrid');
+  };
 
   return (
     <div
@@ -178,6 +200,19 @@ export function PeersPanel({
           >
             Clear
           </button>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {REMOTE_SYNC_PRESETS.map((preset) => (
+            <button
+              key={preset.url}
+              type="button"
+              className="rounded-md border border-slate-700 px-2 py-1 text-[10px] font-semibold text-slate-300 transition hover:border-accent hover:text-white"
+              onClick={() => applyRemotePreset(preset.url)}
+              title={preset.title}
+            >
+              {preset.label}
+            </button>
+          ))}
         </div>
         <div className="mt-2 text-[11px] text-slate-400">{remoteSyncStatus.detail}</div>
         {!requiresRemoteUrl && !hasRemoteUrl && (

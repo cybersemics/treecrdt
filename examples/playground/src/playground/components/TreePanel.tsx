@@ -1,4 +1,5 @@
 import React from "react";
+import { formatContentBytes } from "@treecrdt/content";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { IoMdGitBranch } from "react-icons/io";
 import {
@@ -16,8 +17,9 @@ import {
 
 import { ROOT_ID } from "../constants";
 import type { IssuedGrantRecord } from "../hooks/usePlaygroundAuth";
-import type { CollapseState, DisplayNode, NodeMeta, PeerInfo } from "../types";
+import type { BulkAddProgress, CollapseState, DisplayNode, NodeMeta, PayloadDisplay, PeerInfo } from "../types";
 
+import { AddNodeMenu } from "./AddNodeMenu";
 import { PeersPanel } from "./PeersPanel";
 import { SharingAuthPanel } from "./SharingAuthPanel";
 import { TreeRow } from "./TreeRow";
@@ -37,6 +39,7 @@ export function TreePanel({
   peerCount,
   authCanSyncAll,
   onSync,
+  bulkAddProgress,
   liveAllEnabled,
   setLiveAllEnabled,
   showPeersPanel,
@@ -60,8 +63,12 @@ export function TreePanel({
   toggleCollapse,
   openShareForNode,
   grantSubtreeToReplicaPubkey,
+  onAddTextNode,
+  onAddImageNode,
+  onAddBulkNodes,
   onSetValue,
-  onAddChild,
+  onSetImagePayload,
+  onClearPayload,
   onDelete,
   onMove,
   onMoveToRoot,
@@ -79,6 +86,7 @@ export function TreePanel({
   canWritePayload,
   canWriteStructure,
   canDelete,
+  maxNodeCount,
   liveChildrenParents,
   meta,
   childrenByParent,
@@ -95,6 +103,7 @@ export function TreePanel({
   peerCount: number;
   authCanSyncAll: boolean;
   onSync: () => void;
+  bulkAddProgress: BulkAddProgress | null;
   liveAllEnabled: boolean;
   setLiveAllEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   showPeersPanel: boolean;
@@ -123,8 +132,12 @@ export function TreePanel({
     actions?: string[];
     supersedesTokenIds?: string[];
   }) => Promise<boolean>;
+  onAddTextNode: (parentId: string, value: string) => void | Promise<void>;
+  onAddImageNode: (parentId: string, file: File) => void | Promise<void>;
+  onAddBulkNodes: (parentId: string, count: number, fanout: number, value: string) => void | Promise<void>;
   onSetValue: (nodeId: string, value: string) => void | Promise<void>;
-  onAddChild: (nodeId: string) => void;
+  onSetImagePayload: (nodeId: string, file: File) => void | Promise<void>;
+  onClearPayload: (nodeId: string) => void | Promise<void>;
   onDelete: (nodeId: string) => void;
   onMove: (nodeId: string, direction: "up" | "down") => void;
   onMoveToRoot: (nodeId: string) => void;
@@ -142,10 +155,13 @@ export function TreePanel({
   canWritePayload: boolean;
   canWriteStructure: boolean;
   canDelete: boolean;
+  maxNodeCount: number;
   liveChildrenParents: Set<string>;
   meta: Record<string, NodeMeta>;
   childrenByParent: Record<string, string[]>;
 }) {
+  const [previewImage, setPreviewImage] = React.useState<Extract<PayloadDisplay, { kind: "image" }> | null>(null);
+  const [progressNowMs, setProgressNowMs] = React.useState(() => Date.now());
   const measureTreeElement = React.useCallback(
     (element: Element | null) => {
       if (!element) return;
@@ -160,6 +176,28 @@ export function TreePanel({
     },
     [treeVirtualizer]
   );
+  React.useEffect(() => {
+    if (!bulkAddProgress) return;
+    setProgressNowMs(Date.now());
+    const timer = window.setInterval(() => setProgressNowMs(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [bulkAddProgress]);
+
+  const elapsedMs = bulkAddProgress ? Math.max(0, progressNowMs - bulkAddProgress.startedAtMs) : 0;
+  const progressRatio = bulkAddProgress ? Math.min(1, bulkAddProgress.completed / Math.max(1, bulkAddProgress.total)) : 0;
+  const etaMs =
+    bulkAddProgress &&
+    bulkAddProgress.phase === "creating" &&
+    bulkAddProgress.completed > 0 &&
+    bulkAddProgress.completed < bulkAddProgress.total
+      ? Math.round((elapsedMs / bulkAddProgress.completed) * (bulkAddProgress.total - bulkAddProgress.completed))
+      : null;
+  const formatDuration = (ms: number): string => {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
+  };
 
   return (
     <div className="min-w-0 rounded-2xl bg-slate-900/60 p-5 shadow-lg shadow-black/20 ring-1 ring-slate-800/60">
@@ -178,6 +216,19 @@ export function TreePanel({
           </div>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <AddNodeMenu
+            parentId={ROOT_ID}
+            parentLabel="Root"
+            variant="header"
+            ready={ready}
+            busy={busy}
+            canWritePayload={canWritePayload}
+            canWriteStructure={canWriteStructure}
+            maxNodeCount={maxNodeCount}
+            onAddText={onAddTextNode}
+            onAddImage={onAddImageNode}
+            onAddBulk={onAddBulkNodes}
+          />
           <button
             className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-50 ${
               online
@@ -323,6 +374,36 @@ export function TreePanel({
           {syncError}
         </div>
       )}
+      {bulkAddProgress ? (
+        <div className="mb-3 rounded-xl border border-accent/30 bg-accent/10 p-3 text-xs text-slate-100" aria-live="polite">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-semibold">
+              {bulkAddProgress.phase === "creating"
+                ? `Creating ${bulkAddProgress.completed} of ${bulkAddProgress.total} nodes`
+                : `Applying ${bulkAddProgress.total} generated nodes`}
+            </span>
+            <span className="font-mono text-[11px] text-slate-300">Elapsed {formatDuration(elapsedMs)}</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800/80">
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-200"
+              style={{
+                width: `${bulkAddProgress.completed === 0 ? 0 : Math.max(6, Math.round(progressRatio * 100))}%`,
+              }}
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300">
+            <span>
+              {bulkAddProgress.phase === "creating"
+                ? "Preparing inserts locally before the tree view refreshes."
+                : "Finalizing local tree state and sync updates."}
+            </span>
+            <span className="font-mono">
+              {etaMs !== null ? `ETA ~${formatDuration(etaMs)}` : bulkAddProgress.phase === "applying" ? "ETA settling..." : ""}
+            </span>
+          </div>
+        </div>
+      ) : null}
       {showPeersPanel && <PeersPanel {...peersPanelProps} />}
       {showAuthPanel && <SharingAuthPanel {...sharingAuthPanelProps} />}
       <div ref={treeParentRef} className="max-h-[560px] overflow-auto">
@@ -344,8 +425,13 @@ export function TreePanel({
                   collapse={collapse}
                   onToggle={toggleCollapse}
                   onShare={openShareForNode}
+                  onAddTextNode={onAddTextNode}
+                  onAddImageNode={onAddImageNode}
+                  onAddBulkNodes={onAddBulkNodes}
                   onSetValue={onSetValue}
-                  onAddChild={onAddChild}
+                  onSetImagePayload={onSetImagePayload}
+                  onClearPayload={onClearPayload}
+                  onOpenImagePreview={setPreviewImage}
                   onDelete={onDelete}
                   onMove={onMove}
                   onMoveToRoot={onMoveToRoot}
@@ -366,6 +452,7 @@ export function TreePanel({
                   canWritePayload={canWritePayload}
                   canWriteStructure={canWriteStructure}
                   canDelete={canDelete}
+                  maxNodeCount={maxNodeCount}
                   liveChildren={liveChildrenParents.has(entry.node.id)}
                   meta={meta}
                   childrenByParent={childrenByParent}
@@ -375,6 +462,41 @@ export function TreePanel({
           })}
         </div>
       </div>
+      {previewImage ? (
+        <div
+          className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/90 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image payload preview"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div className="max-h-full w-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-700 bg-slate-900/90 px-4 py-3 text-sm text-slate-100">
+              <div className="min-w-0">
+                <div className="truncate font-semibold">{previewImage.name ?? "TreeCRDT image payload"}</div>
+                <div className="text-xs text-slate-400">
+                  {previewImage.mime} · {formatContentBytes(previewImage.size)} · inline TreeCRDT content
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white"
+                onClick={() => setPreviewImage(null)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex max-h-[calc(100vh-8rem)] items-center justify-center overflow-hidden rounded-2xl border border-slate-700 bg-black/70 shadow-2xl shadow-black/60">
+              <img
+                data-testid="image-payload-preview"
+                src={previewImage.url}
+                alt={previewImage.name ?? "TreeCRDT image payload preview"}
+                className="max-h-[calc(100vh-8rem)] w-auto max-w-full object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
