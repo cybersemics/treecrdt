@@ -1,5 +1,11 @@
 # @treecrdt/wa-sqlite
 
+## 0.3.1
+
+### Patch Changes
+
+- c4c58a0: Normalize cross-realm typed arrays before binding wa-sqlite blob parameters.
+
 ## 0.3.0
 
 ### Minor Changes
