@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest';
+import vm from 'node:vm';
 import {
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
@@ -28,6 +29,18 @@ test('createTreecrdtClient smoke: insert and read in Node', async () => {
     await client.local.insert(replica, root, node, { type: 'last' }, null);
     expect(await client.tree.exists(node)).toBe(true);
     expect(await client.ops.all()).toHaveLength(1);
+  } finally {
+    await client.close();
+  }
+});
+
+test('createTreecrdtClient accepts cross-realm typed array payloads in Node', async () => {
+  const client = await createWaEngine({ docId: 'wa-sqlite-node-cross-realm-payload' });
+  const payload = vm.runInNewContext('new Uint8Array([1, 2, 3])') as Uint8Array;
+
+  try {
+    await client.local.payload(replica, root, payload);
+    expect(await client.tree.getPayload(root)).toEqual(Uint8Array.from([1, 2, 3]));
   } finally {
     await client.close();
   }

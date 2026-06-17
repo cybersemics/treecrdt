@@ -1,5 +1,14 @@
 import type { Database } from './types.js';
 
+function normalizeBindValue(value: unknown): unknown {
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+
+  return value;
+}
+
 export function makeDbAdapter(sqlite3: any, handle: number): Database {
   const prepare = async (sql: string) => {
     const iter = sqlite3.statements(handle, sql, { unscoped: true });
@@ -13,7 +22,8 @@ export function makeDbAdapter(sqlite3: any, handle: number): Database {
 
   return {
     prepare,
-    bind: async (stmt: number, index: number, value: unknown) => sqlite3.bind(stmt, index, value),
+    bind: async (stmt: number, index: number, value: unknown) =>
+      sqlite3.bind(stmt, index, normalizeBindValue(value)),
     step: async (stmt: number) => sqlite3.step(stmt),
     column_text: async (stmt: number, index: number) => sqlite3.column_text(stmt, index),
     finalize: async (stmt: number) => sqlite3.finalize(stmt),
