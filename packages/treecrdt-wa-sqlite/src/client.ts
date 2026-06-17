@@ -487,9 +487,12 @@ async function createSharedWorkerClient(opts: {
   };
   const materialized = createClientMaterializationDispatcher({
     broadcast: (event) => {
-      void call('broadcastMaterialized', [event]).catch(() => {
+      if (closed || terminalError) return;
+      try {
+        port.postMessage({ type: 'materialized', event } satisfies RpcPushMessage);
+      } catch {
         // Closing tabs can race a final materialization notification.
-      });
+      }
     },
   });
 
