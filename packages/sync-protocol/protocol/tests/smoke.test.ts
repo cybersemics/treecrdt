@@ -570,6 +570,36 @@ test('syncOnce protobuf roundtrips ribltStatus.more', () => {
   expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(msg))).toEqual(msg);
 });
 
+test('syncOnce protobuf roundtrips op auth claims', () => {
+  const op = makeOp(replicas.a, 1, 1, {
+    type: 'insert',
+    parent: '0'.repeat(32),
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const msg: SyncMessage<Operation> = {
+    v: 0,
+    docId: 'doc-sync-op-auth-claims-codec',
+    payload: {
+      case: 'opsBatch',
+      value: {
+        filterId: 'all',
+        ops: [op],
+        auth: [
+          {
+            sig: new Uint8Array(64).fill(9),
+            proofRef: new Uint8Array(16).fill(3),
+            claims: { authoredAtMs: 1_700_000_000_123 },
+          },
+        ],
+        done: true,
+      },
+    },
+  };
+
+  expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(msg))).toEqual(msg);
+});
+
 test('syncOnce waits for ribltStatus.more before sending another codeword batch', async () => {
   const docId = 'doc-sync-more-flow-control';
   const root = '0'.repeat(32);

@@ -24,10 +24,11 @@ function makeOpRef(fill: number): OpRef {
   return new Uint8Array(16).fill(fill);
 }
 
-function makeOpAuth(sigFill: number, proofFill?: number): OpAuth {
+function makeOpAuth(sigFill: number, proofFill?: number, authoredAtMs?: number): OpAuth {
   return {
     sig: new Uint8Array(64).fill(sigFill),
     ...(proofFill === undefined ? {} : { proofRef: new Uint8Array(16).fill(proofFill) }),
+    ...(authoredAtMs === undefined ? {} : { claims: { authoredAtMs } }),
   };
 }
 
@@ -39,6 +40,7 @@ function normalizeOpAuth(value: OpAuth): OpAuth {
   return {
     sig: Uint8Array.from(value.sig),
     ...(value.proofRef ? { proofRef: Uint8Array.from(value.proofRef) } : {}),
+    ...(value.claims ? { claims: { ...value.claims } } : {}),
   };
 }
 
@@ -57,7 +59,7 @@ export function defineProofMaterialStoreContract(
       const refA = makeOpRef(1);
       const refB = makeOpRef(2);
       const missing = makeOpRef(3);
-      const authA = makeOpAuth(9, 4);
+      const authA = makeOpAuth(9, 4, 1_700_000_000_001);
       const authB = makeOpAuth(7);
 
       await opAuth.storeOpAuth([

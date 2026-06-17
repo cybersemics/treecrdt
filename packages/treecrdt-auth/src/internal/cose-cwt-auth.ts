@@ -45,7 +45,12 @@ import {
   type CapabilityGrant,
   type TreecrdtCapabilityRevocationCheckContext,
 } from './capability.js';
-import { signTreecrdtOpV1, verifyTreecrdtOpV1 } from './op-sig.js';
+import {
+  signTreecrdtOpV1,
+  signTreecrdtOpV2,
+  verifyTreecrdtOpV1,
+  verifyTreecrdtOpV2,
+} from './op-sig.js';
 import { getField } from './claims.js';
 import {
   capAllowsNode,
@@ -88,7 +93,11 @@ export type TreecrdtCoseCwtAuthOptions = {
   ) => boolean | Promise<boolean>;
   allowUnsigned?: boolean;
   requireProofRef?: boolean;
+  /** Include a signed `claims.authoredAtMs` value on locally authored ops. Defaults to true. */
+  includeAuthoredAt?: boolean;
   now?: () => number;
+  /** Wall-clock source for authoredAtMs claims. */
+  nowMs?: () => number;
 };
 
 export type TreecrdtCoseCwtParseRevocationCheckContext =
@@ -109,8 +118,10 @@ export type TreecrdtCoseCwtRevocationCheckContext =
 
 export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): SyncAuth<Operation> {
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
+  const nowMs = opts.nowMs ?? (() => Date.now());
   const allowUnsigned = opts.allowUnsigned ?? false;
   const requireProofRef = opts.requireProofRef ?? false;
+  const includeAuthoredAt = opts.includeAuthoredAt ?? true;
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
@@ -650,12 +661,24 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           });
           proofRef = selected.tokenId;
         }
-        const sig = await signTreecrdtOpV1({
-          docId: ctx.docId,
-          op,
-          privateKey: opts.localPrivateKey,
-        });
-        const entry: OpAuth = { sig, ...(proofRef ? { proofRef } : {}) };
+        const claims = includeAuthoredAt ? { authoredAtMs: nowMs() } : undefined;
+        const sig = claims
+          ? await signTreecrdtOpV2({
+              docId: ctx.docId,
+              op,
+              privateKey: opts.localPrivateKey,
+              claims,
+            })
+          : await signTreecrdtOpV1({
+              docId: ctx.docId,
+              op,
+              privateKey: opts.localPrivateKey,
+            });
+        const entry: OpAuth = {
+          sig,
+          ...(proofRef ? { proofRef } : {}),
+          ...(claims ? { claims } : {}),
+        };
         opAuthByOpRefHex.set(opRefHex, entry);
         out[i] = entry;
       }
@@ -755,12 +778,20 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         });
         if (scopeRes === 'deny') throw new Error('capability does not allow op');
 
-        const ok = await verifyTreecrdtOpV1({
-          docId: ctx.docId,
-          op,
-          signature: a.sig,
-          publicKey: replica,
-        });
+        const ok = a.claims
+          ? await verifyTreecrdtOpV2({
+              docId: ctx.docId,
+              op,
+              signature: a.sig,
+              publicKey: replica,
+              claims: a.claims,
+            })
+          : await verifyTreecrdtOpV1({
+              docId: ctx.docId,
+              op,
+              signature: a.sig,
+              publicKey: replica,
+            });
         if (!ok) throw new Error('invalid op signature');
         const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
         opAuthByOpRefHex.set(bytesToHex(opRef), a);

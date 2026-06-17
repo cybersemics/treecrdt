@@ -99,6 +99,7 @@ function normalizeOpAuth(value: OpAuth): OpAuth {
   return {
     sig: Uint8Array.from(value.sig),
     ...(value.proofRef ? { proofRef: Uint8Array.from(value.proofRef) } : {}),
+    ...(value.claims ? { claims: { ...value.claims } } : {}),
   };
 }
 
@@ -138,6 +139,7 @@ export function defineReplayOnlyAuthStoreContract(
       const authEntry: OpAuth = {
         sig: new Uint8Array(64).fill(9),
         proofRef: new Uint8Array(16).fill(3),
+        claims: { authoredAtMs: 1_700_000_000_001 },
       };
 
       const authorAuth: SyncAuth<Operation> = {

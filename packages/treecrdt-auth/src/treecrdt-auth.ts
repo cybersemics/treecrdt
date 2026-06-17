@@ -13,9 +13,13 @@ export type {
 
 export {
   encodeTreecrdtOpSigInputV1,
+  encodeTreecrdtOpSigInputV2,
   signTreecrdtOpV1,
+  signTreecrdtOpV2,
   verifyTreecrdtOpV1,
+  verifyTreecrdtOpV2,
 } from './internal/op-sig.js';
+export type { TreecrdtOpAuthClaimsV1 } from './internal/op-sig.js';
 
 export type { TreecrdtScopeEvaluator } from './internal/scope.js';
 

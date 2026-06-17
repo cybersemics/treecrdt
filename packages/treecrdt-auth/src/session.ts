@@ -80,6 +80,7 @@ export type TreecrdtAuthSessionOptions = Omit<
 
 export type TreecrdtAuthSession = {
   syncAuth: SyncAuth<Operation>;
+  signer: { publicKey: Uint8Array };
   readonly ready: Promise<SyncAuth<Operation>>;
   getState: () => TreecrdtAuthSessionState;
   refresh: () => Promise<SyncAuth<Operation>>;
@@ -195,6 +196,7 @@ export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): Tre
 
   return {
     syncAuth,
+    signer: { publicKey: Uint8Array.from(local.publicKey) },
     get ready() {
       return ready;
     },
