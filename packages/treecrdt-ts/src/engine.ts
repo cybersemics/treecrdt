@@ -159,6 +159,11 @@ export type TreecrdtEngineOpRefs = {
   children: (parent: string) => Promise<Uint8Array[]>;
 };
 
+export type TreecrdtNodePlacement = {
+  parent: string;
+  placement: TreecrdtSqlitePlacement;
+};
+
 export type TreecrdtEngineTree = {
   children: (parent: string) => Promise<string[]>;
   childrenPage?: (
@@ -166,6 +171,7 @@ export type TreecrdtEngineTree = {
     cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
     limit: number,
   ) => Promise<SqliteTreeChildRow[]>;
+  placement?: (node: string) => Promise<TreecrdtNodePlacement | null>;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
   parent: (node: string) => Promise<string | null>;

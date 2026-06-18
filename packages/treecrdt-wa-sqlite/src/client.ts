@@ -6,6 +6,7 @@ import {
   decodeSqliteOpRefs,
   decodeSqliteOps,
   decodeSqliteTreeChildRows,
+  decodeSqliteTreePlacement,
   decodeSqliteTreeRows,
   type SqliteTreeChildRow,
   type SqliteRunner,
@@ -702,6 +703,10 @@ export async function buildDirectClient(
             limit,
           )) as any;
         }
+        case 'treePlacement': {
+          const [node] = params as RpcParams<'treePlacement'>;
+          return (await adapter.treePlacement!(nodeIdToBytes16(node))) as any;
+        }
         case 'treeDump':
           return (await adapter.treeDump()) as any;
         case 'treePayload': {
@@ -828,6 +833,8 @@ function makeTreecrdtClientFromCall(opts: {
       : null;
     return decodeSqliteTreeChildRows(await call('treeChildrenPage', [parent, rpcCursor, limit]));
   };
+  const treePlacementImpl = async (node: string) =>
+    decodeSqliteTreePlacement(await call('treePlacement', [node]));
   const treeDumpImpl = async () => decodeSqliteTreeRows(await call('treeDump', []));
   const treeNodeCountImpl = async () => Number(await call('treeNodeCount', []));
   const treeParentImpl = async (node: string) => {
@@ -941,6 +948,7 @@ function makeTreecrdtClientFromCall(opts: {
     tree: {
       children: treeChildrenImpl,
       childrenPage: treeChildrenPageImpl,
+      placement: treePlacementImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       parent: treeParentImpl,

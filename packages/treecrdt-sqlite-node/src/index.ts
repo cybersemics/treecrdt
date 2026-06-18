@@ -7,6 +7,7 @@ import {
   decodeSqliteOpRefs,
   decodeSqliteOps,
   decodeSqliteTreeChildRows,
+  decodeSqliteTreePlacement,
   decodeSqliteTreeRows,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
@@ -167,6 +168,8 @@ export function createTreecrdtClient(
     );
   const treeChildrenImpl = async (parent: string) =>
     decodeSqliteNodeIds(await adapter.treeChildren(nodeIdToBytes16(parent)));
+  const treePlacementImpl = async (node: string) =>
+    decodeSqliteTreePlacement(await adapter.treePlacement!(nodeIdToBytes16(node)));
   const treeDumpImpl = async () => decodeSqliteTreeRows(await adapter.treeDump());
   const treeNodeCountImpl = async () => Number(await adapter.treeNodeCount());
   const treeParentImpl = async (node: string) => {
@@ -239,6 +242,7 @@ export function createTreecrdtClient(
         decodeSqliteTreeChildRows(
           await adapter.treeChildrenPage!(nodeIdToBytes16(parent), cursor, limit),
         ),
+      placement: treePlacementImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       parent: treeParentImpl,

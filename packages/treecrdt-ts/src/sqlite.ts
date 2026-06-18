@@ -46,6 +46,16 @@ async function sqliteGetJsonOrEmpty<T>(
   return JSON.parse(text) as T;
 }
 
+async function sqliteGetJsonOrNull<T>(
+  runner: SqliteRunner,
+  sql: string,
+  params?: SqlCall['params'],
+): Promise<T | null> {
+  const text = await runner.getText(sql, params);
+  if (text === null || text === undefined || text === '') return null;
+  return JSON.parse(text) as T;
+}
+
 async function sqliteGetNumber(
   runner: SqliteRunner,
   sql: string,
@@ -334,6 +344,7 @@ export function createTreecrdtSqliteAdapter(
     treeChildren: (parent) => treecrdtTreeChildren(runner, parent, emitOutcome),
     treeChildrenPage: (parent, cursor, limit) =>
       treecrdtTreeChildrenPage(runner, parent, cursor, limit, emitOutcome),
+    treePlacement: (node) => treecrdtTreePlacement(runner, node, emitOutcome),
     treeDump: () => treecrdtTreeDump(runner, emitOutcome),
     treeNodeCount: () => treecrdtTreeNodeCount(runner, emitOutcome),
     treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
@@ -463,6 +474,39 @@ async function treecrdtTreeChildrenPage(
        LIMIT ?4\
      )",
     [parent, afterOrderKey, afterNode, limit],
+  );
+}
+
+/**
+ * Fetch the current visible parent + sibling placement for a node without reading all siblings.
+ */
+async function treecrdtTreePlacement(
+  runner: SqliteRunner,
+  node: Uint8Array,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<unknown | null> {
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
+  return sqliteGetJsonOrNull(
+    runner,
+    "SELECT json_object('parent', parent_hex, 'after', after_hex) \
+     FROM (\
+       SELECT \
+         lower(hex(current.parent)) AS parent_hex, \
+         (\
+           SELECT lower(hex(previous.node)) \
+           FROM tree_nodes AS previous \
+           WHERE previous.parent = current.parent \
+             AND previous.tombstone = 0 \
+             AND (previous.order_key < current.order_key \
+               OR (previous.order_key = current.order_key AND previous.node < current.node)) \
+           ORDER BY previous.order_key DESC, previous.node DESC \
+           LIMIT 1\
+         ) AS after_hex \
+       FROM tree_nodes AS current \
+       WHERE current.node = ?1 AND current.tombstone = 0 AND current.parent IS NOT NULL \
+       LIMIT 1\
+     )",
+    [node],
   );
 }
 
@@ -834,6 +878,22 @@ export function decodeSqliteTreeChildRows(raw: unknown): SqliteTreeChildRow[] {
             : Uint8Array.from(rawOrderKey as any);
     return { node, orderKey };
   });
+}
+
+export type SqliteTreePlacement = {
+  parent: string;
+  placement: TreecrdtSqlitePlacement;
+};
+
+export function decodeSqliteTreePlacement(raw: unknown): SqliteTreePlacement | null {
+  if (raw == null) return null;
+  const row = raw as any;
+  const parent = decodeNodeId(row.parent);
+  const after = row.after == null ? null : decodeNodeId(row.after);
+  return {
+    parent,
+    placement: after === null ? { type: 'first' } : { type: 'after', after },
+  };
 }
 
 export type SqliteTreeRow = {

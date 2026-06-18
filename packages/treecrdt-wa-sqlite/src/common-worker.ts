@@ -112,6 +112,10 @@ export class CommonWorkerSession {
     return await this.ensureApi().treeChildrenPage!(nodeIdToBytes16(parent), cursorBytes, limit);
   }
 
+  async treePlacement(node: string) {
+    return await this.ensureApi().treePlacement!(nodeIdToBytes16(node));
+  }
+
   async treeDump() {
     return await this.ensureApi().treeDump();
   }
@@ -160,6 +164,7 @@ export function createCommonWorkerRpcHandlers(session: CommonWorkerSession) {
       cursor: { orderKey: number[]; node: number[] } | null,
       limit: number,
     ) => session.treeChildrenPage(parent, cursor, limit),
+    treePlacement: (node: string) => session.treePlacement(node),
     treeDump: () => session.treeDump(),
     treeNodeCount: () => session.treeNodeCount(),
     treeParent: (node: string) => session.treeParent(node),

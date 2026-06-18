@@ -85,6 +85,16 @@ async function visiblePlacementBefore(
 }
 
 async function currentMoveUndoAction(tree: TreecrdtEngineTree, node: string): Promise<Action> {
+  const placement = await tree.placement?.(node);
+  if (placement) {
+    return {
+      type: 'move',
+      node,
+      parent: placement.parent,
+      placement: placement.placement,
+    };
+  }
+
   if (!(await tree.exists(node))) return { type: 'delete', node };
 
   const parent = await tree.parent(node);

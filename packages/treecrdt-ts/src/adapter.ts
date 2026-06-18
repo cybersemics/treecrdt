@@ -52,6 +52,13 @@ export interface TreecrdtAdapter {
     limit: number,
   ): Promise<unknown[]>;
   /**
+   * Fetch the current visible placement for a node.
+   *
+   * Returns raw JSON-decoded row `{ parent: string, after: string | null }`, or null for missing,
+   * tombstoned, or root nodes.
+   */
+  treePlacement?(node: Uint8Array): Promise<unknown | null>;
+  /**
    * Dump the full materialized tree state.
    *
    * Returns raw JSON-decoded rows (array of objects with byte fields).

@@ -37,6 +37,7 @@ export type RpcSchema = {
     params: [parent: string, cursor: { orderKey: number[]; node: number[] } | null, limit: number];
     result: unknown[];
   };
+  treePlacement: { params: [node: string]; result: unknown | null };
   treeDump: { params: []; result: unknown[] };
   treeNodeCount: { params: []; result: number };
   treeParent: { params: [node: string]; result: Uint8Array | null };

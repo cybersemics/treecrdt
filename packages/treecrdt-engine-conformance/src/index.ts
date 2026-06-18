@@ -166,6 +166,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioChildrenPagination,
     },
     {
+      name: 'tree: placement returns restore position',
+      run: scenarioTreePlacement,
+    },
+    {
       name: 'materialized tree: out-of-order ops rebuild correctly',
       run: scenarioOutOfOrderOpsRebuild,
     },
@@ -370,6 +374,23 @@ function assertBytesEqual(
   }
   for (let i = 0; i < actual.length; i++) {
     if (actual[i] !== expected[i]) throw new Error(`${message}: mismatch at byte ${i}`);
+  }
+}
+
+function assertPlacement(
+  actual: Awaited<ReturnType<NonNullable<TreecrdtEngine['tree']['placement']>>>,
+  expected: { parent: string; placement: { type: 'first' } | { type: 'after'; after: string } },
+  message: string,
+): void {
+  assert(actual, `${message}: expected placement`);
+  assertEqual(actual.parent, expected.parent, `${message} parent`);
+  assertEqual(actual.placement.type, expected.placement.type, `${message} placement type`);
+  if (expected.placement.type === 'after') {
+    assertEqual(
+      actual.placement.type === 'after' ? actual.placement.after : null,
+      expected.placement.after,
+      `${message} placement after`,
+    );
   }
 }
 
@@ -938,6 +959,54 @@ async function scenarioChildrenPagination(ctx: TreecrdtEngineConformanceContext)
     4,
   );
   assertEqual(p4.length, 0, 'childrenPage p4 length');
+}
+
+async function scenarioTreePlacement(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.placement) return;
+
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parentA = nodeIdFromInt(61);
+  const parentB = nodeIdFromInt(62);
+  const first = nodeIdFromInt(63);
+  const second = nodeIdFromInt(64);
+  const third = nodeIdFromInt(65);
+  const missing = nodeIdFromInt(66);
+
+  await engine.local.insert(replica, root, parentA, { type: 'last' }, null);
+  await engine.local.insert(replica, root, parentB, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, first, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, second, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, third, { type: 'last' }, null);
+
+  assertPlacement(
+    await engine.tree.placement(first),
+    { parent: parentA, placement: { type: 'first' } },
+    'first child placement',
+  );
+  assertPlacement(
+    await engine.tree.placement(second),
+    { parent: parentA, placement: { type: 'after', after: first } },
+    'second child placement',
+  );
+  assertPlacement(
+    await engine.tree.placement(third),
+    { parent: parentA, placement: { type: 'after', after: second } },
+    'third child placement',
+  );
+
+  await engine.local.move(replica, third, parentB, { type: 'first' });
+  assertPlacement(
+    await engine.tree.placement(third),
+    { parent: parentB, placement: { type: 'first' } },
+    'moved first child placement',
+  );
+
+  await engine.local.delete(replica, second);
+  assertEqual(await engine.tree.placement(second), null, 'deleted node placement');
+  assertEqual(await engine.tree.placement(root), null, 'root node placement');
+  assertEqual(await engine.tree.placement(missing), null, 'missing node placement');
 }
 
 async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContext): Promise<void> {
