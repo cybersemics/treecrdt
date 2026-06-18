@@ -392,7 +392,7 @@ impl<'a> ReplayAccumulator<'a> {
     }
 }
 
-fn frontier_from_op(op: &Operation) -> MaterializationFrontier {
+pub(crate) fn frontier_from_op(op: &Operation) -> MaterializationFrontier {
     MaterializationFrontier {
         lamport: op.meta.lamport,
         replica: op.meta.id.replica.as_bytes().to_vec(),
@@ -416,7 +416,7 @@ fn owned_frontier<R: AsRef<[u8]>>(frontier: &MaterializationKey<R>) -> Materiali
     }
 }
 
-fn cmp_frontiers<R1: AsRef<[u8]>, R2: AsRef<[u8]>>(
+pub(crate) fn cmp_frontiers<R1: AsRef<[u8]>, R2: AsRef<[u8]>>(
     a: &MaterializationKey<R1>,
     b: &MaterializationKey<R2>,
 ) -> Ordering {
@@ -449,7 +449,7 @@ fn start_replay_frontier() -> MaterializationFrontier {
     }
 }
 
-fn op_requires_full_replay(op: &Operation) -> bool {
+pub(crate) fn op_requires_full_replay(op: &Operation) -> bool {
     matches!(
         op.kind,
         crate::ops::OperationKind::Delete { .. } | crate::ops::OperationKind::Tombstone { .. }
@@ -472,7 +472,7 @@ fn payload_from_op(op: &Operation) -> Option<Option<Vec<u8>>> {
     }
 }
 
-fn rewind_structure_op_in_place<S: FrontierRewindStorage, N: NodeStore>(
+pub(crate) fn rewind_structure_op_in_place<S: FrontierRewindStorage, N: NodeStore>(
     nodes: &mut N,
     storage: &S,
     op: &Operation,
@@ -501,7 +501,7 @@ fn rewind_structure_op_in_place<S: FrontierRewindStorage, N: NodeStore>(
     Ok(())
 }
 
-fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
+pub(crate) fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
     payloads: &mut P,
     storage: &S,
     op: &Operation,
@@ -526,6 +526,38 @@ fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
     Ok(())
 }
 
+pub(crate) fn rewind_op_in_place<S, N, P>(
+    nodes: &mut N,
+    payloads: &mut P,
+    storage: &S,
+    op: &Operation,
+) -> Result<()>
+where
+    S: FrontierRewindStorage,
+    N: NodeStore,
+    P: ExactPayloadStore,
+{
+    match &op.kind {
+        crate::ops::OperationKind::Insert { .. } => {
+            if op_sets_payload(op) {
+                rewind_payload_op_in_place(payloads, storage, op)?;
+            }
+            rewind_structure_op_in_place(nodes, storage, op)?;
+        }
+        crate::ops::OperationKind::Move { .. } => rewind_structure_op_in_place(nodes, storage, op)?,
+        crate::ops::OperationKind::Payload { .. } => {
+            rewind_payload_op_in_place(payloads, storage, op)?
+        }
+        crate::ops::OperationKind::Delete { .. } | crate::ops::OperationKind::Tombstone { .. } => {
+            return Err(Error::Storage(
+                "delete/tombstone ops are not supported by direct rewind".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn rewind_existing_suffix_in_place<S, N, P>(
     nodes: &mut N,
     payloads: &mut P,
@@ -538,26 +570,7 @@ where
     P: ExactPayloadStore,
 {
     for op in existing_suffix_ops.iter().rev() {
-        match &op.kind {
-            crate::ops::OperationKind::Insert { .. } => {
-                if op_sets_payload(op) {
-                    rewind_payload_op_in_place(payloads, storage, op)?;
-                }
-                rewind_structure_op_in_place(nodes, storage, op)?;
-            }
-            crate::ops::OperationKind::Move { .. } => {
-                rewind_structure_op_in_place(nodes, storage, op)?
-            }
-            crate::ops::OperationKind::Payload { .. } => {
-                rewind_payload_op_in_place(payloads, storage, op)?
-            }
-            crate::ops::OperationKind::Delete { .. }
-            | crate::ops::OperationKind::Tombstone { .. } => {
-                return Err(Error::Storage(
-                    "delete/tombstone ops are not supported by direct rewind".into(),
-                ));
-            }
-        }
+        rewind_op_in_place(nodes, payloads, storage, op)?;
     }
 
     Ok(())

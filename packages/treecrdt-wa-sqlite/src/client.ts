@@ -2,6 +2,7 @@ import { clearOpfsStorage, detectOpfsSupport } from './opfs.js';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteWriter,
+  decodeSqliteLocalEditPlan,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
@@ -720,6 +721,10 @@ export async function buildDirectClient(
           const [node] = params as RpcParams<'treeExists'>;
           return (await adapter.treeExists(nodeIdToBytes16(node))) as any;
         }
+        case 'historyInvert': {
+          const [edit] = params as RpcParams<'historyInvert'>;
+          return (await adapter.historyInvert!(edit)) as any;
+        }
         case 'headLamport':
           return (await adapter.headLamport()) as any;
         case 'replicaMaxCounter': {
@@ -840,6 +845,8 @@ function makeTreecrdtClientFromCall(opts: {
     const result = await call('treePayload', [node]);
     return result === null ? null : toRpcBytes(result);
   };
+  const historyInvertImpl = async (edit: { operations: Operation[] }) =>
+    decodeSqliteLocalEditPlan(await call('historyInvert', [edit]));
   const headLamportImpl = async () => Number(await call('headLamport', []));
   const replicaMaxCounterImpl = async (replica: Operation['meta']['id']['replica']) =>
     Number(await call('replicaMaxCounter', [Array.from(encodeReplica(replica))]));
@@ -949,6 +956,7 @@ function makeTreecrdtClientFromCall(opts: {
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     local,
+    history: { invert: historyInvertImpl },
     onMaterialized: materialized.onMaterialized,
     close: closeImpl,
     drop: dropImpl,

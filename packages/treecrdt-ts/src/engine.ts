@@ -159,6 +159,38 @@ export type TreecrdtEngineOpRefs = {
   children: (parent: string) => Promise<Uint8Array[]>;
 };
 
+export type LocalDeleteAction = {
+  type: 'delete';
+  node: string;
+};
+
+export type LocalMoveAction = {
+  type: 'move';
+  node: string;
+  parent: string;
+  placement: TreecrdtSqlitePlacement;
+};
+
+export type LocalPayloadAction = {
+  type: 'payload';
+  node: string;
+  payload: Uint8Array | null;
+};
+
+export type LocalEditAction = LocalDeleteAction | LocalMoveAction | LocalPayloadAction;
+
+export type LocalEditPlan = {
+  actions: LocalEditAction[];
+};
+
+export type OperationEdit = {
+  operations: Operation[];
+};
+
+export type EngineHistory = {
+  invert: (edit: OperationEdit) => Promise<LocalEditPlan>;
+};
+
 export type TreecrdtEngineTree = {
   children: (parent: string) => Promise<string[]>;
   childrenPage?: (
@@ -172,6 +204,8 @@ export type TreecrdtEngineTree = {
   exists: (node: string) => Promise<boolean>;
   getPayload: (node: string) => Promise<Uint8Array | null>;
 };
+
+export type EngineTree = TreecrdtEngineTree;
 
 export type TreecrdtEngineMeta = {
   headLamport: () => Promise<number>;
@@ -200,6 +234,8 @@ export type BoundTreecrdtEngineLocal = {
   ) => Promise<Operation>;
 };
 
+export type BoundEngineLocal = BoundTreecrdtEngineLocal;
+
 export type TreecrdtEngineLocal = {
   insert: (
     replica: ReplicaId,
@@ -225,6 +261,8 @@ export type TreecrdtEngineLocal = {
   ) => Promise<Operation>;
   forReplica: (replica: ReplicaId, opts?: LocalWriteOptions) => BoundTreecrdtEngineLocal;
 };
+
+export type EngineLocal = TreecrdtEngineLocal;
 
 export type TreecrdtEngineLocalMethods = Omit<TreecrdtEngineLocal, 'forReplica'>;
 
@@ -273,6 +311,7 @@ export type TreecrdtEngine = {
   tree: TreecrdtEngineTree;
   meta: TreecrdtEngineMeta;
   local: TreecrdtEngineLocal;
+  history?: EngineHistory;
   onMaterialized: (listener: MaterializationListener) => () => void;
   close: () => Promise<void>;
 };

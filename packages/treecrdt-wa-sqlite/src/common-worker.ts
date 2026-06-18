@@ -134,6 +134,10 @@ export class CommonWorkerSession {
     return await this.ensureApi().treeExists(nodeIdToBytes16(node));
   }
 
+  async historyInvert(edit: { operations: Operation[] }) {
+    return await this.ensureApi().historyInvert!(edit);
+  }
+
   async headLamport() {
     return await this.ensureApi().headLamport();
   }
@@ -165,6 +169,7 @@ export function createCommonWorkerRpcHandlers(session: CommonWorkerSession) {
     treeParent: (node: string) => session.treeParent(node),
     treeExists: (node: string) => session.treeExists(node),
     treePayload: (node: string) => session.treePayload(node),
+    historyInvert: (edit: { operations: Operation[] }) => session.historyInvert(edit),
     headLamport: () => session.headLamport(),
     replicaMaxCounter: (replica: number[]) => session.replicaMaxCounter(replica),
   } as const;
