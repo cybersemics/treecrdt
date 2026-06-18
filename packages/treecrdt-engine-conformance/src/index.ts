@@ -1,5 +1,6 @@
 import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
+import { edits } from '@treecrdt/interface/edits';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
@@ -139,6 +140,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'local ops: materialization changes include writeId',
       run: scenarioLocalOpsMaterializationWriteId,
+    },
+    {
+      name: 'local undo: capture/apply supports undo and redo',
+      run: scenarioLocalUndoCaptureApply,
     },
     {
       name: 'append/appendMany: idempotent + headLamport monotonic',
@@ -629,6 +634,86 @@ async function scenarioLocalOpsMaterializationWriteId(
     'bound local insert',
   );
   assertChangeSource(boundInsertEvents[0]!, boundNode, boundInsertOp!, 'bound local insert');
+}
+
+async function scenarioLocalUndoCaptureApply(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parentA = nodeIdFromInt(51);
+  const parentB = nodeIdFromInt(52);
+  const sibling = nodeIdFromInt(53);
+  const node = nodeIdFromInt(54);
+  const inserted = nodeIdFromInt(55);
+  const originalPayload = new TextEncoder().encode('original-payload');
+  const nextPayload = new TextEncoder().encode('next-payload');
+  const insertedPayload = new TextEncoder().encode('inserted-payload');
+
+  await engine.local.insert(replica, root, parentA, { type: 'last' }, null);
+  await engine.local.insert(replica, root, parentB, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, sibling, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, node, { type: 'last' }, originalPayload);
+  assertArrayEqual(await engine.tree.children(parentA), [sibling, node], 'initial parentA');
+
+  const captured = await edits.capture(engine, replica, async (local) => {
+    const move = await local.move(node, parentB, { type: 'last' });
+    const payload = await local.payload(node, nextPayload);
+    return [move, payload];
+  });
+  assertEqual(captured.operations.length, 2, 'captured operation count');
+  assertEqual(captured.undo.actions.length, 2, 'captured undo action count');
+  assertArrayEqual(await engine.tree.children(parentA), [sibling], 'parentA after captured move');
+  assertArrayEqual(await engine.tree.children(parentB), [node], 'parentB after captured move');
+  assertBytesEqual(await engine.tree.getPayload(node), nextPayload, 'payload after captured write');
+
+  const undone = await edits.undo(engine, replica, captured);
+  assertEqual(undone.operations.length, 2, 'undo operation count');
+  assertArrayEqual(await engine.tree.children(parentA), [sibling, node], 'parentA after undo');
+  assertArrayEqual(await engine.tree.children(parentB), [], 'parentB after undo');
+  assertBytesEqual(await engine.tree.getPayload(node), originalPayload, 'payload after undo');
+
+  const redone = await edits.redo(engine, replica, undone);
+  assertEqual(redone.operations.length, 2, 'redo operation count');
+  assertArrayEqual(await engine.tree.children(parentA), [sibling], 'parentA after redo');
+  assertArrayEqual(await engine.tree.children(parentB), [node], 'parentB after redo');
+  assertBytesEqual(await engine.tree.getPayload(node), nextPayload, 'payload after redo');
+
+  const insertCapture = await edits.capture(engine, replica, async (local) =>
+    local.insert(parentB, inserted, { type: 'last' }, insertedPayload),
+  );
+  assertEqual(insertCapture.operations.length, 1, 'insert capture operation count');
+  assertEqual(await engine.tree.exists(inserted), true, 'inserted exists before undo');
+
+  const insertUndone = await edits.undo(engine, replica, insertCapture);
+  assertEqual(insertUndone.operations.length, 1, 'insert undo operation count');
+  assertEqual(await engine.tree.exists(inserted), false, 'inserted hidden after undo');
+
+  await edits.redo(engine, replica, insertUndone);
+  assertEqual(await engine.tree.exists(inserted), true, 'inserted restored after redo');
+  assertBytesEqual(
+    await engine.tree.getPayload(inserted),
+    insertedPayload,
+    'inserted payload after redo',
+  );
+  assertArrayEqual(
+    await engine.tree.children(parentB),
+    [node, inserted],
+    'parentB after insert redo',
+  );
+
+  const deleteCapture = await edits.capture(engine, replica, async (local) => local.delete(node));
+  assertEqual(deleteCapture.operations.length, 1, 'delete capture operation count');
+  assertEqual(await engine.tree.exists(node), false, 'node hidden after delete');
+  assertArrayEqual(await engine.tree.children(parentB), [inserted], 'parentB after delete');
+
+  await edits.undo(engine, replica, deleteCapture);
+  assertEqual(await engine.tree.exists(node), true, 'node restored after delete undo');
+  assertArrayEqual(
+    await engine.tree.children(parentB),
+    [node, inserted],
+    'parentB after delete undo',
+  );
+  assertBytesEqual(await engine.tree.getPayload(node), nextPayload, 'payload after delete undo');
 }
 
 async function scenarioAppendIdempotentAndHeadLamportMonotonic(
