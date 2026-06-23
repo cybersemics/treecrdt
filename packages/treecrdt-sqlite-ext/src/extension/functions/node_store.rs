@@ -783,6 +783,11 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
     ) -> treecrdt_core::Result<()> {
         self.ensure_node(node)?;
         let node_bytes = sqlite_node_id_bytes(node);
+        let vv_bytes = if vv.is_empty() {
+            None
+        } else {
+            Some(vv_to_bytes(vv)?)
+        };
         unsafe {
             sqlite_clear_bindings(self.update_last_change);
             sqlite_reset(self.update_last_change);
@@ -793,10 +798,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
                 node_bytes.len() as c_int,
                 None,
             );
-            if vv.is_empty() {
-                sqlite_bind_null(self.update_last_change, 2);
-            } else {
-                let bytes = vv_to_bytes(vv)?;
+            if let Some(bytes) = &vv_bytes {
                 sqlite_bind_blob(
                     self.update_last_change,
                     2,
@@ -804,6 +806,8 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
                     bytes.len() as c_int,
                     None,
                 );
+            } else {
+                sqlite_bind_null(self.update_last_change, 2);
             }
             let step_rc = sqlite_step(self.update_last_change);
             sqlite_reset(self.update_last_change);
@@ -821,6 +825,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
     ) -> treecrdt_core::Result<()> {
         self.ensure_node(node)?;
         let node_bytes = sqlite_node_id_bytes(node);
+        let vv_bytes = vv.filter(|vv| !vv.is_empty()).map(vv_to_bytes).transpose()?;
         unsafe {
             sqlite_clear_bindings(self.update_deleted_at);
             sqlite_reset(self.update_deleted_at);
@@ -831,8 +836,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
                 node_bytes.len() as c_int,
                 None,
             );
-            if let Some(vv) = vv.filter(|vv| !vv.is_empty()) {
-                let bytes = vv_to_bytes(vv)?;
+            if let Some(bytes) = &vv_bytes {
                 sqlite_bind_blob(
                     self.update_deleted_at,
                     2,

@@ -154,6 +154,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalUndoHistoryReplay,
     },
     {
+      name: 'local undo: imported ops survive history undo/redo',
+      run: scenarioLocalUndoImportedOpsSurvive,
+    },
+    {
       name: 'append/appendMany: idempotent + headLamport monotonic',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
@@ -1055,6 +1059,145 @@ async function scenarioLocalUndoHistoryReplay(
     await engine.tree.getPayload(inserted),
     replacementPayload,
     'lazy replacement payload after redo',
+  );
+}
+
+async function scenarioLocalUndoImportedOpsSurvive(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  if (!a.history) return;
+  const historyA = a as typeof a & { history: NonNullable<typeof a.history> };
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+  const root = nodeIdFromInt(0);
+  const parentA = nodeIdFromInt(171);
+  const parentB = nodeIdFromInt(172);
+  const target = nodeIdFromInt(173);
+  const remoteSibling = nodeIdFromInt(174);
+  const textEncoder = new TextEncoder();
+  const originalPayload = textEncoder.encode('imported-ops-original');
+  const nextPayload = textEncoder.encode('imported-ops-next');
+  const remotePayload = textEncoder.encode('imported-ops-remote');
+
+  await a.local.insert(rA, root, parentA, { type: 'last' }, null);
+  await a.local.insert(rA, root, parentB, { type: 'last' }, null);
+  await a.local.insert(rA, parentA, target, { type: 'last' }, originalPayload);
+
+  // Bring B to the same initial state, then let A and B diverge.
+  await b.ops.appendMany(await a.ops.all());
+
+  const captured = await edits.capture(a, rA, async (local) => {
+    await local.move(target, parentB, { type: 'last' });
+    await local.payload(target, nextPayload);
+  });
+  assertArrayEqual(await a.tree.children(parentA), [], 'imported undo parentA after capture');
+  assertArrayEqual(await a.tree.children(parentB), [target], 'imported undo parentB after capture');
+  assertBytesEqual(
+    await a.tree.getPayload(target),
+    nextPayload,
+    'imported undo payload after capture',
+  );
+
+  // This simulates a sync/import that happens after the local edit was captured but before undo.
+  await b.local.insert(rB, parentA, remoteSibling, { type: 'last' }, remotePayload);
+  await a.ops.appendMany(await b.ops.all());
+  assertArrayEqual(
+    await a.tree.children(parentA),
+    [remoteSibling],
+    'imported undo parentA after remote sync',
+  );
+  assertArrayEqual(
+    await a.tree.children(parentB),
+    [target],
+    'imported undo parentB after remote sync',
+  );
+  assertBytesEqual(
+    await a.tree.getPayload(remoteSibling),
+    remotePayload,
+    'imported undo remote payload after sync',
+  );
+
+  const undone = await edits.undo(historyA, rA, captured);
+  assertArrayEqual(
+    await a.tree.children(parentA),
+    [target, remoteSibling],
+    'imported undo parentA after undo',
+  );
+  assertArrayEqual(await a.tree.children(parentB), [], 'imported undo parentB after undo');
+  assertBytesEqual(
+    await a.tree.getPayload(target),
+    originalPayload,
+    'imported undo target payload after undo',
+  );
+  assertBytesEqual(
+    await a.tree.getPayload(remoteSibling),
+    remotePayload,
+    'imported undo remote payload survives undo',
+  );
+
+  await b.ops.appendMany(await a.ops.all());
+  assertArrayEqual(
+    await b.tree.children(parentA),
+    [target, remoteSibling],
+    'imported undo peer parentA after syncing undo',
+  );
+  assertArrayEqual(
+    await b.tree.children(parentB),
+    [],
+    'imported undo peer parentB after syncing undo',
+  );
+  assertBytesEqual(
+    await b.tree.getPayload(target),
+    originalPayload,
+    'imported undo peer target payload after undo',
+  );
+  assertBytesEqual(
+    await b.tree.getPayload(remoteSibling),
+    remotePayload,
+    'imported undo peer remote payload survives undo',
+  );
+
+  await edits.redo(a, rA, undone);
+  assertArrayEqual(
+    await a.tree.children(parentA),
+    [remoteSibling],
+    'imported undo parentA after redo',
+  );
+  assertArrayEqual(await a.tree.children(parentB), [target], 'imported undo parentB after redo');
+  assertBytesEqual(
+    await a.tree.getPayload(target),
+    nextPayload,
+    'imported undo target payload after redo',
+  );
+  assertBytesEqual(
+    await a.tree.getPayload(remoteSibling),
+    remotePayload,
+    'imported undo remote payload survives redo',
+  );
+
+  await b.ops.appendMany(await a.ops.all());
+  assertArrayEqual(
+    await b.tree.children(parentA),
+    [remoteSibling],
+    'imported undo peer parentA after syncing redo',
+  );
+  assertArrayEqual(
+    await b.tree.children(parentB),
+    [target],
+    'imported undo peer parentB after syncing redo',
+  );
+  assertBytesEqual(
+    await b.tree.getPayload(target),
+    nextPayload,
+    'imported undo peer target payload after redo',
+  );
+  assertBytesEqual(
+    await b.tree.getPayload(remoteSibling),
+    remotePayload,
+    'imported undo peer remote payload survives redo',
   );
 }
 
