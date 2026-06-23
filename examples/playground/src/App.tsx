@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Operation } from "@treecrdt/interface";
+import { edits, type Captured, type RedoResult, type UndoResult } from "@treecrdt/interface/edits";
 import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from "@treecrdt/wa-sqlite";
@@ -46,6 +47,16 @@ import type {
 const PLAYGROUND_SYNC_SERVER_URL_KEY = "treecrdt-playground-sync-server-url";
 const PLAYGROUND_SYNC_TRANSPORT_MODE_KEY = "treecrdt-playground-sync-transport-mode";
 
+type PlaygroundUndoEntry = Captured<unknown> | RedoResult;
+type PlaygroundRedoEntry = UndoResult;
+
+function requireHistoryClient(client: TreecrdtClient): TreecrdtClient & { history: NonNullable<TreecrdtClient["history"]> } {
+  if (!client.history) {
+    throw new Error("This TreeCRDT runtime does not expose history inversion.");
+  }
+  return client as TreecrdtClient & { history: NonNullable<TreecrdtClient["history"]> };
+}
+
 function isSyncTransportMode(value: string | null): value is SyncTransportMode {
   return value === "local" || value === "remote" || value === "hybrid";
 }
@@ -85,6 +96,8 @@ export default function App() {
   }));
   const [status, setStatus] = useState<Status>("booting");
   const [error, setError] = useState<string | null>(null);
+  const [undoStackSize, setUndoStackSize] = useState(0);
+  const [redoStackSize, setRedoStackSize] = useState(0);
   const [headLamport, setHeadLamport] = useState(0);
   const [totalNodes, setTotalNodes] = useState<number | null>(null);
   const [docId, setDocId] = useState<string>(() => initialDocId());
@@ -275,6 +288,8 @@ export default function App() {
 
   const payloadWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const childrenLoadInFlightRef = useRef<Set<string>>(new Set());
+  const undoStackRef = useRef<PlaygroundUndoEntry[]>([]);
+  const redoStackRef = useRef<PlaygroundRedoEntry[]>([]);
 
   const ensureChildrenLoaded = React.useCallback(
     async (parentId: string, opts: { force?: boolean; nextClient?: TreecrdtClient } = {}) => {
@@ -451,11 +466,6 @@ export default function App() {
   };
 
   const { index, childrenByParent } = treeState;
-  const getLocalWriter = React.useCallback((): BoundTreecrdtEngineLocal | null => {
-    if (!client || !replica) return null;
-    return client.local.forReplica(replica, getLocalWriteOptions());
-  }, [client, getLocalWriteOptions, replica]);
-
   const {
     peers,
     remoteSyncStatus,
@@ -503,6 +513,40 @@ export default function App() {
       recordOps(ops, { assumeSorted: true });
     },
     [queueLocalOpsForSync, recordOps]
+  );
+
+  const refreshUndoRedoCounts = React.useCallback(() => {
+    setUndoStackSize(undoStackRef.current.length);
+    setRedoStackSize(redoStackRef.current.length);
+  }, []);
+
+  const clearUndoRedo = React.useCallback(() => {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    refreshUndoRedoCounts();
+  }, [refreshUndoRedoCounts]);
+
+  const pushUndoEntry = React.useCallback(
+    (entry: PlaygroundUndoEntry) => {
+      if (entry.operations.length === 0) return;
+      undoStackRef.current.push(entry);
+      redoStackRef.current = [];
+      refreshUndoRedoCounts();
+    },
+    [refreshUndoRedoCounts]
+  );
+
+  const captureLocalEdit = React.useCallback(
+    async <T,>(fn: (local: BoundTreecrdtEngineLocal) => Promise<T>): Promise<Captured<T> | null> => {
+      if (!client || !replica) return null;
+      const captured = await edits.capture(client, replica, fn, getLocalWriteOptions());
+      if (captured.operations.length > 0) {
+        handleCommittedLocalOps(captured.operations);
+        pushUndoEntry(captured);
+      }
+      return captured;
+    },
+    [client, getLocalWriteOptions, handleCommittedLocalOps, pushUndoEntry, replica]
   );
 
   const grantSubtreeToReplicaPubkey = React.useCallback(
@@ -689,6 +733,7 @@ export default function App() {
         : sessionKey;
     setSessionKey(nextKey);
     resetOps();
+    clearUndoRedo();
     setTreeState({
       index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0 } },
       childrenByParent: { [ROOT_ID]: [] },
@@ -710,14 +755,12 @@ export default function App() {
   };
 
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {
-    const localWriter = getLocalWriter();
-    if (!localWriter) return;
+    if (!client || !replica) return;
     if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
     setBusy(true);
     try {
       const placement = after ? { type: "after" as const, after } : { type: "first" as const };
-      const op = await localWriter.move(nodeId, newParent, placement);
-      handleCommittedLocalOps([op]);
+      await captureLocalEdit((localWriter) => localWriter.move(nodeId, newParent, placement));
     } catch (err) {
       console.error("Failed to append move op", err);
       setError("Failed to move node (see console)");
@@ -727,8 +770,7 @@ export default function App() {
   };
 
   const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
-    const localWriter = getLocalWriter();
-    if (!localWriter) return;
+    if (!client || !replica) return;
     if (authEnabled && !canWriteStructure) return;
     const normalizedCount = Math.max(0, Math.min(MAX_COMPOSER_NODE_COUNT, Math.floor(count)));
     if (normalizedCount <= 0) return;
@@ -743,78 +785,87 @@ export default function App() {
       const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
 
-      if (fanoutLimit <= 0) {
-        for (let i = 0; i < normalizedCount; i++) {
-          const nodeId = makeNodeId();
-          const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
-          const completed = i + 1;
-          if (completed === normalizedCount || completed % progressStep === 0) {
-            setBulkAddProgress((prev) =>
-              prev ? { ...prev, completed } : prev
-            );
-          }
-        }
-      } else {
-        const expanded = new Set<string>();
-        const queue: string[] = [parentId];
-        const childCountByParent = new Map<string, number>();
-
-        const getChildCount = (id: string) => {
-          const existing = childCountByParent.get(id);
-          if (typeof existing === "number") return existing;
-          return (childrenByParent[id] ?? []).length;
-        };
-
-        const setChildCount = (id: string, nextCount: number) => {
-          childCountByParent.set(id, nextCount);
-        };
-
-        const ensureExpanded = (id: string) => {
-          if (expanded.has(id)) return;
-          expanded.add(id);
-          for (const childId of childrenByParent[id] ?? []) {
-            queue.push(childId);
-          }
-        };
-
-        for (let i = 0; i < normalizedCount; i++) {
-          while (queue.length > 0) {
-            const candidate = queue[0];
-            ensureExpanded(candidate);
-            const childCount = getChildCount(candidate);
-            if (childCount < fanoutLimit) break;
-            queue.shift();
+      const captured = await edits.capture(
+        client,
+        replica,
+        async (localWriter) => {
+          if (fanoutLimit <= 0) {
+            for (let i = 0; i < normalizedCount; i++) {
+              const nodeId = makeNodeId();
+              const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
+              const payload = shouldSetValue ? textEncoder.encode(value) : null;
+              const encryptedPayload = await encryptPayloadBytes(payload);
+              ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
+              const completed = i + 1;
+              if (completed === normalizedCount || completed % progressStep === 0) {
+                setBulkAddProgress((prev) =>
+                  prev ? { ...prev, completed } : prev
+                );
+              }
+            }
+            return;
           }
 
-          const targetParent = queue[0] ?? parentId;
-          const childCount = getChildCount(targetParent);
+          const expanded = new Set<string>();
+          const queue: string[] = [parentId];
+          const childCountByParent = new Map<string, number>();
 
-          const nodeId = makeNodeId();
-          const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
-          const payload = shouldSetValue ? textEncoder.encode(value) : null;
-          const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(await localWriter.insert(targetParent, nodeId, { type: "last" }, encryptedPayload));
+          const getChildCount = (id: string) => {
+            const existing = childCountByParent.get(id);
+            if (typeof existing === "number") return existing;
+            return (childrenByParent[id] ?? []).length;
+          };
 
-          setChildCount(targetParent, childCount + 1);
-          queue.push(nodeId);
-          const completed = i + 1;
-          if (completed === normalizedCount || completed % progressStep === 0) {
-            setBulkAddProgress((prev) =>
-              prev ? { ...prev, completed } : prev
-            );
+          const setChildCount = (id: string, nextCount: number) => {
+            childCountByParent.set(id, nextCount);
+          };
+
+          const ensureExpanded = (id: string) => {
+            if (expanded.has(id)) return;
+            expanded.add(id);
+            for (const childId of childrenByParent[id] ?? []) {
+              queue.push(childId);
+            }
+          };
+
+          for (let i = 0; i < normalizedCount; i++) {
+            while (queue.length > 0) {
+              const candidate = queue[0];
+              ensureExpanded(candidate);
+              const childCount = getChildCount(candidate);
+              if (childCount < fanoutLimit) break;
+              queue.shift();
+            }
+
+            const targetParent = queue[0] ?? parentId;
+            const childCount = getChildCount(targetParent);
+
+            const nodeId = makeNodeId();
+            const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
+            const payload = shouldSetValue ? textEncoder.encode(value) : null;
+            const encryptedPayload = await encryptPayloadBytes(payload);
+            ops.push(await localWriter.insert(targetParent, nodeId, { type: "last" }, encryptedPayload));
+
+            setChildCount(targetParent, childCount + 1);
+            queue.push(nodeId);
+            const completed = i + 1;
+            if (completed === normalizedCount || completed % progressStep === 0) {
+              setBulkAddProgress((prev) =>
+                prev ? { ...prev, completed } : prev
+              );
+            }
           }
-        }
-      }
+        },
+        getLocalWriteOptions()
+      );
 
       setBulkAddProgress((prev) =>
         prev ? { ...prev, completed: normalizedCount, phase: "applying" } : prev
       );
 
-      handleCommittedLocalOps(ops);
+      handleCommittedLocalOps(captured.operations);
       opsRecorded = true;
+      pushUndoEntry(captured);
       expandPathTo(parentId);
     } catch (err) {
       if (!opsRecorded && ops.length > 0) handleCommittedLocalOps(ops);
@@ -827,8 +878,7 @@ export default function App() {
   };
 
   const handleInsert = async (parentId: string) => {
-    const localWriter = getLocalWriter();
-    if (!localWriter) return;
+    if (!client || !replica) return;
     if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
@@ -836,8 +886,7 @@ export default function App() {
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
-      const op = await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload);
-      handleCommittedLocalOps([op]);
+      await captureLocalEdit((localWriter) => localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
       }
@@ -855,13 +904,11 @@ export default function App() {
       .catch(() => undefined)
       .then(async () => {
         if (nodeId === ROOT_ID) return;
-        const localWriter = getLocalWriter();
-        if (!localWriter) return;
+        if (!client || !replica) return;
         try {
           const payload = value.trim().length === 0 ? null : textEncoder.encode(value);
           const encryptedPayload = await encryptPayloadBytes(payload);
-          const op = await localWriter.payload(nodeId, encryptedPayload);
-          handleCommittedLocalOps([op]);
+          await captureLocalEdit((localWriter) => localWriter.payload(nodeId, encryptedPayload));
         } catch (err) {
           console.error("Failed to write payload", err);
           setError("Failed to write payload (see console)");
@@ -872,15 +919,66 @@ export default function App() {
   };
 
   const handleDelete = async (nodeId: string) => {
-    const localWriter = getLocalWriter();
-    if (nodeId === ROOT_ID || !localWriter) return;
+    if (nodeId === ROOT_ID || !client || !replica) return;
     setBusy(true);
     try {
-      const op = await localWriter.delete(nodeId);
-      handleCommittedLocalOps([op]);
+      await captureLocalEdit((localWriter) => localWriter.delete(nodeId));
     } catch (err) {
       console.error("Failed to delete node", err);
       setError("Failed to delete node (see console)");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUndo = async () => {
+    if (!client || !replica || busy) return;
+    const entry = undoStackRef.current.pop();
+    if (!entry) {
+      refreshUndoRedoCounts();
+      return;
+    }
+    refreshUndoRedoCounts();
+    setBusy(true);
+    try {
+      await payloadWriteQueueRef.current.catch(() => undefined);
+      const result =
+        "undo" in entry
+          ? await edits.undo(client, replica, entry, getLocalWriteOptions())
+          : await edits.undo(requireHistoryClient(client), replica, entry, getLocalWriteOptions());
+      handleCommittedLocalOps(result.operations);
+      redoStackRef.current.push(result);
+      refreshUndoRedoCounts();
+    } catch (err) {
+      undoStackRef.current.push(entry);
+      refreshUndoRedoCounts();
+      console.error("Failed to undo edit", err);
+      setError("Failed to undo edit (see console)");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRedo = async () => {
+    if (!client || !replica || busy) return;
+    const entry = redoStackRef.current.pop();
+    if (!entry) {
+      refreshUndoRedoCounts();
+      return;
+    }
+    refreshUndoRedoCounts();
+    setBusy(true);
+    try {
+      await payloadWriteQueueRef.current.catch(() => undefined);
+      const result = await edits.redo(client, replica, entry, getLocalWriteOptions());
+      handleCommittedLocalOps(result.operations);
+      undoStackRef.current.push(result);
+      refreshUndoRedoCounts();
+    } catch (err) {
+      redoStackRef.current.push(entry);
+      refreshUndoRedoCounts();
+      console.error("Failed to redo edit", err);
+      setError("Failed to redo edit (see console)");
     } finally {
       setBusy(false);
     }
@@ -1001,6 +1099,7 @@ export default function App() {
 
       <PlaygroundHeader
         status={status}
+        busy={busy}
         storage={storage}
         opfsAvailable={opfsSupport.available}
         joinMode={joinMode}
@@ -1015,6 +1114,10 @@ export default function App() {
         onSelectStorage={handleStorageToggle}
         onNewDoc={handleNewDoc}
         onReset={handleReset}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={undoStackSize > 0}
+        canRedo={redoStackSize > 0}
         onExpandAll={expandAll}
         onCollapseAll={collapseAll}
         error={error}

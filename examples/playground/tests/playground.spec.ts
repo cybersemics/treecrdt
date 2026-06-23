@@ -478,6 +478,38 @@ test("insert and delete node", async ({ page }) => {
   await expect(parentRow).toHaveCount(0, { timeout: 30_000 });
 });
 
+test("undo and redo local edit from header", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  const doc = uniqueDocId("pw-playground-undo-redo");
+  await waitForReady(page, `/?doc=${encodeURIComponent(doc)}`);
+  await expectAuthEnabledByDefault(page);
+  await waitForLocalAuthTokens(page);
+
+  const undoButton = page.getByRole("button", { name: "Undo", exact: true });
+  const redoButton = page.getByRole("button", { name: "Redo", exact: true });
+  await expect(undoButton).toBeDisabled();
+  await expect(redoButton).toBeDisabled();
+
+  await page.getByPlaceholder("Stored as payload bytes").fill("undoable parent");
+  await treeRowByNodeId(page, ROOT_ID).getByRole("button", { name: "Add child" }).click();
+
+  const parentRow = treeRowByLabel(page, "undoable parent");
+  await expect(parentRow).toBeVisible({ timeout: 30_000 });
+  await expect(undoButton).toBeEnabled({ timeout: 30_000 });
+  await expect(redoButton).toBeDisabled();
+
+  await undoButton.click();
+  await expect(parentRow).toHaveCount(0, { timeout: 30_000 });
+  await expect(undoButton).toBeDisabled();
+  await expect(redoButton).toBeEnabled({ timeout: 30_000 });
+
+  await redoButton.click();
+  await expect(treeRowByLabel(page, "undoable parent")).toBeVisible({ timeout: 30_000 });
+  await expect(undoButton).toBeEnabled({ timeout: 30_000 });
+  await expect(redoButton).toBeDisabled();
+});
+
 test("live payload editing commits each keystroke without clobbering the draft", async ({ page }) => {
   test.setTimeout(90_000);
 
