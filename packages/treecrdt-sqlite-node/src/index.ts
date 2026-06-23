@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createTreecrdtSqliteAdapter,
   createTreecrdtSqliteWriter,
+  decodeSqliteLocalEditPlan,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
@@ -248,6 +249,9 @@ export function createTreecrdtClient(
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),
     local,
+    history: {
+      invert: async (edit) => decodeSqliteLocalEditPlan(await adapter.historyInvert!(edit)),
+    },
     onMaterialized: materialized.onMaterialized,
     runner,
     close: async () => {

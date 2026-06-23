@@ -1,5 +1,6 @@
 import type { Operation } from './index.js';
 import type { MaterializationOutcome } from './engine.js';
+import type { OperationEdit } from './engine.js';
 
 export type SerializeNodeId = (id: string) => Uint8Array;
 export type SerializeReplica = (replica: Operation['meta']['id']['replica']) => Uint8Array;
@@ -77,6 +78,12 @@ export interface TreecrdtAdapter {
    * Returns the opaque byte payload or null if the node has no payload.
    */
   treePayload(node: Uint8Array): Promise<Uint8Array | null>;
+  /**
+   * Derive a local edit plan that inverts a captured operation edit.
+   *
+   * Returns raw JSON-decoded plan rows; storage backends own the replay/history semantics.
+   */
+  historyInvert?(edit: OperationEdit): Promise<unknown>;
   /**
    * Fetch the maximum lamport seen in the op log.
    */

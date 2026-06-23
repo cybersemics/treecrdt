@@ -1,9 +1,10 @@
-import { MdContentCopy, MdGroup, MdLockOutline, MdOpenInNew, MdVpnKey } from "react-icons/md";
+import { MdContentCopy, MdGroup, MdLockOutline, MdOpenInNew, MdRedo, MdUndo, MdVpnKey } from "react-icons/md";
 
 import type { Status, StorageMode } from "../types";
 
 export function PlaygroundHeader({
   status,
+  busy,
   storage,
   opfsAvailable,
   joinMode,
@@ -14,11 +15,16 @@ export function PlaygroundHeader({
   onSelectStorage,
   onNewDoc,
   onReset,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
   onExpandAll,
   onCollapseAll,
   error,
 }: {
   status: Status;
+  busy: boolean;
   storage: StorageMode;
   opfsAvailable: boolean;
   joinMode: boolean;
@@ -29,6 +35,10 @@ export function PlaygroundHeader({
   onSelectStorage: (next: StorageMode) => void;
   onNewDoc: () => void;
   onReset: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   onExpandAll: () => void;
   onCollapseAll: () => void;
   error: string | null;
@@ -141,6 +151,26 @@ export function PlaygroundHeader({
           disabled={status !== "ready"}
         >
           Reset
+        </button>
+        <button
+          className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+          onClick={onUndo}
+          disabled={status !== "ready" || busy || !canUndo}
+          title="Undo last local edit"
+          aria-label="Undo"
+        >
+          <MdUndo className="text-[14px]" />
+          Undo
+        </button>
+        <button
+          className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+          onClick={onRedo}
+          disabled={status !== "ready" || busy || !canRedo}
+          title="Redo last undone edit"
+          aria-label="Redo"
+        >
+          <MdRedo className="text-[14px]" />
+          Redo
         </button>
         <button
           className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"

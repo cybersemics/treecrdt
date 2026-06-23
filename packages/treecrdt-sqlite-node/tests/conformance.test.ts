@@ -7,6 +7,7 @@ import {
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
+import { edits } from '@treecrdt/interface/edits';
 import {
   createTreecrdtClient,
   defaultExtensionPath,
@@ -89,6 +90,38 @@ test('sqlite auth-aware local write emits materialization after auth succeeds', 
     expect(await client.ops.all()).toHaveLength(1);
   } finally {
     unsubscribe();
+    await client.close();
+  }
+});
+
+test('sqlite history invert uses suffix rewind before full replay fallback', async () => {
+  const client = await createNodeEngine({ docId: 'sqlite-history-invert-fast-path' });
+  const prefix = nodeIdFromInt(20);
+  const target = nodeIdFromInt(21);
+
+  try {
+    await client.local.insert(replica, root, prefix, { type: 'last' }, null);
+    const captured = await edits.capture(client, replica, async (local) =>
+      local.insert(root, target, { type: 'last' }, null),
+    );
+
+    const idsWithoutLamport = captured.operations.map((op) => ({
+      replica: Array.from(op.meta.id.replica),
+      counter: op.meta.id.counter,
+    }));
+
+    client.runner.exec("UPDATE ops SET kind = 'bad-for-full-replay' WHERE counter = 1");
+
+    expect(() =>
+      client.runner.getText('SELECT treecrdt_history_invert(?1)', [
+        JSON.stringify(idsWithoutLamport),
+      ]),
+    ).toThrow();
+
+    await expect(client.history!.invert(captured)).resolves.toEqual({
+      actions: [{ type: 'delete', node: target }],
+    });
+  } finally {
     await client.close();
   }
 });
