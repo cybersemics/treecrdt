@@ -55,7 +55,11 @@ import {
 } from '@treecrdt/sync-protocol/transport';
 import { startSyncServer } from '@treecrdt/sync-server-postgres-node';
 
-import { createTreecrdtClient, createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
+import {
+  createTreecrdtClientFromDatabase,
+  createSqliteNodeApi,
+  loadTreecrdtExtension,
+} from '../dist/index.js';
 import {
   resetBackendProfiler,
   takeBackendProfilerSnapshot,
@@ -1022,7 +1026,7 @@ async function makeBackend(opts: {
   initialMaxLamport: number;
   profileLabel?: string;
 }): Promise<FlushableSyncBackend<Operation>> {
-  const client = await createTreecrdtClient(opts.db, { docId: opts.docId });
+  const client = await createTreecrdtClientFromDatabase(opts.db, { docId: opts.docId });
   const backend = createTreecrdtSyncBackendFromClient(client, opts.docId);
   const queued = makeQueuedSyncBackend<Operation>({
     docId: opts.docId,
@@ -1063,7 +1067,7 @@ async function measureFirstViewAfterSync(
   docId: string,
   firstView: NonNullable<ReturnType<typeof buildSyncBenchCase>['firstView']>,
 ): Promise<number> {
-  const client = await createTreecrdtClient(db, { docId });
+  const client = await createTreecrdtClientFromDatabase(db, { docId });
   const expectedChildren = Math.min(firstView.expectedChildren, firstView.pageSize);
   const startedAt = performance.now();
   const rows = await client.tree.childrenPage(firstView.parent, null, firstView.pageSize);

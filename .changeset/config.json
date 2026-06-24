@@ -13,7 +13,6 @@
     "@treecrdt/engine-conformance",
     "@treecrdt/playground",
     "@treecrdt/postgres-napi",
-    "@treecrdt/sqlite-node",
     "@treecrdt/wa-sqlite-demo",
     "@treecrdt/wa-sqlite-vendor",
     "@treecrdt/wasm"

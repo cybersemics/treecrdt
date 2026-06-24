@@ -1,17 +1,24 @@
 {
   "name": "@treecrdt/sqlite-node",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "files": [
     "dist",
+    "src",
     "native"
   ],
   "scripts": {
     "build:native-ext": "cd ../.. && pnpm run build:ext:native",
     "copy:ext": "node ./scripts/copy-ext.mjs",
+    "prepack": "node ./scripts/verify-package.mjs",
     "build:ts": "tsc -p tsconfig.json",
     "build": "pnpm run build:native-ext && pnpm run copy:ext && pnpm run build:ts",
     "test": "pnpm -C ../sync-protocol/protocol run build && pnpm -C ../sync-protocol/material/sqlite run build && pnpm run build && vitest run",
@@ -47,5 +54,18 @@
     "typescript": "^5.9.3",
     "vitest": "^1.6.0",
     "ws": "^8.18.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cybersemics/treecrdt.git",
+    "directory": "packages/treecrdt-sqlite-node"
+  },
+  "bugs": {
+    "url": "https://github.com/cybersemics/treecrdt/issues"
+  },
+  "homepage": "https://github.com/cybersemics/treecrdt#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }
