@@ -9,10 +9,37 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@treecrdt/dis
 - You want a single dependency to **open a websocket** to a sync server and run reconciliation against a SQLite-backed client store.
 - You are fine with the built-in discovery + WebSocket + protobuf wiring.
 
+## Multi-peer outbound upload
+
+Use `createOutboundSync` with a `localPeer` when one `SyncPeer` owns several transports, such as
+local-tab mesh peers plus a remote websocket server. The app still manages transport discovery, but
+outbound sync owns the committed-local-op hook: it attaches remote upload targets, wakes live
+subscriptions on the `localPeer`, and queues exact local-op upload with dedupe and offline retry.
+
+```ts
+import { createOutboundSync } from '@treecrdt/sync';
+
+const outbound = createOutboundSync({
+  localPeer: peer,
+  isOnline: () => navigator.onLine,
+});
+
+const detachRemote = outbound.attachTarget('remote:server', websocketTransport);
+
+const op = await client.local.payload(replica, node, payload);
+outbound.queueOps([op]); // live subscription wakeup + remote websocket upload/retry
+```
+
+Use `addTarget` only when the transport was already attached to the same `localPeer`. `queueOps`
+dedupes standard TreeCRDT `Operation` values by `meta.id`. Pass `opKey` only for a custom op shape
+or custom coalescing behavior.
+
 ## When not to
 
 - You only need the protocol types and `SyncPeer` (use **`@treecrdt/sync-protocol`**).
 - You use a custom transport, no discovery, or an in-memory backend (depend on the protocol and/or **`@treecrdt/discovery`** as needed).
+- You want exact low-level control over each `syncOnce`, `startLive`, and direct push call; use
+  `connectTreecrdtWebSocketSync` directly.
 
 ## Repo location
 
