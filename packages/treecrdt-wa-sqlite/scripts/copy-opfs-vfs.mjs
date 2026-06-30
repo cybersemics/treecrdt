@@ -40,6 +40,24 @@ const sources = [
       content.replace('../FacadeVFS.js', './FacadeVFS.js').replace('../VFS.js', './VFS.js'),
   },
   {
+    src: path.join(vendorRoot, 'src/examples/OPFSWriteAheadVFS.js'),
+    name: 'OPFSWriteAheadVFS.js',
+    transform: (content) =>
+      content.replace('../FacadeVFS.js', './FacadeVFS.js').replace('../VFS.js', './VFS.js'),
+  },
+  {
+    src: path.join(vendorRoot, 'src/examples/WriteAhead.js'),
+    name: 'WriteAhead.js',
+  },
+  {
+    src: path.join(vendorRoot, 'src/examples/LazyLock.js'),
+    name: 'LazyLock.js',
+  },
+  {
+    src: path.join(vendorRoot, 'src/examples/Lock.js'),
+    name: 'Lock.js',
+  },
+  {
     src: path.join(vendorRoot, 'src/examples/OPFSCoopSyncVFS.js'),
     name: 'OPFSCoopSyncVFS.js',
     transform: (content) =>

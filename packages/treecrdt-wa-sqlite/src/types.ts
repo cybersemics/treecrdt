@@ -18,7 +18,7 @@ export type Database = {
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
-export type OpfsWriteMode = 'default' | 'single-owner-wal';
+export type OpfsWriteMode = 'default' | 'single-owner-wal' | 'opfs-write-ahead';
 export type TreecrdtStorage =
   | { type: 'memory' }
   | {
@@ -26,9 +26,13 @@ export type TreecrdtStorage =
       filename?: string;
       fallback?: 'throw' | 'memory';
       /**
-       * `single-owner-wal` enables SQLite WAL with exclusive locking. Use it only
-       * when the application guarantees one active TreeCRDT client owns the OPFS
-       * database file.
+       * `single-owner-wal` enables SQLite WAL with exclusive locking on
+       * AccessHandlePoolVFS. Use it only when the application guarantees one
+       * active TreeCRDT client owns the OPFS database file.
+       *
+       * `opfs-write-ahead` enables upstream wa-sqlite's OPFSWriteAheadVFS. This
+       * is experimental and currently limited to browsers that support OPFS
+       * access handles with readwrite-unsafe locking.
        */
       writeMode?: OpfsWriteMode;
     }

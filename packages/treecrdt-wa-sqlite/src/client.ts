@@ -60,6 +60,7 @@ import type {
   TreecrdtRuntime,
   WorkerProxy,
 } from './types.js';
+import { runOpfsWriteAheadWrite } from './opfs-write-ahead.js';
 
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
 // Keep long browser appendMany calls from monopolizing the worker queue.
@@ -68,7 +69,10 @@ const APPEND_MANY_RPC_CHUNK_SIZE = 2500;
 function normalizeOpfsWriteMode(value: unknown): OpfsWriteMode {
   if (value === undefined || value === 'default') return 'default';
   if (value === 'single-owner-wal') return 'single-owner-wal';
-  throw new Error('createTreecrdtClient storage.writeMode must be "default" or "single-owner-wal"');
+  if (value === 'opfs-write-ahead') return 'opfs-write-ahead';
+  throw new Error(
+    'createTreecrdtClient storage.writeMode must be "default", "single-owner-wal", or "opfs-write-ahead"',
+  );
 }
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
@@ -128,11 +132,11 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
   const resolvedRuntime = resolveRuntimeMode(runtime, shouldUseOpfs);
   if (
     shouldUseOpfs &&
-    storage.opfsWriteMode === 'single-owner-wal' &&
+    storage.opfsWriteMode !== 'default' &&
     resolvedRuntime !== 'dedicated-worker'
   ) {
     throw new Error(
-      'OPFS storage.writeMode "single-owner-wal" requires runtime "dedicated-worker" or runtime "auto"',
+      `OPFS storage.writeMode "${storage.opfsWriteMode}" requires runtime "dedicated-worker" or runtime "auto"`,
     );
   }
 
@@ -418,6 +422,7 @@ async function createWorkerClient(opts: {
     storage: effectiveStorage,
     docId: opts.docId,
     call,
+    opfsWriteMode: opts.opfsWriteMode,
     materialized,
     close: closeImpl,
     drop: dropImpl,
@@ -559,6 +564,7 @@ async function createSharedWorkerClient(opts: {
     storage: effectiveStorage,
     docId: opts.docId,
     call,
+    opfsWriteMode: opts.opfsWriteMode,
     materialized,
     close: closeImpl,
     drop: dropImpl,
@@ -736,6 +742,7 @@ async function createDirectClient(opts: {
     storage: finalStorage,
     docId: opts.docId,
     call,
+    opfsWriteMode: opts.opfsWriteMode,
     materialized,
     close: async () => {
       if (closed) return;
@@ -761,6 +768,7 @@ function makeTreecrdtClientFromCall(opts: {
   storage: StorageMode;
   docId: string;
   call: RpcCall;
+  opfsWriteMode: OpfsWriteMode;
   materialized: ClientMaterializationDispatcher;
   close: () => Promise<void>;
   drop: () => Promise<void>;
@@ -770,8 +778,22 @@ function makeTreecrdtClientFromCall(opts: {
   let closePromise: Promise<void> | null = null;
 
   const runner: SqliteRunner = {
-    exec: (sql) => call('sqlExec', [sql]).then(() => undefined),
-    getText: (sql, params = []) => call('sqlGetText', [sql, params]),
+    exec: async (sql) => {
+      await runOpfsWriteAheadWrite(
+        opts.opfsWriteMode,
+        (txSql) => call('sqlExec', [txSql]),
+        sql,
+        () => call('sqlExec', [sql]),
+      );
+    },
+    getText: async (sql, params = []) => {
+      return runOpfsWriteAheadWrite(
+        opts.opfsWriteMode,
+        (txSql) => call('sqlExec', [txSql]),
+        sql,
+        () => call('sqlGetText', [sql, params]),
+      );
+    },
   };
   const localWriters = new Map<string, TreecrdtSqliteWriter>();
   const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);

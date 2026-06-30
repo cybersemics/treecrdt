@@ -136,6 +136,42 @@ export async function readLifecycleTree(opts: LifecycleOptions): Promise<Lifecyc
   }
 }
 
+export async function writeAheadTwoClientLifecycle(opts: LifecycleOptions): Promise<{
+  stateFromAAfterBWrite: LifecycleState;
+  stateFromBAfterAWrite: LifecycleState;
+}> {
+  const prior = openClient;
+  openClient = null;
+  await prior?.close().catch(() => {});
+
+  const clientA = await createOpfsLifecycleClient(opts);
+  const clientB = await createOpfsLifecycleClient(opts);
+  try {
+    await clientA.local.insert(
+      replica,
+      rootId,
+      parentId,
+      { type: 'last' },
+      textEncoder.encode('browser lifecycle parent'),
+    );
+    const stateFromBAfterAWrite = await summarizeLifecycleState(clientB);
+
+    await clientB.local.insert(
+      replica,
+      parentId,
+      childId,
+      { type: 'last' },
+      textEncoder.encode('browser lifecycle child'),
+    );
+    const stateFromAAfterBWrite = await summarizeLifecycleState(clientA);
+
+    return { stateFromAAfterBWrite, stateFromBAfterAWrite };
+  } finally {
+    await clientA.close().catch(() => {});
+    await clientB.close().catch(() => {});
+  }
+}
+
 declare global {
   interface Window {
     __treecrdtLifecycle?: {
@@ -143,6 +179,7 @@ declare global {
       drop: typeof dropLifecycleStore;
       write: typeof writeLifecycleTree;
       read: typeof readLifecycleTree;
+      writeAheadTwoClient: typeof writeAheadTwoClientLifecycle;
     };
   }
 }
@@ -153,5 +190,6 @@ if (typeof window !== 'undefined') {
     drop: dropLifecycleStore,
     write: writeLifecycleTree,
     read: readLifecycleTree,
+    writeAheadTwoClient: writeAheadTwoClientLifecycle,
   };
 }

@@ -6,12 +6,7 @@ import {
   type BenchmarkResult,
   type WorkloadName,
 } from '@treecrdt/benchmark';
-import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite';
-import type { TreecrdtAdapter } from '@treecrdt/interface';
-import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
-import { bytesToHex } from '@treecrdt/interface/ids';
-
-type StorageKind = 'browser-opfs-coop-sync' | 'browser-opfs-single-owner-wal' | 'browser-memory';
+import { createWaSqliteBenchAdapter, type StorageKind } from './bench-adapter';
 
 type WorkerRequest = {
   type: 'run';
@@ -33,100 +28,6 @@ type BenchPayload = BenchmarkResult & {
 const defaultSizes = [100, 1_000];
 const defaultWorkloads: WorkloadName[] = ['insert-move', 'insert-chain', 'replay-log'];
 
-async function createAdapter(
-  storage: StorageKind,
-  baseUrl?: string,
-): Promise<TreecrdtAdapter & { close: () => Promise<void> }> {
-  const isOpfs =
-    storage === 'browser-opfs-coop-sync' || storage === 'browser-opfs-single-owner-wal';
-  const clientStorage = isOpfs ? 'opfs' : 'memory';
-  let client: TreecrdtClient | null = null;
-  const effectiveBase =
-    baseUrl ??
-    (typeof self !== 'undefined' && 'location' in self
-      ? new URL('/', (self as any).location.href).href
-      : '/');
-  const filename = clientStorage === 'opfs' ? `/bench-${crypto.randomUUID()}.db` : undefined;
-  const docId = `bench-${crypto.randomUUID()}`;
-  try {
-    console.info(`[opfs-worker] creating client storage=${clientStorage} base=${effectiveBase}`);
-    client = await createTreecrdtClient({
-      storage: isOpfs
-        ? {
-            type: 'opfs',
-            filename,
-            fallback: 'throw',
-            writeMode: storage === 'browser-opfs-single-owner-wal' ? 'single-owner-wal' : 'default',
-          }
-        : { type: 'memory' },
-      runtime: { type: isOpfs ? 'dedicated-worker' : 'direct' },
-      assets: { baseUrl: effectiveBase },
-      docId,
-    });
-    // sanity check to ensure DB is valid
-    await client.ops.all();
-  } catch (err) {
-    if (client?.close) {
-      await client.close();
-    }
-    const reason = err instanceof Error ? err.message : String(err);
-    console.error(`createAdapter failed (${clientStorage}) base=${effectiveBase}:`, err);
-    throw new Error(
-      JSON.stringify({
-        where: 'createAdapter',
-        storage: clientStorage,
-        base: effectiveBase,
-        message: reason,
-      }),
-    );
-  }
-  return {
-    setDocId: async (nextDocId) => {
-      if (nextDocId !== client.docId) {
-        throw new Error(
-          `docId is fixed at client creation (expected ${client.docId}, got ${nextDocId})`,
-        );
-      }
-    },
-    docId: async () => client.docId,
-    opRefsAll: async () => client.opRefs.all(),
-    opRefsChildren: async (parent) => client.opRefs.children(bytesToHex(parent)),
-    opsByOpRefs: async (opRefs) => client.ops.get(opRefs),
-    treeChildren: async (parent) => client.tree.children(bytesToHex(parent)),
-    treeDump: async () => client.tree.dump(),
-    treeNodeCount: async () => client.tree.nodeCount(),
-    headLamport: async () => client.meta.headLamport(),
-    replicaMaxCounter: async (replica) => client.meta.replicaMaxCounter(replica),
-    appendOp: async (op, serializeNodeId, serializeReplica) => {
-      await client.ops.append({
-        ...op,
-        meta: {
-          ...op.meta,
-          id: {
-            replica: serializeReplica(op.meta.id.replica),
-            counter: op.meta.id.counter,
-          },
-        },
-      });
-      return emptyMaterializationOutcome();
-    },
-    appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      await client.ops.appendMany(
-        ops.map((op) => ({
-          ...op,
-          meta: {
-            ...op.meta,
-            id: { replica: serializeReplica(op.meta.id.replica), counter: op.meta.id.counter },
-          },
-        })),
-      );
-      return emptyMaterializationOutcome();
-    },
-    opsSince: async (lamport, root) => client.ops.since(lamport, root),
-    close: async () => client.close(),
-  };
-}
-
 async function runWaSqliteBenchInWorker(
   storage: StorageKind,
   baseUrl: string | undefined,
@@ -139,7 +40,7 @@ async function runWaSqliteBenchInWorker(
   for (const workload of workloadDefs) {
     console.info(`[opfs-worker] workload ${workload.name} start`);
     // Factory must return a NEW adapter each time: runBenchmark calls it per iteration and closes after each.
-    const adapterFactory = () => createAdapter(storage, baseUrl);
+    const adapterFactory = () => createWaSqliteBenchAdapter(storage, baseUrl);
     const res = await runWorkloads(adapterFactory, [workload]);
     const [result] = res;
     const mergedExtra =
