@@ -2,7 +2,7 @@ import type { Operation } from '@treecrdt/interface';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 
 export type RpcStorageMode = 'memory' | 'opfs';
-export type RpcOpfsWriteMode = 'default' | 'single-owner-wal';
+export type RpcOpfsWriteMode = 'default' | 'single-owner-wal' | 'opfs-write-ahead';
 
 export type RpcSqlParam = number | string | null | Uint8Array;
 export type RpcSqlParams = RpcSqlParam[];

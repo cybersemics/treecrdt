@@ -57,6 +57,13 @@ can block on the exclusive database owner. `AccessHandlePoolVFS` is also not
 filesystem-transparent, so apps that need direct OPFS import/export should use
 the default OPFS mode instead.
 
+## OPFS write-ahead VFS mode
+
+`writeMode: 'opfs-write-ahead'` enables wa-sqlite's experimental
+`OPFSWriteAheadVFS`. It is intended for browser experiments that need multiple
+connections to the same OPFS file and currently requires Chromium support for
+OPFS `readwrite-unsafe` access handles.
+
 ## Playwright
 
 `pnpm --filter @treecrdt/wa-sqlite test:e2e` runs Vite dev + Playwright and asserts the demo can append/fetch ops via the extension.

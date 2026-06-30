@@ -29,7 +29,7 @@ export type OpenTreecrdtDbResult = {
 };
 
 async function configureOpfsWriteMode(db: Database, mode: OpfsWriteMode): Promise<void> {
-  if (mode === 'default') return;
+  if (mode !== 'single-owner-wal') return;
 
   const lockingMode = await dbGetText(db, 'PRAGMA locking_mode=EXCLUSIVE');
   const currentJournalMode = await dbGetText(db, 'PRAGMA journal_mode');
@@ -50,6 +50,27 @@ async function configureOpfsWriteMode(db: Database, mode: OpfsWriteMode): Promis
   }
 }
 
+async function initializeTreecrdtExtensionWithWriteMode(
+  module: any,
+  handle: number,
+  db: Database,
+  mode: OpfsWriteMode,
+): Promise<void> {
+  if (mode !== 'opfs-write-ahead') {
+    await initializeTreecrdtExtension(module, handle);
+    return;
+  }
+
+  await db.exec('BEGIN IMMEDIATE');
+  try {
+    await initializeTreecrdtExtension(module, handle);
+    await db.exec('COMMIT');
+  } catch (err) {
+    await Promise.resolve(db.exec('ROLLBACK')).catch(() => {});
+    throw err;
+  }
+}
+
 export async function openTreecrdtDb(opts: OpenTreecrdtDbOptions): Promise<OpenTreecrdtDbResult> {
   const baseUrl = opts.baseUrl.endsWith('/') ? opts.baseUrl : `${opts.baseUrl}/`;
   const sqliteModule = await import(/* @vite-ignore */ `${baseUrl}wa-sqlite/wa-sqlite-async.mjs`);
@@ -67,7 +88,9 @@ export async function openTreecrdtDb(opts: OpenTreecrdtDbOptions): Promise<OpenT
   const opfsVfsKind: OpfsVfsKind =
     opts.opfsWriteMode === 'single-owner-wal'
       ? 'access-handle-pool'
-      : (opts.opfsVfs ?? 'coop-sync');
+      : opts.opfsWriteMode === 'opfs-write-ahead'
+        ? 'write-ahead'
+        : (opts.opfsVfs ?? 'coop-sync');
   const opfsVfsName =
     opfsVfsKind === 'access-handle-pool'
       ? accessHandlePoolVfsNameForFilename(requestedFilename)
@@ -105,8 +128,16 @@ export async function openTreecrdtDb(opts: OpenTreecrdtDbOptions): Promise<OpenT
     if (storage === 'opfs') {
       await configureOpfsWriteMode(db, opts.opfsWriteMode ?? 'default');
     }
-    await initializeTreecrdtExtension(module, handle);
-    const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
+    await initializeTreecrdtExtensionWithWriteMode(
+      module,
+      handle,
+      db,
+      opts.opfsWriteMode ?? 'default',
+    );
+    const api = createWaSqliteApi(db, {
+      onMaterialized: opts.onMaterialized,
+      opfsWriteMode: opts.opfsWriteMode,
+    });
     await api.setDocId(opts.docId);
 
     const result = {

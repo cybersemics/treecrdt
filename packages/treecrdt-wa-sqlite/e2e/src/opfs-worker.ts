@@ -11,7 +11,11 @@ import type { TreecrdtAdapter } from '@treecrdt/interface';
 import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
 import { bytesToHex } from '@treecrdt/interface/ids';
 
-type StorageKind = 'browser-opfs-coop-sync' | 'browser-opfs-single-owner-wal' | 'browser-memory';
+type StorageKind =
+  | 'browser-opfs-coop-sync'
+  | 'browser-opfs-single-owner-wal'
+  | 'browser-opfs-write-ahead'
+  | 'browser-memory';
 
 type WorkerRequest = {
   type: 'run';
@@ -38,7 +42,9 @@ async function createAdapter(
   baseUrl?: string,
 ): Promise<TreecrdtAdapter & { close: () => Promise<void> }> {
   const isOpfs =
-    storage === 'browser-opfs-coop-sync' || storage === 'browser-opfs-single-owner-wal';
+    storage === 'browser-opfs-coop-sync' ||
+    storage === 'browser-opfs-single-owner-wal' ||
+    storage === 'browser-opfs-write-ahead';
   const clientStorage = isOpfs ? 'opfs' : 'memory';
   let client: TreecrdtClient | null = null;
   const effectiveBase =
@@ -56,7 +62,12 @@ async function createAdapter(
             type: 'opfs',
             filename,
             fallback: 'throw',
-            writeMode: storage === 'browser-opfs-single-owner-wal' ? 'single-owner-wal' : 'default',
+            writeMode:
+              storage === 'browser-opfs-single-owner-wal'
+                ? 'single-owner-wal'
+                : storage === 'browser-opfs-write-ahead'
+                  ? 'opfs-write-ahead'
+                  : 'default',
           }
         : { type: 'memory' },
       runtime: { type: isOpfs ? 'dedicated-worker' : 'direct' },

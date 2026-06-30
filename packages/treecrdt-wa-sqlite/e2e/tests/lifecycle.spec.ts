@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
 type LifecycleRuntime = 'direct' | 'dedicated-worker';
-type LifecycleWriteMode = 'default' | 'single-owner-wal';
+type LifecycleWriteMode = 'default' | 'single-owner-wal' | 'opfs-write-ahead';
 
 const scenarios: Array<{
   runtime: LifecycleRuntime;
@@ -108,6 +108,11 @@ function expectReloadedTree(
   expect(state.childParent).toBe(state.parentId);
 }
 
+function isWriteAheadUnsupportedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.toLowerCase().includes('readwrite-unsafe');
+}
+
 test.describe('browser OPFS lifecycle', () => {
   for (const scenario of scenarios) {
     for (const reloadCase of reloadCases) {
@@ -188,6 +193,106 @@ test.describe('browser OPFS lifecycle', () => {
       });
       expect(reopened.journalMode).toBe('wal');
       expect(reopened.lockingMode).toBe('exclusive');
+    } finally {
+      await drop(page, opts).catch(() => {});
+    }
+  });
+
+  test('opens dedicated-worker OPFS store in write-ahead VFS mode', async ({ page }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const opts = {
+      docId: `lifecycle-write-ahead-${suffix}`,
+      filename: `/lifecycle-write-ahead-${suffix}.db`,
+      runtime: 'dedicated-worker' as const,
+      writeMode: 'opfs-write-ahead' as const,
+    };
+
+    await waitForHarness(page);
+    const opfsSupport = await support(page);
+    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+
+    try {
+      await drop(page, opts);
+      const written = await write(page, { ...opts, closeBeforeReload: true });
+      expectReloadedTree(written, {
+        mode: 'worker',
+        runtime: 'dedicated-worker',
+      });
+
+      const reopened = await read(page, opts);
+      expectReloadedTree(reopened, {
+        mode: 'worker',
+        runtime: 'dedicated-worker',
+      });
+    } catch (err) {
+      if (isWriteAheadUnsupportedError(err)) {
+        test.skip(
+          true,
+          `OPFSWriteAheadVFS unsupported: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      throw err;
+    } finally {
+      await drop(page, opts).catch(() => {});
+    }
+  });
+
+  test('opens the same write-ahead OPFS store from two dedicated-worker clients', async ({
+    page,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const opts = {
+      docId: `lifecycle-write-ahead-two-client-${suffix}`,
+      filename: `/lifecycle-write-ahead-two-client-${suffix}.db`,
+      runtime: 'dedicated-worker' as const,
+      writeMode: 'opfs-write-ahead' as const,
+    };
+
+    await waitForHarness(page);
+    const opfsSupport = await support(page);
+    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+
+    try {
+      await drop(page, opts);
+      const result = await page.evaluate(async (twoClientOpts) => {
+        const harness = window.__treecrdtLifecycle;
+        if (!harness) throw new Error('__treecrdtLifecycle not available');
+        return await harness.writeAheadTwoClient(twoClientOpts);
+      }, opts);
+
+      expect(result.stateFromBAfterAWrite).toMatchObject({
+        mode: 'worker',
+        runtime: 'dedicated-worker',
+        storage: 'opfs',
+        headLamport: 1,
+        parentExists: true,
+        childExists: false,
+        parentPayload: 'browser lifecycle parent',
+      });
+      expect(result.stateFromBAfterAWrite.rootChildren).toEqual([
+        result.stateFromBAfterAWrite.parentId,
+      ]);
+
+      expectReloadedTree(result.stateFromAAfterBWrite, {
+        mode: 'worker',
+        runtime: 'dedicated-worker',
+      });
+    } catch (err) {
+      if (isWriteAheadUnsupportedError(err)) {
+        test.skip(
+          true,
+          `OPFSWriteAheadVFS unsupported: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      throw err;
     } finally {
       await drop(page, opts).catch(() => {});
     }
