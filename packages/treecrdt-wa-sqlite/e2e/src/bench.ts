@@ -1,4 +1,5 @@
-import type { WorkloadName } from '@treecrdt/benchmark';
+import { buildWorkloads, runWorkloads, type WorkloadName } from '@treecrdt/benchmark';
+import { createWaSqliteBenchAdapter, type StorageKind } from './bench-adapter';
 
 export type BenchResult = {
   implementation: string;
@@ -11,12 +12,6 @@ export type BenchResult = {
   extra?: Record<string, unknown>;
 };
 
-type StorageKind =
-  | 'browser-opfs-coop-sync'
-  | 'browser-opfs-single-owner-wal'
-  | 'browser-opfs-write-ahead'
-  | 'browser-memory';
-
 type WorkerRequest = {
   type: 'run';
   storage: StorageKind;
@@ -28,6 +23,40 @@ type WorkerRequest = {
 type WorkerResponse = { ok: true; results: BenchResult[] } | { ok: false; error: string };
 
 const DEFAULT_STORAGE: StorageKind = 'browser-opfs-coop-sync';
+const defaultSizes = [100, 1_000];
+const defaultWorkloads: WorkloadName[] = ['insert-move', 'insert-chain', 'replay-log'];
+
+async function runWaSqlitePageBench(
+  storage: StorageKind,
+  baseUrl: string | undefined,
+  sizes: number[] = defaultSizes,
+  workloads: WorkloadName[] = defaultWorkloads,
+): Promise<BenchResult[]> {
+  const workloadDefs = buildWorkloads(workloads, sizes);
+  const results: BenchResult[] = [];
+
+  for (const workload of workloadDefs) {
+    console.info(`[bench] page workload ${workload.name} start`);
+    const adapterFactory = () => createWaSqliteBenchAdapter(storage, baseUrl);
+    const res = await runWorkloads(adapterFactory, [workload]);
+    const [result] = res;
+    if (!result) throw new Error(`No benchmark result produced for ${workload.name}`);
+    const mergedExtra =
+      result.extra && workload.totalOps
+        ? { ...result.extra, count: workload.totalOps }
+        : (result.extra ?? (workload.totalOps ? { count: workload.totalOps } : undefined));
+    results.push({
+      ...result,
+      implementation: 'wa-sqlite',
+      storage,
+      workload: workload.name,
+      extra: mergedExtra,
+    });
+    console.info(`[bench] page workload ${workload.name} done`);
+  }
+
+  return results;
+}
 
 export async function runWaSqliteBench(
   storage: StorageKind = DEFAULT_STORAGE,
@@ -41,6 +70,10 @@ export async function runWaSqliteBench(
       : typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL
         ? (import.meta as any).env.BASE_URL
         : '/';
+  if (storage === 'browser-opfs-shared-worker') {
+    console.info(`[bench] starting page run storage=${storage} baseUrl=${baseUrl}`);
+    return runWaSqlitePageBench(storage, baseUrl, sizes, workloads);
+  }
   console.info(`[bench] starting run storage=${storage} baseUrl=${baseUrl}`);
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./opfs-worker.ts', import.meta.url), { type: 'module' });
