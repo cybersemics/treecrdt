@@ -5,7 +5,6 @@ use super::payload_store::SqlitePayloadStore;
 use super::schema::set_tree_meta_replay_frontier;
 use super::util::{sqlite_err_from_core, sqlite_result_json};
 use super::*;
-use treecrdt_core::PayloadStore;
 use treecrdt_core::Storage;
 use treecrdt_core::{
     orchestrate_persisted_remote_append, LamportClock, MaterializationChange,
@@ -414,11 +413,6 @@ pub(super) fn append_ops_impl(
         orchestrate_persisted_remote_append(
             &meta,
             inserted_ops,
-            {
-                let payloads =
-                    SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
-                move |node| payloads.last_writer(node).map_err(sqlite_err_from_core)
-            },
             |meta, inserted| materialize_inserted_ops(db, doc_id, meta, inserted),
             |head| update_tree_meta_head(db, Some(head)),
             |frontier| set_tree_meta_replay_frontier(db, frontier),
