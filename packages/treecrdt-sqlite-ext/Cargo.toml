@@ -25,4 +25,5 @@ wasm-ext = ["static-link"]
 
 [dev-dependencies]
 rusqlite = { version = "0.31", features = ["bundled", "load_extension"] }
+tempfile = "3.10"
 treecrdt-test-support = { path = "../treecrdt-test-support" }
