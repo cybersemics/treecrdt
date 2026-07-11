@@ -307,6 +307,16 @@ CREATE TABLE IF NOT EXISTS tree_payload (
   last_counter INTEGER NOT NULL
 );
 "#;
+    const OP_AUTH: &str = r#"
+CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
+  doc_id TEXT NOT NULL,
+  op_ref BLOB NOT NULL,
+  sig BLOB NOT NULL CHECK(length(sig) = 64),
+  proof_ref BLOB NOT NULL CHECK(length(proof_ref) = 16),
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (doc_id, op_ref)
+);
+"#;
 
     let rc_meta = {
         let sql = CString::new(META).expect("meta schema");
@@ -352,6 +362,13 @@ CREATE TABLE IF NOT EXISTS tree_payload (
         return Err(rc_tree_payload);
     }
 
+    let rc_op_auth = {
+        let sql = CString::new(OP_AUTH).expect("op auth schema");
+        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
+    };
+    if rc_op_auth != SQLITE_OK as c_int {
+        return Err(rc_op_auth);
+    }
     const INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
 CREATE INDEX IF NOT EXISTS idx_ops_op_ref ON ops(op_ref);
