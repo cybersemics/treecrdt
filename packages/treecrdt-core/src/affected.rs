@@ -11,26 +11,6 @@ pub(crate) struct TombstoneDelta {
     pub(crate) payload_after: Option<Vec<u8>>,
 }
 
-pub(crate) fn affected_parents(
-    snapshot_parent: Option<NodeId>,
-    kind: &OperationKind,
-) -> Vec<NodeId> {
-    let mut parents = Vec::new();
-    if let Some(p) = snapshot_parent {
-        parents.push(p);
-    }
-    match kind {
-        OperationKind::Insert { parent, .. } => parents.push(*parent),
-        OperationKind::Move { new_parent, .. } => parents.push(*new_parent),
-        OperationKind::Delete { .. }
-        | OperationKind::Tombstone { .. }
-        | OperationKind::Payload { .. } => {}
-    }
-    parents.sort();
-    parents.dedup();
-    parents
-}
-
 pub(crate) fn parent_hints_from(parent: Option<NodeId>) -> Vec<NodeId> {
     parent.into_iter().collect()
 }

@@ -189,6 +189,18 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioOpRefsChildrenCanonicalOrderingOnLamportTies,
     },
     {
+      name: 'oprefs_children: descendant restore trigger closes parent filter',
+      run: scenarioOpRefsChildrenIncludesDescendantRestoreTrigger,
+    },
+    {
+      name: 'oprefs_children: rejected cycle is not projected',
+      run: scenarioOpRefsChildrenOmitsRejectedCycle,
+    },
+    {
+      name: 'oprefs_children: move leaving parent removes projected child',
+      run: scenarioOpRefsChildrenIncludesMoveLeavingParent,
+    },
+    {
       name: 'append/appendMany: rejects delete without known_state',
       run: scenarioRejectsDeleteWithoutKnownState,
     },
@@ -1254,6 +1266,171 @@ async function scenarioOpRefsChildrenCanonicalOrderingOnLamportTies(
     moveReplicas,
     [bytesToHex(replicaA), bytesToHex(replicaZ)],
     'opRefs.children canonical ordering on lamport ties',
+  );
+}
+
+async function replayChildrenFilter(
+  ctx: TreecrdtEngineConformanceContext,
+  parent: string,
+  name: string,
+): Promise<{ engine: TreecrdtEngine; ops: Operation[] }> {
+  const refs = await ctx.engine.opRefs.children(parent);
+  const ops = await ctx.engine.ops.get(refs);
+  const engine = await ctx.createEngine({ docId: `${ctx.docId}-${name}`, name });
+  if (ops.length > 0) await engine.ops.appendMany(ops);
+  return { engine, ops };
+}
+
+async function scenarioOpRefsChildrenIncludesDescendantRestoreTrigger(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const replica = replicaFromLabel('restore-filter');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(401);
+  const child = nodeIdFromInt(402);
+
+  await ctx.engine.ops.appendMany([
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: parent,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeDeleteOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      node: parent,
+      knownState: vvBytes([{ replica, frontier: 1 }]),
+    }),
+    makeInsertOp({
+      replica,
+      counter: 3,
+      lamport: 3,
+      parent,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const filtered = await replayChildrenFilter(ctx, root, 'restore-filter-replay');
+  assertArrayEqual(
+    filtered.ops.map((op) => String(op.meta.id.counter)),
+    ['1', '2', '3'],
+    'root filter includes descendant restore trigger',
+  );
+  assertArrayEqual(
+    await filtered.engine.tree.children(root),
+    [parent],
+    'root-filtered replay restores parent',
+  );
+  assertArrayEqual(
+    await filtered.engine.tree.children(parent),
+    [child],
+    'root-filtered replay includes restoring child dependency',
+  );
+}
+
+async function scenarioOpRefsChildrenOmitsRejectedCycle(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const replica = replicaFromLabel('cycle-filter');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(411);
+  const child = nodeIdFromInt(412);
+
+  await ctx.engine.ops.appendMany([
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: parent,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      parent,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeMoveOp({
+      replica,
+      counter: 3,
+      lamport: 3,
+      node: parent,
+      newParent: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const filtered = await replayChildrenFilter(ctx, child, 'cycle-filter-replay');
+  assertEqual(filtered.ops.length, 0, 'rejected cycle should have no child-filter opRefs');
+  assertArrayEqual(
+    await filtered.engine.tree.children(child),
+    [],
+    'child-filtered replay must not accept cycle rejected by full replay',
+  );
+}
+
+async function scenarioOpRefsChildrenIncludesMoveLeavingParent(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const replica = replicaFromLabel('leave-filter');
+  const root = nodeIdFromInt(0);
+  const source = nodeIdFromInt(421);
+  const destination = nodeIdFromInt(422);
+  const child = nodeIdFromInt(423);
+
+  await ctx.engine.ops.appendMany([
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: source,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      parent: source,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica,
+      counter: 3,
+      lamport: 3,
+      parent: root,
+      node: destination,
+      orderKey: orderKeyFromPosition(1),
+    }),
+    makeMoveOp({
+      replica,
+      counter: 4,
+      lamport: 4,
+      node: child,
+      newParent: destination,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const filtered = await replayChildrenFilter(ctx, source, 'leave-filter-replay');
+  assertArrayEqual(
+    filtered.ops.map((op) => String(op.meta.id.counter)),
+    ['2', '4'],
+    'source filter includes insertion and move-away',
+  );
+  assertArrayEqual(
+    await filtered.engine.tree.children(source),
+    [],
+    'source-filtered replay removes child moved away',
   );
 }
 
