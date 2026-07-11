@@ -292,18 +292,23 @@ fn read_materialized_node_state(conn: &Connection, node: NodeId) -> Materialized
     }
 }
 
-fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (MaterializationOutcome, i64) {
+fn try_append_ops_json(
+    conn: &Connection,
+    ops: &[JsonOp],
+) -> rusqlite::Result<(MaterializationOutcome, i64)> {
     let json = serde_json::to_string(ops).unwrap();
-    let affected_json: String = conn
-        .query_row(
-            "SELECT treecrdt_append_ops(?1)",
-            rusqlite::params![json],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let affected_json: String = conn.query_row(
+        "SELECT treecrdt_append_ops(?1)",
+        rusqlite::params![json],
+        |row| row.get(0),
+    )?;
     let outcome: JsonMaterializationOutcome = serde_json::from_str(&affected_json).unwrap();
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
-    (json_outcome_to_core(outcome), count)
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0))?;
+    Ok((json_outcome_to_core(outcome), count))
+}
+
+fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (MaterializationOutcome, i64) {
+    try_append_ops_json(conn, ops).unwrap()
 }
 
 fn visible_children(conn: &Connection, parent: &[u8]) -> Vec<Vec<u8>> {
@@ -406,6 +411,12 @@ fn append_after_blocking_writer_commits(
 impl MaterializationConformanceHarness for SqliteConformanceHarness {
     fn append_ops(&self, ops: &[Operation]) {
         append_ops_json(&self.conn, &json_ops(ops));
+    }
+
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String> {
+        try_append_ops_json(&self.conn, &json_ops(ops))
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
@@ -711,6 +722,12 @@ fn local_insert_returns_appended_insert_op() {
 fn remote_append_materializes_only_inserted_ops() {
     let harness = setup_conformance_harness();
     materialization_conformance::append_batch_materializes_only_inserted_ops(&harness);
+}
+
+#[test]
+fn remote_append_rejects_operation_id_equivocation_atomically() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::operation_id_equivocation_is_rejected_atomically(&harness);
 }
 
 #[test]

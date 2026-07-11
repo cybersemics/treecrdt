@@ -260,24 +260,14 @@ async function treecrdtAppendOp(
   return decodeSqliteMaterializationOutcome(await sqliteGetJson<unknown>(runner, sql, params));
 }
 
-function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
-  const last = outcomes.length > 0 ? outcomes[outcomes.length - 1] : undefined;
-  return {
-    headSeq: last?.headSeq ?? 0,
-    changes: outcomes.flatMap((outcome) => outcome.changes),
-  };
-}
-
 async function treecrdtAppendOps(
   runner: SqliteRunner,
   ops: Operation[],
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
-  opts: { maxBulkOps?: number } = {},
 ): Promise<MaterializationOutcome> {
   if (ops.length === 0) return emptyMaterializationOutcome();
 
-  const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = 'SELECT treecrdt_append_ops(?1)';
 
   if (
@@ -288,29 +278,9 @@ async function treecrdtAppendOps(
     throw new Error('treecrdt: delete operations require meta.knownState');
   }
 
-  // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
-  let bulkFailedAt: number | null = null;
-  const outcomes: MaterializationOutcome[] = [];
-  for (let start = 0; start < ops.length; start += maxBulkOps) {
-    const chunk = ops.slice(start, start + maxBulkOps);
-    const payload = buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica);
-    try {
-      const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
-      outcomes.push(decodeSqliteMaterializationOutcome(raw));
-    } catch {
-      bulkFailedAt = start;
-      break;
-    }
-  }
-  if (bulkFailedAt === null) return mergeMaterializationOutcomes(outcomes);
-
-  const remaining = ops.slice(bulkFailedAt);
-  for (const op of remaining) {
-    const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
-    const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
-    outcomes.push(decodeSqliteMaterializationOutcome(raw));
-  }
-  return mergeMaterializationOutcomes(outcomes);
+  const payload = buildAppendOpsPayload(ops, serializeNodeId, serializeReplica);
+  const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
+  return decodeSqliteMaterializationOutcome(raw);
 }
 
 async function treecrdtOpsSince(
@@ -328,7 +298,9 @@ async function treecrdtOpsSince(
 
 export function createTreecrdtSqliteAdapter(
   runner: SqliteRunner,
-  opts: { maxBulkOps?: number; onMaterialized?: (event: MaterializationEvent) => void } = {},
+  opts: {
+    onMaterialized?: (event: MaterializationEvent) => void;
+  } = {},
 ): TreecrdtAdapter {
   const emitOutcome = (outcome: MaterializationOutcome) => {
     if (outcome.changes.length === 0) return;
@@ -353,7 +325,7 @@ export function createTreecrdtSqliteAdapter(
     appendOp: (op, serializeNodeId, serializeReplica) =>
       treecrdtAppendOp(runner, op, serializeNodeId, serializeReplica),
     appendOps: (ops, serializeNodeId, serializeReplica) =>
-      treecrdtAppendOps(runner, ops, serializeNodeId, serializeReplica, opts),
+      treecrdtAppendOps(runner, ops, serializeNodeId, serializeReplica),
     opsSince: (lamport, root) => treecrdtOpsSince(runner, { lamport, root }),
   };
 }

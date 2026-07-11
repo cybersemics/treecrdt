@@ -96,22 +96,18 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
         if (!op.meta.knownState || op.meta.knownState.length === 0) {
           throw new Error('treecrdt: delete operations require meta.knownState');
         }
-        jsOp.known_state = Array.from(op.meta.knownState);
       }
       tree.appendOp(JSON.stringify(jsOp));
       return emptyMaterializationOutcome();
     },
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      for (const op of ops) {
-        const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-        if (op.kind.type === 'delete') {
-          if (!op.meta.knownState || op.meta.knownState.length === 0) {
-            throw new Error('treecrdt: delete operations require meta.knownState');
-          }
-          jsOp.known_state = Array.from(op.meta.knownState);
+      const jsOps = ops.map((op) => {
+        if (op.kind.type === 'delete' && (!op.meta.knownState || op.meta.knownState.length === 0)) {
+          throw new Error('treecrdt: delete operations require meta.knownState');
         }
-        tree.appendOp(JSON.stringify(jsOp));
-      }
+        return toJsOp(op, serializeNodeId, serializeReplica);
+      });
+      tree.appendOps(JSON.stringify(jsOps));
       return emptyMaterializationOutcome();
     },
     opsSince: async (lamport: number) => {
@@ -155,6 +151,7 @@ function toJsOp(
     replica: toHex(serializeReplica(op.meta.id.replica)),
     counter: op.meta.id.counter,
     lamport: op.meta.lamport,
+    ...(op.meta.knownState ? { known_state: Array.from(op.meta.knownState) } : {}),
   };
 
   switch (op.kind.type) {
@@ -165,6 +162,7 @@ function toJsOp(
         parent: normalizeNodeId(op.kind.parent),
         node: normalizeNodeId(op.kind.node),
         order_key: toHex(op.kind.orderKey),
+        ...(op.kind.payload !== undefined ? { payload: toHex(op.kind.payload) } : {}),
       };
     case 'move':
       return {

@@ -224,16 +224,23 @@ impl AccessControl for AllowAllAccess {
 #[derive(Default)]
 pub struct MemoryStorage {
     ops: Vec<Operation>,
-    ids: HashSet<OperationId>,
+    ids: HashMap<OperationId, usize>,
 }
 
 impl Storage for MemoryStorage {
     fn apply(&mut self, op: Operation) -> Result<bool> {
         op.validate()?;
-        if self.ids.contains(&op.meta.id) {
-            return Ok(false);
+        if let Some(&index) = self.ids.get(&op.meta.id) {
+            if self.ops.get(index) == Some(&op) {
+                return Ok(false);
+            }
+            return Err(Error::InvalidOperation(format!(
+                "operation id {:?}:{} has conflicting contents",
+                op.meta.id.replica.as_bytes(),
+                op.meta.id.counter
+            )));
         }
-        self.ids.insert(op.meta.id.clone());
+        self.ids.insert(op.meta.id.clone(), self.ops.len());
         self.ops.push(op);
         Ok(true)
     }
