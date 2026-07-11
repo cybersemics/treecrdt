@@ -1443,10 +1443,10 @@ async function scenarioSyncKnownStatePropagation(
   const eventsOnB = await captureMaterializationEvents(b, async () => {
     await b.ops.appendMany(await a.ops.all());
   });
-  assert(eventsOnB.length > 0, 'sync known_state should emit a materialization event on B');
-  assertEventNodeRefsSortedUnique(
-    materializationEventNodeRefs(eventsOnB[eventsOnB.length - 1]!),
-    'sync known_state: materialization event node refs shape',
+  assertEqual(
+    eventsOnB.length,
+    0,
+    'sync known_state should omit replay-only events when visible state is unchanged',
   );
 
   assertArrayEqual(await b.tree.children(root), [parent], 'parent restored after sync delete');

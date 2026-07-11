@@ -732,6 +732,18 @@ fn remote_append_out_of_order_losing_payload_replays_causal_metadata() {
 }
 
 #[test]
+fn remote_net_catch_up_outcomes() {
+    let scenarios: [fn(&SqliteConformanceHarness); 3] = [
+        materialization_conformance::catch_up_reports_same_parent_reorder_as_move,
+        materialization_conformance::catch_up_omits_replay_only_move,
+        materialization_conformance::catch_up_omits_replay_only_restore,
+    ];
+    for scenario in scenarios {
+        scenario(&setup_conformance_harness());
+    }
+}
+
+#[test]
 fn remote_append_out_of_order_move_with_later_payload_catches_up_immediately() {
     let harness = setup_conformance_harness();
     materialization_conformance::out_of_order_move_with_later_payload_catches_up_immediately(
@@ -1459,11 +1471,13 @@ fn find_extension() -> Option<PathBuf> {
         .unwrap_or_else(|_| manifest.join("..").join("..").join("target"));
 
     let (name, alt_name) = extension_filenames();
+    // `cargo test` builds the feature-matched extension in deps; a top-level artifact left by
+    // `cargo rustc` may be stale after switching branches.
     let candidates = [
-        target_dir.join("debug").join(&name),
         target_dir.join("debug").join("deps").join(&name),
-        target_dir.join("debug").join(&alt_name),
         target_dir.join("debug").join("deps").join(&alt_name),
+        target_dir.join("debug").join(&name),
+        target_dir.join("debug").join(&alt_name),
     ];
     candidates.into_iter().find(|p| p.exists())
 }
