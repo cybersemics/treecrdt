@@ -115,7 +115,6 @@ export function createTreecrdtSqliteAuthApi(opts: {
         issuerPublicKeys:
           describeOpts.trust?.issuerPublicKeys ?? describeOpts.issuerPublicKeys ?? [],
         docId: describeOpts.docId ?? opts.docId,
-        scopeEvaluator,
       }),
     evaluateScope: (scopeOpts) =>
       scopeEvaluator({
