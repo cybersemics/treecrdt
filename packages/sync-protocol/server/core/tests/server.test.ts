@@ -200,6 +200,41 @@ function opRefForId(id: string): Uint8Array {
   return Uint8Array.from(Buffer.from(id, 'hex'));
 }
 
+test('malformed frames close only the offending websocket', async () => {
+  const docId = 'malformed-frame';
+  const server = await startWebSocketSyncServer<TestOp>({
+    host: '127.0.0.1',
+    port: 0,
+    codec: jsonCodec(),
+    docs: {
+      async open(openDocId) {
+        return { backend: new MemoryBackend(openDocId) };
+      },
+    },
+  });
+  const wsUrl = `ws://${server.host}:${server.port}/sync?docId=${encodeURIComponent(docId)}`;
+  const ws = await connectWebSocket(wsUrl);
+
+  try {
+    const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
+    ws.send(Buffer.from('{not valid json', 'utf8'));
+
+    await expect(withTimeout(closed, 5_000, 'malformed websocket close')).resolves.toBe(1002);
+    await expect(httpGet(`http://${server.host}:${server.port}/health`)).resolves.toEqual({
+      status: 200,
+      body: 'ok',
+    });
+
+    const healthySocket = await connectWebSocket(wsUrl);
+    const healthyClosed = new Promise<void>((resolve) => healthySocket.once('close', resolve));
+    healthySocket.close();
+    await withTimeout(healthyClosed, 5_000, 'healthy websocket close');
+  } finally {
+    if (ws.readyState === WebSocket.OPEN) ws.close();
+    await server.close();
+  }
+});
+
 test('health endpoint returns ok', async () => {
   const server = await startWebSocketSyncServer({
     host: '127.0.0.1',

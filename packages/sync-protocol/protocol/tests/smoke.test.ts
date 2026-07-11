@@ -136,6 +136,38 @@ function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
   return createTimedDuplex();
 }
 
+function createTerminalTransport<M>(): {
+  transport: DuplexTransport<M>;
+  sent: M[];
+  messageHandlerCount: () => number;
+  terminate: (error?: unknown) => void;
+} {
+  const messageHandlers = new Set<(msg: M) => void>();
+  const terminalHandlers = new Set<(error?: unknown) => void>();
+  const sent: M[] = [];
+  return {
+    sent,
+    messageHandlerCount: () => messageHandlers.size,
+    transport: {
+      async send(msg) {
+        sent.push(msg);
+      },
+      onMessage(handler) {
+        messageHandlers.add(handler);
+        return () => messageHandlers.delete(handler);
+      },
+      onTerminal(handler) {
+        terminalHandlers.add(handler);
+        return () => terminalHandlers.delete(handler);
+      },
+    },
+    terminate(error) {
+      for (const handler of terminalHandlers) handler(error);
+      terminalHandlers.clear();
+    },
+  };
+}
+
 function createPeers(a: SyncBackend<Operation>, b: SyncBackend<Operation>) {
   return createInMemoryConnectedPeers({
     backendA: a,
@@ -333,6 +365,33 @@ class CountingListBackend extends MemoryBackend {
     return super.listOpRefs(filter);
   }
 }
+
+test('transport close rejects only its own syncOnce handshake', async () => {
+  const backend = new MemoryBackend('doc-transport-scoped-close');
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+  const syncA = peer.syncOnce(transportA.transport, { all: {} });
+  const syncB = peer.syncOnce(transportB.transport, { all: {} });
+  const rejectedA = expect(syncA).rejects.toThrow('transport A closed');
+
+  await waitUntil(() => transportA.sent.length > 0 && transportB.sent.length > 0, {
+    message: 'expected both syncOnce calls to send Hello',
+  });
+  transportA.terminate(new Error('transport A closed'));
+
+  await rejectedA;
+  expect(transportA.messageHandlerCount()).toBe(0);
+  expect(transportB.messageHandlerCount()).toBe(1);
+
+  const rejectedB = expect(syncB).rejects.toThrow('transport B closed');
+  transportB.terminate(new Error('transport B closed'));
+  await rejectedB;
+  detachA();
+  detachB();
+});
 
 test('syncOnce does not starve macrotask transports', async () => {
   const docId = 'doc-sync-macrotask';
