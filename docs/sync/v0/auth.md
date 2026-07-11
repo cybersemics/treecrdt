@@ -108,6 +108,12 @@ High-level idea:
 - If that token includes the `grant` action, the subject key can mint a **delegated token** for another subject key.
 - The delegated token MUST be a subset of the proof token (same `doc_id`, narrower-or-equal scope, subset of actions, and time bounds within the proof).
 
+The reference verifier establishes that subset without consulting mutable receiver ancestry. A document-wide proof may
+delegate a narrower root. A non-document-wide proof must keep the same root, though it may still narrow actions and time
+bounds, add `max_depth`, or add exclusions. Re-rooting a scoped proof requires an authenticated causal ancestry witness
+that the current protocol does not carry. Runtime scope evaluators remain available for read filtering and subtree checks;
+their current tree view is not delegation authority.
+
 Wire format (reference implementation):
 
 - Delegated tokens are still COSE_Sign1 + CWT, but they are signed by the **subject key** of a *proof token*.
