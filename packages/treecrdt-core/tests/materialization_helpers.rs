@@ -8,8 +8,7 @@ use treecrdt_core::{
     LocalPlacement, MaterializationChange, MaterializationCursor, MaterializationHead,
     MaterializationKey, MaterializationOutcome, MaterializationState, MemoryNodeStore,
     MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, TruncatingParentOpIndex,
-    VersionVector,
+    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
 };
 
 #[derive(Default)]
@@ -76,13 +75,6 @@ impl ParentOpIndex for RecordingIndex {
         seq: u64,
     ) -> treecrdt_core::Result<()> {
         self.records.push((parent, op_id.clone(), seq));
-        Ok(())
-    }
-}
-
-impl TruncatingParentOpIndex for RecordingIndex {
-    fn truncate_from(&mut self, seq: u64) -> treecrdt_core::Result<()> {
-        self.records.retain(|(_, _, existing_seq)| *existing_seq < seq);
         Ok(())
     }
 }
@@ -885,4 +877,213 @@ fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
         result.outcome.affected_nodes(),
         vec![NodeId::ROOT, parent, child],
     );
+}
+
+#[test]
+fn catch_up_does_not_cancel_restore_reported_by_replay_and_repair() {
+    let author = ReplicaId::new(b"author");
+    let child_author = ReplicaId::new(b"child-author");
+    let parent = NodeId(20);
+    let child = NodeId(21);
+    let unrelated = NodeId(22);
+
+    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
+    let mut known_state = VersionVector::new();
+    known_state.observe(&author, 1);
+    let delete_op = Operation::delete(&author, 2, 2, parent, Some(known_state.clone()));
+    // This arrives late, but canonically follows the delete and therefore restores the parent.
+    let child_op = Operation::insert(&child_author, 1, 3, parent, child, vec![0x20]);
+    let unrelated_op = Operation::insert(&author, 3, 4, NodeId::ROOT, unrelated, vec![0x30]);
+
+    let mut storage = MemoryStorage::default();
+    for op in [&parent_op, &delete_op, &child_op, &unrelated_op] {
+        storage.apply(op.clone()).unwrap();
+    }
+
+    // State before the late child arrives: parent/delete/unrelated are already materialized.
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(parent).unwrap();
+    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
+    let mut deleted_at = known_state;
+    deleted_at.observe(&author, 2);
+    nodes.merge_deleted_at(parent, &deleted_at).unwrap();
+    nodes.set_tombstone(parent, true).unwrap();
+    nodes.ensure_node(unrelated).unwrap();
+    nodes.attach(unrelated, NodeId::ROOT, vec![0x30]).unwrap();
+
+    let meta = Cursor {
+        head_lamport: unrelated_op.meta.lamport,
+        head_replica: unrelated_op.meta.id.replica.as_bytes().to_vec(),
+        head_counter: unrelated_op.meta.id.counter,
+        head_seq: 3,
+        replay_lamport: Some(child_op.meta.lamport),
+        replay_replica: Some(child_op.meta.id.replica.as_bytes().to_vec()),
+        replay_counter: Some(child_op.meta.id.counter),
+    };
+
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes,
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    let restores = result
+        .outcome
+        .changes
+        .iter()
+        .filter(|change| {
+            matches!(
+                change,
+                MaterializationChange::Restore { node, .. } if *node == parent
+            )
+        })
+        .count();
+    assert_eq!(
+        restores, 1,
+        "the replayed restore must be emitted exactly once"
+    );
+}
+
+#[test]
+fn catch_up_removes_orphan_derived_rows() {
+    let replica = ReplicaId::new(b"orphan-repair");
+    let canonical = NodeId(30);
+    let orphan = NodeId(31);
+    let canonical_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, canonical, vec![0x10]);
+
+    let mut storage = MemoryStorage::default();
+    storage.apply(canonical_op.clone()).unwrap();
+
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(canonical).unwrap();
+    nodes.attach(canonical, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.ensure_node(orphan).unwrap();
+    nodes.attach(orphan, NodeId::ROOT, vec![0x20]).unwrap();
+
+    let mut index = RecordingIndex::default();
+    index.record(NodeId::ROOT, &canonical_op.meta.id, 1).unwrap();
+    index.record(NodeId::ROOT, &OperationId::new(&replica, 99), 99).unwrap();
+
+    let meta = Cursor {
+        head_lamport: canonical_op.meta.lamport,
+        head_replica: canonical_op.meta.id.replica.as_bytes().to_vec(),
+        head_counter: canonical_op.meta.id.counter,
+        head_seq: 1,
+        replay_lamport: Some(0),
+        replay_replica: Some(Vec::new()),
+        replay_counter: Some(0),
+    };
+
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes,
+            payloads: MemoryPayloadStore::default(),
+            index,
+        },
+        &meta,
+        |nodes| {
+            assert!(nodes.exists(canonical)?);
+            assert!(!nodes.exists(orphan)?);
+            Ok(())
+        },
+        |index| {
+            assert_eq!(
+                index.records,
+                vec![(NodeId::ROOT, canonical_op.meta.id.clone(), 1)]
+            );
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert!(result.outcome.changes.iter().any(|change| {
+        matches!(change, MaterializationChange::Delete { node, .. } if *node == orphan)
+    }));
+}
+
+#[test]
+fn catch_up_rejects_an_incomplete_scan_before_rewriting_stores() {
+    let replica = ReplicaId::new(b"incomplete-scan");
+    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(50), vec![0x10]);
+    let mut storage = MemoryStorage::default();
+    storage.apply(only_op).unwrap();
+
+    let meta = Cursor {
+        head_lamport: 2,
+        head_replica: replica.as_bytes().to_vec(),
+        head_counter: 2,
+        head_seq: 2,
+        replay_lamport: Some(0),
+        replay_replica: Some(Vec::new()),
+        replay_counter: Some(0),
+    };
+    let flushed_nodes = Cell::new(false);
+    let flushed_index = Cell::new(false);
+
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes: MemoryNodeStore::default(),
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |_| {
+            flushed_nodes.set(true);
+            Ok(())
+        },
+        |_| {
+            flushed_index.set(true);
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert!(!flushed_nodes.get());
+    assert!(!flushed_index.get());
+}
+
+#[test]
+fn catch_up_rejects_a_frontier_beyond_the_operation_log() {
+    let replica = ReplicaId::new(b"frontier-ahead");
+    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(51), vec![0x10]);
+    let mut storage = MemoryStorage::default();
+    storage.apply(only_op).unwrap();
+
+    let meta = Cursor {
+        replay_lamport: Some(2),
+        replay_replica: Some(replica.as_bytes().to_vec()),
+        replay_counter: Some(2),
+        ..Cursor::default()
+    };
+
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes: MemoryNodeStore::default(),
+            payloads: MemoryPayloadStore::default(),
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |_| Ok(()),
+        |_| Ok(()),
+    );
+
+    assert!(result.is_err());
 }

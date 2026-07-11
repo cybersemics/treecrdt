@@ -9,9 +9,8 @@ use std::time::Instant;
 use postgres::{Client, Row};
 
 use treecrdt_core::{
-    Error, ExactNodeStore, ExactPayloadStore, FrontierRewindStorage, Lamport, NodeId, NodeStore,
-    Operation, OperationId, OperationKind, PayloadStore, ReplicaId, Result, Storage,
-    TruncatingParentOpIndex, VersionVector,
+    Error, Lamport, NodeId, Operation, OperationId, OperationKind, PayloadStore, ReplicaId, Result,
+    Storage, VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
@@ -662,56 +661,6 @@ impl treecrdt_core::NodeStore for PgNodeStore {
     }
 }
 
-impl ExactNodeStore for PgNodeStore {
-    fn set_last_change_exact(&mut self, node: NodeId, vv: &VersionVector) -> Result<()> {
-        self.ensure_node(node)?;
-        let node_bytes = node_to_bytes(node);
-        let bytes = if vv.is_empty() {
-            None
-        } else {
-            Some(vv_to_bytes(vv)?)
-        };
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "UPDATE treecrdt_nodes \
-             SET last_change = $3 \
-             WHERE doc_id = $1 AND node = $2",
-        )?;
-        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
-            .map_err(storage_debug)?;
-
-        if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
-            row.last_change = bytes;
-        }
-        self.pending_last_change.borrow_mut().remove(&node);
-        Ok(())
-    }
-
-    fn set_deleted_at_exact(&mut self, node: NodeId, vv: Option<&VersionVector>) -> Result<()> {
-        self.ensure_node(node)?;
-        let node_bytes = node_to_bytes(node);
-        let bytes = match vv {
-            Some(vv) if !vv.is_empty() => Some(vv_to_bytes(vv)?),
-            _ => None,
-        };
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "UPDATE treecrdt_nodes \
-             SET deleted_at = $3 \
-             WHERE doc_id = $1 AND node = $2",
-        )?;
-        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice(), &bytes])
-            .map_err(storage_debug)?;
-
-        if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
-            row.deleted_at = bytes;
-        }
-        Ok(())
-    }
-}
-
 pub(crate) struct PgPayloadStore {
     ctx: PgCtx,
     cache: RefCell<HashMap<NodeId, Option<CachedPayloadRow>>>,
@@ -847,21 +796,6 @@ impl treecrdt_core::PayloadStore for PgPayloadStore {
     }
 }
 
-impl ExactPayloadStore for PgPayloadStore {
-    fn clear_payload(&mut self, node: NodeId) -> Result<()> {
-        let node_bytes = node_to_bytes(node);
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "DELETE FROM treecrdt_payload WHERE doc_id = $1 AND node = $2",
-        )?;
-        c.execute(&stmt, &[&self.ctx.doc_id, &node_bytes.as_slice()])
-            .map_err(storage_debug)?;
-        self.cache.borrow_mut().insert(node, None);
-        Ok(())
-    }
-}
-
 pub(crate) struct PgParentOpIndex {
     ctx: PgCtx,
     pending: Vec<PendingParentOpRefRow>,
@@ -945,19 +879,6 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
     }
 }
 
-impl TruncatingParentOpIndex for PgParentOpIndex {
-    fn truncate_from(&mut self, seq: u64) -> Result<()> {
-        self.pending.clear();
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1 AND seq >= $2",
-        )?;
-        c.execute(&stmt, &[&self.ctx.doc_id, &(seq as i64)]).map_err(storage_debug)?;
-        Ok(())
-    }
-}
-
 const PARENT_OP_INDEX_FLUSH_SIZE: usize = 4096;
 
 struct PendingParentOpRefRow {
@@ -978,6 +899,7 @@ impl PgOpStorage {
 
 impl Storage for PgOpStorage {
     fn apply(&mut self, op: Operation) -> Result<bool> {
+        op.validate()?;
         let mut c = self.ctx.client.borrow_mut();
         let inserted = insert_op_in_tx(&self.ctx, &mut c, &op)?;
         Ok(inserted)
@@ -1032,105 +954,6 @@ impl Storage for PgOpStorage {
             visit(op)?;
         }
         Ok(())
-    }
-}
-
-impl FrontierRewindStorage for PgOpStorage {
-    fn scan_frontier_range(
-        &self,
-        start: &treecrdt_core::MaterializationFrontierRef<'_>,
-        visit: &mut dyn FnMut(Operation) -> Result<()>,
-    ) -> Result<()> {
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-             FROM treecrdt_ops \
-             WHERE doc_id = $1 \
-               AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
-             ORDER BY lamport, replica, counter",
-        )?;
-        let rows = c
-            .query(
-                &stmt,
-                &[
-                    &self.ctx.doc_id,
-                    &(start.lamport as i64),
-                    &start.replica,
-                    &(start.counter as i64),
-                ],
-            )
-            .map_err(storage_debug)?;
-
-        drop(c);
-        for row in rows {
-            visit(row_to_op(row)?)?;
-        }
-        Ok(())
-    }
-
-    fn latest_structural_before(
-        &self,
-        node: NodeId,
-        before: &treecrdt_core::MaterializationFrontierRef<'_>,
-    ) -> Result<Option<Operation>> {
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-             FROM treecrdt_ops \
-             WHERE doc_id = $1 \
-               AND node = $2 \
-               AND kind IN ('insert', 'move') \
-               AND (lamport < $3 OR (lamport = $3 AND (replica < $4 OR (replica = $4 AND counter < $5)))) \
-             ORDER BY lamport DESC, replica DESC, counter DESC \
-             LIMIT 1",
-        )?;
-        let rows = c
-            .query(
-                &stmt,
-                &[
-                    &self.ctx.doc_id,
-                    &node_to_bytes(node).to_vec(),
-                    &(before.lamport as i64),
-                    &before.replica,
-                    &(before.counter as i64),
-                ],
-            )
-            .map_err(storage_debug)?;
-        rows.first().cloned().map(row_to_op).transpose()
-    }
-
-    fn latest_payload_before(
-        &self,
-        node: NodeId,
-        before: &treecrdt_core::MaterializationFrontierRef<'_>,
-    ) -> Result<Option<Operation>> {
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-             FROM treecrdt_ops \
-             WHERE doc_id = $1 \
-               AND node = $2 \
-               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
-               AND (lamport < $3 OR (lamport = $3 AND (replica < $4 OR (replica = $4 AND counter < $5)))) \
-             ORDER BY lamport DESC, replica DESC, counter DESC \
-             LIMIT 1",
-        )?;
-        let rows = c
-            .query(
-                &stmt,
-                &[
-                    &self.ctx.doc_id,
-                    &node_to_bytes(node).to_vec(),
-                    &(before.lamport as i64),
-                    &before.replica,
-                    &(before.counter as i64),
-                ],
-            )
-            .map_err(storage_debug)?;
-        rows.first().cloned().map(row_to_op).transpose()
     }
 }
 
@@ -1401,6 +1224,7 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
     let mut known_states: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
 
     for op in ops {
+        op.validate()?;
         let replica = op.meta.id.replica.as_bytes();
         let counter = op.meta.id.counter;
         let op_ref = derive_op_ref_v0(&ctx.doc_id, replica, counter);

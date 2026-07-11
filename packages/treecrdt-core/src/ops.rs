@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::version_vector::VersionVector;
 
@@ -63,6 +64,36 @@ pub struct Operation {
 }
 
 impl Operation {
+    /// Validate identity fields required by causal tracking and portable persistent adapters.
+    ///
+    /// Zero is reserved as the initial clock/counter and as the exclusive `scan_since(0)`
+    /// sentinel. Persisting a zero-valued operation would make it disappear during canonical
+    /// replay. Persistent SQLite/PostgreSQL schemas use signed 64-bit integers, so values above
+    /// `i64::MAX` are rejected consistently before any adapter can truncate them.
+    pub fn validate(&self) -> Result<()> {
+        if self.meta.lamport == 0 {
+            return Err(Error::InvalidOperation(
+                "operation lamport must be greater than zero".into(),
+            ));
+        }
+        if self.meta.id.counter == 0 {
+            return Err(Error::InvalidOperation(
+                "operation counter must be greater than zero".into(),
+            ));
+        }
+        if self.meta.lamport > i64::MAX as u64 {
+            return Err(Error::InvalidOperation(
+                "operation lamport exceeds the supported signed 64-bit range".into(),
+            ));
+        }
+        if self.meta.id.counter > i64::MAX as u64 {
+            return Err(Error::InvalidOperation(
+                "operation counter exceeds the supported signed 64-bit range".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn insert(
         replica: &ReplicaId,
         counter: u64,
