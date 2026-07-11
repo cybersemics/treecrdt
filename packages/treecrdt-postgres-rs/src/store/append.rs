@@ -150,10 +150,6 @@ fn append_ops_in_tx(
     let apply_result = orchestrate_persisted_remote_append(
         &meta,
         inserted_ops,
-        {
-            let payloads = PgPayloadStore::new(ctx.clone());
-            move |node| payloads.last_writer(node)
-        },
         |meta, inserted| materialize_inserted_ops(ctx.clone(), meta, inserted),
         &mut update_head,
         |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),

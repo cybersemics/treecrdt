@@ -20,10 +20,10 @@ pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use materialization::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    orchestrate_persisted_remote_append, try_shortcut_out_of_order_payload_noops, CatchUpResult,
-    IncrementalApplyResult, MaterializationCursor, MaterializationFrontier, MaterializationHead,
-    MaterializationKey, MaterializationState, MaterializationStateRef, PayloadNoopShortcut,
-    PersistedRemoteApplyResult, PersistedRemoteStores,
+    orchestrate_persisted_remote_append, CatchUpResult, IncrementalApplyResult,
+    MaterializationCursor, MaterializationFrontier, MaterializationHead, MaterializationKey,
+    MaterializationState, MaterializationStateRef, PersistedRemoteApplyResult,
+    PersistedRemoteStores,
 };
 pub use ops::{cmp_op_key, cmp_ops, Operation, OperationKind, OperationMetadata};
 pub use traits::{

@@ -9,8 +9,8 @@ use std::time::Instant;
 use postgres::{Client, Row};
 
 use treecrdt_core::{
-    Error, Lamport, NodeId, Operation, OperationId, OperationKind, PayloadStore, ReplicaId, Result,
-    Storage, VersionVector,
+    Error, Lamport, NodeId, Operation, OperationId, OperationKind, ReplicaId, Result, Storage,
+    VersionVector,
 };
 
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
