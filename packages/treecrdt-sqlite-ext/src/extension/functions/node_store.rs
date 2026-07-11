@@ -783,6 +783,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
     ) -> treecrdt_core::Result<()> {
         self.ensure_node(node)?;
         let node_bytes = sqlite_node_id_bytes(node);
+        let vv_bytes = (!vv.is_empty()).then(|| vv_to_bytes(vv)).transpose()?;
         unsafe {
             sqlite_clear_bindings(self.update_last_change);
             sqlite_reset(self.update_last_change);
@@ -793,10 +794,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
                 node_bytes.len() as c_int,
                 None,
             );
-            if vv.is_empty() {
-                sqlite_bind_null(self.update_last_change, 2);
-            } else {
-                let bytes = vv_to_bytes(vv)?;
+            if let Some(bytes) = vv_bytes.as_ref() {
                 sqlite_bind_blob(
                     self.update_last_change,
                     2,
@@ -804,11 +802,24 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
                     bytes.len() as c_int,
                     None,
                 );
+            } else {
+                sqlite_bind_null(self.update_last_change, 2);
             }
             let step_rc = sqlite_step(self.update_last_change);
-            sqlite_reset(self.update_last_change);
+            let reset_rc = sqlite_reset(self.update_last_change);
+            // Blob bindings use SQLITE_STATIC; clear them before their backing buffers are dropped.
+            let clear_rc = sqlite_clear_bindings(self.update_last_change);
             if step_rc != SQLITE_DONE as c_int {
                 return Err(sqlite_rc_error(step_rc, "set exact last_change failed"));
+            }
+            if reset_rc != SQLITE_OK as c_int {
+                return Err(sqlite_rc_error(reset_rc, "reset exact last_change failed"));
+            }
+            if clear_rc != SQLITE_OK as c_int {
+                return Err(sqlite_rc_error(
+                    clear_rc,
+                    "clear exact last_change bindings failed",
+                ));
             }
         }
         Ok(())
@@ -821,6 +832,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
     ) -> treecrdt_core::Result<()> {
         self.ensure_node(node)?;
         let node_bytes = sqlite_node_id_bytes(node);
+        let vv_bytes = vv.filter(|vv| !vv.is_empty()).map(vv_to_bytes).transpose()?;
         unsafe {
             sqlite_clear_bindings(self.update_deleted_at);
             sqlite_reset(self.update_deleted_at);
@@ -831,8 +843,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
                 node_bytes.len() as c_int,
                 None,
             );
-            if let Some(vv) = vv.filter(|vv| !vv.is_empty()) {
-                let bytes = vv_to_bytes(vv)?;
+            if let Some(bytes) = vv_bytes.as_ref() {
                 sqlite_bind_blob(
                     self.update_deleted_at,
                     2,
@@ -844,9 +855,20 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
                 sqlite_bind_null(self.update_deleted_at, 2);
             }
             let step_rc = sqlite_step(self.update_deleted_at);
-            sqlite_reset(self.update_deleted_at);
+            let reset_rc = sqlite_reset(self.update_deleted_at);
+            // Blob bindings use SQLITE_STATIC; clear them before their backing buffers are dropped.
+            let clear_rc = sqlite_clear_bindings(self.update_deleted_at);
             if step_rc != SQLITE_DONE as c_int {
                 return Err(sqlite_rc_error(step_rc, "set exact deleted_at failed"));
+            }
+            if reset_rc != SQLITE_OK as c_int {
+                return Err(sqlite_rc_error(reset_rc, "reset exact deleted_at failed"));
+            }
+            if clear_rc != SQLITE_OK as c_int {
+                return Err(sqlite_rc_error(
+                    clear_rc,
+                    "clear exact deleted_at bindings failed",
+                ));
             }
         }
         Ok(())

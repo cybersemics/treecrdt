@@ -1,5 +1,5 @@
 use super::materialize::json_outcome_from_core;
-use super::util::sqlite_result_json;
+use super::util::{read_blob, sqlite_result_json};
 use super::*;
 
 /// Append an operation row to the `ops` table. Args:
@@ -71,23 +71,8 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
     };
     let kind = kind.to_string();
 
-    let read_opt_blob = |val: *mut sqlite3_value| -> Option<Vec<u8>> {
-        unsafe {
-            if sqlite_value_type(val) == SQLITE_NULL as c_int {
-                return None;
-            }
-            let ptr = sqlite_value_blob(val) as *const u8;
-            let len = sqlite_value_bytes(val) as usize;
-            if ptr.is_null() {
-                None
-            } else {
-                Some(slice::from_raw_parts(ptr, len).to_vec())
-            }
-        }
-    };
-
-    let parent = read_opt_blob(args[4]);
-    let node = match read_opt_blob(args[5]) {
+    let parent = read_blob(args[4]);
+    let node = match read_blob(args[5]) {
         Some(v) => v,
         None => {
             sqlite_result_error(
@@ -97,9 +82,9 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
             return;
         }
     };
-    let new_parent = read_opt_blob(args[6]);
-    let order_key = read_opt_blob(args[7]);
-    let known_state_or_payload = read_opt_blob(args[8]);
+    let new_parent = read_blob(args[6]);
+    let order_key = read_blob(args[7]);
+    let known_state_or_payload = read_blob(args[8]);
 
     let (known_state, payload) = match kind.as_str() {
         // Deletes must carry known_state (writer-side subtree version vector).
