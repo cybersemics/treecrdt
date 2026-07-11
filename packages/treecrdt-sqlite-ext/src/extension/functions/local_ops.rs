@@ -34,6 +34,42 @@ struct JsonLocalOpResult {
     outcome: JsonMaterializationOutcome,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonPreparedLocalOpResult {
+    op: JsonOp,
+    precondition: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonLocalOpConflict {
+    conflict: bool,
+}
+
+#[derive(serde::Serialize)]
+struct JsonLocalOpTransactionError {
+    error: &'static str,
+}
+
+enum LocalOpMode {
+    Immediate,
+    Prepare,
+    Commit(String),
+}
+
+enum LocalOpDispatchResult {
+    Committed(JsonLocalOpResult),
+    Prepared(JsonPreparedLocalOpResult),
+    Conflict,
+    OuterTransaction,
+}
+
+enum OptimisticBeginError {
+    Conflict,
+    Sql(c_int),
+}
+
 type LocalCrdt = TreeCrdt<SqliteOpStorage, LamportClock, SqliteNodeStore, SqlitePayloadStore>;
 
 struct LocalOpSession {
@@ -46,14 +82,66 @@ struct LocalOpSession {
 
 impl LocalOpSession {
     fn rollback(self, rc: c_int) -> c_int {
-        sqlite_exec(
+        let rollback_rc = sqlite_exec(
             self.db,
             self.rollback_sql.as_ptr(),
             None,
             null_mut(),
             null_mut(),
         );
-        rc
+        if rollback_rc == SQLITE_OK as c_int {
+            rc
+        } else {
+            rollback_rc
+        }
+    }
+}
+
+fn optimistic_conflict(session: LocalOpSession) -> Result<LocalOpDispatchResult, c_int> {
+    match session.rollback(SQLITE_OK as c_int) {
+        rc if rc == SQLITE_OK as c_int => Ok(LocalOpDispatchResult::Conflict),
+        rc => Err(rc),
+    }
+}
+
+fn parse_local_op_mode(
+    argc: c_int,
+    args: &[*mut sqlite3_value],
+    base_argc: usize,
+) -> Result<LocalOpMode, ()> {
+    if argc as usize == base_argc {
+        return Ok(LocalOpMode::Immediate);
+    }
+    if argc as usize != base_argc + 1 {
+        return Err(());
+    }
+    let phase = read_text(args[base_argc]);
+    if phase == "prepare" {
+        Ok(LocalOpMode::Prepare)
+    } else if phase.starts_with("v1:") {
+        Ok(LocalOpMode::Commit(phase))
+    } else {
+        Err(())
+    }
+}
+
+fn sqlite_busy_or_locked(rc: c_int) -> bool {
+    // Keep this independent of optional sqlite bindings: these are stable SQLite result codes.
+    matches!(rc & 0xff, 5 | 6)
+}
+
+fn rollback_optimistic_begin(
+    db: *mut sqlite3,
+    rollback: &CString,
+    rc: c_int,
+) -> OptimisticBeginError {
+    let rollback_rc = sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+    if rollback_rc != SQLITE_OK as c_int {
+        OptimisticBeginError::Sql(rollback_rc)
+    } else if sqlite_busy_or_locked(rc) {
+        OptimisticBeginError::Conflict
+    } else {
+        OptimisticBeginError::Sql(rc)
     }
 }
 
@@ -141,6 +229,62 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
     }
 }
 
+fn load_local_crdt(db: *mut sqlite3, doc_id: &[u8], replica: &[u8]) -> Result<LocalCrdt, c_int> {
+    let node_store = SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
+    let payload_store = SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
+    let storage = SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
+    TreeCrdt::with_stores(
+        ReplicaId::new(replica.to_vec()),
+        storage,
+        LamportClock::default(),
+        node_store,
+        payload_store,
+    )
+    .map_err(sqlite_err_from_core)
+}
+
+fn load_required_doc_id(db: *mut sqlite3) -> Result<Vec<u8>, c_int> {
+    load_doc_id(db)?.ok_or(SQLITE_ERROR as c_int)
+}
+
+/// Hash the complete clean materialization revision together with the proposed operation.
+///
+/// The operation binding is important: two concurrent prepares can mint the same v0 op id while
+/// proposing different bodies. A revision-only token would let one authorization commit the
+/// other proposal. Requiring a clean replay frontier ensures a pending repair never looks stable.
+fn local_precondition(
+    doc_id: &[u8],
+    meta: &TreeMeta,
+    op: &Operation,
+) -> Result<Option<String>, c_int> {
+    let state = meta.state();
+    if state.replay_from.is_some() {
+        return Ok(None);
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"treecrdt/sqlite-local-precondition/v1");
+    hasher.update(&(doc_id.len() as u64).to_be_bytes());
+    hasher.update(doc_id);
+    match state.head {
+        Some(head) => {
+            hasher.update(&[1]);
+            hasher.update(&head.at.lamport.to_be_bytes());
+            hasher.update(&(head.at.replica.len() as u64).to_be_bytes());
+            hasher.update(head.at.replica);
+            hasher.update(&head.at.counter.to_be_bytes());
+            hasher.update(&head.seq.to_be_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    };
+    let op_bytes = serde_json::to_vec(op).map_err(|_| SQLITE_ERROR as c_int)?;
+    hasher.update(&(op_bytes.len() as u64).to_be_bytes());
+    hasher.update(&op_bytes);
+    Ok(Some(format!("v1:{}", hasher.finalize().to_hex())))
+}
+
 fn begin_local_core_op(
     db: *mut sqlite3,
     doc_id: &[u8],
@@ -162,38 +306,70 @@ fn begin_local_core_op(
         return Err(rc);
     }
 
-    let node_store = match SqliteNodeStore::prepare(db) {
-        Ok(store) => store,
-        Err(_) => {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
-        }
-    };
-    let payload_store = match SqlitePayloadStore::prepare(db) {
-        Ok(store) => store,
-        Err(_) => {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
-        }
-    };
-    let storage = SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
-    let replica_id = ReplicaId::new(replica.to_vec());
-    let crdt = match TreeCrdt::with_stores(
-        replica_id,
-        storage,
-        LamportClock::default(),
-        node_store,
-        payload_store,
-    ) {
+    let crdt = match load_local_crdt(db, doc_id, replica) {
         Ok(v) => v,
-        Err(_) => {
+        Err(rc) => {
             sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
+            return Err(rc);
         }
     };
     Ok(LocalOpSession {
         db,
         doc_id: doc_id.to_vec(),
+        crdt,
+        commit_sql,
+        rollback_sql: rollback,
+    })
+}
+
+fn begin_optimistic_local_core_op(
+    db: *mut sqlite3,
+    replica: &[u8],
+    savepoint_name: &str,
+) -> Result<LocalOpSession, OptimisticBeginError> {
+    let begin = CString::new(format!("SAVEPOINT {savepoint_name}")).expect("savepoint begin");
+    let commit_sql = CString::new(format!("RELEASE {savepoint_name}")).expect("savepoint commit");
+    let rollback = CString::new(format!(
+        "ROLLBACK TO {savepoint_name}; RELEASE {savepoint_name}"
+    ))
+    .expect("savepoint rollback");
+    let begin_rc = sqlite_exec(db, begin.as_ptr(), None, null_mut(), null_mut());
+    if begin_rc != SQLITE_OK as c_int {
+        return Err(OptimisticBeginError::Sql(begin_rc));
+    }
+
+    // A deferred SAVEPOINT does not serialize this read with writers on other connections.
+    // Acquire the write lock before checking the token so no writer can invalidate it between
+    // validation and persistence. The assignment is intentionally value-preserving.
+    let lock_sql = CString::new("UPDATE tree_meta SET head_seq = head_seq WHERE id = 1")
+        .expect("local optimistic write lock sql");
+    let lock_rc = sqlite_exec(db, lock_sql.as_ptr(), None, null_mut(), null_mut());
+    if lock_rc != SQLITE_OK as c_int {
+        return Err(rollback_optimistic_begin(db, &rollback, lock_rc));
+    }
+
+    let doc_id = match load_doc_id(db) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Err(rollback_optimistic_begin(
+                db,
+                &rollback,
+                SQLITE_ERROR as c_int,
+            ));
+        }
+        Err(rc) => {
+            return Err(rollback_optimistic_begin(db, &rollback, rc));
+        }
+    };
+    let crdt = match load_local_crdt(db, &doc_id, replica) {
+        Ok(v) => v,
+        Err(rc) => {
+            return Err(rollback_optimistic_begin(db, &rollback, rc));
+        }
+    };
+    Ok(LocalOpSession {
+        db,
+        doc_id,
         crdt,
         commit_sql,
         rollback_sql: rollback,
@@ -237,28 +413,21 @@ fn finish_local_core_op(
         post_materialization_ok = false;
     }
     if !post_materialization_ok {
-        set_tree_meta_replay_frontier(
+        if let Err(rc) = set_tree_meta_replay_frontier(
             session.db,
             &treecrdt_core::MaterializationFrontier {
                 lamport: 0,
                 replica: Vec::new(),
                 counter: 0,
             },
-        )?;
+        ) {
+            return Err(session.rollback(rc));
+        }
     }
 
     let op = match json_op_from_operation(op) {
         Ok(v) => v,
-        Err(rc) => {
-            sqlite_exec(
-                session.db,
-                session.rollback_sql.as_ptr(),
-                None,
-                null_mut(),
-                null_mut(),
-            );
-            return Err(rc);
-        }
+        Err(rc) => return Err(session.rollback(rc)),
     };
 
     let commit_rc = sqlite_exec(
@@ -269,14 +438,7 @@ fn finish_local_core_op(
         null_mut(),
     );
     if commit_rc != SQLITE_OK as c_int {
-        sqlite_exec(
-            session.db,
-            session.rollback_sql.as_ptr(),
-            None,
-            null_mut(),
-            null_mut(),
-        );
-        return Err(commit_rc);
+        return Err(session.rollback(commit_rc));
     }
 
     Ok(JsonLocalOpResult {
@@ -287,24 +449,101 @@ fn finish_local_core_op(
 
 fn run_local_core_op<F>(
     db: *mut sqlite3,
-    doc_id: Vec<u8>,
     replica: Vec<u8>,
     savepoint_name: &str,
+    mode: LocalOpMode,
     build: F,
-) -> Result<JsonLocalOpResult, c_int>
+) -> Result<LocalOpDispatchResult, c_int>
 where
-    F: FnOnce(&mut LocalCrdt) -> treecrdt_core::Result<PreparedLocalOp>,
+    F: Fn(&mut LocalCrdt) -> treecrdt_core::Result<PreparedLocalOp>,
 {
-    let mut session = begin_local_core_op(db, &doc_id, &replica, savepoint_name)?;
-    let prepared = match build(&mut session.crdt) {
-        Ok(v) => v,
-        Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
-    };
-    let (op, plan) = match session.crdt.commit_prepared_local(prepared) {
-        Ok(v) => v,
-        Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
-    };
-    finish_local_core_op(session, op, plan)
+    if !matches!(&mode, LocalOpMode::Immediate) && sqlite_get_autocommit(db) == 0 {
+        return Ok(LocalOpDispatchResult::OuterTransaction);
+    }
+    match mode {
+        LocalOpMode::Prepare => {
+            // Loading meta first pins the read snapshot used by the rest of this SELECT. Preparing
+            // only reads; a pending replay is surfaced as a retry instead of repairing state here.
+            let meta = load_tree_meta(db)?;
+            if meta.state().replay_from.is_some() {
+                return Ok(LocalOpDispatchResult::Conflict);
+            }
+            let doc_id = load_required_doc_id(db)?;
+            let mut crdt = load_local_crdt(db, &doc_id, &replica)?;
+            let prepared = build(&mut crdt).map_err(sqlite_err_from_core)?;
+            let Some(precondition) = local_precondition(&doc_id, &meta, &prepared.op)? else {
+                return Ok(LocalOpDispatchResult::Conflict);
+            };
+            let op = json_op_from_operation(prepared.op)?;
+            Ok(LocalOpDispatchResult::Prepared(JsonPreparedLocalOpResult {
+                op,
+                precondition,
+            }))
+        }
+        LocalOpMode::Immediate => {
+            let doc_id = load_required_doc_id(db)?;
+            let mut session = begin_local_core_op(db, &doc_id, &replica, savepoint_name)?;
+            let prepared = match build(&mut session.crdt) {
+                Ok(v) => v,
+                Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+            };
+            let (op, plan) = match session.crdt.commit_prepared_local(prepared) {
+                Ok(v) => v,
+                Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+            };
+            finish_local_core_op(session, op, plan).map(LocalOpDispatchResult::Committed)
+        }
+        LocalOpMode::Commit(expected_precondition) => {
+            let mut session = match begin_optimistic_local_core_op(db, &replica, savepoint_name) {
+                Ok(v) => v,
+                Err(OptimisticBeginError::Conflict) => return Ok(LocalOpDispatchResult::Conflict),
+                Err(OptimisticBeginError::Sql(rc)) => return Err(rc),
+            };
+            let meta = match load_tree_meta(session.db) {
+                Ok(v) => v,
+                Err(rc) => return Err(session.rollback(rc)),
+            };
+            if meta.state().replay_from.is_some() {
+                return optimistic_conflict(session);
+            }
+            let prepared = match build(&mut session.crdt) {
+                Ok(v) => v,
+                Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+            };
+            let actual_precondition = match local_precondition(&session.doc_id, &meta, &prepared.op)
+            {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    return optimistic_conflict(session);
+                }
+                Err(rc) => return Err(session.rollback(rc)),
+            };
+            if actual_precondition != expected_precondition {
+                return optimistic_conflict(session);
+            }
+            let (op, plan) = match session.crdt.commit_prepared_local(prepared) {
+                Ok(v) => v,
+                Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+            };
+            finish_local_core_op(session, op, plan).map(LocalOpDispatchResult::Committed)
+        }
+    }
+}
+
+fn sqlite_result_local_dispatch(ctx: *mut sqlite3_context, out: &LocalOpDispatchResult) {
+    match out {
+        LocalOpDispatchResult::Committed(value) => sqlite_result_json(ctx, value),
+        LocalOpDispatchResult::Prepared(value) => sqlite_result_json(ctx, value),
+        LocalOpDispatchResult::Conflict => {
+            sqlite_result_json(ctx, &JsonLocalOpConflict { conflict: true })
+        }
+        LocalOpDispatchResult::OuterTransaction => sqlite_result_json(
+            ctx,
+            &JsonLocalOpTransactionError {
+                error: "outerTransaction",
+            },
+        ),
+    }
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_insert(
@@ -317,16 +556,27 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         return;
     }
 
-    if argc != 6 {
+    if argc != 6 && argc != 7 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_insert expects 6 args (replica,parent,node,placement,after,payload)\0"
-                .as_ptr() as *const c_char,
+            b"treecrdt_local_insert expects 6 args plus optional prepare/precondition\0".as_ptr()
+                as *const c_char,
         );
         return;
     }
 
     let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
+    let mode = match parse_local_op_mode(argc, args, 6) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_local_insert: invalid prepare/precondition argument\0".as_ptr()
+                    as *const c_char,
+            );
+            return;
+        }
+    };
     let replica = match read_required_blob(args[0]) {
         Ok(v) => v,
         Err(_) => {
@@ -372,22 +622,6 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
     let payload = read_blob(args[5]);
 
     let db = sqlite_context_db_handle(ctx);
-    let doc_id = match load_doc_id(db) {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_insert: doc_id not set (call treecrdt_set_doc_id)\0".as_ptr()
-                    as *const c_char,
-            );
-            return;
-        }
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
-
     let parent_id = NodeId(u128::from_be_bytes(parent));
     let node_id = NodeId(u128::from_be_bytes(node));
     let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
@@ -398,7 +632,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
             return;
         }
     };
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
+    let out = match run_local_core_op(db, replica, "treecrdt_local_insert", mode, |crdt| {
         crdt.prepare_local_insert(parent_id, node_id, placement, payload.clone())
     }) {
         Ok(v) => v,
@@ -408,7 +642,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
 
-    sqlite_result_json(ctx, &out);
+    sqlite_result_local_dispatch(ctx, &out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_move(
@@ -421,16 +655,27 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         return;
     }
 
-    if argc != 5 {
+    if argc != 5 && argc != 6 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_move expects 5 args (replica,node,new_parent,placement,after)\0"
-                .as_ptr() as *const c_char,
+            b"treecrdt_local_move expects 5 args plus optional prepare/precondition\0".as_ptr()
+                as *const c_char,
         );
         return;
     }
 
     let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
+    let mode = match parse_local_op_mode(argc, args, 5) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_local_move: invalid prepare/precondition argument\0".as_ptr()
+                    as *const c_char,
+            );
+            return;
+        }
+    };
     let replica = match read_required_blob(args[0]) {
         Ok(v) => v,
         Err(_) => {
@@ -475,22 +720,6 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
     };
 
     let db = sqlite_context_db_handle(ctx);
-    let doc_id = match load_doc_id(db) {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_move: doc_id not set (call treecrdt_set_doc_id)\0".as_ptr()
-                    as *const c_char,
-            );
-            return;
-        }
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
-
     let node_id = NodeId(u128::from_be_bytes(node));
     let new_parent_id = NodeId(u128::from_be_bytes(new_parent));
     let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
@@ -501,7 +730,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
             return;
         }
     };
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
+    let out = match run_local_core_op(db, replica, "treecrdt_local_move", mode, |crdt| {
         crdt.prepare_local_move(node_id, new_parent_id, placement)
     }) {
         Ok(v) => v,
@@ -510,7 +739,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
             return;
         }
     };
-    sqlite_result_json(ctx, &out);
+    sqlite_result_local_dispatch(ctx, &out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_delete(
@@ -523,15 +752,27 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
         return;
     }
 
-    if argc != 2 {
+    if argc != 2 && argc != 3 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_delete expects 2 args (replica,node)\0".as_ptr() as *const c_char,
+            b"treecrdt_local_delete expects 2 args plus optional prepare/precondition\0".as_ptr()
+                as *const c_char,
         );
         return;
     }
 
     let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
+    let mode = match parse_local_op_mode(argc, args, 2) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_local_delete: invalid prepare/precondition argument\0".as_ptr()
+                    as *const c_char,
+            );
+            return;
+        }
+    };
     let replica = match read_required_blob(args[0]) {
         Ok(v) => v,
         Err(_) => {
@@ -554,24 +795,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
     };
 
     let db = sqlite_context_db_handle(ctx);
-    let doc_id = match load_doc_id(db) {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_delete: doc_id not set (call treecrdt_set_doc_id)\0".as_ptr()
-                    as *const c_char,
-            );
-            return;
-        }
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
-
     let node_id = NodeId(u128::from_be_bytes(node));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
+    let out = match run_local_core_op(db, replica, "treecrdt_local_delete", mode, |crdt| {
         crdt.prepare_local_delete(node_id)
     }) {
         Ok(v) => v,
@@ -580,7 +805,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
             return;
         }
     };
-    sqlite_result_json(ctx, &out);
+    sqlite_result_local_dispatch(ctx, &out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_payload(
@@ -593,16 +818,27 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         return;
     }
 
-    if argc != 3 {
+    if argc != 3 && argc != 4 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_payload expects 3 args (replica,node,payload)\0".as_ptr()
+            b"treecrdt_local_payload expects 3 args plus optional prepare/precondition\0".as_ptr()
                 as *const c_char,
         );
         return;
     }
 
     let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
+    let mode = match parse_local_op_mode(argc, args, 3) {
+        Ok(v) => v,
+        Err(_) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_local_payload: invalid prepare/precondition argument\0".as_ptr()
+                    as *const c_char,
+            );
+            return;
+        }
+    };
     let replica = match read_required_blob(args[0]) {
         Ok(v) => v,
         Err(_) => {
@@ -626,24 +862,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
     let payload = read_blob(args[2]);
 
     let db = sqlite_context_db_handle(ctx);
-    let doc_id = match load_doc_id(db) {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_payload: doc_id not set (call treecrdt_set_doc_id)\0".as_ptr()
-                    as *const c_char,
-            );
-            return;
-        }
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
-
     let node_id = NodeId(u128::from_be_bytes(node));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
+    let out = match run_local_core_op(db, replica, "treecrdt_local_payload", mode, |crdt| {
         crdt.prepare_local_payload(node_id, payload.clone())
     }) {
         Ok(v) => v,
@@ -652,5 +872,5 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
             return;
         }
     };
-    sqlite_result_json(ctx, &out);
+    sqlite_result_local_dispatch(ctx, &out);
 }

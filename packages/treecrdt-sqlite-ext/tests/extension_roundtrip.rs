@@ -1,6 +1,6 @@
 #![cfg(all(feature = "rusqlite-storage", feature = "ext-sqlite"))]
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -96,6 +96,18 @@ struct JsonOperationId {
 struct JsonLocalOpResult {
     op: JsonOp,
     outcome: JsonMaterializationOutcome,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonPreparedLocalOpResult {
+    op: JsonOp,
+    precondition: String,
+}
+
+#[derive(Deserialize)]
+struct JsonLocalOpConflict {
+    conflict: bool,
 }
 
 fn node_bytes_from_id(node: NodeId) -> Vec<u8> {
@@ -553,6 +565,123 @@ fn local_insert_returns_appended_insert_op() {
     assert_eq!(head_replica, b"r1".to_vec());
     assert_eq!(head_counter, 1);
     assert_eq!(head_seq, 1);
+}
+
+#[test]
+fn optimistic_local_prepare_is_read_only_and_stale_commit_is_a_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("optimistic-auth.sqlite");
+    let conn_a = setup_conn_at(Some(&path));
+    conn_a.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let journal: String =
+        conn_a.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0)).unwrap();
+    assert_eq!(journal.to_ascii_lowercase(), "wal");
+    let conn_b = setup_conn_at(Some(&path));
+    let replica = b"auth-replica".to_vec();
+    let root = node_bytes(0);
+    let proposed_node = node_bytes(1);
+    let unrelated_node = node_bytes(2);
+
+    let prepared_json: String = conn_a
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, 'prepare')",
+            rusqlite::params![replica.clone(), root.clone(), proposed_node.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let prepared: JsonPreparedLocalOpResult = serde_json::from_str(&prepared_json).unwrap();
+    assert_eq!(prepared.op.counter, 1);
+    assert_eq!(prepared.op.lamport, 1);
+    assert!(prepared.precondition.starts_with("v1:"));
+    assert_eq!(
+        conn_a
+            .query_row("SELECT COUNT(*) FROM ops", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(visible_children(&conn_a, &root).is_empty());
+
+    // A held WAL writer is a retryable conflict, not a hard error or leaked savepoint.
+    conn_b.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let _: String = conn_b
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica.clone(), root.clone(), unrelated_node.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let contended_json: String = conn_a
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)",
+            rusqlite::params![
+                replica.clone(),
+                root.clone(),
+                proposed_node.clone(),
+                prepared.precondition.clone()
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(serde_json::from_str::<JsonLocalOpConflict>(&contended_json).unwrap().conflict);
+    conn_b.execute_batch("COMMIT").unwrap();
+
+    // Once B commits, the same token is stale and still returns a clean conflict.
+    let stale_json: String = conn_a
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)",
+            rusqlite::params![
+                replica.clone(),
+                root.clone(),
+                proposed_node.clone(),
+                prepared.precondition
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let stale: JsonLocalOpConflict = serde_json::from_str(&stale_json).unwrap();
+    assert!(stale.conflict);
+    assert_eq!(
+        visible_children(&conn_a, &root),
+        vec![unrelated_node.clone()]
+    );
+    assert_eq!(
+        conn_a
+            .query_row("SELECT COUNT(*) FROM ops", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+
+    let retried_json: String = conn_a
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, 'prepare')",
+            rusqlite::params![replica.clone(), root.clone(), proposed_node.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let retried: JsonPreparedLocalOpResult = serde_json::from_str(&retried_json).unwrap();
+    assert_eq!(retried.op.counter, 2);
+    assert_eq!(retried.op.lamport, 2);
+    let committed_json: String = conn_a
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)",
+            rusqlite::params![
+                replica,
+                root.clone(),
+                proposed_node.clone(),
+                retried.precondition
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let committed: JsonLocalOpResult = serde_json::from_str(&committed_json).unwrap();
+    assert_eq!(committed.op.counter, retried.op.counter);
+    assert_eq!(committed.op.lamport, retried.op.lamport);
+    assert_eq!(committed.op.order_key, retried.op.order_key);
+    assert_eq!(
+        visible_children(&conn_a, &root),
+        vec![unrelated_node, proposed_node]
+    );
 }
 
 #[test]
@@ -1088,8 +1217,15 @@ fn oprefs_children_include_payload_after_move() {
 }
 
 fn setup_conn() -> Connection {
+    setup_conn_at(None)
+}
+
+fn setup_conn_at(path: Option<&Path>) -> Connection {
     let ext_path = find_extension().expect("extension dylib path");
-    let conn = Connection::open_in_memory().unwrap();
+    let conn = match path {
+        Some(path) => Connection::open(path).unwrap(),
+        None => Connection::open_in_memory().unwrap(),
+    };
     unsafe {
         conn.load_extension_enable().unwrap();
         conn.load_extension(ext_path, Some("sqlite3_treecrdt_init")).unwrap();

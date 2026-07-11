@@ -252,7 +252,7 @@ pub extern "C" fn sqlite3_treecrdt_init(
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            6,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_insert),
@@ -266,7 +266,7 @@ pub extern "C" fn sqlite3_treecrdt_init(
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            5,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_move),
@@ -280,7 +280,7 @@ pub extern "C" fn sqlite3_treecrdt_init(
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            2,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_delete),
@@ -294,7 +294,7 @@ pub extern "C" fn sqlite3_treecrdt_init(
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            3,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_payload),
