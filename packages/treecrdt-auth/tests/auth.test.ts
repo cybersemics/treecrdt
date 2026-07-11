@@ -818,7 +818,7 @@ test('auth: replayed author capability tokens do not widen peer filter scope', a
       filter: { all: {} },
       capabilities: scopedPeerCaps,
     }),
-  ).resolves.toEqual([true, false]);
+  ).rejects.toThrow(/does not allow operation-log projection/i);
 });
 
 test('auth: cached stale local tokens cannot authorize new local writes after an access downgrade', async () => {
@@ -1456,8 +1456,8 @@ test('auth: syncOnce accepts doc-wide read_structure capability for filter(all)'
   }
 });
 
-test('auth: syncOnce accepts filter(children) when capability scope matches the parent', async () => {
-  const docId = 'doc-auth-filter-allow-children';
+test('auth: reference COSE/CWT rejects scoped filter(children)', async () => {
+  const docId = 'doc-auth-filter-reject-scoped-children';
   const root = '0'.repeat(32);
 
   const a = new MemoryBackend(docId);
@@ -1482,7 +1482,9 @@ test('auth: syncOnce accepts filter(children) when capability scope matches the 
     rootNodeId: parent,
   });
 
+  let scopeEvaluations = 0;
   const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+    scopeEvaluations += 1;
     const nodeHex = bytesToHex(node);
     const rootHex = bytesToHex(scope.root);
     return nodeHex === rootHex ? 'allow' : 'deny';
@@ -1517,11 +1519,14 @@ test('auth: syncOnce accepts filter(children) when capability scope matches the 
   });
 
   try {
-    await pa.syncOnce(
-      ta,
-      { children: { parent: nodeIdToBytes16(parent) } },
-      { maxCodewords: 1_000, codewordsPerMessage: 64 },
-    );
+    await expect(
+      pa.syncOnce(
+        ta,
+        { children: { parent: nodeIdToBytes16(parent) } },
+        { maxCodewords: 1_000, codewordsPerMessage: 64 },
+      ),
+    ).rejects.toThrow(/UNAUTHORIZED.*capability does not allow filter/i);
+    expect(scopeEvaluations).toBe(0);
   } finally {
     detach();
   }
@@ -1603,7 +1608,7 @@ test('auth: syncOnce rejects filter(children) when capability scope does not mat
   void bPk;
 });
 
-test('auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees', async () => {
+test('auth: scoped projections cannot reveal excluded destinations or private history after re-entry', async () => {
   const docId = 'doc-auth-filter-outgoing-exclude';
   const root = '0'.repeat(32);
 
@@ -1618,62 +1623,25 @@ test('auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees'
 
   const publicNode = nodeIdFromInt(1);
   const privateRoot = nodeIdFromInt(2);
-  const privateChild = nodeIdFromInt(3);
-  const privateSibling = nodeIdFromInt(4);
-
-  const parentByNodeHex = new Map<string, string | null>([
-    [root, null],
-    [publicNode, root],
-    [privateRoot, root],
-    // Current tree state (after the move below): child is under sibling, both under privateRoot.
-    [privateSibling, privateRoot],
-    [privateChild, privateSibling],
-  ]);
+  let scopeEvaluations = 0;
 
   const scopeEvaluator = ({
     node,
-    scope,
   }: {
     node: Uint8Array;
     scope: { root: Uint8Array; maxDepth?: number; exclude?: Uint8Array[] };
   }) => {
-    const rootHex = bytesToHex(scope.root);
-    const excludeHex = new Set((scope.exclude ?? []).map((b) => bytesToHex(b)));
-    const maxDepth = scope.maxDepth;
-
-    let curHex = bytesToHex(node);
-    let distance = 0;
-
-    for (let hops = 0; hops < 10_000; hops += 1) {
-      if (excludeHex.has(curHex)) return 'deny' as const;
-      if (curHex === rootHex) {
-        if (maxDepth !== undefined && distance > maxDepth) return 'deny' as const;
-        return 'allow' as const;
-      }
-
-      // Reserved ids terminate the chain (unless they are the scope root, handled above).
-      if (curHex === root || curHex === 'f'.repeat(32)) return 'deny' as const;
-
-      // If we already traversed `maxDepth` edges without reaching `root`, the node cannot be within scope.
-      if (maxDepth !== undefined && distance >= maxDepth) return 'deny' as const;
-
-      const parentHex = parentByNodeHex.get(curHex);
-      if (parentHex === undefined) return 'unknown' as const;
-      if (parentHex === null) return 'deny' as const;
-
-      curHex = parentHex;
-      distance += 1;
-    }
-
-    // Defensive: cycles or extreme depth.
-    return 'unknown' as const;
+    scopeEvaluations += 1;
+    // The materialized tree only knows the node's current, post-re-entry location. The old
+    // implementation therefore allowed every historical op below, including the private period.
+    return bytesToHex(node) === publicNode ? ('allow' as const) : ('deny' as const);
   };
 
   const tokenReceiver = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: receiverPk,
     docId,
-    actions: ['read_structure'],
+    actions: ['read_structure', 'read_payload'],
     rootNodeId: root,
     excludeNodeIds: [privateRoot],
   });
@@ -1697,72 +1665,181 @@ test('auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees'
   const receiverCaps = await authReceiver.helloCapabilities?.({ docId });
   expect(receiverCaps).toBeTruthy();
 
-  const ops: Operation[] = [
-    makeOp(senderPk, 1, 1, {
-      type: 'insert',
-      parent: root,
-      node: publicNode,
-      orderKey: orderKeyFromPosition(0),
-    }),
-    makeOp(senderPk, 2, 2, {
-      type: 'insert',
-      parent: root,
-      node: privateRoot,
-      orderKey: orderKeyFromPosition(1),
-    }),
-    makeOp(senderPk, 3, 3, {
-      type: 'insert',
-      parent: privateRoot,
-      node: privateSibling,
-      orderKey: orderKeyFromPosition(0),
-    }),
-    makeOp(senderPk, 4, 4, {
-      type: 'insert',
-      parent: privateRoot,
-      node: privateChild,
-      orderKey: orderKeyFromPosition(1),
-    }),
-    makeOp(senderPk, 5, 5, {
-      type: 'move',
-      node: privateChild,
-      newParent: privateSibling,
-      orderKey: orderKeyFromPosition(0),
-    }),
-    makeOp(senderPk, 6, 6, {
-      type: 'payload',
-      node: privateChild,
-      payload: new Uint8Array([1, 2, 3]),
-    }),
-    makeOp(senderPk, 7, 7, { type: 'delete', node: privateChild }),
-    makeOp(senderPk, 8, 8, { type: 'tombstone', node: privateChild }),
-    makeOp(senderPk, 9, 9, {
-      type: 'move',
-      node: publicNode,
-      newParent: root,
-      orderKey: orderKeyFromPosition(0),
-    }),
-    makeOp(senderPk, 10, 10, { type: 'delete', node: publicNode }),
-  ];
-
-  const allowed = await authSender.filterOutgoingOps?.(ops, {
+  const movedIntoPrivate = makeOp(senderPk, 1, 1, {
+    type: 'move',
+    node: publicNode,
+    newParent: privateRoot,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const privatePayload = makeOp(senderPk, 2, 2, {
+    type: 'payload',
+    node: publicNode,
+    payload: new TextEncoder().encode('private history'),
+  });
+  const movedBack = makeOp(senderPk, 3, 3, {
+    type: 'move',
+    node: publicNode,
+    newParent: root,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const publicPayload = makeOp(senderPk, 4, 4, {
+    type: 'payload',
+    node: publicNode,
+    payload: new TextEncoder().encode('current public value'),
+  });
+  const ctx = {
     docId,
-    purpose: 'reconcile',
-    filter: { all: {} },
+    purpose: 'reconcile' as const,
+    filter: { children: { parent: nodeIdToBytes16(root) } },
     capabilities: receiverCaps ?? [],
+  };
+
+  await expect(
+    authSender.authorizeFilter?.(ctx.filter, {
+      docId,
+      purpose: 'hello',
+      capabilities: ctx.capabilities,
+    }),
+  ).rejects.toThrow(/capability does not allow filter/i);
+  await expect(authSender.filterOutgoingOps?.([movedIntoPrivate], ctx)).rejects.toThrow(
+    /does not allow operation-log projection/i,
+  );
+  await expect(
+    authSender.filterOutgoingOps?.([privatePayload, movedBack, publicPayload], ctx),
+  ).rejects.toThrow(/does not allow operation-log projection/i);
+  expect(scopeEvaluations).toBe(0);
+});
+
+test('auth: document-wide projection requires read_payload for every payload-state op', async () => {
+  const docId = 'doc-auth-filter-payload-actions';
+  const root = '0'.repeat(32);
+  const scopedRoot = nodeIdFromInt(9);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const peerSk = ed25519Utils.randomSecretKey();
+  const peerPk = await getPublicKey(peerSk);
+
+  const structureToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: peerPk,
+    docId,
+    actions: ['read_structure'],
+    rootNodeId: root,
+  });
+  const scopedPayloadToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: peerPk,
+    docId,
+    actions: ['read_payload'],
+    rootNodeId: scopedRoot,
+  });
+  const payloadToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: peerPk,
+    docId,
+    actions: ['read_payload'],
+    rootNodeId: root,
   });
 
-  expect(allowed).toBeTruthy();
-  expect(allowed?.length).toBe(ops.length);
+  const capabilitiesFor = async (localCapabilityTokens: Uint8Array[]) => {
+    const auth = createTreecrdtCoseCwtAuth({
+      issuerPublicKeys: [issuerPk],
+      localPrivateKey: peerSk,
+      localPublicKey: peerPk,
+      localCapabilityTokens,
+      requireProofRef: true,
+    });
+    return (await auth.helloCapabilities?.({ docId })) ?? [];
+  };
 
-  // Allowed: ops for the public subtree.
-  expect(allowed?.[0]).toBe(true); // insert(public)
-  expect(allowed?.[8]).toBe(true); // move(public)
-  expect(allowed?.[9]).toBe(true); // delete(public)
+  const structureCaps = await capabilitiesFor([structureToken]);
+  const scopedPayloadCaps = await capabilitiesFor([structureToken, scopedPayloadToken]);
+  const fullCaps = await capabilitiesFor([structureToken, payloadToken]);
+  const authSender = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: peerSk,
+    localPublicKey: peerPk,
+    requireProofRef: true,
+    scopeEvaluator: () => {
+      throw new Error('document-wide fast path must not consult materialized ancestry');
+    },
+  });
 
-  // Denied: everything under the excluded private root (including move/delete/tombstone).
-  for (const i of [1, 2, 3, 4, 5, 6, 7]) {
-    expect(allowed?.[i]).toBe(false);
+  for (const filter of [
+    { all: {} } as const,
+    { children: { parent: nodeIdToBytes16(scopedRoot) } } as const,
+  ]) {
+    await expect(
+      authSender.authorizeFilter?.(filter, {
+        docId,
+        purpose: 'hello',
+        capabilities: structureCaps,
+      }),
+    ).resolves.toBeUndefined();
   }
+
+  const structuralOps: Operation[] = [
+    makeOp(peerPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(peerPk, 2, 2, {
+      type: 'move',
+      node: nodeIdFromInt(1),
+      newParent: scopedRoot,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(peerPk, 3, 3, { type: 'delete', node: nodeIdFromInt(1) }),
+    makeOp(peerPk, 4, 4, { type: 'tombstone', node: nodeIdFromInt(1) }),
+  ];
+  const payloadOps: Operation[] = [
+    makeOp(peerPk, 5, 5, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(2),
+      orderKey: orderKeyFromPosition(0),
+      payload: new Uint8Array(),
+    }),
+    makeOp(peerPk, 6, 6, {
+      type: 'payload',
+      node: nodeIdFromInt(1),
+      payload: new Uint8Array([1]),
+    }),
+    makeOp(peerPk, 7, 7, { type: 'payload', node: nodeIdFromInt(1), payload: null }),
+  ];
+  const context = {
+    docId,
+    purpose: 'reconcile' as const,
+    filter: { all: {} } as const,
+  };
+
+  await expect(
+    authSender.filterOutgoingOps?.(structuralOps, {
+      ...context,
+      capabilities: structureCaps,
+    }),
+  ).resolves.toEqual(structuralOps.map(() => true));
+
+  for (const op of payloadOps) {
+    await expect(
+      authSender.filterOutgoingOps?.([op], { ...context, capabilities: structureCaps }),
+    ).rejects.toThrow(/requires read_payload for payload state/i);
+  }
+  await expect(
+    authSender.filterOutgoingOps?.(payloadOps, {
+      ...context,
+      capabilities: scopedPayloadCaps,
+    }),
+  ).rejects.toThrow(/requires read_payload for payload state/i);
+  await expect(
+    authSender.filterOutgoingOps?.([...structuralOps, ...payloadOps], {
+      ...context,
+      capabilities: fullCaps,
+    }),
+  ).resolves.toEqual([...structuralOps, ...payloadOps].map(() => true));
 });
 
 test('auth: delegated capability token can be verified via issuer-signed proof', async () => {
