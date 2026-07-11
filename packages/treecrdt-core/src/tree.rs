@@ -39,6 +39,27 @@ fn attach_source_if_missing(
     }
 }
 
+fn rejected_structural_fallback_change(
+    op: &Operation,
+    source: Option<MaterializationSource>,
+) -> Vec<MaterializationChange> {
+    match &op.kind {
+        // Insert payloads retain their independent LWW semantics even when the requested tree
+        // attachment is rejected. Report the payload change without claiming the insert occurred.
+        OperationKind::Insert {
+            node,
+            payload: Some(payload),
+            ..
+        } => vec![MaterializationChange::Payload {
+            node: *node,
+            payload: Some(payload.clone()),
+            source,
+        }],
+        OperationKind::Insert { .. } | OperationKind::Move { .. } => Vec::new(),
+        _ => direct_materialization_changes(None, op),
+    }
+}
+
 /// Generic Tree CRDT facade that wires clock and storage together.
 pub struct TreeCrdt<S, C, N = MemoryNodeStore, P = MemoryPayloadStore>
 where
@@ -304,9 +325,12 @@ where
 
     pub fn commit_prepared_local(
         &mut self,
-        prepared: PreparedLocalOp,
+        mut prepared: PreparedLocalOp,
     ) -> Result<(Operation, LocalFinalizePlan)> {
-        let op = self.commit_local(prepared.op)?;
+        let (op, emit_direct_change) = self.commit_local(prepared.op)?;
+        if !emit_direct_change {
+            prepared.plan.changes = rejected_structural_fallback_change(&op, None);
+        }
         Ok((op, prepared.plan))
     }
 
@@ -321,6 +345,7 @@ where
     /// - `Some(delta)` for in-order applies where an exact changed-node set is known,
     /// - `None` for duplicate/not-applied ops or paths that require replay.
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
+        op.validate()?;
         self.clock.observe(op.meta.lamport);
         self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
         if op.meta.id.replica == self.replica_id {
@@ -332,11 +357,19 @@ where
         }
 
         if self.is_in_order(&op) {
-            let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            let (snapshot, emit_direct_change) =
+                Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
             self.op_count += 1;
             self.head = Some(op.clone());
 
-            let changes = direct_materialization_changes(snapshot.parent, &op);
+            // A structural operation can be accepted into the log but rejected by the tree
+            // materializer (for example, because the move would introduce a cycle). Infer a
+            // visible move from the apply result so consumers do not receive a false notification.
+            let changes = if emit_direct_change {
+                direct_materialization_changes(snapshot.parent, &op)
+            } else {
+                rejected_structural_fallback_change(&op, Some(MaterializationSource::from_op(&op)))
+            };
             return Ok(Some(ApplyDelta {
                 snapshot: NodeSnapshotExport {
                     parent: snapshot.parent,
@@ -380,31 +413,6 @@ where
             *seq,
             delta.changes,
         )?))
-    }
-
-    /// Apply a canonically sorted remote op directly against the current materialized state.
-    ///
-    /// This skips storage persistence and out-of-order detection, and is intended for callers
-    /// that already reconstructed/rewound state to the correct prefix and now need to replay a
-    /// suffix in canonical op-key order.
-    pub fn apply_sorted_remote_with_materialization<I: ParentOpIndex>(
-        &mut self,
-        op: Operation,
-        index: &mut I,
-        seq: u64,
-    ) -> Result<ApplyDelta> {
-        self.clock.observe(op.meta.lamport);
-        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-        if op.meta.id.replica == self.replica_id {
-            self.counter = self.counter.max(op.meta.id.counter);
-        }
-
-        let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
-        self.op_count = seq;
-        self.head = Some(op.clone());
-
-        let changes = direct_materialization_changes(snapshot.parent, &op);
-        self.finalize_materialized_apply(snapshot, &op, index, seq, changes)
     }
 
     /// Finalize adapter-owned local ops by refreshing tombstones and recording parent-op index rows.
@@ -725,18 +733,20 @@ where
         &mut self.nodes
     }
 
-    fn commit_local(&mut self, op: Operation) -> Result<Operation> {
+    fn commit_local(&mut self, op: Operation) -> Result<(Operation, bool)> {
+        op.validate()?;
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
         if !self.storage.apply(op.clone())? {
-            return Ok(op);
+            return Ok((op, false));
         }
-        let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        let (snapshot, emit_direct_change) =
+            Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         let mut starts = affected_parents(snapshot.parent, &op.kind);
         starts.push(op.kind.node());
         self.refresh_tombstones_upward(starts)?;
         self.op_count += 1;
         self.head = Some(op.clone());
-        Ok(op)
+        Ok((op, emit_direct_change))
     }
 
     fn seed(replica: &ReplicaId, counter: u64) -> Vec<u8> {
@@ -800,32 +810,49 @@ where
         self.nodes.exists(node)
     }
 
-    fn apply_forward(nodes: &mut N, payloads: &mut P, op: &Operation) -> Result<NodeSnapshot> {
+    fn apply_forward(
+        nodes: &mut N,
+        payloads: &mut P,
+        op: &Operation,
+    ) -> Result<(NodeSnapshot, bool)> {
         let snapshot = Self::snapshot(nodes, op)?;
-        match &op.kind {
+        let emit_direct_change = match &op.kind {
             OperationKind::Insert {
                 parent,
                 node,
                 order_key,
                 payload,
             } => {
-                Self::apply_insert(nodes, op, *parent, *node, order_key.clone())?;
+                let applied = Self::apply_insert(nodes, op, *parent, *node, order_key.clone())?;
                 if payload.is_some() {
                     Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?;
                 }
+                applied
             }
             OperationKind::Move {
                 node,
                 new_parent,
                 order_key,
-            } => Self::apply_move(nodes, op, *node, *new_parent, order_key.clone())?,
-            OperationKind::Delete { node } => Self::apply_delete(nodes, op, *node)?,
-            OperationKind::Tombstone { node } => Self::apply_delete(nodes, op, *node)?,
-            OperationKind::Payload { node, payload } => {
-                Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?
+            } => {
+                let changes_position = snapshot.parent != Some(*new_parent)
+                    || snapshot.order_key.as_deref() != Some(order_key.as_slice());
+                Self::apply_move(nodes, op, *node, *new_parent, order_key.clone())?
+                    && changes_position
             }
-        }
-        Ok(snapshot)
+            OperationKind::Delete { node } => {
+                Self::apply_delete(nodes, op, *node)?;
+                true
+            }
+            OperationKind::Tombstone { node } => {
+                Self::apply_delete(nodes, op, *node)?;
+                true
+            }
+            OperationKind::Payload { node, payload } => {
+                Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?;
+                true
+            }
+        };
+        Ok((snapshot, emit_direct_change))
     }
 
     fn snapshot(nodes: &mut N, op: &Operation) -> Result<NodeSnapshot> {
@@ -848,9 +875,13 @@ where
         parent: NodeId,
         node: NodeId,
         order_key: Vec<u8>,
-    ) -> Result<()> {
-        if parent == node || Self::introduces_cycle(nodes, node, parent)? {
-            return Ok(());
+    ) -> Result<bool> {
+        if node == NodeId::ROOT
+            || node == NodeId::TRASH
+            || parent == node
+            || Self::introduces_cycle(nodes, node, parent)?
+        {
+            return Ok(false);
         }
         nodes.ensure_node(parent)?;
         nodes.ensure_node(node)?;
@@ -858,7 +889,7 @@ where
         nodes.attach(node, parent, order_key)?;
         Self::update_structural_last_change(nodes, op, node)?;
         Self::update_structural_last_change(nodes, op, parent)?;
-        Ok(())
+        Ok(true)
     }
 
     fn apply_move(
@@ -867,16 +898,16 @@ where
         node: NodeId,
         new_parent: NodeId,
         order_key: Vec<u8>,
-    ) -> Result<()> {
-        if node == NodeId::ROOT {
-            return Ok(());
+    ) -> Result<bool> {
+        if node == NodeId::ROOT || node == NodeId::TRASH {
+            return Ok(false);
         }
         nodes.ensure_node(node)?;
         nodes.ensure_node(new_parent)?;
         if new_parent != NodeId::TRASH
             && (Self::introduces_cycle(nodes, node, new_parent)? || node == new_parent)
         {
-            return Ok(());
+            return Ok(false);
         }
 
         let old_parent = nodes.parent(node)?;
@@ -893,7 +924,7 @@ where
         if new_parent != NodeId::TRASH {
             Self::update_structural_last_change(nodes, op, new_parent)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     fn apply_delete(nodes: &mut N, op: &Operation, node: NodeId) -> Result<()> {
@@ -958,12 +989,19 @@ where
             return Ok(false);
         }
         let mut current = Some(potential_parent);
+        let mut visited = HashSet::new();
         while let Some(n) = current {
             if n == node {
                 return Ok(true);
             }
             if n == NodeId::TRASH || n == NodeId::ROOT {
                 return Ok(false);
+            }
+            // Existing persisted state may already be malformed. Treat an ancestry loop as an
+            // unsafe destination and reject the structural operation instead of traversing it
+            // forever.
+            if !visited.insert(n) {
+                return Ok(true);
             }
             current = nodes.parent(n)?;
         }

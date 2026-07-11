@@ -8,9 +8,8 @@ use super::*;
 use treecrdt_core::PayloadStore;
 use treecrdt_core::Storage;
 use treecrdt_core::{
-    orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state,
-    LamportClock, MaterializationChange, MaterializationCursor, MaterializationOutcome,
-    MaterializationSource, OperationId, ReplicaId,
+    orchestrate_persisted_remote_append, LamportClock, MaterializationChange,
+    MaterializationCursor, MaterializationOutcome, MaterializationSource, OperationId, ReplicaId,
 };
 
 #[derive(serde::Serialize)]
@@ -401,77 +400,58 @@ pub(super) fn append_ops_impl(
         return Err(SQLITE_ERROR as c_int);
     }
 
-    let mut storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
-    let mut inserted_ops: Vec<treecrdt_core::Operation> = Vec::with_capacity(ops.len());
+    let append_result = (|| {
+        let mut storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec());
+        let mut inserted_ops: Vec<treecrdt_core::Operation> = Vec::with_capacity(ops.len());
 
-    for op in ops {
-        let operation = match json_append_op_to_operation(op) {
-            Ok(v) => v,
-            Err(rc) => {
-                sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-                return Err(rc);
+        for op in ops {
+            let operation = json_append_op_to_operation(op)?;
+            if storage.apply(operation.clone()).map_err(sqlite_err_from_core)? {
+                inserted_ops.push(operation);
             }
-        };
-
-        let inserted_now = match storage.apply(operation.clone()) {
-            Ok(v) => v,
-            Err(err) => {
-                sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-                return Err(sqlite_err_from_core(err));
-            }
-        };
-        if inserted_now {
-            inserted_ops.push(operation);
         }
-    }
-    let apply_result = orchestrate_persisted_remote_append(
-        &meta,
-        inserted_ops,
-        {
-            let payloads = SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
-            move |node| payloads.last_writer(node).map_err(sqlite_err_from_core)
-        },
-        |meta, inserted| materialize_inserted_ops(db, doc_id, meta, inserted),
-        |head| update_tree_meta_head(db, Some(head)),
-        |frontier| set_tree_meta_replay_frontier(db, frontier),
-        || Ok(load_tree_meta(db)?.0),
-        |meta, inserted_op_ids| {
-            try_direct_rewind_catch_up_materialized_state(
-                &super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
-                inserted_op_ids,
-                treecrdt_core::PersistedRemoteStores {
-                    replica_id: ReplicaId::new(b"sqlite-ext"),
-                    clock: LamportClock::default(),
-                    nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                    payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                    index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                        .map_err(|_| SQLITE_ERROR as c_int)?,
-                },
-                &meta,
-                |_| Ok(()),
-                |_| Ok(()),
-            )
-            .map_err(|_| SQLITE_ERROR as c_int)
-        },
-        |meta| {
-            treecrdt_core::catch_up_materialized_state(
-                super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
-                treecrdt_core::PersistedRemoteStores {
-                    replica_id: ReplicaId::new(b"sqlite-ext"),
-                    clock: LamportClock::default(),
-                    nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                    payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                    index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                        .map_err(|_| SQLITE_ERROR as c_int)?,
-                },
-                &meta,
-                |_| Ok(()),
-                |_| Ok(()),
-            )
-            .map_err(|_| SQLITE_ERROR as c_int)
-        },
-        |_| SQLITE_ERROR as c_int,
-    )?;
+
+        orchestrate_persisted_remote_append(
+            &meta,
+            inserted_ops,
+            {
+                let payloads =
+                    SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?;
+                move |node| payloads.last_writer(node).map_err(sqlite_err_from_core)
+            },
+            |meta, inserted| materialize_inserted_ops(db, doc_id, meta, inserted),
+            |head| update_tree_meta_head(db, Some(head)),
+            |frontier| set_tree_meta_replay_frontier(db, frontier),
+            || Ok(load_tree_meta(db)?.0),
+            |meta| {
+                treecrdt_core::catch_up_materialized_state(
+                    super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
+                    treecrdt_core::PersistedRemoteStores {
+                        replica_id: ReplicaId::new(b"sqlite-ext"),
+                        clock: LamportClock::default(),
+                        nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                        payloads: SqlitePayloadStore::prepare(db)
+                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                        index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                    },
+                    &meta,
+                    |_| Ok(()),
+                    |_| Ok(()),
+                )
+                .map_err(|_| SQLITE_ERROR as c_int)
+            },
+            |_| SQLITE_ERROR as c_int,
+        )
+    })();
+
+    let apply_result = match append_result {
+        Ok(result) => result,
+        Err(rc) => {
+            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+            return Err(rc);
+        }
+    };
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
     if commit_rc != SQLITE_OK as c_int {
