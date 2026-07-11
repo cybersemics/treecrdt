@@ -1172,6 +1172,57 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
     }
 }
 
+fn verify_persisted_ops(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Result<()> {
+    if ops.is_empty() {
+        return Ok(());
+    }
+
+    let op_refs: Vec<Vec<u8>> = ops
+        .iter()
+        .map(|op| {
+            derive_op_ref_v0(
+                &ctx.doc_id,
+                op.meta.id.replica.as_bytes(),
+                op.meta.id.counter,
+            )
+            .to_vec()
+        })
+        .collect();
+    let stmt = ctx.stmt(
+        c,
+        "SELECT \
+           o.lamport, o.replica, o.counter, o.kind, o.parent, o.node, o.new_parent, o.order_key, o.payload, o.known_state \
+         FROM unnest($2::bytea[]) WITH ORDINALITY AS requested(op_ref, ord) \
+         LEFT JOIN treecrdt_ops o \
+           ON o.doc_id = $1 AND o.op_ref = requested.op_ref \
+         ORDER BY requested.ord",
+    )?;
+    let rows = c.query(&stmt, &[&ctx.doc_id, &op_refs]).map_err(storage_debug)?;
+    if rows.len() != ops.len() {
+        return Err(Error::InconsistentState(
+            "operation verification returned an unexpected row count".into(),
+        ));
+    }
+
+    for (row, incoming) in rows.iter().zip(ops) {
+        let kind: Option<String> = row.get(3);
+        if kind.is_none() {
+            return Err(Error::InconsistentState(
+                "operation insert was ignored but no existing operation was found".into(),
+            ));
+        }
+        let persisted = row_to_op_at(row, 0)?;
+        if persisted != *incoming {
+            return Err(Error::InvalidOperation(format!(
+                "operation id {:?}:{} has conflicting contents",
+                incoming.meta.id.replica.as_bytes(),
+                incoming.meta.id.counter
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> {
     let replica = op.meta.id.replica.as_bytes();
     let counter = op.meta.id.counter;
@@ -1203,6 +1254,9 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
             ],
         )
         .map_err(storage_debug)?;
+    if inserted == 0 {
+        verify_persisted_ops(ctx, c, std::slice::from_ref(op))?;
+    }
     Ok(inserted > 0)
 }
 
@@ -1289,6 +1343,9 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
     let mut inserted = Vec::with_capacity(rows.len());
     for row in rows {
         inserted.push(row.get::<_, Vec<u8>>(0));
+    }
+    if inserted.len() != ops.len() {
+        verify_persisted_ops(ctx, c, ops)?;
     }
     Ok(inserted)
 }

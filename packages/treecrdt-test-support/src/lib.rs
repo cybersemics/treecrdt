@@ -14,6 +14,7 @@ pub struct MaterializedNodeState {
 
 pub trait MaterializationConformanceHarness {
     fn append_ops(&self, ops: &[Operation]);
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String>;
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome;
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId>;
     fn payload(&self, node: NodeId) -> Option<Vec<u8>>;
@@ -112,6 +113,94 @@ pub fn append_batch_materializes_only_inserted_ops<H: MaterializationConformance
     assert_eq!(harness.op_count().saturating_sub(before), 2);
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![node]);
     assert_eq!(harness.head_seq(), 2);
+}
+
+pub fn operation_id_equivocation_is_rejected_atomically<H: MaterializationConformanceHarness>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"equivocation");
+    let original = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node(1),
+        order_key_from_position(0),
+    );
+
+    harness.append_ops(&[original.clone(), original.clone()]);
+    assert_eq!(harness.op_count(), 1);
+
+    let mut conflicts = Vec::new();
+
+    let mut changed = original.clone();
+    changed.meta.lamport = 2;
+    conflicts.push(changed);
+
+    let mut changed = original.clone();
+    if let treecrdt_core::OperationKind::Insert { parent, .. } = &mut changed.kind {
+        *parent = node(2);
+    }
+    conflicts.push(changed);
+
+    let mut changed = original.clone();
+    if let treecrdt_core::OperationKind::Insert { node, .. } = &mut changed.kind {
+        *node = self::node(2);
+    }
+    conflicts.push(changed);
+
+    let mut changed = original.clone();
+    if let treecrdt_core::OperationKind::Insert { order_key, .. } = &mut changed.kind {
+        *order_key = order_key_from_position(1);
+    }
+    conflicts.push(changed);
+
+    let mut changed = original.clone();
+    if let treecrdt_core::OperationKind::Insert { payload, .. } = &mut changed.kind {
+        *payload = Some(Vec::new());
+    }
+    conflicts.push(changed);
+
+    conflicts.push(Operation::move_node(
+        &replica,
+        1,
+        1,
+        node(1),
+        NodeId::ROOT,
+        order_key_from_position(0),
+    ));
+
+    for conflict in conflicts {
+        assert!(harness.try_append_ops(&[conflict]).is_err());
+        assert_eq!(harness.op_count(), 1);
+    }
+
+    let mut known_state = treecrdt_core::VersionVector::new();
+    known_state.observe(&replica, 1);
+    let mut tombstone = Operation::tombstone(&replica, 2, 2, node(1));
+    tombstone.meta.known_state = Some(known_state);
+    harness.append_ops(std::slice::from_ref(&tombstone));
+    let mut changed_known_state = treecrdt_core::VersionVector::new();
+    changed_known_state.observe(&replica, 2);
+    let mut changed_tombstone = tombstone.clone();
+    changed_tombstone.meta.known_state = Some(changed_known_state);
+    assert!(harness.try_append_ops(&[changed_tombstone]).is_err());
+    let mut missing_known_state = tombstone;
+    missing_known_state.meta.known_state = None;
+    assert!(harness.try_append_ops(&[missing_known_state]).is_err());
+
+    let valid_prefix = Operation::insert(
+        &replica,
+        3,
+        3,
+        NodeId::ROOT,
+        node(4),
+        order_key_from_position(1),
+    );
+    let mut conflict = original;
+    conflict.meta.lamport = 4;
+    assert!(harness.try_append_ops(&[valid_prefix, conflict]).is_err());
+    assert_eq!(harness.op_count(), 2, "failed batch committed a prefix");
 }
 
 pub fn representative_remote_batch_matches_shape<H: MaterializationConformanceHarness>(

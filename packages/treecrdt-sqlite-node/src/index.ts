@@ -113,8 +113,8 @@ function createRunner(db: any): SqliteRunner {
   return runner;
 }
 
-export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {}): TreecrdtAdapter {
-  return createTreecrdtSqliteAdapter(createRunner(db), opts);
+export function createSqliteNodeApi(db: any): TreecrdtAdapter {
+  return createTreecrdtSqliteAdapter(createRunner(db));
 }
 
 /**
@@ -125,12 +125,13 @@ export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {})
  */
 export function createTreecrdtClient(
   db: any,
-  opts: { docId?: string; maxBulkOps?: number } = {},
+  opts: {
+    docId?: string;
+  } = {},
 ): Promise<TreecrdtEngine & { runner: SqliteRunner; auth: TreecrdtSqliteAuthApi }> {
   const runner = createRunner(db);
   const materialized = createMaterializationDispatcher();
   const adapter = createTreecrdtSqliteAdapter(runner, {
-    maxBulkOps: opts.maxBulkOps,
     onMaterialized: materialized.emitEvent,
   });
   const docId = opts.docId ?? 'treecrdt';

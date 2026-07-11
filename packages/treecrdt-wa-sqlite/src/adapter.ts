@@ -13,7 +13,9 @@ function createRunner(db: Database): SqliteRunner {
 
 export function createWaSqliteApi(
   db: Database,
-  opts: { maxBulkOps?: number; onMaterialized?: (event: MaterializationEvent) => void } = {},
+  opts: {
+    onMaterialized?: (event: MaterializationEvent) => void;
+  } = {},
 ): TreecrdtAdapter {
   return createTreecrdtSqliteAdapter(createRunner(db), opts);
 }

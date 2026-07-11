@@ -119,8 +119,13 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
     let replica = ReplicaId::new(replica_bytes);
     let counter = js.counter;
     let lamport = js.lamport;
+    let known_state: Option<treecrdt_core::VersionVector> = js
+        .known_state
+        .as_deref()
+        .map(|bytes| serde_json::from_slice(bytes).map_err(|e| e.to_string()))
+        .transpose()?;
 
-    let op = match js.kind.as_str() {
+    let mut op = match js.kind.as_str() {
         "insert" => {
             let parent = js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT);
             let node = hex_to_node(&js.node)?;
@@ -148,13 +153,9 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
             )
         }
         "delete" => {
-            let Some(bytes) = js.known_state else {
+            let Some(vv) = known_state.clone() else {
                 return Err("delete op missing known_state".into());
             };
-            if bytes.is_empty() {
-                return Err("delete known_state must not be empty".into());
-            }
-            let vv = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, Some(vv))
         }
         "tombstone" => Operation::tombstone(&replica, counter, lamport, hex_to_node(&js.node)?),
@@ -167,12 +168,42 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
         ),
         _ => return Err("unknown kind".into()),
     };
+    op.meta.known_state = known_state;
     Ok(op)
 }
 
 #[wasm_bindgen]
 pub struct WasmTree {
     inner: TreeCrdt<MemoryStorage, LamportClock>,
+}
+
+fn apply_remote_batch(
+    tree: &mut TreeCrdt<MemoryStorage, LamportClock>,
+    ops: Vec<Operation>,
+) -> treecrdt_core::Result<()> {
+    let mut by_id: std::collections::HashMap<_, _> = tree
+        .operations_since(0)?
+        .into_iter()
+        .map(|op| (op.meta.id.clone(), op))
+        .collect();
+    for op in &ops {
+        op.validate()?;
+        if let Some(existing) = by_id.get(&op.meta.id) {
+            if existing != op {
+                return Err(treecrdt_core::Error::InvalidOperation(format!(
+                    "operation id {:?}:{} has conflicting contents",
+                    op.meta.id.replica.as_bytes(),
+                    op.meta.id.counter
+                )));
+            }
+        } else {
+            by_id.insert(op.meta.id.clone(), op.clone());
+        }
+    }
+    for op in ops {
+        tree.apply_remote(op)?;
+    }
+    Ok(())
 }
 
 #[wasm_bindgen]
@@ -193,6 +224,18 @@ impl WasmTree {
             serde_json::from_str(&op_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
         self.inner.apply_remote(op).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+    }
+
+    #[wasm_bindgen(js_name = appendOps)]
+    pub fn append_ops(&mut self, ops_json: String) -> Result<(), JsValue> {
+        let js_ops: Vec<JsOp> =
+            serde_json::from_str(&ops_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ops = js_ops
+            .into_iter()
+            .map(js_to_op)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| JsValue::from_str(&e))?;
+        apply_remote_batch(&mut self.inner, ops).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
     }
 
     #[wasm_bindgen(js_name = appendOpWithDelta)]
@@ -353,5 +396,31 @@ impl WasmTree {
         }
 
         to_value(&rows).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_batch_rolls_back_before_equivocation() {
+        let replica = ReplicaId::new(b"remote");
+        let mut tree = TreeCrdt::new(
+            ReplicaId::new(b"local"),
+            MemoryStorage::default(),
+            LamportClock::default(),
+        )
+        .unwrap();
+        let original = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 1]);
+        tree.apply_remote(original.clone()).unwrap();
+
+        let prefix = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0, 2]);
+        let mut conflict = original;
+        conflict.meta.lamport = 3;
+        assert!(apply_remote_batch(&mut tree, vec![prefix, conflict]).is_err());
+
+        assert!(!tree.is_known(NodeId(2)).unwrap());
+        assert_eq!(tree.operations_since(0).unwrap().len(), 1);
     }
 }

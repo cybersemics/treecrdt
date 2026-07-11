@@ -407,13 +407,13 @@ where
         op: Operation,
     ) -> Result<Option<(ApplyDelta, ApplyEffects)>> {
         op.validate()?;
+        let inserted = self.storage.apply(op.clone())?;
         self.clock.observe(op.meta.lamport);
         self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
         if op.meta.id.replica == self.replica_id {
             self.counter = self.counter.max(op.meta.id.counter);
         }
-
-        if !self.storage.apply(op.clone())? {
+        if !inserted {
             return Ok(None);
         }
 
@@ -905,8 +905,9 @@ where
         op: Operation,
     ) -> Result<(Operation, bool, ForwardApply, Vec<TombstoneDelta>)> {
         op.validate()?;
+        let inserted = self.storage.apply(op.clone())?;
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
-        if !self.storage.apply(op.clone())? {
+        if !inserted {
             // A duplicate local retry must not call `snapshot`: that helper intentionally ensures
             // the target row for a newly accepted op. Read an existing row only, so a storage-only
             // duplicate cannot mutate derived state while reporting an empty finalize plan.
