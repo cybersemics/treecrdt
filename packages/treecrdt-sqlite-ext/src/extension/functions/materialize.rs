@@ -240,6 +240,28 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
     })
 }
 
+fn with_materialization_savepoint(
+    db: *mut sqlite3,
+    run: impl FnOnce() -> Result<treecrdt_core::IncrementalApplyResult, c_int>,
+) -> Result<treecrdt_core::IncrementalApplyResult, c_int> {
+    const BEGIN: &[u8] = b"SAVEPOINT treecrdt_incremental_materialization\0";
+    const ROLLBACK: &[u8] = b"ROLLBACK TO treecrdt_incremental_materialization\0";
+
+    let rc = sqlite_exec(db, BEGIN.as_ptr().cast(), None, null_mut(), null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(rc);
+    }
+    let result = run();
+    if !matches!(&result, Ok(result) if result.head.is_some()) {
+        let rc = sqlite_exec(db, ROLLBACK.as_ptr().cast(), None, null_mut(), null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(rc);
+        }
+    }
+    // Releasing the outer append savepoint also releases this nested one.
+    result
+}
+
 fn materialize_inserted_ops(
     db: *mut sqlite3,
     doc_id: &[u8],
@@ -250,23 +272,25 @@ fn materialize_inserted_ops(
         materialize_persisted_remote_ops_with_delta, LamportClock, PersistedRemoteStores, ReplicaId,
     };
 
-    materialize_persisted_remote_ops_with_delta(
-        PersistedRemoteStores {
-            // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
-            replica_id: ReplicaId::new(b"sqlite-ext"),
-            clock: LamportClock::default(),
-            nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-            payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-            index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                .map_err(|_| SQLITE_ERROR as c_int)?,
-        },
-        &meta,
-        ops,
-        |_, _| Ok(()),
-        |_| Ok(()),
-        |_| Ok(()),
-    )
-    .map_err(|_| SQLITE_ERROR as c_int)
+    with_materialization_savepoint(db, || {
+        materialize_persisted_remote_ops_with_delta(
+            PersistedRemoteStores {
+                // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
+                replica_id: ReplicaId::new(b"sqlite-ext"),
+                clock: LamportClock::default(),
+                nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+                    .map_err(|_| SQLITE_ERROR as c_int)?,
+            },
+            &meta,
+            ops,
+            |_, _| Ok(()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .map_err(|_| SQLITE_ERROR as c_int)
+    })
 }
 
 pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<MaterializationOutcome, c_int> {
