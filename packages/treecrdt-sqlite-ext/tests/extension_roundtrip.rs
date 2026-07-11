@@ -604,9 +604,9 @@ fn remote_append_out_of_order_catches_up_immediately_from_frontier() {
 }
 
 #[test]
-fn remote_append_out_of_order_losing_payload_skips_replay_frontier() {
+fn remote_append_out_of_order_losing_payload_replays_causal_metadata() {
     let harness = setup_conformance_harness();
-    materialization_conformance::out_of_order_losing_payload_skips_replay_frontier(&harness);
+    materialization_conformance::out_of_order_losing_payload_replays_causal_metadata(&harness);
 }
 
 #[test]

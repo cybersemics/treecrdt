@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::affected::coalesce_materialization_changes;
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
@@ -55,12 +55,6 @@ impl<R: AsRef<[u8]>> MaterializationHead<R> {
             },
             seq: self.seq,
         }
-    }
-
-    fn with_seq(&self, seq: u64) -> MaterializationHead {
-        let mut head = self.owned();
-        head.seq = seq;
-        head
     }
 }
 
@@ -167,13 +161,6 @@ impl PersistedRemoteApplyResult {
             catch_up_needed: true,
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PayloadNoopShortcut {
-    pub resumed_head: MaterializationHead,
-    pub remaining_ops: Vec<Operation>,
-    pub outcome: MaterializationOutcome,
 }
 
 /// Backend-owned stores used to replay already-persisted remote ops through core semantics.
@@ -304,14 +291,6 @@ fn frontier_from_op(op: &Operation) -> MaterializationFrontier {
     }
 }
 
-fn frontier_from_writer(lamport: Lamport, id: &OperationId) -> MaterializationFrontier {
-    MaterializationFrontier {
-        lamport,
-        replica: id.replica.as_bytes().to_vec(),
-        counter: id.counter,
-    }
-}
-
 fn owned_frontier<R: AsRef<[u8]>>(frontier: &MaterializationKey<R>) -> MaterializationFrontier {
     MaterializationFrontier {
         lamport: frontier.lamport,
@@ -373,111 +352,6 @@ fn next_replay_frontier<M: MaterializationCursor>(
     } else {
         None
     }
-}
-
-/// Try to skip out-of-order payload ops that are already dominated by a later payload winner.
-///
-/// This allows adapters to avoid recording a replay frontier for a narrow but common case:
-/// older payload ops that do not change materialized payload state even after being inserted
-/// earlier in the canonical log order.
-pub fn try_shortcut_out_of_order_payload_noops<M, LoadWriter, E>(
-    meta: &M,
-    inserted_ops: Vec<Operation>,
-    mut load_last_writer: LoadWriter,
-) -> std::result::Result<Option<PayloadNoopShortcut>, E>
-where
-    M: MaterializationCursor,
-    LoadWriter: FnMut(NodeId) -> std::result::Result<Option<(Lamport, OperationId)>, E>,
-{
-    let state = meta.state();
-    if state.replay_from.is_some() || inserted_ops.is_empty() {
-        return Ok(None);
-    }
-
-    let Some(head) = state.head.as_ref() else {
-        return Ok(None);
-    };
-
-    let mut ops = inserted_ops;
-    ops.sort_by(cmp_ops);
-
-    let mut candidate_nodes = HashSet::new();
-    let mut has_out_of_order = false;
-    for op in &ops {
-        if cmp_frontiers(&frontier_from_op(op), &head.at) != Ordering::Less {
-            continue;
-        }
-        has_out_of_order = true;
-        match &op.kind {
-            crate::ops::OperationKind::Payload { node, .. } => {
-                candidate_nodes.insert(*node);
-            }
-            _ => return Ok(None),
-        }
-    }
-
-    if !has_out_of_order {
-        return Ok(None);
-    }
-
-    let mut final_writers: HashMap<NodeId, MaterializationFrontier> = HashMap::new();
-    for node in &candidate_nodes {
-        if let Some((lamport, id)) = load_last_writer(*node)? {
-            final_writers.insert(*node, frontier_from_writer(lamport, &id));
-        }
-    }
-
-    for op in &ops {
-        let crate::ops::OperationKind::Payload { node, .. } = &op.kind else {
-            continue;
-        };
-        if !candidate_nodes.contains(node) {
-            continue;
-        }
-        let op_frontier = frontier_from_op(op);
-        match final_writers.get(node) {
-            Some(existing) if cmp_frontiers(&op_frontier, existing) != Ordering::Greater => {}
-            _ => {
-                final_writers.insert(*node, op_frontier);
-            }
-        }
-    }
-
-    let mut skipped = 0u64;
-    let mut remaining_ops = Vec::new();
-
-    for op in ops {
-        let op_frontier = frontier_from_op(&op);
-        if cmp_frontiers(&op_frontier, &head.at) != Ordering::Less {
-            remaining_ops.push(op);
-            continue;
-        }
-
-        let node = match &op.kind {
-            crate::ops::OperationKind::Payload { node, .. } => *node,
-            _ => return Ok(None),
-        };
-
-        let Some(final_writer) = final_writers.get(&node) else {
-            return Ok(None);
-        };
-        if cmp_frontiers(&op_frontier, final_writer) != Ordering::Less {
-            return Ok(None);
-        }
-
-        skipped = skipped.saturating_add(1);
-    }
-
-    if skipped == 0 {
-        return Ok(None);
-    }
-
-    let resumed_seq = head.seq.saturating_add(skipped);
-    Ok(Some(PayloadNoopShortcut {
-        resumed_head: head.with_seq(resumed_seq),
-        remaining_ops,
-        outcome: MaterializationOutcome::empty(resumed_seq),
-    }))
 }
 
 impl MaterializationOutcome {
@@ -941,13 +815,11 @@ where
 ///
 /// Adapters still own transactions, dedupe, and concrete backend stores. This helper just
 /// centralizes the repeated control flow around:
-/// - payload noop shortcut
 /// - incremental materialization vs replay frontier scheduling
 /// - conservative catch-up after any out-of-order append
 #[allow(clippy::too_many_arguments)]
 pub fn orchestrate_persisted_remote_append<
     M,
-    LoadWriter,
     MaterializeInserted,
     UpdateHead,
     ScheduleReplay,
@@ -958,7 +830,6 @@ pub fn orchestrate_persisted_remote_append<
 >(
     meta: &M,
     inserted_ops: Vec<Operation>,
-    mut load_last_writer: LoadWriter,
     mut materialize_inserted: MaterializeInserted,
     mut update_head: UpdateHead,
     mut schedule_replay: ScheduleReplay,
@@ -968,7 +839,6 @@ pub fn orchestrate_persisted_remote_append<
 ) -> std::result::Result<PersistedRemoteApplyResult, E>
 where
     M: MaterializationCursor,
-    LoadWriter: FnMut(NodeId) -> std::result::Result<Option<(Lamport, OperationId)>, E>,
     MaterializeInserted: FnMut(
         &dyn MaterializationCursor,
         Vec<Operation>,
@@ -985,43 +855,13 @@ where
         return Ok(PersistedRemoteApplyResult::empty(0, head_seq));
     }
 
-    let apply_result = if let Some(shortcut) = {
-        try_shortcut_out_of_order_payload_noops(meta, inserted_ops.clone(), |node| {
-            load_last_writer(node)
-        })?
-    } {
-        if shortcut.remaining_ops.is_empty() {
-            update_head(&shortcut.resumed_head)?;
-            PersistedRemoteApplyResult::applied(inserted_count, shortcut.outcome)
-        } else {
-            let shortcut_meta = MaterializationState {
-                head: Some(shortcut.resumed_head.clone()),
-                replay_from: None,
-            };
-            let result = materialize_inserted(&shortcut_meta, shortcut.remaining_ops)?;
-            let Some(head) = result.head else {
-                schedule_replay(&start_replay_frontier())?;
-                return Ok(PersistedRemoteApplyResult::needs_catch_up(
-                    inserted_count,
-                    shortcut.resumed_head.seq,
-                ));
-            };
-            update_head(&head)?;
-
-            PersistedRemoteApplyResult::applied(
-                inserted_count,
-                MaterializationOutcome::merge(head.seq, [shortcut.outcome, result.outcome]),
-            )
-        }
-    } else {
-        apply_persisted_remote_ops_with_delta(
-            meta,
-            inserted_ops,
-            |inserted| materialize_inserted(meta, inserted),
-            &mut update_head,
-            &mut schedule_replay,
-        )?
-    };
+    let apply_result = apply_persisted_remote_ops_with_delta(
+        meta,
+        inserted_ops,
+        |inserted| materialize_inserted(meta, inserted),
+        &mut update_head,
+        &mut schedule_replay,
+    )?;
 
     if !apply_result.catch_up_needed {
         return Ok(apply_result);

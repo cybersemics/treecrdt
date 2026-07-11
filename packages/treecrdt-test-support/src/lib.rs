@@ -182,10 +182,11 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
     assert_eq!(harness.op_ref_counters_for_parent(NodeId::ROOT), vec![1, 2]);
 }
 
-pub fn out_of_order_losing_payload_skips_replay_frontier<H: MaterializationConformanceHarness>(
+pub fn out_of_order_losing_payload_replays_causal_metadata<H: MaterializationConformanceHarness>(
     harness: &H,
 ) {
-    let replica = ReplicaId::new(b"payload-shortcut");
+    let replica = ReplicaId::new(b"payload-replay");
+    let deleter = ReplicaId::new(b"payload-delete");
     let payload_node = node(7);
     let insert = Operation::insert(
         &replica,
@@ -199,11 +200,21 @@ pub fn out_of_order_losing_payload_skips_replay_frontier<H: MaterializationConfo
     let losing_payload = Operation::set_payload(&replica, 2, 2, payload_node, vec![4]);
 
     harness.append_ops(&[insert, winning_payload]);
-    let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&losing_payload));
-    assert!(outcome.changes.is_empty());
+    harness.append_ops(&[losing_payload]);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 3);
     assert_eq!(harness.payload(payload_node), Some(vec![9]));
+
+    // The losing payload is still causally significant. A delete that knows counters 1 and 3 but
+    // not the late counter 2 must remain concurrent with the node's canonical last-change vector.
+    let mut known_state = VersionVector::new();
+    known_state.observe(&replica, 1);
+    known_state.observe(&replica, 3);
+    let delete = Operation::delete(&deleter, 1, 4, payload_node, Some(known_state));
+    harness.append_ops(&[delete]);
+
+    assert!(!harness.node_state(payload_node).tombstone);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![payload_node]);
 }
 
 pub fn out_of_order_move_with_later_payload_catches_up_immediately<
