@@ -166,15 +166,15 @@ test('syncOnce with COSE+CWT auth converges and verifies ops', async () => {
   const aHex = bytesToHex(aPk);
   const bHex = bytesToHex(bPk);
 
-  await a.applyOps([
+  const aOps = [
     makeOp(aPk, 1, 1, {
       type: 'insert',
       parent: root,
       node: nodeIdFromInt(1),
       orderKey: orderKeyFromPosition(0),
     }),
-  ]);
-  await b.applyOps([
+  ];
+  const bOps = [
     makeOp(bPk, 1, 2, {
       type: 'insert',
       parent: root,
@@ -187,7 +187,9 @@ test('syncOnce with COSE+CWT auth converges and verifies ops', async () => {
       node: nodeIdFromInt(3),
       orderKey: orderKeyFromPosition(0),
     }),
-  ]);
+  ];
+  await a.applyOps(aOps);
+  await b.applyOps(bOps);
 
   const tokenA = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
@@ -207,7 +209,6 @@ test('syncOnce with COSE+CWT auth converges and verifies ops', async () => {
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
@@ -215,8 +216,9 @@ test('syncOnce with COSE+CWT auth converges and verifies ops', async () => {
     localPrivateKey: bSk,
     localPublicKey: bPk,
     localCapabilityTokens: [tokenB],
-    requireProofRef: true,
   });
+  await authA.signOps?.(aOps, { docId, purpose: 'local_write', filterId: 'all' });
+  await authB.signOps?.(bOps, { docId, purpose: 'local_write', filterId: 'all' });
 
   const {
     peerA: pa,
@@ -295,7 +297,6 @@ test('auth: direct upload requires a live reader grant from the responder', asyn
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
   // B can verify A's token, but has no live token of its own. Its HelloAck only
   // relays A's token as replay proof material, which must not authorize reading A.
@@ -303,7 +304,6 @@ test('auth: direct upload requires a live reader grant from the responder', asyn
     issuerPublicKeys: [issuerPk],
     localPrivateKey: bSk,
     localPublicKey: bPk,
-    requireProofRef: true,
   });
 
   const { peerA, transportA, detach } = createInMemoryConnectedPeers({
@@ -356,14 +356,12 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenStructure, tokenDelete],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: bSk,
     localPublicKey: bPk,
-    requireProofRef: true,
   });
 
   const helloCapsA = await authA.helloCapabilities?.({ docId });
@@ -389,9 +387,10 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   };
 
   const ops = [opInsert, opDelete];
+  const signCtx = { docId, purpose: 'local_write' as const, filterId: 'all' };
   const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
 
-  const auth = await authA.signOps?.(ops, ctx);
+  const auth = await authA.signOps?.(ops, signCtx);
   expect(auth).toBeTruthy();
   expect(auth?.length).toBe(2);
   expect(auth?.[0]?.proofRef).toBeTruthy();
@@ -417,7 +416,7 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     ...opDelete,
     meta: { id: opDelete.meta.id, lamport: opDelete.meta.lamport },
   };
-  await expect(authA.signOps?.([strippedState], ctx)).rejects.toThrow(/require.*knownState/i);
+  await expect(authA.signOps?.([strippedState], signCtx)).rejects.toThrow(/require.*knownState/i);
   await expect(authB.verifyOps?.([strippedState], [auth![1]!], ctx)).rejects.toThrow(
     /require.*knownState/i,
   );
@@ -425,6 +424,54 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(
     /capability does not allow op/i,
+  );
+});
+
+test('auth: restart reuses only a retained proof for the exact local operation', async () => {
+  const docId = 'doc-auth-retained-local-proof';
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const token = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ['delete'],
+  });
+  const knownState = (frontier: number) =>
+    new TextEncoder().encode(
+      JSON.stringify({ entries: [{ replica: Array.from(writerPk), frontier, ranges: [] }] }),
+    );
+  const op = makeOp(writerPk, 1, 1, { type: 'delete', node: nodeIdFromInt(1) });
+  op.meta.knownState = knownState(1);
+  const proofRef = deriveTokenIdV1(token);
+  const retained = {
+    sig: await signTreecrdtOp({ docId, op, proofRef, privateKey: writerSk }),
+    proofRef,
+  };
+  const auth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [token],
+    // A fresh auth object simulates restart; only the standard proof sidecar survives.
+    opAuthStore: {
+      storeOpAuth: async () => {},
+      getOpAuthByOpRefs: async (opRefs) => opRefs.map(() => retained),
+    },
+  });
+  const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
+
+  await expect(auth.signOps?.([op], ctx)).resolves.toEqual([retained]);
+
+  const differentBody: Operation = {
+    ...op,
+    // v0 op_ref does not bind the body, so keep the same replica/counter and change signed state.
+    meta: { ...op.meta, knownState: knownState(2) },
+  };
+  await expect(auth.signOps?.([differentBody], ctx)).rejects.toThrow(
+    /outbound sync cannot mint auth/i,
   );
 });
 
@@ -475,7 +522,6 @@ test('auth: operation writes require a state-independent doc-wide grant', async 
       issuerPublicKeys: [issuerPk],
       localPrivateKey: verifierSk,
       localPublicKey: verifierPk,
-      requireProofRef: true,
     });
     await verifier.onHello?.(
       helloWithCapabilities([{ name: 'auth.capability', value: base64urlEncode(token) }]),
@@ -540,24 +586,27 @@ test('auth: operation writes require a state-independent doc-wide grant', async 
   ];
   const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
   for (const { label, op } of operations) {
-    const proof = {
-      sig: await signTreecrdtOp({ docId, op, privateKey: writerSk }),
-    };
-
     for (const restricted of restrictedVerifiers) {
+      const proofRef = deriveTokenIdV1(restricted.token);
+      const proof = {
+        sig: await signTreecrdtOp({ docId, op, proofRef, privateKey: writerSk }),
+        proofRef,
+      };
       await expect(
-        restricted.verifier.verifyOps?.(
-          [op],
-          [{ ...proof, proofRef: deriveTokenIdV1(restricted.token) }],
-          ctx,
-        ),
+        restricted.verifier.verifyOps?.([op], [proof], ctx),
         `${restricted.label} ${label}`,
       ).rejects.toThrow(/capability does not allow op/i);
     }
+    const proofRef = deriveTokenIdV1(docWideToken);
     await expect(
       docWideVerifier.verifyOps?.(
         [op],
-        [{ ...proof, proofRef: deriveTokenIdV1(docWideToken) }],
+        [
+          {
+            sig: await signTreecrdtOp({ docId, op, proofRef, privateKey: writerSk }),
+            proofRef,
+          },
+        ],
         ctx,
       ),
       `doc-wide ${label}`,
@@ -598,13 +647,11 @@ test('auth ignores foreign peer capability tokens during hello and still verifie
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
   const authVerifier = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
-    requireProofRef: true,
   });
 
   const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
@@ -630,7 +677,7 @@ test('auth ignores foreign peer capability tokens during hello and still verifie
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth = await authWriter.signOps?.([op], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth = await authWriter.signOps?.([op], { docId, purpose: 'local_write', filterId: 'all' });
   await expect(
     authWriter.filterOutgoingOps?.([op], {
       docId,
@@ -688,7 +735,6 @@ test('auth re-advertises trusted author capability tokens from the capability st
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
   const authRelay = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -696,7 +742,6 @@ test('auth re-advertises trusted author capability tokens from the capability st
     localPublicKey: relayPk,
     localCapabilityTokens: [relayToken],
     capabilityStore,
-    requireProofRef: true,
   });
 
   const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
@@ -708,13 +753,11 @@ test('auth re-advertises trusted author capability tokens from the capability st
     localPublicKey: relayPk,
     localCapabilityTokens: [relayToken],
     capabilityStore,
-    requireProofRef: true,
   });
   const authJoiner = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: joinerSk,
     localPublicKey: joinerPk,
-    requireProofRef: true,
   });
 
   const relayHelloCaps = (await reloadedRelay.helloCapabilities?.({ docId })) ?? [];
@@ -733,7 +776,11 @@ test('auth re-advertises trusted author capability tokens from the capability st
     node: nodeIdFromInt(7),
     orderKey: orderKeyFromPosition(0),
   });
-  const signed = await authWriter.signOps?.([op], { docId, purpose: 'reconcile', filterId: 'all' });
+  const signed = await authWriter.signOps?.([op], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
   await expect(
     authJoiner.verifyOps?.([op], signed, { docId, purpose: 'reconcile', filterId: 'all' }),
   ).resolves.toBeUndefined();
@@ -815,7 +862,6 @@ test('auth: replayed author capability tokens do not widen peer filter scope', a
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
   const authScopedPeer = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -823,13 +869,11 @@ test('auth: replayed author capability tokens do not widen peer filter scope', a
     localPublicKey: scopedPeerPk,
     localCapabilityTokens: [scopedToken],
     capabilityStore,
-    requireProofRef: true,
   });
   const authSender = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: senderSk,
     localPublicKey: senderPk,
-    requireProofRef: true,
     scopeEvaluator,
   });
 
@@ -842,7 +886,6 @@ test('auth: replayed author capability tokens do not widen peer filter scope', a
     localPublicKey: scopedPeerPk,
     localCapabilityTokens: [scopedToken],
     capabilityStore,
-    requireProofRef: true,
   });
 
   const scopedPeerCaps = (await reloadedScopedPeer.helloCapabilities?.({ docId })) ?? [];
@@ -922,7 +965,6 @@ test('auth: cached stale local tokens cannot authorize new local writes after an
     localPublicKey: localPk,
     localCapabilityTokens: [newReadOnlyToken],
     capabilityStore,
-    requireProofRef: true,
   });
 
   const op = makeOp(localPk, 1, 1, {
@@ -933,7 +975,7 @@ test('auth: cached stale local tokens cannot authorize new local writes after an
   });
 
   await expect(
-    auth.signOps?.([op], { docId, purpose: 'reconcile', filterId: root }),
+    auth.signOps?.([op], { docId, purpose: 'local_write', filterId: root }),
   ).rejects.toThrow(/capability does not allow op/i);
 });
 
@@ -979,7 +1021,6 @@ test('auth: helloCapabilities ignores locally cached revoked replay tokens', asy
     localCapabilityTokens: [localToken],
     capabilityStore,
     revokedCapabilityTokenIds: [deriveTokenIdV1(revokedPeerToken)],
-    requireProofRef: true,
   });
 
   await expect(auth.helloCapabilities?.({ docId })).resolves.toEqual([
@@ -1093,7 +1134,6 @@ test('syncOnce fails when responder requires auth but initiator sends unsigned o
     localPrivateKey: bSk,
     localPublicKey: bPk,
     localCapabilityTokens: [tokenB],
-    requireProofRef: true,
   });
 
   const {
@@ -1138,15 +1178,15 @@ test('syncOnce fails when op signatures do not match the claimed replica_id', as
 
   const aHex = bytesToHex(aClaimPk);
 
-  await a.applyOps([
+  const aOps = [
     makeOp(aClaimPk, 1, 1, {
       type: 'insert',
       parent: root,
       node: nodeIdFromInt(1),
       orderKey: orderKeyFromPosition(0),
     }),
-  ]);
-  await b.applyOps([
+  ];
+  const bOps = [
     makeOp(bPk, 1, 2, {
       type: 'insert',
       parent: root,
@@ -1159,7 +1199,9 @@ test('syncOnce fails when op signatures do not match the claimed replica_id', as
       node: nodeIdFromInt(3),
       orderKey: orderKeyFromPosition(0),
     }),
-  ]);
+  ];
+  await a.applyOps(aOps);
+  await b.applyOps(bOps);
 
   const tokenA = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
@@ -1179,7 +1221,6 @@ test('syncOnce fails when op signatures do not match the claimed replica_id', as
     localPrivateKey: aSignSk,
     localPublicKey: aClaimPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
@@ -1187,8 +1228,9 @@ test('syncOnce fails when op signatures do not match the claimed replica_id', as
     localPrivateKey: bSk,
     localPublicKey: bPk,
     localCapabilityTokens: [tokenB],
-    requireProofRef: true,
   });
+  await authA.signOps?.(aOps, { docId, purpose: 'local_write', filterId: 'all' });
+  await authB.signOps?.(bOps, { docId, purpose: 'local_write', filterId: 'all' });
 
   const {
     peerA: pa,
@@ -1205,7 +1247,9 @@ test('syncOnce fails when op signatures do not match the claimed replica_id', as
   try {
     await expect(
       pa.syncOnce(ta, { all: {} }, { maxCodewords: 10_000, codewordsPerMessage: 256 }),
-    ).rejects.toThrow(/invalid op signature|unknown author|capability/i);
+    ).rejects.toThrow(
+      /invalid op signature|missing exact retained op auth|unknown author|capability/i,
+    );
     await tick();
     expect(b.hasOp(aHex, 1)).toBe(false);
   } finally {
@@ -1251,14 +1295,12 @@ test('auth: syncOnce rejects filters when capability scope does not allow read a
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: bSk,
     localPublicKey: bPk,
-    requireProofRef: true,
     scopeEvaluator,
   });
 
@@ -1331,14 +1373,12 @@ test('auth: subscribe rejects filters when capability scope does not allow read 
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: bSk,
     localPublicKey: bPk,
-    requireProofRef: true,
     scopeEvaluator,
   });
 
@@ -1401,14 +1441,12 @@ test('auth: filters require read_structure action (read_payload alone is insuffi
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: bSk,
     localPublicKey: bPk,
-    requireProofRef: true,
   });
 
   const {
@@ -1468,21 +1506,21 @@ test('auth: syncOnce accepts doc-wide read_structure capability for filter(all)'
   });
 
   // Put one op on B so A has something to fetch (A won't send ops).
-  await b.applyOps([
+  const bOps = [
     makeOp(bPk, 1, 1, {
       type: 'insert',
       parent: root,
       node: nodeIdFromInt(1),
       orderKey: orderKeyFromPosition(0),
     }),
-  ]);
+  ];
+  await b.applyOps(bOps);
 
   const authA = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
@@ -1490,8 +1528,8 @@ test('auth: syncOnce accepts doc-wide read_structure capability for filter(all)'
     localPrivateKey: bSk,
     localPublicKey: bPk,
     localCapabilityTokens: [tokenB],
-    requireProofRef: true,
   });
+  await authB.signOps?.(bOps, { docId, purpose: 'local_write', filterId: 'all' });
 
   const {
     peerA: pa,
@@ -1552,14 +1590,12 @@ test('auth: reference COSE/CWT rejects scoped filter(children)', async () => {
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: bSk,
     localPublicKey: bPk,
-    requireProofRef: true,
     scopeEvaluator,
   });
 
@@ -1628,14 +1664,12 @@ test('auth: syncOnce rejects filter(children) when capability scope does not mat
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: bSk,
     localPublicKey: bPk,
-    requireProofRef: true,
     scopeEvaluator,
   });
 
@@ -1707,7 +1741,6 @@ test('auth: scoped projections cannot reveal excluded destinations or private hi
     issuerPublicKeys: [issuerPk],
     localPrivateKey: senderSk,
     localPublicKey: senderPk,
-    requireProofRef: true,
     scopeEvaluator,
   });
 
@@ -1716,7 +1749,6 @@ test('auth: scoped projections cannot reveal excluded destinations or private hi
     localPrivateKey: receiverSk,
     localPublicKey: receiverPk,
     localCapabilityTokens: [tokenReceiver],
-    requireProofRef: true,
   });
 
   const receiverCaps = await authReceiver.helloCapabilities?.({ docId });
@@ -1805,7 +1837,6 @@ test('auth: document-wide projection requires read_payload for every payload-sta
       localPrivateKey: peerSk,
       localPublicKey: peerPk,
       localCapabilityTokens,
-      requireProofRef: true,
     });
     return (await auth.helloCapabilities?.({ docId })) ?? [];
   };
@@ -1817,7 +1848,6 @@ test('auth: document-wide projection requires read_payload for every payload-sta
     issuerPublicKeys: [issuerPk],
     localPrivateKey: peerSk,
     localPublicKey: peerPk,
-    requireProofRef: true,
     scopeEvaluator: () => {
       throw new Error('document-wide fast path must not consult materialized ancestry');
     },
@@ -1942,7 +1972,6 @@ test('auth: delegated capability token can be verified via issuer-signed proof',
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
-    requireProofRef: true,
   });
 
   const authRecipient = createTreecrdtCoseCwtAuth({
@@ -1950,7 +1979,6 @@ test('auth: delegated capability token can be verified via issuer-signed proof',
     localPrivateKey: recipientSk,
     localPublicKey: recipientPk,
     localCapabilityTokens: [delegated],
-    requireProofRef: true,
   });
 
   const helloCaps = await authRecipient.helloCapabilities?.({ docId });
@@ -1966,7 +1994,7 @@ test('auth: delegated capability token can be verified via issuer-signed proof',
   });
   const auth = await authRecipient.signOps?.([op], {
     docId,
-    purpose: 'reconcile',
+    purpose: 'local_write',
     filterId: 'all',
   });
   expect(auth).toBeTruthy();
@@ -2155,7 +2183,6 @@ test('auth: onHello rejects revoked peer capability tokens', async () => {
     localPrivateKey: senderSk,
     localPublicKey: senderPk,
     localCapabilityTokens: [tokenSender],
-    requireProofRef: true,
   });
 
   const authReceiver = createTreecrdtCoseCwtAuth({
@@ -2163,7 +2190,6 @@ test('auth: onHello rejects revoked peer capability tokens', async () => {
     localPrivateKey: receiverSk,
     localPublicKey: receiverPk,
     revokedCapabilityTokenIds: [deriveTokenIdV1(tokenSender)],
-    requireProofRef: true,
   });
 
   const helloCaps = await authSender.helloCapabilities?.({ docId });
@@ -2206,7 +2232,6 @@ test('auth: onHello ignores revoked replay capability tokens', async () => {
     localPrivateKey: receiverSk,
     localPublicKey: receiverPk,
     revokedCapabilityTokenIds: [deriveTokenIdV1(revokedReplayToken)],
-    requireProofRef: true,
   });
 
   await expect(
@@ -2247,14 +2272,12 @@ test('auth: late hard revocation rejects future ops and re-verification of past 
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
 
   const authVerifier = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
-    requireProofRef: true,
     isCapabilityTokenRevoked: ({ stage }) => stage === 'runtime' && hardRevoked.value,
   });
 
@@ -2267,7 +2290,11 @@ test('auth: late hard revocation rejects future ops and re-verification of past 
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth1 = await authWriter.signOps?.([op1], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
   await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
     docId,
     purpose: 'reconcile',
@@ -2282,7 +2309,11 @@ test('auth: late hard revocation rejects future ops and re-verification of past 
     node: nodeIdFromInt(2),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth2 = await authWriter.signOps?.([op2], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
 
   await expect(
     authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
@@ -2327,14 +2358,12 @@ test('auth: runtime revocation callback supports counter cutover policy', async 
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
 
   const authVerifier = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
-    requireProofRef: true,
     isCapabilityTokenRevoked: ({ stage, tokenIdHex, op }) => {
       if (tokenIdHex !== writerTokenIdHex) return false;
       if (stage !== 'runtime') return false;
@@ -2352,7 +2381,11 @@ test('auth: runtime revocation callback supports counter cutover policy', async 
     node: nodeIdFromInt(3),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth1 = await authWriter.signOps?.([op1], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
   await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
     docId,
     purpose: 'reconcile',
@@ -2367,7 +2400,11 @@ test('auth: runtime revocation callback supports counter cutover policy', async 
     node: nodeIdFromInt(4),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth2 = await authWriter.signOps?.([op2], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
 
   await expect(
     authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
@@ -2417,20 +2454,17 @@ test('auth: revocation record from hello capabilities hard-revokes token across 
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
   const authVerifier = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
-    requireProofRef: true,
   });
   const authRevoker = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: revokerSk,
     localPublicKey: revokerPk,
     localRevocationRecords: [revocationRecord],
-    requireProofRef: true,
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
@@ -2442,7 +2476,11 @@ test('auth: revocation record from hello capabilities hard-revokes token across 
     node: nodeIdFromInt(10),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth1 = await authWriter.signOps?.([op1], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
   await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
     docId,
     purpose: 'reconcile',
@@ -2458,7 +2496,11 @@ test('auth: revocation record from hello capabilities hard-revokes token across 
     node: nodeIdFromInt(11),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth2 = await authWriter.signOps?.([op2], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
 
   await expect(
     authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
@@ -2553,27 +2595,23 @@ test('auth: highest rev_seq revocation record wins for a token', async () => {
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
   const authVerifier = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
-    requireProofRef: true,
   });
   const authLowSeq = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: lowSeqSk,
     localPublicKey: lowSeqPk,
     localRevocationRecords: [lowSeqHard],
-    requireProofRef: true,
   });
   const authHighSeq = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: highSeqSk,
     localPublicKey: highSeqPk,
     localRevocationRecords: [highSeqCutover],
-    requireProofRef: true,
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
@@ -2585,7 +2623,11 @@ test('auth: highest rev_seq revocation record wins for a token', async () => {
     node: nodeIdFromInt(20),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth1 = await authWriter.signOps?.([op1], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
   await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
     docId,
     purpose: 'reconcile',
@@ -2618,7 +2660,11 @@ test('auth: highest rev_seq revocation record wins for a token', async () => {
     node: nodeIdFromInt(21),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth2 = await authWriter.signOps?.([op2], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
 
   await expect(
     authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
@@ -2676,27 +2722,23 @@ test('auth: out-of-order revocation records use highest rev_seq even when it arr
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
   const authVerifier = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierSk,
     localPublicKey: verifierPk,
-    requireProofRef: true,
   });
   const authLowSeqPeer = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: lowSeqPeerSk,
     localPublicKey: lowSeqPeerPk,
     localRevocationRecords: [lowSeqHard],
-    requireProofRef: true,
   });
   const authHighSeqPeer = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: highSeqPeerSk,
     localPublicKey: highSeqPeerPk,
     localRevocationRecords: [highSeqCutover],
-    requireProofRef: true,
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
@@ -2708,7 +2750,11 @@ test('auth: out-of-order revocation records use highest rev_seq even when it arr
     node: nodeIdFromInt(30),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth1 = await authWriter.signOps?.([op1], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
 
   const lowSeqCaps = await authLowSeqPeer.helloCapabilities?.({ docId });
   await authVerifier.onHello?.(helloWithCapabilities(lowSeqCaps ?? []), { docId });
@@ -2734,7 +2780,11 @@ test('auth: out-of-order revocation records use highest rev_seq even when it arr
     node: nodeIdFromInt(31),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth2 = await authWriter.signOps?.([op2], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
   await expect(
     authVerifier.verifyOps?.([op2], auth2 ?? undefined, {
       docId,
@@ -2795,19 +2845,16 @@ test('auth: same rev_seq revocation conflicts converge regardless delivery order
     localPrivateKey: writerSk,
     localPublicKey: writerPk,
     localCapabilityTokens: [writerToken],
-    requireProofRef: true,
   });
   const authVerifierA = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierASk,
     localPublicKey: verifierAPk,
-    requireProofRef: true,
   });
   const authVerifierB = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: verifierBSk,
     localPublicKey: verifierBPk,
-    requireProofRef: true,
   });
 
   const authHardPeer = createTreecrdtCoseCwtAuth({
@@ -2815,14 +2862,12 @@ test('auth: same rev_seq revocation conflicts converge regardless delivery order
     localPrivateKey: hardPeerSk,
     localPublicKey: hardPeerPk,
     localRevocationRecords: [hardRecord],
-    requireProofRef: true,
   });
   const authCutoverPeer = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
     localPrivateKey: cutoverPeerSk,
     localPublicKey: cutoverPeerPk,
     localRevocationRecords: [cutoverRecord],
-    requireProofRef: true,
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
@@ -2835,7 +2880,11 @@ test('auth: same rev_seq revocation conflicts converge regardless delivery order
     node: nodeIdFromInt(40),
     orderKey: orderKeyFromPosition(0),
   });
-  const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth1 = await authWriter.signOps?.([op1], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
     type: 'insert',
@@ -2843,7 +2892,11 @@ test('auth: same rev_seq revocation conflicts converge regardless delivery order
     node: nodeIdFromInt(41),
     orderKey: orderKeyFromPosition(1),
   });
-  const auth2 = await authWriter.signOps?.([op2], { docId, purpose: 'reconcile', filterId: 'all' });
+  const auth2 = await authWriter.signOps?.([op2], {
+    docId,
+    purpose: 'local_write',
+    filterId: 'all',
+  });
 
   const hardCaps = await authHardPeer.helloCapabilities?.({ docId });
   const cutoverCaps = await authCutoverPeer.helloCapabilities?.({ docId });
@@ -3029,7 +3082,6 @@ test('auth: records peer identity chain capability via onPeerIdentityChain', asy
     issuerPublicKeys: [issuerPk],
     localPrivateKey: localSk,
     localPublicKey: localPk,
-    requireProofRef: true,
     onPeerIdentityChain: (c) => {
       seen = {
         identityPkHex: bytesToHex(c.identityPublicKey),

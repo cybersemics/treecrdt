@@ -187,26 +187,53 @@ function assertPolicyOperation(op: Operation): void {
   }
 }
 
-export function encodeTreecrdtOpSigInput(opts: { docId: string; op: Operation }): Uint8Array {
+function assertProofRef(proofRef: Uint8Array): Uint8Array {
+  if (!(proofRef instanceof Uint8Array) || proofRef.length !== 16) {
+    throw new Error('proofRef must be 16 bytes');
+  }
+  return proofRef;
+}
+
+export function encodeTreecrdtOpSigInput(opts: {
+  docId: string;
+  op: Operation;
+  proofRef: Uint8Array;
+}): Uint8Array {
   assertPolicyOperation(opts.op);
-  return concatBytes(OP_SIG_DOMAIN, u8(0), encodeTreecrdtOpFields(opts), encodeKnownState(opts.op));
+  return concatBytes(
+    OP_SIG_DOMAIN,
+    u8(0),
+    assertProofRef(opts.proofRef),
+    encodeTreecrdtOpFields(opts),
+    encodeKnownState(opts.op),
+  );
 }
 
 export async function signTreecrdtOp(opts: {
   docId: string;
   op: Operation;
+  proofRef: Uint8Array;
   privateKey: Uint8Array;
 }): Promise<Uint8Array> {
-  const msg = encodeTreecrdtOpSigInput({ docId: opts.docId, op: opts.op });
+  const msg = encodeTreecrdtOpSigInput({
+    docId: opts.docId,
+    op: opts.op,
+    proofRef: opts.proofRef,
+  });
   return signEd25519(msg, opts.privateKey);
 }
 
 export async function verifyTreecrdtOp(opts: {
   docId: string;
   op: Operation;
+  proofRef: Uint8Array;
   signature: Uint8Array;
   publicKey: Uint8Array;
 }): Promise<boolean> {
-  const msg = encodeTreecrdtOpSigInput({ docId: opts.docId, op: opts.op });
+  const msg = encodeTreecrdtOpSigInput({
+    docId: opts.docId,
+    op: opts.op,
+    proofRef: opts.proofRef,
+  });
   return await verifyEd25519(opts.signature, msg, opts.publicKey);
 }

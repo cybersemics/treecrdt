@@ -12,6 +12,7 @@ import {
 ed25519Hashes.sha512 = sha512;
 
 const node = '00112233445566778899aabbccddeeff';
+const proofRef = new Uint8Array(16).fill(7);
 const meta = {
   id: { replica: new Uint8Array(32), counter: 1 },
   lamport: 1,
@@ -33,20 +34,33 @@ test('one signature format binds the explicit knownState field', async () => {
   const state = knownState();
   const op = operation({ type: 'delete', node }, state);
 
-  const input = encodeTreecrdtOpSigInput({ docId: 'doc', op });
+  const input = encodeTreecrdtOpSigInput({ docId: 'doc', op, proofRef });
   const domain = new TextEncoder().encode('treecrdt/op-sig/v1');
   expect(input.slice(0, domain.length + 1)).toEqual(Uint8Array.from([...domain, 0]));
+  expect(input.slice(domain.length + 1, domain.length + 17)).toEqual(proofRef);
   expect(input.slice(-(state.length + 5), -state.length)).toEqual(
     Uint8Array.from([1, 0, 0, 0, state.length]),
   );
   expect(input.slice(-state.length)).toEqual(state);
 
-  const signature = await signTreecrdtOp({ docId: 'doc', op, privateKey });
-  await expect(verifyTreecrdtOp({ docId: 'doc', op, signature, publicKey })).resolves.toBe(true);
+  const signature = await signTreecrdtOp({ docId: 'doc', op, proofRef, privateKey });
+  await expect(
+    verifyTreecrdtOp({ docId: 'doc', op, proofRef, signature, publicKey }),
+  ).resolves.toBe(true);
+  await expect(
+    verifyTreecrdtOp({
+      docId: 'doc',
+      op,
+      proofRef: new Uint8Array(16).fill(8),
+      signature,
+      publicKey,
+    }),
+  ).resolves.toBe(false);
   await expect(
     verifyTreecrdtOp({
       docId: 'doc',
       op: { ...op, meta: { ...op.meta, knownState: knownState(1) } },
+      proofRef,
       signature,
       publicKey,
     }),
@@ -55,6 +69,7 @@ test('one signature format binds the explicit knownState field', async () => {
     verifyTreecrdtOp({
       docId: 'doc',
       op: operation(op.kind),
+      proofRef,
       signature,
       publicKey,
     }),
@@ -64,6 +79,7 @@ test('one signature format binds the explicit knownState field', async () => {
     encodeTreecrdtOpSigInput({
       docId: 'doc',
       op: operation({ type: 'delete', node }, new TextEncoder().encode('{ "entries": [] }')),
+      proofRef,
     }),
   ).toThrow(/canonical/i);
 });
@@ -78,6 +94,7 @@ test('canonical knownState accepts normalized gapped ranges', () => {
     encodeTreecrdtOpSigInput({
       docId: 'doc',
       op: operation({ type: 'delete', node }, state),
+      proofRef,
     }),
   ).not.toThrow();
 });
@@ -117,6 +134,7 @@ test.each<[string, number, Array<[number, number]>]>([
     encodeTreecrdtOpSigInput({
       docId: 'doc',
       op: operation({ type: 'delete', node }, knownState(frontier, ranges)),
+      proofRef,
     }),
   ).toThrow(/Number\.MAX_SAFE_INTEGER/);
 });
@@ -144,14 +162,14 @@ test('signature policy only allows knownState on deletes', async () => {
 
   for (const kind of nonDeleteKinds) {
     await expect(
-      signTreecrdtOp({ docId: 'doc', op: operation(kind, state), privateKey }),
+      signTreecrdtOp({ docId: 'doc', op: operation(kind, state), proofRef, privateKey }),
     ).rejects.toThrow(/only allowed on delete/i);
   }
 
   const tombstone = operation({ type: 'tombstone', node });
-  expect(encodeTreecrdtOpSigInput({ docId: 'doc', op: tombstone }).at(-1)).toBe(0);
-  const signature = await signTreecrdtOp({ docId: 'doc', op: tombstone, privateKey });
+  expect(encodeTreecrdtOpSigInput({ docId: 'doc', op: tombstone, proofRef }).at(-1)).toBe(0);
+  const signature = await signTreecrdtOp({ docId: 'doc', op: tombstone, proofRef, privateKey });
   await expect(
-    verifyTreecrdtOp({ docId: 'doc', op: tombstone, signature, publicKey }),
+    verifyTreecrdtOp({ docId: 'doc', op: tombstone, proofRef, signature, publicKey }),
   ).resolves.toBe(true);
 });

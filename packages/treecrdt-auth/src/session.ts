@@ -1,8 +1,8 @@
 import type { Operation } from '@treecrdt/interface';
+import type { LocalWriteAuthProof } from '@treecrdt/interface/engine';
 import type {
   Capability,
   Hello,
-  OpAuth,
   SyncAuth,
   SyncAuthHelloContext,
   SyncAuthOpsContext,
@@ -54,8 +54,6 @@ export type TreecrdtAuthSessionLocal = {
   revocationRecords?: Uint8Array[];
 };
 
-export type TreecrdtAuthSessionLocalAuthorizeOptions = Partial<SyncAuthOpsContext>;
-
 export type TreecrdtAuthSessionOptions = Omit<
   TreecrdtCoseCwtAuthOptions,
   | 'localIdentityChain'
@@ -83,10 +81,7 @@ export type TreecrdtAuthSession = {
   readonly ready: Promise<SyncAuth<Operation>>;
   getState: () => TreecrdtAuthSessionState;
   refresh: () => Promise<SyncAuth<Operation>>;
-  authorizeLocalOps: (
-    ops: readonly Operation[],
-    opts?: TreecrdtAuthSessionLocalAuthorizeOptions,
-  ) => Promise<OpAuth[]>;
+  authorizeLocalOps: (ops: readonly Operation[]) => Promise<readonly LocalWriteAuthProof[]>;
 };
 
 /**
@@ -161,19 +156,15 @@ export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): Tre
 
   let ready = warm();
 
-  const authorizeLocalOps: TreecrdtAuthSession['authorizeLocalOps'] = async (
-    ops,
-    ctxOverrides = {},
-  ) => {
+  const authorizeLocalOps: TreecrdtAuthSession['authorizeLocalOps'] = async (ops) => {
     if (ops.length === 0) return [];
     if (!syncAuth.signOps || !syncAuth.verifyOps) {
       throw new Error('auth session is missing local op signing/verification hooks');
     }
     const ctx: SyncAuthOpsContext = {
       docId,
-      purpose: 'reconcile',
+      purpose: 'local_write',
       filterId: '__local__',
-      ...ctxOverrides,
     };
     const auth = await syncAuth.signOps(ops, ctx);
     if (auth.length !== ops.length) {
