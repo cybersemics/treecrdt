@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { base64urlDecode } from '@treecrdt/auth';
 import { installHelloTraceSink, type HelloTraceRecord } from '@treecrdt/sync-protocol';
 
 import { startSyncServer } from './server.js';
@@ -16,24 +15,6 @@ function parseBooleanEnv(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   throw new Error(`${name} must be a boolean (true/false), got: ${raw}`);
-}
-
-function parseIssuerPublicKeysEnv(name: string): Uint8Array[] {
-  const raw = process.env[name];
-  if (!raw || raw.trim().length === 0) return [];
-  return raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-    .map((entry) => {
-      try {
-        return base64urlDecode(entry);
-      } catch (err) {
-        throw new Error(
-          `${name} has invalid base64url key "${entry}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    });
 }
 
 function buildPostgresUrlFromParts(): string | undefined {
@@ -99,9 +80,6 @@ async function main() {
     process.env.TREECRDT_MAX_PAYLOAD_BYTES ?? String(10 * 1024 * 1024),
   );
   const authToken = process.env.TREECRDT_SYNC_AUTH_TOKEN?.trim() || undefined;
-  const authCapabilityIssuerPublicKeys = parseIssuerPublicKeysEnv(
-    'TREECRDT_SYNC_CWT_ISSUER_PUBKEYS',
-  );
   const docIdPattern = process.env.TREECRDT_DOC_ID_PATTERN?.trim() || undefined;
   const allowDocCreate = parseBooleanEnv('TREECRDT_ALLOW_DOC_CREATE', true);
   const enablePgNotify = parseBooleanEnv('TREECRDT_PG_NOTIFY_ENABLED', true);
@@ -160,7 +138,6 @@ async function main() {
       maxPayloadBytes,
       backendModule,
       authToken,
-      authCapabilityIssuerPublicKeys,
       docIdPattern,
       allowDocCreate,
       enablePgNotify,
@@ -182,11 +159,7 @@ async function main() {
     console.log(`- backend module: ${handle.backendModule}`);
     if (packageVersion) console.log(`- version: ${packageVersion}`);
     if (gitSha) console.log(`- git sha: ${gitSha}${gitDirty ? ' (dirty)' : ''}`);
-    if (authCapabilityIssuerPublicKeys.length > 0) {
-      console.log(
-        `- auth: capability CWT enabled (${authCapabilityIssuerPublicKeys.length} issuer keys)`,
-      );
-    } else if (authToken) {
+    if (authToken) {
       console.log('- auth: static token enabled (bearer token or ?token=...)');
     }
     if (docIdPattern) console.log(`- docId policy: ${docIdPattern}`);

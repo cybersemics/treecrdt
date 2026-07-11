@@ -53,7 +53,6 @@ Environment variables:
 - `TREECRDT_IDLE_CLOSE_MS` (default: `30000`)
 - `TREECRDT_MAX_PAYLOAD_BYTES` (default: `10485760`)
 - `TREECRDT_SYNC_AUTH_TOKEN` (optional static token, accepted as `Authorization: Bearer ...` or `?token=...`)
-- `TREECRDT_SYNC_CWT_ISSUER_PUBKEYS` (optional comma-separated base64url Ed25519 issuer public keys, enables CWT capability auth)
 - `TREECRDT_DOC_ID_PATTERN` (optional regex; deny docs that do not match)
 - `TREECRDT_ALLOW_DOC_CREATE` (default: `true`; when `false`, unknown `docId` values are denied)
 - `TREECRDT_PG_NOTIFY_ENABLED` (default: `true`; enables LISTEN/NOTIFY fanout across server instances)

@@ -2,7 +2,6 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-import { base64urlDecode, describeTreecrdtCapabilityTokenV1 } from '@treecrdt/auth';
 import type { Operation } from '@treecrdt/interface';
 import { createReplayOnlySyncAuth, deriveOpRefV0 } from '@treecrdt/sync-protocol';
 import type { SyncBackend, SyncPeer, SyncPeerOptions } from '@treecrdt/sync-protocol';
@@ -47,7 +46,6 @@ export type SyncServerOptions = {
   idleCloseMs?: number;
   maxPayloadBytes?: number;
   authToken?: string;
-  authCapabilityIssuerPublicKeys?: Uint8Array[];
   docIdPattern?: string | RegExp;
   allowDocCreate?: boolean;
   enablePgNotify?: boolean;
@@ -112,11 +110,7 @@ function ensurePostgresChannelName(value: string): string {
   return trimmed;
 }
 
-function describeAuthMode(
-  authToken: string | undefined,
-  issuerPublicKeys: Uint8Array[],
-): 'none' | 'static_token' | 'capability_cwt' {
-  if (issuerPublicKeys.length > 0) return 'capability_cwt';
+function describeAuthMode(authToken: string | undefined): 'none' | 'static_token' {
   if (authToken) return 'static_token';
   return 'none';
 }
@@ -268,36 +262,6 @@ function createStaticTokenAuthHook(expectedToken: string): WebSocketSyncServerUp
       statusCode: 401,
       body: 'missing or invalid auth token',
     };
-  };
-}
-
-function createCapabilityTokenAuthHook(
-  issuerPublicKeys: Uint8Array[],
-): WebSocketSyncServerUpgradeHook {
-  return async (ctx) => {
-    const token = extractAuthToken(ctx);
-    if (!token) {
-      return {
-        allow: false,
-        statusCode: 401,
-        body: 'missing capability token',
-      };
-    }
-    try {
-      const tokenBytes = base64urlDecode(token);
-      await describeTreecrdtCapabilityTokenV1({
-        tokenBytes,
-        issuerPublicKeys,
-        docId: ctx.docId,
-      });
-      return { allow: true };
-    } catch (err) {
-      return {
-        allow: false,
-        statusCode: 401,
-        body: `invalid capability token: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
   };
 }
 
@@ -609,9 +573,6 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     typeof opts.authToken === 'string' && opts.authToken.trim().length > 0
       ? opts.authToken.trim()
       : undefined;
-  const authCapabilityIssuerPublicKeys = (opts.authCapabilityIssuerPublicKeys ?? []).filter(
-    (value): value is Uint8Array => value instanceof Uint8Array && value.length > 0,
-  );
   const docIdPattern = parseDocIdRegex(opts.docIdPattern);
   const allowDocCreate = opts.allowDocCreate ?? true;
   const enablePgNotify = opts.enablePgNotify ?? true;
@@ -708,12 +669,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     throw err;
   }
 
-  const builtInAuthHook =
-    authCapabilityIssuerPublicKeys.length > 0
-      ? createCapabilityTokenAuthHook(authCapabilityIssuerPublicKeys)
-      : authToken
-        ? createStaticTokenAuthHook(authToken)
-        : undefined;
+  const builtInAuthHook = authToken ? createStaticTokenAuthHook(authToken) : undefined;
 
   const builtInAuthorizeHook = combineUpgradeHooks(
     docIdPattern ? createDocIdPatternHook(docIdPattern) : undefined,
@@ -776,7 +732,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
             startedAt,
             uptimeMs: Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : null,
             backendModule,
-            authMode: describeAuthMode(authToken, authCapabilityIssuerPublicKeys),
+            authMode: describeAuthMode(authToken),
             pgNotifyEnabled: Boolean(docUpdateBus),
             pgNotifyChannel: docUpdateBus ? pgNotifyChannel : null,
             docIdPattern: docIdPattern?.source ?? null,
