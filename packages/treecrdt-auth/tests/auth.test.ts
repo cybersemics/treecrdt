@@ -258,6 +258,69 @@ test('syncOnce with COSE+CWT auth converges and verifies ops', async () => {
   }
 });
 
+test('auth: direct upload requires a live reader grant from the responder', async () => {
+  const docId = 'doc-auth-direct-upload-reader';
+  const root = '0'.repeat(32);
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  await a.applyOps([
+    makeOp(aPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ['read_structure', 'write_structure'],
+  });
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+  // B can verify A's token, but has no live token of its own. Its HelloAck only
+  // relays A's token as replay proof material, which must not authorize reading A.
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    requireProofRef: true,
+  });
+
+  const { peerA, transportA, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB },
+  });
+
+  try {
+    await expect(peerA.syncOnce(transportA, { all: {} })).rejects.toThrow(
+      /missing "auth\.capability" token/i,
+    );
+    await tick();
+    expect(b.hasOp(bytesToHex(aPk), 1)).toBe(false);
+  } finally {
+    detach();
+  }
+});
+
 test('auth: signOps selects proof_ref per op when multiple tokens exist', async () => {
   const docId = 'doc-auth-multitoken';
   const root = '0'.repeat(32);

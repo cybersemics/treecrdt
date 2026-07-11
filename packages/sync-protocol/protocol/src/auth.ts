@@ -46,13 +46,17 @@ export interface SyncAuth<Op> {
   /**
    * Responder hook invoked when receiving `Hello`.
    *
-   * Implementations MAY validate peer capabilities here and return capabilities
-   * to include in `HelloAck.capabilities`.
+   * `Hello.capabilities` is a complete replacement snapshot. Implementations MAY
+   * validate it here and return capabilities to include in `HelloAck.capabilities`.
+   * Throwing rejects the snapshot before outgoing authorization can observe it.
    */
   onHello?: (hello: Hello, ctx: SyncAuthHelloContext) => Promise<Capability[]> | Capability[];
 
   /**
    * Initiator hook invoked when receiving `HelloAck`.
+   *
+   * `HelloAck.capabilities` is also a complete replacement snapshot. Throwing
+   * rejects it before outgoing authorization can observe it.
    */
   onHelloAck?: (ack: HelloAck, ctx: SyncAuthHelloContext) => Promise<void> | void;
 
