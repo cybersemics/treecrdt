@@ -3,12 +3,11 @@ use std::rc::Rc;
 use treecrdt_core::NodeStore;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
-    catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, LocalFinalizePlan,
-    LocalPlacement, MaterializationChange, MaterializationCursor, MaterializationHead,
-    MaterializationKey, MaterializationOutcome, MaterializationState, MemoryNodeStore,
-    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
+    catch_up_materialized_state, materialize_persisted_remote_ops_with_delta, Lamport,
+    LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationCursor,
+    MaterializationHead, MaterializationKey, MaterializationOutcome, MaterializationState,
+    MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation,
+    OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
 };
 
 #[derive(Default)]
@@ -586,119 +585,6 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
         result.outcome.affected_nodes(),
         vec![NodeId::ROOT, NodeId(10), NodeId(11)]
     );
-}
-
-#[test]
-fn payload_noop_shortcut_skips_out_of_order_payload_dominated_by_current_winner() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let node = NodeId(7);
-    let op = Operation::set_payload(&replica, 4, 4, node, vec![1]);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(&cursor, vec![op.clone()], |lookup| {
-        assert_eq!(lookup, node);
-        Ok::<_, ()>(Some((
-            9,
-            OperationId {
-                replica: replica.clone(),
-                counter: 9,
-            },
-        )))
-    })
-    .unwrap()
-    .expect("expected payload noop shortcut");
-
-    assert_eq!(shortcut.resumed_head.at.counter, 10);
-    assert_eq!(shortcut.resumed_head.seq, 6);
-    assert!(shortcut.remaining_ops.is_empty());
-    assert!(shortcut.outcome.changes.is_empty());
-}
-
-#[test]
-fn payload_noop_shortcut_keeps_later_in_order_payload_for_incremental_materialization() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let node = NodeId(8);
-    let older = Operation::set_payload(&replica, 4, 4, node, vec![1]);
-    let newer = Operation::set_payload(&replica, 12, 12, node, vec![2]);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(
-        &cursor,
-        vec![newer.clone(), older.clone()],
-        |_| Ok::<_, ()>(None),
-    )
-    .unwrap()
-    .expect("expected payload noop shortcut");
-
-    assert_eq!(shortcut.resumed_head.seq, 6);
-    assert_eq!(shortcut.remaining_ops, vec![newer]);
-    assert!(shortcut.outcome.changes.is_empty());
-}
-
-#[test]
-fn payload_noop_shortcut_rejects_out_of_order_payload_that_becomes_final_winner() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let node = NodeId(9);
-    let op = Operation::set_payload(&replica, 4, 4, node, vec![1]);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(&cursor, vec![op], |_| {
-        Ok::<_, ()>(Some((
-            2,
-            OperationId {
-                replica: ReplicaId::new(b"old"),
-                counter: 2,
-            },
-        )))
-    })
-    .unwrap();
-
-    assert!(shortcut.is_none());
-}
-
-#[test]
-fn payload_noop_shortcut_rejects_out_of_order_move() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let move_op = Operation::move_node(&replica, 4, 4, NodeId(3), NodeId::ROOT, vec![0x10]);
-    let called = Cell::new(false);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(
-        &cursor,
-        vec![move_op],
-        |_| -> Result<Option<(u64, OperationId)>, ()> {
-            called.set(true);
-            Ok(None)
-        },
-    )
-    .unwrap();
-
-    assert!(shortcut.is_none());
-    assert!(!called.get());
 }
 
 #[test]
