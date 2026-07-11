@@ -103,7 +103,9 @@ impl treecrdt_core::PayloadStore for SqlitePayloadStore {
                 } else {
                     let ptr = sqlite_column_blob(self.select, 0) as *const u8;
                     let len = sqlite_column_bytes(self.select, 0) as usize;
-                    if ptr.is_null() {
+                    if len == 0 {
+                        Some(Vec::new())
+                    } else if ptr.is_null() {
                         None
                     } else {
                         Some(slice::from_raw_parts(ptr, len).to_vec())

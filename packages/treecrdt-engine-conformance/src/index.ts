@@ -165,6 +165,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioOutOfOrderOpsRebuild,
     },
     {
+      name: 'payload: empty bytes survive local writes and canonical replay',
+      run: scenarioEmptyPayloadCanonicalReplay,
+    },
+    {
       name: 'materialized tree: dump/children/meta + oprefs_children',
       run: scenarioMaterializedSmokeWithOpRefs,
     },
@@ -891,6 +895,88 @@ async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContex
   assertEqual(await engine.meta.headLamport(), 2, 'meta.headLamport after out-of-order inserts');
 }
 
+async function scenarioEmptyPayloadCanonicalReplay(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const withEmptyPayload = nodeIdFromInt(21);
+  const lateNode = nodeIdFromInt(22);
+  const localNode = nodeIdFromInt(23);
+  const empty = new Uint8Array();
+
+  // The late insert invalidates the materialization frontier and forces canonical replay.
+  await engine.ops.append(
+    makeInsertOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      parent: root,
+      node: withEmptyPayload,
+      orderKey: orderKeyFromPosition(1),
+      payload: empty,
+    }),
+  );
+  assertBytesEqual(
+    await engine.tree.getPayload(withEmptyPayload),
+    empty,
+    'empty insert payload before replay',
+  );
+
+  await engine.ops.append(
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: lateNode,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  );
+
+  assertBytesEqual(
+    await engine.tree.getPayload(withEmptyPayload),
+    empty,
+    'empty insert payload after replay',
+  );
+  assertBytesEqual(
+    await engine.tree.getPayload(lateNode),
+    null,
+    'null remains distinct from empty',
+  );
+
+  const replayed = (await engine.ops.all()).find(
+    (op) => op.meta.id.counter === 2 && op.kind.type === 'insert',
+  );
+  assert(replayed?.kind.type === 'insert', 'replayed empty insert op');
+  assertBytesEqual(replayed.kind.payload ?? null, empty, 'op log preserves empty insert payload');
+
+  const localInsert = await engine.local.insert(replica, root, localNode, { type: 'last' }, empty);
+  assert(localInsert.kind.type === 'insert', 'local empty insert op');
+  assertBytesEqual(localInsert.kind.payload ?? null, empty, 'local insert returns empty payload');
+  assertBytesEqual(
+    await engine.tree.getPayload(localNode),
+    empty,
+    'local insert stores empty payload',
+  );
+
+  await engine.local.payload(replica, localNode, null);
+  assertBytesEqual(
+    await engine.tree.getPayload(localNode),
+    null,
+    'local payload clear stores null',
+  );
+  const localPayload = await engine.local.payload(replica, localNode, empty);
+  assert(localPayload.kind.type === 'payload', 'local empty payload op');
+  assertBytesEqual(localPayload.kind.payload, empty, 'local payload returns empty bytes');
+  assertBytesEqual(
+    await engine.tree.getPayload(localNode),
+    empty,
+    'local payload stores empty bytes',
+  );
+}
+
 async function scenarioMaterializedSmokeWithOpRefs(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
@@ -1395,29 +1481,32 @@ async function scenarioPersistencePayloadReopen(
   const replica = replicaFromLabel('r1');
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
+  const n2 = nodeIdFromInt(2);
+  const empty = new Uint8Array();
 
   const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
   await e1.local.insert(replica, root, n1, { type: 'last' }, null);
-  await e1.local.payload(replica, n1, new TextEncoder().encode('hello'));
+  await e1.local.payload(replica, n1, empty);
+  await e1.local.insert(replica, root, n2, { type: 'last' }, null);
   await e1.close();
 
   const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
-  assertArrayEqual(await e2.tree.children(root), [n1], 'children after reopen (payload)');
+  assertArrayEqual(await e2.tree.children(root), [n1, n2], 'children after reopen (payload)');
 
   const payload = await e2.tree.getPayload(n1);
   assert(payload !== null, 'tree.getPayload should return payload for node with payload');
-  assertEqual(
-    new TextDecoder().decode(payload),
-    'hello',
-    'tree.getPayload returns correct value after reopen',
-  );
+  assertBytesEqual(payload, empty, 'tree.getPayload returns empty payload after reopen');
+  assertBytesEqual(await e2.tree.getPayload(n2), null, 'null remains distinct after reopen');
 
   const refs = await e2.opRefs.children(root);
-  assertEqual(refs.length, 2, 'opRefs.children length after reopen (payload)');
+  assertEqual(refs.length, 3, 'opRefs.children length after reopen (payload)');
   const ops = await e2.ops.get(refs);
   const kinds = new Set(ops.map((op) => op.kind.type));
   assert(kinds.has('insert'), 'expected insert op after reopen');
   assert(kinds.has('payload'), 'expected payload op after reopen');
+  const payloadOp = ops.find((op) => op.kind.type === 'payload');
+  assert(payloadOp?.kind.type === 'payload', 'expected payload operation after reopen');
+  assertBytesEqual(payloadOp.kind.payload, empty, 'op log preserves empty payload after reopen');
 }
 
 function makeCapabilityTokenV1(opts: {
