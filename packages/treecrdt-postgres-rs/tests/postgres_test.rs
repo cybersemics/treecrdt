@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{mpsc, OnceLock};
+use std::thread;
+use std::time::Duration;
 
 use postgres::{Client, NoTls};
 use uuid::Uuid;
@@ -9,8 +11,9 @@ use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId, Versio
 use treecrdt_postgres::{
     append_ops, append_ops_with_materialization_outcome, ensure_materialized, ensure_schema,
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
-    local_move, local_payload, max_lamport, prepare_local_insert_tx, replica_max_counter,
-    reset_doc_for_tests, tree_children, tree_payload,
+    local_move, local_payload, max_lamport, replica_max_counter, reset_doc_for_tests,
+    tree_children, tree_payload, try_commit_prepared_local, try_prepare_local_insert,
+    LocalOpAuthProof,
 };
 use treecrdt_test_support::{
     self as materialization_conformance, node, order_key_from_position,
@@ -680,59 +683,183 @@ fn postgres_backend_local_ops_drive_core_materialization_flow() {
 }
 
 #[test]
-fn postgres_backend_prepared_local_tx_rolls_back_until_committed() {
+fn postgres_optimistic_local_proposal_does_not_hold_the_document_lock() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let url = std::env::var("TREECRDT_POSTGRES_URL").unwrap();
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+    ensure_materialized(&client, &doc_id).unwrap();
+
+    let replica = ReplicaId::new(b"optimistic-auth");
+    let proposed_node = node(1201);
+    let proposal = try_prepare_local_insert(
+        &client,
+        &doc_id,
+        &replica,
+        NodeId::ROOT,
+        proposed_node,
+        "last",
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("unexpected initial prepare conflict");
+    assert_eq!(proposal.op().meta.id.counter, 1);
+    // This write uses another connection while the first proposal is waiting for authorization.
+    // The old N-API design retained the meta-row lock here and made this synchronous call wait
+    // forever, which in turn prevented the first JavaScript authorization promise from resuming.
+    let concurrent_node = node(1202);
+    let concurrent_doc = doc_id.clone();
+    let concurrent_replica = replica.clone();
+    let writer_url = url.clone();
+    let (sent, received) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        let concurrent = Client::connect(&writer_url, NoTls).unwrap();
+        let concurrent = Rc::new(RefCell::new(concurrent));
+        let result = local_insert(
+            &concurrent,
+            &concurrent_doc,
+            &concurrent_replica,
+            NodeId::ROOT,
+            concurrent_node,
+            "last",
+            None,
+            None,
+        )
+        .unwrap();
+        sent.send((result.op.meta.id.counter, result.op.meta.lamport)).unwrap();
+    });
+    assert_eq!(
+        received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("concurrent writer blocked behind an authorization proposal"),
+        (1, 1),
+    );
+    writer.join().unwrap();
+
+    assert!(try_commit_prepared_local(
+        &client,
+        proposal,
+        LocalOpAuthProof {
+            sig: vec![8; 64],
+            proof_ref: None,
+        },
+    )
+    .unwrap()
+    .is_none());
+
+    let retry = try_prepare_local_insert(
+        &client,
+        &doc_id,
+        &replica,
+        NodeId::ROOT,
+        proposed_node,
+        "last",
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("unexpected retry prepare conflict");
+    assert_eq!(retry.op().meta.id.counter, 2);
+    assert_eq!(retry.op().meta.lamport, 2);
+    let committed = try_commit_prepared_local(
+        &client,
+        retry,
+        LocalOpAuthProof {
+            sig: vec![9; 64],
+            proof_ref: Some(vec![6; 16]),
+        },
+    )
+    .unwrap()
+    .expect("unexpected retry commit conflict");
+    assert_eq!(committed.op.meta.id.counter, 2);
+    assert_eq!(
+        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
+        vec![concurrent_node, proposed_node],
+    );
+    let proof_row = client
+        .borrow_mut()
+        .query_one(
+            "SELECT sig, proof_ref, created_at_ms \
+             FROM treecrdt_sync_op_auth WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .unwrap();
+    assert_eq!(proof_row.get::<_, Vec<u8>>(0), vec![9; 64]);
+    assert_eq!(proof_row.get::<_, Option<Vec<u8>>>(1), Some(vec![6; 16]));
+    assert!(proof_row.get::<_, i64>(2) > 0);
+
+    let mut locker = Client::connect(&url, NoTls).unwrap();
+    locker.batch_execute("BEGIN").unwrap();
+    locker
+        .query_one(
+            "SELECT 1 FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE",
+            &[&doc_id],
+        )
+        .unwrap();
+
+    let result = try_prepare_local_insert(
+        &client,
+        &doc_id,
+        &replica,
+        NodeId::ROOT,
+        node(1210),
+        "last",
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(result.is_none());
+    locker.batch_execute("ROLLBACK").unwrap();
+}
+
+#[test]
+fn postgres_invalid_local_proof_is_rejected_before_the_operation() {
     let Some(client) = connect() else {
         return;
     };
     ensure_schema_once(&client);
 
     let doc_id = format!("test-{}", Uuid::new_v4());
-    {
-        let mut c = client.borrow_mut();
-        reset_doc_for_tests(&mut c, &doc_id).unwrap();
-    }
-
-    let replica = ReplicaId::new(b"loc-auth");
-    let node_rejected = node(1101);
-    let rejected = prepare_local_insert_tx(
+    ensure_materialized(&client, &doc_id).unwrap();
+    let proposal = try_prepare_local_insert(
         &client,
         &doc_id,
-        &replica,
+        &ReplicaId::new(b"atomic-proof"),
         NodeId::ROOT,
-        node_rejected,
-        "first",
+        node(1220),
+        "last",
         None,
         None,
     )
-    .unwrap();
-    assert_eq!(rejected.op().meta.id.counter, 1);
-    rejected.rollback().unwrap();
+    .unwrap()
+    .expect("unexpected prepare conflict");
+
+    let error = try_commit_prepared_local(
+        &client,
+        proposal,
+        LocalOpAuthProof {
+            sig: vec![1; 63],
+            proof_ref: None,
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("signature must be 64 bytes"));
     assert_eq!(op_count(&client, &doc_id), 0);
-    assert!(tree_children(&client, &doc_id, NodeId::ROOT).unwrap().is_empty());
-
-    let node_committed = node(1102);
-    let committed = prepare_local_insert_tx(
-        &client,
-        &doc_id,
-        &replica,
-        NodeId::ROOT,
-        node_committed,
-        "first",
-        None,
-        Some(vec![7]),
-    )
-    .unwrap();
-    assert_eq!(committed.op().meta.id.counter, 1);
-    let result = committed.commit().unwrap();
-
-    assert_eq!(result.op.kind.node(), node_committed);
-    assert_eq!(op_count(&client, &doc_id), 1);
-    assert_eq!(
-        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
-        vec![node_committed]
-    );
-    assert_eq!(
-        tree_payload(&client, &doc_id, node_committed).unwrap(),
-        Some(vec![7])
-    );
+    let proof_count = client
+        .borrow_mut()
+        .query_one(
+            "SELECT COUNT(*) FROM treecrdt_sync_op_auth WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(proof_count, 0);
 }
