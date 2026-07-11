@@ -49,6 +49,7 @@ impl SqliteStorage {
 
 impl Storage for SqliteStorage {
     fn apply(&mut self, op: Operation) -> treecrdt_core::Result<bool> {
+        op.validate()?;
         let (kind, parent, node, new_parent, order_key, payload) = match op.kind {
             OperationKind::Insert {
                 parent,

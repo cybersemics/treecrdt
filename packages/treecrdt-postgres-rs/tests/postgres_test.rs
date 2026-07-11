@@ -14,7 +14,7 @@ use treecrdt_postgres::{
 };
 use treecrdt_test_support::{
     self as materialization_conformance, node, order_key_from_position,
-    MaterializationConformanceHarness,
+    MaterializationConformanceHarness, MaterializedNodeState,
 };
 
 fn connect() -> Option<Rc<RefCell<Client>>> {
@@ -93,6 +93,22 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
         }
     }
 
+    fn materialization_head(&self) -> treecrdt_core::MaterializationFrontier {
+        let mut c = self.client.borrow_mut();
+        let row = c
+            .query_one(
+                "SELECT head_lamport, head_replica, head_counter \
+                 FROM treecrdt_meta WHERE doc_id = $1",
+                &[&self.doc_id],
+            )
+            .unwrap();
+        treecrdt_core::MaterializationFrontier {
+            lamport: row.get::<_, i64>(0).max(0) as u64,
+            replica: row.get(1),
+            counter: row.get::<_, i64>(2).max(0) as u64,
+        }
+    }
+
     fn head_seq(&self) -> u64 {
         let mut c = self.client.borrow_mut();
         let row = c
@@ -102,6 +118,29 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
             )
             .unwrap();
         row.get::<_, i64>(0).max(0) as u64
+    }
+
+    fn node_state(&self, node: NodeId) -> MaterializedNodeState {
+        let mut c = self.client.borrow_mut();
+        let node_bytes = node.0.to_be_bytes();
+        let row = c
+            .query_one(
+                "SELECT parent, tombstone, deleted_at \
+                 FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
+                &[&self.doc_id, &node_bytes.as_slice()],
+            )
+            .unwrap();
+        let parent = row
+            .get::<_, Option<Vec<u8>>>(0)
+            .map(|bytes| NodeId(u128::from_be_bytes(bytes.try_into().unwrap())));
+        let deleted_at = row
+            .get::<_, Option<Vec<u8>>>(2)
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap());
+        MaterializedNodeState {
+            parent,
+            tombstone: row.get(1),
+            deleted_at,
+        }
     }
 
     fn force_replay_from_start(&self) {
@@ -269,6 +308,30 @@ fn postgres_backend_out_of_order_delete_suffix_falls_back_and_restores_parent() 
     };
     materialization_conformance::out_of_order_delete_suffix_falls_back_and_restores_parent(
         &harness,
+    );
+}
+
+#[test]
+fn postgres_backend_out_of_order_append_after_cycle_rejected_moves_keeps_canonical_tree_acyclic() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_append_after_cycle_rejected_moves_keeps_canonical_tree_acyclic(
+        &harness,
+    );
+}
+
+#[test]
+fn postgres_backend_out_of_order_concurrent_delete_converges_internal_node_metadata() {
+    let Some(canonical) = setup_conformance_harness() else {
+        return;
+    };
+    let Some(out_of_order) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_concurrent_delete_converges_internal_node_metadata(
+        &canonical,
+        &out_of_order,
     );
 }
 

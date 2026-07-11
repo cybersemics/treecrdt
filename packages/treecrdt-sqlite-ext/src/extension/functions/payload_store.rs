@@ -234,30 +234,3 @@ impl treecrdt_core::PayloadStore for SqlitePayloadStore {
         Ok(())
     }
 }
-
-impl treecrdt_core::ExactPayloadStore for SqlitePayloadStore {
-    fn clear_payload(&mut self, node: NodeId) -> treecrdt_core::Result<()> {
-        let node_bytes = sqlite_node_id_bytes(node);
-        unsafe {
-            sqlite_clear_bindings(self.delete);
-            sqlite_reset(self.delete);
-            let bind_rc = sqlite_bind_blob(
-                self.delete,
-                1,
-                node_bytes.as_ptr() as *const c_void,
-                node_bytes.len() as c_int,
-                None,
-            );
-            if bind_rc != SQLITE_OK as c_int {
-                sqlite_reset(self.delete);
-                return Err(sqlite_rc_error(bind_rc, "bind delete payload failed"));
-            }
-            let step_rc = sqlite_step(self.delete);
-            sqlite_reset(self.delete);
-            if step_rc != SQLITE_DONE as c_int {
-                return Err(sqlite_rc_error(step_rc, "delete payload step failed"));
-            }
-        }
-        Ok(())
-    }
-}

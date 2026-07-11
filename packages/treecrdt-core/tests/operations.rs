@@ -1,6 +1,6 @@
 use treecrdt_core::{
-    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId,
-    TreeCrdt,
+    LamportClock, LocalPlacement, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId,
+    NodeStore, NoopParentOpIndex, Operation, ReplicaId, TreeCrdt,
 };
 
 #[test]
@@ -40,6 +40,30 @@ fn duplicate_operations_are_ignored() {
     crdt.apply_remote(op.clone()).unwrap();
     crdt.apply_remote(op).unwrap();
     assert_eq!(crdt.children(NodeId::ROOT).unwrap(), &[NodeId(1)]);
+}
+
+#[test]
+fn persisted_operations_require_portable_key_range() {
+    let replica = ReplicaId::new(b"remote");
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    let overflow = i64::MAX as u64 + 1;
+    for (counter, lamport, node) in [
+        (1, 0, NodeId(90)),
+        (0, 1, NodeId(91)),
+        (1, overflow, NodeId(92)),
+        (overflow, 1, NodeId(93)),
+    ] {
+        let op = Operation::insert(&replica, counter, lamport, NodeId::ROOT, node, vec![0x10]);
+        assert!(crdt.apply_remote(op).is_err());
+    }
+    assert!(crdt.children(NodeId::ROOT).unwrap().is_empty());
+    assert!(crdt.operations_since(0).unwrap().is_empty());
 }
 
 #[test]
@@ -115,6 +139,161 @@ fn prevents_cycle_on_move() {
     ))
     .unwrap();
     assert_eq!(crdt.parent(a).unwrap(), Some(root));
+}
+
+#[test]
+fn rejected_cycle_move_emits_no_visible_change() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    crdt.local_insert(root, parent, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(parent, child, LocalPlacement::First, None).unwrap();
+
+    let mut seq = 0;
+    let mut index = NoopParentOpIndex;
+    let delta = crdt
+        .apply_remote_with_materialization_seq(
+            Operation::move_node(&ReplicaId::new(b"remote"), 1, 3, parent, child, Vec::new()),
+            &mut index,
+            &mut seq,
+        )
+        .unwrap()
+        .unwrap();
+
+    assert!(delta.changes.is_empty());
+    assert_eq!(crdt.parent(parent).unwrap(), Some(root));
+    assert_eq!(crdt.parent(child).unwrap(), Some(parent));
+
+    let rejected_insert = crdt
+        .apply_remote_with_materialization_seq(
+            Operation::insert(&ReplicaId::new(b"remote"), 2, 4, child, parent, Vec::new()),
+            &mut index,
+            &mut seq,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(rejected_insert.changes.is_empty());
+    assert_eq!(crdt.parent(parent).unwrap(), Some(root));
+
+    let rejected_insert_with_payload = crdt
+        .apply_remote_with_materialization_seq(
+            Operation::insert_with_payload(
+                &ReplicaId::new(b"remote"),
+                3,
+                5,
+                child,
+                child,
+                Vec::new(),
+                vec![9],
+            ),
+            &mut index,
+            &mut seq,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        rejected_insert_with_payload.changes.as_slice(),
+        [treecrdt_core::MaterializationChange::Payload {
+            node,
+            payload: Some(payload),
+            ..
+        }] if *node == child && payload == &[9]
+    ));
+    assert_eq!(crdt.parent(child).unwrap(), Some(parent));
+    assert_eq!(crdt.payload(child).unwrap(), Some(vec![9]));
+
+    for op in [
+        Operation::insert(
+            &ReplicaId::new(b"remote"),
+            4,
+            6,
+            NodeId::TRASH,
+            NodeId::ROOT,
+            Vec::new(),
+        ),
+        Operation::move_node(
+            &ReplicaId::new(b"remote"),
+            5,
+            7,
+            NodeId::TRASH,
+            root,
+            Vec::new(),
+        ),
+    ] {
+        let delta = crdt
+            .apply_remote_with_materialization_seq(op, &mut index, &mut seq)
+            .unwrap()
+            .unwrap();
+        assert!(delta.changes.is_empty());
+    }
+    assert_eq!(crdt.parent(NodeId::ROOT).unwrap(), None);
+    assert_eq!(crdt.parent(NodeId::TRASH).unwrap(), None);
+}
+
+#[test]
+fn rejected_local_cycle_move_has_no_visible_change_plan() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let root = NodeId::ROOT;
+    let parent = NodeId(1);
+    let child = NodeId(2);
+
+    crdt.local_insert(root, parent, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(parent, child, LocalPlacement::First, None).unwrap();
+
+    let (_op, plan) = crdt.local_move(parent, child, LocalPlacement::First).unwrap();
+
+    assert!(plan.changes.is_empty());
+    assert_eq!(crdt.parent(parent).unwrap(), Some(root));
+    assert_eq!(crdt.parent(child).unwrap(), Some(parent));
+}
+
+#[test]
+fn malformed_parent_cycle_rejects_move_without_looping() {
+    let root = NodeId::ROOT;
+    let cycle_a = NodeId(1);
+    let cycle_b = NodeId(2);
+    let node = NodeId(3);
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(cycle_a).unwrap();
+    nodes.ensure_node(cycle_b).unwrap();
+    nodes.ensure_node(node).unwrap();
+    nodes.attach(cycle_a, cycle_b, vec![1]).unwrap();
+    nodes.attach(cycle_b, cycle_a, vec![1]).unwrap();
+    nodes.attach(node, root, vec![1]).unwrap();
+
+    let mut crdt = TreeCrdt::with_stores(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+        nodes,
+        MemoryPayloadStore::default(),
+    )
+    .unwrap();
+    let mut seq = 0;
+    let mut index = NoopParentOpIndex;
+    let delta = crdt
+        .apply_remote_with_materialization_seq(
+            Operation::move_node(&ReplicaId::new(b"remote"), 1, 1, node, cycle_a, Vec::new()),
+            &mut index,
+            &mut seq,
+        )
+        .unwrap()
+        .unwrap();
+
+    assert!(delta.changes.is_empty());
+    assert_eq!(crdt.parent(node).unwrap(), Some(root));
 }
 
 #[test]
