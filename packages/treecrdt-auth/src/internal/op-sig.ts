@@ -109,6 +109,12 @@ function encodeTreecrdtOpAuthClaimsV1(claims: TreecrdtOpAuthClaimsV1): Uint8Arra
   return concatBytes(...parts);
 }
 
+function encodeTreecrdtOpKnownStateV2(op: Operation): Uint8Array {
+  const knownState = op.meta.knownState;
+  if (knownState === undefined) return u8(0);
+  return concatBytes(u8(1), u32be(knownState.length), knownState);
+}
+
 export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation }): Uint8Array {
   return concatBytes(OP_SIG_V1_DOMAIN, u8(0), encodeTreecrdtOpFields(opts));
 }
@@ -122,6 +128,7 @@ export function encodeTreecrdtOpSigInputV2(opts: {
     OP_SIG_V2_DOMAIN,
     u8(0),
     encodeTreecrdtOpFields(opts),
+    encodeTreecrdtOpKnownStateV2(opts.op),
     encodeTreecrdtOpAuthClaimsV1(opts.claims),
   );
 }

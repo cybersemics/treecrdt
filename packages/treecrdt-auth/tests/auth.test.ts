@@ -24,6 +24,7 @@ import {
   issueTreecrdtCapabilityTokenV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   issueTreecrdtRevocationRecordV1,
+  signTreecrdtOpV1,
   verifyTreecrdtRevocationRecordV1,
 } from '../dist/treecrdt-auth.js';
 import type { Capability, Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -289,6 +290,7 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     localPublicKey: aPk,
     localCapabilityTokens: [tokenStructure, tokenDelete],
     requireProofRef: true,
+    includeAuthoredAt: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
@@ -320,6 +322,8 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   expect(auth?.length).toBe(2);
   expect(auth?.[0]?.proofRef).toBeTruthy();
   expect(auth?.[1]?.proofRef).toBeTruthy();
+  expect(auth?.[0]?.claims?.authoredAtMs).toEqual(expect.any(Number));
+  expect(auth?.[1]?.claims?.authoredAtMs).toEqual(expect.any(Number));
 
   const tokenStructureId = deriveTokenIdV1(tokenStructure);
   const tokenDeleteId = deriveTokenIdV1(tokenDelete);
@@ -335,9 +339,8 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   );
 });
 
-test('auth: signOps signs authoredAt claims', async () => {
+test('auth: v2 signs authoredAt and defensive-delete knownState', async () => {
   const docId = 'doc-auth-authored-at';
-  const root = '0'.repeat(32);
   const authoredAtMs = 1_700_000_000_123;
 
   const issuerSk = ed25519Utils.randomSecretKey();
@@ -351,7 +354,7 @@ test('auth: signOps signs authoredAt claims', async () => {
     issuerPrivateKey: issuerSk,
     subjectPublicKey: writerPk,
     docId,
-    actions: ['write_structure'],
+    actions: ['delete'],
   });
 
   const authWriter = createTreecrdtCoseCwtAuth({
@@ -360,6 +363,7 @@ test('auth: signOps signs authoredAt claims', async () => {
     localPublicKey: writerPk,
     localCapabilityTokens: [token],
     requireProofRef: true,
+    includeAuthoredAt: true,
     nowMs: () => authoredAtMs,
   });
 
@@ -376,18 +380,68 @@ test('auth: signOps signs authoredAt claims', async () => {
     { docId },
   );
 
-  const op = makeOp(writerPk, 1, 1, {
-    type: 'insert',
-    parent: root,
-    node: nodeIdFromInt(1),
-    orderKey: orderKeyFromPosition(0),
+  const op: Operation = {
+    meta: {
+      id: { replica: writerPk, counter: 1 },
+      lamport: 1,
+      knownState: new Uint8Array([0x01, 0x02, 0x03]),
+    },
+    kind: { type: 'delete', node: nodeIdFromInt(1) },
+  };
+
+  const legacyWriter = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [token],
+    requireProofRef: true,
   });
 
   const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
+  await expect(legacyWriter.signOps?.([op], ctx)).rejects.toThrow(
+    /refusing to sign defensive delete state.*v1/i,
+  );
+
+  const legacySig = await signTreecrdtOpV1({ docId, op, privateKey: writerSk });
+  await expect(
+    authVerifier.verifyOps?.([op], [{ sig: legacySig, proofRef: deriveTokenIdV1(token) }], ctx),
+  ).rejects.toThrow(/v1 does not authenticate defensive delete state/i);
+
+  // V1 never covered knownState, so the same legacy signature also verifies
+  // cryptographically after a relay strips the field. Policy must reject by
+  // operation kind instead of trusting the field's current presence.
+  const strippedLegacyOp: Operation = {
+    ...op,
+    meta: { id: op.meta.id, lamport: op.meta.lamport },
+  };
+  await expect(
+    authVerifier.verifyOps?.(
+      [strippedLegacyOp],
+      [{ sig: legacySig, proofRef: deriveTokenIdV1(token) }],
+      ctx,
+    ),
+  ).rejects.toThrow(/v1 does not authenticate defensive delete state/i);
+
   const auth = await authWriter.signOps?.([op], ctx);
   expect(auth?.[0]?.claims).toEqual({ authoredAtMs });
 
   await expect(authVerifier.verifyOps?.([op], auth, ctx)).resolves.toBeUndefined();
+
+  const mutatedKnownState: Operation = {
+    ...op,
+    meta: { ...op.meta, knownState: new Uint8Array([0x01, 0x02, 0x04]) },
+  };
+  await expect(authVerifier.verifyOps?.([mutatedKnownState], auth, ctx)).rejects.toThrow(
+    /invalid op signature/i,
+  );
+
+  const omittedKnownState: Operation = {
+    ...op,
+    meta: { id: op.meta.id, lamport: op.meta.lamport },
+  };
+  await expect(authVerifier.verifyOps?.([omittedKnownState], auth, ctx)).rejects.toThrow(
+    /invalid op signature/i,
+  );
 
   await expect(
     authVerifier.verifyOps?.(
@@ -408,7 +462,7 @@ test('auth: signOps signs authoredAt claims', async () => {
       ],
       ctx,
     ),
-  ).rejects.toThrow(/invalid op signature/i);
+  ).rejects.toThrow(/v1 does not authenticate defensive delete state/i);
 });
 
 test('auth ignores foreign peer capability tokens during hello and still verifies known authors', async () => {

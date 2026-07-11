@@ -93,7 +93,13 @@ export type TreecrdtCoseCwtAuthOptions = {
   ) => boolean | Promise<boolean>;
   allowUnsigned?: boolean;
   requireProofRef?: boolean;
-  /** Include a signed `claims.authoredAtMs` value on locally authored ops. Defaults to true. */
+  /**
+   * Opt into v2 op signatures and include a signed `claims.authoredAtMs` value.
+   *
+   * Defaults to false so a signer upgrade does not make its operations unreadable to v1-only
+   * verifiers. Upgrade verifiers before enabling this option. Operations with `meta.knownState`
+   * require v2 and fail closed while this option is disabled.
+   */
   includeAuthoredAt?: boolean;
   now?: () => number;
   /** Wall-clock source for authoredAtMs claims. */
@@ -121,7 +127,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   const nowMs = opts.nowMs ?? (() => Date.now());
   const allowUnsigned = opts.allowUnsigned ?? false;
   const requireProofRef = opts.requireProofRef ?? false;
-  const includeAuthoredAt = opts.includeAuthoredAt ?? true;
+  const includeAuthoredAt = opts.includeAuthoredAt ?? false;
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
@@ -661,6 +667,15 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           });
           proofRef = selected.tokenId;
         }
+        const requiresAuthenticatedKnownState =
+          op.meta.knownState !== undefined ||
+          op.kind.type === 'delete' ||
+          op.kind.type === 'tombstone';
+        if (requiresAuthenticatedKnownState && !includeAuthoredAt) {
+          throw new Error(
+            'refusing to sign defensive delete state with legacy op signature v1; enable includeAuthoredAt only after upgrading verifiers to v2',
+          );
+        }
         const claims = includeAuthoredAt ? { authoredAtMs: nowMs() } : undefined;
         const sig = claims
           ? await signTreecrdtOpV2({
@@ -777,6 +792,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           scopeEvaluator: opts.scopeEvaluator,
         });
         if (scopeRes === 'deny') throw new Error('capability does not allow op');
+
+        const requiresAuthenticatedKnownState =
+          op.meta.knownState !== undefined ||
+          op.kind.type === 'delete' ||
+          op.kind.type === 'tombstone';
+        if (!a.claims && requiresAuthenticatedKnownState) {
+          throw new Error('legacy op signature v1 does not authenticate defensive delete state');
+        }
 
         const ok = a.claims
           ? await verifyTreecrdtOpV2({

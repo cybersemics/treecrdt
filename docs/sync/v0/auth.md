@@ -60,6 +60,7 @@ Each op may carry:
 - `sig`: Ed25519 signature bytes (64 bytes)
 - `proof_ref` (optional but RECOMMENDED): 16-byte reference to the capability token used
   to authorize this op
+- `claims.authored_at_ms` (optional): author-claimed wall-clock time covered by a v2 signature
 
 Rationale:
 
@@ -177,8 +178,10 @@ Ops are signed with the doc-scoped Ed25519 key. The signature covers:
 - `doc_id`
 - `op_id` (`replica_id` + `counter`)
 - `lamport`
+- defensive-delete `known_state` in signature v2
 - op kind + fields
 - payload bytes (ciphertext bytes if payloads are encrypted)
+- v2 auth claims
 
 ### Canonical signing bytes
 
@@ -212,6 +215,30 @@ Kind tags and fields:
   - node(16)
   - value_tag(u8): 0=clear, 1=payload
   - if value_tag=1: u32_be(len(payload)) || payload_bytes
+
+Signature v1 predates defensive deletion and does **not** cover `known_state`. It remains supported
+for ordinary operations, but MUST NOT be used for a delete or tombstone. A relay could strip an
+existing `known_state`, so the reference verifier rejects legacy v1 deletes and tombstones by kind
+even when the received field is absent. It also rejects any other v1 operation that carries the
+field.
+
+Signature v2 changes the domain to `"treecrdt/op-sig/v2"` and appends these fields after the v1 op
+fields (without the v1 domain):
+
+```
+known_state = absent:  u8(0)
+              present: u8(1) || u32_be(len(bytes)) || bytes
+
+authored_at = absent:  u8(0)
+              present: u8(1) || u64_be(authored_at_ms)
+```
+
+The reference COSE+CWT auth layer uses the presence of signed claims to distinguish v2 auth. New
+signers therefore keep v1 as the default for rolling-upgrade compatibility. Set
+`includeAuthoredAt: true` only after all verifiers that may receive those operations support v2.
+Until then, signing or verifying a delete/tombstone (or any operation carrying `known_state`) fails
+closed; accepting it as v1 would allow an untrusted relay to change deletion causality without
+invalidating the signature.
 
 ## Subtree scope enforcement and `pending_context`
 

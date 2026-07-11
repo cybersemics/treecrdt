@@ -128,6 +128,8 @@ export function usePlaygroundAuthSession(
           },
           revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
           requireProofRef: true,
+          // Playground peers ship verifier and signer together, so v2 can be enabled immediately.
+          includeAuthoredAt: true,
           identity: {
             onPeer: onPeerIdentityChain,
             local: getLocalIdentityChain,
