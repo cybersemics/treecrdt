@@ -3,7 +3,7 @@ import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
-import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
+import type { Filter, OpRef } from '@treecrdt/sync-protocol';
 import {
   createTreecrdtCoseCwtAuth,
   createTreecrdtSqliteSubtreeScopeEvaluator,
@@ -18,7 +18,7 @@ import {
   type FlushableSyncBackend,
 } from '@treecrdt/sync-protocol/in-memory';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
-import { createOpAuthStore, createPendingOpsStore } from '@treecrdt/sync-sqlite';
+import { createOpAuthStore } from '@treecrdt/sync-sqlite';
 
 export function conformanceSlugify(input: string): string {
   return input
@@ -213,16 +213,8 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioSyncAuthScopedTokenRejectsAllFilter,
     },
     {
-      name: 'sync auth: excluded root is not synced to scoped peer',
-      run: scenarioSyncAuthExcludedRootNotSynced,
-    },
-    {
       name: 'auth: sqlite subtree evaluator allow/deny/unknown',
       run: scenarioAuthSqliteSubtreeEvaluator,
-    },
-    {
-      name: 'sync auth: pending_context ops use sqlite sidecar + reprocess',
-      run: scenarioSyncAuthPendingContextSidecar,
     },
     {
       name: 'sync auth: restart relay re-serves signed ops using sqlite op-auth store',
@@ -1750,157 +1742,6 @@ async function scenarioAuthSqliteSubtreeEvaluator(
   );
 }
 
-async function scenarioSyncAuthPendingContextSidecar(
-  ctx: TreecrdtEngineConformanceContext,
-): Promise<void> {
-  const docId = ctx.docId;
-  const a = ctx.engine;
-  const b = await ctx.createEngine({ docId, name: 'peer-b' });
-
-  const runnerB = engineRunnerOrNull(b);
-  if (!runnerB) return;
-
-  const pendingB = createPendingOpsStore({ runner: runnerB, docId });
-  await pendingB.init();
-
-  const issuerSk = randomEd25519SecretKey();
-  const issuerPk = await getEd25519PublicKey(issuerSk);
-
-  const aSk = randomEd25519SecretKey();
-  const aPk = await getEd25519PublicKey(aSk);
-  const bSk = randomEd25519SecretKey();
-  const bPk = await getEd25519PublicKey(bSk);
-  const aPkHex = bytesToHex(aPk);
-
-  const subtreeRoot = nodeIdFromInt(1);
-  const child = nodeIdFromInt(2);
-
-  // A is scoped to a subtree; B is doc-wide. When B receives an op for an unknown node, it must fail closed
-  // (pending_context) until the node's placement is known.
-  const tokenA = issueTreecrdtCapabilityTokenV1({
-    issuerPrivateKey: issuerSk,
-    subjectPublicKey: aPk,
-    docId,
-    actions: ['write_structure', 'write_payload'],
-    rootNodeId: subtreeRoot,
-  });
-  const tokenB = issueTreecrdtCapabilityTokenV1({
-    issuerPrivateKey: issuerSk,
-    subjectPublicKey: bPk,
-    docId,
-    actions: ['write_structure', 'write_payload'],
-  });
-
-  const authA = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: aSk,
-    localPublicKey: aPk,
-    localCapabilityTokens: [tokenA],
-    requireProofRef: true,
-  });
-
-  const authB = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: bSk,
-    localPublicKey: bPk,
-    localCapabilityTokens: [tokenB],
-    requireProofRef: true,
-    scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(runnerB),
-  });
-
-  const backendA = createEngineSyncBackend(a);
-
-  const backendB: SyncBackend<Operation> = {
-    ...createEngineSyncBackend(b),
-    storePendingOps: pendingB.storePendingOps,
-    listPendingOps: pendingB.listPendingOps,
-    deletePendingOps: pendingB.deletePendingOps,
-  };
-
-  const { peerB, transportB, detach } = createInMemoryConnectedPeers({
-    backendA,
-    backendB,
-    codec: treecrdtSyncV0ProtobufCodec,
-    peerAOptions: { auth: authA, maxOpsPerBatch: 1 },
-    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
-  });
-
-  try {
-    // Exchange capabilities first (so B learns A's token for verifying A's ops).
-    await peerB.syncOnce(
-      transportB,
-      { all: {} },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 },
-    );
-
-    // Payload arrives before insert => pending_context.
-    await a.ops.appendMany([
-      makePayloadOp({
-        replica: aPk,
-        counter: 1,
-        lamport: 1,
-        node: child,
-        payload: new Uint8Array([1, 2, 3]),
-      }),
-    ]);
-
-    await peerB.syncOnce(
-      transportB,
-      { all: {} },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 },
-    );
-
-    const pendingAfterPayload = await pendingB.listPendingOps();
-    assertEqual(pendingAfterPayload.length, 1, 'expected payload op to be stored as pending');
-    assertEqual(
-      bytesToHex(pendingAfterPayload[0]!.op.meta.id.replica),
-      aPkHex,
-      'pending op replica',
-    );
-    assertEqual(pendingAfterPayload[0]!.op.meta.id.counter, 1, 'pending op counter');
-
-    // Now insert arrives; should apply insert and then reprocess pending payload.
-    await a.ops.appendMany([
-      makeInsertOp({
-        replica: aPk,
-        counter: 2,
-        lamport: 2,
-        parent: subtreeRoot,
-        node: child,
-        orderKey: orderKeyFromPosition(0),
-      }),
-    ]);
-
-    await peerB.syncOnce(
-      transportB,
-      { all: {} },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 },
-    );
-
-    const deadline = Date.now() + 2_000;
-    while (true) {
-      const ops = await b.ops.all();
-      const hasPayload = ops.some(
-        (o) => bytesToHex(o.meta.id.replica) === aPkHex && o.meta.id.counter === 1,
-      );
-      const hasInsert = ops.some(
-        (o) => bytesToHex(o.meta.id.replica) === aPkHex && o.meta.id.counter === 2,
-      );
-      const pendingCount = (await pendingB.listPendingOps()).length;
-
-      if (hasPayload && hasInsert && pendingCount === 0) break;
-      if (Date.now() > deadline) {
-        throw new Error(
-          `expected insert+payload to apply and pending to drain (hasPayload=${hasPayload}, hasInsert=${hasInsert}, pending=${pendingCount})`,
-        );
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
-  } finally {
-    detach();
-  }
-}
-
 async function scenarioSyncAuthRestartRelayReServesSignedOps(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
@@ -2053,123 +1894,4 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     [child],
     'receiver sees child under subtree after relay restart',
   );
-}
-
-async function scenarioSyncAuthExcludedRootNotSynced(
-  ctx: TreecrdtEngineConformanceContext,
-): Promise<void> {
-  const docId = ctx.docId;
-  const a = ctx.engine;
-  const b = await ctx.createEngine({ docId, name: 'peer-b' });
-
-  const issuerSk = randomEd25519SecretKey();
-  const issuerPk = await getEd25519PublicKey(issuerSk);
-
-  const aSk = randomEd25519SecretKey();
-  const aPk = await getEd25519PublicKey(aSk);
-  const bSk = randomEd25519SecretKey();
-  const bPk = await getEd25519PublicKey(bSk);
-
-  const root = nodeIdFromInt(0);
-  const publicNode = nodeIdFromInt(1);
-  const secretRoot = nodeIdFromInt(2);
-
-  await a.local.insert(aPk, root, publicNode, { type: 'last' }, null);
-  await a.local.insert(aPk, root, secretRoot, { type: 'last' }, null);
-  await a.local.insert(aPk, secretRoot, nodeIdFromInt(3), { type: 'last' }, null);
-
-  const tokenA = makeCapabilityTokenV1({
-    issuerPrivateKey: issuerSk,
-    subjectPublicKey: aPk,
-    docId,
-  });
-  const tokenB = issueTreecrdtCapabilityTokenV1({
-    issuerPrivateKey: issuerSk,
-    subjectPublicKey: bPk,
-    docId,
-    actions: ['write_structure', 'write_payload', 'delete', 'tombstone'],
-    rootNodeId: root,
-    excludeNodeIds: [secretRoot],
-  });
-
-  const authA = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: aSk,
-    localPublicKey: aPk,
-    localCapabilityTokens: [tokenA],
-    scopeEvaluator: createEngineScopeEvaluator(a),
-    requireProofRef: true,
-  });
-
-  const authB = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: bSk,
-    localPublicKey: bPk,
-    localCapabilityTokens: [tokenB],
-    requireProofRef: true,
-  });
-
-  const backendA = createEngineSyncBackend(a);
-  const backendB = createEngineSyncBackend(b);
-
-  const { peerA, peerB, transportA, transportB, detach } = createInMemoryConnectedPeers({
-    backendA,
-    backendB,
-    codec: treecrdtSyncV0ProtobufCodec,
-    peerAOptions: { auth: authA },
-    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
-  });
-
-  try {
-    // A pushes ops to B, but B's capability excludes `secretRoot`.
-    await peerA.syncOnce(
-      transportA,
-      { all: {} },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 },
-    );
-
-    const bKids = await b.tree.children(root);
-    assertArrayEqual(bKids, [publicNode], 'scoped peer should only see public node');
-
-    // B can still write to the allowed node and sync back using `children(root)`.
-    const updated = new TextEncoder().encode('public-updated');
-    await b.local.payload(bPk, publicNode, updated);
-    // Sanity: the payload update must be discoverable under `children(root)`; otherwise scoped sync cannot propagate it.
-    {
-      const refs = await b.opRefs.children(root);
-      const ops = await b.ops.get(refs);
-      const latestLocal = latestPayloadForNode(ops, publicNode);
-      assertBytesEqual(
-        latestLocal ?? null,
-        updated,
-        'expected local payload to be discoverable under opRefs.children(root)',
-      );
-    }
-
-    await peerB.syncOnce(
-      transportB,
-      { children: { parent: nodeIdToBytes16(root) } },
-      { maxCodewords: 10_000, codewordsPerMessage: 256 },
-    );
-
-    // `syncOnce` does not guarantee the responder has fully applied the initiator's ops when using async backends
-    // (e.g. wa-sqlite worker/OPFS). Poll briefly for the update to become visible.
-    const expectedHex = bytesToHex(updated);
-    const deadline = Date.now() + 2_000;
-    while (true) {
-      const ops = await a.ops.all();
-      const latest = latestPayloadForNode(ops, publicNode);
-      if (latest && bytesToHex(latest) === expectedHex) break;
-      if (Date.now() > deadline) {
-        assertBytesEqual(
-          latest ?? null,
-          updated,
-          'expected payload update to propagate to full peer',
-        );
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
-  } finally {
-    detach();
-  }
 }

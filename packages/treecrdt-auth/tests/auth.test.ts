@@ -24,6 +24,7 @@ import {
   issueTreecrdtCapabilityTokenV1,
   issueTreecrdtDelegatedCapabilityTokenV1,
   issueTreecrdtRevocationRecordV1,
+  signTreecrdtOp,
   verifyTreecrdtRevocationRecordV1,
 } from '../dist/treecrdt-auth.js';
 import type { Capability, Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -358,6 +359,147 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(
     /capability does not allow op/i,
   );
+});
+
+test('auth: operation writes require a state-independent doc-wide grant', async () => {
+  const docId = 'doc-auth-doc-wide-writes-only';
+  const scopeRoot = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  const nextParent = nodeIdFromInt(3);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+  const actions = ['write_structure', 'write_payload', 'delete', 'tombstone'];
+
+  const scopedToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions,
+    rootNodeId: scopeRoot,
+  });
+  const maxDepthToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions,
+    maxDepth: 1,
+  });
+  const excludeToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions,
+    excludeNodeIds: [child],
+  });
+  const docWideToken = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions,
+  });
+
+  const makeVerifier = async (token: Uint8Array) => {
+    const verifier = createTreecrdtCoseCwtAuth({
+      issuerPublicKeys: [issuerPk],
+      localPrivateKey: verifierSk,
+      localPublicKey: verifierPk,
+      requireProofRef: true,
+    });
+    await verifier.onHello?.(
+      {
+        capabilities: [{ name: 'auth.capability', value: base64urlEncode(token) }],
+        filters: [],
+        maxLamport: 0n,
+      },
+      { docId },
+    );
+    return verifier;
+  };
+
+  const restrictedVerifiers = await Promise.all(
+    [
+      { label: 'subtree root', token: scopedToken },
+      { label: 'max_depth', token: maxDepthToken },
+      { label: 'exclude', token: excludeToken },
+    ].map(async ({ label, token }) => ({ label, token, verifier: await makeVerifier(token) })),
+  );
+  const docWideVerifier = await makeVerifier(docWideToken);
+  const knownState = new TextEncoder().encode(
+    JSON.stringify({ entries: [{ replica: Array.from(writerPk), frontier: 1, ranges: [] }] }),
+  );
+  const operations: Array<{ label: string; op: Operation }> = [
+    {
+      label: 'insert',
+      op: makeOp(writerPk, 1, 1, {
+        type: 'insert',
+        parent: scopeRoot,
+        node: child,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    },
+    {
+      label: 'move',
+      op: makeOp(writerPk, 2, 2, {
+        type: 'move',
+        node: child,
+        newParent: nextParent,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    },
+    {
+      label: 'payload',
+      op: makeOp(writerPk, 3, 3, {
+        type: 'payload',
+        node: scopeRoot,
+        payload: new Uint8Array([4]),
+      }),
+    },
+    {
+      label: 'delete',
+      op: {
+        ...makeOp(writerPk, 4, 4, { type: 'delete', node: scopeRoot }),
+        meta: {
+          id: { replica: writerPk, counter: 4 },
+          lamport: 4,
+          knownState,
+        },
+      },
+    },
+    {
+      label: 'tombstone',
+      op: makeOp(writerPk, 5, 5, { type: 'tombstone', node: scopeRoot }),
+    },
+  ];
+  const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
+  for (const { label, op } of operations) {
+    const proof = {
+      sig: await signTreecrdtOp({ docId, op, privateKey: writerSk }),
+    };
+
+    for (const restricted of restrictedVerifiers) {
+      await expect(
+        restricted.verifier.verifyOps?.(
+          [op],
+          [{ ...proof, proofRef: deriveTokenIdV1(restricted.token) }],
+          ctx,
+        ),
+        `${restricted.label} ${label}`,
+      ).rejects.toThrow(/capability does not allow op/i);
+    }
+    await expect(
+      docWideVerifier.verifyOps?.(
+        [op],
+        [{ ...proof, proofRef: deriveTokenIdV1(docWideToken) }],
+        ctx,
+      ),
+      `doc-wide ${label}`,
+    ).resolves.toBeUndefined();
+  }
 });
 
 test('auth ignores foreign peer capability tokens during hello and still verifies known authors', async () => {
