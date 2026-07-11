@@ -1,5 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
-import { bytesToHex, nodeIdToBytes16, ROOT_NODE_ID_HEX } from '@treecrdt/interface/ids';
+import { bytesToHex, ROOT_NODE_ID_HEX } from '@treecrdt/interface/ids';
 
 import { getField, toNumber } from './claims.js';
 
@@ -21,12 +21,6 @@ export function triOr(a: ScopeTri, b: ScopeTri): ScopeTri {
   if (a === 'allow' || b === 'allow') return 'allow';
   if (a === 'unknown' || b === 'unknown') return 'unknown';
   return 'deny';
-}
-
-export function triAnd(a: ScopeTri, b: ScopeTri): ScopeTri {
-  if (a === 'deny' || b === 'deny') return 'deny';
-  if (a === 'unknown' || b === 'unknown') return 'unknown';
-  return 'allow';
 }
 
 export function expandCapabilityActions(actions: readonly unknown[]): Set<string> {
@@ -56,28 +50,6 @@ function requiredActionsForOp(op: Operation): string[] {
       return ['tombstone'];
     case 'payload':
       return ['write_payload'];
-  }
-}
-
-function getRequiredScopeChecks(op: Operation): Array<{ node: Uint8Array; actions: string[] }> {
-  const actions = requiredActionsForOp(op);
-  switch (op.kind.type) {
-    case 'insert':
-      return [{ node: nodeIdToBytes16(op.kind.parent), actions }];
-    case 'move':
-      // v1: require authorization for both source (node) and destination (new_parent).
-      return [
-        { node: nodeIdToBytes16(op.kind.node), actions },
-        { node: nodeIdToBytes16(op.kind.newParent), actions },
-      ];
-    case 'delete':
-    case 'tombstone':
-    case 'payload':
-      return [{ node: nodeIdToBytes16(op.kind.node), actions }];
-    default: {
-      const _exhaustive: never = op.kind;
-      throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
-    }
   }
 }
 
@@ -168,34 +140,25 @@ export async function capsAllowsNodeAccess(opts: {
   return best;
 }
 
-export async function capsAllowsOp(opts: {
-  caps: unknown;
-  docId: string;
-  op: Operation;
-  scopeEvaluator?: TreecrdtScopeEvaluator;
-}): Promise<ScopeTri> {
+export function capsAllowsOp(opts: { caps: unknown; docId: string; op: Operation }): boolean {
   if (!Array.isArray(opts.caps)) throw new Error('capability token must be a v1 capability token');
 
-  const checks = getRequiredScopeChecks(opts.op);
-  let overall: ScopeTri = 'allow';
-
-  for (const check of checks) {
-    let best: ScopeTri = 'deny';
-    for (const cap of opts.caps) {
-      best = triOr(
-        best,
-        await capAllowsNode({
-          cap,
-          docId: opts.docId,
-          node: check.node,
-          requiredActions: check.actions,
-          scopeEvaluator: opts.scopeEvaluator,
-        }),
-      );
-      if (best === 'allow') break;
-    }
-    overall = triAnd(overall, best);
+  // Ancestry is mutable CRDT state. Authorizing an operation against the receiver's current tree
+  // makes the decision delivery-order dependent: a late, earlier move can change where the node
+  // was at the operation's canonical position after the operation has already been accepted.
+  // Until operations carry an authenticated causal ancestry witness, only doc-wide write grants
+  // are state-independent and portable across peers. Scoped reads remain ancestry-aware through
+  // capAllowsNode/capsAllowsNodeAccess.
+  const requiredActions = requiredActionsForOp(opts.op);
+  for (const cap of opts.caps) {
+    const res = getField(cap, 'res');
+    const actions = getField(cap, 'actions');
+    if (!res || typeof res !== 'object' || !Array.isArray(actions)) continue;
+    if (getField(res, 'doc_id') !== opts.docId) continue;
+    const actionSet = expandCapabilityActions(actions);
+    if (!requiredActions.every((action) => actionSet.has(action))) continue;
+    if (isDocWideScope(parseScope(res))) return true;
   }
 
-  return overall;
+  return false;
 }

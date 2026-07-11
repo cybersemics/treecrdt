@@ -426,7 +426,6 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     purpose: 'sign_op' | 'verify_op';
   }): Promise<CapabilityGrant> => {
     const nowSec = now();
-    let bestUnknown: CapabilityGrant | null = null;
     let sawRevoked = false;
 
     for (const grant of opts2.candidates) {
@@ -444,17 +443,17 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       if (grant.exp !== undefined && nowSec > grant.exp) continue;
       if (grant.nbf !== undefined && nowSec < grant.nbf) continue;
 
-      const scopeRes = await capsAllowsOp({
-        caps: grant.caps,
-        docId: opts2.docId,
-        op: opts2.op,
-        scopeEvaluator: opts.scopeEvaluator,
-      });
-      if (scopeRes === 'allow') return grant;
-      if (scopeRes === 'unknown' && !bestUnknown) bestUnknown = grant;
+      if (
+        capsAllowsOp({
+          caps: grant.caps,
+          docId: opts2.docId,
+          op: opts2.op,
+        })
+      ) {
+        return grant;
+      }
     }
 
-    if (bestUnknown) return bestUnknown;
     if (sawRevoked) throw new Error('capability token revoked');
     throw new Error('capability does not allow op');
   };
@@ -688,9 +687,6 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         throw new Error('missing op auth');
       }
 
-      const dispositions: Array<
-        { status: 'allow' } | { status: 'pending_context'; message?: string }
-      > = [];
       const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
@@ -747,13 +743,9 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         if (grant.nbf !== undefined && nowSec < grant.nbf)
           throw new Error('capability token not yet valid');
 
-        const scopeRes = await capsAllowsOp({
-          caps: grant.caps,
-          docId: ctx.docId,
-          op,
-          scopeEvaluator: opts.scopeEvaluator,
-        });
-        if (scopeRes === 'deny') throw new Error('capability does not allow op');
+        if (!capsAllowsOp({ caps: grant.caps, docId: ctx.docId, op })) {
+          throw new Error('capability does not allow op');
+        }
 
         const ok = await verifyTreecrdtOp({
           docId: ctx.docId,
@@ -765,23 +757,6 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
         opAuthByOpRefHex.set(bytesToHex(opRef), a);
         if (opts.opAuthStore) toPersist.push({ opRef, auth: a });
-
-        if (scopeRes === 'unknown') {
-          dispositions.push({
-            status: 'pending_context',
-            message: 'missing subtree context to authorize op',
-          });
-        } else {
-          dispositions.push({ status: 'allow' });
-        }
-      }
-
-      if (dispositions.some((d) => d.status !== 'allow')) {
-        if (opts.opAuthStore && toPersist.length > 0) {
-          await ensureOpAuthStoreReady();
-          await opts.opAuthStore.storeOpAuth(toPersist);
-        }
-        return { dispositions };
       }
 
       if (opts.opAuthStore && toPersist.length > 0) {
