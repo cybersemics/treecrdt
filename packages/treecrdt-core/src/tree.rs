@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::affected::{
-    affected_parents, coalesce_materialization_changes, direct_materialization_changes,
+    coalesce_materialization_changes, direct_materialization_changes,
     materialization_change_from_tombstone_delta, parent_hints_from, TombstoneDelta,
 };
 use crate::error::{Error, Result};
@@ -20,6 +20,25 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ApplyEffects {
+    structure: bool,
+    structure_changed: bool,
+    payload: bool,
+    delete: bool,
+}
+
+impl ApplyEffects {
+    fn any(self) -> bool {
+        self.structure || self.payload || self.delete
+    }
+}
+
+struct ForwardApply {
+    snapshot: NodeSnapshot,
+    effects: ApplyEffects,
 }
 
 fn attach_source_if_missing(
@@ -327,10 +346,33 @@ where
         &mut self,
         mut prepared: PreparedLocalOp,
     ) -> Result<(Operation, LocalFinalizePlan)> {
-        let (op, emit_direct_change) = self.commit_local(prepared.op)?;
-        if !emit_direct_change {
+        let (op, forward, tombstone_changed) = self.commit_local(prepared.op)?;
+        prepared.plan.parent_hints =
+            self.parents_for_forward_apply(&forward.snapshot, &op, forward.effects)?;
+        if !forward.effects.structure_changed {
             prepared.plan.changes = rejected_structural_fallback_change(&op, None);
         }
+        prepared.plan.changes.extend(
+            tombstone_changed
+                .into_iter()
+                .filter_map(|delta| materialization_change_from_tombstone_delta(delta, None)),
+        );
+        Self::extend_parents_from_changes(&mut prepared.plan.parent_hints, &prepared.plan.changes);
+        Self::dedupe_parents(&mut prepared.plan.parent_hints);
+
+        if !forward.effects.structure {
+            prepared.plan.extra_index_records.clear();
+        } else if let Some(parent_after) = self.nodes.parent(op.kind.node())? {
+            if parent_after != NodeId::TRASH && forward.snapshot.parent != Some(parent_after) {
+                if let Some((_lamport, payload_id)) = self.payload_last_writer(op.kind.node())? {
+                    let record = (parent_after, payload_id);
+                    if !prepared.plan.extra_index_records.contains(&record) {
+                        prepared.plan.extra_index_records.push(record);
+                    }
+                }
+            }
+        }
+
         Ok((op, prepared.plan))
     }
 
@@ -345,6 +387,13 @@ where
     /// - `Some(delta)` for in-order applies where an exact changed-node set is known,
     /// - `None` for duplicate/not-applied ops or paths that require replay.
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
+        Ok(self.apply_remote_with_effects(op)?.map(|(delta, _)| delta))
+    }
+
+    fn apply_remote_with_effects(
+        &mut self,
+        op: Operation,
+    ) -> Result<Option<(ApplyDelta, ApplyEffects)>> {
         op.validate()?;
         self.clock.observe(op.meta.lamport);
         self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
@@ -359,24 +408,25 @@ where
         if self.is_in_order(&op) {
             let (snapshot, emit_direct_change) =
                 Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            let effects = self.effects_after_forward(&op, emit_direct_change)?;
             self.op_count += 1;
             self.head = Some(op.clone());
 
-            // A structural operation can be accepted into the log but rejected by the tree
-            // materializer (for example, because the move would introduce a cycle). Infer a
-            // visible move from the apply result so consumers do not receive a false notification.
             let changes = if emit_direct_change {
                 direct_materialization_changes(snapshot.parent, &op)
             } else {
                 rejected_structural_fallback_change(&op, Some(MaterializationSource::from_op(&op)))
             };
-            return Ok(Some(ApplyDelta {
-                snapshot: NodeSnapshotExport {
-                    parent: snapshot.parent,
-                    order_key: snapshot.order_key,
+            return Ok(Some((
+                ApplyDelta {
+                    snapshot: NodeSnapshotExport {
+                        parent: snapshot.parent,
+                        order_key: snapshot.order_key,
+                    },
+                    changes,
                 },
-                changes,
-            }));
+                effects,
+            )));
         }
 
         // Out-of-order operation: catch derived state up from storage.
@@ -397,8 +447,8 @@ where
         seq: &mut u64,
     ) -> Result<Option<ApplyDelta>> {
         *seq = (*seq).saturating_add(1);
-        let delta = self.apply_remote_with_delta(op.clone())?;
-        let Some(delta) = delta else {
+        let applied = self.apply_remote_with_effects(op.clone())?;
+        let Some((delta, effects)) = applied else {
             *seq = (*seq).saturating_sub(1);
             return Ok(None);
         };
@@ -412,6 +462,7 @@ where
             index,
             *seq,
             delta.changes,
+            effects,
         )?))
     }
 
@@ -426,35 +477,31 @@ where
         index: &mut I,
         seq: u64,
         mut changes: Vec<MaterializationChange>,
+        effects: ApplyEffects,
     ) -> Result<ApplyDelta> {
         let op_node = op.kind.node();
-        let parent_after = match &op.kind {
-            OperationKind::Insert { parent, .. } => Some(*parent),
-            OperationKind::Move { new_parent, .. } => Some(*new_parent),
-            _ => None,
-        };
-        let parents = affected_parents(snapshot.parent, &op.kind);
-
-        for parent in &parents {
-            if *parent == NodeId::TRASH {
-                continue;
-            }
-            index.record(*parent, &op.meta.id, seq)?;
-        }
+        let mut parents = self.parents_for_forward_apply(&snapshot, op, effects)?;
 
         // Ensure the latest payload op for `op_node` is discoverable under its current parent.
         // This supports partial sync subscribers that only track `children(parent)` opRefs.
-        if let Some(parent_after) = parent_after {
-            if parent_after != NodeId::TRASH && snapshot.parent != Some(parent_after) {
-                if let Some((_lamport, payload_id)) = self.payload_last_writer(op_node)? {
-                    index.record(parent_after, &payload_id, seq)?;
+        if effects.structure {
+            let parent_after = self.nodes.parent(op_node)?;
+            if let Some(parent_after) = parent_after {
+                if parent_after != NodeId::TRASH && snapshot.parent != Some(parent_after) {
+                    if let Some((_lamport, payload_id)) = self.payload_last_writer(op_node)? {
+                        index.record(parent_after, &payload_id, seq)?;
+                    }
                 }
             }
         }
 
-        let mut starts = parents;
-        starts.push(op_node);
-        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
+        let tombstone_changed = if effects.any() {
+            let mut starts = parents.clone();
+            starts.push(op_node);
+            self.refresh_tombstones_upward_with_delta(starts)?
+        } else {
+            Vec::new()
+        };
         let source = Some(MaterializationSource::from_op(op));
         for change in &mut changes {
             attach_source_if_missing(change, source.clone());
@@ -463,6 +510,8 @@ where
         changes.extend(tombstone_changed.into_iter().filter_map(|delta| {
             materialization_change_from_tombstone_delta(delta, source.clone())
         }));
+        Self::extend_parents_from_changes(&mut parents, &changes);
+        Self::record_op_for_parents(index, &mut parents, &op.meta.id, seq)?;
 
         Ok(ApplyDelta {
             snapshot: NodeSnapshotExport {
@@ -471,6 +520,112 @@ where
             },
             changes: coalesce_materialization_changes(changes),
         })
+    }
+
+    fn parents_for_forward_apply(
+        &self,
+        snapshot: &NodeSnapshot,
+        op: &Operation,
+        effects: ApplyEffects,
+    ) -> Result<Vec<NodeId>> {
+        let mut parents = Vec::new();
+        if effects.structure {
+            parents.extend(self.nodes.parent(op.kind.node())?);
+        }
+        if effects.any() {
+            parents.extend(snapshot.parent);
+        }
+        Self::dedupe_parents(&mut parents);
+        Ok(parents)
+    }
+
+    fn effects_after_forward(
+        &self,
+        op: &Operation,
+        structure_changed: bool,
+    ) -> Result<ApplyEffects> {
+        let node = op.kind.node();
+        let structure = match &op.kind {
+            OperationKind::Insert {
+                parent, order_key, ..
+            }
+            | OperationKind::Move {
+                new_parent: parent,
+                order_key,
+                ..
+            } => {
+                node != NodeId::ROOT
+                    && node != NodeId::TRASH
+                    && self.nodes.parent(node)? == Some(*parent)
+                    && self.nodes.order_key(node)?.as_deref() == Some(order_key.as_slice())
+            }
+            _ => false,
+        };
+        let payload = match &op.kind {
+            OperationKind::Insert {
+                payload: Some(_), ..
+            }
+            | OperationKind::Payload { .. } => self
+                .payload_last_writer(node)?
+                .is_some_and(|writer| writer == (op.meta.lamport, op.meta.id.clone())),
+            _ => false,
+        };
+        let delete = matches!(
+            op.kind,
+            OperationKind::Delete { .. } | OperationKind::Tombstone { .. }
+        ) && node != NodeId::ROOT
+            && node != NodeId::TRASH;
+
+        Ok(ApplyEffects {
+            structure,
+            structure_changed: structure && structure_changed,
+            payload,
+            delete,
+        })
+    }
+
+    fn extend_parents_from_changes(parents: &mut Vec<NodeId>, changes: &[MaterializationChange]) {
+        for change in changes {
+            match change {
+                MaterializationChange::Insert { parent_after, .. } => parents.push(*parent_after),
+                MaterializationChange::Move {
+                    parent_before,
+                    parent_after,
+                    ..
+                } => {
+                    parents.extend(*parent_before);
+                    parents.push(*parent_after);
+                }
+                MaterializationChange::Delete { parent_before, .. } => {
+                    parents.extend(*parent_before)
+                }
+                MaterializationChange::Restore { parent_after, .. } => {
+                    parents.extend(*parent_after)
+                }
+                MaterializationChange::Payload { .. } => {}
+            }
+        }
+    }
+
+    fn record_op_for_parents<I: ParentOpIndex>(
+        index: &mut I,
+        parents: &mut Vec<NodeId>,
+        op_id: &OperationId,
+        seq: u64,
+    ) -> Result<()> {
+        parents.sort();
+        parents.dedup();
+        for parent in parents {
+            if *parent != NodeId::TRASH {
+                index.record(*parent, op_id, seq)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn dedupe_parents(parents: &mut Vec<NodeId>) {
+        let mut seen = HashSet::new();
+        parents.retain(|parent| seen.insert(*parent));
     }
 
     pub fn finalize_local_with_outcome<I: ParentOpIndex>(
@@ -486,21 +641,6 @@ where
         refresh_starts.push(op.kind.node());
         let tombstone_changed = self.refresh_tombstones_upward_with_delta(refresh_starts)?;
 
-        let mut seen: HashSet<NodeId> = HashSet::new();
-        for parent in &plan.parent_hints {
-            if *parent == NodeId::TRASH || !seen.insert(*parent) {
-                continue;
-            }
-            index.record(*parent, &op.meta.id, seq)?;
-        }
-
-        for (parent, op_id) in &plan.extra_index_records {
-            if *parent == NodeId::TRASH {
-                continue;
-            }
-            index.record(*parent, op_id, seq)?;
-        }
-
         let source = Some(MaterializationSource::from_op(op));
         let mut changes = plan.changes.clone();
         for change in &mut changes {
@@ -509,6 +649,17 @@ where
         changes.extend(tombstone_changed.into_iter().filter_map(|delta| {
             materialization_change_from_tombstone_delta(delta, source.clone())
         }));
+
+        let mut parents = plan.parent_hints.clone();
+        Self::extend_parents_from_changes(&mut parents, &changes);
+        Self::record_op_for_parents(index, &mut parents, &op.meta.id, seq)?;
+
+        for (parent, op_id) in &plan.extra_index_records {
+            if *parent == NodeId::TRASH {
+                continue;
+            }
+            index.record(*parent, op_id, seq)?;
+        }
 
         Ok(MaterializationOutcome {
             head_seq: seq,
@@ -524,14 +675,6 @@ where
         plan: &LocalFinalizePlan,
     ) -> Result<u64> {
         Ok(self.finalize_local_with_outcome(op, index, head_seq, plan)?.head_seq)
-    }
-
-    fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
-    where
-        I: IntoIterator<Item = NodeId>,
-    {
-        let _ = self.refresh_tombstones_upward_with_delta(starts)?;
-        Ok(())
     }
 
     /// Refresh tombstone cache for nodes on the upward closure of `starts`.
@@ -729,20 +872,52 @@ where
         &mut self.nodes
     }
 
-    fn commit_local(&mut self, op: Operation) -> Result<(Operation, bool)> {
+    fn commit_local(
+        &mut self,
+        op: Operation,
+    ) -> Result<(Operation, ForwardApply, Vec<TombstoneDelta>)> {
         op.validate()?;
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
         if !self.storage.apply(op.clone())? {
-            return Ok((op, false));
+            // A duplicate local retry must not call `snapshot`: that helper intentionally ensures
+            // the target row for a newly accepted op. Read an existing row only, so a storage-only
+            // duplicate cannot mutate derived state while reporting an empty finalize plan.
+            let node = op.kind.node();
+            let snapshot = if self.nodes.exists(node)? {
+                NodeSnapshot {
+                    parent: self.nodes.parent(node)?,
+                    order_key: self.nodes.order_key(node)?,
+                }
+            } else {
+                NodeSnapshot {
+                    parent: None,
+                    order_key: None,
+                }
+            };
+            return Ok((
+                op,
+                ForwardApply {
+                    snapshot,
+                    effects: ApplyEffects::default(),
+                },
+                Vec::new(),
+            ));
         }
         let (snapshot, emit_direct_change) =
             Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
-        let mut starts = affected_parents(snapshot.parent, &op.kind);
-        starts.push(op.kind.node());
-        self.refresh_tombstones_upward(starts)?;
+        let effects = self.effects_after_forward(&op, emit_direct_change)?;
+        let forward = ForwardApply { snapshot, effects };
+        let tombstone_changed = if forward.effects.any() {
+            let mut starts =
+                self.parents_for_forward_apply(&forward.snapshot, &op, forward.effects)?;
+            starts.push(op.kind.node());
+            self.refresh_tombstones_upward_with_delta(starts)?
+        } else {
+            Vec::new()
+        };
         self.op_count += 1;
         self.head = Some(op.clone());
-        Ok((op, emit_direct_change))
+        Ok((op, forward, tombstone_changed))
     }
 
     fn seed(replica: &ReplicaId, counter: u64) -> Vec<u8> {

@@ -22,7 +22,10 @@ export interface TreecrdtAdapter {
    */
   opRefsAll(): Promise<unknown[]>;
   /**
-   * Fetch opRefs relevant to the `children(parent)` filter.
+   * Fetch the causal operation closure needed to reproduce `children(parent)`.
+   *
+   * This can include descendant operations that restore a direct child and must not be treated as
+   * a confidentiality boundary without a separate redacted projection layer.
    *
    * Returns raw JSON-decoded values; `number[][]` (bytes) is the expected shape for SQLite-backed adapters.
    */
