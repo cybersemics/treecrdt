@@ -616,13 +616,39 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         // For `children(parent)` we still need to hide ops for nodes outside scope
         // (e.g. excluded private roots) so peers cannot discover them by syncing the parent's children.
         switch (op.kind.type) {
-          case 'insert':
-          case 'payload':
-          case 'move':
-          case 'delete':
-          case 'tombstone':
-            out.push(await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure));
+          case 'insert': {
+            const allowed = await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure);
+            if (
+              !allowed &&
+              'children' in ctx.filter &&
+              op.kind.parent !== bytesToHex(ctx.filter.children.parent)
+            ) {
+              throw new Error(
+                'children(parent) projection requires an out-of-scope causal dependency',
+              );
+            }
+            out.push(allowed);
             break;
+          }
+          case 'move':
+          case 'payload':
+          case 'delete':
+          case 'tombstone': {
+            const allowed = await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure);
+            if (!allowed && 'children' in ctx.filter) {
+              // A move can be indexed by its old parent after the node has already left the
+              // authorized subtree; deletes/tombstones are also indexed by their pre-change
+              // parent. Likewise, a descendant payload can defensively restore an ancestor and
+              // therefore appear in that ancestor's parent filter. Omitting any of these leaves a
+              // stale projection; sending it reveals out-of-scope data. Until the wire protocol
+              // has redacted remove/restore records, reject the whole filtered read.
+              throw new Error(
+                'children(parent) projection requires redaction for an out-of-scope dependency',
+              );
+            }
+            out.push(allowed);
+            break;
+          }
           default: {
             const _exhaustive: never = op.kind;
             throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);

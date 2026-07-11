@@ -1659,7 +1659,7 @@ test('auth: syncOnce rejects filter(children) when capability scope does not mat
   void bPk;
 });
 
-test('auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees', async () => {
+test('auth: outgoing scope hides all-filter ops and rejects unsafe children projections', async () => {
   const docId = 'doc-auth-filter-outgoing-exclude';
   const root = '0'.repeat(32);
 
@@ -1819,6 +1819,54 @@ test('auth: filterOutgoingOps hides move/delete/tombstone for excluded subtrees'
   for (const i of [1, 2, 3, 4, 5, 6, 7]) {
     expect(allowed?.[i]).toBe(false);
   }
+
+  // A children filter is a convergent operation projection, so silently hiding an indexed
+  // removal/dependency would leave stale state. Once the public node has crossed into the
+  // excluded subtree, these operations require a redacted wire representation and must reject the
+  // whole projection until that representation exists.
+  parentByNodeHex.set(publicNode, privateRoot);
+  const childrenContext = {
+    docId,
+    purpose: 'reconcile' as const,
+    filter: { children: { parent: nodeIdToBytes16(root) } },
+    capabilities: receiverCaps ?? [],
+  };
+  const boundaryOps: Operation[] = [
+    makeOp(senderPk, 11, 11, {
+      type: 'move',
+      node: publicNode,
+      newParent: privateRoot,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeOp(senderPk, 12, 12, { type: 'delete', node: publicNode }),
+    makeOp(senderPk, 13, 13, { type: 'tombstone', node: publicNode }),
+    makeOp(senderPk, 14, 14, {
+      type: 'payload',
+      node: publicNode,
+      payload: new Uint8Array([4]),
+    }),
+  ];
+  for (const boundaryOp of boundaryOps) {
+    await expect(authSender.filterOutgoingOps?.([boundaryOp], childrenContext)).rejects.toThrow(
+      /requires redaction/i,
+    );
+  }
+
+  const insertUpsertLeavingScope = makeOp(senderPk, 15, 15, {
+    type: 'insert',
+    parent: privateRoot,
+    node: publicNode,
+    orderKey: orderKeyFromPosition(0),
+  });
+  await expect(
+    authSender.filterOutgoingOps?.([insertUpsertLeavingScope], childrenContext),
+  ).rejects.toThrow(/out-of-scope causal dependency/i);
+
+  // A descendant op can be selected by children(root) because it defensively restores a direct
+  // child. Omitting it is also unsafe, even though its own node is outside the readable scope.
+  await expect(authSender.filterOutgoingOps?.([ops[3]!], childrenContext)).rejects.toThrow(
+    /out-of-scope causal dependency/i,
+  );
 });
 
 test('auth: delegated capability token can be verified via issuer-signed proof', async () => {
