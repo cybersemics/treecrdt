@@ -128,8 +128,14 @@ export type WriteOptions = {
   writeId?: string;
 };
 
+/** Standard proof material that a backend can persist atomically with a local operation. */
+export type LocalWriteAuthProof = {
+  sig: Uint8Array;
+  proofRef: Uint8Array;
+};
+
 export type LocalWriteAuthSession = {
-  authorizeLocalOps: (ops: readonly Operation[]) => Promise<unknown>;
+  authorizeLocalOps: (ops: readonly Operation[]) => Promise<readonly LocalWriteAuthProof[]>;
 };
 
 export type LocalWriteOptions = {

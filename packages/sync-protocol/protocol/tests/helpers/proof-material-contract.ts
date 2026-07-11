@@ -24,10 +24,10 @@ function makeOpRef(fill: number): OpRef {
   return new Uint8Array(16).fill(fill);
 }
 
-function makeOpAuth(sigFill: number, proofFill?: number): OpAuth {
+function makeOpAuth(sigFill: number, proofFill: number): OpAuth {
   return {
     sig: new Uint8Array(64).fill(sigFill),
-    ...(proofFill === undefined ? {} : { proofRef: new Uint8Array(16).fill(proofFill) }),
+    proofRef: new Uint8Array(16).fill(proofFill),
   };
 }
 
@@ -38,7 +38,7 @@ function sortCapabilities(caps: Capability[]): Capability[] {
 function normalizeOpAuth(value: OpAuth): OpAuth {
   return {
     sig: Uint8Array.from(value.sig),
-    ...(value.proofRef ? { proofRef: Uint8Array.from(value.proofRef) } : {}),
+    proofRef: Uint8Array.from(value.proofRef),
   };
 }
 
@@ -58,7 +58,7 @@ export function defineProofMaterialStoreContract(
       const refB = makeOpRef(2);
       const missing = makeOpRef(3);
       const authA = makeOpAuth(9, 4);
-      const authB = makeOpAuth(7);
+      const authB = makeOpAuth(7, 5);
 
       await opAuth.storeOpAuth([
         { opRef: refA, auth: authA },
@@ -83,7 +83,7 @@ export function defineProofMaterialStoreContract(
       const docB = await harness.createDocStores(`doc-b-${randomUUID()}`);
       const authA1 = makeOpAuth(1, 2);
       const authA2 = makeOpAuth(3, 4);
-      const authB = makeOpAuth(8);
+      const authB = makeOpAuth(8, 6);
 
       await docA.opAuth.storeOpAuth([{ opRef: sharedRef, auth: authA1 }]);
       await docA.opAuth.storeOpAuth([{ opRef: sharedRef, auth: authA2 }]);

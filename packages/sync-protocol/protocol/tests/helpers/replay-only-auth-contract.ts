@@ -98,7 +98,7 @@ function makeInsertOp(replicaFill: number, counter: number): Operation {
 function normalizeOpAuth(value: OpAuth): OpAuth {
   return {
     sig: Uint8Array.from(value.sig),
-    ...(value.proofRef ? { proofRef: Uint8Array.from(value.proofRef) } : {}),
+    proofRef: Uint8Array.from(value.proofRef),
   };
 }
 

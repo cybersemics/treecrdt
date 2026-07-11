@@ -73,6 +73,7 @@ test('sqlite auth-aware local write emits materialization after auth succeeds', 
   const authSession = {
     authorizeLocalOps: vi.fn(async () => {
       expect(events).toHaveLength(0);
+      return [{ sig: new Uint8Array(64), proofRef: new Uint8Array(16) }];
     }),
   };
   const node = nodeIdFromInt(11);

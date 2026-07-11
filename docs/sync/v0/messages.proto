@@ -111,15 +111,15 @@ message OpsBatch {
 
 // Auth metadata attached to a single operation.
 //
-// This is an optional extension to Sync v0. Implementations that do not support
-// auth MUST ignore these fields.
+// The entire OpsBatch.auth array is optional. When an entry is present, both
+// fields below are required by the application protocol.
 message OpAuth {
   reserved 1;
 
   // Signature bytes (Ed25519: 64 bytes) over the canonical signing input.
   bytes sig = 2;
 
-  // Optional reference to an authorization proof (e.g. token id / hash).
+  // 16-byte reference to the authorization proof selected before signing.
   bytes proof_ref = 3;
 }
 
