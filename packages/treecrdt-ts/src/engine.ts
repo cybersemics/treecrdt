@@ -128,8 +128,26 @@ export type WriteOptions = {
   writeId?: string;
 };
 
+/**
+ * Materialized location of an operation's target node immediately before a
+ * local SQLite write was applied.
+ *
+ * Entries are aligned with the operations passed to `authorizeLocalOps`.
+ * Keeping this explicit prevents structural authorization from accidentally
+ * consulting the node after an insert/move/delete has changed its ancestry.
+ */
+export type LocalWriteAuthPreState = {
+  node: string;
+  existed: boolean;
+  parent: string | null;
+};
+
+export type LocalWriteAuthContext = {
+  preWriteState?: readonly LocalWriteAuthPreState[];
+};
+
 export type LocalWriteAuthSession = {
-  authorizeLocalOps: (ops: readonly Operation[]) => Promise<unknown>;
+  authorizeLocalOps: (ops: readonly Operation[], opts?: LocalWriteAuthContext) => Promise<unknown>;
 };
 
 export type LocalWriteOptions = {

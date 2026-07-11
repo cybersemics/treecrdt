@@ -21,7 +21,11 @@ export {
 } from './internal/op-sig.js';
 export type { TreecrdtOpAuthClaimsV1 } from './internal/op-sig.js';
 
-export type { TreecrdtScopeEvaluator } from './internal/scope.js';
+export type {
+  TreecrdtScopeEvaluation,
+  TreecrdtScopeEvaluator,
+  TreecrdtScopeEvaluatorInput,
+} from './internal/scope.js';
 
 export {
   TREECRDT_REVOCATION_CAPABILITY,

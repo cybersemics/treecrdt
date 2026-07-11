@@ -1,6 +1,7 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
 import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
+  LocalWriteAuthPreState,
   LocalWriteOptions,
   MaterializationEvent,
   MaterializationOutcome,
@@ -67,12 +68,34 @@ let localAuthSavepointCounter = 0;
 function decodeLocalOpResult(
   raw: any,
   sql: string,
-): { op: Operation; outcome: MaterializationOutcome } {
+): {
+  op: Operation;
+  outcome: MaterializationOutcome;
+  preWriteState?: LocalWriteAuthPreState;
+} {
   const ops = decodeSqliteOps([raw.op]);
   if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
+  const op = ops[0]!;
+  const rawPreWriteState = raw.preWriteState;
+  let preWriteState: LocalWriteAuthPreState | undefined;
+  if (rawPreWriteState !== undefined) {
+    if (!rawPreWriteState || typeof rawPreWriteState.existed !== 'boolean') {
+      throw new Error(`invalid pre-write state from query: ${sql}`);
+    }
+    const parent = rawPreWriteState.parent == null ? null : decodeNodeId(rawPreWriteState.parent);
+    if (!rawPreWriteState.existed && parent !== null) {
+      throw new Error(`absent pre-write state has a parent from query: ${sql}`);
+    }
+    preWriteState = {
+      node: op.kind.node,
+      existed: rawPreWriteState.existed,
+      parent,
+    };
+  }
   return {
-    op: ops[0]!,
+    op,
     outcome: decodeSqliteMaterializationOutcome(raw.outcome),
+    ...(preWriteState ? { preWriteState } : {}),
   };
 }
 
@@ -631,11 +654,16 @@ export function createTreecrdtSqliteWriter(
     let released = false;
     await sqliteExec(runner, `SAVEPOINT ${savepoint}`);
     try {
-      const { op, outcome } = decodeLocalOpResult(
+      const { op, outcome, preWriteState } = decodeLocalOpResult(
         await sqliteGetJson<any>(runner, sql, params),
         sql,
       );
-      await authSession.authorizeLocalOps([op]);
+      if (!preWriteState) {
+        throw new Error(
+          'treecrdt: local authorization requires pre-write state from the SQLite extension',
+        );
+      }
+      await authSession.authorizeLocalOps([op], { preWriteState: [preWriteState] });
       await sqliteExec(runner, `RELEASE ${savepoint}`);
       released = true;
       emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);

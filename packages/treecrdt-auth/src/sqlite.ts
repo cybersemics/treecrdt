@@ -18,7 +18,8 @@ import type { TreecrdtScopeEvaluator } from './treecrdt-auth.js';
  * Semantics:
  * - returns `"allow"` if `node` is inside the subtree rooted at `scope.root`
  * - returns `"deny"` if `node` is definitely outside the subtree (or excluded)
- * - returns `"unknown"` if local context is insufficient (e.g. `tree_nodes` has no row for a needed ancestor)
+ * - returns `"absent"` if the requested node itself has no materialized row
+ * - returns `"unknown"` if local context is insufficient (e.g. a needed ancestor has no row)
  *
  * Known issues / tradeoffs:
  * - Performance: O(depth) per call with 1 SQL query per hop. For large sync batches this can be costly.
@@ -51,7 +52,10 @@ LEFT JOIN tree_nodes AS t ON t.node = ?1
 
   const maxHops = 100_000;
 
-  return async ({ node, scope }) => {
+  const evaluate = async (
+    { node, scope }: Parameters<TreecrdtScopeEvaluator>[0],
+    parentOverride?: { parent: Uint8Array | null },
+  ) => {
     const rootHex = bytesToHex(scope.root);
     const excludeHex = new Set((scope.exclude ?? []).map((b) => bytesToHex(b)));
     const maxDepth = scope.maxDepth;
@@ -73,10 +77,15 @@ LEFT JOIN tree_nodes AS t ON t.node = ?1
       // If we already traversed `maxDepth` edges without reaching `root`, the node cannot be within scope.
       if (maxDepth !== undefined && distance >= maxDepth) return 'deny';
 
-      const parentHex = await runner.getText(parentSql, [curBytes]);
+      const parentHex =
+        distance === 0 && parentOverride
+          ? parentOverride.parent === null
+            ? 'null'
+            : bytesToHex(parentOverride.parent)
+          : await runner.getText(parentSql, [curBytes]);
       if (!parentHex) throw new Error('scope evaluator query returned empty result');
 
-      if (parentHex === 'missing') return 'unknown';
+      if (parentHex === 'missing') return distance === 0 ? 'absent' : 'unknown';
       if (parentHex === 'null') return 'deny';
 
       // `tree_nodes.parent` is a NodeId (16 bytes).
@@ -88,4 +97,8 @@ LEFT JOIN tree_nodes AS t ON t.node = ?1
     // Defensive: cycles or extreme depth.
     return 'unknown';
   };
+
+  const evaluator: TreecrdtScopeEvaluator = (opts) => evaluate(opts);
+  evaluator.evaluateWithParent = ({ parent, ...opts }) => evaluate(opts, { parent });
+  return evaluator;
 }

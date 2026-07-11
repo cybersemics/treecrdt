@@ -1,4 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
+import type { LocalWriteAuthContext } from '@treecrdt/interface/engine';
 import type {
   Capability,
   Hello,
@@ -54,7 +55,8 @@ export type TreecrdtAuthSessionLocal = {
   revocationRecords?: Uint8Array[];
 };
 
-export type TreecrdtAuthSessionLocalAuthorizeOptions = Partial<SyncAuthOpsContext>;
+export type TreecrdtAuthSessionLocalAuthorizeOptions = Partial<SyncAuthOpsContext> &
+  LocalWriteAuthContext;
 
 export type TreecrdtAuthSessionOptions = Omit<
   TreecrdtCoseCwtAuthOptions,
@@ -167,10 +169,15 @@ export function createTreecrdtAuthSession(opts: TreecrdtAuthSessionOptions): Tre
     ctxOverrides = {},
   ) => {
     if (ops.length === 0) return [];
+    if (ctxOverrides.preWriteState && ctxOverrides.preWriteState.length !== ops.length) {
+      throw new Error(
+        `preWriteState has ${ctxOverrides.preWriteState.length} entries for ${ops.length} ops`,
+      );
+    }
     if (!syncAuth.signOps || !syncAuth.verifyOps) {
       throw new Error('auth session is missing local op signing/verification hooks');
     }
-    const ctx: SyncAuthOpsContext = {
+    const ctx: SyncAuthOpsContext & LocalWriteAuthContext = {
       docId,
       purpose: 'reconcile',
       filterId: '__local__',

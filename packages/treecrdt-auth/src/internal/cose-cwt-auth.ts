@@ -1,4 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
+import type { LocalWriteAuthContext, LocalWriteAuthPreState } from '@treecrdt/interface/engine';
 import {
   bytesToHex,
   nodeIdToBytes16,
@@ -20,6 +21,7 @@ import {
   type OpAuth,
   type OpRef,
   type SyncAuth,
+  type SyncAuthOpsContext,
   type SyncCapabilityMaterialStore,
 } from '@treecrdt/sync-protocol';
 
@@ -128,6 +130,12 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
   const allowUnsigned = opts.allowUnsigned ?? false;
   const requireProofRef = opts.requireProofRef ?? false;
   const includeAuthoredAt = opts.includeAuthoredAt ?? false;
+
+  const preWriteStateAt = (
+    ctx: SyncAuthOpsContext,
+    index: number,
+  ): LocalWriteAuthPreState | undefined =>
+    (ctx as SyncAuthOpsContext & LocalWriteAuthContext).preWriteState?.[index];
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
@@ -441,6 +449,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     op: Operation;
     candidates: CapabilityGrant[];
     purpose: 'sign_op' | 'verify_op';
+    preWriteState?: LocalWriteAuthPreState;
   }): Promise<CapabilityGrant> => {
     const nowSec = now();
     let bestUnknown: CapabilityGrant | null = null;
@@ -466,6 +475,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         docId: opts2.docId,
         op: opts2.op,
         scopeEvaluator: opts.scopeEvaluator,
+        preWriteState: opts2.preWriteState,
       });
       if (scopeRes === 'allow') return grant;
       if (scopeRes === 'unknown' && !bestUnknown) bestUnknown = grant;
@@ -664,6 +674,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             op,
             candidates: currentLocalGrants,
             purpose: 'sign_op',
+            preWriteState: preWriteStateAt(ctx, i),
           });
           proofRef = selected.tokenId;
         }
@@ -772,6 +783,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
             op,
             candidates: orderedCandidates,
             purpose: 'verify_op',
+            preWriteState: preWriteStateAt(ctx, i),
           });
         }
 
@@ -790,6 +802,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           docId: ctx.docId,
           op,
           scopeEvaluator: opts.scopeEvaluator,
+          preWriteState: preWriteStateAt(ctx, i),
         });
         if (scopeRes === 'deny') throw new Error('capability does not allow op');
 

@@ -279,7 +279,7 @@ test('subtree scope: pending_context ops are stored and later applied when conte
     let cur = nodeHex;
     for (let depth = 0; depth < 10_000; depth += 1) {
       const parent = b.getParentHex(cur);
-      if (!parent) return 'unknown' as const;
+      if (!parent) return cur === nodeHex ? ('absent' as const) : ('unknown' as const);
       if (parent === scopeRootHex) return 'allow' as const;
       if (parent === ROOT_NODE_ID_HEX || parent === TRASH_NODE_ID_HEX) return 'deny' as const;
       cur = parent;

@@ -6,6 +6,7 @@ import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 import {
   createTreecrdtCoseCwtAuth,
+  createTreecrdtAuthSession,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   getEd25519PublicKey,
   issueTreecrdtCapabilityTokenV1,
@@ -219,6 +220,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'auth: sqlite subtree evaluator allow/deny/unknown',
       run: scenarioAuthSqliteSubtreeEvaluator,
+    },
+    {
+      name: 'local auth: scoped structural writes use pre-write ancestry',
+      run: scenarioLocalAuthUsesPreWriteAncestry,
     },
     {
       name: 'sync auth: pending_context ops use sqlite sidecar + reprocess',
@@ -1484,6 +1489,8 @@ function createEngineScopeEvaluator(engine: TreecrdtEngine): TreecrdtScopeEvalua
     const rootHex = bytesToHex(opts.scope.root);
     const nodeHex = bytesToHex(opts.node);
 
+    if (!(await engine.tree.exists(nodeHex))) return 'absent';
+
     const depth = await findDepthBfs({ engine, root: rootHex, target: nodeHex });
     if (depth === null) return 'unknown';
     if (opts.scope.maxDepth !== undefined && depth > opts.scope.maxDepth) return 'deny';
@@ -1696,15 +1703,16 @@ async function scenarioAuthSqliteSubtreeEvaluator(
   const child = nodeIdFromInt(2);
   const unrelated = nodeIdFromInt(3);
 
-  // Missing node => unknown context.
+  // A missing target is distinct from incomplete ancestry. Insert auth uses
+  // this to allow genuinely new nodes without treating unknown context as safe.
   assertEqual(
     await evalScope({
       docId,
       node: nodeIdToBytes16(child),
       scope: { root: nodeIdToBytes16(subtreeRoot) },
     }),
-    'unknown',
-    'sqlite scope evaluator: missing node should be unknown',
+    'absent',
+    'sqlite scope evaluator: missing target should be absent',
   );
 
   // Insert child under subtreeRoot (root node itself need not exist as a row).
@@ -1747,6 +1755,125 @@ async function scenarioAuthSqliteSubtreeEvaluator(
     }),
     'deny',
     'sqlite scope evaluator: expected unrelated node to be outside subtree',
+  );
+}
+
+async function scenarioLocalAuthUsesPreWriteAncestry(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const runner = engineRunnerOrNull(ctx.engine);
+  if (!runner) return;
+
+  const engine = ctx.engine;
+  const root = nodeIdFromInt(0);
+  const scopeRoot = nodeIdFromInt(1);
+  const scopeParent = nodeIdFromInt(2);
+  const inScopeNode = nodeIdFromInt(3);
+  const externalNode = nodeIdFromInt(4);
+  const freshNode = nodeIdFromInt(5);
+  const seedReplica = replicaFromLabel('scope-seed');
+
+  await engine.local.insert(seedReplica, root, scopeRoot, { type: 'last' }, null);
+  await engine.local.insert(seedReplica, scopeRoot, scopeParent, { type: 'last' }, null);
+  await engine.local.insert(seedReplica, scopeRoot, inScopeNode, { type: 'last' }, null);
+  await engine.local.insert(seedReplica, root, externalNode, { type: 'last' }, null);
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+  const writerSk = randomEd25519SecretKey();
+  const writerPk = await getEd25519PublicKey(writerSk);
+  const token = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId: ctx.docId,
+    actions: ['write_structure'],
+    rootNodeId: scopeRoot,
+  });
+  const authSession = createTreecrdtAuthSession({
+    docId: ctx.docId,
+    trust: { issuerPublicKeys: [issuerPk] },
+    local: {
+      privateKey: writerSk,
+      publicKey: writerPk,
+      capabilityTokens: [token],
+    },
+    backend: {
+      scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(runner),
+    },
+    requireProofRef: true,
+  });
+  await authSession.ready;
+
+  // A genuinely new insert has no source location and only needs its
+  // destination to be in scope.
+  await engine.local.insert(writerPk, scopeRoot, freshNode, { type: 'last' }, null, {
+    authSession,
+  });
+  assertEqual(await engine.tree.parent(freshNode), scopeRoot, 'authorized new insert parent');
+
+  // An existing in-scope node can still move within the authorized subtree.
+  await engine.local.move(
+    writerPk,
+    inScopeNode,
+    scopeParent,
+    { type: 'last' },
+    {
+      authSession,
+    },
+  );
+  assertEqual(
+    await engine.tree.parent(inScopeNode),
+    scopeParent,
+    'authorized in-scope move parent',
+  );
+
+  const opCountBeforeRejectedWrites = (await engine.ops.all()).length;
+  const expectRejected = async (write: () => Promise<unknown>, label: string) => {
+    let error: unknown;
+    try {
+      await write();
+    } catch (err) {
+      error = err;
+    }
+    assert(error, `${label}: expected authorization rejection`);
+    assert(
+      /capability does not allow op|missing subtree context/i.test(
+        String((error as any)?.message ?? error),
+      ),
+      `${label}: unexpected error: ${String((error as any)?.message ?? error)}`,
+    );
+  };
+
+  // Insert is an upsert. It must not be usable to pull an existing external
+  // node into scope merely because the destination parent is authorized.
+  await expectRejected(
+    () =>
+      engine.local.insert(writerPk, scopeRoot, externalNode, { type: 'last' }, null, {
+        authSession,
+      }),
+    'cross-scope insert upsert',
+  );
+  assertEqual(
+    await engine.tree.parent(externalNode),
+    root,
+    'rejected insert preserves external parent',
+  );
+
+  // Move uses the same stable pre-write ancestry and cannot bypass the source
+  // check by observing its own post-move placement.
+  await expectRejected(
+    () => engine.local.move(writerPk, externalNode, scopeRoot, { type: 'last' }, { authSession }),
+    'cross-scope move',
+  );
+  assertEqual(
+    await engine.tree.parent(externalNode),
+    root,
+    'rejected move preserves external parent',
+  );
+  assertEqual(
+    (await engine.ops.all()).length,
+    opCountBeforeRejectedWrites,
+    'rejected structural writes do not persist operations',
   );
 }
 

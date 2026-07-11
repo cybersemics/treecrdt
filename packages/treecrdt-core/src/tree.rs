@@ -635,6 +635,10 @@ where
         Ok(self.nodes.parent(node)?.filter(|&p| p != NodeId::TRASH))
     }
 
+    pub fn node_exists(&self, node: NodeId) -> Result<bool> {
+        self.nodes.exists(node)
+    }
+
     pub fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
         self.payloads.payload(node)
     }

@@ -32,6 +32,14 @@ struct JsonOp {
 struct JsonLocalOpResult {
     op: JsonOp,
     outcome: JsonMaterializationOutcome,
+    pre_write_state: JsonLocalOpPreWriteState,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonLocalOpPreWriteState {
+    existed: bool,
+    parent: Option<[u8; 16]>,
 }
 
 type LocalCrdt = TreeCrdt<SqliteOpStorage, LamportClock, SqliteNodeStore, SqlitePayloadStore>;
@@ -204,6 +212,7 @@ fn finish_local_core_op(
     mut session: LocalOpSession,
     op: Operation,
     plan: LocalFinalizePlan,
+    pre_write_state: JsonLocalOpPreWriteState,
 ) -> Result<JsonLocalOpResult, c_int> {
     let mut post_materialization_ok = true;
     let mut head_seq = 0u64;
@@ -282,6 +291,7 @@ fn finish_local_core_op(
     Ok(JsonLocalOpResult {
         op,
         outcome: json_outcome_from_core(&outcome),
+        pre_write_state,
     })
 }
 
@@ -300,11 +310,31 @@ where
         Ok(v) => v,
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
     };
+    let source_node = match &prepared.op.kind {
+        OperationKind::Insert { node, .. }
+        | OperationKind::Move { node, .. }
+        | OperationKind::Delete { node }
+        | OperationKind::Tombstone { node }
+        | OperationKind::Payload { node, .. } => *node,
+    };
+    let existed = match session.crdt.node_exists(source_node) {
+        Ok(v) => v,
+        Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+    };
+    let parent = if existed {
+        match session.crdt.parent(source_node) {
+            Ok(parent) => parent.map(|node| node.0.to_be_bytes()),
+            Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
+        }
+    } else {
+        None
+    };
+    let pre_write_state = JsonLocalOpPreWriteState { existed, parent };
     let (op, plan) = match session.crdt.commit_prepared_local(prepared) {
         Ok(v) => v,
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
     };
-    finish_local_core_op(session, op, plan)
+    finish_local_core_op(session, op, plan, pre_write_state)
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_insert(

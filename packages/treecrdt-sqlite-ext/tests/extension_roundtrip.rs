@@ -96,6 +96,14 @@ struct JsonOperationId {
 struct JsonLocalOpResult {
     op: JsonOp,
     outcome: JsonMaterializationOutcome,
+    pre_write_state: JsonLocalOpPreWriteState,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonLocalOpPreWriteState {
+    existed: bool,
+    parent: Option<[u8; 16]>,
 }
 
 fn node_bytes_from_id(node: NodeId) -> Vec<u8> {
@@ -522,6 +530,10 @@ fn local_insert_returns_appended_insert_op() {
         )
         .unwrap();
 
+    let result: JsonLocalOpResult = serde_json::from_str(&json).unwrap();
+    assert!(!result.pre_write_state.existed);
+    assert_eq!(result.pre_write_state.parent, None);
+
     let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
@@ -553,6 +565,21 @@ fn local_insert_returns_appended_insert_op() {
     assert_eq!(head_replica, b"r1".to_vec());
     assert_eq!(head_counter, 1);
     assert_eq!(head_seq, 1);
+
+    let next_parent = node_bytes(2);
+    let upsert_json: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'first', NULL, NULL)",
+            rusqlite::params![replica, next_parent, node],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let upsert: JsonLocalOpResult = serde_json::from_str(&upsert_json).unwrap();
+    assert!(upsert.pre_write_state.existed);
+    assert_eq!(
+        upsert.pre_write_state.parent,
+        Some(<[u8; 16]>::try_from(parent.as_slice()).unwrap())
+    );
 }
 
 #[test]

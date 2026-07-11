@@ -465,6 +465,99 @@ test('auth: v2 signs authoredAt and defensive-delete knownState', async () => {
   ).rejects.toThrow(/v1 does not authenticate defensive delete state/i);
 });
 
+test('auth: scoped insert cannot reparent an existing external node', async () => {
+  const docId = 'doc-auth-insert-upsert-source';
+  const root = '0'.repeat(32);
+  const scopeRoot = nodeIdFromInt(1);
+  const externalNode = nodeIdFromInt(2);
+  const newNode = nodeIdFromInt(3);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const verifierSk = ed25519Utils.randomSecretKey();
+  const verifierPk = await getPublicKey(verifierSk);
+
+  const token = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ['write_structure'],
+    rootNodeId: scopeRoot,
+  });
+  const writerAuth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [token],
+    requireProofRef: true,
+  });
+
+  const parentByNode = new Map<string, string | null>([
+    [root, null],
+    [scopeRoot, root],
+    [externalNode, root],
+  ]);
+  const scopeEvaluator = ({ node, scope }: { node: Uint8Array; scope: { root: Uint8Array } }) => {
+    const target = bytesToHex(node);
+    const scopedRoot = bytesToHex(scope.root);
+    let current = target;
+    for (let hops = 0; hops < 100; hops += 1) {
+      if (current === scopedRoot) return 'allow' as const;
+      if (current === root) return 'deny' as const;
+      const parent = parentByNode.get(current);
+      if (parent === undefined)
+        return current === target ? ('absent' as const) : ('unknown' as const);
+      if (parent === null) return 'deny' as const;
+      current = parent;
+    }
+    return 'unknown' as const;
+  };
+  const verifierAuth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: verifierSk,
+    localPublicKey: verifierPk,
+    requireProofRef: true,
+    scopeEvaluator,
+  });
+  await verifierAuth.onHello?.(
+    {
+      capabilities: (await writerAuth.helloCapabilities?.({ docId })) ?? [],
+      filters: [],
+      maxLamport: 0n,
+    },
+    { docId },
+  );
+
+  const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
+  const makeAuth = async (op: Operation) => [
+    {
+      sig: await signTreecrdtOpV1({ docId, op, privateKey: writerSk }),
+      proofRef: deriveTokenIdV1(token),
+    },
+  ];
+  const stealingInsert = makeOp(writerPk, 1, 1, {
+    type: 'insert',
+    parent: scopeRoot,
+    node: externalNode,
+    orderKey: orderKeyFromPosition(0),
+  });
+  await expect(
+    verifierAuth.verifyOps?.([stealingInsert], await makeAuth(stealingInsert), ctx),
+  ).rejects.toThrow(/capability does not allow op/i);
+
+  const newInsert = makeOp(writerPk, 2, 2, {
+    type: 'insert',
+    parent: scopeRoot,
+    node: newNode,
+    orderKey: orderKeyFromPosition(0),
+  });
+  await expect(
+    verifierAuth.verifyOps?.([newInsert], await makeAuth(newInsert), ctx),
+  ).resolves.toBeUndefined();
+});
+
 test('auth ignores foreign peer capability tokens during hello and still verifies known authors', async () => {
   const docId = 'doc-auth-ignore-foreign-hello-cap';
   const root = '0'.repeat(32);
