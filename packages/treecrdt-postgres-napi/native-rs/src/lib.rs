@@ -116,7 +116,7 @@ pub struct NativeLocalOpResult {
 #[napi(object)]
 pub struct NativeLocalOpAuthProof {
     pub sig: Buffer,
-    pub proof_ref: Option<Buffer>,
+    pub proof_ref: Buffer,
 }
 
 #[napi]
@@ -161,7 +161,7 @@ impl NativePreparedLocalOp {
             proposal,
             treecrdt_postgres::LocalOpAuthProof {
                 sig: proof.sig.to_vec(),
-                proof_ref: proof.proof_ref.map(|value| value.to_vec()),
+                proof_ref: proof.proof_ref.to_vec(),
             },
         )
         .map_err(map_core_err)?;

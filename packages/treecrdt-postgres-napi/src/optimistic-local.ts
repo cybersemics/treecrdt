@@ -68,13 +68,14 @@ export async function commitOptimisticAuthorizedLocalWrite<T>(
     if (
       !(sig instanceof Uint8Array) ||
       sig.length !== 64 ||
-      (proofRef !== undefined && (!(proofRef instanceof Uint8Array) || proofRef.length !== 16))
+      !(proofRef instanceof Uint8Array) ||
+      proofRef.length !== 16
     ) {
       throw new Error('authorizeLocalOps returned an invalid operation proof');
     }
     const proofSnapshot = {
       sig: Uint8Array.from(sig),
-      ...(proofRef !== undefined ? { proofRef: Uint8Array.from(proofRef) } : {}),
+      proofRef: Uint8Array.from(proofRef),
     };
     const committed = proposal.commit(proofSnapshot);
     if (!committed) {

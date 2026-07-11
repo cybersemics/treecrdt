@@ -49,7 +49,7 @@ export type NativeLocalOpResult = {
 
 export type NativeLocalOpAuthProof = {
   sig: Uint8Array;
-  proofRef?: Uint8Array | null;
+  proofRef: Uint8Array;
 };
 
 /** Owned proposal; the native layer retains no connection, transaction, or row lock. */

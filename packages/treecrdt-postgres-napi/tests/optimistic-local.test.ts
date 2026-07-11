@@ -33,7 +33,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 function proofPersistingCommit(operation: Operation) {
   const proofRows: Uint8Array[] = [];
-  const commit = vi.fn((proof: { sig: Uint8Array }) => {
+  const commit = vi.fn((proof: { sig: Uint8Array; proofRef: Uint8Array }) => {
     proofRows.push(proof.sig);
     return { operation, value: operation };
   });
@@ -55,7 +55,7 @@ test('authorization holds no lock and a conflict gets a fresh op, auth, and atom
     const operation = insert(proposalRevision + 1, target);
     return {
       operation,
-      commit: (proof: { sig: Uint8Array }) => {
+      commit: (proof: { sig: Uint8Array; proofRef: Uint8Array }) => {
         if (revision !== proposalRevision) return null;
         revision += 1;
         atomicallyPersisted.push(`${target}-${proof.sig[0]}`);
@@ -64,7 +64,10 @@ test('authorization holds no lock and a conflict gets a fresh op, auth, and atom
     };
   };
   const proofFor = (ops: readonly Operation[]) => [
-    { sig: new Uint8Array(64).fill(ops[0]!.meta.id.counter) },
+    {
+      sig: new Uint8Array(64).fill(ops[0]!.meta.id.counter),
+      proofRef: new Uint8Array(16),
+    },
   ];
   const firstAuth = {
     authorizeLocalOps: vi.fn(async (ops: readonly Operation[]) => {
@@ -111,9 +114,7 @@ test('invalid proof fails before native commit', async () => {
   await expect(
     commitOptimisticAuthorizedLocalWrite({
       authSession: {
-        authorizeLocalOps: async () => [
-          { sig: Uint8Array.of(1), proofRef: Uint8Array.of(1) },
-        ],
+        authorizeLocalOps: async () => [{ sig: Uint8Array.of(1), proofRef: Uint8Array.of(1) }],
       },
       prepare: () => ({
         operation,
@@ -129,11 +130,11 @@ test('proof buffers are snapshotted before native commit', async () => {
   const operation = insert(1, node(31));
   const sig = new Uint8Array(64).fill(7);
   const proofRef = new Uint8Array(16).fill(8);
-  const commit = vi.fn((proof: { sig: Uint8Array; proofRef?: Uint8Array }) => {
+  const commit = vi.fn((proof: { sig: Uint8Array; proofRef: Uint8Array }) => {
     expect(proof.sig).not.toBe(sig);
     expect(proof.proofRef).not.toBe(proofRef);
     proof.sig[0] = 9;
-    proof.proofRef![0] = 10;
+    proof.proofRef[0] = 10;
     return { operation, value: operation };
   });
 
@@ -161,7 +162,7 @@ test('authorization metadata mutation cannot reach native commit or proof storag
       authSession: {
         authorizeLocalOps: async (ops) => {
           ops[0]!.meta.id.counter += 1;
-          return [{ sig: new Uint8Array(64) }];
+          return [{ sig: new Uint8Array(64), proofRef: new Uint8Array(16) }];
         },
       },
       prepare: () => ({ operation, commit }),

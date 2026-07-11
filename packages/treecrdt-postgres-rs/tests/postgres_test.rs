@@ -749,7 +749,7 @@ fn postgres_optimistic_local_proposal_does_not_hold_the_document_lock() {
         proposal,
         LocalOpAuthProof {
             sig: vec![8; 64],
-            proof_ref: None,
+            proof_ref: vec![5; 16],
         },
     )
     .unwrap()
@@ -774,7 +774,7 @@ fn postgres_optimistic_local_proposal_does_not_hold_the_document_lock() {
         retry,
         LocalOpAuthProof {
             sig: vec![9; 64],
-            proof_ref: Some(vec![6; 16]),
+            proof_ref: vec![6; 16],
         },
     )
     .unwrap()
@@ -793,7 +793,7 @@ fn postgres_optimistic_local_proposal_does_not_hold_the_document_lock() {
         )
         .unwrap();
     assert_eq!(proof_row.get::<_, Vec<u8>>(0), vec![9; 64]);
-    assert_eq!(proof_row.get::<_, Option<Vec<u8>>>(1), Some(vec![6; 16]));
+    assert_eq!(proof_row.get::<_, Vec<u8>>(1), vec![6; 16]);
     assert!(proof_row.get::<_, i64>(2) > 0);
 
     let mut locker = Client::connect(&url, NoTls).unwrap();
@@ -847,7 +847,7 @@ fn postgres_invalid_local_proof_is_rejected_before_the_operation() {
         proposal,
         LocalOpAuthProof {
             sig: vec![1; 63],
-            proof_ref: None,
+            proof_ref: vec![1; 16],
         },
     )
     .unwrap_err();

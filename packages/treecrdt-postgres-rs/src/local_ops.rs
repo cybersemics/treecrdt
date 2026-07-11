@@ -43,7 +43,7 @@ impl std::ops::Deref for LocalOpResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOpAuthProof {
     pub sig: Vec<u8>,
-    pub proof_ref: Option<Vec<u8>>,
+    pub proof_ref: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -278,6 +278,9 @@ where
 {
     begin_tx(client)?;
     let result = (|| {
+        // A local write may be the first operation for a document. Create its revision row inside
+        // this same transaction before materialization takes the row lock.
+        ensure_doc_meta(client, doc_id)?;
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let prepared = build(&mut session.crdt)?;
         let (op, plan) = session.crdt.commit_prepared_local(prepared)?;
@@ -294,7 +297,7 @@ fn validate_local_auth_proof(proof: &LocalOpAuthProof) -> Result<()> {
             "local operation auth signature must be 64 bytes".into(),
         ));
     }
-    if proof.proof_ref.as_ref().is_some_and(|value| value.len() != 16) {
+    if proof.proof_ref.len() != 16 {
         return Err(Error::InvalidOperation(
             "local operation auth proof reference must be 16 bytes".into(),
         ));
