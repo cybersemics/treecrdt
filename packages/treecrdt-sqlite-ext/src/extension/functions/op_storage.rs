@@ -77,7 +77,9 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
     } else {
         let ptr = unsafe { sqlite_column_blob(stmt, 9) } as *const u8;
         let len = unsafe { sqlite_column_bytes(stmt, 9) } as usize;
-        if ptr.is_null() {
+        if len == 0 {
+            Some(Vec::new())
+        } else if ptr.is_null() {
             None
         } else {
             Some(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
