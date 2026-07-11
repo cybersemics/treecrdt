@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::affected::coalesce_materialization_changes;
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
@@ -173,7 +173,7 @@ pub struct CatchUpResult {
 pub struct PersistedRemoteApplyResult {
     /// Number of ops from the input batch that were actually inserted by adapter-side dedupe.
     pub inserted_count: u64,
-    /// Structured changes produced by core materialization when replay succeeded.
+    /// Structured changes produced when materialization advanced.
     ///
     /// This is empty when nothing was inserted or when the helper could not advance
     /// materialization immediately and had to hand catch-up work back to the caller.
@@ -486,13 +486,6 @@ impl MaterializationOutcome {
             changes: coalesce_materialization_changes(changes),
         }
     }
-
-    fn merge(head_seq: u64, outcomes: impl IntoIterator<Item = MaterializationOutcome>) -> Self {
-        Self::from_changes(
-            head_seq,
-            outcomes.into_iter().flat_map(|outcome| outcome.changes).collect(),
-        )
-    }
 }
 
 /// Apply an incremental batch and return both head metadata and the structured materialization delta.
@@ -722,6 +715,7 @@ where
         mut index,
     } = stores;
 
+    let before = snapshot_visible_state(&nodes, |node| payloads.payload(node))?;
     index.truncate_from(truncate_from)?;
     rewind_existing_payload_suffix_in_place(
         &mut payloads,
@@ -736,13 +730,15 @@ where
         replay.apply_sorted(&mut crdt, &mut index, op)?;
     }
     let run = replay.finish();
+    let after = snapshot_visible_state(crdt.node_store(), |node| crdt.payload(node))?;
+    let visible_changes = visible_changes_between(&before, &after);
 
     flush_nodes(crdt.node_store_mut())?;
     flush_index(&mut index)?;
 
     Ok(Some(CatchUpResult {
         head: run.head.as_ref().map(|head| MaterializationHead::from_op(head, run.seq)),
-        outcome: run.outcome,
+        outcome: MaterializationOutcome::from_changes(run.seq, visible_changes),
     }))
 }
 
@@ -789,53 +785,157 @@ fn validate_rebuilt_state<M: MaterializationCursor>(
     Ok(())
 }
 
-fn repair_visibility_changes<N: NodeStore>(
-    rebuilt: &mut RebuiltMaterialization,
-    persisted_nodes: &[NodeId],
+struct VisibleNodeState {
+    parent: Option<NodeId>,
+    order_key: Option<Vec<u8>>,
+    tombstone: bool,
+    payload: Option<Vec<u8>>,
+}
+
+fn snapshot_visible_state<N: NodeStore>(
     nodes: &N,
-) -> Result<Vec<MaterializationChange>> {
+    mut payload: impl FnMut(NodeId) -> Result<Option<Vec<u8>>>,
+) -> Result<HashMap<NodeId, VisibleNodeState>> {
+    let mut snapshot = HashMap::new();
+    for node in nodes.all_nodes()? {
+        snapshot.insert(
+            node,
+            VisibleNodeState {
+                parent: nodes.parent(node)?,
+                order_key: nodes.order_key(node)?,
+                tombstone: nodes.tombstone(node)?,
+                payload: payload(node)?,
+            },
+        );
+    }
+    Ok(snapshot)
+}
+
+fn visible_parent(state: &VisibleNodeState) -> Option<NodeId> {
+    state.parent.filter(|parent| *parent != NodeId::TRASH)
+}
+
+fn payload_change_between(
+    node: NodeId,
+    before: Option<&VisibleNodeState>,
+    after: Option<&VisibleNodeState>,
+) -> Option<MaterializationChange> {
+    let previous_payload = before.and_then(|state| state.payload.as_ref());
+    let final_payload = after.and_then(|state| state.payload.as_ref());
+    (previous_payload != final_payload).then(|| MaterializationChange::Payload {
+        node,
+        payload: final_payload.cloned(),
+        source: None,
+    })
+}
+
+fn node_change_between(
+    node: NodeId,
+    before: Option<&VisibleNodeState>,
+    after: Option<&VisibleNodeState>,
+) -> Option<MaterializationChange> {
+    match (before, after) {
+        (Some(previous), Some(final_state)) if previous.tombstone && !final_state.tombstone => {
+            Some(MaterializationChange::Restore {
+                node,
+                parent_after: visible_parent(final_state),
+                payload: final_state.payload.clone(),
+                source: None,
+            })
+        }
+        (Some(previous), Some(final_state)) if !previous.tombstone && final_state.tombstone => {
+            Some(MaterializationChange::Delete {
+                node,
+                parent_before: visible_parent(previous),
+                source: None,
+            })
+        }
+        (None, Some(final_state)) if final_state.tombstone => {
+            Some(MaterializationChange::Payload {
+                node,
+                payload: final_state.payload.clone(),
+                source: None,
+            })
+        }
+        (None, Some(final_state)) => Some(match final_state.parent {
+            Some(parent_after) => MaterializationChange::Insert {
+                node,
+                parent_after,
+                payload: final_state.payload.clone(),
+                source: None,
+            },
+            None => MaterializationChange::Payload {
+                node,
+                payload: final_state.payload.clone(),
+                source: None,
+            },
+        }),
+        (Some(previous), None) if previous.tombstone => Some(MaterializationChange::Payload {
+            node,
+            payload: None,
+            source: None,
+        }),
+        (Some(previous), None) => Some(MaterializationChange::Delete {
+            node,
+            parent_before: visible_parent(previous),
+            source: None,
+        }),
+        (Some(previous), Some(final_state)) if !previous.tombstone && !final_state.tombstone => {
+            match (previous.parent, final_state.parent) {
+                (None, Some(parent_after)) => Some(MaterializationChange::Insert {
+                    node,
+                    parent_after,
+                    payload: final_state.payload.clone(),
+                    source: None,
+                }),
+                (Some(parent_before), None) => Some(MaterializationChange::Delete {
+                    node,
+                    parent_before: (parent_before != NodeId::TRASH).then_some(parent_before),
+                    source: None,
+                }),
+                (Some(parent_before), Some(parent_after))
+                    if parent_before != parent_after
+                        || previous.order_key != final_state.order_key =>
+                {
+                    Some(MaterializationChange::Move {
+                        node,
+                        parent_before: (parent_before != NodeId::TRASH).then_some(parent_before),
+                        parent_after,
+                        source: None,
+                    })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn visible_changes_between(
+    before: &HashMap<NodeId, VisibleNodeState>,
+    after: &HashMap<NodeId, VisibleNodeState>,
+) -> Vec<MaterializationChange> {
+    let mut all_nodes: Vec<_> = before.keys().chain(after.keys()).copied().collect();
+    all_nodes.sort();
+    all_nodes.dedup();
+
     let mut changes = Vec::new();
-    for node in persisted_nodes {
-        if *node == NodeId::ROOT || *node == NodeId::TRASH {
+    for node in all_nodes {
+        if node == NodeId::ROOT || node == NodeId::TRASH {
+            changes.extend(payload_change_between(
+                node,
+                before.get(&node),
+                after.get(&node),
+            ));
             continue;
         }
 
-        let previous_parent = nodes.parent(*node)?;
-        let previous_tombstone = nodes.tombstone(*node)?;
-        if rebuilt.crdt.node_store_mut().exists(*node)? {
-            let final_parent = rebuilt.crdt.node_store_mut().parent(*node)?;
-            let final_tombstone = rebuilt.crdt.node_store_mut().tombstone(*node)?;
-            match (previous_tombstone, final_tombstone) {
-                (true, false) => changes.push(MaterializationChange::Restore {
-                    node: *node,
-                    parent_after: final_parent.filter(|parent| *parent != NodeId::TRASH),
-                    payload: rebuilt.crdt.payload(*node)?,
-                    source: None,
-                }),
-                (false, true) => changes.push(MaterializationChange::Delete {
-                    node: *node,
-                    parent_before: previous_parent.filter(|parent| *parent != NodeId::TRASH),
-                    source: None,
-                }),
-                _ => {}
-            }
-        } else if !previous_tombstone {
-            changes.push(MaterializationChange::Delete {
-                node: *node,
-                parent_before: previous_parent.filter(|parent| *parent != NodeId::TRASH),
-                source: None,
-            });
-        }
+        let before_state = before.get(&node);
+        let after_state = after.get(&node);
+        changes.extend(node_change_between(node, before_state, after_state));
+        changes.extend(payload_change_between(node, before_state, after_state));
     }
-    Ok(changes)
-}
-
-fn visibility_transition_key(change: &MaterializationChange) -> Option<(NodeId, bool)> {
-    match change {
-        MaterializationChange::Delete { node, .. } => Some((*node, false)),
-        MaterializationChange::Restore { node, .. } => Some((*node, true)),
-        _ => None,
-    }
+    changes
 }
 
 fn rebuild_derived_state<N, P, I>(
@@ -890,6 +990,11 @@ where
 
 /// Catch backend materialized state up from a replay frontier by rebuilding derived stores from
 /// the canonical operation log.
+///
+/// The returned outcome is the exact node-backed application-visible delta between persisted state
+/// before the rebuild and canonical final state. Transient replay changes that cancel are omitted.
+/// Payload-only orphan rows are still repaired, but cannot be reported because [`PayloadStore`]
+/// does not expose key enumeration.
 pub fn catch_up_materialized_state<S, C, N, P, I, M, FlushNodes, FlushIndex>(
     storage: S,
     stores: PersistedRemoteStores<C, N, P, I>,
@@ -928,25 +1033,17 @@ where
         mut index,
     } = stores;
 
-    let (mut rebuilt, replay_outcome) =
+    let (mut rebuilt, _replay_outcome) =
         replay_canonical_log_in_memory(&storage, frontier, &replica_id)?;
     validate_rebuilt_state(meta, frontier, &rebuilt)?;
 
-    // Public materialization changes intentionally describe only visible application state. They
-    // are not a safe proxy for rows whose internal CRDT metadata changed: a non-dominating delete,
-    // for example, can update `deleted_at` without emitting a visible delete event. Rebuild every
-    // derived store from the authoritative oplog so metadata and orphan rows converge too.
-    let persisted_nodes = nodes.all_nodes()?;
-    let mut repair_changes = repair_visibility_changes(&mut rebuilt, &persisted_nodes, &nodes)?;
-    // Replay describes the invalidated suffix, while repair changes describe persisted-before to
-    // rebuilt-final visibility. The same transition can appear in both views; feeding duplicates
-    // to the parity-based coalescer would incorrectly cancel a real Restore/Delete.
-    let replayed_visibility: HashSet<_> =
-        replay_outcome.changes.iter().filter_map(visibility_transition_key).collect();
-    repair_changes.retain(|repair| match visibility_transition_key(repair) {
-        Some(transition) => !replayed_visibility.contains(&transition),
-        None => true,
-    });
+    // Replay operations can contain transient moves/restores that leave the externally visible
+    // state unchanged. Snapshot both sides so the public outcome describes only the committed net
+    // delta, while the rebuild below still repairs every piece of derived metadata.
+    let before = snapshot_visible_state(&nodes, |node| payloads.payload(node))?;
+    let after =
+        snapshot_visible_state(rebuilt.crdt.node_store(), |node| rebuilt.crdt.payload(node))?;
+    let visible_changes = visible_changes_between(&before, &after);
 
     rebuild_derived_state(&mut rebuilt, &mut nodes, &mut payloads, &mut index)?;
 
@@ -958,22 +1055,17 @@ where
             .head
             .as_ref()
             .map(|head| MaterializationHead::from_op(head, rebuilt.seq)),
-        outcome: MaterializationOutcome::merge(
-            rebuilt.seq,
-            [
-                replay_outcome,
-                MaterializationOutcome::from_changes(rebuilt.seq, repair_changes),
-            ],
-        ),
+        outcome: MaterializationOutcome::from_changes(rebuilt.seq, visible_changes),
     })
 }
 
 /// Apply already-persisted inserted remote ops and commit adapter-owned metadata writes.
 ///
 /// Adapters own persistence + dedupe and pass only the inserted subset here. If the materialized
-/// doc is already behind a replay frontier, or if incremental materialization / metadata updates
-/// fail, this records a replay frontier and returns control to the caller. Callers can then either
-/// catch up immediately in the same append flow or defer catch-up to a later read/recovery path.
+/// doc is already behind a replay frontier, or if incremental materialization fails, this records
+/// a frontier and returns control to the caller. Adapters must make failed incremental writes
+/// atomic so catch-up observes the state from before the attempt. Metadata-write failures are
+/// returned so the adapter's enclosing transaction can roll back.
 pub fn apply_persisted_remote_ops_with_delta<M, E>(
     meta: &M,
     inserted_ops: Vec<Operation>,
@@ -1009,18 +1101,11 @@ where
                 ));
             };
 
-            if update_head(&head).is_ok() {
-                Ok(PersistedRemoteApplyResult::applied(
-                    inserted_count,
-                    result.outcome,
-                ))
-            } else {
-                schedule_replay(&start_replay_frontier())?;
-                Ok(PersistedRemoteApplyResult::needs_catch_up(
-                    inserted_count,
-                    head_seq,
-                ))
-            }
+            update_head(&head)?;
+            Ok(PersistedRemoteApplyResult::applied(
+                inserted_count,
+                result.outcome,
+            ))
         }
         Err(_) => {
             schedule_replay(&start_replay_frontier())?;
@@ -1390,5 +1475,34 @@ mod tests {
         .unwrap();
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn tombstoned_row_appearance_and_removal_preserve_payload_changes() {
+        let node = NodeId(9);
+        let mut state = VisibleNodeState {
+            parent: Some(NodeId::TRASH),
+            order_key: Some(Vec::new()),
+            tombstone: true,
+            payload: Some(vec![1]),
+        };
+        let payload = |payload| MaterializationChange::Payload {
+            node,
+            payload,
+            source: None,
+        };
+        assert_eq!(
+            node_change_between(node, None, Some(&state)),
+            Some(payload(Some(vec![1])))
+        );
+        assert_eq!(
+            node_change_between(node, Some(&state), None),
+            Some(payload(None))
+        );
+        state.payload = None;
+        assert_eq!(
+            node_change_between(node, None, Some(&state)),
+            Some(payload(None))
+        );
     }
 }
