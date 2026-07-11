@@ -5,7 +5,10 @@ import WebSocket, { WebSocketServer } from 'ws';
 import type { SyncBackend, SyncMessage, SyncPeerOptions } from '@treecrdt/sync-protocol';
 import { SyncPeer } from '@treecrdt/sync-protocol';
 import type { DuplexTransport, WireCodec } from '@treecrdt/sync-protocol/transport';
-import { wrapDuplexTransportWithCodec } from '@treecrdt/sync-protocol/transport';
+import {
+  createTerminalSignal,
+  wrapDuplexTransportWithCodec,
+} from '@treecrdt/sync-protocol/transport';
 
 type Awaitable<T> = T | Promise<T>;
 type UpgradeSocket = {
@@ -24,6 +27,18 @@ function toUint8Array(data: WebSocket.RawData): Uint8Array {
 }
 
 function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
+  const terminal = createTerminalSignal();
+
+  ws.once('close', (code, reason) => {
+    const detail = reason.length > 0 ? `: ${reason.toString()}` : '';
+    terminal.notify(new Error(`websocket closed (${code})${detail}`));
+  });
+  ws.once('error', (error) => terminal.notify(error));
+
+  if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+    terminal.notify(new Error('websocket is not open'));
+  }
+
   return {
     send: (bytes) =>
       new Promise<void>((resolve, reject) => {
@@ -38,6 +53,12 @@ function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
       ws.on('message', onMessage);
       return () => ws.off('message', onMessage);
     },
+    close: (error) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (error) ws.close(1002, 'invalid sync frame');
+      else ws.close();
+    },
+    onTerminal: terminal.subscribe,
   };
 }
 
@@ -377,8 +398,9 @@ export async function startWebSocketSyncServer<Op>(
         } catch {}
       };
 
-      ws.once('close', () => void cleanup());
-      ws.once('error', () => void cleanup());
+      // Let the transport's terminal listeners reject protocol work before detaching them.
+      ws.once('close', () => queueMicrotask(() => void cleanup()));
+      ws.once('error', () => queueMicrotask(() => void cleanup()));
 
       let openedDoc: WebSocketSyncServerDocHandle<Op>;
       try {

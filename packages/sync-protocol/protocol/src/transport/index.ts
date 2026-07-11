@@ -1,8 +1,22 @@
+import { createTerminalSignal } from './terminal.js';
+
+export { createTerminalSignal } from './terminal.js';
+
 export type Unsubscribe = () => void;
 
 export interface DuplexTransport<M> {
   send(msg: M): Promise<void>;
   onMessage(handler: (msg: M) => void): Unsubscribe;
+  /** Permanently close the transport, optionally because of a protocol error. */
+  close?(error?: unknown): void;
+  /**
+   * Subscribe to the transport becoming permanently unusable.
+   *
+   * This is optional so existing application transports remain source-compatible.
+   * Implementations that expose it must notify each handler at most once. A missing
+   * error denotes an ordinary close rather than a protocol or I/O failure.
+   */
+  onTerminal?(handler: (error?: unknown) => void): Unsubscribe;
 }
 
 export type WireCodec<Message, Wire> = {
@@ -99,9 +113,50 @@ export function wrapDuplexTransportWithCodec<Wire, Message>(
   transport: DuplexTransport<Wire>,
   codec: WireCodec<Message, Wire>,
 ): DuplexTransport<Message> {
+  const terminal = createTerminalSignal();
+
+  const closeForProtocolError = (error: unknown) => {
+    try {
+      transport.close?.(error);
+    } catch {
+      // The decode failure remains the primary terminal cause.
+    }
+    terminal.notify(error);
+  };
+
   return {
-    send: async (msg) => transport.send(codec.encode(msg)),
-    onMessage: (handler) => transport.onMessage((wire) => handler(codec.decode(wire))),
+    send: async (msg) => {
+      if (terminal.settled) {
+        throw terminal.error instanceof Error ? terminal.error : new Error('transport is closed');
+      }
+      await transport.send(codec.encode(msg));
+    },
+    onMessage: (handler) =>
+      transport.onMessage((wire) => {
+        if (terminal.settled) return;
+        let message: Message;
+        try {
+          message = codec.decode(wire);
+        } catch (error) {
+          closeForProtocolError(error);
+          return;
+        }
+        handler(message);
+      }),
+    close: (error) => {
+      terminal.notify(error);
+      transport.close?.(error);
+    },
+    onTerminal: (handler) => {
+      const unsubscribeLocal = terminal.subscribe(handler);
+      const unsubscribeUpstream = terminal.settled
+        ? undefined
+        : transport.onTerminal?.((error) => terminal.notify(error));
+      return () => {
+        unsubscribeLocal();
+        unsubscribeUpstream?.();
+      };
+    },
   };
 }
 

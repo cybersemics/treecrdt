@@ -65,7 +65,16 @@ function deferred<T>(): Pending<T> {
   return { promise, resolve, reject };
 }
 
+function ignoreErrors(action?: () => void): void {
+  try {
+    action?.();
+  } catch {
+    // best-effort cleanup or error reporting
+  }
+}
+
 type ResponderSession<Op> = {
+  transport: DuplexTransport<SyncMessage<Op>>;
   filter: Filter;
   round: number;
   decoder: RibltDecoder16;
@@ -74,6 +83,7 @@ type ResponderSession<Op> = {
 };
 
 type InitiatorSession<Op> = {
+  transport: DuplexTransport<SyncMessage<Op>>;
   filter: Filter;
   filterId: string;
   round: number;
@@ -85,6 +95,14 @@ type InitiatorSession<Op> = {
   awaitingUploadAck: boolean;
   done: boolean;
 };
+
+function rejectInitiatorSession<Op>(session: InitiatorSession<Op>, error: Error): void {
+  session.done = true;
+  session.ack.reject(error);
+  session.terminalStatus.reject(error);
+  session.codewordCreditSignal.reject(error);
+  session.receivedOps.reject(error);
+}
 
 export type SyncPeerOptions<Op = unknown> = {
   /** Upper bound on RIBLT codewords exchanged while reconciling one filter. */
@@ -212,9 +230,10 @@ type ResponderSubscription<Op> = {
   transport: DuplexTransport<SyncMessage<Op>>;
 };
 
-type InitiatorSubscription = {
+type InitiatorSubscription<Op> = {
+  transport: DuplexTransport<SyncMessage<Op>>;
   ack: Pending<SubscribeAck>;
-  failed: Pending<unknown>;
+  failed: Pending<never>;
 };
 
 type PendingPushOp<Op> = {
@@ -255,8 +274,11 @@ export class SyncPeer<Op> {
   private readonly responderSessions = new Map<string, ResponderSession<Op>>();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
   private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
-  private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription>();
-  private readonly responderAwaitingUploadAcks = new Set<string>();
+  private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription<Op>>();
+  private readonly responderAwaitingUploadAcks = new Map<
+    string,
+    DuplexTransport<SyncMessage<Op>>
+  >();
   private readonly opsBatchQueues = new Map<string, Promise<void>>();
   private readonly pendingPushOpsByRefHex = new Map<string, PendingPushOp<Op>>();
   private pushNeedsFullScan = false;
@@ -286,18 +308,48 @@ export class SyncPeer<Op> {
 
   attach(
     transport: DuplexTransport<SyncMessage<Op>>,
-    opts: SyncPeerAttachOptions<Op> = {},
+    attachOpts: SyncPeerAttachOptions<Op> = {},
   ): () => void {
-    return transport.onMessage((msg) => {
-      void this.handleMessage(transport, msg).catch((error) => {
-        this.failAllPendingSessions(error);
-        try {
-          opts.onError?.({ error, transport });
-        } catch {
-          // ignore callback failures
-        }
-      });
+    let failed = false;
+    let unsubscribeMessage: (() => void) | undefined;
+    let unsubscribeTerminal: (() => void) | undefined;
+    const stopListening = () => {
+      ignoreErrors(unsubscribeMessage);
+      unsubscribeMessage = undefined;
+      ignoreErrors(unsubscribeTerminal);
+      unsubscribeTerminal = undefined;
+    };
+    const fail = (error: unknown, report: boolean, close: boolean) => {
+      if (failed) return;
+      failed = true;
+      stopListening();
+      const normalized =
+        error instanceof Error ? error : new Error(String(error ?? 'sync transport closed'));
+      this.failPendingSessionsForTransport(transport, normalized);
+      this.dropResponderStateForTransport(transport);
+      if (close) ignoreErrors(() => transport.close?.(normalized));
+      if (report) ignoreErrors(() => attachOpts.onError?.({ error: normalized, transport }));
+    };
+
+    unsubscribeMessage = transport.onMessage((msg) => {
+      if (failed) return;
+      void this.handleMessage(transport, msg)
+        .catch((error) => {
+          fail(error, true, true);
+        })
+        .finally(() => {
+          if (failed) this.dropResponderStateForTransport(transport);
+        });
     });
+    if (failed) stopListening();
+
+    if (!failed && transport.onTerminal) {
+      const unsubscribe = transport.onTerminal((error) => fail(error, true, false));
+      if (failed) ignoreErrors(unsubscribe);
+      else unsubscribeTerminal = unsubscribe;
+    }
+
+    return () => fail(new Error('sync transport detached'), false, false);
   }
 
   // Live subscriptions are responder-owned: once a peer subscribes, local writes
@@ -632,6 +684,7 @@ export class SyncPeer<Op> {
     const hello: Hello = { capabilities, filters: [{ id: filterId, filter }], maxLamport };
 
     const session: InitiatorSession<Op> = {
+      transport,
       filter,
       filterId,
       round,
@@ -916,10 +969,12 @@ export class SyncPeer<Op> {
     const maxOpsPerBatch = opts.maxOpsPerBatch;
 
     const subscriptionId = randomId('sub');
-    const session: InitiatorSubscription = {
+    const session: InitiatorSubscription<Op> = {
+      transport,
       ack: deferred<SubscribeAck>(),
-      failed: deferred<unknown>(),
+      failed: deferred<never>(),
     };
+    const failed = session.failed.promise;
     this.initiatorSubscriptions.set(subscriptionId, session);
     const ready = deferred<void>();
     let readySettled = false;
@@ -957,18 +1012,13 @@ export class SyncPeer<Op> {
 
         const ackOrAbort = await Promise.race([
           session.ack.promise.then(() => ({ case: 'ack' as const })),
-          session.failed.promise.then((err) => ({ case: 'failed' as const, err })),
+          failed,
           waitForAbort(signal).then(() => ({ case: 'aborted' as const })),
         ]);
         if (ackOrAbort.case === 'aborted') {
           resolveReady();
           return;
         }
-        if (ackOrAbort.case === 'failed') {
-          rejectReady(ackOrAbort.err);
-          throw ackOrAbort.err;
-        }
-
         if (signal.aborted) {
           resolveReady();
           return;
@@ -984,7 +1034,7 @@ export class SyncPeer<Op> {
 
         if (intervalMs > 0) {
           while (!signal.aborted) {
-            const slept = await sleepUntil(intervalMs, signal);
+            const slept = await Promise.race([sleepUntil(intervalMs, signal), failed]);
             if (!slept) break;
             if (signal.aborted) break;
             await this.syncOnce(transport, filter, {
@@ -994,17 +1044,13 @@ export class SyncPeer<Op> {
             });
           }
         } else {
-          await Promise.race([
-            waitForAbort(signal),
-            session.failed.promise.then((err) => {
-              throw err;
-            }),
-          ]);
+          await Promise.race([waitForAbort(signal), failed]);
         }
       } catch (err) {
         rejectReady(err);
         throw err;
       } finally {
+        controller.abort();
         resolveReady();
         this.initiatorSubscriptions.delete(subscriptionId);
         if (sentSubscribe) {
@@ -1278,7 +1324,7 @@ export class SyncPeer<Op> {
           name: DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
           value: id,
         });
-        this.responderAwaitingUploadAcks.add(id);
+        this.responderAwaitingUploadAcks.set(id, transport);
         continue;
       }
 
@@ -1289,6 +1335,7 @@ export class SyncPeer<Op> {
         opRefs: localOpRefs.length,
       });
       this.responderSessions.set(id, {
+        transport,
         filter,
         round: 0,
         decoder,
@@ -1600,11 +1647,7 @@ export class SyncPeer<Op> {
       const code = ErrorCode[err.code] ?? String(err.code);
       const e = new Error(`${code}: ${err.message}`);
       for (const session of this.initiatorSessions.values()) {
-        session.done = true;
-        session.ack.reject(e);
-        session.terminalStatus.reject(e);
-        session.codewordCreditSignal.reject(e);
-        session.receivedOps.reject(e);
+        rejectInitiatorSession(session, e);
       }
       this.initiatorSessions.clear();
       return;
@@ -1614,31 +1657,46 @@ export class SyncPeer<Op> {
 
     const code = ErrorCode[err.code] ?? String(err.code);
     const e = new Error(`${code}: ${err.message}`);
-    session.done = true;
-    session.ack.reject(e);
-    session.terminalStatus.reject(e);
-    session.codewordCreditSignal.reject(e);
-    session.receivedOps.reject(e);
+    rejectInitiatorSession(session, e);
     this.initiatorSessions.delete(err.filterId);
   }
 
-  private failAllPendingSessions(error: unknown): void {
+  private failPendingSessionsForTransport(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    error: unknown,
+  ): void {
     const e = error instanceof Error ? error : new Error(String(error));
 
-    for (const sub of this.initiatorSubscriptions.values()) {
+    const helloWaiters = this.transportHelloAckWaiters.get(transport);
+    if (helloWaiters) {
+      this.transportHelloAckWaiters.delete(transport);
+      for (const waiter of helloWaiters) waiter.reject(e);
+    }
+
+    for (const [subscriptionId, sub] of this.initiatorSubscriptions) {
+      if (sub.transport !== transport) continue;
       sub.ack.reject(e);
       sub.failed.reject(e);
+      this.initiatorSubscriptions.delete(subscriptionId);
     }
-    this.initiatorSubscriptions.clear();
 
-    for (const session of this.initiatorSessions.values()) {
-      session.done = true;
-      session.ack.reject(e);
-      session.terminalStatus.reject(e);
-      session.codewordCreditSignal.reject(e);
-      session.receivedOps.reject(e);
+    for (const [filterId, session] of this.initiatorSessions) {
+      if (session.transport !== transport) continue;
+      rejectInitiatorSession(session, e);
+      this.initiatorSessions.delete(filterId);
     }
-    this.initiatorSessions.clear();
+  }
+
+  private dropResponderStateForTransport(transport: DuplexTransport<SyncMessage<Op>>): void {
+    for (const [filterId, session] of this.responderSessions) {
+      if (session.transport === transport) this.responderSessions.delete(filterId);
+    }
+    for (const [subscriptionId, sub] of this.responderSubscriptions) {
+      if (sub.transport === transport) this.responderSubscriptions.delete(subscriptionId);
+    }
+    for (const [filterId, pendingTransport] of this.responderAwaitingUploadAcks) {
+      if (pendingTransport === transport) this.responderAwaitingUploadAcks.delete(filterId);
+    }
   }
 
   private async onRibltStatus(status: RibltStatus): Promise<void> {
