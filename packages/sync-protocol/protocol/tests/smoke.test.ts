@@ -31,6 +31,43 @@ async function tick(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+async function sendHello(
+  transport: DuplexTransport<SyncMessage<Operation>>,
+  docId: string,
+  capabilities: Array<{ name: string; value: string }>,
+): Promise<void> {
+  await transport.send({
+    v: 0,
+    docId,
+    payload: {
+      case: 'hello',
+      value: { capabilities, filters: [], maxLamport: 0n },
+    },
+  });
+  await tick();
+}
+
+async function sendHelloAck(
+  transport: DuplexTransport<SyncMessage<Operation>>,
+  docId: string,
+  capabilities: Array<{ name: string; value: string }>,
+): Promise<void> {
+  await transport.send({
+    v: 0,
+    docId,
+    payload: {
+      case: 'helloAck',
+      value: {
+        capabilities,
+        acceptedFilters: [],
+        rejectedFilters: [],
+        maxLamport: 0n,
+      },
+    },
+  });
+  await tick();
+}
+
 function orderKeyFromPosition(position: number): Uint8Array {
   if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
   const n = position + 1;
@@ -971,6 +1008,215 @@ test('pushOps uploads direct ops without reconcile roundtrips', async () => {
   }
 });
 
+test('pushOps refreshes withdrawn reader authority and shares a concurrent refresh', async () => {
+  const docId = 'doc-push-reader-refresh';
+  const root = '0'.repeat(32);
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  let advertiseReader = true;
+  const op = (counter: number) =>
+    makeOp(replicas.a, counter, counter, {
+      type: 'insert' as const,
+      parent: root,
+      node: nodeIdFromInt(counter),
+      orderKey: orderKeyFromPosition(counter - 1),
+    });
+
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>({
+    bToADelayMs: 25,
+  });
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => [{ name: 'auth.capability', value: 'sender' }],
+      filterOutgoingOps: async (ops, ctx) => {
+        expect(ctx.filter).toEqual({ all: {} });
+        const canRead = ctx.capabilities.some(
+          (capability) => capability.name === 'auth.capability' && capability.value === 'reader',
+        );
+        return ops.map(() => canRead);
+      },
+    },
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      onHello: async () => (advertiseReader ? [{ name: 'auth.capability', value: 'reader' }] : []),
+    },
+  });
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    await peerA.pushOps(transportA, [op(1)]);
+    await waitUntil(() => b.hasOp(replicaHex.a, 1));
+
+    advertiseReader = false;
+    const hellosBefore = wire.filter(
+      (entry) => entry.dir === 'aToB' && entry.msg.payload.case === 'hello',
+    ).length;
+    await Promise.all([peerA.pushOps(transportA, [op(2)]), peerA.pushOps(transportA, [op(3)])]);
+    await tick();
+
+    const hellosAfter = wire.filter(
+      (entry) => entry.dir === 'aToB' && entry.msg.payload.case === 'hello',
+    ).length;
+    expect(hellosAfter - hellosBefore).toBe(1);
+    expect(b.hasOp(replicaHex.a, 2)).toBe(false);
+    expect(b.hasOp(replicaHex.a, 3)).toBe(false);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('pushOps retries the same capability snapshot after remote and local rejection', async () => {
+  const docId = 'doc-push-capability-retry';
+  const root = '0'.repeat(32);
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  let helloAttempt = 0;
+
+  const [transportA, transportB] = createTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => [{ name: 'auth.capability', value: 'sender' }],
+      onHelloAck: async () => {
+        if (helloAttempt === 2) throw new Error('local rejected ack');
+      },
+      filterOutgoingOps: async (ops, ctx) =>
+        ops.map(() =>
+          ctx.capabilities.some(
+            (capability) => capability.name === 'auth.capability' && capability.value === 'reader',
+          ),
+        ),
+    },
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      onHello: async () => {
+        helloAttempt += 1;
+        if (helloAttempt === 1) throw new Error('remote rejected hello');
+        return [{ name: 'auth.capability', value: 'reader' }];
+      },
+    },
+  });
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+  const makePushOp = (counter: number) =>
+    makeOp(replicas.a, counter, counter, {
+      type: 'insert' as const,
+      parent: root,
+      node: nodeIdFromInt(counter),
+      orderKey: orderKeyFromPosition(counter - 1),
+    });
+
+  try {
+    await expect(peerA.pushOps(transportA, [makePushOp(1)])).rejects.toThrow(
+      /remote rejected hello/,
+    );
+    await expect(peerA.pushOps(transportA, [makePushOp(2)])).rejects.toThrow(/local rejected ack/);
+    await peerA.pushOps(transportA, [makePushOp(3)]);
+    await waitUntil(() => b.hasOp(replicaHex.a, 3));
+
+    expect(helloAttempt).toBe(3);
+    expect(b.hasOp(replicaHex.a, 1)).toBe(false);
+    expect(b.hasOp(replicaHex.a, 2)).toBe(false);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('rejected and out-of-order capability snapshots stay hidden from outgoing auth', async () => {
+  const docId = 'doc-capability-snapshot-validation';
+  const root = '0'.repeat(32);
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  let releaseSlowHello!: () => void;
+  const slowHello = new Promise<void>((resolve) => {
+    releaseSlowHello = resolve;
+  });
+  let releaseSlowAck!: () => void;
+  const slowAck = new Promise<void>((resolve) => {
+    releaseSlowAck = resolve;
+  });
+  const seenCapabilities: Array<Array<{ name: string; value: string }>> = [];
+
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, {
+    auth: {
+      onHello: async (hello) => {
+        const value = hello.capabilities[0]?.value;
+        if (value === 'bad-hello') throw new Error('rejected hello snapshot');
+        if (value === 'slow-bad-hello') {
+          await slowHello;
+          throw new Error('stale rejected hello snapshot');
+        }
+        return [];
+      },
+      onHelloAck: async (ack) => {
+        const value = ack.capabilities[0]?.value;
+        if (value === 'bad-ack') {
+          throw new Error('rejected ack snapshot');
+        }
+        if (value === 'slow-bad-ack') {
+          await slowAck;
+          throw new Error('stale rejected ack snapshot');
+        }
+      },
+      filterOutgoingOps: async (ops, ctx) => {
+        seenCapabilities.push([...ctx.capabilities]);
+        return ops.map(() => false);
+      },
+    },
+  });
+  const peerB = new SyncPeer(b);
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+  const op = (counter: number) =>
+    makeOp(replicas.a, counter, counter, {
+      type: 'insert' as const,
+      parent: root,
+      node: nodeIdFromInt(counter),
+      orderKey: orderKeyFromPosition(counter - 1),
+    });
+
+  try {
+    await sendHello(transportB, docId, [{ name: 'auth.capability', value: 'reader' }]);
+    await sendHello(transportB, docId, [{ name: 'auth.capability', value: 'bad-hello' }]);
+    await peerA.pushOps(transportA, [op(1)]);
+
+    await sendHelloAck(transportB, docId, [{ name: 'auth.capability', value: 'reader' }]);
+    await sendHelloAck(transportB, docId, [{ name: 'auth.capability', value: 'bad-ack' }]);
+    await peerA.pushOps(transportA, [op(2)]);
+
+    const errorsBeforeStaleSnapshots = wire.filter(
+      (entry) => entry.dir === 'aToB' && entry.msg.payload.case === 'error',
+    ).length;
+    await sendHello(transportB, docId, [{ name: 'auth.capability', value: 'slow-bad-hello' }]);
+    await sendHello(transportB, docId, []);
+    releaseSlowHello();
+    await tick();
+    await sendHelloAck(transportB, docId, [{ name: 'auth.capability', value: 'slow-bad-ack' }]);
+    await sendHelloAck(transportB, docId, []);
+    releaseSlowAck();
+    await tick();
+    await peerA.pushOps(transportA, [op(3)]);
+
+    expect(seenCapabilities).toEqual([[], [], []]);
+    expect(
+      wire.filter((entry) => entry.dir === 'aToB' && entry.msg.payload.case === 'error'),
+    ).toHaveLength(errorsBeforeStaleSnapshots);
+    expect(b.hasOp(replicaHex.a, 1)).toBe(false);
+    expect(b.hasOp(replicaHex.a, 2)).toBe(false);
+    expect(b.hasOp(replicaHex.a, 3)).toBe(false);
+  } finally {
+    releaseSlowHello();
+    releaseSlowAck();
+    detachA();
+    detachB();
+  }
+});
+
 test('pushOps refreshes replay capabilities before uploading newly authorized ops', async () => {
   const docId = 'doc-push-capability-refresh';
   const root = '0'.repeat(32);
@@ -1216,6 +1462,58 @@ test('syncOnce can direct-send a clean-slate upload to an empty receiver without
   expect(wire).toContain('bToA:opsBatch');
   expect(wire).not.toContain('aToB:ribltCodewords');
   expect(wire).not.toContain('bToA:ribltStatus');
+});
+
+test('Hello rejects an all-filter payload projection before exposing RIBLT state', async () => {
+  const docId = 'doc-all-filter-payload-preflight';
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  await b.applyOps([
+    makeOp(replicas.b, 1, 1, {
+      type: 'payload',
+      node: nodeIdFromInt(1),
+      payload: new Uint8Array([1, 2, 3]),
+    }),
+  ]);
+
+  const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => [{ name: 'auth.capability', value: 'structure-only-reader' }],
+    },
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      onHello: async () => [],
+      authorizeFilter: async () => {},
+      filterOutgoingOps: async (ops) => {
+        if (ops.some((op) => op.kind.type === 'payload')) {
+          throw new Error('operation-log projection requires read_payload');
+        }
+        return ops.map(() => true);
+      },
+    },
+  });
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+
+  try {
+    await expect(peerA.syncOnce(transportA, { all: {} })).rejects.toThrow(/read_payload/);
+
+    const ack = wire.find(
+      (entry) => entry.dir === 'bToA' && entry.msg.payload.case === 'helloAck',
+    )?.msg;
+    expect(ack?.payload.case).toBe('helloAck');
+    if (ack?.payload.case === 'helloAck') {
+      expect(ack.payload.value.acceptedFilters).toEqual([]);
+      expect(ack.payload.value.rejectedFilters).toHaveLength(1);
+    }
+    expect(wire.some((entry) => entry.msg.payload.case === 'ribltCodewords')).toBe(false);
+    expect(wire.some((entry) => entry.msg.payload.case === 'ribltStatus')).toBe(false);
+  } finally {
+    detachA();
+    detachB();
+  }
 });
 
 test('syncOnce rejects when local message handler throws during apply', async () => {
@@ -1613,6 +1911,7 @@ test('subscribe refreshes replay capabilities before pushing newly authorized op
   const [transportA, transportB, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
   const knownReplayCaps = new Set<string>();
   let serverHelloCaps: Array<{ name: string; value: string }> = [];
+  const clientHelloCaps = [{ name: 'auth.capability', value: 'client-token' }];
 
   const peerA = new SyncPeer(a, {
     auth: {
@@ -1624,12 +1923,12 @@ test('subscribe refreshes replay capabilities before pushing newly authorized op
   });
   const peerB = new SyncPeer(b, {
     auth: {
-      helloCapabilities: async () => [{ name: 'auth.capability', value: 'client-token' }],
+      helloCapabilities: async () => clientHelloCaps,
       onHello: async (hello) => {
         for (const cap of hello.capabilities) {
           if (cap.name === 'auth.capability.replay') knownReplayCaps.add(cap.value);
         }
-        return [];
+        return clientHelloCaps;
       },
       verifyOps: async (_ops, auth) => {
         if (!auth) throw new Error('expected auth on subscribed push');
@@ -1681,6 +1980,62 @@ test('subscribe refreshes replay capabilities before pushing newly authorized op
       await sub.done;
     }
   } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('subscription withdrawal sends no ops and terminates the subscriber', async () => {
+  const docId = 'doc-subscribe-reader-withdrawal';
+  const root = '0'.repeat(32);
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  let readerCapabilities = [{ name: 'auth.capability', value: 'reader' }];
+
+  const [transportA, transportB] = createTimedDuplex<SyncMessage<Operation>>();
+  const peerA = new SyncPeer(a, {
+    auth: {
+      helloCapabilities: async () => [{ name: 'auth.capability', value: 'server' }],
+      onHello: async () => [{ name: 'auth.capability', value: 'server' }],
+      authorizeFilter: async () => {},
+      filterOutgoingOps: async (ops, ctx) => {
+        if (!ctx.capabilities.some((capability) => capability.value === 'reader')) {
+          throw new Error('reader capability withdrawn');
+        }
+        return ops.map(() => true);
+      },
+    },
+  });
+  const peerB = new SyncPeer(b, {
+    auth: {
+      helloCapabilities: async () => readerCapabilities,
+      onHello: async () => readerCapabilities,
+    },
+  });
+  const detachA = peerA.attach(transportA);
+  const detachB = peerB.attach(transportB);
+  const sub = peerB.subscribe(transportB, { all: {} }, { immediate: false });
+
+  try {
+    await sub.ready;
+    readerCapabilities = [];
+    await sendHello(transportB, docId, []);
+
+    await a.applyOps([
+      makeOp(replicas.a, 1, 1, {
+        type: 'insert',
+        parent: root,
+        node: nodeIdFromInt(1),
+        orderKey: orderKeyFromPosition(0),
+      }),
+    ]);
+    const terminal = expect(sub.done).rejects.toThrow(/reader capability withdrawn/);
+    await peerA.notifyLocalUpdate();
+
+    await terminal;
+    expect(b.hasOp(replicaHex.a, 1)).toBe(false);
+  } finally {
+    sub.stop();
     detachA();
     detachB();
   }

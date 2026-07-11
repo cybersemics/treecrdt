@@ -307,13 +307,17 @@ export class SyncPeer<Op> {
     DuplexTransport<SyncMessage<Op>>,
     Hello['capabilities']
   >();
-  private readonly transportLastSentHelloCaps = new WeakMap<
+  private readonly transportHelloAckWaiter = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
-    string
+    Pending<void>
   >();
-  private readonly transportHelloAckWaiters = new WeakMap<
+  private readonly transportHelloRefreshInFlight = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
-    Set<Pending<void>>
+    { fingerprint: string; completion: Pending<void> }
+  >();
+  private readonly transportPeerCapabilityGeneration = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    number
   >();
   private readonly transportDirectPushStreamIds = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
@@ -452,8 +456,24 @@ export class SyncPeer<Op> {
           for (const sub of subscriptions.values()) {
             try {
               await this.pushSubscription(sub, { deltaOps, forceFullScan });
-            } catch {
+            } catch (err) {
               deleteTransportOwned(this.responderSubscriptions, sub.transport, sub.subscriptionId);
+              try {
+                await sub.transport.send({
+                  v: 0,
+                  docId: this.backend.docId,
+                  payload: {
+                    case: 'error',
+                    value: {
+                      code: ErrorCode.ERROR_CODE_UNSPECIFIED,
+                      message: err instanceof Error ? err.message : String(err),
+                      subscriptionId: sub.subscriptionId,
+                    },
+                  },
+                });
+              } catch {
+                // The subscription is already terminal locally; ignore transport failure.
+              }
             }
             await yieldToMacrotask();
           }
@@ -466,7 +486,6 @@ export class SyncPeer<Op> {
 
   private async refreshHelloCapabilities(
     transport: DuplexTransport<SyncMessage<Op>>,
-    opts: { force?: boolean; waitForAck?: boolean } = {},
   ): Promise<void> {
     if (!this.auth?.helloCapabilities) return;
 
@@ -475,33 +494,83 @@ export class SyncPeer<Op> {
       this.auth.helloCapabilities({ docId: this.backend.docId }),
     ]);
     const fingerprint = capabilitySetFingerprint(capabilities);
-    if (!opts.force && this.transportLastSentHelloCaps.get(transport) === fingerprint) return;
 
-    let waiter: Pending<void> | undefined;
-    if (opts.waitForAck) {
-      waiter = deferred<void>();
-      const waiters = this.transportHelloAckWaiters.get(transport) ?? new Set<Pending<void>>();
-      waiters.add(waiter);
-      this.transportHelloAckWaiters.set(transport, waiters);
-    }
-
-    try {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
-      });
-      this.transportLastSentHelloCaps.set(transport, fingerprint);
-      await waiter?.promise;
-    } catch (err) {
-      if (waiter) {
-        const waiters = this.transportHelloAckWaiters.get(transport);
-        waiters?.delete(waiter);
-        if (waiters && waiters.size === 0) this.transportHelloAckWaiters.delete(transport);
-        waiter.reject(err);
+    // HelloAck has no request id, so only one capability refresh may be in flight
+    // per transport. Identical callers share it; changed snapshots queue behind it.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const inFlight = this.transportHelloRefreshInFlight.get(transport);
+      if (inFlight) {
+        if (inFlight.fingerprint === fingerprint) {
+          await inFlight.completion.promise;
+          return;
+        }
+        try {
+          await inFlight.completion.promise;
+        } catch {
+          // A failed refresh does not prevent a queued snapshot from retrying.
+        }
+        continue;
       }
-      throw err;
+      const ack = deferred<void>();
+      this.transportHelloAckWaiter.set(transport, ack);
+
+      const completion = deferred<void>();
+      const refresh = { fingerprint, completion };
+      this.transportHelloRefreshInFlight.set(transport, refresh);
+
+      void (async () => {
+        try {
+          await transport.send({
+            v: 0,
+            docId: this.backend.docId,
+            payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
+          });
+          await ack.promise;
+          completion.resolve();
+        } catch (err) {
+          if (this.transportHelloAckWaiter.get(transport) === ack) {
+            this.transportHelloAckWaiter.delete(transport);
+          }
+          completion.reject(err);
+        } finally {
+          if (this.transportHelloRefreshInFlight.get(transport) === refresh) {
+            this.transportHelloRefreshInFlight.delete(transport);
+          }
+        }
+      })();
+
+      await completion.promise;
+      return;
     }
+  }
+
+  private rejectHelloAckWaiter(transport: DuplexTransport<SyncMessage<Op>>, error: unknown): void {
+    const waiter = this.transportHelloAckWaiter.get(transport);
+    if (!waiter) return;
+    this.transportHelloAckWaiter.delete(transport);
+    waiter.reject(error);
+  }
+
+  private beginPeerCapabilitySnapshot(transport: DuplexTransport<SyncMessage<Op>>): number {
+    const generation = (this.transportPeerCapabilityGeneration.get(transport) ?? 0) + 1;
+    this.transportPeerCapabilityGeneration.set(transport, generation);
+    // Clear old authority immediately; publish the replacement only after its
+    // auth hook succeeds and only if no newer snapshot has arrived.
+    this.transportHasAuth.set(transport, false);
+    this.transportPeerCapabilities.set(transport, []);
+    return generation;
+  }
+
+  private publishPeerCapabilitySnapshot(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    generation: number,
+    capabilities: Hello['capabilities'],
+  ): boolean {
+    if (this.transportPeerCapabilityGeneration.get(transport) !== generation) return false;
+    this.transportHasAuth.set(transport, capabilities.some(isAuthCapability));
+    this.transportPeerCapabilities.set(transport, capabilities);
+    return true;
   }
 
   private resolveDirectPushStreamId(
@@ -871,7 +940,9 @@ export class SyncPeer<Op> {
    *
    * The `opsBatch` wire format still carries a `filterId`; for direct pushes
    * that field acts only as a stable stream id so the receiver can order chunks
-   * and interpret the final `done` marker correctly.
+   * and interpret the final `done` marker correctly. When an outgoing auth
+   * filter is configured, direct pushes use an unscoped `all` filter and only
+   * send the operations that filter allows for the peer's current capabilities.
    */
   async pushOps(
     transport: DuplexTransport<SyncMessage<Op>>,
@@ -880,16 +951,32 @@ export class SyncPeer<Op> {
   ): Promise<void> {
     if (ops.length === 0) return;
 
-    await this.refreshHelloCapabilities(transport, { waitForAck: true });
+    await this.refreshHelloCapabilities(transport);
+
+    const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
+    let outgoingOps: readonly Op[] = ops;
+    if (this.auth?.filterOutgoingOps) {
+      const allowed = await this.auth.filterOutgoingOps(outgoingOps, {
+        docId: this.backend.docId,
+        purpose: 'reconcile',
+        filter: { all: {} },
+        capabilities: peerCapabilities,
+      });
+      if (allowed.length !== outgoingOps.length) {
+        throw new Error(
+          `filterOutgoingOps returned ${allowed.length} flags for ${outgoingOps.length} ops`,
+        );
+      }
+      outgoingOps = outgoingOps.filter((_op, index) => allowed[index] === true);
+      if (outgoingOps.length === 0) return;
+    }
 
     const streamId = this.resolveDirectPushStreamId(transport, opts.filterId);
     const batchSize = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
-
-    const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
     const shouldAttachAuth = peerAdvertisedOpAuth(peerCapabilities);
 
-    for (let start = 0; start < ops.length; start += batchSize) {
-      const chunk = ops.slice(start, start + batchSize);
+    for (let start = 0; start < outgoingOps.length; start += batchSize) {
+      const chunk = outgoingOps.slice(start, start + batchSize);
       const auth =
         shouldAttachAuth && this.auth?.signOps
           ? await this.auth.signOps(chunk, {
@@ -911,7 +998,7 @@ export class SyncPeer<Op> {
             filterId: streamId,
             ops: [...chunk],
             ...(auth ? { auth } : {}),
-            done: start + batchSize >= ops.length,
+            done: start + batchSize >= outgoingOps.length,
           },
         },
       });
@@ -1043,7 +1130,7 @@ export class SyncPeer<Op> {
         // If the responder requires capability-gated filters/subscriptions, send an initial
         // Hello (no filters) so it can record our capabilities before Subscribe arrives.
         if (this.auth?.helloCapabilities) {
-          await this.refreshHelloCapabilities(transport, { force: true });
+          await this.refreshHelloCapabilities(transport);
         }
 
         await transport.send({
@@ -1121,6 +1208,10 @@ export class SyncPeer<Op> {
 
     if (msg.payload.case === 'error') {
       try {
+        if (!msg.payload.value.filterId && !msg.payload.value.subscriptionId) {
+          const code = ErrorCode[msg.payload.value.code] ?? String(msg.payload.value.code);
+          this.rejectHelloAckWaiter(transport, new Error(`${code}: ${msg.payload.value.message}`));
+        }
         await this.onError(transport, msg.payload.value);
       } catch {
         // ignore error while handling error
@@ -1209,12 +1300,7 @@ export class SyncPeer<Op> {
     });
     const hasAuthCapability = hello.capabilities.some(isAuthCapability);
     const supportsDirectSendSmallScope = peerSupportsDirectSendSmallScope(hello.capabilities);
-
-    // Record the presence of auth capabilities immediately so concurrent messages (e.g. Subscribe)
-    // can't race and get rejected before `onHello` completes.
-    if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(hello.capabilities))
-      this.transportPeerCapabilities.set(transport, hello.capabilities);
+    const capabilityGeneration = this.beginPeerCapabilitySnapshot(transport);
 
     let ackCapabilities: HelloAck['capabilities'] = [];
     try {
@@ -1223,10 +1309,14 @@ export class SyncPeer<Op> {
         ackCapabilities: ackCapabilities.length,
       });
     } catch (err: any) {
+      if (this.transportPeerCapabilityGeneration.get(transport) !== capabilityGeneration) return;
       await this.sendProtocolError(transport, {
         code: ErrorCode.ERROR_CODE_UNSPECIFIED,
         message: String(err?.message ?? err ?? 'auth error'),
       });
+      return;
+    }
+    if (!this.publishPeerCapabilitySnapshot(transport, capabilityGeneration, hello.capabilities)) {
       return;
     }
 
@@ -1297,7 +1387,7 @@ export class SyncPeer<Op> {
         continue;
       }
 
-      if (!('all' in filter) && this.auth?.filterOutgoingOps && localOpRefs.length > 0) {
+      if (this.auth?.filterOutgoingOps && localOpRefs.length > 0) {
         try {
           const ops = await this.backend.getOpsByOpRefs(localOpRefs);
           const allowed = await this.auth.filterOutgoingOps(ops, {
@@ -1400,16 +1490,21 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     ack: HelloAck,
   ): Promise<void> {
-    await this.auth?.onHelloAck?.(ack, { docId: this.backend.docId });
-
-    const hasAuthCapability = ack.capabilities.some(isAuthCapability);
-    if (hasAuthCapability) this.transportHasAuth.set(transport, true);
-    if (peerAdvertisedOpAuth(ack.capabilities))
-      this.transportPeerCapabilities.set(transport, ack.capabilities);
-    const waiters = this.transportHelloAckWaiters.get(transport);
-    if (waiters && waiters.size > 0) {
-      this.transportHelloAckWaiters.delete(transport);
-      for (const waiter of waiters) waiter.resolve();
+    const capabilityGeneration = this.beginPeerCapabilitySnapshot(transport);
+    try {
+      await this.auth?.onHelloAck?.(ack, { docId: this.backend.docId });
+    } catch (err) {
+      if (this.transportPeerCapabilityGeneration.get(transport) !== capabilityGeneration) return;
+      this.rejectHelloAckWaiter(transport, err);
+      throw err;
+    }
+    if (!this.publishPeerCapabilitySnapshot(transport, capabilityGeneration, ack.capabilities)) {
+      return;
+    }
+    const waiter = this.transportHelloAckWaiter.get(transport);
+    if (waiter) {
+      this.transportHelloAckWaiter.delete(transport);
+      waiter.resolve();
     }
 
     for (const id of ack.acceptedFilters) {
