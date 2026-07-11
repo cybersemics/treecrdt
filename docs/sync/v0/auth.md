@@ -269,9 +269,6 @@ immediately; they are not placed in `pending_context`. Existing subtree read/fil
 `pending_context` remains a protocol mechanism for custom auth schemes that have a stable, verifiable way to resolve
 missing context. It is not used to make mutable receiver ancestry authoritative for reference operation writes.
 
-Compatibility: previously pending scoped writes are now denied. Already-applied scoped writes remain in local logs, but
-upgraded peers reject them on sync; deployments using scoped write tokens need a coordinated migration.
-
 ## Sidecar storage (same SQLite database)
 
 To avoid changing core op-log storage, implementations SHOULD store auth data in sidecar tables in the same SQLite
