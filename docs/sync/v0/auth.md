@@ -177,6 +177,7 @@ Ops are signed with the doc-scoped Ed25519 key. The signature covers:
 - `doc_id`
 - `op_id` (`replica_id` + `counter`)
 - `lamport`
+- explicit defensive-delete `known_state` presence and bytes
 - op kind + fields
 - payload bytes (ciphertext bytes if payloads are encrypted)
 
@@ -192,7 +193,8 @@ sig_input = concat(
   u64_be(counter),
   u64_be(lamport),
   u8(kind_tag),
-  kind_fields
+  kind_fields,
+  known_state
 )
 ```
 
@@ -212,6 +214,29 @@ Kind tags and fields:
   - node(16)
   - value_tag(u8): 0=clear, 1=payload
   - if value_tag=1: u32_be(len(payload)) || payload_bytes
+
+Every operation uses this one signature format. `known_state` is encoded after the operation fields:
+
+```
+known_state = absent:  u8(0)
+              present: u8(1) || u32_be(len(bytes)) || bytes
+```
+
+The present form must contain the canonical UTF-8 JSON version-vector encoding used by the
+auth-enabled persistent backends: `{"entries":[...]}` without whitespace, with entries sorted
+lexicographically by replica bytes and each entry encoded as
+`{"replica":[...],"frontier":n,"ranges":[[start,end],...]}`. Signers and verifiers reject other
+spellings so persistence cannot change signed bytes.
+
+The v0 cross-language counter limit is `Number.MAX_SAFE_INTEGER` (`9007199254740991`). Frontiers
+and range bounds MUST be integers at or below that limit; range bounds MUST be positive. Ranges
+MUST be normalized exactly as the Rust version vector stores them: each `start <= end`, starts are
+strictly ordered, ranges neither overlap nor touch, and every start is greater than `frontier + 1`.
+
+Policy APIs require non-empty `known_state` on deletes and reject non-empty state on every other
+operation; tombstones use the explicit absent-state form. Because every operation signs the
+presence tag, a relay cannot strip delete state to bypass this policy. Applications use
+`signTreecrdtOp` and `verifyTreecrdtOp`, which enforce these invariants.
 
 ## Subtree scope enforcement and `pending_context`
 
