@@ -58,22 +58,79 @@ async function sqliteGetNumber(
   return value;
 }
 
-async function sqliteExec(runner: SqliteRunner, sql: string): Promise<void> {
-  await runner.exec(sql);
+function decodeLocalOp(raw: any, sql: string): Operation {
+  const ops = decodeSqliteOps([raw.op]);
+  if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
+  return ops[0]!;
 }
-
-let localAuthSavepointCounter = 0;
 
 function decodeLocalOpResult(
   raw: any,
   sql: string,
-): { op: Operation; outcome: MaterializationOutcome } {
-  const ops = decodeSqliteOps([raw.op]);
-  if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
+): {
+  op: Operation;
+  outcome: MaterializationOutcome;
+} {
   return {
-    op: ops[0]!,
+    op: decodeLocalOp(raw, sql),
     outcome: decodeSqliteMaterializationOutcome(raw.outcome),
   };
+}
+
+function decodePreparedLocalOpResult(
+  raw: any,
+  sql: string,
+): { op: Operation; precondition: string } {
+  const op = decodeLocalOp(raw, sql);
+  if (typeof raw.precondition !== 'string' || !raw.precondition.startsWith('v1:')) {
+    throw new Error(`invalid local-write precondition from query: ${sql}`);
+  }
+  return { op, precondition: raw.precondition };
+}
+
+function exactStructuralEqual(expected: unknown, actual: unknown): boolean {
+  if (Object.is(expected, actual)) return true;
+  if (
+    expected === null ||
+    actual === null ||
+    typeof expected !== 'object' ||
+    typeof actual !== 'object' ||
+    Object.getPrototypeOf(expected) !== Object.getPrototypeOf(actual)
+  ) {
+    return false;
+  }
+
+  const expectedKeys = Reflect.ownKeys(expected);
+  const actualKeys = Reflect.ownKeys(actual);
+  if (expectedKeys.length !== actualKeys.length) return false;
+  return expectedKeys.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(actual, key) &&
+      exactStructuralEqual(
+        (expected as Record<PropertyKey, unknown>)[key],
+        (actual as Record<PropertyKey, unknown>)[key],
+      ),
+  );
+}
+
+function assertExactAuthOperation(expected: Operation, actual: readonly Operation[]): void {
+  let unchanged = false;
+  try {
+    unchanged = actual.length === 1 && exactStructuralEqual(expected, actual[0]);
+  } catch {
+    // Treat hostile proxies and other comparison failures as mutation.
+  }
+  if (!unchanged) {
+    throw new Error('treecrdt: local authorization mutated the proposed operation');
+  }
+}
+
+function rejectOuterTransaction(raw: any): void {
+  if (raw?.error === 'outerTransaction') {
+    throw new Error(
+      'treecrdt: authenticated local writes require autocommit; do not keep a caller transaction open across authorization',
+    );
+  }
 }
 
 function emitLocalOutcome(
@@ -627,29 +684,71 @@ export function createTreecrdtSqliteWriter(
       return op;
     }
 
-    const savepoint = `treecrdt_local_auth_${++localAuthSavepointCounter}`;
-    let released = false;
-    await sqliteExec(runner, `SAVEPOINT ${savepoint}`);
-    try {
-      const { op, outcome } = decodeLocalOpResult(
-        await sqliteGetJson<any>(runner, sql, params),
-        sql,
-      );
-      await authSession.authorizeLocalOps([op]);
-      await sqliteExec(runner, `RELEASE ${savepoint}`);
-      released = true;
-      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
-      return op;
-    } catch (err) {
-      if (!released) {
-        try {
-          await sqliteExec(runner, `ROLLBACK TO ${savepoint}`);
-        } finally {
-          await sqliteExec(runner, `RELEASE ${savepoint}`);
-        }
+    const maxAttempts = 4;
+    if (!sql.endsWith(')')) throw new Error(`invalid local-write query: ${sql}`);
+    const optimisticSql = `${sql.slice(0, -1)},?${params.length + 1})`;
+    const proofSql = `${sql.slice(0, -1)},?${params.length + 1},?${params.length + 2},?${params.length + 3})`;
+    // User-owned buffers can otherwise be mutated while authorization is awaiting.
+    const stableParams = params.map((value) =>
+      value instanceof Uint8Array ? Uint8Array.from(value) : value,
+    );
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const preparedRaw = await sqliteGetJson<any>(runner, optimisticSql, [
+        ...stableParams,
+        'prepare',
+      ]);
+      rejectOuterTransaction(preparedRaw);
+      if (preparedRaw?.conflict === true) {
+        await treecrdtEnsureMaterialized(runner, (outcome) =>
+          emitLocalOutcome(outcome, opts.onMaterialized),
+        );
+        continue;
       }
-      throw err;
+
+      const prepared = decodePreparedLocalOpResult(preparedRaw, optimisticSql);
+      // Decode a second detached operation for authorization while keeping the commit-bound
+      // proposal private.
+      const expectedOp = prepared.op;
+      const authOps = [decodePreparedLocalOpResult(preparedRaw, optimisticSql).op];
+      const proofs = await authSession.authorizeLocalOps(authOps);
+      assertExactAuthOperation(expectedOp, authOps);
+      if (!Array.isArray(proofs) || proofs.length !== 1) {
+        throw new Error(`treecrdt: authorizeLocalOps must return exactly 1 proof for 1 op`);
+      }
+      const extracted = proofs[0];
+      const sig = extracted?.sig;
+      const proofRef = extracted?.proofRef;
+      if (
+        !(sig instanceof Uint8Array) ||
+        sig.length !== 64 ||
+        !(proofRef instanceof Uint8Array) ||
+        proofRef.length !== 16
+      ) {
+        throw new Error('treecrdt: authorizeLocalOps returned an invalid proof');
+      }
+      // Snapshot auth-owned proof buffers before crossing into SQLite.
+      const proof = {
+        sig: Uint8Array.from(sig),
+        proofRef: Uint8Array.from(proofRef),
+      };
+      const committedRaw = await sqliteGetJson<any>(runner, proofSql, [
+        ...stableParams,
+        prepared.precondition,
+        proof.sig,
+        proof.proofRef,
+      ]);
+      rejectOuterTransaction(committedRaw);
+      if (committedRaw?.conflict === true) continue;
+
+      const committed = decodeLocalOpResult(committedRaw, proofSql);
+      emitLocalOutcome(committed.outcome, opts.onMaterialized, writeOpts?.writeId);
+      return committed.op;
     }
+
+    throw new Error(
+      `treecrdt: local authorization could not commit after ${maxAttempts} attempts because SQLite state kept changing`,
+    );
   };
 
   const insert = async (
