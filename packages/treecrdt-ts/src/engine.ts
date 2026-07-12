@@ -159,6 +159,40 @@ export type TreecrdtEngineOpRefs = {
   children: (parent: string) => Promise<Uint8Array[]>;
 };
 
+export type LocalDeleteAction = {
+  type: 'delete';
+  node: string;
+};
+
+export type LocalMoveAction = {
+  type: 'move';
+  node: string;
+  parent: string;
+  /** Zero-based position before the captured operation; used if the sibling anchor disappears. */
+  index: number;
+  placement: TreecrdtSqlitePlacement;
+};
+
+export type LocalPayloadAction = {
+  type: 'payload';
+  node: string;
+  payload: Uint8Array | null;
+};
+
+export type LocalEditAction = LocalDeleteAction | LocalMoveAction | LocalPayloadAction;
+
+export type LocalEditPlan = {
+  actions: LocalEditAction[];
+};
+
+export type OperationEdit = {
+  operations: Operation[];
+};
+
+export type EngineHistory = {
+  invert: (edit: OperationEdit) => Promise<LocalEditPlan>;
+};
+
 export type TreecrdtEngineTree = {
   children: (parent: string) => Promise<string[]>;
   childrenPage?: (
@@ -273,6 +307,7 @@ export type TreecrdtEngine = {
   tree: TreecrdtEngineTree;
   meta: TreecrdtEngineMeta;
   local: TreecrdtEngineLocal;
+  history?: EngineHistory;
   onMaterialized: (listener: MaterializationListener) => () => void;
   close: () => Promise<void>;
 };
