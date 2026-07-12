@@ -138,6 +138,9 @@ jobs:
       - name: Build project
         run: pnpm run build
 
+      - name: Run wa-sqlite unit tests
+        run: pnpm -C packages/treecrdt-wa-sqlite exec vitest run
+
       - name: Run browser tests
         run: pnpm run test:browser
 

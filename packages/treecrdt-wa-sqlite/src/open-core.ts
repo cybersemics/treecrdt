@@ -23,33 +23,121 @@ export type OpenTreecrdtDbResult = {
   opfsError?: string;
 };
 
+export type LoadedWaSqlite = { sqlite3: any; module: any };
+export type LoadFreshWaSqlite = () => Promise<LoadedWaSqlite>;
+
+const OPFS_VFS_NAME = 'opfs';
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function memoryFallbackError(opfsFailure: unknown, fallbackFailure: unknown): Error {
+  const error = new Error(
+    `OPFS initialization failed: ${errorMessage(opfsFailure)}; memory fallback failed: ${errorMessage(fallbackFailure)}`,
+  ) as Error & { cause?: unknown; opfsCause?: unknown };
+  error.cause = fallbackFailure;
+  error.opfsCause = opfsFailure;
+  return error;
+}
+
+async function closeIgnoringErrors(close: (() => Promise<void> | void) | undefined): Promise<void> {
+  if (!close) return;
+  try {
+    await close();
+  } catch {
+    // Preserve the error that made initialization fail.
+  }
+}
+
+async function openInitializedDatabase(
+  sqlite3: any,
+  filename: string,
+  opts: OpenTreecrdtDbOptions,
+  vfsName?: string,
+): Promise<{ db: Database; api: TreecrdtAdapter }> {
+  let db: Database | undefined;
+  try {
+    const handle = vfsName
+      ? await sqlite3.open_v2(filename, undefined, vfsName)
+      : await sqlite3.open_v2(filename);
+    db = makeDbAdapter(sqlite3, handle);
+    const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
+    await api.setDocId(opts.docId);
+    return { db, api };
+  } catch (err) {
+    await closeIgnoringErrors(db?.close ? () => db!.close!() : undefined);
+    throw err;
+  }
+}
+
+function closeDatabaseWithVfs(db: Database, vfs: { close?: () => Promise<void> | void }): Database {
+  if (!vfs.close) return db;
+  let closePromise: Promise<void> | null = null;
+  return {
+    ...db,
+    close: () => {
+      closePromise ??= (async () => {
+        try {
+          await db.close?.();
+        } finally {
+          await vfs.close!();
+        }
+      })();
+      return closePromise;
+    },
+  };
+}
+
 export async function openTreecrdtDbFromLoaded(
   opts: OpenTreecrdtDbOptions,
-  loaded: { sqlite3: any; module: any },
+  loaded: LoadedWaSqlite,
+  loadFresh: LoadFreshWaSqlite,
 ): Promise<OpenTreecrdtDbResult> {
   const { sqlite3, module } = loaded;
-
-  let storage: 'memory' | 'opfs' = opts.storage === 'opfs' ? 'opfs' : 'memory';
   let opfsError: string | undefined;
+  let opfsFailure: unknown;
+  const requestedFilename = opts.filename ?? '/treecrdt.db';
 
-  if (storage === 'opfs') {
+  if (opts.storage === 'opfs') {
+    let vfs: { close?: () => Promise<void> | void } | undefined;
     try {
-      const vfs = await createOpfsVfs(module, { name: 'opfs', kind: opts.opfsVfs });
-      sqlite3.vfs_register(vfs, true);
+      const initializedVfs = await createOpfsVfs(module, {
+        name: OPFS_VFS_NAME,
+        kind: opts.opfsVfs,
+      });
+      vfs = initializedVfs;
+      sqlite3.vfs_register(initializedVfs, false);
+      const opened = await openInitializedDatabase(sqlite3, requestedFilename, opts, OPFS_VFS_NAME);
+      return {
+        ...opened,
+        db: closeDatabaseWithVfs(opened.db, initializedVfs),
+        storage: 'opfs',
+        filename: requestedFilename,
+      };
     } catch (err) {
-      opfsError = err instanceof Error ? err.message : String(err);
+      opfsFailure = err;
+      opfsError = errorMessage(err);
+      await closeIgnoringErrors(vfs?.close ? () => vfs!.close!() : undefined);
       if (opts.requireOpfs) {
-        throw new Error(`OPFS requested but could not be initialized: ${opfsError}`);
+        const requiredError = new Error(
+          `OPFS requested but could not be initialized: ${opfsError}`,
+        ) as Error & { cause?: unknown };
+        requiredError.cause = err;
+        throw requiredError;
       }
-      storage = 'memory';
     }
   }
 
-  const filename = storage === 'opfs' ? (opts.filename ?? '/treecrdt.db') : ':memory:';
-  const handle = await sqlite3.open_v2(filename);
-  const db = makeDbAdapter(sqlite3, handle);
-  const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
-  await api.setDocId(opts.docId);
-
-  return opfsError ? { db, api, storage, filename, opfsError } : { db, api, storage, filename };
+  // A rejected wa-sqlite open_v2 may retain a C database handle that its JavaScript wrapper
+  // does not expose. Do not continue on that wrapper after an OPFS attempt fails.
+  try {
+    const memoryLoaded = opfsError !== undefined ? await loadFresh() : loaded;
+    const opened = await openInitializedDatabase(memoryLoaded.sqlite3, ':memory:', opts);
+    const result = { ...opened, storage: 'memory' as const, filename: ':memory:' };
+    return opfsError !== undefined ? { ...result, opfsError } : result;
+  } catch (fallbackFailure) {
+    if (opfsError === undefined) throw fallbackFailure;
+    throw memoryFallbackError(opfsFailure, fallbackFailure);
+  }
 }
