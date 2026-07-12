@@ -78,6 +78,16 @@ async function sendHello(
   return exchangeId;
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function orderKeyFromPosition(position: number): Uint8Array {
   if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
   const n = position + 1;
@@ -1202,6 +1212,17 @@ test('capability fingerprints cannot collide through delimiter bytes', () => {
   );
 });
 
+class PausedMaxLamportBackend extends MemoryBackend {
+  readonly maxLamportStarted = deferred();
+  readonly resumeMaxLamport = deferred();
+
+  override async maxLamport(): Promise<bigint> {
+    this.maxLamportStarted.resolve();
+    await this.resumeMaxLamport.promise;
+    return super.maxLamport();
+  }
+}
+
 test('syncOnce does not starve macrotask transports', async () => {
   const docId = 'doc-sync-macrotask';
   const root = '0'.repeat(32);
@@ -1325,6 +1346,163 @@ test('syncOnce paces outbound codewords until delayed ribltStatus arrives', asyn
   await waitUntil(() => b.hasOp(replicaHex.a, 1), {
     message: 'expected b to receive a:1 after delayed ribltStatus',
   });
+});
+
+test('syncOnce abort stops the session before delayed replies can continue it', async () => {
+  const docId = 'doc-sync-abort';
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>({ bToADelayMs: 50 });
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  const detachA = pa.attach(ta);
+  const detachB = pb.attach(tb);
+  const controller = new AbortController();
+
+  try {
+    const sync = pa.syncOnce(ta, { all: {} }, { signal: controller.signal });
+    await waitUntil(() =>
+      log.some(({ dir, msg }) => dir === 'aToB' && msg.payload.case === 'hello'),
+    );
+
+    controller.abort(new Error('deadline exceeded'));
+    await expect(sync).rejects.toThrow('deadline exceeded');
+    await new Promise<void>((resolve) => setTimeout(resolve, 75));
+
+    const sentAfterAbort = log
+      .filter(({ dir }) => dir === 'aToB')
+      .map(({ msg }) => msg.payload.case);
+    expect(sentAfterAbort).toEqual(['hello', 'error']);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('syncOnce with an already-aborted signal does not start a wire session', async () => {
+  const docId = 'doc-sync-pre-abort';
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const pa = new SyncPeer(new MemoryBackend(docId));
+  const pb = new SyncPeer(new MemoryBackend(docId));
+  const detachA = pa.attach(ta);
+  const detachB = pb.attach(tb);
+  const controller = new AbortController();
+  controller.abort(new Error('cancelled before start'));
+
+  try {
+    await expect(pa.syncOnce(ta, { all: {} }, { signal: controller.signal })).rejects.toThrow(
+      'cancelled before start',
+    );
+    await tick();
+    expect(log).toEqual([]);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('syncOnce schedules remote cleanup when Hello send cancels synchronously', async () => {
+  const docId = 'doc-sync-abort-inside-hello-send';
+  const controller = new AbortController();
+  const sent: Array<SyncMessage<Operation>['payload']['case']> = [];
+  const transport: DuplexTransport<SyncMessage<Operation>> = {
+    send: async (message) => {
+      sent.push(message.payload.case);
+      if (message.payload.case === 'hello') {
+        controller.abort(new Error('cancelled inside Hello send'));
+      }
+    },
+    onMessage: () => () => {},
+  };
+  const peer = new SyncPeer(new MemoryBackend(docId));
+
+  await expect(
+    peer.syncOnce(transport, { all: {} }, { signal: controller.signal }),
+  ).rejects.toThrow('cancelled inside Hello send');
+  await waitUntil(() => sent.includes('error'));
+
+  expect(sent).toEqual(['hello', 'error']);
+});
+
+test('stopping a subscription during immediate reconciliation resolves cleanly', async () => {
+  const docId = 'doc-subscribe-stop-during-sync';
+  const a = new PausedMaxLamportBackend(docId);
+  const b = new MemoryBackend(docId);
+  const [wa, wb] = createTimedDuplex<Uint8Array>();
+  const ta = wrapDuplexTransportWithCodec(wa, treecrdtSyncV0ProtobufCodec);
+  const tb = wrapDuplexTransportWithCodec(wb, treecrdtSyncV0ProtobufCodec);
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  const detachA = pa.attach(ta);
+  const detachB = pb.attach(tb);
+
+  try {
+    const subscription = pa.subscribe(ta, { all: {} });
+    await a.maxLamportStarted.promise;
+
+    subscription.stop();
+    await expect(subscription.ready).resolves.toBeUndefined();
+    await expect(subscription.done).resolves.toBeUndefined();
+  } finally {
+    a.resumeMaxLamport.resolve();
+    detachA();
+    detachB();
+  }
+});
+
+test('syncOnce cancellation during Hello cannot recreate responder state', async () => {
+  const docId = 'doc-sync-abort-during-hello';
+  const a = new MemoryBackend(docId);
+  const b = new PausedMaxLamportBackend(docId);
+  const [ta, tb, log] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const pa = new SyncPeer(a);
+  const pb = new SyncPeer(b);
+  const detachA = pa.attach(ta);
+  const detachB = pb.attach(tb);
+  const controller = new AbortController();
+
+  try {
+    const sync = pa.syncOnce(ta, { all: {} }, { signal: controller.signal });
+    await b.maxLamportStarted.promise;
+
+    const hello = log.find(({ dir, msg }) => dir === 'aToB' && msg.payload.case === 'hello')?.msg;
+    expect(hello?.payload.case).toBe('hello');
+    if (hello?.payload.case !== 'hello') throw new Error('expected Hello');
+    const filterId = hello.payload.value.filters[0]?.id;
+    if (!filterId) throw new Error('expected Hello filter id');
+
+    controller.abort(new Error('deadline exceeded during Hello'));
+    await expect(sync).rejects.toThrow('deadline exceeded during Hello');
+    await waitUntil(() =>
+      log.some(({ dir, msg }) => dir === 'aToB' && msg.payload.case === 'error'),
+    );
+    await tick();
+
+    b.resumeMaxLamport.resolve();
+    await waitUntil(() =>
+      log.some(({ dir, msg }) => dir === 'bToA' && msg.payload.case === 'helloAck'),
+    );
+
+    await ta.send({
+      v: 0,
+      docId,
+      payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
+    });
+    await tick();
+    await tick();
+
+    const responderAcks = log.filter(
+      ({ dir, msg }) =>
+        dir === 'bToA' &&
+        msg.payload.case === 'opsBatch' &&
+        msg.payload.value.filterId === filterId,
+    );
+    expect(responderAcks).toEqual([]);
+  } finally {
+    b.resumeMaxLamport.resolve();
+    detachA();
+    detachB();
+  }
 });
 
 test('syncOnce waits for responder to apply uploaded ops before resolving', async () => {
