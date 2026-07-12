@@ -129,6 +129,8 @@ export type SyncOnceOptions = {
   codewordsPerMessage?: number;
   maxCodewords?: number;
   maxOpsPerBatch?: number;
+  /** Abort an in-flight reconciliation and release its local session state. */
+  signal?: AbortSignal;
 };
 
 export type SyncPushOptions = {
@@ -147,7 +149,6 @@ export type SyncPushOptions = {
 
 export type SyncSubscribeOptions = SyncOnceOptions & {
   intervalMs?: number;
-  signal?: AbortSignal;
 };
 
 export type SyncSubscription = {
@@ -372,6 +373,10 @@ export class SyncPeer<Op> {
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription<Op>>();
   private readonly responderAwaitingUploadAcks: TransportOwnedMap<Op, true> = new Map();
   private readonly opsBatchQueues: TransportOwnedMap<Op, Promise<void>> = new Map();
+  private readonly responderHelloAbortControllers = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    Map<string, AbortController>
+  >();
   private readonly pendingPushOpsByRefHex = new Map<string, PendingPushOp<Op>>();
   private pushNeedsFullScan = false;
   private pushScheduled = false;
@@ -591,12 +596,18 @@ export class SyncPeer<Op> {
   private async sendDoneOpsBatch(
     transport: DuplexTransport<SyncMessage<Op>>,
     filterId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await transport.send({
-      v: 0,
-      docId: this.backend.docId,
-      payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
-    });
+    throwIfSyncAborted(signal);
+    await awaitSyncStep(
+      () =>
+        transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
+        }),
+      signal,
+    );
   }
 
   private async pushSubscription(
@@ -789,6 +800,9 @@ export class SyncPeer<Op> {
     filter: Filter,
     opts: SyncOnceOptions = {},
   ): Promise<void> {
+    const signal = opts.signal;
+    const step = <T>(run: () => T | PromiseLike<T>) => awaitSyncStep(run, signal);
+    throwIfSyncAborted(signal);
     // syncOnce negotiates one of three wire modes for this filter:
     // 1. the normal RIBLT reconcile path,
     // 2. direct-send for small scoped reads, or
@@ -796,12 +810,16 @@ export class SyncPeer<Op> {
     // The capability exchange below advertises support and lets the peer pick the cheaper mode.
     const filterId = randomId('f');
     const round = 0;
-    const maxLamport = await this.backend.maxLamport();
-    const localOpRefsBeforeHello = await this.backend.listOpRefs(filter);
-    const capabilities = buildInitiatorHelloCapabilities(
-      (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [],
-      { filterId, localHasOps: localOpRefsBeforeHello.length > 0 },
-    );
+    const maxLamport = await step(() => this.backend.maxLamport());
+    const localOpRefsBeforeHello = await step(() => this.backend.listOpRefs(filter));
+    const localCapabilities = this.auth?.helloCapabilities
+      ? await step(() => this.auth!.helloCapabilities!({ docId: this.backend.docId }))
+      : [];
+    throwIfSyncAborted(signal);
+    const capabilities = buildInitiatorHelloCapabilities(localCapabilities, {
+      filterId,
+      localHasOps: localOpRefsBeforeHello.length > 0,
+    });
     const hello: Hello = { capabilities, filters: [{ id: filterId, filter }], maxLamport };
 
     const session: InitiatorSession<Op> = {
@@ -819,13 +837,49 @@ export class SyncPeer<Op> {
     };
     this.initiatorSessions.set(filterId, session);
 
+    let helloSend: Promise<void> | undefined;
+    let cancelled = false;
+    let remoteCancellationScheduled = false;
+    const scheduleRemoteCancellation = () => {
+      if (!cancelled || !helloSend || !signal || remoteCancellationScheduled) return;
+      remoteCancellationScheduled = true;
+      const message = `sync cancelled: ${syncAbortReason(signal).message}`;
+      void helloSend
+        .then(() =>
+          transport.send({
+            v: 0,
+            docId: this.backend.docId,
+            payload: {
+              case: 'error',
+              value: { code: ErrorCode.ERROR_CODE_UNSPECIFIED, message, filterId },
+            },
+          }),
+        )
+        .catch(() => {
+          // Best-effort remote cleanup; the local session is already cancelled.
+        });
+    };
+    const cancelSession = () => {
+      cancelled = true;
+      session.done = true;
+      this.initiatorSessions.delete(filterId);
+      scheduleRemoteCancellation();
+    };
+    if (signal?.aborted) cancelSession();
+    else signal?.addEventListener('abort', cancelSession, { once: true });
+
     try {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'hello', value: hello },
+      await step(() => {
+        helloSend = transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: { case: 'hello', value: hello },
+        });
+        // `transport.send` may synchronously trigger cancellation before its promise is assigned.
+        scheduleRemoteCancellation();
+        return helloSend;
       });
-      const ack = await session.ack.promise;
+      const ack = await step(() => session.ack.promise);
 
       // For tiny scoped reads the responder can skip RIBLT entirely and send
       // the result as direct ops once Hello/HelloAck agrees on that shortcut.
@@ -833,23 +887,25 @@ export class SyncPeer<Op> {
         localOpRefsBeforeHello.length === 0 &&
         peerSelectedDirectSendFilter(ack.capabilities, filterId)
       ) {
-        await session.receivedOps.promise;
+        await step(() => session.receivedOps.promise);
         return;
       }
 
-      let opRefs = await this.backend.listOpRefs(filter);
+      let opRefs = await step(() => this.backend.listOpRefs(filter));
 
       // If we have peer capabilities (from HelloAck) and an auth layer that can scope outgoing ops,
       // filter the local set to avoid advertising/sending ops the peer cannot receive.
       if (this.auth?.filterOutgoingOps && opRefs.length > 0) {
         const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
-        const ops = await this.backend.getOpsByOpRefs(opRefs);
-        const allowed = await this.auth.filterOutgoingOps(ops, {
-          docId: this.backend.docId,
-          purpose: 'reconcile',
-          filter,
-          capabilities: peerCaps,
-        });
+        const ops = await step(() => this.backend.getOpsByOpRefs(opRefs));
+        const allowed = await step(() =>
+          this.auth!.filterOutgoingOps!(ops, {
+            docId: this.backend.docId,
+            purpose: 'reconcile',
+            filter,
+            capabilities: peerCaps,
+          }),
+        );
         if (allowed.length !== ops.length) {
           throw new Error(
             `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
@@ -866,15 +922,16 @@ export class SyncPeer<Op> {
           await this.sendOpsBatches(transport, filterId, opRefs, {
             maxOpsPerBatch: uploadMaxOpsPerBatch,
             filter,
+            signal,
           });
         } else {
-          await this.sendDoneOpsBatch(transport, filterId);
+          await this.sendDoneOpsBatch(transport, filterId, signal);
         }
-        await session.receivedOps.promise;
+        await step(() => session.receivedOps.promise);
         return;
       }
 
-      const { RibltEncoder16 } = await import('@treecrdt/riblt-wasm');
+      const { RibltEncoder16 } = await step(() => import('@treecrdt/riblt-wasm'));
       const enc = new RibltEncoder16();
       for (const r of opRefs) enc.addSymbol(r);
 
@@ -883,15 +940,18 @@ export class SyncPeer<Op> {
 
       let nextIndex = 0n;
       while (!session.done && nextIndex < maxCodewords) {
+        throwIfSyncAborted(signal);
         if (session.codewordCredits <= 0) {
           const wakeForCredits = session.codewordCreditSignal.promise;
-          await Promise.race([
-            session.terminalStatus.promise.then(
-              () => undefined,
-              () => undefined,
-            ),
-            wakeForCredits,
-          ]);
+          await step(() =>
+            Promise.race([
+              session.terminalStatus.promise.then(
+                () => undefined,
+                () => undefined,
+              ),
+              wakeForCredits,
+            ]),
+          );
           continue;
         }
 
@@ -903,20 +963,23 @@ export class SyncPeer<Op> {
           nextIndex += 1n;
         }
 
-        await transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: {
-            case: 'ribltCodewords',
-            value: { filterId, round, startIndex, codewords },
-          },
-        });
-        await yieldToMacrotask();
+        await step(() =>
+          transport.send({
+            v: 0,
+            docId: this.backend.docId,
+            payload: {
+              case: 'ribltCodewords',
+              value: { filterId, round, startIndex, codewords },
+            },
+          }),
+        );
+        await step(yieldToMacrotask);
       }
 
+      throwIfSyncAborted(signal);
       if (!session.done) throw new Error('riblt: max codewords exceeded');
 
-      const status = await session.terminalStatus.promise;
+      const status = await step(() => session.terminalStatus.promise);
       if (status.payload.case === 'failed') {
         const { reason, message } = status.payload.value;
         const name = RibltFailureReason[reason] ?? String(reason);
@@ -929,13 +992,15 @@ export class SyncPeer<Op> {
       if (receiverMissing.length > 0) {
         await this.sendOpsBatches(transport, filterId, receiverMissing, {
           maxOpsPerBatch: opts.maxOpsPerBatch,
+          signal,
         });
       } else {
-        await this.sendDoneOpsBatch(transport, filterId);
+        await this.sendDoneOpsBatch(transport, filterId, signal);
       }
 
-      await session.receivedOps.promise;
+      await step(() => session.receivedOps.promise);
     } finally {
+      signal?.removeEventListener('abort', cancelSession);
       this.initiatorSessions.delete(filterId);
     }
   }
@@ -1006,8 +1071,10 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     filterId: string,
     opRefs: OpRef[],
-    opts: { maxOpsPerBatch?: number; filter?: Filter } = {},
+    opts: { maxOpsPerBatch?: number; filter?: Filter; signal?: AbortSignal } = {},
   ): Promise<void> {
+    const step = <T>(run: () => T | PromiseLike<T>) => awaitSyncStep(run, opts.signal);
+    throwIfSyncAborted(opts.signal);
     const maxOpsPerBatch = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
 
     const initiatorSession = this.initiatorSessions.get(filterId);
@@ -1018,21 +1085,24 @@ export class SyncPeer<Op> {
     const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
 
     if (opRefs.length === 0) {
-      await this.sendDoneOpsBatch(transport, filterId);
+      await this.sendDoneOpsBatch(transport, filterId, opts.signal);
       return;
     }
 
     for (let start = 0; start < opRefs.length; start += maxOpsPerBatch) {
+      throwIfSyncAborted(opts.signal);
       const chunk = opRefs.slice(start, start + maxOpsPerBatch);
-      let ops = await this.backend.getOpsByOpRefs(chunk);
+      let ops = await step(() => this.backend.getOpsByOpRefs(chunk));
 
       if (filter && this.auth?.filterOutgoingOps && ops.length > 0) {
-        const allowed = await this.auth.filterOutgoingOps(ops, {
-          docId: this.backend.docId,
-          purpose: 'reconcile',
-          filter,
-          capabilities: peerCaps,
-        });
+        const allowed = await step(() =>
+          this.auth!.filterOutgoingOps!(ops, {
+            docId: this.backend.docId,
+            purpose: 'reconcile',
+            filter,
+            capabilities: peerCaps,
+          }),
+        );
         if (allowed.length !== ops.length) {
           throw new Error(
             `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
@@ -1050,7 +1120,7 @@ export class SyncPeer<Op> {
 
       if (ops.length === 0) {
         if (done) {
-          await this.sendDoneOpsBatch(transport, filterId);
+          await this.sendDoneOpsBatch(transport, filterId, opts.signal);
         }
         continue;
       }
@@ -1058,22 +1128,27 @@ export class SyncPeer<Op> {
       const shouldAttachAuth = peerAdvertisedOpAuth(peerCaps);
       const auth =
         shouldAttachAuth && this.auth?.signOps
-          ? await this.auth.signOps(ops, {
-              docId: this.backend.docId,
-              purpose: 'reconcile',
-              filterId,
-            })
+          ? await step(() =>
+              this.auth!.signOps!(ops, {
+                docId: this.backend.docId,
+                purpose: 'reconcile',
+                filterId,
+              }),
+            )
           : undefined;
       if (auth && auth.length !== ops.length) {
         throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       }
 
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'opsBatch', value: { filterId, ops, ...(auth ? { auth } : {}), done } },
-      });
-      await yieldToMacrotask();
+      throwIfSyncAborted(opts.signal);
+      await step(() =>
+        transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: { case: 'opsBatch', value: { filterId, ops, ...(auth ? { auth } : {}), done } },
+        }),
+      );
+      await step(yieldToMacrotask);
     }
   }
 
@@ -1158,6 +1233,7 @@ export class SyncPeer<Op> {
             codewordsPerMessage,
             maxCodewords,
             maxOpsPerBatch,
+            signal,
           });
         }
         resolveReady();
@@ -1171,12 +1247,19 @@ export class SyncPeer<Op> {
               codewordsPerMessage,
               maxCodewords,
               maxOpsPerBatch,
+              signal,
             });
           }
         } else {
           await Promise.race([waitForAbort(signal), failed]);
         }
       } catch (err) {
+        // Stopping a subscription is normal completion, including while its immediate or periodic
+        // reconciliation is awaiting an abortable backend/transport step.
+        if (signal.aborted) {
+          resolveReady();
+          return;
+        }
         rejectReady(err);
         throw err;
       } finally {
@@ -1296,6 +1379,39 @@ export class SyncPeer<Op> {
   }
 
   private async onHello(transport: DuplexTransport<SyncMessage<Op>>, hello: Hello): Promise<void> {
+    const transportControllers =
+      this.responderHelloAbortControllers.get(transport) ?? new Map<string, AbortController>();
+    const helloControllers = new Map<string, AbortController>();
+
+    for (let i = 0; i < hello.filters.length && i < this.maxHelloFilters; i += 1) {
+      const id = hello.filters[i]?.id;
+      if (!id || helloControllers.has(id)) continue;
+      const controller = new AbortController();
+      transportControllers.get(id)?.abort(new Error('responder sync superseded'));
+      transportControllers.set(id, controller);
+      helloControllers.set(id, controller);
+    }
+    if (transportControllers.size > 0) {
+      this.responderHelloAbortControllers.set(transport, transportControllers);
+    }
+
+    try {
+      await this.onActiveHello(transport, hello, helloControllers);
+    } finally {
+      for (const [id, controller] of helloControllers) {
+        if (transportControllers.get(id) === controller) transportControllers.delete(id);
+      }
+      if (transportControllers.size === 0) {
+        this.responderHelloAbortControllers.delete(transport);
+      }
+    }
+  }
+
+  private async onActiveHello(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    hello: Hello,
+    helloControllers: ReadonlyMap<string, AbortController>,
+  ): Promise<void> {
     const traceStartedAt = performance.now();
     traceHello(this.backend.docId, traceStartedAt, 'start', {
       filters: hello.filters.length,
@@ -1358,6 +1474,9 @@ export class SyncPeer<Op> {
         continue;
       }
 
+      const signal = helloControllers.get(id)?.signal;
+      if (!signal || signal.aborted) continue;
+
       if (this.requireAuthForFilters && !hasAuthCapability) {
         rejectedFilters.push({
           id,
@@ -1374,6 +1493,7 @@ export class SyncPeer<Op> {
           capabilities: hello.capabilities,
         });
       } catch (err: any) {
+        if (signal.aborted) continue;
         rejectedFilters.push({
           id,
           reason: ErrorCode.UNAUTHORIZED,
@@ -1381,15 +1501,18 @@ export class SyncPeer<Op> {
         });
         continue;
       }
+      if (signal.aborted) continue;
 
       let localOpRefs: OpRef[];
       try {
         localOpRefs = await this.backend.listOpRefs(filter);
+        if (signal.aborted) continue;
         traceHello(this.backend.docId, traceStartedAt, 'after-listOpRefs', {
           filterId: id,
           opRefs: localOpRefs.length,
         });
       } catch (err: any) {
+        if (signal.aborted) continue;
         rejectedFilters.push({
           id,
           reason: ErrorCode.FILTER_NOT_SUPPORTED,
@@ -1401,12 +1524,14 @@ export class SyncPeer<Op> {
       if (!('all' in filter) && this.auth?.filterOutgoingOps && localOpRefs.length > 0) {
         try {
           const ops = await this.backend.getOpsByOpRefs(localOpRefs);
+          if (signal.aborted) continue;
           const allowed = await this.auth.filterOutgoingOps(ops, {
             docId: this.backend.docId,
             purpose: 'hello',
             filter,
             capabilities: hello.capabilities,
           });
+          if (signal.aborted) continue;
           if (allowed.length !== ops.length) {
             throw new Error(
               `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
@@ -1419,6 +1544,7 @@ export class SyncPeer<Op> {
             allowedOpRefs: localOpRefs.length,
           });
         } catch (err: any) {
+          if (signal.aborted) continue;
           rejectedFilters.push({
             id,
             reason: ErrorCode.UNAUTHORIZED,
@@ -1427,6 +1553,8 @@ export class SyncPeer<Op> {
           continue;
         }
       }
+
+      if (signal.aborted) continue;
 
       acceptedFilters.push(id);
 
@@ -1457,24 +1585,29 @@ export class SyncPeer<Op> {
           name: DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
           value: id,
         });
-        setTransportOwned(this.responderAwaitingUploadAcks, transport, id, true);
+        if (!signal.aborted) {
+          setTransportOwned(this.responderAwaitingUploadAcks, transport, id, true);
+        }
         continue;
       }
 
       const { RibltDecoder16 } = await import('@treecrdt/riblt-wasm');
+      if (signal.aborted) continue;
       const decoder = new RibltDecoder16();
       for (const r of localOpRefs) decoder.addLocalSymbol(r);
       traceHello(this.backend.docId, traceStartedAt, 'after-decoder-setup', {
         filterId: id,
         opRefs: localOpRefs.length,
       });
-      setTransportOwned(this.responderSessions, transport, id, {
-        filter,
-        round: 0,
-        decoder,
-        expectedIndex: 0n,
-        awaitingIncomingDone: false,
-      });
+      if (!signal.aborted) {
+        setTransportOwned(this.responderSessions, transport, id, {
+          filter,
+          round: 0,
+          decoder,
+          expectedIndex: 0n,
+          awaitingIncomingDone: false,
+        });
+      }
     }
 
     await transport.send({
@@ -1484,7 +1617,9 @@ export class SyncPeer<Op> {
         case: 'helloAck',
         value: {
           capabilities: ackCapabilities,
-          acceptedFilters,
+          acceptedFilters: acceptedFilters.filter(
+            (id) => !helloControllers.get(id)?.signal.aborted,
+          ),
           rejectedFilters,
           maxLamport,
         },
@@ -1496,8 +1631,11 @@ export class SyncPeer<Op> {
     });
 
     for (const directSend of directSendFilters) {
+      const signal = helloControllers.get(directSend.id)?.signal;
+      if (!signal || signal.aborted) continue;
       await this.sendOpsBatches(transport, directSend.id, directSend.opRefs, {
         filter: directSend.filter,
+        signal,
       });
     }
   }
@@ -1775,6 +1913,15 @@ export class SyncPeer<Op> {
   ): Promise<void> {
     const code = ErrorCode[err.code] ?? String(err.code);
     const e = new Error(`${code}: ${err.message}`);
+
+    if (err.filterId) {
+      this.responderHelloAbortControllers
+        .get(transport)
+        ?.get(err.filterId)
+        ?.abort(new Error(err.message));
+      deleteTransportOwned(this.responderSessions, transport, err.filterId);
+      deleteTransportOwned(this.responderAwaitingUploadAcks, transport, err.filterId);
+    }
 
     if (err.subscriptionId) {
       const sub = this.initiatorSubscriptions.get(err.subscriptionId);
