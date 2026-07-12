@@ -123,6 +123,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test('single-owner WAL rejects direct and shared-worker runtimes before startup', async () => {
+  vi.stubGlobal('window', { crossOriginIsolated: true });
+  vi.stubGlobal('navigator', { storage: { getDirectory: vi.fn() } });
+  vi.stubGlobal('SharedWorker', class {});
+
+  for (const runtime of ['direct', 'shared-worker'] as const) {
+    await expect(
+      createTreecrdtClient({
+        storage: { type: 'opfs', writeMode: 'single-owner-wal' },
+        runtime: { type: runtime },
+      }),
+    ).rejects.toThrow(
+      'OPFS storage.writeMode "single-owner-wal" requires runtime "dedicated-worker" or runtime "auto"',
+    );
+  }
+});
+
 for (const runtime of ['dedicated-worker', 'shared-worker'] as const) {
   test(`${runtime} cleans up after rejected initialization`, async () => {
     const endpoint = installEndpoint(runtime, (request) => ({

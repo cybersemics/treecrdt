@@ -18,9 +18,19 @@ export type Database = {
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
+export type OpfsWriteMode = 'default' | 'single-owner-wal';
 export type TreecrdtStorage =
   | { type: 'memory' }
-  | { type: 'opfs'; filename?: string; fallback?: 'throw' | 'memory' }
+  | {
+      type: 'opfs';
+      filename?: string;
+      fallback?: 'throw' | 'memory';
+      /**
+       * Enables WAL with exclusive locking. The application must guarantee that
+       * one dedicated worker is the only owner of this OPFS database.
+       */
+      writeMode?: OpfsWriteMode;
+    }
   | { type: 'auto'; filename?: string; fallback?: 'memory' | 'throw' };
 export type TreecrdtRuntime =
   | { type: 'auto' }
@@ -52,6 +62,7 @@ export type NormalizedStorageOptions = {
   filename?: string;
   requireOpfs: boolean;
   fallback: 'memory' | 'throw';
+  opfsWriteMode: OpfsWriteMode;
 };
 
 export type NormalizedRuntimeOptions = TreecrdtRuntime;

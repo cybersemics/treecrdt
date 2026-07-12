@@ -32,6 +32,28 @@ const client = await createTreecrdtClient({
 
 See the [playground](../../examples/playground/README.md) for a full browser demo.
 
+### OPFS single-owner WAL mode
+
+Apps that guarantee one dedicated worker is the only owner of an OPFS database can opt in to
+SQLite WAL with exclusive locking:
+
+```ts
+const client = await createTreecrdtClient({
+  storage: {
+    type: 'opfs',
+    filename: '/treecrdt.db',
+    fallback: 'throw',
+    writeMode: 'single-owner-wal',
+  },
+  runtime: { type: 'dedicated-worker' },
+});
+```
+
+`runtime: { type: 'auto' }` also selects a dedicated worker for OPFS. Direct and shared-worker
+runtimes reject this mode. It uses wa-sqlite's `AccessHandlePoolVFS`, which is not
+filesystem-transparent; use the default OPFS mode for multi-tab ownership or direct file
+import/export.
+
 ## Node usage (in-memory WASM)
 
 On Node, `createTreecrdtClient()` runs wa-sqlite in-process with an in-memory database. OPFS and worker runtimes are not supported.

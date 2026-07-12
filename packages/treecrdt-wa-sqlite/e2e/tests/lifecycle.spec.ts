@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
 type LifecycleRuntime = 'direct' | 'dedicated-worker';
+type LifecycleWriteMode = 'default' | 'single-owner-wal';
 
 const scenarios: Array<{
   runtime: LifecycleRuntime;
@@ -40,7 +41,12 @@ async function support(page: Page): Promise<ReturnType<LifecycleHarness['support
 
 async function drop(
   page: Page,
-  opts: { docId: string; filename: string; runtime: LifecycleRuntime },
+  opts: {
+    docId: string;
+    filename: string;
+    runtime: LifecycleRuntime;
+    writeMode?: LifecycleWriteMode;
+  },
 ) {
   await page.evaluate(async (dropOpts) => {
     const harness = window.__treecrdtLifecycle;
@@ -55,6 +61,7 @@ async function write(
     docId: string;
     filename: string;
     runtime: LifecycleRuntime;
+    writeMode?: LifecycleWriteMode;
     closeBeforeReload?: boolean;
   },
 ) {
@@ -67,7 +74,12 @@ async function write(
 
 async function read(
   page: Page,
-  opts: { docId: string; filename: string; runtime: LifecycleRuntime },
+  opts: {
+    docId: string;
+    filename: string;
+    runtime: LifecycleRuntime;
+    writeMode?: LifecycleWriteMode;
+  },
 ) {
   return page.evaluate(async (readOpts) => {
     const harness = window.__treecrdtLifecycle;
@@ -141,4 +153,39 @@ test.describe('browser OPFS lifecycle', () => {
       });
     }
   }
+
+  test('reopens a dedicated-worker OPFS store in single-owner WAL mode', async ({
+    page,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const opts = {
+      docId: `lifecycle-wal-${suffix}`,
+      filename: `/lifecycle-wal-${suffix}.db`,
+      runtime: 'dedicated-worker' as const,
+      writeMode: 'single-owner-wal' as const,
+    };
+
+    await waitForHarness(page);
+    const opfsSupport = await support(page);
+    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+
+    try {
+      await drop(page, opts);
+      const written = await write(page, { ...opts, closeBeforeReload: true });
+      expectReloadedTree(written, { mode: 'worker', runtime: 'dedicated-worker' });
+      expect(written.journalMode).toBe('wal');
+      expect(written.lockingMode).toBe('exclusive');
+
+      const reopened = await read(page, opts);
+      expectReloadedTree(reopened, { mode: 'worker', runtime: 'dedicated-worker' });
+      expect(reopened.journalMode).toBe('wal');
+      expect(reopened.lockingMode).toBe('exclusive');
+    } finally {
+      await drop(page, opts).catch(() => {});
+    }
+  });
 });

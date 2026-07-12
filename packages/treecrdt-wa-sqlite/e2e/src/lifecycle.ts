@@ -1,4 +1,9 @@
-import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from '@treecrdt/wa-sqlite';
+import {
+  createTreecrdtClient,
+  detectOpfsSupport,
+  type OpfsWriteMode,
+  type TreecrdtClient,
+} from '@treecrdt/wa-sqlite';
 import { nodeIdFromInt } from '@treecrdt/benchmark';
 import { replicaFromLabel } from './op-helpers.js';
 
@@ -17,6 +22,7 @@ type LifecycleOptions = {
   docId: string;
   filename: string;
   runtime: LifecycleRuntime;
+  writeMode?: OpfsWriteMode;
 };
 
 export type LifecycleState = {
@@ -33,12 +39,19 @@ export type LifecycleState = {
   childParent: string | null;
   parentPayload: string | null;
   childPayload: string | null;
+  journalMode: string | null;
+  lockingMode: string | null;
 };
 
 async function createOpfsLifecycleClient(opts: LifecycleOptions): Promise<TreecrdtClient> {
   return createTreecrdtClient({
     docId: opts.docId,
-    storage: { type: 'opfs', filename: opts.filename, fallback: 'throw' },
+    storage: {
+      type: 'opfs',
+      filename: opts.filename,
+      fallback: 'throw',
+      writeMode: opts.writeMode,
+    },
     runtime: { type: opts.runtime },
   });
 }
@@ -60,6 +73,8 @@ async function summarizeLifecycleState(client: TreecrdtClient): Promise<Lifecycl
     childParent: await client.tree.parent(childId),
     parentPayload: parentPayload ? textDecoder.decode(parentPayload) : null,
     childPayload: childPayload ? textDecoder.decode(childPayload) : null,
+    journalMode: await client.runner.getText('PRAGMA journal_mode'),
+    lockingMode: await client.runner.getText('PRAGMA locking_mode'),
   };
 }
 

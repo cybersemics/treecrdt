@@ -1,6 +1,11 @@
 /// <reference lib="webworker" />
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import { transferablesForRpcBinaryResult, type RpcMethod, type RpcRequest } from './rpc.js';
+import {
+  transferablesForRpcBinaryResult,
+  type RpcMethod,
+  type RpcOpfsWriteMode,
+  type RpcRequest,
+} from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import {
   CommonWorkerSession,
@@ -20,6 +25,7 @@ async function init(
   filename: string | undefined,
   storageParam: 'memory' | 'opfs',
   docId: string,
+  opfsWriteMode: RpcOpfsWriteMode = 'default',
 ) {
   await session.closeDbAndReset();
   const opened = await openTreecrdtDb({
@@ -28,6 +34,7 @@ async function init(
     storage: storageParam,
     docId,
     requireOpfs: false,
+    opfsWriteMode,
     onMaterialized: postMaterialized,
   });
   session.applyOpened(opened);

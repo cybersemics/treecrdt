@@ -37,14 +37,46 @@ export function detectOpfsSupport(): OpfsSupport {
 
 const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal'];
 
+export type ClearOpfsStorageOptions = {
+  vfsKind?: OpfsVfsKind;
+  vfsName?: string;
+};
+
+export async function accessHandlePoolVfsNameForFilename(filename: string): Promise<string> {
+  const normalized = new URL(filename, 'file://localhost/').pathname;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+  const suffix = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+  return `opfs-ahp-${suffix}`;
+}
+
+async function clearAccessHandlePoolStorage(vfsName: string): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(vfsName, { recursive: true });
+  } catch (err) {
+    if ((err as Error)?.name !== 'NotFoundError') throw err;
+  }
+}
+
 /**
  * Remove database and related files (journal, wal) from OPFS storage.
  * Call only after the database handle is closed.
  *
  * @param filename - Path used when opening (e.g. /treecrdt.db or /treecrdt-playground.db)
  */
-export async function clearOpfsStorage(filename: string): Promise<void> {
+export async function clearOpfsStorage(
+  filename: string,
+  opts: ClearOpfsStorageOptions = {},
+): Promise<void> {
   if (!hasOpfsGetDirectory()) return;
+  if (opts.vfsKind === 'access-handle-pool') {
+    await clearAccessHandlePoolStorage(
+      opts.vfsName ?? (await accessHandlePoolVfsNameForFilename(filename)),
+    );
+    return;
+  }
 
   const path = filename.startsWith('/') ? filename.slice(1) : filename;
   const parts = path.split('/').filter(Boolean);
@@ -118,7 +150,7 @@ export async function opfsStorageExists(filename: string): Promise<boolean> {
   return false;
 }
 
-export type OpfsVfsKind = 'coop-sync' | 'any-context';
+export type OpfsVfsKind = 'coop-sync' | 'any-context' | 'access-handle-pool';
 
 export type OpfsVfsOptions = {
   name?: string;
@@ -131,6 +163,12 @@ export type OpfsVfsOptions = {
  */
 export async function createOpfsVfs(module: any, opts: OpfsVfsOptions = {}): Promise<any> {
   const name = opts.name ?? 'opfs';
+  if (opts.kind === 'access-handle-pool') {
+    // @ts-ignore vendored module lacks type declarations
+    const { AccessHandlePoolVFS } = await import('./vendor/AccessHandlePoolVFS.js');
+    return AccessHandlePoolVFS.create(name, module);
+  }
+
   if (opts.kind === 'any-context') {
     // @ts-ignore vendored module lacks type declarations
     const { OPFSAnyContextVFS } = await import('./vendor/OPFSAnyContextVFS.js');
