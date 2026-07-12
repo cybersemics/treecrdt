@@ -11,12 +11,9 @@ export type BrowserWebSocketLike = {
   send(data: Uint8Array): void;
   close(): void;
   addEventListener(type: 'message', listener: BrowserWebSocketMessageListener): void;
-  removeEventListener(type: 'message', listener: BrowserWebSocketMessageListener): void;
-};
-
-type BrowserWebSocketTerminalEventTarget = {
   addEventListener(type: 'close', listener: BrowserWebSocketCloseListener): void;
   addEventListener(type: 'error', listener: BrowserWebSocketErrorListener): void;
+  removeEventListener(type: 'message', listener: BrowserWebSocketMessageListener): void;
 };
 
 export type BrowserWebSocketTransportOptions = {
@@ -111,13 +108,8 @@ export function createBrowserWebSocketTransport(
   const onError: BrowserWebSocketErrorListener = () => {
     closeWithError(new Error('websocket error'));
   };
-  const terminalEvents = ws as BrowserWebSocketLike & BrowserWebSocketTerminalEventTarget;
-  try {
-    terminalEvents.addEventListener('close', onClose);
-    terminalEvents.addEventListener('error', onError);
-  } catch {
-    // Legacy WebSocket-like shims may support message events only.
-  }
+  ws.addEventListener('close', onClose);
+  ws.addEventListener('error', onError);
 
   if (ws.readyState > browserWebSocketOpenState(ws)) {
     terminal.notify(new Error('websocket is not open'));
