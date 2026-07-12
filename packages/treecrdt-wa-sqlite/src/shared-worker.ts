@@ -8,6 +8,7 @@ import {
   type RpcRequest,
   type RpcResult,
 } from './rpc.js';
+import { createRpcScheduler } from './rpc-scheduler.js';
 import { openTreecrdtDb } from './open.js';
 import {
   CommonWorkerSession,
@@ -39,13 +40,7 @@ class SharedCommonWorkerSession extends CommonWorkerSession {
 const ports = new Set<MessagePort>();
 const session = new SharedCommonWorkerSession();
 const coreHandlers = createCommonWorkerRpcHandlers(session);
-let callQueue: Promise<void> = Promise.resolve();
-
-const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
-  promise.then(
-    () => undefined,
-    () => undefined,
-  );
+const scheduleRequest = createRpcScheduler();
 
 function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePort) {
   if (event.changes.length === 0) return;
@@ -71,8 +66,7 @@ function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePor
     const respondError = (error: string) => {
       port.postMessage({ id: request.id, ok: false, error });
     };
-    const run = callQueue.then(() => handleRequest(port, request));
-    callQueue = settleQueue(run);
+    const run = scheduleRequest(request.priority ?? 'normal', () => handleRequest(port, request));
     run.then(
       (result) => respondSuccess(result),
       (err) => respondError(err instanceof Error ? err.message : String(err)),

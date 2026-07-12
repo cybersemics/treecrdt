@@ -126,6 +126,11 @@ export function addMaterializationWriteId(
 
 export type WriteOptions = {
   writeId?: string;
+  /**
+   * Scheduling hint for runtimes that serialize requests through a worker.
+   * Background writes may yield to foreground operations.
+   */
+  priority?: 'foreground' | 'background';
 };
 
 export type LocalWriteAuthSession = {
