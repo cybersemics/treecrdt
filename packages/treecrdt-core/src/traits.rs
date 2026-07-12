@@ -419,7 +419,6 @@ impl NodeStore for MemoryNodeStore {
     }
 
     fn attach(&mut self, node: NodeId, parent: NodeId, order_key: Vec<u8>) -> Result<()> {
-        self.ensure_node(parent)?;
         self.ensure_node(node)?;
         self.get_state_mut(node)?.parent = Some(parent);
         self.get_state_mut(node)?.order_key = Some(order_key.clone());
@@ -427,6 +426,8 @@ impl NodeStore for MemoryNodeStore {
         if parent == NodeId::TRASH {
             return Ok(());
         }
+
+        self.ensure_node(parent)?;
 
         let existing = self.get_state(parent)?.children.clone();
         let mut idx = existing.len();

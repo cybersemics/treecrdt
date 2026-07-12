@@ -215,33 +215,70 @@ fn rejected_cycle_move_emits_no_visible_change() {
     ));
     assert_eq!(crdt.parent(child).unwrap(), Some(parent));
     assert_eq!(crdt.payload(child).unwrap(), Some(vec![9]));
+}
 
-    for op in [
-        Operation::insert(
-            &ReplicaId::new(b"remote"),
-            4,
-            6,
-            NodeId::TRASH,
+#[test]
+fn reserved_sentinel_targets_never_materialize() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let replica = ReplicaId::new(b"remote");
+    let orphan_parent = NodeId(42);
+    let mut seq = 0;
+    let mut index = NoopParentOpIndex;
+
+    let root_payload = Operation::set_payload(&replica, 1, 1, NodeId::ROOT, vec![7]);
+    crdt.apply_remote_with_materialization_seq(root_payload, &mut index, &mut seq)
+        .unwrap();
+    assert_eq!(crdt.payload(NodeId::ROOT).unwrap(), Some(vec![7]));
+
+    let mut known_state = treecrdt_core::VersionVector::new();
+    known_state.observe(&replica, 3);
+    let rejected = [
+        Operation::insert_with_payload(
+            &replica,
+            2,
+            2,
             NodeId::ROOT,
-            Vec::new(),
-        ),
-        Operation::move_node(
-            &ReplicaId::new(b"remote"),
-            5,
-            7,
             NodeId::TRASH,
-            root,
             vec![0, 1],
+            vec![9],
         ),
-    ] {
+        Operation::move_node(&replica, 3, 3, NodeId::TRASH, NodeId::ROOT, vec![0, 1]),
+        Operation::delete(&replica, 4, 4, NodeId::TRASH, Some(known_state.clone())),
+        Operation::tombstone(&replica, 5, 5, NodeId::TRASH),
+        Operation::set_payload(&replica, 6, 6, NodeId::TRASH, vec![9]),
+        Operation::insert_with_payload(
+            &replica,
+            7,
+            7,
+            orphan_parent,
+            NodeId::ROOT,
+            vec![0, 1],
+            vec![8],
+        ),
+        Operation::move_node(&replica, 8, 8, NodeId::ROOT, NodeId::TRASH, Vec::new()),
+        Operation::delete(&replica, 9, 9, NodeId::ROOT, Some(known_state)),
+        Operation::tombstone(&replica, 10, 10, NodeId::ROOT),
+    ];
+
+    for op in rejected {
         let delta = crdt
             .apply_remote_with_materialization_seq(op, &mut index, &mut seq)
             .unwrap()
             .unwrap();
         assert!(delta.changes.is_empty());
     }
+
+    assert!(!crdt.is_known(NodeId::TRASH).unwrap());
+    assert!(!crdt.is_known(orphan_parent).unwrap());
+    assert_eq!(crdt.payload(NodeId::TRASH).unwrap(), None);
     assert_eq!(crdt.parent(NodeId::ROOT).unwrap(), None);
-    assert_eq!(crdt.parent(NodeId::TRASH).unwrap(), None);
+    assert_eq!(crdt.payload(NodeId::ROOT).unwrap(), Some(vec![7]));
+    crdt.validate_invariants().unwrap();
 }
 
 #[test]

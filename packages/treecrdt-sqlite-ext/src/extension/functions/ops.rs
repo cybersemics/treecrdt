@@ -246,7 +246,9 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
         } else {
             let ptr = sqlite_column_blob(stmt, 7) as *const u8;
             let len = sqlite_column_bytes(stmt, 7) as usize;
-            if ptr.is_null() {
+            if len == 0 {
+                Some(Vec::new())
+            } else if ptr.is_null() {
                 None
             } else {
                 Some(slice::from_raw_parts(ptr, len).to_vec())

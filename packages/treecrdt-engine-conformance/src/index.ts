@@ -149,6 +149,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioRejectsOperationIdEquivocationAtomically,
     },
     {
+      name: 'reserved sentinels stay virtual under remote operations',
+      run: scenarioReservedSentinelsStayVirtual,
+    },
+    {
       name: 'materialization events: structural batch',
       run: scenarioMaterializationEventStructuralBatch,
     },
@@ -736,6 +740,115 @@ async function scenarioRejectsOperationIdEquivocationAtomically(
     'null versus empty payload',
   );
   assertEqual((await engine.opRefs.all()).length, 2, 'conflicts must leave the op log unchanged');
+}
+
+async function scenarioReservedSentinelsStayVirtual(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('reserved-sentinel');
+  const trashParentReplica = replicaFromLabel('virtual-trash-parent');
+  const root = nodeIdFromInt(0);
+  const trash = 'f'.repeat(32);
+  const trashedNode = nodeIdFromInt(51);
+  const insertedUnderTrash = nodeIdFromInt(52);
+  const orphanParent = nodeIdFromInt(53);
+  const rootPayload = new Uint8Array([7]);
+
+  await engine.ops.append(
+    makePayloadOp({ replica, counter: 1, lamport: 1, node: root, payload: rootPayload }),
+  );
+  await engine.local.insert(trashParentReplica, root, trashedNode, { type: 'last' }, null);
+  const trashMoveEvents = await captureMaterializationEvents(engine, async () => {
+    await engine.local.move(trashParentReplica, trashedNode, trash, { type: 'last' });
+  });
+  assertEqual(trashMoveEvents.length, 1, 'local TRASH move must emit one event');
+  const trashMoveChanges = trashMoveEvents
+    .flatMap((event) => event.changes)
+    .filter(
+      (change) =>
+        change.kind === 'move' && change.node === trashedNode && change.parentAfter === trash,
+    );
+  assertEqual(trashMoveChanges.length, 1, 'local move to virtual TRASH must emit exactly once');
+  const rootOps = await engine.ops.get(await engine.opRefs.children(root));
+  assert(
+    rootOps.some((op) => op.kind.type === 'move' && op.kind.node === trashedNode),
+    'move to virtual TRASH must remain discoverable from its former parent',
+  );
+  const directTrashInsertEvents = await captureMaterializationEvents(engine, async () => {
+    await engine.local.insert(
+      trashParentReplica,
+      trash,
+      insertedUnderTrash,
+      { type: 'last' },
+      null,
+    );
+  });
+  assertEqual(directTrashInsertEvents.length, 1, 'insert under virtual TRASH must emit once');
+  const repeatedTrashMoveEvents = await captureMaterializationEvents(engine, async () => {
+    await engine.local.move(trashParentReplica, trashedNode, trash, { type: 'last' });
+  });
+  assertEqual(repeatedTrashMoveEvents.length, 0, 'repeated TRASH move must not emit a false move');
+
+  const events = await captureMaterializationEvents(engine, () =>
+    engine.ops.appendMany([
+      makeInsertOp({
+        replica,
+        counter: 2,
+        lamport: 2,
+        parent: root,
+        node: trash,
+        orderKey: orderKeyFromPosition(0),
+        payload: new Uint8Array([9]),
+      }),
+      makeInsertOp({
+        replica,
+        counter: 3,
+        lamport: 7,
+        parent: orphanParent,
+        node: root,
+        orderKey: orderKeyFromPosition(2),
+        payload: new Uint8Array([8]),
+      }),
+    ]),
+  );
+
+  assertEqual(events.length, 0, 'reserved-target operations must not emit visible changes');
+  assertEqual(await engine.tree.exists(trash), false, 'TRASH must not exist as a tree row');
+  assertEqual(
+    await engine.tree.exists(trashedNode),
+    true,
+    'a node under virtual TRASH must remain',
+  );
+  assertEqual(
+    await engine.tree.exists(insertedUnderTrash),
+    true,
+    'a node inserted under virtual TRASH must remain',
+  );
+  assertEqual(await engine.tree.nodeCount(), 2, 'TRASH itself must not contribute to nodeCount');
+  assertEqual(await engine.tree.parent(root), null, 'ROOT must remain parentless');
+  assertEqual(await engine.tree.exists(orphanParent), false, 'ROOT insert must not create parent');
+  assertBytesEqual(await engine.tree.getPayload(trash), null, 'TRASH payload must stay absent');
+  assertBytesEqual(
+    await engine.tree.getPayload(root),
+    rootPayload,
+    'structural ROOT operations must not overwrite its supported payload',
+  );
+  const dump = await engine.tree.dump();
+  assert(!dump.some((row) => row.node === trash), 'tree.dump must not expose TRASH');
+  assert(
+    dump.some((row) => row.node === trashedNode && row.parent === trash),
+    'the normal node must retain virtual TRASH as its stored parent',
+  );
+  assert(
+    dump.some((row) => row.node === insertedUnderTrash && row.parent === trash),
+    'a direct child must retain virtual TRASH as its stored parent',
+  );
+  const replayedRootOps = await engine.ops.get(await engine.opRefs.children(root));
+  assert(
+    replayedRootOps.some((op) => op.kind.type === 'move' && op.kind.node === trashedNode),
+    'canonical replay must preserve former-parent discovery for the TRASH move',
+  );
 }
 
 async function scenarioMaterializationEventStructuralBatch(

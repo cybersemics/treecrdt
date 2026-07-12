@@ -473,14 +473,13 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             return Ok(());
         }
         self.ensure_node(node)?;
-        self.ensure_node(parent)?;
 
         let started_at = Instant::now();
         let node_bytes = node_to_bytes(node);
         let parent_bytes = node_to_bytes(parent);
-        let mut c = self.ctx.client.borrow_mut();
 
         if parent == NodeId::TRASH {
+            let mut c = self.ctx.client.borrow_mut();
             let stmt = self.ctx.stmt(
                 &mut c,
                 "UPDATE treecrdt_nodes \
@@ -509,6 +508,9 @@ impl treecrdt_core::NodeStore for PgNodeStore {
             }
             return Ok(());
         }
+
+        self.ensure_node(parent)?;
+        let mut c = self.ctx.client.borrow_mut();
 
         let stmt = self.ctx.stmt(
             &mut c,
