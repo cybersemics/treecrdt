@@ -184,3 +184,48 @@ fn move_leaving_parent_is_included_in_source_filter() {
     assert_eq!(full.children(source).unwrap(), Vec::<NodeId>::new());
     assert_eq!(filtered.children(source).unwrap(), Vec::<NodeId>::new());
 }
+
+#[test]
+fn query_time_children_filter_uses_canonical_causal_closure() {
+    let replica = ReplicaId::new(b"query");
+    let source = node(11);
+    let destination = node(12);
+    let child = node(13);
+    let mut known_state = VersionVector::new();
+    for counter in 1..=6 {
+        known_state.observe(&replica, counter);
+    }
+
+    let ops = [
+        Operation::insert(&replica, 1, 1, NodeId::ROOT, source, key(0)),
+        Operation::insert(&replica, 2, 2, NodeId::ROOT, destination, key(1)),
+        Operation::insert(&replica, 3, 3, source, child, key(0)),
+        Operation::set_payload(&replica, 4, 4, child, b"before move"),
+        Operation::move_node(&replica, 5, 5, child, destination, key(0)),
+        Operation::clear_payload(&replica, 6, 6, child),
+        Operation::delete(&replica, 7, 7, child, Some(known_state)),
+    ];
+    let mut tree = TreeCrdt::new(
+        ReplicaId::new(b"query-materializer"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    // Append the move before the preceding payload to ensure the query derives its answer from a
+    // fresh canonical replay instead of incremental append order.
+    for index in [0, 1, 2, 4, 3, 5, 6] {
+        tree.apply_remote(ops[index].clone()).unwrap();
+    }
+
+    let counters_for = |parent| {
+        tree.operation_ids_for_children_filter(parent)
+            .unwrap()
+            .into_iter()
+            .map(|id| id.counter)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(counters_for(source), vec![3, 4, 5]);
+    assert_eq!(counters_for(destination), vec![4, 5, 6, 7]);
+}
