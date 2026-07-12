@@ -7,6 +7,7 @@
 
 mod append;
 mod doc_id;
+mod history;
 mod local_ops;
 mod materialize;
 mod node_store;
@@ -21,6 +22,7 @@ mod util;
 
 use append::{treecrdt_append_op, treecrdt_append_ops};
 use doc_id::{treecrdt_doc_id, treecrdt_set_doc_id};
+use history::treecrdt_history_invert;
 use local_ops::{
     treecrdt_local_delete, treecrdt_local_insert, treecrdt_local_move, treecrdt_local_payload,
 };
@@ -246,6 +248,20 @@ pub extern "C" fn sqlite3_treecrdt_init(
             None,
         )
     };
+    let rc_history_invert = {
+        let name = CString::new("treecrdt_history_invert").expect("static name");
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            1,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_history_invert),
+            None,
+            None,
+            None,
+        )
+    };
 
     let rc_local_insert = {
         let name = CString::new("treecrdt_local_insert").expect("static name");
@@ -313,6 +329,7 @@ pub extern "C" fn sqlite3_treecrdt_init(
         || rc_oprefs_children != SQLITE_OK as c_int
         || rc_ops_by_oprefs != SQLITE_OK as c_int
         || rc_since != SQLITE_OK as c_int
+        || rc_history_invert != SQLITE_OK as c_int
         || rc_local_insert != SQLITE_OK as c_int
         || rc_local_move != SQLITE_OK as c_int
         || rc_local_delete != SQLITE_OK as c_int
@@ -341,6 +358,8 @@ pub extern "C" fn sqlite3_treecrdt_init(
             rc_oprefs_children
         } else if rc_ops_by_oprefs != SQLITE_OK as c_int {
             rc_ops_by_oprefs
+        } else if rc_history_invert != SQLITE_OK as c_int {
+            rc_history_invert
         } else if rc_local_insert != SQLITE_OK as c_int {
             rc_local_insert
         } else if rc_local_move != SQLITE_OK as c_int {
