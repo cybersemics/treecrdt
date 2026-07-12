@@ -1,4 +1,4 @@
-import type { Operation } from '@treecrdt/interface';
+import type { Operation, OperationId } from '@treecrdt/interface';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 
 export type RpcStorageMode = 'memory' | 'opfs';
@@ -42,6 +42,10 @@ export type RpcSchema = {
   treeParent: { params: [node: string]; result: Uint8Array | null };
   treeExists: { params: [node: string]; result: boolean };
   treePayload: { params: [node: string]; result: Uint8Array | null };
+  historyInvert: {
+    params: [operationIds: OperationId[]];
+    result: unknown;
+  };
   headLamport: { params: []; result: number };
   replicaMaxCounter: { params: [replica: number[]]; result: number };
   close: { params: []; result: void };

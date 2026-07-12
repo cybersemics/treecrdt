@@ -1,7 +1,7 @@
 import { dbGetText } from './sql.js';
 import type { Database } from './types.js';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type { Operation } from '@treecrdt/interface';
+import type { Operation, OperationId } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { OpenTreecrdtDbResult } from './open.js';
 import { clearOpfsStorage } from './opfs.js';
@@ -134,6 +134,10 @@ export class CommonWorkerSession {
     return await this.ensureApi().treeExists(nodeIdToBytes16(node));
   }
 
+  async historyInvert(operationIds: OperationId[]) {
+    return await this.ensureApi().historyInvert!(operationIds);
+  }
+
   async headLamport() {
     return await this.ensureApi().headLamport();
   }
@@ -165,6 +169,7 @@ export function createCommonWorkerRpcHandlers(session: CommonWorkerSession) {
     treeParent: (node: string) => session.treeParent(node),
     treeExists: (node: string) => session.treeExists(node),
     treePayload: (node: string) => session.treePayload(node),
+    historyInvert: (operationIds: OperationId[]) => session.historyInvert(operationIds),
     headLamport: () => session.headLamport(),
     replicaMaxCounter: (replica: number[]) => session.replicaMaxCounter(replica),
   } as const;

@@ -1,4 +1,8 @@
-import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
+import type {
+  EngineHistory,
+  MaterializationEvent,
+  TreecrdtEngine,
+} from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import type { RpcMethod, RpcParams, RpcRequest, RpcResult } from './rpc.js';
@@ -32,7 +36,8 @@ export type TreecrdtAssets = {
   baseUrl?: string;
 };
 
-export type TreecrdtClient = TreecrdtEngine & {
+export type TreecrdtClient = Omit<TreecrdtEngine, 'history'> & {
+  history: EngineHistory;
   mode: ClientMode;
   runtime: RuntimeMode;
   storage: StorageMode;

@@ -5,6 +5,7 @@ import type {
   MaterializationEvent,
   MaterializationOutcome,
   MaterializationSource,
+  LocalEditPlan,
 } from './engine.js';
 import {
   decodeNodeId,
@@ -14,7 +15,7 @@ import {
   ROOT_NODE_ID_HEX,
   replicaIdToBytes,
 } from './ids.js';
-import type { Operation, OperationKind, ReplicaId } from './index.js';
+import type { Operation, OperationId, OperationKind, ReplicaId } from './index.js';
 
 export type SqlCall = {
   sql: string;
@@ -348,6 +349,7 @@ export function createTreecrdtSqliteAdapter(
     treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
     treeExists: (node) => treecrdtTreeExists(runner, node, emitOutcome),
     treePayload: (node) => treecrdtTreePayload(runner, node, emitOutcome),
+    historyInvert: (edit) => treecrdtHistoryInvert(runner, edit),
     headLamport: () => treecrdtHeadLamport(runner),
     replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(runner, replica),
     appendOp: (op, serializeNodeId, serializeReplica) =>
@@ -564,6 +566,19 @@ async function treecrdtTreePayload(
   );
   if (encoded === null || encoded === undefined || encoded === 'n') return null;
   return hexToBytes(encoded.slice(1));
+}
+
+async function treecrdtHistoryInvert(
+  runner: SqliteRunner,
+  operationIds: OperationId[],
+): Promise<unknown> {
+  const ids = operationIds.map((id) => ({
+    replica: Array.from(id.replica),
+    counter: id.counter,
+  }));
+  return sqliteGetJson<unknown>(runner, 'SELECT treecrdt_history_invert(?1)', [
+    JSON.stringify(ids),
+  ]);
 }
 
 /**
@@ -874,6 +889,41 @@ export function decodeSqliteTreeRows(raw: unknown): SqliteTreeRow[] {
     const tombstone = Boolean(row.tombstone);
     return { node, parent, orderKey, tombstone };
   });
+}
+
+export function decodeSqliteLocalEditPlan(raw: unknown): LocalEditPlan {
+  const value = (raw ?? {}) as any;
+  const actions = Array.isArray(value.actions) ? value.actions : [];
+  return {
+    actions: actions.map((action: any) => {
+      const type = String(action.type);
+      if (type === 'delete') {
+        return { type, node: decodeNodeId(action.node) };
+      }
+      if (type === 'move') {
+        const placement = action.placement as any;
+        const placementType = String(placement?.type);
+        return {
+          type,
+          node: decodeNodeId(action.node),
+          parent: decodeNodeId(action.parent),
+          index: Math.max(0, Number(action.index) || 0),
+          placement:
+            placementType === 'after'
+              ? { type: 'after', after: decodeNodeId(placement.after) }
+              : { type: 'first' },
+        };
+      }
+      if (type === 'payload') {
+        return {
+          type,
+          node: decodeNodeId(action.node),
+          payload: decodeSqlitePayload(action.payload),
+        };
+      }
+      throw new Error(`unknown local edit action type: ${type}`);
+    }),
+  };
 }
 
 export function decodeSqliteOps(raw: unknown): Operation[] {
