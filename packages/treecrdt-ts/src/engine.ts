@@ -145,8 +145,8 @@ export type LocalWriteOptions = {
   /**
    * Authorizes the minted local op before it is exposed to callers as committed.
    *
-   * SQLite clients wrap this in a savepoint so auth failures roll back the local
-   * op and defer materialization events until auth succeeds.
+   * SQLite clients prepare without writing, authorize the exact proposal, then atomically
+   * revalidate and commit it. A concurrent write causes a fresh proposal and authorization.
    */
   authSession?: LocalWriteAuthSession;
 };
