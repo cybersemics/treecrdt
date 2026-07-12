@@ -1,4 +1,4 @@
-import type { Operation } from './index.js';
+import type { Operation, OperationId } from './index.js';
 import type { MaterializationOutcome } from './engine.js';
 
 export type SerializeNodeId = (id: string) => Uint8Array;
@@ -77,6 +77,12 @@ export interface TreecrdtAdapter {
    * Returns the opaque byte payload or null if the node has no payload.
    */
   treePayload(node: Uint8Array): Promise<Uint8Array | null>;
+  /**
+   * Derive a local edit plan that inverts the operations with these ids.
+   *
+   * Returns raw JSON-decoded plan rows from the backend's operation history.
+   */
+  historyInvert?(operationIds: OperationId[]): Promise<unknown>;
   /**
    * Fetch the maximum lamport seen in the op log.
    */

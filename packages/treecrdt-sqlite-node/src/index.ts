@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createTreecrdtSqliteAdapter,
   createTreecrdtSqliteWriter,
+  decodeSqliteLocalEditPlan,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
@@ -23,7 +24,12 @@ import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
 } from '@treecrdt/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type {
+  EngineHistory,
+  LocalWriteOptions,
+  TreecrdtEngine,
+  WriteOptions,
+} from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
   type TreecrdtSqliteAuthApi,
@@ -126,7 +132,13 @@ export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {})
 export function createTreecrdtClient(
   db: any,
   opts: { docId?: string; maxBulkOps?: number } = {},
-): Promise<TreecrdtEngine & { runner: SqliteRunner; auth: TreecrdtSqliteAuthApi }> {
+): Promise<
+  Omit<TreecrdtEngine, 'history'> & {
+    history: EngineHistory;
+    runner: SqliteRunner;
+    auth: TreecrdtSqliteAuthApi;
+  }
+> {
   const runner = createRunner(db);
   const materialized = createMaterializationDispatcher();
   const adapter = createTreecrdtSqliteAdapter(runner, {
@@ -248,6 +260,12 @@ export function createTreecrdtClient(
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),
     local,
+    history: {
+      invert: async (edit) =>
+        decodeSqliteLocalEditPlan(
+          await adapter.historyInvert!(edit.operations.map((operation) => operation.meta.id)),
+        ),
+    },
     onMaterialized: materialized.onMaterialized,
     runner,
     close: async () => {
