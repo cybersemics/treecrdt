@@ -1,6 +1,12 @@
 import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import { edits, PartialEditError } from '@treecrdt/interface/edits';
+import {
+  bytesToHex,
+  nodeIdToBytes16,
+  replicaIdToBytes,
+  TRASH_NODE_ID_HEX,
+} from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -139,6 +145,18 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'local ops: materialization changes include writeId',
       run: scenarioLocalOpsMaterializationWriteId,
+    },
+    {
+      name: 'local undo: capture/apply supports undo and redo',
+      run: scenarioLocalUndoCaptureApply,
+    },
+    {
+      name: 'local undo: history replay derives undo lazily',
+      run: scenarioLocalUndoHistoryReplay,
+    },
+    {
+      name: 'local undo: imported ops survive history undo/redo',
+      run: scenarioLocalUndoImportedOpsSurvive,
     },
     {
       name: 'append/appendMany: idempotent + headLamport monotonic',
@@ -633,6 +651,254 @@ async function scenarioLocalOpsMaterializationWriteId(
     'bound local insert',
   );
   assertChangeSource(boundInsertEvents[0]!, boundNode, boundInsertOp!, 'bound local insert');
+}
+
+async function scenarioLocalUndoCaptureApply(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parentA = nodeIdFromInt(51);
+  const parentB = nodeIdFromInt(52);
+  const sibling = nodeIdFromInt(53);
+  const node = nodeIdFromInt(54);
+  const inserted = nodeIdFromInt(55);
+  const payloadOnly = nodeIdFromInt(56);
+  const originalPayload = new Uint8Array();
+  const nextPayload = new TextEncoder().encode('next-payload');
+  const insertedPayload = new TextEncoder().encode('inserted-payload');
+
+  await engine.local.insert(replica, root, parentA, { type: 'last' }, null);
+  await engine.local.insert(replica, root, parentB, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, sibling, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, node, { type: 'last' }, originalPayload);
+
+  const captured = await edits.capturePlan(engine, replica, async (local) => {
+    await local.move(node, parentB, { type: 'last' });
+    await local.payload(node, nextPayload);
+  });
+  assertEqual(captured.operations.length, 2, 'captured operation count');
+
+  const undone = await edits.undo(engine, replica, captured);
+  assertArrayEqual(await engine.tree.children(parentA), [sibling, node], 'parentA after undo');
+  assertBytesEqual(await engine.tree.getPayload(node), originalPayload, 'payload after undo');
+
+  await edits.redo(engine, replica, undone);
+  assertArrayEqual(await engine.tree.children(parentB), [node], 'parentB after redo');
+  assertBytesEqual(await engine.tree.getPayload(node), nextPayload, 'payload after redo');
+
+  const insertCapture = await edits.capturePlan(engine, replica, async (local) =>
+    local.insert(parentB, inserted, { type: 'last' }, insertedPayload),
+  );
+  const insertUndone = await edits.undo(engine, replica, insertCapture);
+  assertEqual(insertUndone.operations.length, 2, 'insert undo operation count');
+  assertBytesEqual(await engine.tree.getPayload(inserted), null, 'insert payload cleared by undo');
+
+  await edits.redo(engine, replica, insertUndone);
+  assertBytesEqual(await engine.tree.getPayload(inserted), insertedPayload, 'insert redo payload');
+
+  const reinsertCapture = await edits.capturePlan(engine, replica, (local) =>
+    local.insert(parentA, inserted, { type: 'last' }, nextPayload),
+  );
+  await edits.undo(engine, replica, reinsertCapture);
+  assertArrayEqual(await engine.tree.children(parentB), [node, inserted], 'reinsert undo parent');
+  assertBytesEqual(
+    await engine.tree.getPayload(inserted),
+    insertedPayload,
+    'reinsert undo payload',
+  );
+
+  const partialPayload = new TextEncoder().encode('partial-payload');
+  let partial: PartialEditError | undefined;
+  try {
+    await edits.undo(engine, replica, {
+      undo: {
+        actions: [
+          { type: 'payload', node, payload: partialPayload },
+          {
+            type: 'move',
+            node,
+            parent: 'invalid-node-id',
+            index: 0,
+            placement: { type: 'first' },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    if (error instanceof PartialEditError) partial = error;
+    else throw error;
+  }
+  assert(partial, 'partial edit error');
+  assertEqual(partial.operations.length, 1, 'partial edit committed operation count');
+  assertEqual(partial.undo?.actions.length, 1, 'partial edit inverse count');
+  assertEqual(partial.remaining?.actions.length, 1, 'partial edit remaining action count');
+  assertBytesEqual(await engine.tree.getPayload(node), partialPayload, 'partial edit state');
+
+  await engine.local.delete(replica, node);
+  const revivedPayload = new TextEncoder().encode('revived-payload');
+  const payloadRevival = await edits.capturePlan(engine, replica, (local) =>
+    local.payload(node, revivedPayload),
+  );
+  const payloadRevivalUndone = await edits.undo(engine, replica, payloadRevival);
+  assertEqual(await engine.tree.exists(node), false, 'payload undo restores deleted state');
+  await edits.redo(engine, replica, payloadRevivalUndone);
+  assertBytesEqual(await engine.tree.getPayload(node), revivedPayload, 'payload redo value');
+
+  const payloadOnlyEdit = await edits.capturePlan(engine, replica, (local) =>
+    local.payload(payloadOnly, revivedPayload),
+  );
+  const payloadOnlyUndone = await edits.undo(engine, replica, payloadOnlyEdit);
+  assertEqual(await engine.tree.exists(payloadOnly), false, 'first payload undo');
+  const payloadOnlyRedone = await edits.redo(engine, replica, payloadOnlyUndone);
+  assertBytesEqual(await engine.tree.getPayload(payloadOnly), revivedPayload, 'first payload redo');
+  assertEqual(payloadOnlyRedone.undo.actions.length, 2, 'first payload undo plan stays compact');
+}
+
+async function scenarioLocalUndoHistoryReplay(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.history) return;
+  const historyEngine = engine as typeof engine & { history: NonNullable<typeof engine.history> };
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parentA = nodeIdFromInt(151);
+  const parentB = nodeIdFromInt(152);
+  const sibling = nodeIdFromInt(153);
+  const node = nodeIdFromInt(154);
+  const inserted = nodeIdFromInt(155);
+  const payloadOnly = nodeIdFromInt(156);
+  const trashMoved = nodeIdFromInt(157);
+  const originalPayload = new Uint8Array();
+  const nextPayload = new TextEncoder().encode('lazy-next-payload');
+  const insertedPayload = new TextEncoder().encode('lazy-inserted-payload');
+  const chainPayload = new TextEncoder().encode('lazy-chain-payload');
+  const replacementPayload = new TextEncoder().encode('lazy-replacement-payload');
+
+  await engine.local.insert(replica, root, parentA, { type: 'last' }, null);
+  await engine.local.insert(replica, root, parentB, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, sibling, { type: 'last' }, null);
+  await engine.local.insert(replica, parentA, node, { type: 'last' }, originalPayload);
+
+  const captured = await edits.capture(engine, replica, async (local) => {
+    await local.move(node, parentB, { type: 'last' });
+    await local.payload(node, nextPayload);
+  });
+  assertEqual(captured.operations.length, 2, 'lazy captured operation count');
+
+  const undoResult = await edits.undo(historyEngine, replica, captured);
+  assertArrayEqual(await engine.tree.children(parentA), [sibling, node], 'lazy parentA after undo');
+  assertBytesEqual(await engine.tree.getPayload(node), originalPayload, 'lazy payload after undo');
+
+  await edits.redo(engine, replica, undoResult);
+  assertArrayEqual(await engine.tree.children(parentB), [node], 'lazy parentB after redo');
+  assertBytesEqual(await engine.tree.getPayload(node), nextPayload, 'lazy payload after redo');
+
+  const insertCapture = await edits.capture(engine, replica, async (local) =>
+    local.insert(parentB, inserted, { type: 'last' }, insertedPayload),
+  );
+  const insertUndone = await edits.undo(historyEngine, replica, insertCapture);
+  assertBytesEqual(await engine.tree.getPayload(inserted), null, 'lazy insert undo payload');
+
+  await edits.redo(engine, replica, insertUndone);
+  assertBytesEqual(await engine.tree.getPayload(inserted), insertedPayload, 'lazy insert redo');
+
+  const deleteCapture = await edits.capture(engine, replica, (local) => local.delete(node));
+  await edits.undo(historyEngine, replica, deleteCapture);
+  assertArrayEqual(await engine.tree.children(parentB), [node, inserted], 'lazy delete undo');
+
+  const repeatedPayload = await edits.capture(engine, replica, async (local) => {
+    await local.payload(node, chainPayload);
+    await local.payload(node, replacementPayload);
+  });
+  const repeatedUndone = await edits.undo(historyEngine, replica, repeatedPayload);
+  assertEqual(repeatedUndone.operations.length, 1, 'lazy repeated payload undo coalesces');
+  assertBytesEqual(await engine.tree.getPayload(node), nextPayload, 'lazy repeated payload undo');
+  await edits.redo(engine, replica, repeatedUndone);
+  assertBytesEqual(await engine.tree.getPayload(node), replacementPayload, 'lazy repeated redo');
+
+  const payloadOnlyEdit = await edits.capture(engine, replica, (local) =>
+    local.payload(payloadOnly, replacementPayload),
+  );
+  const payloadOnlyUndone = await edits.undo(historyEngine, replica, payloadOnlyEdit);
+  assertEqual(await engine.tree.exists(payloadOnly), false, 'lazy first payload undo');
+  await edits.redo(engine, replica, payloadOnlyUndone);
+  assertBytesEqual(
+    await engine.tree.getPayload(payloadOnly),
+    replacementPayload,
+    'lazy first payload redo',
+  );
+
+  await engine.local.insert(replica, parentA, trashMoved, { type: 'last' }, null);
+  await engine.local.move(replica, trashMoved, TRASH_NODE_ID_HEX, { type: 'first' });
+  const moveFromTrash = await edits.capture(engine, replica, (local) =>
+    local.move(trashMoved, parentA, { type: 'last' }),
+  );
+  const moveFromTrashUndone = await edits.undo(historyEngine, replica, moveFromTrash);
+  assertEqual(await engine.tree.parent(trashMoved), TRASH_NODE_ID_HEX, 'lazy undo restores trash');
+  await edits.redo(engine, replica, moveFromTrashUndone);
+  assertEqual(await engine.tree.parent(trashMoved), parentA, 'lazy redo restores moved node');
+}
+
+async function scenarioLocalUndoImportedOpsSurvive(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  if (!a.history) return;
+  const historyA = a as typeof a & { history: NonNullable<typeof a.history> };
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+  const root = nodeIdFromInt(0);
+  const anchor = nodeIdFromInt(170);
+  const parentA = nodeIdFromInt(171);
+  const parentB = nodeIdFromInt(172);
+  const target = nodeIdFromInt(173);
+  const remoteSibling = nodeIdFromInt(174);
+  const textEncoder = new TextEncoder();
+  const originalPayload = textEncoder.encode('imported-ops-original');
+  const nextPayload = textEncoder.encode('imported-ops-next');
+  const remotePayload = textEncoder.encode('imported-ops-remote');
+
+  await a.local.insert(rA, root, parentA, { type: 'last' }, null);
+  await a.local.insert(rA, root, parentB, { type: 'last' }, null);
+  await a.local.insert(rA, parentA, anchor, { type: 'last' }, null);
+  await a.local.insert(rA, parentA, target, { type: 'last' }, originalPayload);
+
+  // Bring B to the same initial state, then let A and B diverge.
+  await b.ops.appendMany(await a.ops.all());
+
+  const captured = await edits.capture(a, rA, async (local) => {
+    await local.move(target, parentB, { type: 'last' });
+    await local.payload(target, nextPayload);
+  });
+
+  // This simulates a sync/import that happens after the local edit was captured but before undo.
+  await b.local.delete(rB, anchor);
+  await b.local.insert(rB, parentA, remoteSibling, { type: 'last' }, remotePayload);
+  await a.ops.appendMany(await b.ops.all());
+
+  const undone = await edits.undo(historyA, rA, captured);
+  assertArrayEqual(
+    await a.tree.children(parentA),
+    [target, remoteSibling],
+    'undo rebases missing sibling anchor',
+  );
+  assertBytesEqual(await a.tree.getPayload(target), originalPayload, 'imported undo payload');
+  assertBytesEqual(
+    await a.tree.getPayload(remoteSibling),
+    remotePayload,
+    'remote payload survives undo',
+  );
+
+  await edits.redo(a, rA, undone);
+  assertArrayEqual(await a.tree.children(parentA), [remoteSibling], 'imported redo parent');
+  assertBytesEqual(await a.tree.getPayload(target), nextPayload, 'imported redo payload');
+
+  await b.ops.appendMany(await a.ops.all());
+  assertArrayEqual(await b.tree.children(parentB), [target], 'peer receives redo');
+  assertBytesEqual(await b.tree.getPayload(remoteSibling), remotePayload, 'peer keeps remote op');
 }
 
 async function scenarioAppendIdempotentAndHeadLamportMonotonic(

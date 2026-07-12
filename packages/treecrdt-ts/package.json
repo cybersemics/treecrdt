@@ -24,6 +24,10 @@
     "./engine": {
       "import": "./dist/src/engine.js",
       "types": "./dist/src/engine.d.ts"
+    },
+    "./edits": {
+      "import": "./dist/src/edits.js",
+      "types": "./dist/src/edits.d.ts"
     }
   },
   "files": [
