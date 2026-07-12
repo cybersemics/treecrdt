@@ -732,6 +732,19 @@ where
         self.storage.load_since(lamport)
     }
 
+    /// Return the canonical operation-id closure needed to reproduce `children(parent)`.
+    ///
+    /// This query-time implementation replays the operation log through core's [`ParentOpIndex`]
+    /// semantics. It is intended for in-memory adapters that do not persist that index; indexed
+    /// storage backends should continue to serve their materialized parent-op rows directly.
+    pub fn operation_ids_for_children_filter(&self, parent: NodeId) -> Result<Vec<OperationId>> {
+        crate::materialization::operation_ids_for_children_filter(
+            &self.storage,
+            &self.replica_id,
+            parent,
+        )
+    }
+
     pub fn replay_from_storage(&mut self) -> Result<()> {
         self.version_vector = VersionVector::new();
         self.nodes.reset()?;

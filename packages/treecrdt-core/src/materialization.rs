@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::affected::coalesce_materialization_changes;
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
@@ -458,6 +458,32 @@ fn replay_frontier_in_memory<S: Storage>(
         head: replay.head,
         seq: replay.seq,
     })
+}
+
+pub(crate) fn operation_ids_for_children_filter<S: Storage>(
+    storage: &S,
+    replica_id: &ReplicaId,
+    parent: NodeId,
+) -> Result<Vec<OperationId>> {
+    let rebuilt = replay_frontier_in_memory(storage, replica_id)?;
+    let selected: HashSet<_> = rebuilt
+        .index
+        .records
+        .into_iter()
+        .filter_map(|(indexed_parent, op_id, _seq)| (indexed_parent == parent).then_some(op_id))
+        .collect();
+
+    // Parent-index sequence numbers describe when a relationship was discovered. A payload
+    // backfilled after a move can therefore share the move's sequence despite preceding it in the
+    // operation log. Scan again so callers always receive the selected ids in canonical op order.
+    let mut operation_ids = Vec::with_capacity(selected.len());
+    storage.scan_since(0, &mut |op| {
+        if selected.contains(&op.meta.id) {
+            operation_ids.push(op.meta.id);
+        }
+        Ok(())
+    })?;
+    Ok(operation_ids)
 }
 
 fn validate_rebuilt_state<M: MaterializationCursor>(

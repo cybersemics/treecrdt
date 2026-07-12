@@ -25,6 +25,12 @@ struct JsOp {
     payload: Option<String>, // hex
 }
 
+#[derive(Serialize)]
+struct JsOperationId {
+    replica: String,
+    counter: u64,
+}
+
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let clean = hex.trim_start_matches("0x");
     if !clean.len().is_multiple_of(2) {
@@ -220,6 +226,23 @@ impl WasmTree {
             .operations_since(lamport)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         let mapped: Vec<JsOp> = ops.iter().map(op_to_js).collect();
+        to_value(&mapped).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = childrenFilterOperationIds)]
+    pub fn children_filter_operation_ids(&self, parent_hex: String) -> Result<JsValue, JsValue> {
+        let parent = hex_to_node(&parent_hex).map_err(|e| JsValue::from_str(&e))?;
+        let operation_ids = self
+            .inner
+            .operation_ids_for_children_filter(parent)
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        let mapped: Vec<JsOperationId> = operation_ids
+            .into_iter()
+            .map(|id| JsOperationId {
+                replica: bytes_to_hex(id.replica.as_bytes()),
+                counter: id.counter,
+            })
+            .collect();
         to_value(&mapped).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
