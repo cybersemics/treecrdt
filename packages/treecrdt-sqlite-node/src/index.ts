@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,8 +69,8 @@ export type SqliteNodeClient = Omit<TreecrdtSqliteNodeDatabaseClient, 'storage'>
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SQLITE_FILE_SUFFIXES = ['', '-journal', '-wal', '-shm'];
 
-function platformExt(): '.dylib' | '.so' | '.dll' {
-  switch (process.platform) {
+function platformExt(platform = process.platform): '.dylib' | '.so' | '.dll' {
+  switch (platform) {
     case 'darwin':
       return '.dylib';
     case 'win32':
@@ -79,14 +80,18 @@ function platformExt(): '.dylib' | '.so' | '.dll' {
   }
 }
 
+function nativeExtensionFileName(platform = process.platform, arch = process.arch): string {
+  const ext = platformExt(platform);
+  const base = ext === '.dll' ? 'treecrdt_sqlite_ext' : 'libtreecrdt_sqlite_ext';
+  return `${base}-${platform}-${arch}${ext}`;
+}
+
 /**
  * Resolve the bundled TreeCRDT SQLite extension for this platform.
  * Falls back to the `native/` directory within this package.
  */
 export function defaultExtensionPath(): string {
-  const ext = platformExt();
-  const base = ext === '.dll' ? 'treecrdt_sqlite_ext' : 'libtreecrdt_sqlite_ext';
-  return path.resolve(__dirname, '../native', `${base}${ext}`);
+  return path.resolve(__dirname, '../native', nativeExtensionFileName());
 }
 
 /**
@@ -95,6 +100,11 @@ export function defaultExtensionPath(): string {
 export function loadTreecrdtExtension(db: LoadableDatabase, opts: LoadOptions = {}): string {
   const path = opts.extensionPath ?? defaultExtensionPath();
   const entrypoint = opts.entrypoint ?? 'sqlite3_treecrdt_init';
+  if (!existsSync(path)) {
+    throw new Error(
+      `TreeCRDT SQLite native extension not found at ${path}. This package may not include a native artifact for ${process.platform}/${process.arch}; install a supported package version or pass a custom extensionPath.`,
+    );
+  }
   db.loadExtension(path, entrypoint);
   return path;
 }
