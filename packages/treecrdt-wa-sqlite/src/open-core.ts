@@ -1,7 +1,8 @@
-import { createOpfsVfs, type OpfsVfsKind } from './opfs.js';
+import { accessHandlePoolVfsNameForFilename, createOpfsVfs, type OpfsVfsKind } from './opfs.js';
 import { createWaSqliteApi } from './adapter.js';
-import type { Database } from './types.js';
+import type { Database, OpfsWriteMode } from './types.js';
 import { makeDbAdapter } from './db.js';
+import { dbGetText } from './sql.js';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import { initializeTreecrdtExtension } from './extension.js';
@@ -14,6 +15,7 @@ export type OpenTreecrdtDbOptions = {
   requireOpfs?: boolean;
   onMaterialized?: (event: MaterializationEvent) => void;
   opfsVfs?: OpfsVfsKind;
+  opfsWriteMode?: OpfsWriteMode;
 };
 
 export type OpenTreecrdtDbResult = {
@@ -21,6 +23,8 @@ export type OpenTreecrdtDbResult = {
   api: TreecrdtAdapter;
   storage: 'memory' | 'opfs';
   filename: string;
+  opfsVfsKind?: OpfsVfsKind;
+  opfsVfsName?: string;
   opfsError?: string;
 };
 
@@ -57,6 +61,7 @@ async function openInitializedDatabase(
   filename: string,
   opts: OpenTreecrdtDbOptions,
   vfsName?: string,
+  beforeExtensionInit?: (db: Database) => Promise<void>,
 ): Promise<{ db: Database; api: TreecrdtAdapter }> {
   let db: Database | undefined;
   try {
@@ -64,6 +69,7 @@ async function openInitializedDatabase(
       ? await sqlite3.open_v2(filename, undefined, vfsName)
       : await sqlite3.open_v2(filename);
     db = makeDbAdapter(sqlite3, handle);
+    await beforeExtensionInit?.(db);
     await initializeTreecrdtExtension(module, handle);
     const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
     await api.setDocId(opts.docId);
@@ -71,6 +77,28 @@ async function openInitializedDatabase(
   } catch (err) {
     await closeIgnoringErrors(db?.close ? () => db!.close!() : undefined);
     throw err;
+  }
+}
+
+async function configureOpfsWriteMode(db: Database, mode: OpfsWriteMode): Promise<void> {
+  if (mode === 'default') return;
+
+  const lockingMode = await dbGetText(db, 'PRAGMA locking_mode=EXCLUSIVE');
+  const currentJournalMode = await dbGetText(db, 'PRAGMA journal_mode');
+  const journalMode =
+    currentJournalMode?.toLowerCase() === 'wal'
+      ? currentJournalMode
+      : await dbGetText(db, 'PRAGMA journal_mode=WAL');
+  const confirmedJournalMode = await dbGetText(db, 'PRAGMA journal_mode');
+  const confirmedLockingMode = await dbGetText(db, 'PRAGMA locking_mode');
+
+  if (
+    confirmedJournalMode?.toLowerCase() !== 'wal' ||
+    confirmedLockingMode?.toLowerCase() !== 'exclusive'
+  ) {
+    throw new Error(
+      `OPFS single-owner WAL requested but SQLite reported journal_mode=${confirmedJournalMode ?? journalMode ?? 'null'} locking_mode=${confirmedLockingMode ?? lockingMode ?? 'null'}`,
+    );
   }
 }
 
@@ -101,13 +129,20 @@ export async function openTreecrdtDbFromLoaded(
   let opfsError: string | undefined;
   let opfsFailure: unknown;
   const requestedFilename = opts.filename ?? '/treecrdt.db';
+  const opfsWriteMode = opts.opfsWriteMode ?? 'default';
 
   if (opts.storage === 'opfs') {
     let vfs: { close?: () => Promise<void> | void } | undefined;
     try {
+      const opfsVfsKind: OpfsVfsKind =
+        opfsWriteMode === 'single-owner-wal' ? 'access-handle-pool' : (opts.opfsVfs ?? 'coop-sync');
+      const opfsVfsName =
+        opfsVfsKind === 'access-handle-pool'
+          ? await accessHandlePoolVfsNameForFilename(requestedFilename)
+          : OPFS_VFS_NAME;
       const initializedVfs = await createOpfsVfs(module, {
-        name: OPFS_VFS_NAME,
-        kind: opts.opfsVfs,
+        name: opfsVfsName,
+        kind: opfsVfsKind,
       });
       vfs = initializedVfs;
       sqlite3.vfs_register(initializedVfs, false);
@@ -116,13 +151,16 @@ export async function openTreecrdtDbFromLoaded(
         module,
         requestedFilename,
         opts,
-        OPFS_VFS_NAME,
+        opfsVfsName,
+        (db) => configureOpfsWriteMode(db, opfsWriteMode),
       );
       return {
         ...opened,
         db: closeDatabaseWithVfs(opened.db, initializedVfs),
         storage: 'opfs',
         filename: requestedFilename,
+        opfsVfsKind,
+        opfsVfsName,
       };
     } catch (err) {
       opfsFailure = err;

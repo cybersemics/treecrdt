@@ -51,6 +51,7 @@ import type {
   MessagePortProxy,
   NormalizedRuntimeOptions,
   NormalizedStorageOptions,
+  OpfsWriteMode,
   RpcCall,
   RuntimeMode,
   SharedWorkerFactory,
@@ -64,6 +65,12 @@ export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
 // Keep long browser appendMany calls from monopolizing the worker queue.
 const APPEND_MANY_RPC_CHUNK_SIZE = 2500;
 
+function normalizeOpfsWriteMode(value: unknown): OpfsWriteMode {
+  if (value === undefined || value === 'default') return 'default';
+  if (value === 'single-owner-wal') return 'single-owner-wal';
+  throw new Error('createTreecrdtClient storage.writeMode must be "default" or "single-owner-wal"');
+}
+
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
   const raw = opts.storage ?? { type: 'auto' };
   if (!raw || typeof raw !== 'object') {
@@ -73,7 +80,12 @@ function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions 
   }
 
   if (raw.type === 'memory') {
-    return { type: 'memory', requireOpfs: false, fallback: 'memory' };
+    return {
+      type: 'memory',
+      requireOpfs: false,
+      fallback: 'memory',
+      opfsWriteMode: 'default',
+    };
   }
   if (raw.type === 'opfs') {
     const fallback = raw.fallback ?? 'throw';
@@ -82,6 +94,7 @@ function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions 
       filename: raw.filename,
       requireOpfs: fallback === 'throw',
       fallback,
+      opfsWriteMode: normalizeOpfsWriteMode(raw.writeMode),
     };
   }
   if (raw.type !== 'auto') {
@@ -93,6 +106,7 @@ function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions 
     filename: raw.filename,
     requireOpfs: fallback === 'throw',
     fallback,
+    opfsWriteMode: 'default',
   };
 }
 
@@ -160,6 +174,16 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
     runtime,
   );
 
+  if (
+    shouldUseOpfs &&
+    storage.opfsWriteMode === 'single-owner-wal' &&
+    resolvedRuntime !== 'dedicated-worker'
+  ) {
+    throw new Error(
+      'OPFS storage.writeMode "single-owner-wal" requires runtime "dedicated-worker" or runtime "auto"',
+    );
+  }
+
   if (resolvedRuntime === 'shared-worker') {
     return createSharedWorkerClient({
       baseUrl,
@@ -182,6 +206,7 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
       filename: storage.filename,
       storage: shouldUseOpfs ? 'opfs' : 'memory',
       requireOpfs: storage.requireOpfs,
+      opfsWriteMode: storage.opfsWriteMode,
       docId,
       workerUrl: runtime.type === 'dedicated-worker' ? runtime.workerUrl : undefined,
     });
@@ -306,6 +331,7 @@ async function createWorkerClient(opts: {
   baseUrl?: string;
   filename?: string;
   storage: StorageMode;
+  opfsWriteMode: OpfsWriteMode;
   docId: string;
   requireOpfs?: boolean;
   workerUrl?: string | URL;
@@ -383,7 +409,13 @@ async function createWorkerClient(opts: {
   // init
   let initResult: RpcResult<'init'>;
   try {
-    initResult = await call('init', [opts.baseUrl ?? '/', opts.filename, opts.storage, opts.docId]);
+    initResult = await call('init', [
+      opts.baseUrl ?? '/',
+      opts.filename,
+      opts.storage,
+      opts.docId,
+      opts.opfsWriteMode,
+    ]);
   } catch (err) {
     cleanup();
     throw err;
@@ -653,6 +685,8 @@ export async function buildDirectClient(
   const db = opened.db;
   const finalStorage: StorageMode = opened.storage;
   const filename = opened.filename;
+  const opfsVfsKind = opened.opfsVfsKind;
+  const opfsVfsName = opened.opfsVfsName;
   if (finalStorage === 'opfs') {
     materialized.enableCrossTab({ docId: opts.docId, filename });
   }
@@ -764,7 +798,7 @@ export async function buildDirectClient(
         case 'drop': {
           if (db.close) await db.close();
           if (finalStorage === 'opfs') {
-            await clearOpfsStorage(filename);
+            await clearOpfsStorage(filename, { vfsKind: opfsVfsKind, vfsName: opfsVfsName });
           }
           return undefined as any;
         }
@@ -797,7 +831,7 @@ export async function buildDirectClient(
       if (closed) return;
       if (db.close) await db.close();
       if (finalStorage === 'opfs') {
-        await clearOpfsStorage(filename);
+        await clearOpfsStorage(filename, { vfsKind: opfsVfsKind, vfsName: opfsVfsName });
       }
       closed = true;
     },
