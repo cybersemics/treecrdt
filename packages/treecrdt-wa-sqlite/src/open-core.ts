@@ -4,6 +4,7 @@ import type { Database } from './types.js';
 import { makeDbAdapter } from './db.js';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
+import { initializeTreecrdtExtension } from './extension.js';
 
 export type OpenTreecrdtDbOptions = {
   baseUrl?: string;
@@ -52,6 +53,7 @@ async function closeIgnoringErrors(close: (() => Promise<void> | void) | undefin
 
 async function openInitializedDatabase(
   sqlite3: any,
+  module: any,
   filename: string,
   opts: OpenTreecrdtDbOptions,
   vfsName?: string,
@@ -62,6 +64,7 @@ async function openInitializedDatabase(
       ? await sqlite3.open_v2(filename, undefined, vfsName)
       : await sqlite3.open_v2(filename);
     db = makeDbAdapter(sqlite3, handle);
+    await initializeTreecrdtExtension(module, handle);
     const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
     await api.setDocId(opts.docId);
     return { db, api };
@@ -108,7 +111,13 @@ export async function openTreecrdtDbFromLoaded(
       });
       vfs = initializedVfs;
       sqlite3.vfs_register(initializedVfs, false);
-      const opened = await openInitializedDatabase(sqlite3, requestedFilename, opts, OPFS_VFS_NAME);
+      const opened = await openInitializedDatabase(
+        sqlite3,
+        module,
+        requestedFilename,
+        opts,
+        OPFS_VFS_NAME,
+      );
       return {
         ...opened,
         db: closeDatabaseWithVfs(opened.db, initializedVfs),
@@ -133,7 +142,12 @@ export async function openTreecrdtDbFromLoaded(
   // does not expose. Do not continue on that wrapper after an OPFS attempt fails.
   try {
     const memoryLoaded = opfsError !== undefined ? await loadFresh() : loaded;
-    const opened = await openInitializedDatabase(memoryLoaded.sqlite3, ':memory:', opts);
+    const opened = await openInitializedDatabase(
+      memoryLoaded.sqlite3,
+      memoryLoaded.module,
+      ':memory:',
+      opts,
+    );
     const result = { ...opened, storage: 'memory' as const, filename: ':memory:' };
     return opfsError !== undefined ? { ...result, opfsError } : result;
   } catch (fallbackFailure) {

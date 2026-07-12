@@ -5,6 +5,13 @@ vi.mock('../src/opfs.js', () => ({ createOpfsVfs: vi.fn() }));
 import { createOpfsVfs } from '../src/opfs.js';
 import { openTreecrdtDbFromLoaded } from '../src/open-core.js';
 
+function createFakeModule(initResult = 0) {
+  return {
+    cwrap: vi.fn(() => vi.fn(async () => initResult)),
+    retryOps: [] as Promise<unknown>[],
+  };
+}
+
 function createFakeSqlite(
   opts: { failOpen?: string; failOpenError?: Error; failInitializationHandle?: number } = {},
 ) {
@@ -50,7 +57,7 @@ test('keeps the memory path single-pass without creating an OPFS VFS', async () 
 
   const opened = await openTreecrdtDbFromLoaded(
     { storage: 'memory', docId: 'memory-fast-path' },
-    { sqlite3, module: {} },
+    { sqlite3, module: createFakeModule() },
     loadFresh,
   );
 
@@ -67,7 +74,7 @@ test('falls back to memory when opening the OPFS database fails', async () => {
   vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
   const sqlite3 = createFakeSqlite({ failOpen: '/fallback.db' });
   const memorySqlite3 = createFakeSqlite();
-  const loadFresh = vi.fn(async () => ({ sqlite3: memorySqlite3, module: {} }));
+  const loadFresh = vi.fn(async () => ({ sqlite3: memorySqlite3, module: createFakeModule() }));
 
   const opened = await openTreecrdtDbFromLoaded(
     {
@@ -76,7 +83,7 @@ test('falls back to memory when opening the OPFS database fails', async () => {
       docId: 'fallback-open',
       requireOpfs: false,
     },
-    { sqlite3, module: {} },
+    { sqlite3, module: createFakeModule() },
     loadFresh,
   );
 
@@ -97,7 +104,7 @@ test('closes a partially initialized OPFS database before falling back', async (
   vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
   const sqlite3 = createFakeSqlite({ failInitializationHandle: 1 });
   const memorySqlite3 = createFakeSqlite();
-  const loadFresh = vi.fn(async () => ({ sqlite3: memorySqlite3, module: {} }));
+  const loadFresh = vi.fn(async () => ({ sqlite3: memorySqlite3, module: createFakeModule() }));
 
   const opened = await openTreecrdtDbFromLoaded(
     {
@@ -106,7 +113,7 @@ test('closes a partially initialized OPFS database before falling back', async (
       docId: 'fallback-init',
       requireOpfs: false,
     },
-    { sqlite3, module: {} },
+    { sqlite3, module: createFakeModule() },
     loadFresh,
   );
 
@@ -116,6 +123,34 @@ test('closes a partially initialized OPFS database before falling back', async (
   expect(memorySqlite3.open_v2).toHaveBeenCalledWith(':memory:');
   expect(vfs.close).toHaveBeenCalledOnce();
   expect(loadFresh).toHaveBeenCalledOnce();
+});
+
+test('closes the OPFS database when explicit extension initialization fails', async () => {
+  const vfs = { close: vi.fn() };
+  vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
+  const sqlite3 = createFakeSqlite();
+  const memorySqlite3 = createFakeSqlite();
+  const loadFresh = vi.fn(async () => ({
+    sqlite3: memorySqlite3,
+    module: createFakeModule(),
+  }));
+
+  const opened = await openTreecrdtDbFromLoaded(
+    {
+      storage: 'opfs',
+      filename: '/fallback-extension.db',
+      docId: 'fallback-extension',
+      requireOpfs: false,
+    },
+    { sqlite3, module: createFakeModule(10) },
+    loadFresh,
+  );
+
+  expect(opened.storage).toBe('memory');
+  expect(opened.opfsError).toBe('TreeCRDT SQLite extension init failed (rc=10)');
+  expect(sqlite3.close).toHaveBeenCalledWith(1);
+  expect(vfs.close).toHaveBeenCalledOnce();
+  expect(memorySqlite3.open_v2).toHaveBeenCalledWith(':memory:');
 });
 
 test('preserves both errors when the fresh memory fallback also fails', async () => {
@@ -132,7 +167,7 @@ test('preserves both errors when the fresh memory fallback also fails', async ()
       docId: 'both-fail',
       requireOpfs: false,
     },
-    { sqlite3, module: {} },
+    { sqlite3, module: createFakeModule() },
     vi.fn().mockRejectedValue(fallbackFailure),
   );
 
@@ -158,7 +193,7 @@ test('keeps the successful OPFS path single-pass and closes its database and VFS
       docId: 'success',
       requireOpfs: true,
     },
-    { sqlite3, module: {} },
+    { sqlite3, module: createFakeModule() },
     loadFresh,
   );
 
@@ -193,7 +228,7 @@ test('required OPFS closes the VFS and does not attempt memory fallback', async 
         docId: 'required',
         requireOpfs: true,
       },
-      { sqlite3, module: {} },
+      { sqlite3, module: createFakeModule() },
       loadFresh,
     ),
   ).rejects.toMatchObject({
