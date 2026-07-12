@@ -13,10 +13,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"], opti
 
 [features]
 default = []
-serde = ["dep:serde", "dep:serde_json", "dep:chrono"]
+serde = ["dep:serde", "dep:serde_json"]
 wasm = []
 sql-storage = []
-bench = ["serde"]
+bench = ["serde", "dep:chrono"]
 
 [dev-dependencies]
 proptest = "1"

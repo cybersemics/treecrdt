@@ -38,6 +38,7 @@ impl SqliteStorage {
                     new_parent BLOB,
                     order_key BLOB,
                     payload BLOB,
+                    known_state BLOB,
                     PRIMARY KEY (replica, counter)
                 );
                 CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);",
@@ -79,11 +80,18 @@ impl Storage for SqliteStorage {
             .counter
             .try_into()
             .map_err(|_| Error::Storage("counter overflow".into()))?;
+        let known_state = op
+            .meta
+            .known_state
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| Error::Storage(e.to_string()))?;
 
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO ops (replica, counter, lamport, kind, parent, node, new_parent, order_key, payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT OR IGNORE INTO ops (replica, counter, lamport, kind, parent, node, new_parent, order_key, payload, known_state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     op.meta.id.replica.as_bytes(),
                     counter,
@@ -94,6 +102,7 @@ impl Storage for SqliteStorage {
                     new_parent.map(node_to_blob),
                     order_key,
                     payload,
+                    known_state,
                 ],
             )
             .map(|changed| changed > 0)
@@ -105,7 +114,7 @@ impl Storage for SqliteStorage {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT replica, counter, lamport, kind, parent, node, new_parent, order_key, payload
+                "SELECT replica, counter, lamport, kind, parent, node, new_parent, order_key, payload, known_state
                  FROM ops
                  WHERE lamport > ?
                  ORDER BY lamport ASC, replica ASC, counter ASC",
@@ -154,6 +163,18 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
     let new_parent: Option<Vec<u8>> = row.get(6)?;
     let order_key: Option<Vec<u8>> = row.get(7)?;
     let payload: Option<Vec<u8>> = row.get(8)?;
+    let known_state: Option<Vec<u8>> = row.get(9)?;
+    let known_state = known_state
+        .map(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Blob,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()?;
 
     let op_id = OperationId {
         replica: ReplicaId::new(replica),
@@ -219,7 +240,7 @@ fn row_to_operation(row: &Row<'_>) -> rusqlite::Result<Operation> {
         meta: treecrdt_core::OperationMetadata {
             id: op_id,
             lamport: lamport as u64,
-            known_state: None,
+            known_state,
         },
         kind,
     })
@@ -245,7 +266,7 @@ fn blob_to_node(data: Vec<u8>) -> rusqlite::Result<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use treecrdt_core::{LamportClock, TreeCrdt};
+    use treecrdt_core::{LamportClock, TreeCrdt, VersionVector};
 
     #[test]
     fn apply_and_load_round_trip() {
@@ -311,5 +332,22 @@ mod tests {
 
         assert_eq!(crdt.parent(child).unwrap(), Some(parent));
         assert_eq!(crdt.children(parent).unwrap(), &[child]);
+    }
+
+    #[test]
+    fn delete_known_state_survives_reopen() {
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let path = db.path().to_str().unwrap();
+        let replica = ReplicaId::new(b"deleter");
+        let observed_replica = ReplicaId::new(b"observed");
+        let mut known_state = VersionVector::new();
+        known_state.observe(&observed_replica, 1);
+        known_state.observe(&observed_replica, 3);
+        let delete = Operation::delete(&replica, 1, 1, NodeId(1), Some(known_state));
+
+        SqliteStorage::new(path).unwrap().apply(delete.clone()).unwrap();
+
+        let reopened = SqliteStorage::new(path).unwrap();
+        assert_eq!(reopened.load_since(0).unwrap(), vec![delete]);
     }
 }
