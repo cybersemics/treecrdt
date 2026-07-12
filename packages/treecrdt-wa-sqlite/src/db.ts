@@ -28,6 +28,7 @@ export function makeDbAdapter(sqlite3: any, handle: number): Database {
     column_text: async (stmt: number, index: number) => sqlite3.column_text(stmt, index),
     finalize: async (stmt: number) => sqlite3.finalize(stmt),
     exec: async (sql: string) => sqlite3.exec(handle, sql),
+    getAutocommit: () => sqlite3.get_autocommit(handle) !== 0,
     close: async () => sqlite3.close(handle),
   } as unknown as Database;
 }

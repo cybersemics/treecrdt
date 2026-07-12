@@ -12,6 +12,9 @@ export type LifecycleRuntime = 'direct' | 'dedicated-worker';
 const rootId = '0'.repeat(32);
 const parentId = nodeIdFromInt(901);
 const childId = nodeIdFromInt(902);
+const authRollbackNodeId = nodeIdFromInt(903);
+const outerRollbackNodeId = nodeIdFromInt(904);
+const authSuccessNodeId = nodeIdFromInt(905);
 const replica = replicaFromLabel('lifecycle');
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -136,6 +139,106 @@ export async function readLifecycleTree(opts: LifecycleOptions): Promise<Lifecyc
   }
 }
 
+export async function writeAheadTwoClientLifecycle(opts: LifecycleOptions): Promise<{
+  stateFromAAfterBWrite: LifecycleState;
+  stateFromBAfterAWrite: LifecycleState;
+}> {
+  const prior = openClient;
+  openClient = null;
+  await prior?.close().catch(() => {});
+
+  const clientA = await createOpfsLifecycleClient(opts);
+  const clientB = await createOpfsLifecycleClient(opts);
+  try {
+    await clientA.local.insert(
+      replica,
+      rootId,
+      parentId,
+      { type: 'last' },
+      textEncoder.encode('browser lifecycle parent'),
+    );
+    const stateFromBAfterAWrite = await summarizeLifecycleState(clientB);
+
+    await clientB.local.insert(
+      replica,
+      parentId,
+      childId,
+      { type: 'last' },
+      textEncoder.encode('browser lifecycle child'),
+    );
+    const stateFromAAfterBWrite = await summarizeLifecycleState(clientA);
+
+    return { stateFromAAfterBWrite, stateFromBAfterAWrite };
+  } finally {
+    await clientA.close().catch(() => {});
+    await clientB.close().catch(() => {});
+  }
+}
+
+export async function writeAheadTransactionOwnershipLifecycle(opts: LifecycleOptions): Promise<{
+  authRollback: { exists: boolean; opCount: number; eventCount: number };
+  outerRollback: { exists: boolean; opCount: number };
+  authSuccess: { exists: boolean; opCount: number; eventCount: number };
+}> {
+  const prior = openClient;
+  openClient = null;
+  await prior?.close().catch(() => {});
+
+  const client = await createOpfsLifecycleClient(opts);
+  const events: unknown[] = [];
+  const unsubscribe = client.onMaterialized((event) => events.push(event));
+  try {
+    await client.local
+      .insert(replica, rootId, authRollbackNodeId, { type: 'last' }, null, {
+        authSession: {
+          authorizeLocalOps: async () => {
+            throw new Error('local auth denied');
+          },
+        },
+      })
+      .then(() => {
+        throw new Error('expected local auth denial');
+      })
+      .catch((err) => {
+        if (!(err instanceof Error) || !err.message.includes('local auth denied')) throw err;
+      });
+
+    const authRollback = {
+      exists: await client.tree.exists(authRollbackNodeId),
+      opCount: (await client.ops.all()).length,
+      eventCount: events.length,
+    };
+
+    await client.runner.exec('SAVEPOINT treecrdt_e2e_outer');
+    try {
+      await client.local.insert(replica, rootId, outerRollbackNodeId, { type: 'last' }, null);
+      await client.runner.exec('ROLLBACK TO treecrdt_e2e_outer');
+    } finally {
+      await client.runner.exec('RELEASE treecrdt_e2e_outer');
+    }
+
+    const outerRollback = {
+      exists: await client.tree.exists(outerRollbackNodeId),
+      opCount: (await client.ops.all()).length,
+    };
+
+    events.length = 0;
+    await client.local.insert(replica, rootId, authSuccessNodeId, { type: 'last' }, null, {
+      authSession: { authorizeLocalOps: async () => undefined },
+    });
+    const authSuccess = {
+      exists: await client.tree.exists(authSuccessNodeId),
+      opCount: (await client.ops.all()).length,
+      eventCount: events.length,
+    };
+
+    return { authRollback, outerRollback, authSuccess };
+  } finally {
+    unsubscribe();
+    await client.close().catch(() => {});
+  }
+}
+
 declare global {
   interface Window {
     __treecrdtLifecycle?: {
@@ -143,6 +246,8 @@ declare global {
       drop: typeof dropLifecycleStore;
       write: typeof writeLifecycleTree;
       read: typeof readLifecycleTree;
+      writeAheadTwoClient: typeof writeAheadTwoClientLifecycle;
+      writeAheadTransactionOwnership: typeof writeAheadTransactionOwnershipLifecycle;
     };
   }
 }
@@ -153,5 +258,7 @@ if (typeof window !== 'undefined') {
     drop: dropLifecycleStore,
     write: writeLifecycleTree,
     read: readLifecycleTree,
+    writeAheadTwoClient: writeAheadTwoClientLifecycle,
+    writeAheadTransactionOwnership: writeAheadTransactionOwnershipLifecycle,
   };
 }

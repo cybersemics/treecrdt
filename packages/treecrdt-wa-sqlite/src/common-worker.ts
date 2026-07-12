@@ -1,8 +1,8 @@
-import { dbGetText } from './sql.js';
 import type { Database } from './types.js';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
+import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import type { OpenTreecrdtDbResult } from './open.js';
 import { clearOpfsStorage, type OpfsVfsKind } from './opfs.js';
 import { rpcBinaryResult, type RpcInitResult, type RpcSqlParams } from './rpc.js';
@@ -20,6 +20,7 @@ export function openedToRpcInitResult(opened: OpenTreecrdtDbResult): RpcInitResu
 export class CommonWorkerSession {
   db: Database | null = null;
   api: TreecrdtAdapter | null = null;
+  runner: SqliteRunner | null = null;
   storedFilename: string | undefined;
   storedStorage: 'memory' | 'opfs' = 'memory';
   storedOpfsVfsKind: OpfsVfsKind | undefined;
@@ -30,6 +31,7 @@ export class CommonWorkerSession {
   applyOpened(opened: OpenTreecrdtDbResult): void {
     this.db = opened.db;
     this.api = opened.api;
+    this.runner = opened.runner;
     this.storedFilename = opened.filename;
     this.storedStorage = opened.storage;
     this.storedOpfsVfsKind = opened.opfsVfsKind;
@@ -40,6 +42,7 @@ export class CommonWorkerSession {
     const db = this.db;
     this.db = null;
     this.api = null;
+    this.runner = null;
     this.storedFilename = undefined;
     this.storedStorage = 'memory';
     this.storedOpfsVfsKind = undefined;
@@ -70,13 +73,18 @@ export class CommonWorkerSession {
     return this.db;
   }
 
+  ensureRunner(): SqliteRunner {
+    if (!this.runner) throw new Error('db not initialized');
+    return this.runner;
+  }
+
   async sqlExec(sql: string): Promise<null> {
-    await this.ensureDb().exec(sql);
+    await this.ensureRunner().exec(sql);
     return null;
   }
 
   async sqlGetText(sql: string, params?: RpcSqlParams): Promise<string | null> {
-    return dbGetText(this.ensureDb(), sql, params ?? []);
+    return this.ensureRunner().getText(sql, params ?? []);
   }
 
   async append(op: Operation) {
