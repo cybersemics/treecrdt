@@ -11,7 +11,10 @@ import {
   capabilitySetFingerprint,
   DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
   DIRECT_SEND_EMPTY_RECEIVER_MAX_OPS_PER_BATCH,
+  DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY,
   DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY,
+  DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY,
+  DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY,
   peerRequestedDirectSendFilter,
   peerSelectedDirectSendEmptyReceiverFilter,
   peerSelectedDirectSendFilter,
@@ -53,6 +56,11 @@ type Pending<T> = {
   reject: (err: unknown) => void;
 };
 
+type PeerCapabilitySnapshot = {
+  fingerprint: string;
+  capabilities: Hello['capabilities'];
+};
+
 function deferred<T>(): Pending<T> {
   let resolve!: (value: T) => void;
   let reject!: (err: unknown) => void;
@@ -75,6 +83,7 @@ function ignoreErrors(action?: () => void): void {
 }
 
 type ResponderSession = {
+  peerSnapshot: PeerCapabilitySnapshot;
   filter: Filter;
   round: number;
   decoder: RibltDecoder16;
@@ -94,6 +103,13 @@ type InitiatorSession<Op> = {
   receivedOps: Pending<void>;
   awaitingUploadAck: boolean;
   done: boolean;
+};
+
+type PendingHelloExchange = {
+  ack: Pending<HelloAck>;
+  capabilityGeneration: number;
+  filterId?: string;
+  processing?: boolean;
 };
 
 function rejectInitiatorSession<Op>(session: InitiatorSession<Op>, error: Error): void {
@@ -294,6 +310,27 @@ function assertOutgoingFilterLength(allowed: readonly boolean[], expected: numbe
   }
 }
 
+function copyCapabilities(capabilities: readonly Capability[]): Capability[] {
+  return capabilities.map(({ name, value }) => ({ name, value }));
+}
+
+function authorizationCapabilities(capabilities: readonly Capability[]): Capability[] {
+  return copyCapabilities(capabilities).filter(
+    (capability) =>
+      capability.name !== DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY &&
+      capability.name !== DIRECT_SEND_SMALL_SCOPE_REQUEST_CAPABILITY &&
+      capability.name !== DIRECT_SEND_SMALL_SCOPE_FILTER_CAPABILITY &&
+      capability.name !== DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY &&
+      capability.name !== DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
+  );
+}
+
+const EMPTY_CAPABILITY_FINGERPRINT = capabilitySetFingerprint([]);
+
+function assertCurrentCapabilityLease(current: boolean): void {
+  if (!current) throw new Error('peer capabilities changed during outbound operation selection');
+}
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
@@ -302,29 +339,34 @@ export class SyncPeer<Op> {
   private readonly requireAuthForFilters: boolean;
   private readonly auth?: SyncAuth<Op>;
   private readonly deriveOpRef?: (op: Op, ctx: { docId: string }) => OpRef;
-  private readonly transportHasAuth = new WeakMap<DuplexTransport<SyncMessage<Op>>, boolean>();
   private readonly transportPeerCapabilities = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
     Hello['capabilities']
   >();
-  private readonly transportHelloAckWaiter = new WeakMap<
+  private readonly transportHelloExchangeSequences = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
-    Pending<void>
-  >();
-  private readonly transportHelloRefreshInFlight = new WeakMap<
-    DuplexTransport<SyncMessage<Op>>,
-    { fingerprint: string; completion: Pending<void> }
+    bigint
   >();
   private readonly transportPeerCapabilityGeneration = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
     number
   >();
+  private readonly transportPeerCapabilityFingerprints = new WeakMap<
+    DuplexTransport<SyncMessage<Op>>,
+    string
+  >();
+  private readonly peerCapabilityRecoveryRequired = new WeakSet<DuplexTransport<SyncMessage<Op>>>();
+  private readonly peerCapabilityValidationPending = new WeakSet<
+    DuplexTransport<SyncMessage<Op>>
+  >();
   private readonly transportDirectPushStreamIds = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
     string
   >();
+  private readonly transportTerminalErrors = new WeakMap<DuplexTransport<SyncMessage<Op>>, Error>();
   private readonly responderSessions: TransportOwnedMap<Op, ResponderSession> = new Map();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
+  private readonly pendingHelloExchanges: TransportOwnedMap<Op, PendingHelloExchange> = new Map();
   private readonly responderSubscriptions: TransportOwnedMap<Op, ResponderSubscription<Op>> =
     new Map();
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription<Op>>();
@@ -360,6 +402,7 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     error: SyncError,
   ): Promise<void> {
+    this.assertTransportActive(transport);
     await transport.send({
       v: 0,
       docId: this.backend.docId,
@@ -386,6 +429,7 @@ export class SyncPeer<Op> {
       stopListening();
       const normalized =
         error instanceof Error ? error : new Error(String(error ?? 'sync transport closed'));
+      this.transportTerminalErrors.set(transport, normalized);
       this.failPendingSessionsForTransport(transport, normalized);
       this.dropResponderStateForTransport(transport);
       if (close) ignoreErrors(() => transport.close?.(normalized));
@@ -394,7 +438,7 @@ export class SyncPeer<Op> {
 
     unsubscribeMessage = transport.onMessage((msg) => {
       if (failed) return;
-      void this.handleMessage(transport, msg)
+      void this.dispatchMessage(transport, msg)
         .catch((error) => {
           fail(error, true, true);
         })
@@ -459,17 +503,10 @@ export class SyncPeer<Op> {
             } catch (err) {
               deleteTransportOwned(this.responderSubscriptions, sub.transport, sub.subscriptionId);
               try {
-                await sub.transport.send({
-                  v: 0,
-                  docId: this.backend.docId,
-                  payload: {
-                    case: 'error',
-                    value: {
-                      code: ErrorCode.ERROR_CODE_UNSPECIFIED,
-                      message: err instanceof Error ? err.message : String(err),
-                      subscriptionId: sub.subscriptionId,
-                    },
-                  },
+                await this.sendProtocolError(sub.transport, {
+                  code: ErrorCode.ERROR_CODE_UNSPECIFIED,
+                  message: err instanceof Error ? err.message : String(err),
+                  subscriptionId: sub.subscriptionId,
                 });
               } catch {
                 // The subscription is already terminal locally; ignore transport failure.
@@ -487,69 +524,58 @@ export class SyncPeer<Op> {
   private async refreshHelloCapabilities(
     transport: DuplexTransport<SyncMessage<Op>>,
   ): Promise<void> {
+    this.assertTransportActive(transport);
     if (!this.auth?.helloCapabilities) return;
 
-    const [maxLamport, capabilities] = await Promise.all([
+    const [maxLamport, advertisedCapabilities] = await Promise.all([
       this.backend.maxLamport(),
       this.auth.helloCapabilities({ docId: this.backend.docId }),
     ]);
-    const fingerprint = capabilitySetFingerprint(capabilities);
-
-    // HelloAck has no request id, so only one capability refresh may be in flight
-    // per transport. Identical callers share it; changed snapshots queue behind it.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const inFlight = this.transportHelloRefreshInFlight.get(transport);
-      if (inFlight) {
-        if (inFlight.fingerprint === fingerprint) {
-          await inFlight.completion.promise;
-          return;
-        }
-        try {
-          await inFlight.completion.promise;
-        } catch {
-          // A failed refresh does not prevent a queued snapshot from retrying.
-        }
-        continue;
-      }
-      const ack = deferred<void>();
-      this.transportHelloAckWaiter.set(transport, ack);
-
-      const completion = deferred<void>();
-      const refresh = { fingerprint, completion };
-      this.transportHelloRefreshInFlight.set(transport, refresh);
-
-      void (async () => {
-        try {
-          await transport.send({
-            v: 0,
-            docId: this.backend.docId,
-            payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
-          });
-          await ack.promise;
-          completion.resolve();
-        } catch (err) {
-          if (this.transportHelloAckWaiter.get(transport) === ack) {
-            this.transportHelloAckWaiter.delete(transport);
-          }
-          completion.reject(err);
-        } finally {
-          if (this.transportHelloRefreshInFlight.get(transport) === refresh) {
-            this.transportHelloRefreshInFlight.delete(transport);
-          }
-        }
-      })();
-
-      await completion.promise;
-      return;
+    const capabilities = copyCapabilities(advertisedCapabilities);
+    this.assertTransportActive(transport);
+    const { exchangeId, ack } = this.beginHelloExchange(transport);
+    try {
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: 'hello',
+          value: { exchangeId, capabilities, filters: [], maxLamport },
+        },
+      });
+      await ack.promise;
+    } finally {
+      deleteTransportOwned(this.pendingHelloExchanges, transport, exchangeId);
     }
   }
 
-  private rejectHelloAckWaiter(transport: DuplexTransport<SyncMessage<Op>>, error: unknown): void {
-    const waiter = this.transportHelloAckWaiter.get(transport);
-    if (!waiter) return;
-    this.transportHelloAckWaiter.delete(transport);
-    waiter.reject(error);
+  private async dispatchMessage(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    msg: SyncMessage<Op>,
+  ): Promise<void> {
+    const isInboundHello = msg.docId === this.backend.docId && msg.payload.case === 'hello';
+    const capabilityGeneration = isInboundHello
+      ? this.beginPeerCapabilitySnapshot(transport)
+      : undefined;
+    this.assertTransportActive(transport);
+    await this.handleMessage(transport, msg, capabilityGeneration);
+  }
+
+  private rejectPendingHelloExchanges(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    error: unknown,
+  ): void {
+    for (const [exchangeId, byTransport] of this.pendingHelloExchanges) {
+      const exchange = byTransport.get(transport);
+      if (!exchange) continue;
+      exchange.ack.reject(error);
+      deleteTransportOwned(this.pendingHelloExchanges, transport, exchangeId);
+    }
+  }
+
+  private assertTransportActive(transport: DuplexTransport<SyncMessage<Op>>): void {
+    const terminalError = this.transportTerminalErrors.get(transport);
+    if (terminalError) throw terminalError;
   }
 
   private beginPeerCapabilitySnapshot(transport: DuplexTransport<SyncMessage<Op>>): number {
@@ -557,20 +583,104 @@ export class SyncPeer<Op> {
     this.transportPeerCapabilityGeneration.set(transport, generation);
     // Clear old authority immediately; publish the replacement only after its
     // auth hook succeeds and only if no newer snapshot has arrived.
-    this.transportHasAuth.set(transport, false);
     this.transportPeerCapabilities.set(transport, []);
+    this.peerCapabilityValidationPending.add(transport);
     return generation;
+  }
+
+  private beginHelloExchange(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    filterId?: string,
+  ): { exchangeId: string; ack: Pending<HelloAck> } {
+    this.assertTransportActive(transport);
+    const sequence = (this.transportHelloExchangeSequences.get(transport) ?? 0n) + 1n;
+    this.transportHelloExchangeSequences.set(transport, sequence);
+    const exchangeId = `h_${sequence.toString(36)}`;
+    const ack = deferred<HelloAck>();
+    setTransportOwned(this.pendingHelloExchanges, transport, exchangeId, {
+      ack,
+      capabilityGeneration: this.beginPeerCapabilitySnapshot(transport),
+      ...(filterId ? { filterId } : {}),
+    });
+    return { exchangeId, ack };
   }
 
   private publishPeerCapabilitySnapshot(
     transport: DuplexTransport<SyncMessage<Op>>,
     generation: number,
     capabilities: Hello['capabilities'],
+  ): boolean | undefined {
+    this.assertTransportActive(transport);
+    if (!this.isCurrentPeerCapabilityGeneration(transport, generation)) return undefined;
+    const acceptedCapabilities = authorizationCapabilities(capabilities);
+    const fingerprint = capabilitySetFingerprint(acceptedCapabilities);
+    const changed =
+      this.peerCapabilityRecoveryRequired.has(transport) ||
+      this.transportPeerCapabilityFingerprints.get(transport) !== fingerprint;
+    this.transportPeerCapabilities.set(transport, acceptedCapabilities);
+    this.transportPeerCapabilityFingerprints.set(transport, fingerprint);
+    this.peerCapabilityRecoveryRequired.delete(transport);
+    this.peerCapabilityValidationPending.delete(transport);
+    return changed;
+  }
+
+  private peerCapabilitySnapshot(
+    transport: DuplexTransport<SyncMessage<Op>>,
+  ): PeerCapabilitySnapshot {
+    const capabilities = this.transportPeerCapabilities.get(transport) ?? [];
+    return {
+      fingerprint: capabilitySetFingerprint(capabilities),
+      capabilities,
+    };
+  }
+
+  private isCurrentPeerCapabilityGeneration(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    generation: number,
   ): boolean {
-    if (this.transportPeerCapabilityGeneration.get(transport) !== generation) return false;
-    this.transportHasAuth.set(transport, capabilities.some(isAuthCapability));
-    this.transportPeerCapabilities.set(transport, capabilities);
-    return true;
+    return (
+      !this.transportTerminalErrors.has(transport) &&
+      (this.transportPeerCapabilityGeneration.get(transport) ?? 0) === generation
+    );
+  }
+
+  private isCurrentPeerCapabilitySnapshot(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    snapshot: Pick<PeerCapabilitySnapshot, 'fingerprint'>,
+  ): boolean {
+    if (this.transportTerminalErrors.has(transport)) return false;
+    if (this.peerCapabilityValidationPending.has(transport)) return false;
+    const acceptedFingerprint = this.transportPeerCapabilityFingerprints.get(transport);
+    if (acceptedFingerprint !== undefined) return acceptedFingerprint === snapshot.fingerprint;
+    return (
+      (this.transportPeerCapabilityGeneration.get(transport) ?? 0) === 0 &&
+      snapshot.fingerprint === EMPTY_CAPABILITY_FINGERPRINT
+    );
+  }
+
+  private hasCurrentSubscriptionCapabilitySnapshot(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    snapshot: PeerCapabilitySnapshot,
+  ): boolean {
+    if (this.peerCapabilityValidationPending.has(transport)) {
+      this.peerCapabilityRecoveryRequired.add(transport);
+      return false;
+    }
+    if (this.isCurrentPeerCapabilitySnapshot(transport, snapshot)) return true;
+    this.rescanSubscriptionsAfterCapabilityChange(transport, true);
+    return false;
+  }
+
+  private rescanSubscriptionsAfterCapabilityChange(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    capabilitiesChanged: boolean,
+  ): void {
+    if (!capabilitiesChanged) return;
+    for (const subscriptions of this.responderSubscriptions.values()) {
+      if (!subscriptions.has(transport)) continue;
+      void this.notifyLocalUpdate();
+      return;
+    }
   }
 
   private resolveDirectPushStreamId(
@@ -599,10 +709,23 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     filterId: string,
   ): Promise<void> {
+    this.assertTransportActive(transport);
     await transport.send({
       v: 0,
       docId: this.backend.docId,
       payload: { case: 'opsBatch', value: { filterId, ops: [], done: true } },
+    });
+  }
+
+  private async rejectResponderCapabilityLease(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    filterId: string,
+  ): Promise<void> {
+    deleteTransportOwned(this.responderSessions, transport, filterId);
+    await this.sendProtocolError(transport, {
+      code: ErrorCode.UNAUTHORIZED,
+      message: 'peer capabilities changed during reconciliation; retry',
+      filterId,
     });
   }
 
@@ -640,11 +763,12 @@ export class SyncPeer<Op> {
     // Live subscriptions can outlive the capability snapshot from the initial handshake.
     // Refresh it before the push so proof_ref verification can succeed on newly seen authors.
     await this.refreshHelloCapabilities(sub.transport);
+    const peerSnapshot = this.peerCapabilitySnapshot(sub.transport);
 
     for (let start = 0; start < newOpRefs.length; start += this.maxOpsPerBatch) {
       const chunk = newOpRefs.slice(start, start + this.maxOpsPerBatch);
       let ops = await this.backend.getOpsByOpRefs(chunk);
-      const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
+      const peerCaps = peerSnapshot.capabilities;
 
       // Apply peer-scoped visibility restrictions (best-effort).
       if (this.auth?.filterOutgoingOps && ops.length > 0) {
@@ -655,6 +779,7 @@ export class SyncPeer<Op> {
           capabilities: peerCaps,
         });
         assertOutgoingFilterLength(allowed, ops.length);
+        if (!this.hasCurrentSubscriptionCapabilitySnapshot(sub.transport, peerSnapshot)) return;
 
         const allowedRefs: OpRef[] = [];
         const allowedOps: Op[] = [];
@@ -664,9 +789,6 @@ export class SyncPeer<Op> {
             allowedOps.push(ops[i]!);
           }
         }
-
-        // Record everything as sent so we don't repeatedly attempt to send filtered ops.
-        for (const r of chunk) sub.sentOpRefs.add(bytesToHex(r));
 
         if (allowedOps.length === 0) {
           await yieldToMacrotask();
@@ -689,6 +811,7 @@ export class SyncPeer<Op> {
           : undefined;
       if (auth && auth.length !== ops.length)
         throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
+      if (!this.hasCurrentSubscriptionCapabilitySnapshot(sub.transport, peerSnapshot)) return;
       const done = start + this.maxOpsPerBatch >= newOpRefs.length;
       await sub.transport.send({
         v: 0,
@@ -717,7 +840,8 @@ export class SyncPeer<Op> {
     // Refresh it before the push so proof_ref verification can succeed on newly seen authors.
     await this.refreshHelloCapabilities(sub.transport);
 
-    const peerCaps = this.transportPeerCapabilities.get(sub.transport) ?? [];
+    const peerSnapshot = this.peerCapabilitySnapshot(sub.transport);
+    const peerCaps = peerSnapshot.capabilities;
     const filter = sub.filter;
     const maxOpsPerBatch = this.maxOpsPerBatch;
 
@@ -734,6 +858,7 @@ export class SyncPeer<Op> {
           capabilities: peerCaps,
         });
         assertOutgoingFilterLength(allowed, ops.length);
+        if (!this.hasCurrentSubscriptionCapabilitySnapshot(sub.transport, peerSnapshot)) return;
 
         const allowedRefs: OpRef[] = [];
         const allowedOps: Op[] = [];
@@ -743,8 +868,6 @@ export class SyncPeer<Op> {
             allowedOps.push(ops[i]!);
           }
         }
-
-        for (const ref of refs) sub.sentOpRefs.add(bytesToHex(ref));
 
         if (allowedOps.length === 0) {
           await yieldToMacrotask();
@@ -767,6 +890,7 @@ export class SyncPeer<Op> {
       if (auth && auth.length !== ops.length) {
         throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       }
+      if (!this.hasCurrentSubscriptionCapabilitySnapshot(sub.transport, peerSnapshot)) return;
 
       const done = start + maxOpsPerBatch >= unsent.length;
       await sub.transport.send({
@@ -788,6 +912,7 @@ export class SyncPeer<Op> {
     filter: Filter,
     opts: SyncOnceOptions = {},
   ): Promise<void> {
+    this.assertTransportActive(transport);
     // syncOnce negotiates one of three wire modes for this filter:
     // 1. the normal RIBLT reconcile path,
     // 2. direct-send for small scoped reads, or
@@ -801,14 +926,21 @@ export class SyncPeer<Op> {
       (await this.auth?.helloCapabilities?.({ docId: this.backend.docId })) ?? [],
       { filterId, localHasOps: localOpRefsBeforeHello.length > 0 },
     );
-    const hello: Hello = { capabilities, filters: [{ id: filterId, filter }], maxLamport };
+    this.assertTransportActive(transport);
+    const { exchangeId, ack } = this.beginHelloExchange(transport, filterId);
+    const hello: Hello = {
+      exchangeId,
+      capabilities,
+      filters: [{ id: filterId, filter }],
+      maxLamport,
+    };
 
     const session: InitiatorSession<Op> = {
       transport,
       filter,
       filterId,
       round,
-      ack: deferred<HelloAck>(),
+      ack,
       terminalStatus: deferred<RibltStatus>(),
       codewordCredits: 1,
       codewordCreditSignal: deferred<void>(),
@@ -819,6 +951,7 @@ export class SyncPeer<Op> {
     this.initiatorSessions.set(filterId, session);
 
     try {
+      this.assertTransportActive(transport);
       await transport.send({
         v: 0,
         docId: this.backend.docId,
@@ -836,20 +969,21 @@ export class SyncPeer<Op> {
         return;
       }
 
+      const peerSnapshot = this.peerCapabilitySnapshot(transport);
       let opRefs = await this.backend.listOpRefs(filter);
 
       // If we have peer capabilities (from HelloAck) and an auth layer that can scope outgoing ops,
       // filter the local set to avoid advertising/sending ops the peer cannot receive.
       if (this.auth?.filterOutgoingOps && opRefs.length > 0) {
-        const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
         const ops = await this.backend.getOpsByOpRefs(opRefs);
         const allowed = await this.auth.filterOutgoingOps(ops, {
           docId: this.backend.docId,
           purpose: 'reconcile',
           filter,
-          capabilities: peerCaps,
+          capabilities: peerSnapshot.capabilities,
         });
         assertOutgoingFilterLength(allowed, ops.length);
+        assertCurrentCapabilityLease(this.isCurrentPeerCapabilitySnapshot(transport, peerSnapshot));
         opRefs = opRefs.filter((_r, idx) => allowed[idx] === true);
       }
 
@@ -897,6 +1031,7 @@ export class SyncPeer<Op> {
           nextIndex += 1n;
         }
 
+        assertCurrentCapabilityLease(this.isCurrentPeerCapabilitySnapshot(transport, peerSnapshot));
         await transport.send({
           v: 0,
           docId: this.backend.docId,
@@ -930,6 +1065,7 @@ export class SyncPeer<Op> {
 
       await session.receivedOps.promise;
     } finally {
+      deleteTransportOwned(this.pendingHelloExchanges, transport, exchangeId);
       this.initiatorSessions.delete(filterId);
     }
   }
@@ -953,7 +1089,8 @@ export class SyncPeer<Op> {
 
     await this.refreshHelloCapabilities(transport);
 
-    const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
+    const peerSnapshot = this.peerCapabilitySnapshot(transport);
+    const peerCapabilities = peerSnapshot.capabilities;
     let outgoingOps: readonly Op[] = ops;
     if (this.auth?.filterOutgoingOps) {
       const allowed = await this.auth.filterOutgoingOps(outgoingOps, {
@@ -962,11 +1099,8 @@ export class SyncPeer<Op> {
         filter: { all: {} },
         capabilities: peerCapabilities,
       });
-      if (allowed.length !== outgoingOps.length) {
-        throw new Error(
-          `filterOutgoingOps returned ${allowed.length} flags for ${outgoingOps.length} ops`,
-        );
-      }
+      assertOutgoingFilterLength(allowed, outgoingOps.length);
+      assertCurrentCapabilityLease(this.isCurrentPeerCapabilitySnapshot(transport, peerSnapshot));
       outgoingOps = outgoingOps.filter((_op, index) => allowed[index] === true);
       if (outgoingOps.length === 0) return;
     }
@@ -988,6 +1122,7 @@ export class SyncPeer<Op> {
       if (auth && auth.length !== chunk.length) {
         throw new Error(`signOps returned ${auth.length} entries for ${chunk.length} ops`);
       }
+      assertCurrentCapabilityLease(this.isCurrentPeerCapabilitySnapshot(transport, peerSnapshot));
 
       await transport.send({
         v: 0,
@@ -1010,7 +1145,11 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     filterId: string,
     opRefs: OpRef[],
-    opts: { maxOpsPerBatch?: number; filter?: Filter } = {},
+    opts: {
+      maxOpsPerBatch?: number;
+      filter?: Filter;
+      peerSnapshot?: PeerCapabilitySnapshot;
+    } = {},
   ): Promise<void> {
     const maxOpsPerBatch = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
 
@@ -1019,9 +1158,13 @@ export class SyncPeer<Op> {
       opts.filter ??
       getTransportOwned(this.responderSessions, transport, filterId)?.filter ??
       (initiatorSession?.transport === transport ? initiatorSession.filter : undefined);
-    const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
+    const peerSnapshot = opts.peerSnapshot ?? this.peerCapabilitySnapshot(transport);
+    const peerCaps = peerSnapshot.capabilities;
+    const hasCurrentCapabilities = () =>
+      this.isCurrentPeerCapabilitySnapshot(transport, peerSnapshot);
 
     if (opRefs.length === 0) {
+      assertCurrentCapabilityLease(hasCurrentCapabilities());
       await this.sendDoneOpsBatch(transport, filterId);
       return;
     }
@@ -1038,6 +1181,7 @@ export class SyncPeer<Op> {
           capabilities: peerCaps,
         });
         assertOutgoingFilterLength(allowed, ops.length);
+        assertCurrentCapabilityLease(hasCurrentCapabilities());
 
         const nextOps: Op[] = [];
         for (let i = 0; i < ops.length; i += 1) {
@@ -1050,6 +1194,7 @@ export class SyncPeer<Op> {
 
       if (ops.length === 0) {
         if (done) {
+          assertCurrentCapabilityLease(hasCurrentCapabilities());
           await this.sendDoneOpsBatch(transport, filterId);
         }
         continue;
@@ -1067,6 +1212,7 @@ export class SyncPeer<Op> {
       if (auth && auth.length !== ops.length) {
         throw new Error(`signOps returned ${auth.length} entries for ${ops.length} ops`);
       }
+      assertCurrentCapabilityLease(hasCurrentCapabilities());
 
       await transport.send({
         v: 0,
@@ -1082,6 +1228,7 @@ export class SyncPeer<Op> {
     filter: Filter,
     opts: SyncSubscribeOptions = {},
   ): SyncSubscription {
+    this.assertTransportActive(transport);
     const controller = new AbortController();
     if (opts.signal) {
       if (opts.signal.aborted) {
@@ -1133,6 +1280,7 @@ export class SyncPeer<Op> {
           await this.refreshHelloCapabilities(transport);
         }
 
+        this.assertTransportActive(transport);
         await transport.send({
           v: 0,
           docId: this.backend.docId,
@@ -1185,6 +1333,7 @@ export class SyncPeer<Op> {
         this.initiatorSubscriptions.delete(subscriptionId);
         if (sentSubscribe) {
           try {
+            this.assertTransportActive(transport);
             await transport.send({
               v: 0,
               docId: this.backend.docId,
@@ -1203,14 +1352,22 @@ export class SyncPeer<Op> {
   private async handleMessage(
     transport: DuplexTransport<SyncMessage<Op>>,
     msg: SyncMessage<Op>,
+    capabilityGeneration?: number,
   ): Promise<void> {
     if (msg.docId !== this.backend.docId) return;
 
     if (msg.payload.case === 'error') {
       try {
-        if (!msg.payload.value.filterId && !msg.payload.value.subscriptionId) {
+        if (
+          !msg.payload.value.filterId &&
+          !msg.payload.value.subscriptionId &&
+          !msg.payload.value.exchangeId
+        ) {
           const code = ErrorCode[msg.payload.value.code] ?? String(msg.payload.value.code);
-          this.rejectHelloAckWaiter(transport, new Error(`${code}: ${msg.payload.value.message}`));
+          this.rejectPendingHelloExchanges(
+            transport,
+            new Error(`${code}: ${msg.payload.value.message}`),
+          );
         }
         await this.onError(transport, msg.payload.value);
       } catch {
@@ -1222,7 +1379,11 @@ export class SyncPeer<Op> {
     try {
       switch (msg.payload.case) {
         case 'hello':
-          await this.onHello(transport, msg.payload.value);
+          await this.onHello(
+            transport,
+            msg.payload.value,
+            capabilityGeneration ?? this.beginPeerCapabilitySnapshot(transport),
+          );
           return;
         case 'helloAck':
           await this.onHelloAck(transport, msg.payload.value);
@@ -1251,9 +1412,22 @@ export class SyncPeer<Op> {
         }
       }
     } catch (err: any) {
+      if (this.transportTerminalErrors.has(transport)) return;
+      if (
+        msg.payload.case === 'hello' &&
+        capabilityGeneration !== undefined &&
+        this.isCurrentPeerCapabilityGeneration(transport, capabilityGeneration)
+      ) {
+        this.peerCapabilityRecoveryRequired.add(transport);
+      }
+
       let filterId: string | undefined;
       let subscriptionId: string | undefined;
+      let exchangeId: string | undefined;
       switch (msg.payload.case) {
+        case 'hello':
+          exchangeId = msg.payload.value.exchangeId;
+          break;
         case 'ribltCodewords':
         case 'ribltStatus':
         case 'opsBatch':
@@ -1273,18 +1447,23 @@ export class SyncPeer<Op> {
       }
 
       try {
-        await this.onError(transport, {
-          code: ErrorCode.ERROR_CODE_UNSPECIFIED,
-          message: String(err?.message ?? err ?? 'error'),
-          ...(filterId ? { filterId } : {}),
-          ...(subscriptionId ? { subscriptionId } : {}),
-        });
+        // A Hello exchange id is chosen by the remote peer. Do not feed it into
+        // local initiator cleanup: both directions have independent id spaces.
+        if (!exchangeId) {
+          await this.onError(transport, {
+            code: ErrorCode.ERROR_CODE_UNSPECIFIED,
+            message: String(err?.message ?? err ?? 'error'),
+            ...(filterId ? { filterId } : {}),
+            ...(subscriptionId ? { subscriptionId } : {}),
+          });
+        }
 
         await this.sendProtocolError(transport, {
           code: ErrorCode.ERROR_CODE_UNSPECIFIED,
           message: String(err?.message ?? err ?? 'error'),
           ...(filterId ? { filterId } : {}),
           ...(subscriptionId ? { subscriptionId } : {}),
+          ...(exchangeId ? { exchangeId } : {}),
         });
       } catch {
         // ignore transport failures while reporting errors
@@ -1292,35 +1471,38 @@ export class SyncPeer<Op> {
     }
   }
 
-  private async onHello(transport: DuplexTransport<SyncMessage<Op>>, hello: Hello): Promise<void> {
+  private async onHello(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    hello: Hello,
+    capabilityGeneration: number,
+  ): Promise<void> {
+    if (!hello.exchangeId) throw new Error('Hello.exchangeId missing');
     const traceStartedAt = performance.now();
+    const receivedCapabilities = copyCapabilities(hello.capabilities);
     traceHello(this.backend.docId, traceStartedAt, 'start', {
       filters: hello.filters.length,
-      capabilities: hello.capabilities.length,
+      capabilities: receivedCapabilities.length,
     });
-    const hasAuthCapability = hello.capabilities.some(isAuthCapability);
-    const supportsDirectSendSmallScope = peerSupportsDirectSendSmallScope(hello.capabilities);
-    const capabilityGeneration = this.beginPeerCapabilitySnapshot(transport);
+    const supportsDirectSendSmallScope = peerSupportsDirectSendSmallScope(receivedCapabilities);
 
-    let ackCapabilities: HelloAck['capabilities'] = [];
-    try {
-      ackCapabilities = (await this.auth?.onHello?.(hello, { docId: this.backend.docId })) ?? [];
-      traceHello(this.backend.docId, traceStartedAt, 'after-auth-onHello', {
-        ackCapabilities: ackCapabilities.length,
-      });
-    } catch (err: any) {
-      if (this.transportPeerCapabilityGeneration.get(transport) !== capabilityGeneration) return;
-      await this.sendProtocolError(transport, {
-        code: ErrorCode.ERROR_CODE_UNSPECIFIED,
-        message: String(err?.message ?? err ?? 'auth error'),
-      });
-      return;
-    }
-    if (!this.publishPeerCapabilitySnapshot(transport, capabilityGeneration, hello.capabilities)) {
-      return;
-    }
-
+    const ackCapabilities = copyCapabilities(
+      (await this.auth?.onHello?.(
+        { ...hello, capabilities: copyCapabilities(receivedCapabilities) },
+        { docId: this.backend.docId },
+      )) ?? [],
+    );
+    this.assertTransportActive(transport);
+    traceHello(this.backend.docId, traceStartedAt, 'after-auth-onHello', {
+      ackCapabilities: ackCapabilities.length,
+    });
+    const peerCapabilities = authorizationCapabilities(receivedCapabilities);
+    const hasAuthCapability = peerCapabilities.some(isAuthCapability);
+    const peerSnapshot: PeerCapabilitySnapshot = {
+      fingerprint: capabilitySetFingerprint(peerCapabilities),
+      capabilities: peerCapabilities,
+    };
     const maxLamport = await this.backend.maxLamport();
+    this.assertTransportActive(transport);
     traceHello(this.backend.docId, traceStartedAt, 'after-maxLamport', {
       maxLamport: Number(maxLamport),
     });
@@ -1331,6 +1513,17 @@ export class SyncPeer<Op> {
       filter: Filter;
       opRefs: OpRef[];
     }> = [];
+    const awaitingUploadFilterIds: string[] = [];
+    const responderSessions: Array<[string, ResponderSession]> = [];
+    const rejectDirectSendFilters = async (): Promise<void> => {
+      for (const directSend of directSendFilters) {
+        await this.sendProtocolError(transport, {
+          code: ErrorCode.UNAUTHORIZED,
+          message: 'peer capabilities changed during direct send; retry',
+          filterId: directSend.id,
+        });
+      }
+    };
 
     for (let i = 0; i < hello.filters.length; i += 1) {
       const spec = hello.filters[i]!;
@@ -1360,8 +1553,9 @@ export class SyncPeer<Op> {
         await this.auth?.authorizeFilter?.(filter, {
           docId: this.backend.docId,
           purpose: 'hello',
-          capabilities: hello.capabilities,
+          capabilities: peerCapabilities,
         });
+        this.assertTransportActive(transport);
       } catch (err: any) {
         rejectedFilters.push({
           id,
@@ -1374,6 +1568,7 @@ export class SyncPeer<Op> {
       let localOpRefs: OpRef[];
       try {
         localOpRefs = await this.backend.listOpRefs(filter);
+        this.assertTransportActive(transport);
         traceHello(this.backend.docId, traceStartedAt, 'after-listOpRefs', {
           filterId: id,
           opRefs: localOpRefs.length,
@@ -1394,8 +1589,9 @@ export class SyncPeer<Op> {
             docId: this.backend.docId,
             purpose: 'hello',
             filter,
-            capabilities: hello.capabilities,
+            capabilities: peerCapabilities,
           });
+          this.assertTransportActive(transport);
           assertOutgoingFilterLength(allowed, ops.length);
           localOpRefs = localOpRefs.filter((_r, idx) => allowed[idx] === true);
           traceHello(this.backend.docId, traceStartedAt, 'after-filterOutgoingOps', {
@@ -1418,7 +1614,7 @@ export class SyncPeer<Op> {
       if (
         supportsDirectSendSmallScope &&
         this.directSendThreshold > 0 &&
-        peerRequestedDirectSendFilter(hello.capabilities, id) &&
+        peerRequestedDirectSendFilter(receivedCapabilities, id) &&
         localOpRefs.length <= this.directSendThreshold
       ) {
         ackCapabilities.push({
@@ -1437,12 +1633,12 @@ export class SyncPeer<Op> {
         continue;
       }
 
-      if (peerSupportsDirectSendEmptyReceiver(hello.capabilities) && localOpRefs.length === 0) {
+      if (peerSupportsDirectSendEmptyReceiver(receivedCapabilities) && localOpRefs.length === 0) {
         ackCapabilities.push({
           name: DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
           value: id,
         });
-        setTransportOwned(this.responderAwaitingUploadAcks, transport, id, true);
+        awaitingUploadFilterIds.push(id);
         continue;
       }
 
@@ -1452,37 +1648,96 @@ export class SyncPeer<Op> {
         filterId: id,
         opRefs: localOpRefs.length,
       });
-      setTransportOwned(this.responderSessions, transport, id, {
-        filter,
-        round: 0,
-        decoder,
-        expectedIndex: 0n,
-        awaitingIncomingDone: false,
-      });
+      responderSessions.push([
+        id,
+        {
+          peerSnapshot,
+          filter,
+          round: 0,
+          decoder,
+          expectedIndex: 0n,
+          awaitingIncomingDone: false,
+        },
+      ]);
     }
 
-    await transport.send({
-      v: 0,
-      docId: this.backend.docId,
-      payload: {
-        case: 'helloAck',
-        value: {
-          capabilities: ackCapabilities,
-          acceptedFilters,
-          rejectedFilters,
-          maxLamport,
-        },
-      },
-    });
-    traceHello(this.backend.docId, traceStartedAt, 'after-helloAck-send', {
-      acceptedFilters: acceptedFilters.length,
-      rejectedFilters: rejectedFilters.length,
-    });
-
-    for (const directSend of directSendFilters) {
-      await this.sendOpsBatches(transport, directSend.id, directSend.opRefs, {
-        filter: directSend.filter,
+    const capabilitiesChanged = this.publishPeerCapabilitySnapshot(
+      transport,
+      capabilityGeneration,
+      receivedCapabilities,
+    );
+    if (
+      capabilitiesChanged === undefined &&
+      !this.isCurrentPeerCapabilitySnapshot(transport, peerSnapshot)
+    ) {
+      await this.sendProtocolError(transport, {
+        code: ErrorCode.UNAUTHORIZED,
+        message: 'Hello was superseded by a newer capability snapshot; retry',
+        exchangeId: hello.exchangeId,
       });
+      return;
+    }
+
+    this.assertTransportActive(transport);
+    for (const id of awaitingUploadFilterIds) {
+      setTransportOwned(this.responderAwaitingUploadAcks, transport, id, true);
+    }
+    for (const [id, session] of responderSessions) {
+      setTransportOwned(this.responderSessions, transport, id, session);
+    }
+    const cleanup = () => {
+      for (const id of awaitingUploadFilterIds) {
+        deleteTransportOwned(this.responderAwaitingUploadAcks, transport, id);
+      }
+      for (const [id, session] of responderSessions) {
+        if (getTransportOwned(this.responderSessions, transport, id) === session) {
+          deleteTransportOwned(this.responderSessions, transport, id);
+        }
+      }
+    };
+    let keepSessions = false;
+    try {
+      this.assertTransportActive(transport);
+      await transport.send({
+        v: 0,
+        docId: this.backend.docId,
+        payload: {
+          case: 'helloAck',
+          value: {
+            exchangeId: hello.exchangeId,
+            capabilities: ackCapabilities,
+            acceptedFilters,
+            rejectedFilters,
+            maxLamport,
+          },
+        },
+      });
+      this.assertTransportActive(transport);
+      // The peer may start its addressed RIBLT/upload session as soon as the Ack is sent.
+      // Preserve those sessions across an overlapping capability exchange; their own
+      // authorization lease is rechecked before any response data is sent.
+      keepSessions = true;
+      traceHello(this.backend.docId, traceStartedAt, 'after-helloAck-send', {
+        acceptedFilters: acceptedFilters.length,
+        rejectedFilters: rejectedFilters.length,
+      });
+
+      try {
+        for (const directSend of directSendFilters) {
+          await this.sendOpsBatches(transport, directSend.id, directSend.opRefs, {
+            filter: directSend.filter,
+            peerSnapshot,
+          });
+        }
+      } catch {
+        await rejectDirectSendFilters();
+        return;
+      }
+      if (capabilitiesChanged !== undefined) {
+        this.rescanSubscriptionsAfterCapabilityChange(transport, capabilitiesChanged);
+      }
+    } finally {
+      if (!keepSessions) cleanup();
     }
   }
 
@@ -1490,34 +1745,69 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     ack: HelloAck,
   ): Promise<void> {
-    const capabilityGeneration = this.beginPeerCapabilitySnapshot(transport);
-    try {
-      await this.auth?.onHelloAck?.(ack, { docId: this.backend.docId });
-    } catch (err) {
-      if (this.transportPeerCapabilityGeneration.get(transport) !== capabilityGeneration) return;
-      this.rejectHelloAckWaiter(transport, err);
-      throw err;
-    }
-    if (!this.publishPeerCapabilitySnapshot(transport, capabilityGeneration, ack.capabilities)) {
-      return;
-    }
-    const waiter = this.transportHelloAckWaiter.get(transport);
-    if (waiter) {
-      this.transportHelloAckWaiter.delete(transport);
-      waiter.resolve();
-    }
+    if (!ack.exchangeId) throw new Error('HelloAck.exchangeId missing');
+    const exchange = getTransportOwned(this.pendingHelloExchanges, transport, ack.exchangeId);
+    if (!exchange || exchange.processing) return;
+    exchange.processing = true;
 
-    for (const id of ack.acceptedFilters) {
-      const session = this.initiatorSessions.get(id);
-      if (session?.transport === transport) session.ack.resolve(ack);
-    }
-    for (const rej of ack.rejectedFilters) {
-      const session = this.initiatorSessions.get(rej.id);
-      if (session?.transport === transport) {
-        const reason = ErrorCode[rej.reason] ?? String(rej.reason);
-        const detail = rej.message ? `: ${rej.message}` : '';
-        session.ack.reject(new Error(`${reason}${detail}`));
+    try {
+      const receivedCapabilities = copyCapabilities(ack.capabilities);
+      try {
+        await this.auth?.onHelloAck?.(
+          {
+            ...ack,
+            capabilities: copyCapabilities(receivedCapabilities),
+            acceptedFilters: [...ack.acceptedFilters],
+            rejectedFilters: ack.rejectedFilters.map((rejected) => ({ ...rejected })),
+          },
+          { docId: this.backend.docId },
+        );
+        this.assertTransportActive(transport);
+      } catch (err) {
+        if (this.isCurrentPeerCapabilityGeneration(transport, exchange.capabilityGeneration)) {
+          this.peerCapabilityRecoveryRequired.add(transport);
+        }
+        exchange.ack.reject(err);
+        return;
       }
+      const capabilitiesChanged = this.publishPeerCapabilitySnapshot(
+        transport,
+        exchange.capabilityGeneration,
+        receivedCapabilities,
+      );
+      this.assertTransportActive(transport);
+      const acceptedCapabilities = authorizationCapabilities(receivedCapabilities);
+      const receivedSnapshot: PeerCapabilitySnapshot = {
+        fingerprint: capabilitySetFingerprint(acceptedCapabilities),
+        capabilities: acceptedCapabilities,
+      };
+      if (
+        capabilitiesChanged === undefined &&
+        !this.isCurrentPeerCapabilitySnapshot(transport, receivedSnapshot)
+      ) {
+        exchange.ack.reject(new Error('Hello exchange was superseded by newer peer capabilities'));
+        return;
+      }
+
+      if (!exchange.filterId) {
+        exchange.ack.resolve(ack);
+      } else {
+        const rejection = ack.rejectedFilters.find(({ id }) => id === exchange.filterId);
+        if (rejection) {
+          const reason = ErrorCode[rejection.reason] ?? String(rejection.reason);
+          const detail = rejection.message ? `: ${rejection.message}` : '';
+          exchange.ack.reject(new Error(`${reason}${detail}`));
+        } else if (ack.acceptedFilters.includes(exchange.filterId)) {
+          exchange.ack.resolve(ack);
+        } else {
+          exchange.ack.reject(new Error(`HelloAck omitted filter result for ${exchange.filterId}`));
+        }
+      }
+      if (capabilitiesChanged !== undefined) {
+        this.rescanSubscriptionsAfterCapabilityChange(transport, capabilitiesChanged);
+      }
+    } finally {
+      deleteTransportOwned(this.pendingHelloExchanges, transport, ack.exchangeId);
     }
   }
 
@@ -1527,6 +1817,10 @@ export class SyncPeer<Op> {
   ): Promise<void> {
     const session = getTransportOwned(this.responderSessions, transport, msg.filterId);
     if (!session) return;
+    if (!this.isCurrentPeerCapabilitySnapshot(transport, session.peerSnapshot)) {
+      await this.rejectResponderCapabilityLease(transport, msg.filterId);
+      return;
+    }
 
     if (msg.round !== session.round) return;
     if (msg.startIndex !== session.expectedIndex) {
@@ -1635,8 +1929,15 @@ export class SyncPeer<Op> {
       },
     });
 
+    if (!this.isCurrentPeerCapabilitySnapshot(transport, session.peerSnapshot)) {
+      await this.rejectResponderCapabilityLease(transport, msg.filterId);
+      return;
+    }
+
     if (senderMissing.length > 0) {
-      await this.sendOpsBatches(transport, msg.filterId, senderMissing);
+      await this.sendOpsBatches(transport, msg.filterId, senderMissing, {
+        peerSnapshot: session.peerSnapshot,
+      });
       if (!session.awaitingIncomingDone) {
         deleteTransportOwned(this.responderSessions, transport, msg.filterId);
       }
@@ -1650,10 +1951,12 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     msg: Subscribe,
   ): Promise<void> {
+    this.assertTransportActive(transport);
     if (!msg.subscriptionId) return;
     if (!msg.filter) return;
 
-    if (this.requireAuthForFilters && !this.transportHasAuth.get(transport)) {
+    const peerSnapshot = this.peerCapabilitySnapshot(transport);
+    if (this.requireAuthForFilters && !peerSnapshot.capabilities.some(isAuthCapability)) {
       await this.sendProtocolError(transport, {
         code: ErrorCode.UNAUTHORIZED,
         message: `missing "${AUTH_CAPABILITY_NAME}" token; send Hello before Subscribe`,
@@ -1663,12 +1966,12 @@ export class SyncPeer<Op> {
     }
 
     try {
-      const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
       await this.auth?.authorizeFilter?.(msg.filter, {
         docId: this.backend.docId,
         purpose: 'subscribe',
-        capabilities: peerCaps,
+        capabilities: peerSnapshot.capabilities,
       });
+      this.assertTransportActive(transport);
     } catch (err: any) {
       await this.sendProtocolError(transport, {
         code: ErrorCode.UNAUTHORIZED,
@@ -1683,9 +1986,33 @@ export class SyncPeer<Op> {
         this.backend.listOpRefs(msg.filter),
         this.backend.maxLamport(),
       ]);
+      this.assertTransportActive(transport);
 
       const sentOpRefs = new Set<string>();
-      for (const r of opRefs) sentOpRefs.add(bytesToHex(r));
+      if (this.auth?.filterOutgoingOps && opRefs.length > 0) {
+        const ops = await this.backend.getOpsByOpRefs(opRefs);
+        const allowed = await this.auth.filterOutgoingOps(ops, {
+          docId: this.backend.docId,
+          purpose: 'subscribe',
+          filter: msg.filter,
+          capabilities: peerSnapshot.capabilities,
+        });
+        this.assertTransportActive(transport);
+        assertOutgoingFilterLength(allowed, opRefs.length);
+        for (let i = 0; i < opRefs.length; i += 1) {
+          if (allowed[i] === true) sentOpRefs.add(bytesToHex(opRefs[i]!));
+        }
+      } else {
+        for (const ref of opRefs) sentOpRefs.add(bytesToHex(ref));
+      }
+      if (!this.isCurrentPeerCapabilitySnapshot(transport, peerSnapshot)) {
+        await this.sendProtocolError(transport, {
+          code: ErrorCode.UNAUTHORIZED,
+          message: 'peer capabilities changed while authorizing subscription; retry',
+          subscriptionId: msg.subscriptionId,
+        });
+        return;
+      }
 
       setTransportOwned(this.responderSubscriptions, transport, msg.subscriptionId, {
         subscriptionId: msg.subscriptionId,
@@ -1702,12 +2029,14 @@ export class SyncPeer<Op> {
           value: { subscriptionId: msg.subscriptionId, currentLamport: maxLamport },
         },
       });
+      this.assertTransportActive(transport);
 
       // Close a race where local updates happen between `listOpRefs` and the caller
       // registering its own update hooks; this makes subscriptions robust even
       // without explicit `notifyLocalUpdate()` calls for every writer.
       void this.notifyLocalUpdate();
     } catch (err: any) {
+      deleteTransportOwned(this.responderSubscriptions, transport, msg.subscriptionId);
       await this.sendProtocolError(transport, {
         code: ErrorCode.FILTER_NOT_SUPPORTED,
         message: String(err?.message ?? err ?? 'subscribe failed'),
@@ -1739,10 +2068,20 @@ export class SyncPeer<Op> {
       message: string;
       filterId?: string;
       subscriptionId?: string;
+      exchangeId?: string;
     },
   ): Promise<void> {
     const code = ErrorCode[err.code] ?? String(err.code);
     const e = new Error(`${code}: ${err.message}`);
+
+    if (err.exchangeId) {
+      const exchange = getTransportOwned(this.pendingHelloExchanges, transport, err.exchangeId);
+      if (exchange) {
+        exchange.ack.reject(e);
+        deleteTransportOwned(this.pendingHelloExchanges, transport, err.exchangeId);
+      }
+      return;
+    }
 
     if (err.subscriptionId) {
       const sub = this.initiatorSubscriptions.get(err.subscriptionId);
@@ -1777,11 +2116,7 @@ export class SyncPeer<Op> {
   ): void {
     const e = error instanceof Error ? error : new Error(String(error));
 
-    const helloWaiters = this.transportHelloAckWaiters.get(transport);
-    if (helloWaiters) {
-      this.transportHelloAckWaiters.delete(transport);
-      for (const waiter of helloWaiters) waiter.reject(e);
-    }
+    this.rejectPendingHelloExchanges(transport, e);
 
     for (const [subscriptionId, sub] of this.initiatorSubscriptions) {
       if (sub.transport !== transport) continue;

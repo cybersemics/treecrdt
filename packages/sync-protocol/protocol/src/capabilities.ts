@@ -23,7 +23,7 @@ export function buildInitiatorHelloCapabilities(
   baseCapabilities: readonly Capability[],
   opts: { filterId: string; localHasOps: boolean },
 ): Capability[] {
-  const capabilities = [...baseCapabilities];
+  const capabilities = baseCapabilities.map(({ name, value }) => ({ name, value }));
   pushCapabilityIfMissing(capabilities, DIRECT_SEND_SMALL_SCOPE_SUPPORT_CAPABILITY, '1');
   pushCapabilityIfMissing(capabilities, DIRECT_SEND_EMPTY_RECEIVER_SUPPORT_CAPABILITY, '1');
   if (!opts.localHasOps) {
@@ -84,8 +84,11 @@ export function peerSelectedDirectSendEmptyReceiverFilter(
 }
 
 export function capabilitySetFingerprint(capabilities: readonly Capability[]): string {
-  return capabilities
-    .map((capability) => `${capability.name}\u0000${capability.value}`)
-    .sort()
-    .join('\u0001');
+  const entries = capabilities.map(({ name, value }) => [name, value] as const);
+  entries.sort(([leftName, leftValue], [rightName, rightValue]) => {
+    if (leftName !== rightName) return leftName < rightName ? -1 : 1;
+    if (leftValue !== rightValue) return leftValue < rightValue ? -1 : 1;
+    return 0;
+  });
+  return JSON.stringify(entries);
 }

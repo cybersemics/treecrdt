@@ -35,7 +35,7 @@ test('replay-only auth filters non-auth capabilities during hello exchange', asy
   ];
 
   const ackCaps = await auth.onHello?.(
-    { capabilities: helloCaps, filters: [], maxLamport: 0n },
+    { exchangeId: 'test', capabilities: helloCaps, filters: [], maxLamport: 0n },
     { docId: 'doc-replay-auth' },
   );
   expect(storedCaps).toEqual([
