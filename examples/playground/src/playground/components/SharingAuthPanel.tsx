@@ -31,6 +31,9 @@ type SharingAuthPanelProps = {
   authTokenCount: number;
   authTokenScope: PlaygroundAuthApi["authTokenScope"];
   authTokenActions: PlaygroundAuthApi["authTokenActions"];
+  payloadKeyKid: string | null;
+  payloadRotateBusy: boolean;
+  rotatePayloadKey: () => Promise<void>;
   nodeLabelForId: (id: string) => string;
 
   selfPeerId: string | null;
@@ -169,6 +172,9 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
     authTokenCount,
     authTokenScope,
     authTokenActions,
+    payloadKeyKid,
+    payloadRotateBusy,
+    rotatePayloadKey,
     nodeLabelForId,
     selfPeerId,
     openMintingPeerTab,
@@ -322,6 +328,33 @@ export function SharingAuthPanel(props: SharingAuthPanelProps) {
           {authError}
         </div>
       )}
+
+      <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Payload key</div>
+            <div className="mt-1 text-[11px] text-slate-400">
+              Active key id: <span className="font-mono text-slate-200">{payloadKeyKid ?? "-"}</span>
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500">
+              Rotation affects future writes only. Re-share an invite or grant to distribute the new key.
+            </div>
+          </div>
+          <button
+            className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-accent hover:text-white disabled:opacity-50"
+            type="button"
+            onClick={() => void rotatePayloadKey()}
+            disabled={!authEnabled || authBusy || payloadRotateBusy || !authCanIssue || !payloadKeyKid}
+            title={
+              authCanIssue
+                ? "Rotate the doc payload key for future writes"
+                : "Only minting peers can rotate payload keys"
+            }
+          >
+            {payloadRotateBusy ? "Rotating..." : "Rotate key"}
+          </button>
+        </div>
+      </div>
 
       {showAuthAdvanced && (
         <>

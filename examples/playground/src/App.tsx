@@ -4,6 +4,7 @@ import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/i
 import { bytesToHex } from "@treecrdt/interface/ids";
 import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from "@treecrdt/wa-sqlite";
 
+import { rotateDocPayloadKey } from "./auth";
 import { hexToBytes16 } from "./sync-v0";
 import { useVirtualizer } from "./virtualizer";
 
@@ -115,6 +116,7 @@ export default function App() {
     return false;
   });
   const [online, setOnline] = useState(true);
+  const [payloadRotateBusy, setPayloadRotateBusy] = useState(false);
 
   const joinMode =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).get("join") === "1";
@@ -153,6 +155,7 @@ export default function App() {
   const opfsSupport = useMemo(detectOpfsSupport, []);
   const {
     encryptPayloadBytes,
+    payloadKeyKid,
     payloadDisplayForNode,
     refreshDocPayloadKey,
     refreshPayloadsForNodes,
@@ -190,6 +193,7 @@ export default function App() {
     showAuthAdvanced,
     setShowAuthAdvanced,
     authInfo,
+    setAuthInfo,
     authError,
     setAuthError,
     authBusy,
@@ -254,8 +258,23 @@ export default function App() {
     syncServerUrl,
     syncTransportMode,
     onPeerIdentityChain,
+    payloadKeyKid,
     refreshDocPayloadKey,
   });
+
+  const handleRotatePayloadKey = React.useCallback(async () => {
+    setPayloadRotateBusy(true);
+    setAuthError(null);
+    try {
+      const rotated = await rotateDocPayloadKey(docId);
+      await refreshDocPayloadKey();
+      setAuthInfo(`Rotated payload key (${rotated.payloadKeyKid}). Share a new invite or grant with peers.`);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPayloadRotateBusy(false);
+    }
+  }, [docId, refreshDocPayloadKey, setAuthError, setAuthInfo]);
 
   const textEncoder = useMemo(() => new TextEncoder(), []);
   const { ops, recordOps, resetOps } = usePlaygroundOpsLog({
@@ -1098,6 +1117,9 @@ export default function App() {
               authTokenCount,
               authTokenScope,
               authTokenActions,
+              payloadKeyKid,
+              payloadRotateBusy,
+              rotatePayloadKey: handleRotatePayloadKey,
               nodeLabelForId,
               selfPeerId,
               revealIdentity,
