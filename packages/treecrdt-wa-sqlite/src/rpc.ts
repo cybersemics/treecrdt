@@ -1,6 +1,8 @@
 import type { Operation } from '@treecrdt/interface';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 
+export const SHARED_WORKER_DROPPED_ERROR = 'TreeCRDT shared database was dropped';
+
 export type RpcStorageMode = 'memory' | 'opfs';
 
 export type RpcSqlParam = number | string | null | Uint8Array;
@@ -61,10 +63,15 @@ export type RpcResponse<M extends RpcMethod = RpcMethod> =
   | { id: number; ok: true; result: RpcResult<M> }
   | { id: number; ok: false; error: string };
 
-export type RpcPushMessage = {
-  type: 'materialized';
-  event: MaterializationEvent;
-};
+export type RpcPushMessage =
+  | {
+      type: 'materialized';
+      event: MaterializationEvent;
+    }
+  | {
+      type: 'terminal';
+      error: string;
+    };
 
 export function rpcBinaryResult(bytes: Uint8Array | null): Uint8Array | null {
   if (bytes === null) return null;

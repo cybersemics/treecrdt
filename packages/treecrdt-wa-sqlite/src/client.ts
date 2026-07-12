@@ -468,12 +468,22 @@ async function createSharedWorkerClient(opts: {
     );
 
   const callRaw = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
+    if (terminalError) return Promise.reject(terminalError);
     if (closed) return Promise.reject(closedError);
     const id = nextId++;
-    if (terminalError) return Promise.reject(terminalError);
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      port.postMessage({ id, method, params } satisfies RpcRequest<M>);
+      try {
+        port.postMessage({ id, method, params } satisfies RpcRequest<M>);
+      } catch (err) {
+        pending.delete(id);
+        const postError = new Error(
+          `shared worker post failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        terminalError = postError;
+        cleanup(postError);
+        reject(postError);
+      }
     });
   };
   const call = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
@@ -486,16 +496,26 @@ async function createSharedWorkerClient(opts: {
       if (closed || terminalError) return;
       try {
         port.postMessage({ type: 'materialized', event } satisfies RpcPushMessage);
-      } catch {
-        // Closing tabs can race a final materialization notification.
+      } catch (err) {
+        const postError = new Error(
+          `shared worker post failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        terminalError = postError;
+        cleanup(postError);
       }
     },
   });
 
   const onMessage = (ev: MessageEvent<RpcResponse | RpcPushMessage>) => {
     const data = ev.data;
-    if ('type' in data && data.type === 'materialized') {
-      materialized.emitIncomingEvent(data.event);
+    if ('type' in data) {
+      if (data.type === 'materialized') {
+        materialized.emitIncomingEvent(data.event);
+        return;
+      }
+      const err = new Error(data.error || 'shared worker terminated');
+      terminalError = err;
+      cleanup(err);
       return;
     }
     const response = data as RpcResponse;
@@ -508,21 +528,36 @@ async function createSharedWorkerClient(opts: {
   const onMessageError = () => {
     const err = new Error('shared worker message error');
     terminalError = err;
-    for (const { reject } of pending.values()) reject(err);
-    pending.clear();
+    try {
+      port.postMessage({
+        id: nextId++,
+        method: 'close',
+        params: [],
+      } satisfies RpcRequest<'close'>);
+    } catch {
+      // The port may already be unusable; cleanup below is still required.
+    }
+    cleanup(err);
   };
-  const cleanup = () => {
+  const onWorkerError = (ev: ErrorEvent) => {
+    const err = new Error(ev.message || 'shared worker error');
+    terminalError = err;
+    cleanup(err);
+  };
+  const cleanup = (reason: Error = closedError) => {
     if (closed) return;
     closed = true;
     materialized.close();
-    for (const { reject } of pending.values()) reject(closedError);
+    for (const { reject } of pending.values()) reject(reason);
     pending.clear();
     port.removeEventListener('message', onMessage);
     port.removeEventListener('messageerror', onMessageError);
+    sharedWorker.removeEventListener('error', onWorkerError);
     port.close();
   };
   port.addEventListener('message', onMessage);
   port.addEventListener('messageerror', onMessageError);
+  sharedWorker.addEventListener('error', onWorkerError);
   port.start();
 
   let initResult: RpcResult<'init'>;
