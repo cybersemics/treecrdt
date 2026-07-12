@@ -264,7 +264,14 @@ test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', 
     syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
   });
   try {
-    await sync.pushLocalOps([opA]);
+    const cancelled = new AbortController();
+    cancelled.abort(new Error('cancelled high-level push'));
+    await expect(sync.pushLocalOps([opA], { signal: cancelled.signal })).rejects.toThrow(
+      'cancelled high-level push',
+    );
+    expect(await getAllB()).toEqual([]);
+
+    await sync.pushLocalOps([opA], { maxOpsPerBatch: 1 });
   } finally {
     await sync.close();
   }

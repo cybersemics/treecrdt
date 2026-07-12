@@ -1642,6 +1642,153 @@ test('a stale failing HelloAck rejects its real filtered session', async () => {
   }
 });
 
+test('pushOps with an already-aborted signal starts no auth or transport work', async () => {
+  const docId = 'doc-push-pre-aborted';
+  const op = makeInsertOp(replicas.a, 1);
+  let helloCapabilitiesCalls = 0;
+  let filterCalls = 0;
+  let signCalls = 0;
+  let sendCalls = 0;
+  const peer = new SyncPeer(new MemoryBackend(docId), {
+    auth: {
+      helloCapabilities: async () => {
+        helloCapabilitiesCalls += 1;
+        return [];
+      },
+      filterOutgoingOps: async (ops) => {
+        filterCalls += 1;
+        return ops.map(() => true);
+      },
+      signOps: async (ops) => {
+        signCalls += 1;
+        return ops.map(() => ({ sig: new Uint8Array([1]) }));
+      },
+    },
+  });
+  const transport: DuplexTransport<SyncMessage<Operation>> = {
+    send: async () => {
+      sendCalls += 1;
+    },
+    onMessage: () => () => {},
+  };
+  const controller = new AbortController();
+  controller.abort(new Error('cancelled before push'));
+
+  await expect(peer.pushOps(transport, [op], { signal: controller.signal })).rejects.toThrow(
+    'cancelled before push',
+  );
+
+  expect(helloCapabilitiesCalls).toBe(0);
+  expect(filterCalls).toBe(0);
+  expect(signCalls).toBe(0);
+  expect(sendCalls).toBe(0);
+});
+
+test('pushOps aborted during capability creation does not send Hello', async () => {
+  const docId = 'doc-push-abort-before-hello';
+  const capabilityPause = createPause();
+  let sendCalls = 0;
+  const peer = new SyncPeer(new MemoryBackend(docId), {
+    auth: {
+      helloCapabilities: async () => {
+        await capabilityPause.wait();
+        return [];
+      },
+    },
+  });
+  const transport: DuplexTransport<SyncMessage<Operation>> = {
+    send: async () => {
+      sendCalls += 1;
+    },
+    onMessage: () => () => {},
+  };
+  const controller = new AbortController();
+
+  const push = peer.pushOps(transport, [makeInsertOp(replicas.a, 1)], {
+    signal: controller.signal,
+  });
+  await capabilityPause.started;
+  controller.abort(new Error('cancelled before Hello'));
+
+  await expect(push).rejects.toThrow('cancelled before Hello');
+  capabilityPause.release();
+  await tick();
+
+  expect(sendCalls).toBe(0);
+});
+
+test('pushOps aborted during outbound filtering does not start a send', async () => {
+  const docId = 'doc-push-abort-before-send';
+  const filterPause = createPause();
+  let sendCalls = 0;
+  const peer = new SyncPeer(new MemoryBackend(docId), {
+    auth: {
+      filterOutgoingOps: async (ops) => {
+        await filterPause.wait();
+        return ops.map(() => true);
+      },
+    },
+  });
+  const transport: DuplexTransport<SyncMessage<Operation>> = {
+    send: async () => {
+      sendCalls += 1;
+    },
+    onMessage: () => () => {},
+  };
+  const controller = new AbortController();
+
+  const push = peer.pushOps(transport, [makeInsertOp(replicas.a, 1)], {
+    signal: controller.signal,
+  });
+  await filterPause.started;
+  controller.abort(new Error('cancelled before send'));
+
+  await expect(push).rejects.toThrow('cancelled before send');
+  filterPause.release();
+  await tick();
+
+  expect(sendCalls).toBe(0);
+});
+
+test('pushOps aborts an in-flight chunk without sending later chunks', async () => {
+  const docId = 'doc-push-abort';
+  const root = '0'.repeat(32);
+  const backend = new MemoryBackend(docId);
+  const ops = [1, 2].map((counter) =>
+    makeOp(replicas.a, counter, counter, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(counter),
+      orderKey: orderKeyFromPosition(counter - 1),
+    }),
+  );
+  const sent: SyncMessage<Operation>[] = [];
+  let releaseFirstSend!: () => void;
+  const firstSend = new Promise<void>((resolve) => {
+    releaseFirstSend = resolve;
+  });
+  const transport: DuplexTransport<SyncMessage<Operation>> = {
+    async send(message) {
+      sent.push(message);
+      if (sent.length === 1) await firstSend;
+    },
+    onMessage: () => () => {},
+  };
+  const peer = new SyncPeer(backend, { maxOpsPerBatch: 1 });
+  const controller = new AbortController();
+
+  const push = peer.pushOps(transport, ops, { signal: controller.signal });
+  await waitUntil(() => sent.length === 1);
+  controller.abort(new Error('push timed out'));
+
+  await expect(push).rejects.toThrow('push timed out');
+  releaseFirstSend();
+  await tick();
+
+  expect(sent).toHaveLength(1);
+  expect(sent[0]?.payload.case).toBe('opsBatch');
+});
+
 test('pushOps refreshes replay capabilities before uploading newly authorized ops', async () => {
   const docId = 'doc-push-capability-refresh';
   const root = '0'.repeat(32);
