@@ -456,8 +456,7 @@ async function createSharedWorkerClient(opts: {
     number,
     { resolve: (value: any) => void; reject: (err: Error) => void }
   >();
-  let terminalError: Error | null = null;
-  let closed = false;
+  let closedReason: Error | null = null;
   let callQueue: Promise<void> = Promise.resolve();
 
   const closedError = new Error(CLIENT_CLOSED_ERROR);
@@ -468,21 +467,17 @@ async function createSharedWorkerClient(opts: {
     );
 
   const callRaw = <M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> => {
-    if (terminalError) return Promise.reject(terminalError);
-    if (closed) return Promise.reject(closedError);
+    if (closedReason) return Promise.reject(closedReason);
     const id = nextId++;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
       try {
         port.postMessage({ id, method, params } satisfies RpcRequest<M>);
       } catch (err) {
-        pending.delete(id);
         const postError = new Error(
           `shared worker post failed: ${err instanceof Error ? err.message : String(err)}`,
         );
-        terminalError = postError;
         cleanup(postError);
-        reject(postError);
       }
     });
   };
@@ -493,14 +488,13 @@ async function createSharedWorkerClient(opts: {
   };
   const materialized = createClientMaterializationDispatcher({
     broadcast: (event) => {
-      if (closed || terminalError) return;
+      if (closedReason) return;
       try {
         port.postMessage({ type: 'materialized', event } satisfies RpcPushMessage);
       } catch (err) {
         const postError = new Error(
           `shared worker post failed: ${err instanceof Error ? err.message : String(err)}`,
         );
-        terminalError = postError;
         cleanup(postError);
       }
     },
@@ -514,7 +508,6 @@ async function createSharedWorkerClient(opts: {
         return;
       }
       const err = new Error(data.error || 'shared worker terminated');
-      terminalError = err;
       cleanup(err);
       return;
     }
@@ -527,7 +520,6 @@ async function createSharedWorkerClient(opts: {
   };
   const onMessageError = () => {
     const err = new Error('shared worker message error');
-    terminalError = err;
     try {
       port.postMessage({
         id: nextId++,
@@ -541,12 +533,11 @@ async function createSharedWorkerClient(opts: {
   };
   const onWorkerError = (ev: ErrorEvent) => {
     const err = new Error(ev.message || 'shared worker error');
-    terminalError = err;
     cleanup(err);
   };
   const cleanup = (reason: Error = closedError) => {
-    if (closed) return;
-    closed = true;
+    if (closedReason) return;
+    closedReason = reason;
     materialized.close();
     for (const { reject } of pending.values()) reject(reason);
     pending.clear();
@@ -565,7 +556,7 @@ async function createSharedWorkerClient(opts: {
     initResult = await call('init', [opts.baseUrl ?? '/', opts.filename, opts.storage, opts.docId]);
   } catch (err) {
     try {
-      if (!terminalError) await call('close', [] as RpcParams<'close'>);
+      if (!closedReason) await call('close', [] as RpcParams<'close'>);
     } catch {
       // Initialization may not have completed, but the shared worker still needs its port removed.
     } finally {
@@ -578,7 +569,7 @@ async function createSharedWorkerClient(opts: {
   if (opts.requireOpfs && effectiveStorage !== 'opfs') {
     const reason = opfsError ? `: ${opfsError}` : '';
     try {
-      if (!terminalError) await call('close', [] as RpcParams<'close'>);
+      if (!closedReason) await call('close', [] as RpcParams<'close'>);
     } catch {
       // ignore close errors on init failure
     } finally {
@@ -588,18 +579,18 @@ async function createSharedWorkerClient(opts: {
   }
 
   const closeImpl = async () => {
-    if (closed) return;
+    if (closedReason) return;
     try {
-      if (!terminalError) await call('close', [] as RpcParams<'close'>);
+      await call('close', [] as RpcParams<'close'>);
     } finally {
       cleanup();
     }
   };
 
   const dropImpl = async () => {
-    if (closed) return;
+    if (closedReason) return;
     try {
-      if (!terminalError) await call('drop', [] as RpcParams<'drop'>);
+      await call('drop', [] as RpcParams<'drop'>);
     } finally {
       cleanup();
     }

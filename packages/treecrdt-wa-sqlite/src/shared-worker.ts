@@ -52,25 +52,20 @@ const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
 
 function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePort) {
   if (event.changes.length === 0) return;
-  for (const port of [...ports]) {
+  for (const port of ports) {
     if (port === exclude) continue;
-    try {
-      port.postMessage({ type: 'materialized', event });
-    } catch {
-      prunePort(port);
-    }
+    postToPort(port, { type: 'materialized', event });
   }
 }
 
-function isClientPushMessage(
-  message: RpcRequest | RpcPushMessage,
-): message is Extract<RpcPushMessage, { type: 'materialized' }> {
-  return 'type' in message && message.type === 'materialized';
-}
-
-function clearPortHandlers(port: MessagePort): void {
-  port.onmessage = null;
-  port.onmessageerror = null;
+function postToPort(port: MessagePort, message: unknown, transfer: Transferable[] = []): boolean {
+  try {
+    port.postMessage(message, transfer);
+    return true;
+  } catch {
+    prunePort(port);
+    return false;
+  }
 }
 
 function scheduleFinalReset(): void {
@@ -84,15 +79,16 @@ function scheduleFinalReset(): void {
 }
 
 function prunePort(port: MessagePort): void {
-  const removed = ports.delete(port);
-  clearPortHandlers(port);
+  const removed = detachPort(port);
   port.close();
   if (removed) scheduleFinalReset();
 }
 
-function detachPort(port: MessagePort): void {
-  ports.delete(port);
-  clearPortHandlers(port);
+function detachPort(port: MessagePort): boolean {
+  const removed = ports.delete(port);
+  port.onmessage = null;
+  port.onmessageerror = null;
+  return removed;
 }
 
 function invalidatePeers(sourcePort: MessagePort): void {
@@ -100,14 +96,9 @@ function invalidatePeers(sourcePort: MessagePort): void {
     type: 'terminal',
     error: SHARED_WORKER_DROPPED_ERROR,
   };
-  for (const port of [...ports]) {
+  for (const port of ports) {
     if (port === sourcePort) continue;
-    try {
-      port.postMessage(terminal);
-      detachPort(port);
-    } catch {
-      prunePort(port);
-    }
+    if (postToPort(port, terminal)) detachPort(port);
   }
 }
 
@@ -118,7 +109,7 @@ function invalidatePeers(sourcePort: MessagePort): void {
   port.onmessage = (message: MessageEvent<RpcRequest | RpcPushMessage>) => {
     const data = message.data;
     if ('type' in data) {
-      if (isClientPushMessage(data)) broadcastMaterialized(data.event, port);
+      if (data.type === 'materialized') broadcastMaterialized(data.event, port);
       return;
     }
 
@@ -128,18 +119,10 @@ function invalidatePeers(sourcePort: MessagePort): void {
         request.method === 'treePayload' || request.method === 'treeParent'
           ? transferablesForRpcBinaryResult(result)
           : [];
-      try {
-        port.postMessage({ id: request.id, ok: true, result }, transfer);
-      } catch {
-        prunePort(port);
-      }
+      postToPort(port, { id: request.id, ok: true, result }, transfer);
     };
     const respondError = (error: string) => {
-      try {
-        port.postMessage({ id: request.id, ok: false, error });
-      } catch {
-        prunePort(port);
-      }
+      postToPort(port, { id: request.id, ok: false, error });
     };
     let handled = false;
     const run = callQueue.then(() => {
@@ -229,14 +212,10 @@ async function close(port: MessagePort) {
 }
 
 async function drop(sourcePort: MessagePort): Promise<void> {
-  let dropError: unknown;
   try {
     await session.drop();
-  } catch (err) {
-    dropError = err;
+  } finally {
+    invalidatePeers(sourcePort);
+    detachPort(sourcePort);
   }
-
-  invalidatePeers(sourcePort);
-  detachPort(sourcePort);
-  if (dropError !== undefined) throw dropError;
 }

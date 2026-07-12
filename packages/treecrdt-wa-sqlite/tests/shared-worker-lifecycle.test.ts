@@ -48,7 +48,6 @@ function opened(close = vi.fn(async () => undefined)) {
     headLamport: vi.fn(async () => 7),
   };
   return {
-    api,
     close,
     result: { db: { close }, api, storage: 'memory' as const, filename: ':memory:' },
   };
@@ -73,6 +72,11 @@ async function response(port: FakePort, id: number): Promise<any> {
   return port.outbound.find((message) => message.id === id);
 }
 
+async function initialize(port: FakePort, id: number): Promise<void> {
+  request(port, id, 'init');
+  expect(await response(port, id)).toMatchObject({ ok: true });
+}
+
 beforeEach(async () => {
   vi.resetModules();
   mocks.clearOpfsStorage.mockReset();
@@ -93,18 +97,14 @@ test('drop terminates every peer and permits a fresh shared session', async () =
   const source = connect();
   const peer = connect();
 
-  request(source, 1, 'init');
-  request(peer, 2, 'init');
-  expect((await response(source, 1)).ok).toBe(true);
-  expect((await response(peer, 2)).ok).toBe(true);
+  await initialize(source, 1);
+  await initialize(peer, 2);
 
   request(source, 3, 'drop');
   expect(await response(source, 3)).toMatchObject({ ok: true });
-  await vi.waitFor(() => {
-    expect(peer.outbound).toContainEqual({
-      type: 'terminal',
-      error: SHARED_WORKER_DROPPED_ERROR,
-    });
+  expect(peer.outbound).toContainEqual({
+    type: 'terminal',
+    error: SHARED_WORKER_DROPPED_ERROR,
   });
   expect(first.close).toHaveBeenCalledOnce();
   expect(peer.onmessage).toBeNull();
@@ -126,10 +126,8 @@ test('a failed drop rejects its source but still terminally invalidates peers', 
   mocks.openTreecrdtDb.mockResolvedValueOnce(first.result).mockResolvedValueOnce(second.result);
   const source = connect();
   const peer = connect();
-  request(source, 1, 'init');
-  request(peer, 2, 'init');
-  await response(source, 1);
-  await response(peer, 2);
+  await initialize(source, 1);
+  await initialize(peer, 2);
 
   request(source, 3, 'drop');
   expect(await response(source, 3)).toMatchObject({ ok: false, error: 'close failed' });
@@ -153,12 +151,9 @@ test('message errors and failed broadcasts prune stale ports before final close'
   const live = connect();
   const messageErrorPort = connect();
   const failedPostPort = connect();
-  request(live, 1, 'init');
-  request(messageErrorPort, 2, 'init');
-  request(failedPostPort, 3, 'init');
-  await response(live, 1);
-  await response(messageErrorPort, 2);
-  await response(failedPostPort, 3);
+  await initialize(live, 1);
+  await initialize(messageErrorPort, 2);
+  await initialize(failedPostPort, 3);
 
   messageErrorPort.messageError();
   failedPostPort.failPosts = true;
@@ -177,10 +172,8 @@ test('closing one client preserves the database until the final client closes', 
   mocks.openTreecrdtDb.mockResolvedValue(first.result);
   const firstPort = connect();
   const finalPort = connect();
-  request(firstPort, 1, 'init');
-  request(finalPort, 2, 'init');
-  await response(firstPort, 1);
-  await response(finalPort, 2);
+  await initialize(firstPort, 1);
+  await initialize(finalPort, 2);
 
   request(firstPort, 3, 'close');
   expect((await response(firstPort, 3)).ok).toBe(true);

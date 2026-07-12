@@ -109,6 +109,16 @@ function expectCleaned(runtime: Runtime, endpoint: FakeEndpoint) {
   if (runtime === 'shared-worker') expect(endpoint.workerErrorListeners.size).toBe(0);
 }
 
+async function openSharedClientWithoutRpcResponses() {
+  const endpoint = installEndpoint('shared-worker', (request) =>
+    request.method === 'init'
+      ? { id: request.id, ok: true, result: { storage: 'memory', filename: ':memory:' } }
+      : undefined,
+  );
+  const client = await createTreecrdtClient(clientOptions('shared-worker'));
+  return { client, endpoint };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -157,12 +167,7 @@ for (const runtime of ['dedicated-worker', 'shared-worker'] as const) {
 }
 
 test('shared-worker terminal invalidation rejects pending calls and closes the client', async () => {
-  const endpoint = installEndpoint('shared-worker', (request) =>
-    request.method === 'init'
-      ? { id: request.id, ok: true, result: { storage: 'memory', filename: ':memory:' } }
-      : undefined,
-  );
-  const client = await createTreecrdtClient(clientOptions('shared-worker'));
+  const { client, endpoint } = await openSharedClientWithoutRpcResponses();
   const pending = client.meta.headLamport();
   await vi.waitFor(() => {
     expect(endpoint.requests.some((request) => request.method === 'headLamport')).toBe(true);
@@ -178,12 +183,7 @@ test('shared-worker terminal invalidation rejects pending calls and closes the c
 });
 
 test('shared-worker runtime errors reject pending calls and close the client', async () => {
-  const endpoint = installEndpoint('shared-worker', (request) =>
-    request.method === 'init'
-      ? { id: request.id, ok: true, result: { storage: 'memory', filename: ':memory:' } }
-      : undefined,
-  );
-  const client = await createTreecrdtClient(clientOptions('shared-worker'));
+  const { client, endpoint } = await openSharedClientWithoutRpcResponses();
   const pending = client.meta.headLamport();
   await vi.waitFor(() => {
     expect(endpoint.requests.some((request) => request.method === 'headLamport')).toBe(true);
@@ -196,12 +196,7 @@ test('shared-worker runtime errors reject pending calls and close the client', a
 });
 
 test('shared-worker message errors send a best-effort close before cleanup', async () => {
-  const endpoint = installEndpoint('shared-worker', (request) =>
-    request.method === 'init'
-      ? { id: request.id, ok: true, result: { storage: 'memory', filename: ':memory:' } }
-      : undefined,
-  );
-  const client = await createTreecrdtClient(clientOptions('shared-worker'));
+  const { client, endpoint } = await openSharedClientWithoutRpcResponses();
 
   endpoint.emitMessageError();
 
