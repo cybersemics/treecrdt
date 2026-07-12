@@ -14,6 +14,16 @@ where
 {
     pub fn validate_invariants(&self) -> Result<()> {
         let nodes = self.node_store();
+        if nodes.exists(NodeId::TRASH)? {
+            return Err(Error::InvalidOperation(
+                "TRASH must remain a virtual sentinel".into(),
+            ));
+        }
+        if nodes.parent(NodeId::ROOT)?.is_some() {
+            return Err(Error::InvalidOperation(
+                "ROOT must not have a parent".into(),
+            ));
+        }
         for pid in nodes.all_nodes()? {
             let pchildren = nodes.children(pid)?;
             let mut seen = HashSet::new();

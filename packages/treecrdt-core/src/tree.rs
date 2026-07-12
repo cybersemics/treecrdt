@@ -16,7 +16,7 @@ use crate::types::{
 };
 use crate::version_vector::VersionVector;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
@@ -62,6 +62,9 @@ fn rejected_structural_fallback_change(
     op: &Operation,
     source: Option<MaterializationSource>,
 ) -> Vec<MaterializationChange> {
+    if reserved_target_is_noop(op) {
+        return Vec::new();
+    }
     match &op.kind {
         // Insert payloads retain their independent LWW semantics even when the requested tree
         // attachment is rejected. Report the payload change without claiming the insert occurred.
@@ -77,6 +80,13 @@ fn rejected_structural_fallback_change(
         OperationKind::Insert { .. } | OperationKind::Move { .. } => Vec::new(),
         _ => direct_materialization_changes(None, op),
     }
+}
+
+/// TRASH and structural ROOT targets are virtual sentinels, not materialized nodes.
+fn reserved_target_is_noop(op: &Operation) -> bool {
+    let node = op.kind.node();
+    node == NodeId::TRASH
+        || (node == NodeId::ROOT && !matches!(&op.kind, OperationKind::Payload { .. }))
 }
 
 /// Generic Tree CRDT facade that wires clock and storage together.
@@ -183,6 +193,7 @@ where
                 }
                 Ok(Some(after_id))
             }
+            LocalPlacement::Last if parent == NodeId::TRASH => Ok(None),
             LocalPlacement::Last => {
                 let mut children = self.children(parent)?;
                 if let Some(excluded) = exclude {
@@ -557,7 +568,8 @@ where
                 node != NodeId::ROOT
                     && node != NodeId::TRASH
                     && self.nodes.parent(node)? == Some(*parent)
-                    && self.nodes.order_key(node)?.as_deref() == Some(order_key.as_slice())
+                    && (*parent == NodeId::TRASH
+                        || self.nodes.order_key(node)?.as_deref() == Some(order_key.as_slice()))
             }
             _ => false,
         };
@@ -883,10 +895,7 @@ where
                     order_key: self.nodes.order_key(node)?,
                 }
             } else {
-                NodeSnapshot {
-                    parent: None,
-                    order_key: None,
-                }
+                NodeSnapshot::default()
             };
             return Ok((
                 op,
@@ -997,6 +1006,9 @@ where
         payloads: &mut P,
         op: &Operation,
     ) -> Result<(NodeSnapshot, bool)> {
+        if reserved_target_is_noop(op) {
+            return Ok((NodeSnapshot::default(), false));
+        }
         let snapshot = Self::snapshot(nodes, op)?;
         let emit_direct_change = match &op.kind {
             OperationKind::Insert {
@@ -1017,7 +1029,8 @@ where
                 order_key,
             } => {
                 let changes_position = snapshot.parent != Some(*new_parent)
-                    || snapshot.order_key.as_deref() != Some(order_key.as_slice());
+                    || (*new_parent != NodeId::TRASH
+                        && snapshot.order_key.as_deref() != Some(order_key.as_slice()));
                 Self::apply_move(nodes, op, *node, *new_parent, order_key.clone())?
                     && changes_position
             }
@@ -1065,12 +1078,16 @@ where
         {
             return Ok(false);
         }
-        nodes.ensure_node(parent)?;
+        if parent != NodeId::TRASH {
+            nodes.ensure_node(parent)?;
+        }
         nodes.ensure_node(node)?;
         nodes.detach(node)?;
         nodes.attach(node, parent, order_key)?;
         Self::update_last_change(nodes, op, node)?;
-        Self::update_last_change(nodes, op, parent)?;
+        if parent != NodeId::TRASH {
+            Self::update_last_change(nodes, op, parent)?;
+        }
         Ok(true)
     }
 
@@ -1085,7 +1102,9 @@ where
             return Ok(false);
         }
         nodes.ensure_node(node)?;
-        nodes.ensure_node(new_parent)?;
+        if new_parent != NodeId::TRASH {
+            nodes.ensure_node(new_parent)?;
+        }
         if new_parent != NodeId::TRASH
             && (Self::introduces_cycle(nodes, node, new_parent)? || node == new_parent)
         {

@@ -382,7 +382,6 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
             return Ok(());
         }
         self.ensure_node(node)?;
-        self.ensure_node(parent)?;
 
         let node_bytes = sqlite_node_id_bytes(node);
         let parent_bytes = sqlite_node_id_bytes(parent);
@@ -414,6 +413,8 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
             }
             return Ok(());
         }
+
+        self.ensure_node(parent)?;
 
         unsafe {
             sqlite_clear_bindings(self.set_parent_order_key);

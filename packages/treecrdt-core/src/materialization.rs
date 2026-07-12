@@ -640,7 +640,8 @@ fn node_change_between(
                 }),
                 (Some(parent_before), Some(parent_after))
                     if parent_before != parent_after
-                        || previous.order_key != final_state.order_key =>
+                        || (parent_after != NodeId::TRASH
+                            && previous.order_key != final_state.order_key) =>
                 {
                     Some(MaterializationChange::Move {
                         node,
@@ -666,7 +667,10 @@ fn visible_changes_between(
 
     let mut changes = Vec::new();
     for node in all_nodes {
-        if node == NodeId::ROOT || node == NodeId::TRASH {
+        if node == NodeId::TRASH {
+            continue;
+        }
+        if node == NodeId::ROOT {
             changes.extend(payload_change_between(
                 node,
                 before.get(&node),

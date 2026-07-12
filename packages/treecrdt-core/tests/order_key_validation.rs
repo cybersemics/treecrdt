@@ -13,6 +13,8 @@ fn structural_operation_validation_is_state_independent() {
         Operation::insert(&replica, 4, 4, NodeId::TRASH, NodeId(4), vec![0, 1]),
         Operation::move_node(&replica, 5, 5, NodeId(5), NodeId::ROOT, vec![]),
         Operation::move_node(&replica, 6, 6, NodeId(6), NodeId::TRASH, vec![0, 1]),
+        Operation::insert(&replica, 11, 11, NodeId::ROOT, NodeId::TRASH, vec![]),
+        Operation::move_node(&replica, 12, 12, NodeId::ROOT, NodeId::ROOT, vec![]),
     ];
     for op in invalid {
         assert!(
@@ -87,4 +89,7 @@ fn local_move_to_trash_uses_the_empty_sentinel_key() {
         unreachable!();
     };
     assert!(order_key.is_empty());
+    assert_eq!(tree.parent(node).unwrap(), None);
+    assert!(tree.children(NodeId::ROOT).unwrap().is_empty());
+    assert!(!tree.is_known(NodeId::TRASH).unwrap());
 }
