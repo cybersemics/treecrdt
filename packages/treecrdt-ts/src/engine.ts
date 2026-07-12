@@ -161,6 +161,12 @@ export type TreecrdtEngineOps = {
   append: (op: Operation, opts?: WriteOptions) => Promise<void>;
   appendMany: (ops: Operation[], opts?: WriteOptions) => Promise<void>;
   all: () => Promise<Operation[]>;
+  /**
+   * Reads currently stored operations with `op.meta.lamport > lamport`.
+   *
+   * This is an exclusive threshold query, not a resumable arrival cursor. Operations with lower or
+   * equal Lamport timestamps can arrive after this call.
+   */
   since: (lamport: number, root?: string) => Promise<Operation[]>;
   children: (parent: string) => Promise<Operation[]>;
   get: (opRefs: Uint8Array[]) => Promise<Operation[]>;
@@ -191,6 +197,7 @@ export type TreecrdtEngineTree = {
 };
 
 export type TreecrdtEngineMeta = {
+  /** Current maximum stored Lamport timestamp; not a durable ingestion checkpoint. */
   headLamport: () => Promise<number>;
   replicaMaxCounter: (replica: ReplicaId) => Promise<number>;
 };

@@ -24,7 +24,10 @@ pub trait Storage {
     /// Persist a single operation. Returns `true` if the op was inserted, or `false` if it was
     /// already present (idempotent).
     fn apply(&mut self, op: Operation) -> Result<bool>;
+    /// Return currently stored operations whose Lamport timestamp is strictly greater than
+    /// `lamport`. This is an exclusive threshold query, not an arrival cursor.
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>>;
+    /// Return the current maximum stored Lamport timestamp, not an ingestion checkpoint.
     fn latest_lamport(&self) -> Lamport;
     /// Return the maximum counter observed for `replica`, or 0 if absent.
     ///
@@ -40,7 +43,8 @@ pub trait Storage {
             .unwrap_or(0))
     }
 
-    /// Iterate operations since `lamport` in canonical op-key order.
+    /// Iterate operations with Lamport timestamps strictly greater than `lamport` in canonical
+    /// op-key order.
     ///
     /// Default implementation loads into memory and sorts; storage backends can override this
     /// to stream rows in sorted order (e.g. via SQL `ORDER BY`).

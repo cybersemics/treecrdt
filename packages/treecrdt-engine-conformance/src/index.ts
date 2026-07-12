@@ -145,6 +145,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
     {
+      name: 'ops.since: exclusive Lamport threshold after late/equal arrivals',
+      run: scenarioOpsSinceExclusiveLamportThreshold,
+    },
+    {
       name: 'append/appendMany: rejects operation id equivocation atomically',
       run: scenarioRejectsOperationIdEquivocationAtomically,
     },
@@ -690,6 +694,50 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
   const refs = await engine.opRefs.all();
   assertEqual(refs.length, 2, 'opRefs.all length after duplicate append');
   assertEqual(await engine.meta.headLamport(), 7, 'meta.headLamport after duplicate append');
+}
+
+async function scenarioOpsSinceExclusiveLamportThreshold(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const root = nodeIdFromInt(0);
+  const makeOp = (label: string, node: number, lamport: number, position: number) =>
+    makeInsertOp({
+      replica: replicaFromLabel(label),
+      counter: 1,
+      lamport,
+      parent: root,
+      node: nodeIdFromInt(node),
+      orderKey: orderKeyFromPosition(position),
+    });
+
+  await engine.ops.append(makeOp('since-head', 501, 7, 0));
+  const observedHead = await engine.meta.headLamport();
+  assertEqual(observedHead, 7, 'observed head');
+
+  await engine.ops.appendMany([makeOp('since-late', 502, 3, 1), makeOp('since-equal', 503, 7, 2)]);
+  assertEqual(await engine.meta.headLamport(), 7, 'head remains the current maximum');
+
+  const lamportsSince = async (lamport: number) =>
+    (await engine.ops.since(lamport))
+      .map((op) => String(op.meta.lamport))
+      .sort((a, b) => Number(a) - Number(b));
+
+  assertArrayEqual(
+    await lamportsSince(observedHead),
+    [],
+    'ops.since(head) excludes late lower and equal Lamport arrivals',
+  );
+  assertArrayEqual(
+    await lamportsSince(3),
+    ['7', '7'],
+    'ops.since(3) uses a strict greater-than threshold',
+  );
+  assertArrayEqual(
+    await lamportsSince(2),
+    ['3', '7', '7'],
+    'ops.since(2) returns every currently stored operation above the threshold',
+  );
 }
 
 async function scenarioRejectsOperationIdEquivocationAtomically(

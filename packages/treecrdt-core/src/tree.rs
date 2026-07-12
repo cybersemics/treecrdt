@@ -740,6 +740,8 @@ where
         Ok(changed)
     }
 
+    /// Return currently stored operations whose Lamport timestamp is strictly greater than
+    /// `lamport`. This is an exclusive threshold query, not an arrival cursor.
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         self.storage.load_since(lamport)
     }
