@@ -117,15 +117,23 @@ function fromProtoFilter(filter: { kind: { case?: string; value?: any } }): Filt
 }
 
 function toProtoHello(hello: Hello) {
+  if (!hello.exchangeId) throw new Error('Hello.exchangeId missing');
   const capabilities = hello.capabilities.map((cap) => create(CapabilitySchema, cap));
   const filters = hello.filters.map((spec) =>
     create(FilterSpecSchema, { id: spec.id, filter: toProtoFilter(spec.filter) }),
   );
-  return create(HelloSchema, { capabilities, filters, maxLamport: hello.maxLamport });
+  return create(HelloSchema, {
+    exchangeId: hello.exchangeId,
+    capabilities,
+    filters,
+    maxLamport: hello.maxLamport,
+  });
 }
 
 function fromProtoHello(hello: any): Hello {
+  if (!hello.exchangeId) throw new Error('Hello.exchangeId missing');
   return {
+    exchangeId: hello.exchangeId,
     capabilities: (hello.capabilities ?? []).map((cap: any) => ({
       name: cap.name,
       value: cap.value,
@@ -139,6 +147,7 @@ function fromProtoHello(hello: any): Hello {
 }
 
 function toProtoHelloAck(ack: HelloAck) {
+  if (!ack.exchangeId) throw new Error('HelloAck.exchangeId missing');
   const capabilities = ack.capabilities.map((cap) => create(CapabilitySchema, cap));
 
   const rejectedFilters = ack.rejectedFilters.map((rej) =>
@@ -150,6 +159,7 @@ function toProtoHelloAck(ack: HelloAck) {
   );
 
   return create(HelloAckSchema, {
+    exchangeId: ack.exchangeId,
     capabilities,
     acceptedFilters: ack.acceptedFilters,
     rejectedFilters,
@@ -158,7 +168,9 @@ function toProtoHelloAck(ack: HelloAck) {
 }
 
 function fromProtoHelloAck(ack: any): HelloAck {
+  if (!ack.exchangeId) throw new Error('HelloAck.exchangeId missing');
   return {
+    exchangeId: ack.exchangeId,
     capabilities: (ack.capabilities ?? []).map((cap: any) => ({
       name: cap.name,
       value: cap.value,
@@ -612,6 +624,7 @@ export function encodeTreecrdtSyncV0(msg: SyncMessage<Operation>): Uint8Array {
         message: err.message,
         filterId: err.filterId ?? '',
         subscriptionId: err.subscriptionId ?? '',
+        exchangeId: err.exchangeId ?? '',
       });
       const proto = create(SyncMessageSchema, {
         ...base,
@@ -684,6 +697,7 @@ export function decodeTreecrdtSyncV0(bytes: Uint8Array): SyncMessage<Operation> 
             message: err.message,
             filterId: err.filterId.length > 0 ? err.filterId : undefined,
             subscriptionId: err.subscriptionId.length > 0 ? err.subscriptionId : undefined,
+            exchangeId: err.exchangeId.length > 0 ? err.exchangeId : undefined,
           },
         },
       };

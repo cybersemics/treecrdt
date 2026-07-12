@@ -4,5 +4,6 @@
 ---
 
 Fail closed on every outbound operation path: validate replacement capability snapshots before
-publishing them, serialize fresh Hello/Ack authorization barriers for direct and subscribed pushes,
-preflight `all` filters before RIBLT disclosure, and terminate subscriptions after authority loss.
+publishing them, correlate concurrent Hello/Ack authorization barriers by exchange id, preflight
+`all` filters before RIBLT disclosure, suppress stale subscription sends, and rescan after validated
+capability changes.

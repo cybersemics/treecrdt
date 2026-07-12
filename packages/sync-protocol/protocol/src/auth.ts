@@ -24,6 +24,7 @@ export type SyncAuthHelloContext = {
 export type SyncAuthAuthorizeFilterContext = {
   docId: string;
   purpose: 'hello' | 'subscribe';
+  /** Validated peer capabilities with protocol-only direct-send negotiation removed. */
   capabilities: Capability[];
 };
 
@@ -31,6 +32,7 @@ export type SyncAuthFilterOutgoingOpsContext = {
   docId: string;
   purpose: 'hello' | 'subscribe' | 'reconcile';
   filter: Filter;
+  /** Validated peer capabilities with protocol-only direct-send negotiation removed. */
   capabilities: Capability[];
 };
 
