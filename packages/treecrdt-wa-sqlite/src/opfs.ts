@@ -124,6 +124,14 @@ export type OpfsVfsOptions = {
   kind?: OpfsVfsKind;
 };
 
+const OPFS_MAX_PATHNAME = 512;
+
+function withOpfsPathCapacity(vfs: any): any {
+  // SQLite appends sidecar suffixes such as "-journal" after checking this capacity.
+  vfs.mxPathname = Math.max(vfs.mxPathname ?? 0, OPFS_MAX_PATHNAME);
+  return vfs;
+}
+
 /**
  * Create an OPFS VFS bound to the provided wa-sqlite Module.
  * Uses local copies of wa-sqlite's example VFS implementations to avoid reaching into vendor paths.
@@ -133,12 +141,14 @@ export async function createOpfsVfs(module: any, opts: OpfsVfsOptions = {}): Pro
   if (opts.kind === 'any-context') {
     // @ts-ignore vendored module lacks type declarations
     const { OPFSAnyContextVFS } = await import('./vendor/OPFSAnyContextVFS.js');
-    return OPFSAnyContextVFS.create(name, module, { lockPolicy: 'exclusive' });
+    return withOpfsPathCapacity(
+      await OPFSAnyContextVFS.create(name, module, { lockPolicy: 'exclusive' }),
+    );
   }
 
   // @ts-ignore vendored module lacks type declarations
   const { OPFSCoopSyncVFS } = await import('./vendor/OPFSCoopSyncVFS.js');
-  return OPFSCoopSyncVFS.create(name, module);
+  return withOpfsPathCapacity(await OPFSCoopSyncVFS.create(name, module));
 }
 
 export type OpenOptions = {
