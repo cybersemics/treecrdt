@@ -27,6 +27,25 @@ pub(crate) fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
     Error::Storage(format!("{e:?}"))
 }
 
+fn load_replica_max_counter(c: &mut Client, doc_id: &str, replica: &[u8]) -> Result<u64> {
+    let row = c
+        .query_opt(
+            "SELECT max_counter FROM treecrdt_replica_meta \
+             WHERE doc_id = $1 AND replica = $2 LIMIT 1",
+            &[&doc_id, &replica],
+        )
+        .map_err(storage_debug)?;
+    Ok(row.map(|row| row.get::<_, i64>(0).max(0) as u64).unwrap_or(0))
+}
+
+pub(crate) fn replica_max_counter_in_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &[u8],
+) -> Result<u64> {
+    load_replica_max_counter(&mut client.borrow_mut(), doc_id, replica)
+}
+
 pub(crate) fn node_to_bytes(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
 }
@@ -1012,14 +1031,7 @@ impl Storage for PgOpStorage {
 
     fn latest_counter(&self, replica: &ReplicaId) -> Result<u64> {
         let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "SELECT COALESCE(MAX(counter), 0) \
-             FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
-        )?;
-        let rows = c.query(&stmt, &[&self.ctx.doc_id, &replica.0]).map_err(storage_debug)?;
-        let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
-        Ok(row.get::<_, i64>(0).max(0) as u64)
+        load_replica_max_counter(&mut c, &self.ctx.doc_id, replica.as_bytes())
     }
 
     fn scan_since(
