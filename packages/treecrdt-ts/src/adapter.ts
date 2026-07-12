@@ -81,7 +81,9 @@ export interface TreecrdtAdapter {
    */
   treePayload(node: Uint8Array): Promise<Uint8Array | null>;
   /**
-   * Fetch the maximum lamport seen in the op log.
+   * Fetch the current maximum Lamport timestamp in the op log.
+   *
+   * Lower or equal timestamps can arrive later, so this is not a durable ingestion checkpoint.
    */
   headLamport(): Promise<number> | number;
   /**
@@ -105,6 +107,11 @@ export interface TreecrdtAdapter {
     serializeNodeId: SerializeNodeId,
     serializeReplica: SerializeReplica,
   ): Promise<MaterializationOutcome> | MaterializationOutcome;
+  /**
+   * Fetch currently stored operations with `op.meta.lamport > lamport`.
+   *
+   * This is an exclusive threshold query, not a resumable arrival cursor.
+   */
   opsSince(lamport: number, root?: string): Promise<unknown[]>;
   close?(): Promise<void> | void;
 }

@@ -99,7 +99,9 @@ flowchart TD
 ## Trait contracts (Rust)
 - `Clock`: lamport/HLC pluggable (`LamportClock` provided).
 - `AccessControl`: guards apply/read.
-- `Storage`: append operations, load since lamport, latest_lamport.
+- `Storage`: append operations, query the current log with the exclusive threshold
+  `op.lamport > lamport`, and report the current maximum Lamport value. See
+  [Operation queries](OPERATION_QUERIES.md).
 - `IndexProvider`: optional acceleration for subtree queries and existence checks.
 - These traits are the seam for SQLite/wa-sqlite implementations; extension just implements them over tables/indexes.
 
@@ -112,6 +114,8 @@ flowchart TD
 - **Protocol & runtime** (`@treecrdt/sync-protocol`, `packages/sync-protocol/protocol`): transport-agnostic peer, codecs, in-memory test helpers, and generated Protobuf types.
 - **Client integration** (`@treecrdt/sync`, `packages/treecrdt-sync`): optional wiring for spec `WebSocket` clients (browser global, or `webSocketCtor` e.g. from `undici` in Node; see `packages/treecrdt-sync` README)—uses `@treecrdt/discovery` to resolve docs to websocket URLs, `@treecrdt/sync-protocol` for the wire session, and `@treecrdt/sync-sqlite` for a `SyncBackend` backed by the SQLite material layer. App code that wants full control can depend on the protocol and discovery packages only.
 - Transport-agnostic: push/pull batches with causal metadata + optional subtree filters.
-- Progress hooks for UI, resumable checkpoints via lamport/head.
+- Progress hooks for UI; operation-reference set reconciliation provides convergence using RIBLT
+  or the tiny-scope direct-send fast path. A Lamport head observes the logical clock but is not a
+  resumable arrival checkpoint.
 - Access control enforced at responder using subtree filters and ACL callbacks.
 - Draft protocol: [`sync/v0.md`](sync/v0.md)

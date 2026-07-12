@@ -84,12 +84,15 @@ export interface AccessControl {
 
 export interface StorageAdapter {
   apply(op: Operation): Promise<void> | void;
+  /** Exclusive threshold read (`op.meta.lamport > lamport`), not an arrival cursor. */
   loadSince(lamport: Lamport): Promise<Operation[]> | Operation[];
+  /** Current maximum stored Lamport timestamp, not a durable ingestion checkpoint. */
   latestLamport(): Promise<Lamport> | Lamport;
 }
 
 export interface SyncProtocol {
   push(ops: Operation[]): Promise<void> | void;
+  /** Exclusive Lamport-threshold read; callers must not use it as a resumable arrival cursor. */
   pull(since: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
 }
 

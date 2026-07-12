@@ -21,6 +21,9 @@ pnpm test
 
 See the package READMEs for package-specific setup and API details.
 
+For the exact `ops.since(lamport)` and `headLamport()` contracts, see
+[Operation queries](docs/OPERATION_QUERIES.md).
+
 ## Playground
 
 - Live demo: https://cybersemics.github.io/treecrdt/
