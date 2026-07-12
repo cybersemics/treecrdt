@@ -12,9 +12,9 @@ export interface DuplexTransport<M> {
   /**
    * Subscribe to the transport becoming permanently unusable.
    *
-   * This is optional so existing application transports remain source-compatible.
-   * Implementations that expose it must notify each handler at most once. A missing
-   * error denotes an ordinary close rather than a protocol or I/O failure.
+   * Message-only transports may omit this capability. Implementations that expose
+   * it must notify each handler at most once. A missing error denotes an ordinary
+   * close rather than a protocol or I/O failure.
    */
   onTerminal?(handler: (error?: unknown) => void): Unsubscribe;
 }

@@ -73,8 +73,7 @@ function ignoreErrors(action?: () => void): void {
   }
 }
 
-type ResponderSession<Op> = {
-  transport: DuplexTransport<SyncMessage<Op>>;
+type ResponderSession = {
   filter: Filter;
   round: number;
   decoder: RibltDecoder16;
@@ -242,6 +241,48 @@ type PendingPushOp<Op> = {
   op: Op;
 };
 
+type SyncTransport<Op> = DuplexTransport<SyncMessage<Op>>;
+// Responder ids are peer-chosen and only unique within one transport session.
+type TransportOwnedMap<Op, Value> = Map<string, Map<SyncTransport<Op>, Value>>;
+
+function getTransportOwned<Op, Value>(
+  state: TransportOwnedMap<Op, Value>,
+  transport: SyncTransport<Op>,
+  id: string,
+): Value | undefined {
+  return state.get(id)?.get(transport);
+}
+
+function setTransportOwned<Op, Value>(
+  state: TransportOwnedMap<Op, Value>,
+  transport: SyncTransport<Op>,
+  id: string,
+  value: Value,
+): void {
+  const byTransport = state.get(id) ?? new Map<SyncTransport<Op>, Value>();
+  byTransport.set(transport, value);
+  state.set(id, byTransport);
+}
+
+function deleteTransportOwned<Op, Value>(
+  state: TransportOwnedMap<Op, Value>,
+  transport: SyncTransport<Op>,
+  id: string,
+): boolean {
+  const byTransport = state.get(id);
+  if (!byTransport) return false;
+  const deleted = byTransport.delete(transport);
+  if (byTransport.size === 0) state.delete(id);
+  return deleted;
+}
+
+function dropTransportOwned<Op, Value>(
+  state: TransportOwnedMap<Op, Value>,
+  transport: SyncTransport<Op>,
+): void {
+  for (const id of state.keys()) deleteTransportOwned(state, transport, id);
+}
+
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
   return capabilities.some(isAnyAuthCapability);
 }
@@ -271,15 +312,13 @@ export class SyncPeer<Op> {
     DuplexTransport<SyncMessage<Op>>,
     string
   >();
-  private readonly responderSessions = new Map<string, ResponderSession<Op>>();
+  private readonly responderSessions: TransportOwnedMap<Op, ResponderSession> = new Map();
   private readonly initiatorSessions = new Map<string, InitiatorSession<Op>>();
-  private readonly responderSubscriptions = new Map<string, ResponderSubscription<Op>>();
+  private readonly responderSubscriptions: TransportOwnedMap<Op, ResponderSubscription<Op>> =
+    new Map();
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription<Op>>();
-  private readonly responderAwaitingUploadAcks = new Map<
-    string,
-    DuplexTransport<SyncMessage<Op>>
-  >();
-  private readonly opsBatchQueues = new Map<string, Promise<void>>();
+  private readonly responderAwaitingUploadAcks: TransportOwnedMap<Op, true> = new Map();
+  private readonly opsBatchQueues: TransportOwnedMap<Op, Promise<void>> = new Map();
   private readonly pendingPushOpsByRefHex = new Map<string, PendingPushOp<Op>>();
   private pushNeedsFullScan = false;
   private pushScheduled = false;
@@ -391,13 +430,15 @@ export class SyncPeer<Op> {
         const forceFullScan = this.pushNeedsFullScan;
         this.pushNeedsFullScan = false;
         this.pendingPushOpsByRefHex.clear();
-        for (const sub of this.responderSubscriptions.values()) {
-          try {
-            await this.pushSubscription(sub, { deltaOps, forceFullScan });
-          } catch {
-            this.responderSubscriptions.delete(sub.subscriptionId);
+        for (const subscriptions of this.responderSubscriptions.values()) {
+          for (const sub of subscriptions.values()) {
+            try {
+              await this.pushSubscription(sub, { deltaOps, forceFullScan });
+            } catch {
+              deleteTransportOwned(this.responderSubscriptions, sub.transport, sub.subscriptionId);
+            }
+            await yieldToMacrotask();
           }
-          await yieldToMacrotask();
         }
       }
     } finally {
@@ -494,7 +535,7 @@ export class SyncPeer<Op> {
     try {
       opRefs = await this.backend.listOpRefs(sub.filter);
     } catch (err) {
-      this.responderSubscriptions.delete(sub.subscriptionId);
+      deleteTransportOwned(this.responderSubscriptions, sub.transport, sub.subscriptionId);
       return;
     }
 
@@ -880,11 +921,11 @@ export class SyncPeer<Op> {
   ): Promise<void> {
     const maxOpsPerBatch = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
 
+    const initiatorSession = this.initiatorSessions.get(filterId);
     const filter =
       opts.filter ??
-      this.responderSessions.get(filterId)?.filter ??
-      this.initiatorSessions.get(filterId)?.filter ??
-      undefined;
+      getTransportOwned(this.responderSessions, transport, filterId)?.filter ??
+      (initiatorSession?.transport === transport ? initiatorSession.filter : undefined);
     const peerCaps = this.transportPeerCapabilities.get(transport) ?? [];
 
     if (opRefs.length === 0) {
@@ -1078,7 +1119,7 @@ export class SyncPeer<Op> {
 
     if (msg.payload.case === 'error') {
       try {
-        await this.onError(msg.payload.value);
+        await this.onError(transport, msg.payload.value);
       } catch {
         // ignore error while handling error
       }
@@ -1097,7 +1138,7 @@ export class SyncPeer<Op> {
           await this.onRibltCodewords(transport, msg.payload.value);
           return;
         case 'ribltStatus':
-          await this.onRibltStatus(msg.payload.value);
+          await this.onRibltStatus(transport, msg.payload.value);
           return;
         case 'opsBatch':
           await this.enqueueOpsBatch(transport, msg.payload.value);
@@ -1106,10 +1147,10 @@ export class SyncPeer<Op> {
           await this.onSubscribe(transport, msg.payload.value);
           return;
         case 'subscribeAck':
-          await this.onSubscribeAck(msg.payload.value);
+          await this.onSubscribeAck(transport, msg.payload.value);
           return;
         case 'unsubscribe':
-          await this.onUnsubscribe(msg.payload.value);
+          await this.onUnsubscribe(transport, msg.payload.value);
           return;
         default: {
           const _exhaustive: never = msg.payload;
@@ -1124,7 +1165,10 @@ export class SyncPeer<Op> {
         case 'ribltStatus':
         case 'opsBatch':
           filterId = msg.payload.value.filterId;
-          if (msg.payload.case === 'opsBatch' && this.initiatorSubscriptions.has(filterId)) {
+          if (
+            msg.payload.case === 'opsBatch' &&
+            this.initiatorSubscriptions.get(filterId)?.transport === transport
+          ) {
             subscriptionId = filterId;
           }
           break;
@@ -1136,7 +1180,7 @@ export class SyncPeer<Op> {
       }
 
       try {
-        await this.onError({
+        await this.onError(transport, {
           code: ErrorCode.ERROR_CODE_UNSPECIFIED,
           message: String(err?.message ?? err ?? 'error'),
           ...(filterId ? { filterId } : {}),
@@ -1324,7 +1368,7 @@ export class SyncPeer<Op> {
           name: DIRECT_SEND_EMPTY_RECEIVER_FILTER_CAPABILITY,
           value: id,
         });
-        this.responderAwaitingUploadAcks.set(id, transport);
+        setTransportOwned(this.responderAwaitingUploadAcks, transport, id, true);
         continue;
       }
 
@@ -1334,8 +1378,7 @@ export class SyncPeer<Op> {
         filterId: id,
         opRefs: localOpRefs.length,
       });
-      this.responderSessions.set(id, {
-        transport,
+      setTransportOwned(this.responderSessions, transport, id, {
         filter,
         round: 0,
         decoder,
@@ -1387,11 +1430,11 @@ export class SyncPeer<Op> {
 
     for (const id of ack.acceptedFilters) {
       const session = this.initiatorSessions.get(id);
-      if (session) session.ack.resolve(ack);
+      if (session?.transport === transport) session.ack.resolve(ack);
     }
     for (const rej of ack.rejectedFilters) {
       const session = this.initiatorSessions.get(rej.id);
-      if (session) {
+      if (session?.transport === transport) {
         const reason = ErrorCode[rej.reason] ?? String(rej.reason);
         const detail = rej.message ? `: ${rej.message}` : '';
         session.ack.reject(new Error(`${reason}${detail}`));
@@ -1403,7 +1446,7 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     msg: RibltCodewords,
   ): Promise<void> {
-    const session = this.responderSessions.get(msg.filterId);
+    const session = getTransportOwned(this.responderSessions, transport, msg.filterId);
     if (!session) return;
 
     if (msg.round !== session.round) return;
@@ -1420,7 +1463,7 @@ export class SyncPeer<Op> {
           },
         },
       });
-      this.responderSessions.delete(msg.filterId);
+      deleteTransportOwned(this.responderSessions, transport, msg.filterId);
       return;
     }
 
@@ -1450,7 +1493,7 @@ export class SyncPeer<Op> {
           },
         },
       });
-      this.responderSessions.delete(msg.filterId);
+      deleteTransportOwned(this.responderSessions, transport, msg.filterId);
       return;
     }
 
@@ -1471,7 +1514,7 @@ export class SyncPeer<Op> {
             },
           },
         });
-        this.responderSessions.delete(msg.filterId);
+        deleteTransportOwned(this.responderSessions, transport, msg.filterId);
       } else {
         await transport.send({
           v: 0,
@@ -1516,11 +1559,11 @@ export class SyncPeer<Op> {
     if (senderMissing.length > 0) {
       await this.sendOpsBatches(transport, msg.filterId, senderMissing);
       if (!session.awaitingIncomingDone) {
-        this.responderSessions.delete(msg.filterId);
+        deleteTransportOwned(this.responderSessions, transport, msg.filterId);
       }
     } else if (!session.awaitingIncomingDone) {
       await this.sendDoneOpsBatch(transport, msg.filterId);
-      this.responderSessions.delete(msg.filterId);
+      deleteTransportOwned(this.responderSessions, transport, msg.filterId);
     }
   }
 
@@ -1579,7 +1622,7 @@ export class SyncPeer<Op> {
       const sentOpRefs = new Set<string>();
       for (const r of opRefs) sentOpRefs.add(bytesToHex(r));
 
-      this.responderSubscriptions.set(msg.subscriptionId, {
+      setTransportOwned(this.responderSubscriptions, transport, msg.subscriptionId, {
         subscriptionId: msg.subscriptionId,
         filter: msg.filter,
         sentOpRefs,
@@ -1615,50 +1658,59 @@ export class SyncPeer<Op> {
     }
   }
 
-  private async onSubscribeAck(ack: SubscribeAck): Promise<void> {
+  private async onSubscribeAck(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    ack: SubscribeAck,
+  ): Promise<void> {
     const sub = this.initiatorSubscriptions.get(ack.subscriptionId);
-    if (!sub) return;
+    if (!sub || sub.transport !== transport) return;
     sub.ack.resolve(ack);
   }
 
-  private async onUnsubscribe(msg: Unsubscribe): Promise<void> {
-    this.responderSubscriptions.delete(msg.subscriptionId);
+  private async onUnsubscribe(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    msg: Unsubscribe,
+  ): Promise<void> {
+    deleteTransportOwned(this.responderSubscriptions, transport, msg.subscriptionId);
   }
 
-  private async onError(err: {
-    code: ErrorCode;
-    message: string;
-    filterId?: string;
-    subscriptionId?: string;
-  }): Promise<void> {
+  private async onError(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    err: {
+      code: ErrorCode;
+      message: string;
+      filterId?: string;
+      subscriptionId?: string;
+    },
+  ): Promise<void> {
+    const code = ErrorCode[err.code] ?? String(err.code);
+    const e = new Error(`${code}: ${err.message}`);
+
     if (err.subscriptionId) {
       const sub = this.initiatorSubscriptions.get(err.subscriptionId);
-      if (sub) {
-        const code = ErrorCode[err.code] ?? String(err.code);
-        const e = new Error(`${code}: ${err.message}`);
+      if (sub?.transport === transport) {
         sub.ack.reject(e);
         sub.failed.reject(e);
         this.initiatorSubscriptions.delete(err.subscriptionId);
       }
     }
 
-    if (!err.filterId) {
-      if (this.initiatorSessions.size === 0) return;
-      const code = ErrorCode[err.code] ?? String(err.code);
-      const e = new Error(`${code}: ${err.message}`);
-      for (const session of this.initiatorSessions.values()) {
+    if (err.filterId) {
+      const session = this.initiatorSessions.get(err.filterId);
+      if (session?.transport === transport) {
         rejectInitiatorSession(session, e);
+        this.initiatorSessions.delete(err.filterId);
       }
-      this.initiatorSessions.clear();
       return;
     }
-    const session = this.initiatorSessions.get(err.filterId);
-    if (!session) return;
 
-    const code = ErrorCode[err.code] ?? String(err.code);
-    const e = new Error(`${code}: ${err.message}`);
-    rejectInitiatorSession(session, e);
-    this.initiatorSessions.delete(err.filterId);
+    if (err.subscriptionId) return;
+
+    for (const [filterId, session] of this.initiatorSessions) {
+      if (session.transport !== transport) continue;
+      rejectInitiatorSession(session, e);
+      this.initiatorSessions.delete(filterId);
+    }
   }
 
   private failPendingSessionsForTransport(
@@ -1688,20 +1740,18 @@ export class SyncPeer<Op> {
   }
 
   private dropResponderStateForTransport(transport: DuplexTransport<SyncMessage<Op>>): void {
-    for (const [filterId, session] of this.responderSessions) {
-      if (session.transport === transport) this.responderSessions.delete(filterId);
-    }
-    for (const [subscriptionId, sub] of this.responderSubscriptions) {
-      if (sub.transport === transport) this.responderSubscriptions.delete(subscriptionId);
-    }
-    for (const [filterId, pendingTransport] of this.responderAwaitingUploadAcks) {
-      if (pendingTransport === transport) this.responderAwaitingUploadAcks.delete(filterId);
-    }
+    dropTransportOwned(this.responderSessions, transport);
+    dropTransportOwned(this.responderSubscriptions, transport);
+    dropTransportOwned(this.responderAwaitingUploadAcks, transport);
+    dropTransportOwned(this.opsBatchQueues, transport);
   }
 
-  private async onRibltStatus(status: RibltStatus): Promise<void> {
+  private async onRibltStatus(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    status: RibltStatus,
+  ): Promise<void> {
     const session = this.initiatorSessions.get(status.filterId);
-    if (!session) return;
+    if (!session || session.transport !== transport) return;
     if (status.round !== session.round) return;
     if (session.done) return;
     if (status.payload.case === 'more') {
@@ -1726,20 +1776,21 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     batch: OpsBatch<Op>,
   ): Promise<void> {
-    // Apply batches sequentially per filter so a later done marker cannot overtake earlier ops.
-    // Upload completion only becomes observable after the full queue for that filter has finished.
-    const previous = this.opsBatchQueues.get(batch.filterId) ?? Promise.resolve();
+    // Apply batches sequentially per transport/filter so a later done marker cannot overtake
+    // earlier ops without making an unrelated transport wait on the same peer-chosen id.
+    const previous =
+      getTransportOwned(this.opsBatchQueues, transport, batch.filterId) ?? Promise.resolve();
     const current = previous
       .catch(() => {
         // A prior batch failure should not permanently poison the queue.
       })
       .then(() => this.onOpsBatch(transport, batch));
-    this.opsBatchQueues.set(batch.filterId, current);
+    setTransportOwned(this.opsBatchQueues, transport, batch.filterId, current);
     try {
       await current;
     } finally {
-      if (this.opsBatchQueues.get(batch.filterId) === current) {
-        this.opsBatchQueues.delete(batch.filterId);
+      if (getTransportOwned(this.opsBatchQueues, transport, batch.filterId) === current) {
+        deleteTransportOwned(this.opsBatchQueues, transport, batch.filterId);
       }
     }
   }
@@ -1751,9 +1802,10 @@ export class SyncPeer<Op> {
     // opsBatch is shared by both flows:
     // - reconcile / direct-send during syncOnce
     // - incremental pushes for live subscriptions
-    const purpose: SyncOpPurpose = this.initiatorSubscriptions.has(batch.filterId)
-      ? 'subscribe'
-      : 'reconcile';
+    const purpose: SyncOpPurpose =
+      this.initiatorSubscriptions.get(batch.filterId)?.transport === transport
+        ? 'subscribe'
+        : 'reconcile';
     const auth = batch.auth;
     if (auth && auth.length !== batch.ops.length) {
       throw new Error(
@@ -1823,11 +1875,15 @@ export class SyncPeer<Op> {
     if (allowedOps.length > 0) void this.notifyLocalUpdate(allowedOps);
     await this.reprocessPendingOps();
 
-    const responderSession = this.responderSessions.get(batch.filterId);
+    const responderSession = getTransportOwned(this.responderSessions, transport, batch.filterId);
     // The empty done ack is only a completion signal. Send it after applyOps/reprocessPending
     // finishes so "done" means every prior batch for this filter has been durably handled.
-    if (!responderSession && this.responderAwaitingUploadAcks.has(batch.filterId) && batch.done) {
-      this.responderAwaitingUploadAcks.delete(batch.filterId);
+    if (
+      !responderSession &&
+      getTransportOwned(this.responderAwaitingUploadAcks, transport, batch.filterId) &&
+      batch.done
+    ) {
+      deleteTransportOwned(this.responderAwaitingUploadAcks, transport, batch.filterId);
       await this.sendDoneOpsBatch(transport, batch.filterId);
     }
     if (responderSession && batch.done) {
@@ -1835,11 +1891,11 @@ export class SyncPeer<Op> {
         responderSession.awaitingIncomingDone = false;
         await this.sendDoneOpsBatch(transport, batch.filterId);
       }
-      this.responderSessions.delete(batch.filterId);
+      deleteTransportOwned(this.responderSessions, transport, batch.filterId);
     }
 
     const session = this.initiatorSessions.get(batch.filterId);
-    if (session && batch.done) {
+    if (session?.transport === transport && batch.done) {
       if (!session.awaitingUploadAck || batch.ops.length === 0) {
         session.receivedOps.resolve();
       }

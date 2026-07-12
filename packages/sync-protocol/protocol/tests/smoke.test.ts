@@ -11,6 +11,7 @@ import { SyncPeer } from '../dist/sync.js';
 import { createInMemoryConnectedPeers } from '../dist/in-memory.js';
 import { wrapDuplexTransportWithCodec } from '../dist/transport/index.js';
 import type { DuplexTransport } from '../dist/transport/index.js';
+import { ErrorCode } from '../dist/types.js';
 import type { Filter, OpRef, SyncBackend, SyncMessage } from '../dist/types.js';
 
 function opRefFor(docId: string, replica: string, counter: number): OpRef {
@@ -140,6 +141,7 @@ function createTerminalTransport<M>(): {
   transport: DuplexTransport<M>;
   sent: M[];
   messageHandlerCount: () => number;
+  receive: (message: M) => void;
   terminate: (error?: unknown) => void;
 } {
   const messageHandlers = new Set<(msg: M) => void>();
@@ -161,11 +163,64 @@ function createTerminalTransport<M>(): {
         return () => terminalHandlers.delete(handler);
       },
     },
+    receive(message) {
+      for (const handler of messageHandlers) handler(message);
+    },
     terminate(error) {
       for (const handler of terminalHandlers) handler(error);
       terminalHandlers.clear();
     },
   };
+}
+
+type OperationSyncPayload = SyncMessage<Operation>['payload'];
+type OperationSyncCase = OperationSyncPayload['case'];
+type OperationSyncPayloadFor<Case extends OperationSyncCase> = Extract<
+  OperationSyncPayload,
+  { case: Case }
+>;
+type OperationTransportControl = ReturnType<typeof createTerminalTransport<SyncMessage<Operation>>>;
+
+function receiveSync<Case extends OperationSyncCase>(
+  control: OperationTransportControl,
+  docId: string,
+  payload: OperationSyncPayloadFor<Case>,
+): void {
+  control.receive({ v: 0, docId, payload });
+}
+
+function sentValues<Case extends OperationSyncCase>(
+  control: OperationTransportControl,
+  payloadCase: Case,
+): Array<OperationSyncPayloadFor<Case>['value']> {
+  return control.sent.flatMap((message) =>
+    message.payload.case === payloadCase
+      ? [message.payload.value as OperationSyncPayloadFor<Case>['value']]
+      : [],
+  );
+}
+
+function receiveError(
+  control: OperationTransportControl,
+  docId: string,
+  message: string,
+  ids: { filterId?: string; subscriptionId?: string } = {},
+): void {
+  receiveSync(control, docId, {
+    case: 'error',
+    value: { code: ErrorCode.ERROR_CODE_UNSPECIFIED, message, ...ids },
+  });
+}
+
+async function expectPending(promise: Promise<unknown>): Promise<void> {
+  const state = await Promise.race([
+    promise.then(
+      () => 'settled',
+      () => 'settled',
+    ),
+    tick().then(() => 'pending'),
+  ]);
+  expect(state).toBe('pending');
 }
 
 function createPeers(a: SyncBackend<Operation>, b: SyncBackend<Operation>) {
@@ -366,6 +421,24 @@ class CountingListBackend extends MemoryBackend {
   }
 }
 
+class BlockingFirstApplyBackend extends MemoryBackend {
+  applyOpsCalls = 0;
+  private releaseFirstApply!: () => void;
+  private readonly firstApplyGate = new Promise<void>((resolve) => {
+    this.releaseFirstApply = resolve;
+  });
+
+  release(): void {
+    this.releaseFirstApply();
+  }
+
+  override async applyOps(ops: Operation[]): Promise<void> {
+    this.applyOpsCalls += 1;
+    if (this.applyOpsCalls === 1) await this.firstApplyGate;
+    await super.applyOps(ops);
+  }
+}
+
 test('transport close rejects only its own syncOnce handshake', async () => {
   const backend = new MemoryBackend('doc-transport-scoped-close');
   const transportA = createTerminalTransport<SyncMessage<Operation>>();
@@ -391,6 +464,366 @@ test('transport close rejects only its own syncOnce handshake', async () => {
   await rejectedB;
   detachA();
   detachB();
+});
+
+test('riblt status only advances the session owned by its transport', async () => {
+  const docId = 'doc-transport-scoped-riblt-status';
+  const backend = new MemoryBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+  const sync = peer.syncOnce(transportA.transport, { all: {} });
+  void sync.catch(() => {});
+
+  try {
+    await waitUntil(() => sentValues(transportA, 'hello').length === 1);
+    const filterId = sentValues(transportA, 'hello')[0]?.filters[0]?.id;
+    if (!filterId) throw new Error('expected Hello filter id');
+
+    receiveSync(transportB, docId, {
+      case: 'helloAck',
+      value: {
+        capabilities: [],
+        acceptedFilters: [],
+        rejectedFilters: [
+          {
+            id: filterId,
+            reason: ErrorCode.ERROR_CODE_UNSPECIFIED,
+            message: 'wrong transport rejection',
+          },
+        ],
+        maxLamport: 0n,
+      },
+    });
+    await tick();
+    expect((peer as any).initiatorSessions.has(filterId)).toBe(true);
+
+    receiveSync(transportB, docId, {
+      case: 'helloAck',
+      value: {
+        capabilities: [],
+        acceptedFilters: [filterId],
+        rejectedFilters: [],
+        maxLamport: 0n,
+      },
+    });
+    await tick();
+    expect(transportA.sent.some((msg) => msg.payload.case === 'ribltCodewords')).toBe(false);
+
+    receiveSync(transportA, docId, {
+      case: 'helloAck',
+      value: {
+        capabilities: [],
+        acceptedFilters: [filterId],
+        rejectedFilters: [],
+        maxLamport: 0n,
+      },
+    });
+    await waitUntil(() => transportA.sent.some((msg) => msg.payload.case === 'ribltCodewords'));
+
+    const decodedStatus: OperationSyncPayloadFor<'ribltStatus'> = {
+      case: 'ribltStatus',
+      value: {
+        filterId,
+        round: 0,
+        payload: {
+          case: 'decoded',
+          value: { senderMissing: [], receiverMissing: [], codewordsReceived: 0n },
+        },
+      },
+    };
+    receiveSync(transportB, docId, decodedStatus);
+    await tick();
+    expect(transportA.sent.some((msg) => msg.payload.case === 'opsBatch')).toBe(false);
+
+    receiveSync(transportA, docId, decodedStatus);
+    await waitUntil(() => transportA.sent.some((msg) => msg.payload.case === 'opsBatch'));
+    const doneBatch: OperationSyncPayloadFor<'opsBatch'> = {
+      case: 'opsBatch',
+      value: { filterId, ops: [], done: true },
+    };
+    receiveSync(transportB, docId, doneBatch);
+    await expectPending(sync);
+
+    receiveSync(transportA, docId, doneBatch);
+    await sync;
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('subscription acknowledgements and errors are scoped to their transport', async () => {
+  const docId = 'doc-transport-scoped-subscription';
+  const backend = new MemoryBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const verifiedPurposes: string[] = [];
+  const peer = new SyncPeer(backend, {
+    requireAuthForFilters: false,
+    auth: {
+      verifyOps: async (_ops, _auth, ctx) => {
+        verifiedPurposes.push(ctx.purpose);
+      },
+    },
+  });
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+  const sub = peer.subscribe(
+    transportA.transport,
+    { all: {} },
+    { immediate: false, intervalMs: 0 },
+  );
+  void sub.done.catch(() => {});
+
+  try {
+    await waitUntil(() => sentValues(transportA, 'subscribe').length === 1);
+    const subscriptionId = sentValues(transportA, 'subscribe')[0]!.subscriptionId;
+
+    receiveSync(transportB, docId, {
+      case: 'subscribeAck',
+      value: { subscriptionId, currentLamport: 0n },
+    });
+    receiveError(transportB, docId, 'wrong transport subscription error', { subscriptionId });
+    await expectPending(sub.ready);
+
+    receiveSync(transportA, docId, {
+      case: 'subscribeAck',
+      value: { subscriptionId, currentLamport: 0n },
+    });
+    await sub.ready;
+    const unrelatedSync = peer.syncOnce(transportA.transport, { all: {} });
+    void unrelatedSync.catch(() => {});
+    await waitUntil(() => sentValues(transportA, 'hello').length === 1);
+
+    receiveSync(transportB, docId, {
+      case: 'opsBatch',
+      value: { filterId: subscriptionId, ops: [], done: true },
+    });
+    receiveSync(transportA, docId, {
+      case: 'opsBatch',
+      value: { filterId: subscriptionId, ops: [], done: true },
+    });
+    await waitUntil(() => verifiedPurposes.length === 2);
+    expect(verifiedPurposes).toEqual(['reconcile', 'subscribe']);
+
+    receiveError(transportB, docId, 'wrong transport live error', { subscriptionId });
+    await expectPending(sub.done);
+
+    const ownError = expect(sub.done).rejects.toThrow('own transport subscription error');
+    receiveError(transportA, docId, 'own transport subscription error', { subscriptionId });
+    await ownError;
+    await expectPending(unrelatedSync);
+  } finally {
+    sub.stop();
+    await sub.done.catch(() => {});
+    detachA();
+    detachB();
+  }
+});
+
+test('unsubscribe only removes responder state owned by its transport', async () => {
+  const docId = 'doc-transport-scoped-unsubscribe';
+  const subscriptionId = 'sub_transport_a';
+  const backend = new MemoryBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+
+  try {
+    const subscribe: OperationSyncPayloadFor<'subscribe'> = {
+      case: 'subscribe',
+      value: { subscriptionId, filter: { all: {} } },
+    };
+    receiveSync(transportA, docId, subscribe);
+    receiveSync(transportB, docId, subscribe);
+    await waitUntil(() => (peer as any).responderSubscriptions.get(subscriptionId)?.size === 2);
+
+    receiveSync(transportB, docId, {
+      case: 'unsubscribe',
+      value: { subscriptionId },
+    });
+    await waitUntil(() => (peer as any).responderSubscriptions.get(subscriptionId)?.size === 1);
+    expect(
+      (peer as any).responderSubscriptions.get(subscriptionId)?.has(transportA.transport),
+    ).toBe(true);
+
+    receiveSync(transportA, docId, {
+      case: 'unsubscribe',
+      value: { subscriptionId },
+    });
+    await waitUntil(() => !(peer as any).responderSubscriptions.has(subscriptionId));
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('identical responder filter ids remain independent across transports', async () => {
+  const docId = 'doc-transport-scoped-responder-filter';
+  const filterId = 'shared_filter_id';
+  const backend = new MemoryBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+  const hello: OperationSyncPayloadFor<'hello'> = {
+    case: 'hello',
+    value: {
+      capabilities: [],
+      filters: [{ id: filterId, filter: { all: {} } }],
+      maxLamport: 0n,
+    },
+  };
+
+  try {
+    receiveSync(transportA, docId, hello);
+    receiveSync(transportB, docId, hello);
+    await waitUntil(() => (peer as any).responderSessions.get(filterId)?.size === 2);
+
+    const outOfOrder: OperationSyncPayloadFor<'ribltCodewords'> = {
+      case: 'ribltCodewords',
+      value: { filterId, round: 0, startIndex: 1n, codewords: [] },
+    };
+    receiveSync(transportB, docId, outOfOrder);
+    await waitUntil(() => (peer as any).responderSessions.get(filterId)?.size === 1);
+    expect((peer as any).responderSessions.get(filterId)?.has(transportA.transport)).toBe(true);
+    expect(transportA.sent.some((msg) => msg.payload.case === 'ribltStatus')).toBe(false);
+    expect(transportB.sent.some((msg) => msg.payload.case === 'ribltStatus')).toBe(true);
+
+    receiveSync(transportA, docId, outOfOrder);
+    await waitUntil(() => !(peer as any).responderSessions.has(filterId));
+    expect(transportA.sent.some((msg) => msg.payload.case === 'ribltStatus')).toBe(true);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('direct-upload acknowledgements are scoped by transport and filter id', async () => {
+  const docId = 'doc-transport-scoped-upload-ack';
+  const filterId = 'shared_upload_filter';
+  const backend = new MemoryBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+  const hello: OperationSyncPayloadFor<'hello'> = {
+    case: 'hello',
+    value: {
+      capabilities: [{ name: 'treecrdt.sync.direct_send_empty_receiver.v1', value: '1' }],
+      filters: [{ id: filterId, filter: { all: {} } }],
+      maxLamport: 0n,
+    },
+  };
+  const doneBatch: OperationSyncPayloadFor<'opsBatch'> = {
+    case: 'opsBatch',
+    value: { filterId, ops: [], done: true },
+  };
+
+  try {
+    receiveSync(transportA, docId, hello);
+    receiveSync(transportB, docId, hello);
+    await waitUntil(() => (peer as any).responderAwaitingUploadAcks.get(filterId)?.size === 2);
+
+    receiveSync(transportA, docId, doneBatch);
+    await waitUntil(() => transportA.sent.some((msg) => msg.payload.case === 'opsBatch'));
+    expect(transportB.sent.some((msg) => msg.payload.case === 'opsBatch')).toBe(false);
+    expect((peer as any).responderAwaitingUploadAcks.get(filterId)?.has(transportB.transport)).toBe(
+      true,
+    );
+
+    receiveSync(transportB, docId, doneBatch);
+    await waitUntil(() => transportB.sent.some((msg) => msg.payload.case === 'opsBatch'));
+    expect((peer as any).responderAwaitingUploadAcks.has(filterId)).toBe(false);
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('ops batches with the same filter id queue independently across transports', async () => {
+  const docId = 'doc-transport-scoped-ops-queue';
+  const backend = new BlockingFirstApplyBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+  const batch: OperationSyncPayloadFor<'opsBatch'> = {
+    case: 'opsBatch',
+    value: { filterId: 'shared_ops_stream', ops: [], done: false },
+  };
+
+  try {
+    receiveSync(transportA, docId, batch);
+    await waitUntil(() => backend.applyOpsCalls === 1);
+    receiveSync(transportB, docId, batch);
+    await waitUntil(() => backend.applyOpsCalls === 2, {
+      message: 'expected the second transport to use an independent ops queue',
+    });
+  } finally {
+    backend.release();
+    await waitUntil(() => (peer as any).opsBatchQueues.size === 0);
+    detachA();
+    detachB();
+  }
+});
+
+test('addressed and global errors only reject sessions owned by their transport', async () => {
+  const docId = 'doc-transport-scoped-errors';
+  const backend = new MemoryBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+  const syncA1 = peer.syncOnce(transportA.transport, { all: {} });
+  const syncB = peer.syncOnce(transportB.transport, { all: {} });
+  void syncA1.catch(() => {});
+  void syncB.catch(() => {});
+
+  try {
+    await waitUntil(
+      () =>
+        sentValues(transportA, 'hello').length === 1 &&
+        sentValues(transportB, 'hello').length === 1,
+    );
+    const filterA1 = sentValues(transportA, 'hello')[0]?.filters[0]?.id;
+    const filterB = sentValues(transportB, 'hello')[0]?.filters[0]?.id;
+    if (!filterA1 || !filterB) throw new Error('expected Hello filter ids');
+
+    receiveError(transportB, docId, 'wrong transport addressed error', { filterId: filterA1 });
+    await tick();
+    expect((peer as any).initiatorSessions.has(filterA1)).toBe(true);
+
+    const addressedError = expect(syncA1).rejects.toThrow('own transport addressed error');
+    receiveError(transportA, docId, 'own transport addressed error', { filterId: filterA1 });
+    await addressedError;
+    expect((peer as any).initiatorSessions.has(filterB)).toBe(true);
+
+    const syncA2 = peer.syncOnce(transportA.transport, { all: {} });
+    void syncA2.catch(() => {});
+    await waitUntil(() => sentValues(transportA, 'hello').length === 2);
+    const globalAError = expect(syncA2).rejects.toThrow('global transport A error');
+    receiveError(transportA, docId, 'global transport A error');
+    await globalAError;
+    expect((peer as any).initiatorSessions.has(filterB)).toBe(true);
+
+    const globalBError = expect(syncB).rejects.toThrow('global transport B error');
+    receiveError(transportB, docId, 'global transport B error');
+    await globalBError;
+    expect((peer as any).initiatorSessions.size).toBe(0);
+  } finally {
+    detachA();
+    detachB();
+  }
 });
 
 test('syncOnce does not starve macrotask transports', async () => {
