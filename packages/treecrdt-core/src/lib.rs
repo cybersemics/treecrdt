@@ -5,6 +5,7 @@
 
 pub(crate) mod affected;
 pub mod error;
+pub mod history;
 pub mod ids;
 pub mod materialization;
 pub mod ops;
@@ -16,6 +17,11 @@ mod validation;
 pub mod version_vector;
 
 pub use error::{Error, Result};
+pub use history::{
+    derive_undo_plan_from_history, LocalEditAction, LocalEditHistory, LocalEditPlan,
+};
+#[cfg(feature = "serde")]
+pub use history::{derive_undo_plan_from_history_json, LocalEditPlanWire};
 pub use ids::{Lamport, NodeId, OperationId, ReplicaId};
 pub use materialization::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,

@@ -643,6 +643,10 @@ where
         Ok(self.nodes.parent(node)?.filter(|&p| p != NodeId::TRASH))
     }
 
+    pub(crate) fn raw_parent(&self, node: NodeId) -> Result<Option<NodeId>> {
+        self.nodes.parent(node)
+    }
+
     pub fn payload(&self, node: NodeId) -> Result<Option<Vec<u8>>> {
         self.payloads.payload(node)
     }
