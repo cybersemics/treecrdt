@@ -78,6 +78,10 @@ export function emptyMaterializationOutcome(headSeq = 0): MaterializationOutcome
  */
 export type MaterializationEvent = MaterializationOutcome;
 
+/**
+ * Synchronous observational callback. A listener failure is isolated from the committed write and
+ * from other listeners; asynchronous work must handle its own promise rejections.
+ */
 export type MaterializationListener = (event: MaterializationEvent) => void;
 
 export type MaterializationDispatcher = {
@@ -91,7 +95,13 @@ export function createMaterializationDispatcher(): MaterializationDispatcher {
 
   const emitEvent = (event: MaterializationEvent) => {
     if (event.changes.length === 0) return;
-    for (const listener of listeners) listener(event);
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch {
+        // Materialization is already committed. Listeners are observational and independent.
+      }
+    }
   };
 
   const emitOutcome = (outcome: MaterializationOutcome, writeId?: string) => {
