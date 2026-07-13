@@ -1,5 +1,11 @@
 # @treecrdt/wa-sqlite
 
+## 0.3.2
+
+### Patch Changes
+
+- 1dd003d: Allow OPFS database paths longer than wa-sqlite's 64-byte VFS default.
+
 ## 0.3.1
 
 ### Patch Changes
