@@ -1,8 +1,13 @@
+//! Deterministic allocation of sibling ordering keys.
+//!
+//! Keys are non-empty sequences of big-endian `u16` digits. The final digit is non-zero, which
+//! keeps the valid key space dense under the bytewise ordering used by storage backends.
+
 use crate::error::{Error, Result};
 
-const ORDER_KEY_DOMAIN: &[u8] = b"treecrdt/order_key/v0";
+const ORDER_KEY_DOMAIN: &[u8] = b"treecrdt/order_key/v1";
 const DIGIT_BYTES: usize = 2;
-const DEFAULT_BOUNDARY: u16 = 10;
+const ENTROPY_DIGITS: usize = 4;
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
@@ -27,11 +32,7 @@ pub(crate) fn validate_order_key(key: &[u8]) -> Result<()> {
 }
 
 fn decode_digits(bytes: &[u8]) -> Result<Vec<u16>> {
-    if !bytes.len().is_multiple_of(DIGIT_BYTES) {
-        return Err(Error::InvalidOperation(
-            "order_key must have even length (u16 big-endian digits)".into(),
-        ));
-    }
+    validate_order_key(bytes)?;
     Ok(bytes
         .chunks_exact(DIGIT_BYTES)
         .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
@@ -40,101 +41,120 @@ fn decode_digits(bytes: &[u8]) -> Result<Vec<u16>> {
 
 fn encode_digits(digits: &[u16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(digits.len() * DIGIT_BYTES);
-    for d in digits {
-        out.extend_from_slice(&d.to_be_bytes());
+    for digit in digits {
+        out.extend_from_slice(&digit.to_be_bytes());
     }
     out
 }
 
+fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 fn sample_u64(seed: &[u8], depth: usize) -> u64 {
-    let mut h = FNV_OFFSET_BASIS;
-    for b in ORDER_KEY_DOMAIN {
-        h ^= *b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    for b in &(seed.len() as u32).to_be_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    for b in seed {
-        h ^= *b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    for b in &(depth as u32).to_be_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    h
+    let mut hash = hash_bytes(FNV_OFFSET_BASIS, ORDER_KEY_DOMAIN);
+    hash = hash_bytes(hash, &(seed.len() as u64).to_be_bytes());
+    hash = hash_bytes(hash, seed);
+    hash = hash_bytes(hash, &(depth as u64).to_be_bytes());
+
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51afd7ed558ccd);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ceb9fe1a85ec53);
+    hash ^ (hash >> 33)
 }
 
-fn choose_side(seed: &[u8], depth: usize) -> bool {
-    // true = choose near left, false = choose near right
-    (sample_u64(seed, depth) & 1) == 0
-}
-
-fn choose_in_range(seed: &[u8], depth: usize, lo: u16, hi: u16) -> u16 {
-    debug_assert!(lo <= hi);
-    if lo == hi {
-        return lo;
+fn append_entropy(digits: &mut Vec<u16>, seed: &[u8], depth: usize) {
+    let sample = sample_u64(seed, depth);
+    for index in 0..ENTROPY_DIGITS {
+        let shift = (ENTROPY_DIGITS - index - 1) * u16::BITS as usize;
+        let raw = ((sample >> shift) & u64::from(u16::MAX)) as u16;
+        digits.push(if index + 1 == ENTROPY_DIGITS {
+            (u32::from(raw) % u32::from(u16::MAX) + 1) as u16
+        } else {
+            raw
+        });
     }
-    let span = (hi - lo) as u32 + 1;
-    let n = (sample_u64(seed, depth) % (span as u64)) as u16;
-    lo + n
 }
 
-/// Allocate a stable ordering key strictly between `left` and `right` (lexicographic order).
+fn allocate_after(left: &[u16], seed: &[u8], depth: usize) -> Vec<u16> {
+    let mut out = left.to_vec();
+    append_entropy(&mut out, seed, depth + left.len());
+    out
+}
+
+fn allocate_before(right: &[u16], seed: &[u8], depth: usize) -> Vec<u16> {
+    let offset = right
+        .iter()
+        .position(|digit| *digit != 0)
+        .expect("validated key has a non-zero final digit");
+    let mut out = right[..offset].to_vec();
+    out.push(right[offset] / 2);
+    append_entropy(&mut out, seed, depth + offset + 1);
+    out
+}
+
+fn allocate_between_digits(left: &[u16], right: &[u16], seed: &[u8]) -> Vec<u16> {
+    let common = left.iter().zip(right).take_while(|(a, b)| a == b).count();
+
+    if common == left.len() {
+        let mut out = left.to_vec();
+        out.extend(allocate_before(&right[common..], seed, common));
+        return out;
+    }
+
+    let left_digit = left[common];
+    let right_digit = right[common];
+    let mut out = left[..common].to_vec();
+    if u32::from(right_digit) > u32::from(left_digit) + 1 {
+        out.push(((u32::from(left_digit) + u32::from(right_digit)) / 2) as u16);
+        append_entropy(&mut out, seed, common + 1);
+    } else {
+        out.push(left_digit);
+        out.extend(allocate_after(&left[common + 1..], seed, common + 1));
+    }
+    out
+}
+
+/// Allocate a deterministic key strictly between `left` and `right` in bytewise order.
 ///
-/// Keys are encoded as a variable-length sequence of big-endian `u16` digits, compared
-/// lexicographically. The generator is LSEQ-inspired: it prefers allocating within a bounded
-/// interval near one side to reduce expected key growth in repeated "insert between the same
-/// neighbors" workloads.
+/// `None` opens that side of the key space. Every provided bound must be a canonical structural
+/// key: non-empty, even-length, and ending in a non-zero `u16` digit.
 pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) -> Result<Vec<u8>> {
-    let left_digits = decode_digits(left.unwrap_or_default())?;
-    let right_digits = decode_digits(right.unwrap_or_default())?;
+    let left_digits = left.map(decode_digits).transpose()?;
+    let right_digits = right.map(decode_digits).transpose()?;
 
-    let mut out: Vec<u16> = Vec::new();
-    let mut depth: usize = 0;
-
-    loop {
-        let ld = left_digits.get(depth).copied().unwrap_or(0);
-        let rd = right_digits.get(depth).copied().unwrap_or(u16::MAX);
-        if rd < ld {
+    if let (Some(left), Some(right)) = (left, right) {
+        if left >= right {
             return Err(Error::InvalidOperation(
-                "cannot allocate order_key: right < left".into(),
+                "cannot allocate order_key: bounds must be in strictly increasing order".into(),
             ));
         }
-
-        if u32::from(rd) > u32::from(ld) + 1 {
-            let gap = rd - ld - 1;
-            let boundary = DEFAULT_BOUNDARY.min(gap);
-            let choose_left = choose_side(seed, depth);
-
-            let (lo, hi) = if gap > boundary {
-                if choose_left {
-                    (ld + 1, ld + boundary)
-                } else {
-                    (rd - boundary, rd - 1)
-                }
-            } else {
-                (ld + 1, rd - 1)
-            };
-
-            out.push(choose_in_range(seed, depth, lo, hi));
-            break;
-        }
-
-        // Once a concrete left digit is immediately below the upper digit, its remaining suffix
-        // can be extended without comparing it against the right key's suffix.
-        if rd > ld && depth < left_digits.len() {
-            out.extend_from_slice(&left_digits[depth..]);
-            out.push(choose_in_range(seed, left_digits.len(), 1, u16::MAX));
-            break;
-        }
-
-        // No room at this level; extend the prefix and continue deeper.
-        out.push(ld);
-        depth += 1;
     }
 
-    Ok(encode_digits(&out))
+    let digits = match (left_digits.as_deref(), right_digits.as_deref()) {
+        (None, None) => {
+            let mut out = Vec::with_capacity(ENTROPY_DIGITS);
+            append_entropy(&mut out, seed, 0);
+            out
+        }
+        (Some(left), None) => allocate_after(left, seed, 0),
+        (None, Some(right)) => allocate_before(right, seed, 0),
+        (Some(left), Some(right)) => allocate_between_digits(left, right, seed),
+    };
+
+    let encoded = encode_digits(&digits);
+    validate_order_key(&encoded)?;
+    if left.is_some_and(|bound| encoded.as_slice() <= bound)
+        || right.is_some_and(|bound| encoded.as_slice() >= bound)
+    {
+        return Err(Error::InvalidOperation(
+            "cannot allocate order_key strictly between bounds".into(),
+        ));
+    }
+    Ok(encoded)
 }

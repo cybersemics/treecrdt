@@ -1,7 +1,55 @@
 use proptest::prelude::*;
-use treecrdt_core::{Lamport, LamportClock, MemoryStorage, NodeId, Operation, ReplicaId, TreeCrdt};
+use treecrdt_core::{
+    order_key::allocate_between, Lamport, LamportClock, MemoryStorage, NodeId, Operation,
+    ReplicaId, TreeCrdt,
+};
 
 proptest! {
+    #[test]
+    fn order_key_output_is_strictly_inside_valid_digit_bounds(
+        left in 1u16..=u16::MAX,
+        right in 1u16..=u16::MAX,
+        seed in prop::collection::vec(any::<u8>(), 0..64),
+    ) {
+        prop_assume!(left < right);
+        let left = left.to_be_bytes();
+        let right = right.to_be_bytes();
+        let key = allocate_between(Some(&left), Some(&right), &seed).unwrap();
+        prop_assert!(key.as_slice() > left.as_slice());
+        prop_assert!(key.as_slice() < right.as_slice());
+    }
+
+    #[test]
+    fn order_key_allocation_never_panics_and_is_deterministic(
+        left in prop::option::of(prop::collection::vec(any::<u8>(), 0..32)),
+        right in prop::option::of(prop::collection::vec(any::<u8>(), 0..32)),
+        seed in prop::collection::vec(any::<u8>(), 0..64),
+    ) {
+        let first = allocate_between(left.as_deref(), right.as_deref(), &seed);
+        let second = allocate_between(left.as_deref(), right.as_deref(), &seed);
+
+        match (first, second) {
+            (Ok(first), Ok(second)) => {
+                prop_assert_eq!(&first, &second);
+                prop_assert!(!first.is_empty());
+                prop_assert!(first.len().is_multiple_of(2));
+                let terminator = u16::from_be_bytes([
+                    first[first.len() - 2],
+                    first[first.len() - 1],
+                ]);
+                prop_assert_ne!(terminator, 0);
+                if let Some(left) = left.as_deref() {
+                    prop_assert!(first.as_slice() > left);
+                }
+                if let Some(right) = right.as_deref() {
+                    prop_assert!(first.as_slice() < right);
+                }
+            }
+            (Err(first), Err(second)) => prop_assert_eq!(first.to_string(), second.to_string()),
+            _ => prop_assert!(false, "same inputs returned different result variants"),
+        }
+    }
+
     #[test]
     fn permutations_converge_property(ops in {
         // Generate up to 5 operations with lamports 1..=5 over a small node set.

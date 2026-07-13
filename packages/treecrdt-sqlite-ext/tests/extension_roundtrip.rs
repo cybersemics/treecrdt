@@ -1000,7 +1000,12 @@ fn local_insert_after_is_deterministic_for_single_gap() {
             .unwrap();
     }
 
-    // after(A) between 1 and 3 => 2 (deterministic)
+    // after(A) uses the deterministic local-operation seed within the open interval (1, 3).
+    let seed = {
+        let mut seed = replica.clone();
+        seed.extend_from_slice(&3u64.to_be_bytes());
+        seed
+    };
     let json: String = conn
         .query_row(
             "SELECT treecrdt_local_insert(?1, ?2, ?3, 'after', ?4, NULL)",
@@ -1012,10 +1017,8 @@ fn local_insert_after_is_deterministic_for_single_gap() {
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "insert");
-    assert_eq!(
-        op.order_key.as_ref().unwrap(),
-        &(2u16).to_be_bytes().to_vec()
-    );
+    let expected = allocate_between(Some(&key_a), Some(&key_b), &seed).unwrap();
+    assert_eq!(op.order_key.as_ref().unwrap(), &expected);
 }
 
 #[test]
@@ -1036,6 +1039,11 @@ fn local_insert_last_is_deterministic_for_single_gap() {
         )
         .unwrap();
 
+    let seed = {
+        let mut seed = replica.clone();
+        seed.extend_from_slice(&2u64.to_be_bytes());
+        seed
+    };
     let json: String = conn
         .query_row(
             "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
@@ -1047,10 +1055,8 @@ fn local_insert_last_is_deterministic_for_single_gap() {
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
     assert_eq!(op.kind, "insert");
-    assert_eq!(
-        op.order_key.as_ref().unwrap(),
-        &(0xfffeu16).to_be_bytes().to_vec()
-    );
+    let expected = allocate_between(Some(&key_a), None, &seed).unwrap();
+    assert_eq!(op.order_key.as_ref().unwrap(), &expected);
 
     let parent_arr = <[u8; 16]>::try_from(parent.as_slice()).unwrap();
     let node_rows: Vec<Vec<u8>> = {
