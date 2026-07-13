@@ -32,6 +32,7 @@ import type {
   Subscribe,
   SubscribeAck,
   SyncBackend,
+  SyncError,
   SyncMessage,
   Unsubscribe,
 } from './types.js';
@@ -287,6 +288,12 @@ function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
   return capabilities.some(isAnyAuthCapability);
 }
 
+function assertOutgoingFilterLength(allowed: readonly boolean[], expected: number): void {
+  if (allowed.length !== expected) {
+    throw new Error(`filterOutgoingOps returned ${allowed.length} flags for ${expected} ops`);
+  }
+}
+
 export class SyncPeer<Op> {
   private readonly maxCodewords: number;
   private readonly maxOpsPerBatch: number;
@@ -343,6 +350,17 @@ export class SyncPeer<Op> {
     }
     this.requireAuthForFilters = opts.requireAuthForFilters ?? Boolean(opts.auth);
     this.deriveOpRef = opts.deriveOpRef;
+  }
+
+  private async sendProtocolError(
+    transport: DuplexTransport<SyncMessage<Op>>,
+    error: SyncError,
+  ): Promise<void> {
+    await transport.send({
+      v: 0,
+      docId: this.backend.docId,
+      payload: { case: 'error', value: error },
+    });
   }
 
   attach(
@@ -567,11 +585,7 @@ export class SyncPeer<Op> {
           filter: sub.filter,
           capabilities: peerCaps,
         });
-        if (allowed.length !== ops.length) {
-          throw new Error(
-            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
-          );
-        }
+        assertOutgoingFilterLength(allowed, ops.length);
 
         const allowedRefs: OpRef[] = [];
         const allowedOps: Op[] = [];
@@ -650,11 +664,7 @@ export class SyncPeer<Op> {
           filter,
           capabilities: peerCaps,
         });
-        if (allowed.length !== ops.length) {
-          throw new Error(
-            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
-          );
-        }
+        assertOutgoingFilterLength(allowed, ops.length);
 
         const allowedRefs: OpRef[] = [];
         const allowedOps: Op[] = [];
@@ -770,11 +780,7 @@ export class SyncPeer<Op> {
           filter,
           capabilities: peerCaps,
         });
-        if (allowed.length !== ops.length) {
-          throw new Error(
-            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
-          );
-        }
+        assertOutgoingFilterLength(allowed, ops.length);
         opRefs = opRefs.filter((_r, idx) => allowed[idx] === true);
       }
 
@@ -944,11 +950,7 @@ export class SyncPeer<Op> {
           filter,
           capabilities: peerCaps,
         });
-        if (allowed.length !== ops.length) {
-          throw new Error(
-            `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
-          );
-        }
+        assertOutgoingFilterLength(allowed, ops.length);
 
         const nextOps: Op[] = [];
         for (let i = 0; i < ops.length; i += 1) {
@@ -1187,18 +1189,11 @@ export class SyncPeer<Op> {
           ...(subscriptionId ? { subscriptionId } : {}),
         });
 
-        await transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: {
-            case: 'error',
-            value: {
-              code: ErrorCode.ERROR_CODE_UNSPECIFIED,
-              message: String(err?.message ?? err ?? 'error'),
-              ...(filterId ? { filterId } : {}),
-              ...(subscriptionId ? { subscriptionId } : {}),
-            },
-          },
+        await this.sendProtocolError(transport, {
+          code: ErrorCode.ERROR_CODE_UNSPECIFIED,
+          message: String(err?.message ?? err ?? 'error'),
+          ...(filterId ? { filterId } : {}),
+          ...(subscriptionId ? { subscriptionId } : {}),
         });
       } catch {
         // ignore transport failures while reporting errors
@@ -1228,16 +1223,9 @@ export class SyncPeer<Op> {
         ackCapabilities: ackCapabilities.length,
       });
     } catch (err: any) {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: {
-          case: 'error',
-          value: {
-            code: ErrorCode.ERROR_CODE_UNSPECIFIED,
-            message: String(err?.message ?? err ?? 'auth error'),
-          },
-        },
+      await this.sendProtocolError(transport, {
+        code: ErrorCode.ERROR_CODE_UNSPECIFIED,
+        message: String(err?.message ?? err ?? 'auth error'),
       });
       return;
     }
@@ -1318,11 +1306,7 @@ export class SyncPeer<Op> {
             filter,
             capabilities: hello.capabilities,
           });
-          if (allowed.length !== ops.length) {
-            throw new Error(
-              `filterOutgoingOps returned ${allowed.length} flags for ${ops.length} ops`,
-            );
-          }
+          assertOutgoingFilterLength(allowed, ops.length);
           localOpRefs = localOpRefs.filter((_r, idx) => allowed[idx] === true);
           traceHello(this.backend.docId, traceStartedAt, 'after-filterOutgoingOps', {
             filterId: id,
@@ -1575,17 +1559,10 @@ export class SyncPeer<Op> {
     if (!msg.filter) return;
 
     if (this.requireAuthForFilters && !this.transportHasAuth.get(transport)) {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: {
-          case: 'error',
-          value: {
-            code: ErrorCode.UNAUTHORIZED,
-            message: `missing "${AUTH_CAPABILITY_NAME}" token; send Hello before Subscribe`,
-            subscriptionId: msg.subscriptionId,
-          },
-        },
+      await this.sendProtocolError(transport, {
+        code: ErrorCode.UNAUTHORIZED,
+        message: `missing "${AUTH_CAPABILITY_NAME}" token; send Hello before Subscribe`,
+        subscriptionId: msg.subscriptionId,
       });
       return;
     }
@@ -1598,17 +1575,10 @@ export class SyncPeer<Op> {
         capabilities: peerCaps,
       });
     } catch (err: any) {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: {
-          case: 'error',
-          value: {
-            code: ErrorCode.UNAUTHORIZED,
-            message: String(err?.message ?? err ?? 'unauthorized filter'),
-            subscriptionId: msg.subscriptionId,
-          },
-        },
+      await this.sendProtocolError(transport, {
+        code: ErrorCode.UNAUTHORIZED,
+        message: String(err?.message ?? err ?? 'unauthorized filter'),
+        subscriptionId: msg.subscriptionId,
       });
       return;
     }
@@ -1643,17 +1613,10 @@ export class SyncPeer<Op> {
       // without explicit `notifyLocalUpdate()` calls for every writer.
       void this.notifyLocalUpdate();
     } catch (err: any) {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: {
-          case: 'error',
-          value: {
-            code: ErrorCode.FILTER_NOT_SUPPORTED,
-            message: String(err?.message ?? err ?? 'subscribe failed'),
-            subscriptionId: msg.subscriptionId,
-          },
-        },
+      await this.sendProtocolError(transport, {
+        code: ErrorCode.FILTER_NOT_SUPPORTED,
+        message: String(err?.message ?? err ?? 'subscribe failed'),
+        subscriptionId: msg.subscriptionId,
       });
     }
   }
