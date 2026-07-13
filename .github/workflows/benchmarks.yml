@@ -9,6 +9,14 @@ on:
         description: Pull request number
         required: true
         type: number
+      suite:
+        description: Benchmark suite
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - web
 
 permissions:
   contents: read
@@ -39,11 +47,19 @@ jobs:
         with:
           script: |
             const prNumber = context.eventName === 'workflow_dispatch'
-              ? Number(core.getInput('pr'))
+              ? Number(context.payload.inputs?.pr)
               : context.payload.issue?.number;
 
             if (!prNumber) {
               throw new Error('Unable to determine pull request number');
+            }
+
+            const suite = context.eventName === 'workflow_dispatch'
+              ? context.payload.inputs?.suite ?? 'full'
+              : 'full';
+            const benchmarkScripts = { full: 'benchmark', web: 'benchmark:web' };
+            if (!Object.hasOwn(benchmarkScripts, suite)) {
+              throw new Error(`Unsupported benchmark suite: ${suite}`);
             }
 
             const { owner, repo } = context.repo;
@@ -55,6 +71,8 @@ jobs:
             core.setOutput('base_ref', pr.data.base.ref);
             core.setOutput('head_ref', pr.data.head.ref);
             core.setOutput('head_repo', pr.data.head.repo.full_name);
+            core.setOutput('suite', suite);
+            core.setOutput('script', benchmarkScripts[suite]);
 
             const sameRepo = pr.data.head.repo.full_name === `${owner}/${repo}`;
             core.setOutput('same_repo', sameRepo ? 'true' : 'false');
@@ -169,10 +187,20 @@ jobs:
         working-directory: bench-base
         run: pnpm install --frozen-lockfile=false
 
+      - name: Build project (base)
+        if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-base
+        run: pnpm run build
+
       - name: Install dependencies (head)
         if: steps.pr.outputs.same_repo == 'true'
         working-directory: bench-head
         run: pnpm install --frozen-lockfile=false
+
+      - name: Build project (head)
+        if: steps.pr.outputs.same_repo == 'true'
+        working-directory: bench-head
+        run: pnpm run build
 
       - name: Install Playwright browsers
         if: steps.pr.outputs.same_repo == 'true'
@@ -181,21 +209,37 @@ jobs:
         run: pnpm -C bench-head/packages/treecrdt-wa-sqlite/e2e exec playwright install --with-deps chromium
 
       - name: Run benchmarks (base)
+        id: benchmark_base
         if: steps.pr.outputs.same_repo == 'true'
+        continue-on-error: true
         working-directory: bench-base
         env:
+          BENCHMARK_SCRIPT: ${{ steps.pr.outputs.script }}
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-        run: pnpm run benchmark
+        run: |
+          set -o pipefail
+          status=0
+          env -u CI pnpm run "$BENCHMARK_SCRIPT" 2>&1 | tee benchmark.log || status=$?
+          pnpm run benchmark:aggregate || status=$?
+          exit "$status"
 
       - name: Run benchmarks (head)
+        id: benchmark_head
         if: steps.pr.outputs.same_repo == 'true'
+        continue-on-error: true
         working-directory: bench-head
         env:
+          BENCHMARK_SCRIPT: ${{ steps.pr.outputs.script }}
           PLAYWRIGHT_BROWSERS_PATH: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-        run: pnpm run benchmark
+        run: |
+          set -o pipefail
+          status=0
+          env -u CI pnpm run "$BENCHMARK_SCRIPT" 2>&1 | tee benchmark.log || status=$?
+          pnpm run benchmark:aggregate || status=$?
+          exit "$status"
 
       - name: Upload benchmark artifacts
-        if: steps.pr.outputs.same_repo == 'true'
+        if: always() && steps.pr.outputs.same_repo == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: benchmarks-${{ steps.pr.outputs.number }}
@@ -203,9 +247,13 @@ jobs:
           path: |
             bench-base/benchmarks/**
             bench-head/benchmarks/**
+            bench-base/benchmark.log
+            bench-head/benchmark.log
+            bench-base/packages/treecrdt-wa-sqlite/e2e/test-results/**
+            bench-head/packages/treecrdt-wa-sqlite/e2e/test-results/**
 
       - name: Prepare comment body
-        if: steps.pr.outputs.same_repo == 'true'
+        if: always() && steps.pr.outputs.same_repo == 'true'
         id: render
         uses: actions/github-script@v7
         with:
@@ -290,6 +338,10 @@ jobs:
             const headSha = '${{ steps.pr.outputs.head_sha }}'.slice(0, 7);
             const baseRef = '${{ steps.pr.outputs.base_ref }}';
             const headRef = '${{ steps.pr.outputs.head_ref }}';
+            const suite = '${{ steps.pr.outputs.suite }}';
+            const baseOutcome = '${{ steps.benchmark_base.outcome }}';
+            const headOutcome = '${{ steps.benchmark_head.outcome }}';
+            const benchmarkFailed = [baseOutcome, headOutcome].includes('failure');
             const triggerLabel =
               context.eventName === 'workflow_dispatch' ? '`workflow_dispatch`' : '`/bench`';
 
@@ -298,10 +350,15 @@ jobs:
               '## Benchmarks',
               '',
               `Triggered by ${triggerLabel} - Run: ${runUrl}`,
+              `Suite: \`${suite}\` - Base command: ${baseOutcome} - Head command: ${headOutcome}`,
               `Base: ${baseRef} (${baseSha}) - Head: ${headRef} (${headSha})`,
               `Compared entries: ${keys.length} - Improved: ${improved} - Regressed: ${regressed}`,
               '',
             ];
+
+            if (benchmarkFailed) {
+              parts.push('_At least one benchmark command failed. Available partial results and logs are included in the artifact._', '');
+            }
 
             if (keys.length === 0) {
               parts.push('_No benchmark results were found. Check the workflow logs for details._', '');
@@ -314,13 +371,14 @@ jobs:
               'Artifacts:',
               '- base summary: `bench-base/benchmarks/summary.json`',
               '- head summary: `bench-head/benchmarks/summary.json`',
+              '- command logs: `bench-base/benchmark.log`, `bench-head/benchmark.log`',
               ''
             );
 
             return parts.join('\n');
 
       - name: Comment results
-        if: steps.pr.outputs.same_repo == 'true'
+        if: always() && steps.pr.outputs.same_repo == 'true' && steps.render.outcome == 'success'
         uses: actions/github-script@v7
         env:
           BENCH_BODY: ${{ steps.render.outputs.result }}
@@ -355,3 +413,10 @@ jobs:
                 body,
               });
             }
+
+      - name: Fail after publishing partial results
+        if: |
+          always() &&
+          steps.pr.outputs.same_repo == 'true' &&
+          (steps.benchmark_base.outcome == 'failure' || steps.benchmark_head.outcome == 'failure')
+        run: exit 1
