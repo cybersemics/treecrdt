@@ -54,9 +54,9 @@ export async function runBenchmark(
 
   const envIterations = envInt('BENCH_ITERATIONS');
   const envWarmup = envInt('BENCH_WARMUP');
-  const rawIterations = Math.max(1, workload.iterations ?? envIterations ?? 1);
   const minIterationsForTiny = totalOps >= 1 && totalOps <= 100 ? 10 : totalOps <= 1000 ? 7 : 1;
-  const iterations = Math.max(minIterationsForTiny, rawIterations);
+  const requestedIterations = workload.iterations ?? envIterations;
+  const iterations = Math.max(1, requestedIterations ?? minIterationsForTiny);
   const warmupIterations = Math.max(
     0,
     workload.warmupIterations ?? envWarmup ?? (iterations > 1 ? 1 : 0),

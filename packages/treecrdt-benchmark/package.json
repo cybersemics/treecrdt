@@ -20,7 +20,8 @@
     "src"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm -C ../treecrdt-ts run build && pnpm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",
