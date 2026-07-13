@@ -939,16 +939,33 @@ where
             let idx = children.iter().position(|c| *c == after).ok_or_else(|| {
                 Error::InvalidOperation("after node is not a child of parent".into())
             })?;
-            let left = self.nodes.order_key(after)?;
+            let left = self.nodes.order_key(after)?.ok_or_else(|| {
+                Error::InvalidOperation("after node is missing its structural order_key".into())
+            })?;
             let right = if idx + 1 < children.len() {
-                self.nodes.order_key(children[idx + 1])?
+                let next = self.nodes.order_key(children[idx + 1])?.ok_or_else(|| {
+                    Error::InvalidOperation(
+                        "next sibling is missing its structural order_key".into(),
+                    )
+                })?;
+                if next == left {
+                    return Err(Error::InvalidOperation(
+                        "cannot place directly after node: the next sibling has the same order_key"
+                            .into(),
+                    ));
+                }
+                Some(next)
             } else {
                 None
             };
-            (left, right)
+            (Some(left), right)
         } else {
             let right = if let Some(first) = children.first().copied() {
-                self.nodes.order_key(first)?
+                Some(self.nodes.order_key(first)?.ok_or_else(|| {
+                    Error::InvalidOperation(
+                        "first sibling is missing its structural order_key".into(),
+                    )
+                })?)
             } else {
                 None
             };
