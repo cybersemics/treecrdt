@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use postgres::{Client, Statement};
+use postgres::{error::SqlState, Client, Row, Statement};
 
 use treecrdt_core::{
     Error, Lamport, MaterializationCursor, MaterializationFrontier, MaterializationHead,
@@ -57,7 +57,10 @@ fn load_tree_meta_row(
     let rows = c.query(&stmt, &[&doc_id]).map_err(storage_debug)?;
 
     let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
+    Ok(tree_meta_from_row(row))
+}
 
+fn tree_meta_from_row(row: &Row) -> TreeMeta {
     let head_lamport = row.get::<_, i64>(0).max(0) as Lamport;
     let head_replica = row.get::<_, Vec<u8>>(1);
     let head_counter = row.get::<_, i64>(2).max(0) as u64;
@@ -88,7 +91,7 @@ fn load_tree_meta_row(
         _ => None,
     };
 
-    Ok(TreeMeta(MaterializationState { head, replay_from }))
+    TreeMeta(MaterializationState { head, replay_from })
 }
 
 pub(super) fn load_tree_meta(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<TreeMeta> {
@@ -100,6 +103,31 @@ pub(crate) fn load_tree_meta_for_update(
     doc_id: &str,
 ) -> Result<TreeMeta> {
     load_tree_meta_row(client, doc_id, true)
+}
+
+/// Try to serialize a document writer without waiting for another transaction.
+///
+/// Synchronous N-API callers must not block the JavaScript event loop behind a writer whose
+/// progress may depend on that same event loop. `None` is therefore a normal optimistic conflict;
+/// every other database error remains a hard failure.
+pub(crate) fn try_load_tree_meta_for_update(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+) -> Result<Option<TreeMeta>> {
+    let mut c = client.borrow_mut();
+    let rows = match c.query(
+        "SELECT head_lamport, head_replica, head_counter, head_seq, \
+                replay_lamport, replay_replica, replay_counter \
+         FROM treecrdt_meta WHERE doc_id = $1 FOR UPDATE NOWAIT",
+        &[&doc_id],
+    ) {
+        Ok(rows) => rows,
+        Err(error) if error.code() == Some(&SqlState::LOCK_NOT_AVAILABLE) => return Ok(None),
+        Err(error) => return Err(storage_debug(error)),
+    };
+    let row = rows.first().ok_or_else(|| Error::Storage("missing treecrdt_meta row".into()))?;
+
+    Ok(Some(tree_meta_from_row(row)))
 }
 
 pub(crate) fn set_tree_meta_replay_frontier(

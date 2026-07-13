@@ -72,6 +72,17 @@ CREATE TABLE IF NOT EXISTS treecrdt_oprefs_children (
 
 CREATE INDEX IF NOT EXISTS idx_treecrdt_oprefs_children_doc_parent_seq
   ON treecrdt_oprefs_children (doc_id, parent, seq);
+
+-- Local authenticated writes persist their exact proof in the same transaction as the operation.
+-- @treecrdt/sync-postgres uses this same table as its standard proof-material store.
+CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
+  doc_id TEXT NOT NULL,
+  op_ref BYTEA NOT NULL,
+  sig BYTEA NOT NULL CHECK (octet_length(sig) = 64),
+  proof_ref BYTEA NOT NULL CHECK (octet_length(proof_ref) = 16),
+  created_at_ms BIGINT NOT NULL,
+  PRIMARY KEY (doc_id, op_ref)
+);
 "#;
 
 pub fn ensure_schema(client: &mut Client) -> Result<()> {
@@ -90,6 +101,12 @@ pub fn ensure_schema(client: &mut Client) -> Result<()> {
 }
 
 pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
+    client
+        .execute(
+            "DELETE FROM treecrdt_sync_op_auth WHERE doc_id = $1",
+            &[&doc_id],
+        )
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
     client
         .execute(
             "DELETE FROM treecrdt_oprefs_children WHERE doc_id = $1",

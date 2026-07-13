@@ -12,8 +12,9 @@ mod schema;
 mod store;
 
 pub use local_ops::{
-    local_delete, local_insert, local_move, local_payload, prepare_local_delete_tx,
-    prepare_local_insert_tx, prepare_local_move_tx, prepare_local_payload_tx, PreparedLocalOpTx,
+    local_delete, local_insert, local_move, local_payload, try_commit_prepared_local,
+    try_prepare_local_delete, try_prepare_local_insert, try_prepare_local_move,
+    try_prepare_local_payload, LocalOpAuthProof, LocalOpResult, PreparedLocalOpProposal,
 };
 pub use reads::{
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children,
