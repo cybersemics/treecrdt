@@ -9,7 +9,7 @@ fn permutations_converge() {
             1,
             NodeId::ROOT,
             NodeId(1),
-            Vec::new(),
+            vec![0, 1],
         ),
         Operation::insert(
             &ReplicaId::new(b"a"),
@@ -17,7 +17,7 @@ fn permutations_converge() {
             2,
             NodeId::ROOT,
             NodeId(2),
-            Vec::new(),
+            vec![0, 2],
         ),
         Operation::insert(
             &ReplicaId::new(b"a"),
@@ -25,7 +25,7 @@ fn permutations_converge() {
             3,
             NodeId::ROOT,
             NodeId(3),
-            Vec::new(),
+            vec![0, 3],
         ),
         Operation::move_node(
             &ReplicaId::new(b"a"),
@@ -33,7 +33,7 @@ fn permutations_converge() {
             4,
             NodeId(3),
             NodeId(1),
-            Vec::new(),
+            vec![0, 1],
         ),
         Operation::move_node(
             &ReplicaId::new(b"a"),
@@ -41,7 +41,7 @@ fn permutations_converge() {
             5,
             NodeId(3),
             NodeId(2),
-            Vec::new(),
+            vec![0, 1],
         ),
     ];
 

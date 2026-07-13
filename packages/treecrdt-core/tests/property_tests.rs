@@ -14,8 +14,8 @@ proptest! {
                 let node = nodes[(i + 1) % nodes.len()];
                 let parent = nodes[i % nodes.len()];
                 match i % 3 {
-                    0 => Operation::insert(&replica, (i + 1) as u64, lamport, parent, node, Vec::new()),
-                    1 => Operation::move_node(&replica, (i + 1) as u64, lamport, node, parent, Vec::new()),
+                    0 => Operation::insert(&replica, (i + 1) as u64, lamport, parent, node, vec![0, (i + 1) as u8]),
+                    1 => Operation::move_node(&replica, (i + 1) as u64, lamport, node, parent, vec![0, (i + 1) as u8]),
                     _ => Operation::delete(&replica, (i + 1) as u64, lamport, node, None),
                 }
             }),

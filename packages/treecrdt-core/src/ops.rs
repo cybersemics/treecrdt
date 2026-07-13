@@ -64,12 +64,14 @@ pub struct Operation {
 }
 
 impl Operation {
-    /// Validate identity fields required by causal tracking and portable persistent adapters.
+    /// Validate fields required by causal tracking and portable persistent adapters.
     ///
     /// Zero is reserved as the initial clock/counter and as the exclusive `scan_since(0)`
     /// sentinel. Persisting a zero-valued operation would make it disappear during canonical
     /// replay. Persistent SQLite/PostgreSQL schemas use signed 64-bit integers, so values above
-    /// `i64::MAX` are rejected consistently before any adapter can truncate them.
+    /// `i64::MAX` are rejected consistently before any adapter can truncate them. Structural
+    /// insert/move keys are complete big-endian `u16` digits with a non-zero final digit; the
+    /// empty key is reserved for attachment to Trash.
     pub fn validate(&self) -> Result<()> {
         if self.meta.lamport == 0 {
             return Err(Error::InvalidOperation(
@@ -90,6 +92,27 @@ impl Operation {
             return Err(Error::InvalidOperation(
                 "operation counter exceeds the supported signed 64-bit range".into(),
             ));
+        }
+        match &self.kind {
+            OperationKind::Insert {
+                parent, order_key, ..
+            }
+            | OperationKind::Move {
+                new_parent: parent,
+                order_key,
+                ..
+            } => {
+                if *parent == NodeId::TRASH {
+                    if !order_key.is_empty() {
+                        return Err(Error::InvalidOperation(
+                            "order_key must be empty when the parent is Trash".into(),
+                        ));
+                    }
+                } else {
+                    crate::order_key::validate_order_key(order_key)?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
