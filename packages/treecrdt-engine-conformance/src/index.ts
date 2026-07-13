@@ -1612,7 +1612,8 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
   await a.local.insert(aPk, root, nodeIdFromInt(1), { type: 'last' }, null);
   await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null);
 
-  // Scoped tokens must not be allowed to use `filter(all)`; they should use `children(parent)` instead.
+  // The reference COSE/CWT policy cannot safely project historical operations from current
+  // ancestry, so a scoped grant must not authorize any operation-log filter.
   const tokenA = issueTreecrdtCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
