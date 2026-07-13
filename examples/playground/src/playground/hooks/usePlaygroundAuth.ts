@@ -11,6 +11,7 @@ import {
   issueTreecrdtDelegatedCapabilityTokenV1,
   type TreecrdtCapabilityTokenV1,
 } from "@treecrdt/auth";
+import type { TreecrdtPayloadKeyringV1 } from "@treecrdt/crypto";
 import { createTreecrdtSqliteSyncDiagnostics } from "@treecrdt/sync-sqlite";
 import { createTreecrdtSqliteAuthApi } from "@treecrdt/sync-sqlite/auth";
 import type { SyncAuth } from "@treecrdt/sync-protocol";
@@ -23,9 +24,9 @@ import {
   encodeInvitePayload,
   generateEd25519KeyPair,
   deriveEd25519PublicKey,
+  getDocPayloadActiveKeyInfoB64,
   initialAuthEnabled,
   initialRevealIdentity,
-  loadOrCreateDocPayloadKeyB64,
   loadAuthMaterial,
   persistRevealIdentity,
   persistAuthEnabled,
@@ -198,6 +199,7 @@ export type PlaygroundAuthApi = {
   showAuthAdvanced: boolean;
   setShowAuthAdvanced: React.Dispatch<React.SetStateAction<boolean>>;
   authInfo: string | null;
+  setAuthInfo: React.Dispatch<React.SetStateAction<string | null>>;
   authError: string | null;
   setAuthError: React.Dispatch<React.SetStateAction<string | null>>;
   authBusy: boolean;
@@ -282,15 +284,24 @@ type UsePlaygroundAuthOptions = {
     devicePublicKey: Uint8Array;
     replicaPublicKey: Uint8Array;
   }) => void;
+  payloadKeyKid: string | null;
   /**
-   * App-owned doc payload key refresher (used by invite/grant import flows).
-   * This keeps crypto state (decrypt/encrypt) in App while auth UI is extracted.
+   * Payload-hook-owned keyring refresher used after invite/grant imports.
    */
-  refreshDocPayloadKey: () => Promise<Uint8Array | null>;
+  refreshDocPayloadKey: () => Promise<TreecrdtPayloadKeyringV1>;
 };
 
 export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAuthApi {
-  const { docId, joinMode, client, syncServerUrl, syncTransportMode, onPeerIdentityChain, refreshDocPayloadKey } = opts;
+  const {
+    docId,
+    joinMode,
+    client,
+    syncServerUrl,
+    syncTransportMode,
+    onPeerIdentityChain,
+    payloadKeyKid,
+    refreshDocPayloadKey,
+  } = opts;
   const authApi = useMemo(
     () =>
       client ? createTreecrdtSqliteAuthApi({ runner: client.runner, docId: client.docId }) : null,
@@ -606,10 +617,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         throw new Error(`invite doc mismatch: got ${payload.docId}, expected ${docId}`);
       }
 
-      if (payload.payloadKeyB64) {
-        await saveDocPayloadKeyB64(docId, payload.payloadKeyB64);
-        await refreshDocPayloadKey();
-      }
+      await saveDocPayloadKeyB64(docId, payload.payloadKeyB64, payload.payloadKeyKid);
+      await refreshDocPayloadKey();
 
       await saveIssuerKeys(docId, payload.issuerPkB64);
 
@@ -840,6 +849,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       actions: [...actions].sort(),
       maxDepth: maxDepth ?? null,
       excludeNodeIds: [...excludeNodeIds].sort(),
+      payloadKeyKid,
     });
   };
 
@@ -950,7 +960,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         issuerPkB64,
         subjectSkB64: base64urlEncode(subjectSk),
         tokenB64: base64urlEncode(tokenBytes),
-        payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
+        ...(await getDocPayloadActiveKeyInfoB64(docId)),
       });
     }
     if (!issuerSkB64 || !issuerPkB64) {
@@ -988,7 +998,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
       issuerPkB64,
       subjectSkB64: base64urlEncode(subjectSk),
       tokenB64: base64urlEncode(tokenBytes),
-      payloadKeyB64: await loadOrCreateDocPayloadKeyB64(docId),
+      ...(await getDocPayloadActiveKeyInfoB64(docId)),
     });
   };
 
@@ -1059,7 +1069,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     (grant: AuthGrantMessageV1) => {
       const issuerPkB64 = grant.issuer_pk_b64;
       const tokenB64 = grant.token_b64;
-      const payloadKeyB64 = typeof grant.payload_key_b64 === "string" ? grant.payload_key_b64 : null;
+      const payloadKeyB64 = grant.payload_key_b64;
+      const payloadKeyKid = grant.payload_key_kid;
       const supersededTokenIds = Array.isArray(grant.supersedes_token_ids_hex)
         ? grant.supersedes_token_ids_hex
             .map((id) => normalizeTokenIdHex(id))
@@ -1073,10 +1084,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         try {
           await saveIssuerKeys(docId, issuerPkB64);
 
-          if (payloadKeyB64) {
-            await saveDocPayloadKeyB64(docId, payloadKeyB64);
-            await refreshDocPayloadKey();
-          }
+          await saveDocPayloadKeyB64(docId, payloadKeyB64, payloadKeyKid);
+          await refreshDocPayloadKey();
 
           const current = await loadAuthMaterial(docId);
           if (!current.localPkB64 || !current.localSkB64) {
@@ -1233,6 +1242,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         });
       }
 
+      const { payloadKeyB64, payloadKeyKid } = await getDocPayloadActiveKeyInfoB64(docId);
       const msg: AuthGrantMessageV1 = {
         t: "auth_grant_v1",
         doc_id: docId,
@@ -1240,7 +1250,8 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
         issuer_pk_b64: issuerPkB64,
         token_b64: base64urlEncode(tokenBytes),
         ...(supersedesTokenIds.length > 0 ? { supersedes_token_ids_hex: supersedesTokenIds } : {}),
-        payload_key_b64: await loadOrCreateDocPayloadKeyB64(docId),
+        payload_key_b64: payloadKeyB64,
+        payload_key_kid: payloadKeyKid,
         from_peer_id: selfPeerId,
         ts: Date.now(),
       };
@@ -1321,6 +1332,7 @@ export function usePlaygroundAuth(opts: UsePlaygroundAuthOptions): PlaygroundAut
     showAuthAdvanced,
     setShowAuthAdvanced,
     authInfo,
+    setAuthInfo,
     authError,
     setAuthError,
     authBusy,

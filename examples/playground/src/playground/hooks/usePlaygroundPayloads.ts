@@ -1,17 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { base64urlDecode } from '@treecrdt/auth';
 import {
-  createTreecrdtPayloadKeyringV1,
   decryptTreecrdtPayloadWithKeyring,
   encryptTreecrdtPayloadWithKeyring,
   type TreecrdtPayloadKeyringV1,
 } from '@treecrdt/crypto';
 import type { TreecrdtClient } from '@treecrdt/wa-sqlite';
 
-import { loadOrCreateDocPayloadKeyB64 } from '../../auth';
+import { loadOrCreateDocPayloadKeyringV1 } from '../../auth';
 import { ROOT_ID } from '../constants';
-
-const INITIAL_PAYLOAD_KEY_ID = 'initial';
 
 type PayloadRecord = {
   payload: Uint8Array | null;
@@ -41,6 +37,7 @@ export function usePlaygroundPayloads(opts: {
 }) {
   const { docId, setError } = opts;
   const [payloadVersion, setPayloadVersion] = useState(0);
+  const [payloadKeyKid, setPayloadKeyKid] = useState<string | null>(null);
   const textDecoder = useMemo(() => new TextDecoder(), []);
   const docPayloadKeyringRef = useRef<TreecrdtPayloadKeyringV1 | null>(null);
   const payloadByNodeRef = useRef<Map<string, PayloadRecord>>(new Map());
@@ -53,17 +50,15 @@ export function usePlaygroundPayloads(opts: {
   }, []);
 
   const refreshDocPayloadKey = React.useCallback(async () => {
-    const keyB64 = await loadOrCreateDocPayloadKeyB64(docId);
-    const payloadKey = base64urlDecode(keyB64);
-    docPayloadKeyringRef.current = createTreecrdtPayloadKeyringV1({
-      payloadKey,
-      activeKid: INITIAL_PAYLOAD_KEY_ID,
-    });
-    return payloadKey;
+    const keyring = await loadOrCreateDocPayloadKeyringV1(docId);
+    docPayloadKeyringRef.current = keyring;
+    setPayloadKeyKid(keyring.activeKid);
+    return keyring;
   }, [docId]);
 
   useEffect(() => {
     docPayloadKeyringRef.current = null;
+    setPayloadKeyKid(null);
     resetPayloadCache();
     let cancelled = false;
     void (async () => {
@@ -79,13 +74,10 @@ export function usePlaygroundPayloads(opts: {
     };
   }, [refreshDocPayloadKey, resetPayloadCache, setError]);
 
-  const requireDocPayloadKeyring =
-    React.useCallback(async (): Promise<TreecrdtPayloadKeyringV1> => {
-      if (docPayloadKeyringRef.current) return docPayloadKeyringRef.current;
-      await refreshDocPayloadKey();
-      if (!docPayloadKeyringRef.current) throw new Error('doc payload keyring is missing');
-      return docPayloadKeyringRef.current;
-    }, [refreshDocPayloadKey]);
+  const requireDocPayloadKeyring = React.useCallback(async (): Promise<TreecrdtPayloadKeyringV1> => {
+    if (docPayloadKeyringRef.current) return docPayloadKeyringRef.current;
+    return await refreshDocPayloadKey();
+  }, [refreshDocPayloadKey]);
 
   const decodePayloadRecord = React.useCallback(
     async (raw: Uint8Array | null): Promise<PayloadRecord> => {
@@ -171,6 +163,7 @@ export function usePlaygroundPayloads(opts: {
 
   return {
     encryptPayloadBytes,
+    payloadKeyKid,
     payloadDisplayForNode,
     refreshDocPayloadKey,
     refreshPayloadsForNodes,
