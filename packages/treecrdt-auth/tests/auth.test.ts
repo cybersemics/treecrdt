@@ -2825,7 +2825,7 @@ test('auth: same rev_seq revocation conflicts converge regardless delivery order
   ).rejects.toThrow(/capability token revoked/i);
 });
 
-test('auth: delegated capability root may be a descendant of proof root (with scope evaluator)', async () => {
+test('auth: scoped delegation may narrow at the same root but cannot re-root from local ancestry', async () => {
   const docId = 'doc-auth-delegation-narrow-root';
   const root = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
@@ -2843,52 +2843,76 @@ test('auth: delegated capability root may be a descendant of proof root (with sc
     subjectPublicKey: delegatorPk,
     docId,
     rootNodeId: root,
-    actions: ['write_structure', 'grant'],
+    actions: ['read_structure', 'grant'],
   });
 
-  const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
+  const sameRoot = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proof,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: root,
+    maxDepth: 1,
+    actions: ['read_structure'],
+  });
+
+  const described = await describeTreecrdtCapabilityTokenV1({
+    tokenBytes: sameRoot,
+    issuerPublicKeys: [issuerPk],
+    docId,
+  });
+  expect(described.caps[0]?.res.rootNodeId).toBe(root);
+  expect(described.caps[0]?.res.maxDepth).toBe(1);
+
+  const reRooted = issueTreecrdtDelegatedCapabilityTokenV1({
     delegatorPrivateKey: delegatorSk,
     delegatorProofToken: proof,
     subjectPublicKey: recipientPk,
     docId,
     rootNodeId: child,
-    actions: ['write_structure'],
+    actions: ['read_structure'],
   });
 
   await expect(
     describeTreecrdtCapabilityTokenV1({
-      tokenBytes: delegated,
+      tokenBytes: reRooted,
       issuerPublicKeys: [issuerPk],
       docId,
     }),
-  ).rejects.toThrow(/scope evaluator/i);
+  ).rejects.toThrow(/delegation proof does not allow delegated capability/i);
+});
 
-  const parentByNode = new Map<string, string>([[child, root]]);
-  const scopeEvaluator = async ({
-    node,
-    scope,
-  }: {
-    node: Uint8Array;
-    scope: { root: Uint8Array };
-  }) => {
-    const rootHex = bytesToHex(scope.root);
-    let curHex = bytesToHex(node);
-    for (let hops = 0; hops < 16; hops += 1) {
-      if (curHex === rootHex) return 'allow' as const;
-      const parent = parentByNode.get(curHex);
-      if (!parent) return 'deny' as const;
-      curHex = parent;
-    }
-    return 'unknown' as const;
-  };
+test('auth: a document-wide delegation proof may re-root without an ancestry evaluator', async () => {
+  const docId = 'doc-auth-delegation-doc-wide-root';
+  const delegatedRoot = nodeIdFromInt(1);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const delegatorSk = ed25519Utils.randomSecretKey();
+  const delegatorPk = await getPublicKey(delegatorSk);
+  const recipientPk = await getPublicKey(ed25519Utils.randomSecretKey());
+
+  const proof = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: delegatorPk,
+    docId,
+    actions: ['read_structure', 'grant'],
+  });
+  const delegated = issueTreecrdtDelegatedCapabilityTokenV1({
+    delegatorPrivateKey: delegatorSk,
+    delegatorProofToken: proof,
+    subjectPublicKey: recipientPk,
+    docId,
+    rootNodeId: delegatedRoot,
+    actions: ['read_structure'],
+  });
 
   const described = await describeTreecrdtCapabilityTokenV1({
     tokenBytes: delegated,
     issuerPublicKeys: [issuerPk],
     docId,
-    scopeEvaluator: scopeEvaluator as any,
   });
-  expect(bytesToHex(described.subjectPublicKey)).toBe(bytesToHex(recipientPk));
+  expect(described.caps[0]?.res.rootNodeId).toBe(delegatedRoot);
 });
 
 test('auth: records peer identity chain capability via onPeerIdentityChain', async () => {

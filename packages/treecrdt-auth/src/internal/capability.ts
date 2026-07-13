@@ -13,12 +13,7 @@ import {
 } from '../cose.js';
 import { concatBytes } from './bytes.js';
 import { getClaim, getField, mapGet, toNumber } from './claims.js';
-import {
-  expandCapabilityActions,
-  isDocWideScope,
-  parseScope,
-  type TreecrdtScopeEvaluator,
-} from './scope.js';
+import { expandCapabilityActions, isDocWideScope, parseScope } from './scope.js';
 
 const TREECRDT_DELEGATION_PROOF_HEADER_V1 = 'treecrdt.delegation_proof_v1';
 
@@ -181,7 +176,6 @@ type ParseAndVerifyCapabilityTokenOptions = {
   issuerPublicKeys: readonly Uint8Array[];
   docId: string;
   nowSec: number;
-  scopeEvaluator?: TreecrdtScopeEvaluator;
 } & TreecrdtCapabilityRevocationOptions;
 
 type ParseAndVerifyCapabilityTokenDepthOptions = {
@@ -189,7 +183,6 @@ type ParseAndVerifyCapabilityTokenDepthOptions = {
   issuerPublicKeys: readonly Uint8Array[];
   docId: string;
   nowSec: number;
-  scopeEvaluator?: TreecrdtScopeEvaluator;
   isCapabilityTokenRevoked?: (
     ctx: TreecrdtCapabilityRevocationCheckContext,
   ) => boolean | Promise<boolean>;
@@ -287,7 +280,6 @@ async function parseAndVerifyCapabilityTokenDepth(
     issuerPublicKeys: opts.issuerPublicKeys,
     docId: opts.docId,
     nowSec: opts.nowSec,
-    scopeEvaluator: opts.scopeEvaluator,
     isCapabilityTokenRevoked: opts.isCapabilityTokenRevoked,
     depth: opts.depth + 1,
     seenTokenIds: opts.seenTokenIds,
@@ -306,11 +298,10 @@ async function parseAndVerifyCapabilityTokenDepth(
     nowSec: opts.nowSec,
   });
 
-  await assertDelegatedGrantWithinProof({
+  assertDelegatedGrantWithinProof({
     docId: opts.docId,
     proof: proofGrant,
     delegated: delegatedGrant,
-    scopeEvaluator: opts.scopeEvaluator,
   });
 
   return delegatedGrant;
@@ -375,12 +366,11 @@ function parseCapabilityGrantFromClaims(opts: {
   };
 }
 
-async function assertDelegatedGrantWithinProof(opts: {
+function assertDelegatedGrantWithinProof(opts: {
   docId: string;
   proof: CapabilityGrant;
   delegated: CapabilityGrant;
-  scopeEvaluator?: TreecrdtScopeEvaluator;
-}): Promise<void> {
+}): void {
   if (!Array.isArray(opts.proof.caps))
     throw new Error('delegation proof token must be a v1 capability token');
   if (!Array.isArray(opts.delegated.caps))
@@ -441,24 +431,10 @@ async function assertDelegatedGrantWithinProof(opts: {
         const proofRootHex = bytesToHex(proofScope.root);
         const delegatedRootHex = bytesToHex(delegatedScope.root);
         if (delegatedRootHex !== proofRootHex) {
-          if (proofScope.maxDepth !== undefined) {
-            throw new Error(
-              'delegated capability root must match proof root when proof uses maxDepth',
-            );
-          }
-          if (!opts.scopeEvaluator) {
-            throw new Error(
-              'delegated capability root must match proof root (scope evaluator missing)',
-            );
-          }
-          const tri = await opts.scopeEvaluator({
-            docId: opts.docId,
-            node: delegatedScope.root,
-            scope: proofScope,
-          });
-          if (tri === 'deny') throw new Error('delegated capability root is outside proof scope');
-          if (tri === 'unknown')
-            throw new Error('cannot validate delegated capability root within proof scope');
+          // Receiver-local ancestry can change as operations arrive, so it cannot prove that a
+          // different delegated root is a stable subset of this scoped proof. Keep looking in
+          // case another capability in the proof is document-wide and can authorize the re-root.
+          continue;
         }
 
         if (proofScope.maxDepth !== undefined) {
@@ -498,7 +474,6 @@ export async function describeTreecrdtCapabilityTokenV1(
     tokenBytes: Uint8Array;
     issuerPublicKeys: readonly Uint8Array[];
     docId: string;
-    scopeEvaluator?: TreecrdtScopeEvaluator;
     nowSec?: number;
   } & TreecrdtCapabilityRevocationOptions,
 ): Promise<TreecrdtCapabilityTokenV1> {
@@ -506,7 +481,6 @@ export async function describeTreecrdtCapabilityTokenV1(
     tokenBytes: opts.tokenBytes,
     issuerPublicKeys: opts.issuerPublicKeys,
     docId: opts.docId,
-    scopeEvaluator: opts.scopeEvaluator,
     nowSec: opts.nowSec ?? Math.floor(Date.now() / 1000),
     revokedCapabilityTokenIds: opts.revokedCapabilityTokenIds,
     isCapabilityTokenRevoked: opts.isCapabilityTokenRevoked,
