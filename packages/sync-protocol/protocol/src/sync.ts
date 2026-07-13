@@ -1,4 +1,4 @@
-import { RibltDecoder16, RibltEncoder16 } from '@treecrdt/riblt-wasm';
+import type { RibltDecoder16 } from '@treecrdt/riblt-wasm';
 
 import {
   AUTH_CAPABILITY_NAME,
@@ -700,6 +700,7 @@ export class SyncPeer<Op> {
         return;
       }
 
+      const { RibltEncoder16 } = await import('@treecrdt/riblt-wasm');
       const enc = new RibltEncoder16();
       for (const r of opRefs) enc.addSymbol(r);
 
@@ -1282,6 +1283,7 @@ export class SyncPeer<Op> {
         continue;
       }
 
+      const { RibltDecoder16 } = await import('@treecrdt/riblt-wasm');
       const decoder = new RibltDecoder16();
       for (const r of localOpRefs) decoder.addLocalSymbol(r);
       traceHello(this.backend.docId, traceStartedAt, 'after-decoder-setup', {
