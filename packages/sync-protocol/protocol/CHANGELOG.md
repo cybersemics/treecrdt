@@ -1,5 +1,11 @@
 # @treecrdt/sync-protocol
 
+## 0.1.2
+
+### Patch Changes
+
+- d859c20: Load RIBLT only when reconciliation needs it, so importing the sync protocol no longer suspends browser application startup.
+
 ## 0.1.1
 
 ### Patch Changes
