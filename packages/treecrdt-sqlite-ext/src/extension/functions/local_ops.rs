@@ -55,7 +55,15 @@ struct JsonLocalOpTransactionError {
 enum LocalOpMode {
     Immediate,
     Prepare,
-    Commit(String),
+    Commit {
+        precondition: String,
+        proof: LocalOpProof,
+    },
+}
+
+struct LocalOpProof {
+    sig: Vec<u8>,
+    proof_ref: Vec<u8>,
 }
 
 enum LocalOpDispatchResult {
@@ -109,20 +117,37 @@ fn parse_local_op_mode(
     args: &[*mut sqlite3_value],
     base_argc: usize,
 ) -> Result<LocalOpMode, ()> {
-    if argc as usize == base_argc {
-        return Ok(LocalOpMode::Immediate);
+    match argc as usize {
+        n if n == base_argc => return Ok(LocalOpMode::Immediate),
+        n if n == base_argc + 1 => {
+            return (read_text(args[base_argc]) == "prepare")
+                .then_some(LocalOpMode::Prepare)
+                .ok_or(());
+        }
+        n if n == base_argc + 3 => {}
+        _ => return Err(()),
     }
-    if argc as usize != base_argc + 1 {
+
+    let precondition = read_text(args[base_argc]);
+    if !precondition.starts_with("v1:") {
         return Err(());
     }
-    let phase = read_text(args[base_argc]);
-    if phase == "prepare" {
-        Ok(LocalOpMode::Prepare)
-    } else if phase.starts_with("v1:") {
-        Ok(LocalOpMode::Commit(phase))
-    } else {
-        Err(())
+    let sig = read_required_blob(args[base_argc + 1])?;
+    if sig.len() != 64 {
+        return Err(());
     }
+    let proof_ref = read_required_blob(args[base_argc + 2])?;
+    if proof_ref.len() != 16 {
+        return Err(());
+    }
+    Ok(LocalOpMode::Commit {
+        precondition,
+        proof: LocalOpProof { sig, proof_ref },
+    })
+}
+
+fn valid_local_op_argc(argc: c_int, base_argc: usize) -> bool {
+    matches!(argc as usize, n if n == base_argc || n == base_argc + 1 || n == base_argc + 3)
 }
 
 fn sqlite_busy_or_locked(rc: c_int) -> bool {
@@ -283,6 +308,72 @@ fn local_precondition(
     hasher.update(&(op_bytes.len() as u64).to_be_bytes());
     hasher.update(&op_bytes);
     Ok(Some(format!("v1:{}", hasher.finalize().to_hex())))
+}
+
+fn persist_local_op_proof(
+    db: *mut sqlite3,
+    doc_id: &[u8],
+    op: &Operation,
+    proof: &LocalOpProof,
+) -> Result<(), c_int> {
+    let sql = CString::new(
+        "INSERT OR REPLACE INTO treecrdt_sync_op_auth \
+         (doc_id, op_ref, sig, proof_ref, created_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, CAST(strftime('%s','now') AS INTEGER) * 1000)",
+    )
+    .expect("local op proof sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(rc);
+    }
+
+    let op_ref = derive_op_ref_v0(doc_id, op.meta.id.replica.as_bytes(), op.meta.id.counter);
+    let mut bind_err = false;
+    unsafe {
+        bind_err |= sqlite_bind_text(
+            stmt,
+            1,
+            doc_id.as_ptr() as *const c_char,
+            doc_id.len() as c_int,
+            None,
+        ) != SQLITE_OK as c_int;
+        bind_err |= sqlite_bind_blob(
+            stmt,
+            2,
+            op_ref.as_ptr() as *const c_void,
+            op_ref.len() as c_int,
+            None,
+        ) != SQLITE_OK as c_int;
+        bind_err |= sqlite_bind_blob(
+            stmt,
+            3,
+            proof.sig.as_ptr() as *const c_void,
+            proof.sig.len() as c_int,
+            None,
+        ) != SQLITE_OK as c_int;
+        bind_err |= sqlite_bind_blob(
+            stmt,
+            4,
+            proof.proof_ref.as_ptr() as *const c_void,
+            proof.proof_ref.len() as c_int,
+            None,
+        ) != SQLITE_OK as c_int;
+    }
+    if bind_err {
+        unsafe { sqlite_finalize(stmt) };
+        return Err(SQLITE_ERROR as c_int);
+    }
+
+    let step_rc = unsafe { sqlite_step(stmt) };
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    if step_rc != SQLITE_DONE as c_int {
+        return Err(step_rc);
+    }
+    if finalize_rc != SQLITE_OK as c_int {
+        return Err(finalize_rc);
+    }
+    Ok(())
 }
 
 fn begin_local_core_op(
@@ -493,7 +584,10 @@ where
             };
             finish_local_core_op(session, op, plan).map(LocalOpDispatchResult::Committed)
         }
-        LocalOpMode::Commit(expected_precondition) => {
+        LocalOpMode::Commit {
+            precondition: expected_precondition,
+            proof,
+        } => {
             let mut session = match begin_optimistic_local_core_op(db, &replica, savepoint_name) {
                 Ok(v) => v,
                 Err(OptimisticBeginError::Conflict) => return Ok(LocalOpDispatchResult::Conflict),
@@ -525,6 +619,9 @@ where
                 Ok(v) => v,
                 Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
             };
+            if let Err(rc) = persist_local_op_proof(session.db, &session.doc_id, &op, &proof) {
+                return Err(session.rollback(rc));
+            }
             finish_local_core_op(session, op, plan).map(LocalOpDispatchResult::Committed)
         }
     }
@@ -556,10 +653,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         return;
     }
 
-    if argc != 6 && argc != 7 {
+    if !valid_local_op_argc(argc, 6) {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_insert expects 6 args plus optional prepare/precondition\0".as_ptr()
+            b"treecrdt_local_insert expects 6 args, 7 for prepare, or 9 for commit\0".as_ptr()
                 as *const c_char,
         );
         return;
@@ -571,7 +668,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_insert: invalid prepare/precondition argument\0".as_ptr()
+                b"treecrdt_local_insert: invalid prepare or commit arguments\0".as_ptr()
                     as *const c_char,
             );
             return;
@@ -655,10 +752,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         return;
     }
 
-    if argc != 5 && argc != 6 {
+    if !valid_local_op_argc(argc, 5) {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_move expects 5 args plus optional prepare/precondition\0".as_ptr()
+            b"treecrdt_local_move expects 5 args, 6 for prepare, or 8 for commit\0".as_ptr()
                 as *const c_char,
         );
         return;
@@ -670,7 +767,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_move: invalid prepare/precondition argument\0".as_ptr()
+                b"treecrdt_local_move: invalid prepare or commit arguments\0".as_ptr()
                     as *const c_char,
             );
             return;
@@ -752,10 +849,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
         return;
     }
 
-    if argc != 2 && argc != 3 {
+    if !valid_local_op_argc(argc, 2) {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_delete expects 2 args plus optional prepare/precondition\0".as_ptr()
+            b"treecrdt_local_delete expects 2 args, 3 for prepare, or 5 for commit\0".as_ptr()
                 as *const c_char,
         );
         return;
@@ -767,7 +864,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_delete: invalid prepare/precondition argument\0".as_ptr()
+                b"treecrdt_local_delete: invalid prepare or commit arguments\0".as_ptr()
                     as *const c_char,
             );
             return;
@@ -818,10 +915,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         return;
     }
 
-    if argc != 3 && argc != 4 {
+    if !valid_local_op_argc(argc, 3) {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_payload expects 3 args plus optional prepare/precondition\0".as_ptr()
+            b"treecrdt_local_payload expects 3 args, 4 for prepare, or 6 for commit\0".as_ptr()
                 as *const c_char,
         );
         return;
@@ -833,7 +930,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_payload: invalid prepare/precondition argument\0".as_ptr()
+                b"treecrdt_local_payload: invalid prepare or commit arguments\0".as_ptr()
                     as *const c_char,
             );
             return;

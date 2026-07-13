@@ -613,7 +613,7 @@ fn optimistic_local_prepare_is_read_only_and_stale_commit_is_a_conflict() {
 
     let contended_json: String = conn_a
         .query_row(
-            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)",
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, zeroblob(64), zeroblob(16))",
             rusqlite::params![
                 replica.clone(),
                 root.clone(),
@@ -629,7 +629,7 @@ fn optimistic_local_prepare_is_read_only_and_stale_commit_is_a_conflict() {
     // Once B commits, the same token is stale and still returns a clean conflict.
     let stale_json: String = conn_a
         .query_row(
-            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)",
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, zeroblob(64), zeroblob(16))",
             rusqlite::params![
                 replica.clone(),
                 root.clone(),
@@ -664,7 +664,7 @@ fn optimistic_local_prepare_is_read_only_and_stale_commit_is_a_conflict() {
     assert_eq!(retried.op.lamport, 2);
     let committed_json: String = conn_a
         .query_row(
-            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)",
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, zeroblob(64), zeroblob(16))",
             rusqlite::params![
                 replica,
                 root.clone(),
@@ -682,6 +682,236 @@ fn optimistic_local_prepare_is_read_only_and_stale_commit_is_a_conflict() {
         visible_children(&conn_a, &root),
         vec![unrelated_node, proposed_node]
     );
+}
+
+#[test]
+fn op_auth_schema_is_shared_across_initialization_orders() {
+    fn columns(conn: &Connection) -> Vec<(String, String, i64, i64)> {
+        let mut stmt = conn.prepare("PRAGMA table_info('treecrdt_sync_op_auth')").unwrap();
+        stmt.query_map([], |row| {
+            Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(5)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+
+    let fresh = setup_conn();
+    assert_eq!(
+        columns(&fresh),
+        vec![
+            ("doc_id".into(), "TEXT".into(), 1, 1),
+            ("op_ref".into(), "BLOB".into(), 1, 2),
+            ("sig".into(), "BLOB".into(), 1, 0),
+            ("proof_ref".into(), "BLOB".into(), 1, 0),
+            ("created_at_ms".into(), "INTEGER".into(), 1, 0),
+        ]
+    );
+
+    let proof_store_first = Connection::open_in_memory().unwrap();
+    proof_store_first
+        .execute_batch(
+            r#"
+CREATE TABLE treecrdt_sync_op_auth (
+  doc_id TEXT NOT NULL,
+  op_ref BLOB NOT NULL,
+  sig BLOB NOT NULL CHECK(length(sig) = 64),
+  proof_ref BLOB NOT NULL CHECK(length(proof_ref) = 16),
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (doc_id, op_ref)
+);
+INSERT INTO treecrdt_sync_op_auth
+  (doc_id, op_ref, sig, proof_ref, created_at_ms)
+VALUES ('proof-store-first', X'01', zeroblob(64), zeroblob(16), 7);
+"#,
+        )
+        .unwrap();
+    load_extension(&proof_store_first);
+
+    assert_eq!(columns(&proof_store_first), columns(&fresh));
+    assert_eq!(
+        proof_store_first
+            .query_row(
+                "SELECT created_at_ms FROM treecrdt_sync_op_auth WHERE doc_id = 'proof-store-first'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        7
+    );
+
+    for conn in [&fresh, &proof_store_first] {
+        assert!(conn
+            .execute(
+                "INSERT INTO treecrdt_sync_op_auth \
+                 (doc_id, op_ref, sig, proof_ref, created_at_ms) \
+                 VALUES ('short-sig', X'02', zeroblob(63), zeroblob(16), 8)",
+                [],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO treecrdt_sync_op_auth \
+                 (doc_id, op_ref, sig, proof_ref, created_at_ms) \
+                 VALUES ('short-proof-ref', X'03', zeroblob(64), zeroblob(15), 9)",
+                [],
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn optimistic_local_proof_is_atomic_with_operation_commit() {
+    let doc_id = "träd/🌲/文档";
+    let conn = setup_conn_with_doc_id(doc_id);
+    let replica = b"proof-replica".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(50);
+    let sig = vec![7u8; 64];
+    let proof_ref = vec![8u8; 16];
+
+    let prepared_json: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, 'prepare')",
+            rusqlite::params![replica.clone(), root.clone(), node.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let prepared: JsonPreparedLocalOpResult = serde_json::from_str(&prepared_json).unwrap();
+    for sql in [
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)",
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, zeroblob(63), zeroblob(16))",
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, zeroblob(64), NULL)",
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, zeroblob(64), zeroblob(15))",
+    ] {
+        let invalid: rusqlite::Result<String> = conn.query_row(
+            sql,
+            rusqlite::params![
+                replica.clone(),
+                root.clone(),
+                node.clone(),
+                prepared.precondition.clone()
+            ],
+            |row| row.get(0),
+        );
+        assert!(invalid.is_err());
+    }
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let before_ms: i64 = conn
+        .query_row(
+            "SELECT CAST(strftime('%s','now') AS INTEGER) * 1000",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, ?5, ?6)",
+            rusqlite::params![
+                replica.clone(),
+                root.clone(),
+                node.clone(),
+                prepared.precondition,
+                sig.clone(),
+                proof_ref.clone()
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let after_ms: i64 = conn
+        .query_row(
+            "SELECT CAST(strftime('%s','now') AS INTEGER) * 1000",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let stored: (String, String, Vec<u8>, Vec<u8>, i64) = conn
+        .query_row(
+            "SELECT typeof(doc_id), doc_id, sig, proof_ref, created_at_ms \
+             FROM treecrdt_sync_op_auth",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(stored.0, "text");
+    assert_eq!(stored.1, doc_id);
+    assert_eq!(stored.2, sig.clone());
+    assert_eq!(stored.3, proof_ref);
+    assert!((before_ms..=after_ms).contains(&stored.4));
+    assert_eq!(
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM treecrdt_sync_op_auth AS auth \
+             JOIN ops ON ops.op_ref = auth.op_ref WHERE auth.doc_id = ?1)",
+            [doc_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+
+    let rejected_node = node_bytes(51);
+    let rejected_json: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, 'prepare')",
+            rusqlite::params![replica.clone(), root.clone(), rejected_node.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let rejected: JsonPreparedLocalOpResult = serde_json::from_str(&rejected_json).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_local_proof BEFORE INSERT ON treecrdt_sync_op_auth \
+         BEGIN SELECT RAISE(ABORT, 'proof failure'); END;",
+    )
+    .unwrap();
+    let failed: rusqlite::Result<String> = conn.query_row(
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4, ?5, ?6)",
+        rusqlite::params![
+            replica,
+            root,
+            rejected_node.clone(),
+            rejected.precondition,
+            sig,
+            proof_ref
+        ],
+        |row| row.get(0),
+    );
+    assert!(failed.is_err());
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(!visible_children(&conn, &node_bytes(0)).contains(&rejected_node));
+    assert_eq!(read_tree_meta(&conn).3, 1);
+    assert!(conn.is_autocommit());
+
+    conn.execute_batch("DROP TRIGGER reject_local_proof").unwrap();
+    let recovery_node = node_bytes(52);
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![
+                b"recovery-replica".to_vec(),
+                node_bytes(0),
+                recovery_node.clone()
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(visible_children(&conn, &node_bytes(0)).contains(&recovery_node));
 }
 
 #[test]
@@ -1217,26 +1447,36 @@ fn oprefs_children_include_payload_after_move() {
 }
 
 fn setup_conn() -> Connection {
-    setup_conn_at(None)
+    setup_conn_with_doc_id("treecrdt-sqlite-ext-test")
 }
 
 fn setup_conn_at(path: Option<&Path>) -> Connection {
-    let ext_path = find_extension().expect("extension dylib path");
+    setup_conn_at_with_doc_id(path, "treecrdt-sqlite-ext-test")
+}
+
+fn setup_conn_with_doc_id(doc_id: &str) -> Connection {
+    setup_conn_at_with_doc_id(None, doc_id)
+}
+
+fn setup_conn_at_with_doc_id(path: Option<&Path>, doc_id: &str) -> Connection {
     let conn = match path {
         Some(path) => Connection::open(path).unwrap(),
         None => Connection::open_in_memory().unwrap(),
     };
+    load_extension(&conn);
+    conn.query_row("SELECT treecrdt_set_doc_id(?1)", [doc_id], |row| {
+        row.get::<_, i64>(0)
+    })
+    .unwrap();
+    conn
+}
+
+fn load_extension(conn: &Connection) {
+    let ext_path = find_extension().expect("extension dylib path");
     unsafe {
         conn.load_extension_enable().unwrap();
         conn.load_extension(ext_path, Some("sqlite3_treecrdt_init")).unwrap();
     }
-    conn.query_row(
-        "SELECT treecrdt_set_doc_id('treecrdt-sqlite-ext-test')",
-        [],
-        |row| row.get::<_, i64>(0),
-    )
-    .unwrap();
-    conn
 }
 
 fn node_bytes(id: u128) -> Vec<u8> {
