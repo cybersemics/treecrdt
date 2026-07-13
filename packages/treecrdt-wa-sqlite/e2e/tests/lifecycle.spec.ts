@@ -107,9 +107,11 @@ test.describe('browser OPFS lifecycle', () => {
         page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
 
         const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+        const filename = `/lifecycle-${'p'.repeat(48)}-${scenario.runtime}-${suffix}.db`;
+        expect(new TextEncoder().encode(`${filename}-journal`).byteLength).toBeGreaterThan(64);
         const opts = {
           docId: `lifecycle-${scenario.runtime}-${suffix}`,
-          filename: `/lifecycle-${scenario.runtime}-${suffix}.db`,
+          filename,
           runtime: scenario.runtime,
         };
 
