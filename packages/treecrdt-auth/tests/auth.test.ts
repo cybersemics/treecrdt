@@ -27,7 +27,14 @@ import {
   signTreecrdtOp,
   verifyTreecrdtRevocationRecordV1,
 } from '../dist/treecrdt-auth.js';
-import type { Capability, Filter, Hello, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
+import type {
+  Capability,
+  Filter,
+  Hello,
+  OpAuth,
+  OpRef,
+  SyncBackend,
+} from '@treecrdt/sync-protocol';
 
 ed25519Hashes.sha512 = sha512;
 
@@ -425,6 +432,59 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(
     /capability does not allow op/i,
   );
+});
+
+test('auth: verifyOps is side-effect-free and onVerifiedOps publishes proof material', async () => {
+  const docId = 'doc-auth-local-proof-staging';
+  const root = '0'.repeat(32);
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const writerSk = ed25519Utils.randomSecretKey();
+  const writerPk = await getPublicKey(writerSk);
+  const token = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: writerPk,
+    docId,
+    actions: ['write_structure'],
+  });
+  const persisted: Array<{ opRef: OpRef; auth: OpAuth }> = [];
+  const auth = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: writerSk,
+    localPublicKey: writerPk,
+    localCapabilityTokens: [token],
+    opAuthStore: {
+      storeOpAuth: async (entries) => {
+        persisted.push(...entries);
+      },
+      getOpAuthByOpRefs: async (opRefs) => opRefs.map(() => null),
+    },
+  });
+  const signCtx = { docId, purpose: 'local_write' as const, filterId: '__local__' };
+  const ctx = { docId, purpose: 'reconcile' as const, filterId: '__local__' };
+  const firstProposal = makeOp(writerPk, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const retriedProposal = makeOp(writerPk, 1, 2, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(2),
+    orderKey: orderKeyFromPosition(1),
+  });
+
+  const firstAuth = (await auth.signOps?.([firstProposal], signCtx))!;
+  await auth.verifyOps?.([firstProposal], firstAuth, ctx);
+  const retriedAuth = (await auth.signOps?.([retriedProposal], signCtx))!;
+  await auth.verifyOps?.([retriedProposal], retriedAuth, ctx);
+  expect(persisted).toHaveLength(0);
+
+  await auth.onVerifiedOps?.([retriedProposal], retriedAuth, ctx);
+  expect(persisted).toHaveLength(1);
+  expect(persisted[0]!.auth.sig).toEqual(retriedAuth[0]!.sig);
+  expect(persisted[0]!.auth.sig).not.toEqual(firstAuth[0]!.sig);
 });
 
 test('auth: restart reuses only a retained proof for the exact local operation', async () => {
