@@ -39,11 +39,11 @@ fn node_buffer(node: NodeId) -> Buffer {
 }
 
 fn vv_from_bytes(bytes: &[u8]) -> CoreResult<VersionVector> {
-    serde_json::from_slice(bytes).map_err(|e| CoreError::Storage(e.to_string()))
+    VersionVector::decode_v0(bytes)
 }
 
 fn vv_to_bytes(vv: &VersionVector) -> CoreResult<Vec<u8>> {
-    serde_json::to_vec(vv).map_err(|e| CoreError::Storage(e.to_string()))
+    vv.encode_v0()
 }
 
 #[napi(object)]
@@ -262,7 +262,6 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
 
     let known_state = match op.known_state {
         None => None,
-        Some(b) if b.is_empty() => None,
         Some(b) => Some(vv_from_bytes(&b)?),
     };
 

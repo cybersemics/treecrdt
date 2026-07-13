@@ -5,11 +5,11 @@ fn sqlite_rc_error(rc: c_int, context: &str) -> treecrdt_core::Error {
 }
 
 fn vv_to_bytes(vv: &VersionVector) -> treecrdt_core::Result<Vec<u8>> {
-    serde_json::to_vec(vv).map_err(|e| treecrdt_core::Error::Storage(e.to_string()))
+    vv.encode_v0()
 }
 
 fn vv_from_bytes(bytes: &[u8]) -> treecrdt_core::Result<VersionVector> {
-    serde_json::from_slice(bytes).map_err(|e| treecrdt_core::Error::Storage(e.to_string()))
+    VersionVector::decode_v0(bytes)
 }
 
 fn sqlite_bytes_to_node_id(bytes: [u8; 16]) -> NodeId {
@@ -65,11 +65,17 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
     } else {
         let ptr = unsafe { sqlite_column_blob(stmt, 8) } as *const u8;
         let len = unsafe { sqlite_column_bytes(stmt, 8) } as usize;
-        if ptr.is_null() || len == 0 {
-            None
+        let bytes = if len == 0 {
+            &[]
+        } else if ptr.is_null() {
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                "known_state blob pointer is null",
+            ));
         } else {
-            Some(vv_from_bytes(unsafe { slice::from_raw_parts(ptr, len) })?)
-        }
+            unsafe { slice::from_raw_parts(ptr, len) }
+        };
+        Some(vv_from_bytes(bytes)?)
     };
 
     let payload = if unsafe { sqlite_column_type(stmt, 9) } == SQLITE_NULL as c_int {

@@ -2,6 +2,7 @@ import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/e
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import { encodeVersionVectorV0 } from '@treecrdt/interface/version-vector';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 import {
@@ -185,8 +186,8 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioOpRefsChildrenCanonicalOrderingOnLamportTies,
     },
     {
-      name: 'append/appendMany: rejects delete without known_state',
-      run: scenarioRejectsDeleteWithoutKnownState,
+      name: 'append/appendMany: rejects invalid delete known_state',
+      run: scenarioRejectsInvalidDeleteKnownState,
     },
     {
       name: 'defensive delete: delete hides node; move restores it',
@@ -388,14 +389,13 @@ function orderKeyFromPosition(position: number): Uint8Array {
 function vvBytes(
   entries: { replica: ReplicaId; frontier: number; ranges?: [number, number][] }[],
 ): Uint8Array {
-  const payload = {
+  return encodeVersionVectorV0({
     entries: entries.map((e) => ({
-      replica: Array.from(replicaIdToBytes(e.replica)),
-      frontier: e.frontier,
-      ranges: e.ranges ?? [],
+      replica: replicaIdToBytes(e.replica),
+      frontier: BigInt(e.frontier),
+      ranges: (e.ranges ?? []).map(([start, end]) => [BigInt(start), BigInt(end)] as const),
     })),
-  };
-  return new TextEncoder().encode(JSON.stringify(payload));
+  });
 }
 
 function makeInsertOp(opts: {
@@ -1181,7 +1181,7 @@ async function scenarioOpRefsChildrenCanonicalOrderingOnLamportTies(
   );
 }
 
-async function scenarioRejectsDeleteWithoutKnownState(
+async function scenarioRejectsInvalidDeleteKnownState(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
@@ -1190,22 +1190,44 @@ async function scenarioRejectsDeleteWithoutKnownState(
   const node = nodeIdFromInt(1);
 
   await engine.local.insert(replica, root, node, { type: 'last' }, null);
+  const initialOpCount = (await engine.ops.all()).length;
+  const invalidStates: { name: string; knownState?: Uint8Array }[] = [
+    { name: 'missing' },
+    { name: 'empty', knownState: new Uint8Array() },
+    { name: 'noncanonical JSON', knownState: new TextEncoder().encode('{"entries":[]}') },
+  ];
+  const appenders: { name: string; run: (op: Operation) => Promise<void> }[] = [
+    { name: 'append', run: (op) => engine.ops.append(op) },
+    { name: 'appendMany', run: (op) => engine.ops.appendMany([op]) },
+  ];
+  let counter = 2;
 
-  let threw = false;
-  try {
-    await engine.ops.append(makeDeleteOp({ replica, counter: 2, lamport: 2, node }));
-  } catch {
-    threw = true;
-  }
-  assert(threw, 'append(delete without knownState) should throw');
+  for (const invalid of invalidStates) {
+    for (const appender of appenders) {
+      const op = makeDeleteOp({
+        replica,
+        counter,
+        lamport: counter,
+        node,
+        knownState: invalid.knownState,
+      });
+      counter += 1;
 
-  threw = false;
-  try {
-    await engine.ops.appendMany([makeDeleteOp({ replica, counter: 3, lamport: 3, node })]);
-  } catch {
-    threw = true;
+      let threw = false;
+      try {
+        await appender.run(op);
+      } catch {
+        threw = true;
+      }
+      const label = `${appender.name}(delete with ${invalid.name} knownState)`;
+      assert(threw, `${label} should throw`);
+      assertEqual(
+        (await engine.ops.all()).length,
+        initialOpCount,
+        `${label} must not persist the op`,
+      );
+    }
   }
-  assert(threw, 'appendMany(delete without knownState) should throw');
 }
 
 async function scenarioDefensiveDeleteMoveRestores(
@@ -1367,6 +1389,13 @@ async function scenarioSyncKnownStatePropagation(
   const eventsOnB = await captureMaterializationEvents(b, async () => {
     await b.ops.appendMany(await a.ops.all());
   });
+  const receivedDelete = (await b.ops.all()).find((op) => op.kind.type === 'delete');
+  assert(receivedDelete, 'receiver must store the delete operation');
+  assertBytesEqual(
+    receivedDelete.meta.knownState ?? null,
+    del.meta.knownState ?? null,
+    'receiver must preserve exact delete knownState bytes',
+  );
   assert(eventsOnB.length > 0, 'sync known_state should emit a materialization event on B');
   assertEventNodeRefsSortedUnique(
     materializationEventNodeRefs(eventsOnB[eventsOnB.length - 1]!),

@@ -257,11 +257,15 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
         } else {
             let ptr = sqlite_column_blob(stmt, 8) as *const u8;
             let len = sqlite_column_bytes(stmt, 8) as usize;
-            if ptr.is_null() || len == 0 {
-                None
+            let bytes = if len == 0 {
+                Vec::new()
+            } else if ptr.is_null() {
+                return Err(SQLITE_ERROR as c_int);
             } else {
-                Some(slice::from_raw_parts(ptr, len).to_vec())
-            }
+                slice::from_raw_parts(ptr, len).to_vec()
+            };
+            deserialize_version_vector(&bytes)?;
+            Some(bytes)
         };
         let payload = if sqlite_column_type(stmt, 9) == SQLITE_NULL as c_int {
             None

@@ -196,7 +196,7 @@ fn decode_ops_or_local_result(json: &str) -> Vec<JsonOp> {
 }
 
 fn vv_to_bytes(vv: &VersionVector) -> Vec<u8> {
-    serde_json::to_vec(vv).unwrap()
+    vv.encode_v0().unwrap()
 }
 
 fn json_op(op: &Operation) -> JsonOp {
@@ -921,7 +921,7 @@ fn local_delete_includes_known_state_bytes() {
     assert_eq!(op.kind, "delete");
     let bytes = op.known_state.as_ref().unwrap();
     assert!(!bytes.is_empty());
-    let vv: VersionVector = serde_json::from_slice(bytes).unwrap();
+    let vv = VersionVector::decode_v0(bytes).unwrap();
     assert!(vv.get(&ReplicaId::new(replica)) >= 1);
 
     let (head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
@@ -929,6 +929,62 @@ fn local_delete_includes_known_state_bytes() {
     assert_eq!(head_replica, b"r1".to_vec());
     assert_eq!(head_counter, 2);
     assert_eq!(head_seq, 2);
+}
+
+#[test]
+fn materialization_repairs_noncanonical_deleted_at_bytes() {
+    for deleted_at in [Vec::new(), br#"{"entries":[]}"#.to_vec()] {
+        let conn = setup_conn();
+        let replica = b"r1".to_vec();
+        let root = node_bytes(0);
+        let node = node_bytes(1);
+        let order_key = (1u16).to_be_bytes().to_vec();
+
+        let _: String = conn
+            .query_row(
+                "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
+                rusqlite::params![replica, 1i64, 1i64, "insert", root, node, order_key],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let updated = conn
+            .execute(
+                "UPDATE tree_nodes SET deleted_at = ?1 WHERE node = ?2",
+                rusqlite::params![deleted_at, node],
+            )
+            .unwrap();
+        assert_eq!(updated, 1);
+
+        let _: String = conn
+            .query_row(
+                "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, NULL, ?5, NULL, NULL, ?6)",
+                rusqlite::params![
+                    b"r1".to_vec(),
+                    2i64,
+                    2i64,
+                    "payload",
+                    node,
+                    b"payload".to_vec()
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+
+        let repaired: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT deleted_at FROM tree_nodes WHERE node = ?1",
+                rusqlite::params![node],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            repaired, None,
+            "did not repair invalid deleted_at bytes: {deleted_at:?}"
+        );
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 2);
+    }
 }
 
 #[test]

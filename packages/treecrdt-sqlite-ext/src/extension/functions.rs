@@ -60,10 +60,7 @@ fn derive_op_ref_v0(doc_id: &[u8], replica: &[u8], counter: u64) -> [u8; OPREF_V
 
 #[cfg(any(feature = "ext-sqlite", feature = "static-link"))]
 fn deserialize_version_vector(bytes: &[u8]) -> Result<VersionVector, c_int> {
-    match serde_json::from_slice(bytes) {
-        Ok(vv) => Ok(vv),
-        Err(_) => Err(SQLITE_ERROR as c_int),
-    }
+    VersionVector::decode_v0(bytes).map_err(|_| SQLITE_ERROR as c_int)
 }
 
 /// A simple scalar function that returns the crate version string. Useful to confirm

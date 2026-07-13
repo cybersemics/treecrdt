@@ -103,8 +103,8 @@ export type OperationMetadata = Message<'treecrdt.sync.v0.OperationMetadata'> & 
   lamport: bigint;
 
   /**
-   * Optional defensive-deletion awareness payload for delete operations.
-   * When present, this is the JSON-encoded `VersionVector` blob stored by the SQLite extension.
+   * Defensive-deletion awareness payload: absent for most operation kinds, but
+   * required and non-empty for delete. Uses canonical TreeCRDT VersionVector v0 bytes.
    *
    * @generated from field: bytes known_state = 3;
    */

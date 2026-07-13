@@ -50,11 +50,11 @@ pub(crate) fn op_ref_from_bytes(bytes: &[u8]) -> Result<[u8; OPREF_V0_WIDTH]> {
 }
 
 fn vv_to_bytes(vv: &VersionVector) -> Result<Vec<u8>> {
-    serde_json::to_vec(vv).map_err(|e| Error::Storage(e.to_string()))
+    vv.encode_v0()
 }
 
 pub(crate) fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
-    serde_json::from_slice(bytes).map_err(|e| Error::Storage(e.to_string()))
+    VersionVector::decode_v0(bytes)
 }
 
 #[derive(Clone, Debug)]
@@ -583,7 +583,6 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         };
         match row.last_change {
             None => Ok(VersionVector::new()),
-            Some(b) if b.is_empty() => Ok(VersionVector::new()),
             Some(b) => vv_from_bytes(&b),
         }
     }
@@ -614,7 +613,6 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         };
         match row.deleted_at {
             None => Ok(None),
-            Some(b) if b.is_empty() => Ok(None),
             Some(b) => vv_from_bytes(&b).map(Some),
         }
     }
@@ -1147,7 +1145,6 @@ pub(crate) fn row_to_op(row: Row) -> Result<Operation> {
     let known_state_bytes: Option<Vec<u8>> = row.get(9);
     let known_state = match known_state_bytes {
         None => None,
-        Some(b) if b.is_empty() => None,
         Some(b) => Some(vv_from_bytes(&b)?),
     };
 
@@ -1211,7 +1208,6 @@ pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     let known_state_bytes: Option<Vec<u8>> = row.get(base + 9);
     let known_state = match known_state_bytes {
         None => None,
-        Some(b) if b.is_empty() => None,
         Some(b) => Some(vv_from_bytes(&b)?),
     };
 
@@ -1307,17 +1303,11 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
             known_state,
         }),
         OperationKind::Delete { node } => {
-            let Some(vv) = op.meta.known_state.as_ref() else {
+            let Some(bytes) = known_state else {
                 return Err(Error::InvalidOperation(
                     "treecrdt: delete operations require meta.known_state".into(),
                 ));
             };
-            let bytes = vv_to_bytes(vv)?;
-            if bytes.is_empty() {
-                return Err(Error::InvalidOperation(
-                    "treecrdt: delete known_state must not be empty".into(),
-                ));
-            }
             Ok(OpDbFields {
                 kind: "delete",
                 parent: None,

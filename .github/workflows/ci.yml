@@ -104,6 +104,9 @@ jobs:
       - name: Run Rust tests
         run: cargo test --workspace --all-targets
 
+      - name: Run core serde tests
+        run: cargo test -p treecrdt-core --features serde --test serde_version_vector
+
       - name: Run SQLite extension roundtrip tests
         run: cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite
 
@@ -143,6 +146,9 @@ jobs:
 
       - name: Run sync protocol tests
         run: pnpm -C packages/sync-protocol/protocol exec vitest run
+
+      - name: Run interface codec tests
+        run: pnpm -C packages/treecrdt-ts exec vitest run
 
       - name: Run sync server core tests
         run: pnpm -C packages/sync-protocol/server/core exec vitest run
