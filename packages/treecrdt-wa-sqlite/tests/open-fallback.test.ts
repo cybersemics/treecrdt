@@ -37,6 +37,7 @@ function createFakeSqlite(
   const statementText = new Map<number, string | null>();
   let nextHandle = 1;
   let nextStatement = 100;
+  let autocommit = true;
 
   return {
     vfs_register: vi.fn(),
@@ -67,7 +68,12 @@ function createFakeSqlite(
     }),
     column_text: vi.fn((statement: number) => statementText.get(statement)),
     finalize: vi.fn(),
-    exec: vi.fn(),
+    exec: vi.fn(async (_handle: number, sql: string) => {
+      opts.events?.push(`exec:${sql}`);
+      if (sql === 'BEGIN IMMEDIATE') autocommit = false;
+      if (sql === 'COMMIT' || sql === 'ROLLBACK') autocommit = true;
+    }),
+    get_autocommit: vi.fn(() => (autocommit ? 1 : 0)),
     close: vi.fn(),
   };
 }
@@ -92,6 +98,7 @@ test('keeps the memory path single-pass without creating an OPFS VFS', async () 
   expect(sqlite3.open_v2).toHaveBeenCalledWith(':memory:');
   expect(sqlite3.vfs_register).not.toHaveBeenCalled();
   expect(createOpfsVfs).not.toHaveBeenCalled();
+  expect(sqlite3.get_autocommit).not.toHaveBeenCalled();
   expect(loadFresh).not.toHaveBeenCalled();
 });
 
@@ -264,6 +271,7 @@ test('keeps the successful OPFS path single-pass and closes its database and VFS
   expect(sqlite3.statements.mock.calls.some(([, sql]) => String(sql).startsWith('PRAGMA'))).toBe(
     false,
   );
+  expect(sqlite3.get_autocommit).not.toHaveBeenCalled();
   expect(loadFresh).not.toHaveBeenCalled();
 
   await opened.db.close?.();
@@ -310,6 +318,41 @@ test('configures WAL before extension initialization and selects the VFS explici
   expect(events.indexOf('prepare:PRAGMA locking_mode=EXCLUSIVE')).toBeLessThan(
     events.indexOf('extension-init'),
   );
+  expect(sqlite3.get_autocommit).not.toHaveBeenCalled();
+});
+
+test('selects write-ahead VFS explicitly and initializes the extension in an immediate transaction', async () => {
+  const events: string[] = [];
+  const vfs = { close: vi.fn() };
+  vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
+  const sqlite3 = createFakeSqlite({ events });
+  const filename = '/write-ahead.db';
+
+  const opened = await openTreecrdtDbFromLoaded(
+    {
+      storage: 'opfs',
+      filename,
+      docId: 'write-ahead',
+      requireOpfs: true,
+      opfsWriteMode: 'opfs-write-ahead',
+    },
+    { sqlite3, module: createFakeModule(0, events) },
+    vi.fn(),
+  );
+
+  expect(opened.opfsVfsKind).toBe('write-ahead');
+  expect(opened.opfsVfsName).toBe('opfs');
+  expect(createOpfsVfs).toHaveBeenCalledWith(expect.anything(), {
+    name: 'opfs',
+    kind: 'write-ahead',
+  });
+  expect(sqlite3.vfs_register).toHaveBeenCalledWith(vfs, false);
+  expect(sqlite3.open_v2).toHaveBeenCalledWith(filename, undefined, 'opfs');
+  expect(events.slice(0, 3)).toEqual(['exec:BEGIN IMMEDIATE', 'extension-init', 'exec:COMMIT']);
+  expect(events.filter((event) => event === 'exec:BEGIN IMMEDIATE')).toHaveLength(2);
+  expect(events.filter((event) => event === 'exec:COMMIT')).toHaveLength(2);
+  expect(sqlite3.get_autocommit).toHaveBeenCalledOnce();
+  expect(events.some((event) => event.startsWith('prepare:PRAGMA'))).toBe(false);
 });
 
 test('required OPFS closes the VFS and does not attempt memory fallback', async () => {

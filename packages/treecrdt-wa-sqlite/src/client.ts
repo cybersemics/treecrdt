@@ -29,7 +29,6 @@ import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
 } from '@treecrdt/interface/engine';
-import { dbGetText } from './sql.js';
 import {
   rpcBinaryResult,
   type RpcMethod,
@@ -68,7 +67,10 @@ const APPEND_MANY_RPC_CHUNK_SIZE = 2500;
 function normalizeOpfsWriteMode(value: unknown): OpfsWriteMode {
   if (value === undefined || value === 'default') return 'default';
   if (value === 'single-owner-wal') return 'single-owner-wal';
-  throw new Error('createTreecrdtClient storage.writeMode must be "default" or "single-owner-wal"');
+  if (value === 'opfs-write-ahead') return 'opfs-write-ahead';
+  throw new Error(
+    'createTreecrdtClient storage.writeMode must be "default", "single-owner-wal", or "opfs-write-ahead"',
+  );
 }
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
@@ -176,11 +178,11 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
 
   if (
     shouldUseOpfs &&
-    storage.opfsWriteMode === 'single-owner-wal' &&
+    storage.opfsWriteMode !== 'default' &&
     resolvedRuntime !== 'dedicated-worker'
   ) {
     throw new Error(
-      'OPFS storage.writeMode "single-owner-wal" requires runtime "dedicated-worker" or runtime "auto"',
+      `OPFS storage.writeMode "${storage.opfsWriteMode}" requires runtime "dedicated-worker" or runtime "auto"`,
     );
   }
 
@@ -691,10 +693,7 @@ export async function buildDirectClient(
     materialized.enableCrossTab({ docId: opts.docId, filename });
   }
   const adapter = opened.api;
-  const runner: SqliteRunner = {
-    exec: (sql) => db.exec(sql),
-    getText: (sql, params = []) => dbGetText(db, sql, params),
-  };
+  const runner = opened.runner;
   const wrapError = (stage: string, err: unknown) =>
     new Error(
       JSON.stringify({
@@ -720,12 +719,12 @@ export async function buildDirectClient(
       switch (method) {
         case 'sqlExec': {
           const [sql] = params as RpcParams<'sqlExec'>;
-          await db.exec(sql);
+          await runner.exec(sql);
           return undefined as any;
         }
         case 'sqlGetText': {
           const [sql, rawParams] = params as RpcParams<'sqlGetText'>;
-          return dbGetText(db, sql, (rawParams ?? []) as unknown[]) as any;
+          return runner.getText(sql, rawParams ?? []) as any;
         }
         case 'append': {
           const [op] = params as RpcParams<'append'>;

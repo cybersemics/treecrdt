@@ -35,7 +35,7 @@ export function detectOpfsSupport(): OpfsSupport {
       };
 }
 
-const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal'];
+const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal', '-wa0', '-wa1'];
 
 export type ClearOpfsStorageOptions = {
   vfsKind?: OpfsVfsKind;
@@ -150,7 +150,7 @@ export async function opfsStorageExists(filename: string): Promise<boolean> {
   return false;
 }
 
-export type OpfsVfsKind = 'coop-sync' | 'any-context' | 'access-handle-pool';
+export type OpfsVfsKind = 'coop-sync' | 'any-context' | 'access-handle-pool' | 'write-ahead';
 
 export type OpfsVfsOptions = {
   name?: string;
@@ -167,6 +167,12 @@ export async function createOpfsVfs(module: any, opts: OpfsVfsOptions = {}): Pro
     // @ts-ignore vendored module lacks type declarations
     const { AccessHandlePoolVFS } = await import('./vendor/AccessHandlePoolVFS.js');
     return AccessHandlePoolVFS.create(name, module);
+  }
+
+  if (opts.kind === 'write-ahead') {
+    // @ts-ignore vendored module lacks type declarations
+    const { OPFSWriteAheadVFS } = await import('./vendor/OPFSWriteAheadVFS.js');
+    return OPFSWriteAheadVFS.create(name, module);
   }
 
   if (opts.kind === 'any-context') {

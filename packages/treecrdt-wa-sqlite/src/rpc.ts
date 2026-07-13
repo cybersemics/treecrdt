@@ -4,7 +4,7 @@ import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/int
 export const SHARED_WORKER_DROPPED_ERROR = 'TreeCRDT shared database was dropped';
 
 export type RpcStorageMode = 'memory' | 'opfs';
-export type RpcOpfsWriteMode = 'default' | 'single-owner-wal';
+export type RpcOpfsWriteMode = 'default' | 'single-owner-wal' | 'opfs-write-ahead';
 
 export type RpcSqlParam = number | string | null | Uint8Array;
 export type RpcSqlParams = RpcSqlParam[];

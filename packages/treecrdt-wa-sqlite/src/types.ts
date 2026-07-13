@@ -12,13 +12,14 @@ export type Database = {
   column_text(stmt: number, index: number): Promise<string> | string;
   finalize(stmt: number): Promise<void> | void;
   exec(sql: string): Promise<void> | void;
+  getAutocommit(): Promise<boolean> | boolean;
   close?(): Promise<void> | void;
 };
 
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
-export type OpfsWriteMode = 'default' | 'single-owner-wal';
+export type OpfsWriteMode = 'default' | 'single-owner-wal' | 'opfs-write-ahead';
 export type TreecrdtStorage =
   | { type: 'memory' }
   | {
@@ -26,8 +27,13 @@ export type TreecrdtStorage =
       filename?: string;
       fallback?: 'throw' | 'memory';
       /**
-       * Enables WAL with exclusive locking. The application must guarantee that
-       * one dedicated worker is the only owner of this OPFS database.
+       * `single-owner-wal` enables WAL with exclusive locking. The application
+       * must guarantee that one dedicated worker is the only owner of this OPFS
+       * database.
+       *
+       * `opfs-write-ahead` enables upstream wa-sqlite's experimental
+       * OPFSWriteAheadVFS for multiple connections to the same file. It currently
+       * requires Chromium support for `readwrite-unsafe` OPFS access handles.
        */
       writeMode?: OpfsWriteMode;
     }

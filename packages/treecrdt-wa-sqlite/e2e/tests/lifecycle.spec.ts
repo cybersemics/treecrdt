@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
 type LifecycleRuntime = 'direct' | 'dedicated-worker';
-type LifecycleWriteMode = 'default' | 'single-owner-wal';
+type LifecycleWriteMode = 'default' | 'single-owner-wal' | 'opfs-write-ahead';
 
 const scenarios: Array<{
   runtime: LifecycleRuntime;
@@ -108,6 +108,52 @@ function expectReloadedTree(
   expect(state.childParent).toBe(state.parentId);
 }
 
+function isWriteAheadUnsupportedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.toLowerCase().includes('readwrite-unsafe');
+}
+
+type WriteAheadLifecycleOptions = {
+  docId: string;
+  filename: string;
+  runtime: 'dedicated-worker';
+  writeMode: 'opfs-write-ahead';
+};
+
+async function withWriteAheadStore(
+  page: Page,
+  name: string,
+  run: (opts: WriteAheadLifecycleOptions) => Promise<void>,
+): Promise<void> {
+  if (test.info().project.name !== 'chromium-dev') test.skip();
+  test.setTimeout(120_000);
+  page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+  const opts = {
+    docId: `${name}-${suffix}`,
+    filename: `/${name}-${suffix}.db`,
+    runtime: 'dedicated-worker',
+    writeMode: 'opfs-write-ahead',
+  } as const;
+
+  await waitForHarness(page);
+  const opfsSupport = await support(page);
+  if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+
+  try {
+    await drop(page, opts);
+    await run(opts);
+  } catch (err) {
+    if (isWriteAheadUnsupportedError(err)) {
+      test.skip(true, `OPFSWriteAheadVFS unsupported: ${err instanceof Error ? err.message : err}`);
+    }
+    throw err;
+  } finally {
+    await drop(page, opts).catch(() => {});
+  }
+}
+
 test.describe('browser OPFS lifecycle', () => {
   for (const scenario of scenarios) {
     for (const reloadCase of reloadCases) {
@@ -187,5 +233,65 @@ test.describe('browser OPFS lifecycle', () => {
     } finally {
       await drop(page, opts).catch(() => {});
     }
+  });
+
+  test('opens dedicated-worker OPFS store in write-ahead VFS mode', async ({ page }) => {
+    await withWriteAheadStore(page, 'lifecycle-write-ahead', async (opts) => {
+      const written = await write(page, { ...opts, closeBeforeReload: true });
+      expectReloadedTree(written, { mode: 'worker', runtime: 'dedicated-worker' });
+
+      expectReloadedTree(await read(page, opts), {
+        mode: 'worker',
+        runtime: 'dedicated-worker',
+      });
+    });
+  });
+
+  test('opens the same write-ahead OPFS store from two dedicated-worker clients', async ({
+    page,
+  }) => {
+    await withWriteAheadStore(page, 'lifecycle-write-ahead-two-client', async (opts) => {
+      const result = await page.evaluate(async (twoClientOpts) => {
+        const harness = window.__treecrdtLifecycle;
+        if (!harness) throw new Error('__treecrdtLifecycle not available');
+        return await harness.writeAheadTwoClient(twoClientOpts);
+      }, opts);
+
+      expect(result.stateFromBAfterAWrite).toMatchObject({
+        mode: 'worker',
+        runtime: 'dedicated-worker',
+        storage: 'opfs',
+        headLamport: 1,
+        parentExists: true,
+        childExists: false,
+        parentPayload: 'browser lifecycle parent',
+      });
+      expect(result.stateFromBAfterAWrite.rootChildren).toEqual([
+        result.stateFromBAfterAWrite.parentId,
+      ]);
+
+      expectReloadedTree(result.stateFromAAfterBWrite, {
+        mode: 'worker',
+        runtime: 'dedicated-worker',
+      });
+    });
+  });
+
+  test('write-ahead mode preserves auth and outer-savepoint transaction ownership', async ({
+    page,
+  }) => {
+    await withWriteAheadStore(page, 'lifecycle-write-ahead-transactions', async (opts) => {
+      const result = await page.evaluate(async (transactionOpts) => {
+        const harness = window.__treecrdtLifecycle;
+        if (!harness) throw new Error('__treecrdtLifecycle not available');
+        return await harness.writeAheadTransactionOwnership(transactionOpts);
+      }, opts);
+
+      expect(result).toEqual({
+        authRollback: { exists: false, opCount: 0, eventCount: 0 },
+        outerRollback: { exists: false, opCount: 0 },
+        authSuccess: { exists: true, opCount: 1, eventCount: 1 },
+      });
+    });
   });
 });

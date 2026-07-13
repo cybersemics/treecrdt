@@ -54,6 +54,17 @@ runtimes reject this mode. It uses wa-sqlite's `AccessHandlePoolVFS`, which is n
 filesystem-transparent; use the default OPFS mode for multi-tab ownership or direct file
 import/export.
 
+### OPFS write-ahead VFS mode
+
+`writeMode: 'opfs-write-ahead'` enables wa-sqlite's experimental
+`OPFSWriteAheadVFS`. It is intended for browser experiments that need multiple
+connections to the same OPFS file and currently requires Chromium support for
+OPFS `readwrite-unsafe` access handles. Like the single-owner WAL mode, it requires
+a dedicated-worker runtime; the regular OPFS mode remains the default fast path.
+Transactions opened through `client.runner` must use `BEGIN IMMEDIATE` or
+`BEGIN EXCLUSIVE`; deferred transactions are rejected because this VFS cannot
+safely upgrade them after a read.
+
 ## Node usage (in-memory WASM)
 
 On Node, `createTreecrdtClient()` runs wa-sqlite in-process with an in-memory database. OPFS and worker runtimes are not supported.

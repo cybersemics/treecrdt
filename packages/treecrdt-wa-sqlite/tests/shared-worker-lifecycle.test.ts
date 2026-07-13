@@ -47,9 +47,13 @@ function opened(close = vi.fn(async () => undefined)) {
   const api = {
     headLamport: vi.fn(async () => 7),
   };
+  const runner = {
+    exec: vi.fn(async () => undefined),
+    getText: vi.fn(async () => null),
+  };
   return {
     close,
-    result: { db: { close }, api, storage: 'memory' as const, filename: ':memory:' },
+    result: { db: { close }, api, runner, storage: 'memory' as const, filename: ':memory:' },
   };
 }
 

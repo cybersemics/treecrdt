@@ -1,10 +1,11 @@
 import { accessHandlePoolVfsNameForFilename, createOpfsVfs, type OpfsVfsKind } from './opfs.js';
-import { createWaSqliteApi } from './adapter.js';
+import { createWaSqliteApiFromRunner, createWaSqliteRunner } from './adapter.js';
 import type { Database, OpfsWriteMode } from './types.js';
 import { makeDbAdapter } from './db.js';
 import { dbGetText } from './sql.js';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
+import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import { initializeTreecrdtExtension } from './extension.js';
 
 export type OpenTreecrdtDbOptions = {
@@ -21,6 +22,7 @@ export type OpenTreecrdtDbOptions = {
 export type OpenTreecrdtDbResult = {
   db: Database;
   api: TreecrdtAdapter;
+  runner: SqliteRunner;
   storage: 'memory' | 'opfs';
   filename: string;
   opfsVfsKind?: OpfsVfsKind;
@@ -55,14 +57,36 @@ async function closeIgnoringErrors(close: (() => Promise<void> | void) | undefin
   }
 }
 
+async function initializeTreecrdtExtensionWithWriteMode(
+  module: any,
+  handle: number,
+  db: Database,
+  mode: OpfsWriteMode,
+): Promise<void> {
+  if (mode !== 'opfs-write-ahead') {
+    await initializeTreecrdtExtension(module, handle);
+    return;
+  }
+
+  await db.exec('BEGIN IMMEDIATE');
+  try {
+    await initializeTreecrdtExtension(module, handle);
+    await db.exec('COMMIT');
+  } catch (err) {
+    await closeIgnoringErrors(() => db.exec('ROLLBACK'));
+    throw err;
+  }
+}
+
 async function openInitializedDatabase(
   sqlite3: any,
   module: any,
   filename: string,
   opts: OpenTreecrdtDbOptions,
   vfsName?: string,
+  opfsWriteMode: OpfsWriteMode = 'default',
   beforeExtensionInit?: (db: Database) => Promise<void>,
-): Promise<{ db: Database; api: TreecrdtAdapter }> {
+): Promise<{ db: Database; api: TreecrdtAdapter; runner: SqliteRunner }> {
   let db: Database | undefined;
   try {
     const handle = vfsName
@@ -70,10 +94,11 @@ async function openInitializedDatabase(
       : await sqlite3.open_v2(filename);
     db = makeDbAdapter(sqlite3, handle);
     await beforeExtensionInit?.(db);
-    await initializeTreecrdtExtension(module, handle);
-    const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
+    await initializeTreecrdtExtensionWithWriteMode(module, handle, db, opfsWriteMode);
+    const runner = createWaSqliteRunner(db, opfsWriteMode);
+    const api = createWaSqliteApiFromRunner(runner, { onMaterialized: opts.onMaterialized });
     await api.setDocId(opts.docId);
-    return { db, api };
+    return { db, api, runner };
   } catch (err) {
     await closeIgnoringErrors(db?.close ? () => db!.close!() : undefined);
     throw err;
@@ -81,7 +106,7 @@ async function openInitializedDatabase(
 }
 
 async function configureOpfsWriteMode(db: Database, mode: OpfsWriteMode): Promise<void> {
-  if (mode === 'default') return;
+  if (mode !== 'single-owner-wal') return;
 
   const lockingMode = await dbGetText(db, 'PRAGMA locking_mode=EXCLUSIVE');
   const currentJournalMode = await dbGetText(db, 'PRAGMA journal_mode');
@@ -135,7 +160,11 @@ export async function openTreecrdtDbFromLoaded(
     let vfs: { close?: () => Promise<void> | void } | undefined;
     try {
       const opfsVfsKind: OpfsVfsKind =
-        opfsWriteMode === 'single-owner-wal' ? 'access-handle-pool' : (opts.opfsVfs ?? 'coop-sync');
+        opfsWriteMode === 'single-owner-wal'
+          ? 'access-handle-pool'
+          : opfsWriteMode === 'opfs-write-ahead'
+            ? 'write-ahead'
+            : (opts.opfsVfs ?? 'coop-sync');
       const opfsVfsName =
         opfsVfsKind === 'access-handle-pool'
           ? await accessHandlePoolVfsNameForFilename(requestedFilename)
@@ -152,6 +181,7 @@ export async function openTreecrdtDbFromLoaded(
         requestedFilename,
         opts,
         opfsVfsName,
+        opfsWriteMode,
         (db) => configureOpfsWriteMode(db, opfsWriteMode),
       );
       return {
