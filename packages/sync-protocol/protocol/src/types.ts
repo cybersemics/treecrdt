@@ -16,6 +16,7 @@ export type FilterSpec = {
 export type Capability = { name: string; value: string };
 
 export type Hello = {
+  exchangeId: string;
   capabilities: Capability[];
   filters: FilterSpec[];
   maxLamport: bigint;
@@ -28,6 +29,7 @@ export type RejectedFilter = {
 };
 
 export type HelloAck = {
+  exchangeId: string;
   capabilities: Capability[];
   acceptedFilters: string[];
   rejectedFilters: RejectedFilter[];
@@ -108,6 +110,7 @@ export type SyncError = {
   message: string;
   filterId?: string;
   subscriptionId?: string;
+  exchangeId?: string;
 };
 
 export type SyncMessagePayload<Op> =
