@@ -4,24 +4,165 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Cargo.lock
+      - Cargo.toml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - packages/treecrdt-core/**
+      - packages/treecrdt-sqlite-ext/**
+      - packages/treecrdt-sqlite-node/**
+      - scripts/repo-root.mjs
 
 permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+  contents: read
 
 concurrency:
-  group: release-main
-  cancel-in-progress: false
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   EM_VERSION: 4.0.21
   EM_CACHE_FOLDER: emsdk-cache
+  BETTER_SQLITE3_CURRENT: 12.11.1
 
 jobs:
+  release-plan:
+    name: Plan native release
+    runs-on: ubuntu-latest
+    outputs:
+      build_sqlite_node: ${{ steps.sqlite_node.outputs.build }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Check whether sqlite-node will publish
+        id: sqlite_node
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
+            build=true
+            reason='pull request preflight requires the native artifact matrix'
+          else
+            version=$(node -p "require('./packages/treecrdt-sqlite-node/package.json').version")
+            # Changesets versions first and publishes only after the version PR lands.
+            if find .changeset -maxdepth 1 -type f -name '*.md' -print -quit | grep -q .; then
+              build=false
+              reason='pending changesets will create or update the version PR'
+            elif npm view "@treecrdt/sqlite-node@$version" version >/dev/null 2>&1; then
+              build=false
+              reason="@treecrdt/sqlite-node@$version is already published"
+            else
+              build=true
+              reason="@treecrdt/sqlite-node@$version needs native release artifacts"
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "$reason"
+
+  sqlite-node-native:
+    name: Build sqlite-node (${{ matrix.triple }})
+    needs: release-plan
+    if: needs.release-plan.outputs.build_sqlite_node == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
+            file: libtreecrdt_sqlite_ext-linux-x64.so
+          - os: macos-26
+            triple: aarch64-apple-darwin
+            file: libtreecrdt_sqlite_ext-darwin-arm64.dylib
+          - os: macos-15-intel
+            triple: x86_64-apple-darwin
+            file: libtreecrdt_sqlite_ext-darwin-x64.dylib
+          - os: windows-2025
+            triple: x86_64-pc-windows-msvc
+            file: treecrdt_sqlite_ext-win32-x64.dll
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - name: Install sqlite-node dependencies
+        run: pnpm install --frozen-lockfile --filter @treecrdt/sqlite-node
+
+      - name: Verify native target
+        shell: bash
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "${{ matrix.triple }}"
+
+      - name: Build native SQLite extension
+        shell: bash
+        run: cargo rustc -p treecrdt-sqlite-ext --release --no-default-features --features "ext-sqlite rusqlite-storage" -- --crate-type=cdylib
+
+      - name: Copy native SQLite extension
+        run: node packages/treecrdt-sqlite-node/scripts/copy-ext.mjs
+
+      - name: Smoke test with better-sqlite3 9
+        run: node packages/treecrdt-sqlite-node/scripts/smoke-native.mjs "packages/treecrdt-sqlite-node/native/${{ matrix.file }}"
+
+      - name: Setup current Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Smoke test with current better-sqlite3
+        shell: bash
+        run: |
+          current_dir="$RUNNER_TEMP/better-sqlite3-current"
+          npm install --prefix "$current_dir" --no-save --no-package-lock "better-sqlite3@$BETTER_SQLITE3_CURRENT"
+          node packages/treecrdt-sqlite-node/scripts/smoke-native.mjs \
+            "packages/treecrdt-sqlite-node/native/${{ matrix.file }}" "$current_dir"
+
+      - name: Upload native SQLite extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlite-node-native-${{ matrix.triple }}
+          path: packages/treecrdt-sqlite-node/native/${{ matrix.file }}
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     name: Version or Publish
     runs-on: ubuntu-latest
+    needs: [release-plan, sqlite-node-native]
+    if: >-
+      ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.release-plan.result == 'success' &&
+      (needs.sqlite-node-native.result == 'success' || needs.sqlite-node-native.result == 'skipped') }}
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
 
     steps:
       - name: Checkout
@@ -85,6 +226,14 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Download sqlite-node native artifacts
+        if: needs.release-plan.outputs.build_sqlite_node == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sqlite-node-native-*
+          path: packages/treecrdt-sqlite-node/native
+          merge-multiple: true
 
       - name: Setup Emscripten cache
         uses: actions/cache@v4

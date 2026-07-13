@@ -55,15 +55,10 @@ const src = candidates[0].fullPath;
 const destDir = path.resolve(scriptDir, "../native");
 fs.mkdirSync(destDir, { recursive: true });
 const destBase = ext === ".dll" ? "treecrdt_sqlite_ext" : "libtreecrdt_sqlite_ext";
-const dest = path.join(destDir, `${destBase}${ext}`);
+const dest = path.join(destDir, `${destBase}-${process.platform}-${process.arch}${ext}`);
+const legacyDest = path.join(destDir, `${destBase}${ext}`);
 
-try {
-  if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
-  const rel = path.relative(destDir, src);
-  fs.symlinkSync(rel, dest, "file");
-  console.log(`Linked ${dest} -> ${src}`);
-} catch (err) {
-  console.warn(`Failed to create symlink, falling back to copy: ${err}`);
-  fs.copyFileSync(src, dest);
-  console.log(`Copied ${src} -> ${dest}`);
-}
+if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
+if (legacyDest !== dest && fs.existsSync(legacyDest)) fs.rmSync(legacyDest, { force: true });
+fs.copyFileSync(src, dest);
+console.log(`Copied ${src} -> ${dest}`);
