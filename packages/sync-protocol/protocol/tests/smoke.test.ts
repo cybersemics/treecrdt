@@ -1645,7 +1645,7 @@ test('a stale failing HelloAck rejects its real filtered session', async () => {
 test('pushOps refreshes replay capabilities before uploading newly authorized ops', async () => {
   const docId = 'doc-push-capability-refresh';
   const root = '0'.repeat(32);
-  const proofRef = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  const proofRef = new Uint8Array(16).fill(0x12);
   const replayCapValue = bytesToHex(proofRef);
   const knownReplayCaps = new Set<string>();
   let senderHelloCaps: Array<{ name: string; value: string }> = [];
@@ -1663,7 +1663,7 @@ test('pushOps refreshes replay capabilities before uploading newly authorized op
   const peerA = new SyncPeer(a, {
     auth: {
       helloCapabilities: async () => senderHelloCaps,
-      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array([1]), proofRef })),
+      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array(64), proofRef })),
     },
     maxOpsPerBatch: 1,
   });
@@ -1731,6 +1731,53 @@ test('syncOnce protobuf roundtrips ribltStatus.more', () => {
   };
 
   expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(msg))).toEqual(msg);
+});
+
+test('protobuf requires complete, fixed-width op auth entries', () => {
+  const op = makeOp(replicas.a, 1, 1, {
+    type: 'insert',
+    parent: '0'.repeat(32),
+    node: nodeIdFromInt(1),
+    orderKey: new Uint8Array([1]),
+  });
+  const msg: SyncMessage<Operation> = {
+    v: 0,
+    docId: 'doc-op-auth-codec',
+    payload: {
+      case: 'opsBatch',
+      value: {
+        filterId: 'all',
+        ops: [op],
+        auth: [{ sig: new Uint8Array(64), proofRef: new Uint8Array(16) }],
+        done: true,
+      },
+    },
+  };
+
+  expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(msg))).toEqual(msg);
+
+  const withAuth = msg.payload.case === 'opsBatch' ? msg.payload.value : undefined;
+  expect(() =>
+    treecrdtSyncV0ProtobufCodec.encode({
+      ...msg,
+      payload: {
+        case: 'opsBatch',
+        value: { ...withAuth!, auth: [{ sig: new Uint8Array(64) }] },
+      },
+    } as SyncMessage<Operation>),
+  ).toThrow(/proofRef must be 16 bytes/i);
+  expect(() =>
+    treecrdtSyncV0ProtobufCodec.encode({
+      ...msg,
+      payload: {
+        case: 'opsBatch',
+        value: {
+          ...withAuth!,
+          auth: [{ sig: new Uint8Array(63), proofRef: new Uint8Array(16) }],
+        },
+      },
+    }),
+  ).toThrow(/sig must be 64 bytes/i);
 });
 
 test('syncOnce waits for ribltStatus.more before sending another codeword batch', async () => {
@@ -2337,7 +2384,7 @@ test('subscribe pushes exact all-filter deltas without rescanning full state', a
 test('subscribe refreshes replay capabilities before pushing newly authorized ops', async () => {
   const docId = 'doc-subscribe-capability-refresh';
   const root = '0'.repeat(32);
-  const proofRef = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  const proofRef = new Uint8Array(16).fill(0x12);
   const replayCapValue = bytesToHex(proofRef);
 
   const a = new MemoryBackend(docId);
@@ -2351,7 +2398,7 @@ test('subscribe refreshes replay capabilities before pushing newly authorized op
     auth: {
       helloCapabilities: async () => serverHelloCaps,
       onHello: async () => serverHelloCaps,
-      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array([1]), proofRef })),
+      signOps: async (ops) => ops.map(() => ({ sig: new Uint8Array(64), proofRef })),
     },
     maxOpsPerBatch: 1,
   });

@@ -84,7 +84,6 @@ export type TreecrdtCoseCwtAuthOptions = {
     ctx: TreecrdtCoseCwtRevocationCheckContext,
   ) => boolean | Promise<boolean>;
   allowUnsigned?: boolean;
-  requireProofRef?: boolean;
   now?: () => number;
 };
 
@@ -107,7 +106,6 @@ export type TreecrdtCoseCwtRevocationCheckContext =
 export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): SyncAuth<Operation> {
   const now = opts.now ?? (() => Math.floor(Date.now() / 1000));
   const allowUnsigned = opts.allowUnsigned ?? false;
-  const requireProofRef = opts.requireProofRef ?? false;
 
   const localTokens = opts.localCapabilityTokens ?? [];
   const localTokenIds = localTokens.map((t) => deriveTokenIdV1(t));
@@ -494,6 +492,30 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     }
   };
 
+  const opAuthMatches = async (docId: string, op: Operation, auth: OpAuth): Promise<boolean> => {
+    if (
+      !(auth?.sig instanceof Uint8Array) ||
+      auth.sig.length !== 64 ||
+      !(auth?.proofRef instanceof Uint8Array) ||
+      auth.proofRef.length !== 16
+    ) {
+      return false;
+    }
+
+    const publicKey = replicaIdToBytes(op.meta.id.replica);
+    try {
+      return await verifyTreecrdtOp({
+        docId,
+        op,
+        proofRef: auth.proofRef,
+        signature: auth.sig,
+        publicKey,
+      });
+    } catch {
+      return false;
+    }
+  };
+
   return {
     helloCapabilities: async (ctx) => helloCaps(ctx.docId),
     onHello: async (hello: Hello, ctx) => {
@@ -554,71 +576,81 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const localKeyIdHex = bytesToHex(deriveKeyIdV1(opts.localPublicKey));
       const out: OpAuth[] = new Array(ops.length);
 
-      const missingOpRefs: OpRef[] = [];
-      const missingIndices: number[] = [];
+      const opRefs = ops.map((op) => {
+        const replica = replicaIdToBytes(op.meta.id.replica);
+        return deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
+      });
+      const unresolved: number[] = [];
+
+      for (let i = 0; i < ops.length; i += 1) {
+        const opRefHex = bytesToHex(opRefs[i]!);
+        const existing = opAuthByOpRefHex.get(opRefHex);
+        if (existing && (await opAuthMatches(ctx.docId, ops[i]!, existing))) {
+          out[i] = existing;
+        } else {
+          if (existing) opAuthByOpRefHex.delete(opRefHex);
+          unresolved.push(i);
+        }
+      }
+
+      if (opts.opAuthStore && unresolved.length > 0) {
+        await ensureOpAuthStoreReady();
+        const listed = await opts.opAuthStore.getOpAuthByOpRefs(
+          unresolved.map((index) => opRefs[index]!),
+        );
+        if (listed.length !== unresolved.length) {
+          throw new Error('op auth store returned misaligned entries');
+        }
+        for (let j = 0; j < listed.length; j += 1) {
+          const index = unresolved[j]!;
+          const found = listed[j];
+          if (found && (await opAuthMatches(ctx.docId, ops[index]!, found))) {
+            out[index] = found;
+            opAuthByOpRefHex.set(bytesToHex(opRefs[index]!), found);
+          }
+        }
+      }
 
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
         const opReplica = replicaIdToBytes(op.meta.id.replica);
         const opReplicaHex = bytesToHex(opReplica);
-        const opRef = deriveOpRefV0(ctx.docId, { replica: opReplica, counter: op.meta.id.counter });
-        const opRefHex = bytesToHex(opRef);
+        const opRefHex = bytesToHex(opRefs[i]!);
 
+        if (out[i]) continue;
+
+        if (ctx.purpose !== 'local_write') {
+          throw new Error('missing exact retained op auth; outbound sync cannot mint auth');
+        }
         if (opReplicaHex !== localReplicaHex) {
-          const existing = opAuthByOpRefHex.get(opRefHex);
-          if (existing) {
-            out[i] = existing;
-          } else {
-            missingOpRefs.push(opRef);
-            missingIndices.push(i);
-          }
-          continue;
+          throw new Error('missing op auth or exact proof is invalid for non-local replica');
         }
 
-        let proofRef: Uint8Array | undefined;
-        if (localTokenIds.length > 0) {
-          const byToken = grantsByKeyIdHex.get(localKeyIdHex);
-          const currentLocalGrants = byToken
-            ? Array.from(byToken.entries())
-                .filter(([tokenIdHex]) => localTokenIdHexes.has(tokenIdHex))
-                .map(([, grant]) => grant)
-            : [];
-          if (currentLocalGrants.length === 0)
-            throw new Error('auth enabled but no local capability tokens are recorded');
-          const selected = await selectGrantForOp({
-            docId: ctx.docId,
-            op,
-            candidates: currentLocalGrants,
-            purpose: 'sign_op',
-          });
-          proofRef = selected.tokenId;
+        const byToken = grantsByKeyIdHex.get(localKeyIdHex);
+        const currentLocalGrants = byToken
+          ? Array.from(byToken.entries())
+              .filter(([tokenIdHex]) => localTokenIdHexes.has(tokenIdHex))
+              .map(([, grant]) => grant)
+          : [];
+        if (currentLocalGrants.length === 0) {
+          throw new Error('auth enabled but no local capability tokens are recorded');
         }
+        const selected = await selectGrantForOp({
+          docId: ctx.docId,
+          op,
+          candidates: currentLocalGrants,
+          purpose: 'sign_op',
+        });
+        const proofRef = selected.tokenId;
         const sig = await signTreecrdtOp({
           docId: ctx.docId,
           op,
+          proofRef,
           privateKey: opts.localPrivateKey,
         });
-        const entry: OpAuth = { sig, ...(proofRef ? { proofRef } : {}) };
+        const entry: OpAuth = { sig, proofRef };
         opAuthByOpRefHex.set(opRefHex, entry);
         out[i] = entry;
-      }
-
-      if (missingOpRefs.length > 0) {
-        const store = opts.opAuthStore;
-        if (!store) {
-          throw new Error('missing op auth for non-local replica; cannot forward unsigned op');
-        }
-        await ensureOpAuthStoreReady();
-        const listed = await store.getOpAuthByOpRefs(missingOpRefs);
-        for (let j = 0; j < listed.length; j += 1) {
-          const found = listed[j];
-          if (!found) {
-            throw new Error('missing op auth for non-local replica; cannot forward unsigned op');
-          }
-          const opRefHex = bytesToHex(missingOpRefs[j]!);
-          opAuthByOpRefHex.set(opRefHex, found);
-          out[missingIndices[j]!] = found;
-        }
       }
 
       return out;
@@ -630,51 +662,39 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         if (allowUnsigned) return;
         throw new Error('missing op auth');
       }
+      if (auth.length !== ops.length) {
+        throw new Error(`op auth length ${auth.length} does not match ops length ${ops.length}`);
+      }
 
       const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
         const a = auth[i]!;
+        if (
+          !(a?.sig instanceof Uint8Array) ||
+          a.sig.length !== 64 ||
+          !(a?.proofRef instanceof Uint8Array) ||
+          a.proofRef.length !== 16
+        ) {
+          throw new Error('op auth requires a 64-byte sig and 16-byte proof_ref');
+        }
         const replica = replicaIdToBytes(op.meta.id.replica);
         const keyId = deriveKeyIdV1(replica);
         const keyHex = bytesToHex(keyId);
         const byToken = grantsByKeyIdHex.get(keyHex);
         if (!byToken || byToken.size === 0) throw new Error(`unknown author: ${keyHex}`);
 
-        const candidates = Array.from(byToken.values());
-        let grant: CapabilityGrant;
-
-        if (requireProofRef) {
-          if (!a.proofRef) throw new Error('missing proof_ref');
-          const g = byToken.get(bytesToHex(a.proofRef));
-          if (!g) throw new Error('proof_ref does not match known token');
-          if (
-            await isGrantRevoked({
-              grant: g,
-              docId: ctx.docId,
-              purpose: 'verify_op',
-              op,
-            })
-          ) {
-            throw new Error('capability token revoked');
-          }
-          grant = g;
-        } else {
-          const preferred = a.proofRef ? byToken.get(bytesToHex(a.proofRef)) : undefined;
-          const orderedCandidates = preferred
-            ? [
-                preferred,
-                ...candidates.filter(
-                  (c) => bytesToHex(c.tokenId) !== bytesToHex(preferred.tokenId),
-                ),
-              ]
-            : candidates;
-          grant = await selectGrantForOp({
+        const grant = byToken.get(bytesToHex(a.proofRef));
+        if (!grant) throw new Error('proof_ref does not match known token');
+        if (
+          await isGrantRevoked({
+            grant,
             docId: ctx.docId,
-            op,
-            candidates: orderedCandidates,
             purpose: 'verify_op',
-          });
+            op,
+          })
+        ) {
+          throw new Error('capability token revoked');
         }
 
         if (bytesToHex(grant.publicKey) !== bytesToHex(replica)) {
@@ -694,6 +714,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         const ok = await verifyTreecrdtOp({
           docId: ctx.docId,
           op,
+          proofRef: a.proofRef,
           signature: a.sig,
           publicKey: replica,
         });

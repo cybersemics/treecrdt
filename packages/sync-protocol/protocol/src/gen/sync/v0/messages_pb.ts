@@ -414,8 +414,8 @@ export const OpsBatchSchema: GenMessage<OpsBatch> =
 /**
  * Auth metadata attached to a single operation.
  *
- * This is an optional extension to Sync v0. Implementations that do not support
- * auth MUST ignore these fields.
+ * The entire OpsBatch.auth array is optional. When an entry is present, both
+ * fields below are required by the application protocol.
  *
  * @generated from message treecrdt.sync.v0.OpAuth
  */
@@ -428,7 +428,7 @@ export type OpAuth = Message<'treecrdt.sync.v0.OpAuth'> & {
   sig: Uint8Array;
 
   /**
-   * Optional reference to an authorization proof (e.g. token id / hash).
+   * 16-byte reference to the authorization proof selected before signing.
    *
    * @generated from field: bytes proof_ref = 3;
    */

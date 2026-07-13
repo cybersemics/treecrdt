@@ -38,8 +38,8 @@ const OP_AUTH_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
   doc_id TEXT NOT NULL,
   op_ref BYTEA NOT NULL,
-  sig BYTEA NOT NULL,
-  proof_ref BYTEA,
+  sig BYTEA NOT NULL CHECK (octet_length(sig) = 64),
+  proof_ref BYTEA NOT NULL CHECK (octet_length(proof_ref) = 16),
   created_at_ms BIGINT NOT NULL,
   PRIMARY KEY (doc_id, op_ref)
 );
@@ -60,8 +60,8 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   doc_id TEXT NOT NULL,
   op_ref BYTEA NOT NULL,
   op BYTEA NOT NULL,
-  sig BYTEA NOT NULL,
-  proof_ref BYTEA,
+  sig BYTEA NOT NULL CHECK (octet_length(sig) = 64),
+  proof_ref BYTEA NOT NULL CHECK (octet_length(proof_ref) = 16),
   reason TEXT NOT NULL,
   message TEXT,
   created_at_ms BIGINT NOT NULL,
@@ -138,7 +138,7 @@ export function createOpAuthStore(opts: {
 
         const params: Array<string | number | Uint8Array | null> = [];
         for (const entry of deduped) {
-          params.push(docId, entry.opRef, entry.auth.sig, entry.auth.proofRef ?? null, nowMs());
+          params.push(docId, entry.opRef, entry.auth.sig, entry.auth.proofRef, nowMs());
         }
 
         await pool.query(insertOpAuthSql(deduped.length), params);
@@ -150,15 +150,15 @@ export function createOpAuthStore(opts: {
         const res = await pool.query<{
           op_ref: Buffer;
           sig: Buffer;
-          proof_ref: Buffer | null;
+          proof_ref: Buffer;
         }>(selectOpAuthByRefsSql(opRefs.length), [docId, ...opRefs]);
 
         const byOpRefHex = new Map<string, OpAuth>();
         for (const row of res.rows) {
           const opRef = toBytes(row.op_ref);
           const sig = toBytes(row.sig);
-          const proofRef = row.proof_ref ? toBytes(row.proof_ref) : undefined;
-          byOpRefHex.set(bytesToHex(opRef), { sig, ...(proofRef ? { proofRef } : {}) });
+          const proofRef = toBytes(row.proof_ref);
+          byOpRefHex.set(bytesToHex(opRef), { sig, proofRef });
         }
 
         return opRefs.map((opRef) => byOpRefHex.get(bytesToHex(opRef)) ?? null);
@@ -290,7 +290,7 @@ export function createPendingOpsStore(opts: {
             opRefForOp(docId, entry.op),
             encodeTreecrdtSyncV0Operation(entry.op),
             entry.auth.sig,
-            entry.auth.proofRef ?? null,
+            entry.auth.proofRef,
             entry.reason,
             entry.message ?? null,
             nowMs(),
@@ -303,7 +303,7 @@ export function createPendingOpsStore(opts: {
         const res = await pool.query<{
           op: Buffer;
           sig: Buffer;
-          proof_ref: Buffer | null;
+          proof_ref: Buffer;
           reason: string;
           message: string | null;
         }>(
@@ -320,7 +320,7 @@ ORDER BY created_at_ms ASC, op_ref ASC
           op: decodeTreecrdtSyncV0Operation(toBytes(row.op)),
           auth: {
             sig: toBytes(row.sig),
-            ...(row.proof_ref ? { proofRef: toBytes(row.proof_ref) } : {}),
+            proofRef: toBytes(row.proof_ref),
           },
           reason:
             row.reason === 'missing_context'

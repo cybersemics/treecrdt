@@ -5,6 +5,7 @@ import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
 import type { Filter, OpRef } from '@treecrdt/sync-protocol';
 import {
+  createTreecrdtAuthSession,
   createTreecrdtCoseCwtAuth,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   getEd25519PublicKey,
@@ -1425,6 +1426,22 @@ function makeCapabilityTokenV1(opts: {
   });
 }
 
+async function createReadyAuthSession(
+  docId: string,
+  issuerPublicKey: Uint8Array,
+  privateKey: Uint8Array,
+  publicKey: Uint8Array,
+  capabilityTokens: Uint8Array[],
+) {
+  const session = createTreecrdtAuthSession({
+    docId,
+    trust: { issuerPublicKeys: [issuerPublicKey] },
+    local: { privateKey, publicKey, capabilityTokens },
+  });
+  await session.ready;
+  return session;
+}
+
 function maxLamportFromOps(ops: Operation[]): number {
   return ops.reduce((max, op) => Math.max(max, op.meta.lamport), 0);
 }
@@ -1525,11 +1542,6 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
   const bSk = randomEd25519SecretKey();
   const bPk = await getEd25519PublicKey(bSk);
 
-  const root = nodeIdFromInt(0);
-  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: 'last' }, null);
-  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null);
-  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: 'last' }, null);
-
   const tokenA = makeCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
     subjectPublicKey: aPk,
@@ -1541,20 +1553,18 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     docId,
   });
 
-  const authA = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: aSk,
-    localPublicKey: aPk,
-    localCapabilityTokens: [tokenA],
-    requireProofRef: true,
-  });
+  const sessionA = await createReadyAuthSession(docId, issuerPk, aSk, aPk, [tokenA]);
+  const sessionB = await createReadyAuthSession(docId, issuerPk, bSk, bPk, [tokenB]);
 
-  const authB = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: bSk,
-    localPublicKey: bPk,
-    localCapabilityTokens: [tokenB],
-    requireProofRef: true,
+  const root = nodeIdFromInt(0);
+  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: 'last' }, null, {
+    authSession: sessionA,
+  });
+  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null, {
+    authSession: sessionB,
+  });
+  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: 'last' }, null, {
+    authSession: sessionB,
   });
 
   const backendA = createEngineSyncBackend(a);
@@ -1564,8 +1574,8 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     backendA,
     backendB,
     codec: treecrdtSyncV0ProtobufCodec,
-    peerAOptions: { auth: authA },
-    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+    peerAOptions: { auth: sessionA.syncAuth },
+    peerBOptions: { auth: sessionB.syncAuth, maxOpsPerBatch: 1 },
   });
 
   try {
@@ -1607,8 +1617,8 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
   const aPk = await getEd25519PublicKey(aSk);
   const bSk = randomEd25519SecretKey();
   const bPk = await getEd25519PublicKey(bSk);
-
   const root = nodeIdFromInt(0);
+  // Seed operations without auth: this case must reject the scoped filter before reconciliation.
   await a.local.insert(aPk, root, nodeIdFromInt(1), { type: 'last' }, null);
   await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null);
 
@@ -1633,7 +1643,6 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
     localPrivateKey: aSk,
     localPublicKey: aPk,
     localCapabilityTokens: [tokenA],
-    requireProofRef: true,
   });
 
   const authB = createTreecrdtCoseCwtAuth({
@@ -1641,7 +1650,6 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
     localPrivateKey: bSk,
     localPublicKey: bPk,
     localCapabilityTokens: [tokenB],
-    requireProofRef: true,
   });
 
   const backendA = createEngineSyncBackend(a);
@@ -1783,13 +1791,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     docId,
   });
 
-  const authA = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: aSk,
-    localPublicKey: aPk,
-    localCapabilityTokens: [tokenA],
-    requireProofRef: true,
-  });
+  const sessionA = await createReadyAuthSession(docId, issuerPk, aSk, aPk, [tokenA]);
 
   const authRelay1 = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -1797,15 +1799,18 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     localPublicKey: bPk,
     // Advertise tokenA so downstream peers can verify A's ops (A is offline after relay restart).
     localCapabilityTokens: [tokenB, tokenA],
-    requireProofRef: true,
     opAuthStore: opAuthRelay1,
   });
 
   const root = nodeIdFromInt(0);
   const subtreeRoot = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
-  await a.local.insert(aPk, root, subtreeRoot, { type: 'last' }, null);
-  await a.local.insert(aPk, subtreeRoot, child, { type: 'last' }, null);
+  await a.local.insert(aPk, root, subtreeRoot, { type: 'last' }, null, {
+    authSession: sessionA,
+  });
+  await a.local.insert(aPk, subtreeRoot, child, { type: 'last' }, null, {
+    authSession: sessionA,
+  });
 
   const backendA = createEngineSyncBackend(a);
   const backendRelay1 = createEngineSyncBackend(relay1);
@@ -1818,7 +1823,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     backendA,
     backendB: backendRelay1,
     codec: treecrdtSyncV0ProtobufCodec,
-    peerAOptions: { auth: authA },
+    peerAOptions: { auth: sessionA.syncAuth },
     peerBOptions: { auth: authRelay1 },
   });
 
@@ -1846,7 +1851,6 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     localPrivateKey: bSk,
     localPublicKey: bPk,
     localCapabilityTokens: [tokenB, tokenA],
-    requireProofRef: true,
     opAuthStore: opAuthRelay2,
   });
 
@@ -1855,7 +1859,6 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     localPrivateKey: cSk,
     localPublicKey: cPk,
     localCapabilityTokens: [tokenC],
-    requireProofRef: true,
   });
 
   const c = await ctx.createEngine({ docId, name: 'peer-c' });
