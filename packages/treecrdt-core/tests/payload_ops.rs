@@ -16,7 +16,7 @@ fn payload_lww_tie_breaker_converges() {
     .unwrap();
 
     let node = NodeId(1);
-    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, Vec::new());
+    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, vec![0, 1]);
     a.apply_remote(insert.clone()).unwrap();
     b.apply_remote(insert).unwrap();
 
@@ -50,7 +50,7 @@ fn payload_clear_is_last_writer_wins() {
     .unwrap();
 
     let node = NodeId(1);
-    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, Vec::new());
+    let insert = Operation::insert(&ReplicaId::new(b"s"), 1, 1, NodeId::ROOT, node, vec![0, 1]);
     a.apply_remote(insert.clone()).unwrap();
     b.apply_remote(insert).unwrap();
 
@@ -77,7 +77,7 @@ fn payload_can_arrive_before_insert() {
     .unwrap();
 
     let node = NodeId(1);
-    let insert = Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, Vec::new());
+    let insert = Operation::insert(&ReplicaId::new(b"a"), 1, 1, NodeId::ROOT, node, vec![0, 1]);
     let payload = Operation::set_payload(&ReplicaId::new(b"a"), 2, 2, node, b"hello");
 
     // Receive payload first, then receive the earlier insert (out of order by lamport).
@@ -105,7 +105,7 @@ fn insert_with_payload_sets_value() {
         1,
         NodeId::ROOT,
         node,
-        Vec::new(),
+        vec![0, 1],
         b"hello",
     );
 
@@ -132,7 +132,7 @@ fn insert_payload_does_not_override_newer_payload() {
         1,
         NodeId::ROOT,
         node,
-        Vec::new(),
+        vec![0, 1],
         b"old",
     );
     let payload = Operation::set_payload(&ReplicaId::new(b"a"), 2, 2, node, b"new");

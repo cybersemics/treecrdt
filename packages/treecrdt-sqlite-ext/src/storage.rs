@@ -252,8 +252,8 @@ mod tests {
     fn apply_and_load_round_trip() {
         let mut storage = SqliteStorage::new_in_memory().unwrap();
         let replica = ReplicaId::new(b"r1");
-        let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), Vec::new());
-        let mov = Operation::move_node(&replica, 2, 2, NodeId(1), NodeId::ROOT, Vec::new());
+        let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 1]);
+        let mov = Operation::move_node(&replica, 2, 2, NodeId(1), NodeId::ROOT, vec![0, 1]);
         let del = Operation::delete(&replica, 3, 3, NodeId(1), None);
 
         storage.apply(insert.clone()).unwrap();
@@ -283,7 +283,7 @@ mod tests {
                 3,
                 child,
                 parent,
-                Vec::new(),
+                vec![0, 1],
             ))
             .unwrap();
         storage
@@ -293,7 +293,7 @@ mod tests {
                 1,
                 NodeId::ROOT,
                 parent,
-                Vec::new(),
+                vec![0, 1],
             ))
             .unwrap();
         storage
@@ -303,7 +303,7 @@ mod tests {
                 2,
                 NodeId::ROOT,
                 child,
-                Vec::new(),
+                vec![0, 2],
             ))
             .unwrap();
 

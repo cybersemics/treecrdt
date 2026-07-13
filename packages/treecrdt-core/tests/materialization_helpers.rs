@@ -182,8 +182,8 @@ fn apply_incremental_ops_with_delta_sorts_and_returns_head() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
 
-    let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
-    let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
+    let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 0x10]);
+    let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0, 0x20]);
 
     let next =
         apply_incremental_ops_with_delta(&mut crdt, &mut index, &cursor, vec![second, first])
@@ -210,7 +210,7 @@ fn apply_incremental_ops_with_delta_keeps_head_for_duplicate_ops() {
     .unwrap();
     let mut index = RecordingIndex::default();
     let replica = ReplicaId::new(b"remote");
-    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 0x10]);
 
     let first_result = apply_incremental_ops_with_delta(
         &mut crdt,
@@ -263,7 +263,7 @@ fn apply_incremental_ops_with_delta_rejects_before_materialized_head() {
         4,
         NodeId::ROOT,
         NodeId(9),
-        vec![0x10],
+        vec![0, 0x10],
     );
 
     let res = apply_incremental_ops_with_delta(&mut crdt, &mut index, &cursor, vec![op]);
@@ -294,7 +294,7 @@ fn apply_incremental_ops_with_delta_rejects_pending_replay_frontier() {
         6,
         NodeId::ROOT,
         NodeId(9),
-        vec![0x10],
+        vec![0, 0x10],
     );
 
     let res = apply_incremental_ops_with_delta(&mut crdt, &mut index, &cursor, vec![op]);
@@ -315,8 +315,8 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
 
     let parent = NodeId(10);
     let child = NodeId(11);
-    let parent_insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, vec![0x10]);
-    let child_insert = Operation::insert(&replica, 2, 2, parent, child, vec![0x20]);
+    let parent_insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, parent, vec![0, 0x10]);
+    let child_insert = Operation::insert(&replica, 2, 2, parent, child, vec![0, 0x20]);
 
     let res = apply_incremental_ops_with_delta(
         &mut crdt,
@@ -338,7 +338,7 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
 fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
-    let op2 = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
+    let op2 = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0, 0x20]);
     let op3 = Operation::set_payload(&replica, 3, 3, NodeId(2), vec![9]);
 
     let mut seen_counters = Vec::new();
@@ -396,7 +396,7 @@ fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
 fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
-    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 0x10]);
     let mut runs = 0u64;
     let mut scheduled_replay = 0u64;
 
@@ -429,7 +429,7 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
 fn apply_persisted_remote_ops_propagates_update_head_failure() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
-    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 0x10]);
     let mut scheduled_replay = 0u64;
 
     let result = apply_persisted_remote_ops_with_delta(
@@ -477,7 +477,7 @@ fn apply_persisted_remote_ops_propagates_update_head_failure() {
 fn apply_persisted_remote_ops_schedules_repair_after_materialization_failure() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
-    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 0x10]);
     let mut scheduled_replay = 0u64;
 
     let result = apply_persisted_remote_ops_with_delta(
@@ -507,8 +507,8 @@ fn apply_persisted_remote_ops_schedules_replay_frontier_for_out_of_order_ops() {
         ..Cursor::default()
     };
     let replica = ReplicaId::new(b"r");
-    let out_of_order = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
-    let later = Operation::insert(&replica, 6, 6, NodeId::ROOT, NodeId(6), vec![0x60]);
+    let out_of_order = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0, 0x20]);
+    let later = Operation::insert(&replica, 6, 6, NodeId::ROOT, NodeId(6), vec![0, 0x60]);
     let mut materialize_runs = 0u64;
     let mut replay_frontier = None;
 
@@ -556,7 +556,7 @@ fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
         replay_counter: Some(2),
     };
     let replica = ReplicaId::new(b"r");
-    let later = Operation::insert(&replica, 4, 4, NodeId::ROOT, NodeId(4), vec![0x40]);
+    let later = Operation::insert(&replica, 4, 4, NodeId::ROOT, NodeId(4), vec![0, 0x40]);
     let mut replay_frontier = None;
 
     let result = apply_persisted_remote_ops_with_delta(
@@ -588,8 +588,8 @@ fn apply_persisted_remote_ops_keeps_earliest_existing_replay_frontier() {
 fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
-    let parent = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(10), vec![0x10]);
-    let child = Operation::insert(&replica, 2, 2, NodeId(10), NodeId(11), vec![0x20]);
+    let parent = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(10), vec![0, 0x10]);
+    let child = Operation::insert(&replica, 2, 2, NodeId(10), NodeId(11), vec![0, 0x20]);
 
     let mut prepared = 0u64;
     let mut flushed_nodes = 0u64;
@@ -634,8 +634,8 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
 #[test]
 fn catch_up_materialized_state_scans_storage_once() {
     let replica = ReplicaId::new(b"scan-once");
-    let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
-    let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
+    let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 0x10]);
+    let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0, 0x20]);
 
     let mut inner = MemoryStorage::default();
     inner.apply(first.clone()).unwrap();
@@ -680,8 +680,8 @@ fn catch_up_materialized_state_reports_only_net_visible_changes() {
     let replica = ReplicaId::new(b"suffix-only");
     let prefix = NodeId(1);
     let suffix = NodeId(2);
-    let prefix_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, prefix, vec![0x10]);
-    let suffix_op = Operation::insert(&replica, 2, 2, NodeId::ROOT, suffix, vec![0x20]);
+    let prefix_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, prefix, vec![0, 0x10]);
+    let suffix_op = Operation::insert(&replica, 2, 2, NodeId::ROOT, suffix, vec![0, 0x20]);
 
     let mut storage = MemoryStorage::default();
     storage.apply(prefix_op.clone()).unwrap();
@@ -691,7 +691,7 @@ fn catch_up_materialized_state_reports_only_net_visible_changes() {
     // so conservative catch-up should not re-emit them as materialization changes.
     let mut nodes = MemoryNodeStore::default();
     nodes.ensure_node(prefix).unwrap();
-    nodes.attach(prefix, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.attach(prefix, NodeId::ROOT, vec![0, 0x10]).unwrap();
     let mut index = RecordingIndex::default();
     index.record(NodeId::ROOT, &prefix_op.meta.id, 1).unwrap();
 
@@ -746,19 +746,19 @@ fn catch_up_reports_net_delete() {
     let deleter = ReplicaId::new(b"net-delete-writer");
     let node = NodeId(7);
     let unrelated = NodeId(8);
-    let insert = Operation::insert(&creator, 1, 1, NodeId::ROOT, node, vec![0x10]);
+    let insert = Operation::insert(&creator, 1, 1, NodeId::ROOT, node, vec![0, 0x10]);
     let mut known_state = VersionVector::new();
     known_state.observe(&creator, 1);
     let delete = Operation::delete(&deleter, 1, 2, node, Some(known_state));
-    let head_op = Operation::insert(&creator, 2, 3, NodeId::ROOT, unrelated, vec![0x20]);
+    let head_op = Operation::insert(&creator, 2, 3, NodeId::ROOT, unrelated, vec![0, 0x20]);
 
     let mut storage = MemoryStorage::default();
     for op in [&insert, &delete, &head_op] {
         storage.apply(op.clone()).unwrap();
     }
     let mut nodes = MemoryNodeStore::default();
-    nodes.attach(node, NodeId::ROOT, vec![0x10]).unwrap();
-    nodes.attach(unrelated, NodeId::ROOT, vec![0x20]).unwrap();
+    nodes.attach(node, NodeId::ROOT, vec![0, 0x10]).unwrap();
+    nodes.attach(unrelated, NodeId::ROOT, vec![0, 0x20]).unwrap();
     let meta = Cursor {
         head_lamport: head_op.meta.lamport,
         head_replica: head_op.meta.id.replica.as_bytes().to_vec(),
@@ -789,7 +789,7 @@ fn catch_up_reports_payload_changes_for_root_and_tombstoned_nodes() {
     let unrelated = NodeId(6);
     let root_payload = Operation::set_payload(&creator, 1, 1, NodeId::ROOT, vec![1]);
     let insert =
-        Operation::insert_with_payload(&creator, 2, 2, NodeId::ROOT, node, vec![0x10], vec![1]);
+        Operation::insert_with_payload(&creator, 2, 2, NodeId::ROOT, node, vec![0, 0x10], vec![1]);
     let late_root_payload = Operation::clear_payload(&creator, 3, 3, NodeId::ROOT);
     let late_node_payload = Operation::set_payload(&creator, 4, 4, node, vec![2]);
     let mut known_state = VersionVector::new();
@@ -797,7 +797,7 @@ fn catch_up_reports_payload_changes_for_root_and_tombstoned_nodes() {
         known_state.observe(&creator, counter);
     }
     let delete = Operation::delete(&deleter, 1, 5, node, Some(known_state.clone()));
-    let head_op = Operation::insert(&creator, 5, 6, NodeId::ROOT, unrelated, vec![0x20]);
+    let head_op = Operation::insert(&creator, 5, 6, NodeId::ROOT, unrelated, vec![0, 0x20]);
 
     let mut storage = MemoryStorage::default();
     for op in [
@@ -812,8 +812,8 @@ fn catch_up_reports_payload_changes_for_root_and_tombstoned_nodes() {
     }
 
     let mut nodes = MemoryNodeStore::default();
-    nodes.attach(node, NodeId::ROOT, vec![0x10]).unwrap();
-    nodes.attach(unrelated, NodeId::ROOT, vec![0x20]).unwrap();
+    nodes.attach(node, NodeId::ROOT, vec![0, 0x10]).unwrap();
+    nodes.attach(unrelated, NodeId::ROOT, vec![0, 0x20]).unwrap();
     let mut deleted_at = known_state;
     deleted_at.observe(&deleter, 1);
     nodes.merge_deleted_at(node, &deleted_at).unwrap();
@@ -869,8 +869,8 @@ fn catch_up_materialized_state_reports_net_restore_from_rebuilt_state() {
     let parent = NodeId(10);
     let child = NodeId(11);
 
-    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
-    let child_op = Operation::insert(&author, 2, 2, parent, child, vec![0x20]);
+    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0, 0x10]);
+    let child_op = Operation::insert(&author, 2, 2, parent, child, vec![0, 0x20]);
     let mut known_state = VersionVector::new();
     known_state.observe(&author, 1);
     let delete_op = Operation::delete(&deleter, 1, 3, parent, Some(known_state.clone()));
@@ -887,7 +887,7 @@ fn catch_up_materialized_state_reports_net_restore_from_rebuilt_state() {
     // delete were materialized, but the out-of-order child insert has not been replayed yet.
     let mut nodes = MemoryNodeStore::default();
     nodes.ensure_node(parent).unwrap();
-    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.attach(parent, NodeId::ROOT, vec![0, 0x10]).unwrap();
     nodes.merge_deleted_at(parent, &deleted_at).unwrap();
     nodes.set_tombstone(parent, true).unwrap();
 
@@ -939,13 +939,13 @@ fn catch_up_reports_real_restore_once() {
     let child = NodeId(21);
     let unrelated = NodeId(22);
 
-    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
+    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0, 0x10]);
     let mut known_state = VersionVector::new();
     known_state.observe(&author, 1);
     let delete_op = Operation::delete(&author, 2, 2, parent, Some(known_state.clone()));
     // This arrives late, but canonically follows the delete and therefore restores the parent.
-    let child_op = Operation::insert(&child_author, 1, 3, parent, child, vec![0x20]);
-    let unrelated_op = Operation::insert(&author, 3, 4, NodeId::ROOT, unrelated, vec![0x30]);
+    let child_op = Operation::insert(&child_author, 1, 3, parent, child, vec![0, 0x20]);
+    let unrelated_op = Operation::insert(&author, 3, 4, NodeId::ROOT, unrelated, vec![0, 0x30]);
 
     let mut storage = MemoryStorage::default();
     for op in [&parent_op, &delete_op, &child_op, &unrelated_op] {
@@ -955,13 +955,13 @@ fn catch_up_reports_real_restore_once() {
     // State before the late child arrives: parent/delete/unrelated are already materialized.
     let mut nodes = MemoryNodeStore::default();
     nodes.ensure_node(parent).unwrap();
-    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.attach(parent, NodeId::ROOT, vec![0, 0x10]).unwrap();
     let mut deleted_at = known_state;
     deleted_at.observe(&author, 2);
     nodes.merge_deleted_at(parent, &deleted_at).unwrap();
     nodes.set_tombstone(parent, true).unwrap();
     nodes.ensure_node(unrelated).unwrap();
-    nodes.attach(unrelated, NodeId::ROOT, vec![0x30]).unwrap();
+    nodes.attach(unrelated, NodeId::ROOT, vec![0, 0x30]).unwrap();
 
     let meta = Cursor {
         head_lamport: unrelated_op.meta.lamport,
@@ -1007,16 +1007,16 @@ fn catch_up_removes_orphan_derived_rows() {
     let replica = ReplicaId::new(b"orphan-repair");
     let canonical = NodeId(30);
     let orphan = NodeId(31);
-    let canonical_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, canonical, vec![0x10]);
+    let canonical_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, canonical, vec![0, 0x10]);
 
     let mut storage = MemoryStorage::default();
     storage.apply(canonical_op.clone()).unwrap();
 
     let mut nodes = MemoryNodeStore::default();
     nodes.ensure_node(canonical).unwrap();
-    nodes.attach(canonical, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.attach(canonical, NodeId::ROOT, vec![0, 0x10]).unwrap();
     nodes.ensure_node(orphan).unwrap();
-    nodes.attach(orphan, NodeId::ROOT, vec![0x20]).unwrap();
+    nodes.attach(orphan, NodeId::ROOT, vec![0, 0x20]).unwrap();
 
     let mut index = RecordingIndex::default();
     index.record(NodeId::ROOT, &canonical_op.meta.id, 1).unwrap();
@@ -1065,7 +1065,7 @@ fn catch_up_removes_orphan_derived_rows() {
 #[test]
 fn catch_up_rejects_an_incomplete_scan_before_rewriting_stores() {
     let replica = ReplicaId::new(b"incomplete-scan");
-    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(50), vec![0x10]);
+    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(50), vec![0, 0x10]);
     let mut storage = MemoryStorage::default();
     storage.apply(only_op).unwrap();
 
@@ -1109,7 +1109,7 @@ fn catch_up_rejects_an_incomplete_scan_before_rewriting_stores() {
 #[test]
 fn catch_up_rejects_a_frontier_beyond_the_operation_log() {
     let replica = ReplicaId::new(b"frontier-ahead");
-    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(51), vec![0x10]);
+    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(51), vec![0, 0x10]);
     let mut storage = MemoryStorage::default();
     storage.apply(only_op).unwrap();
 

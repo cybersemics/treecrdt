@@ -940,7 +940,7 @@ fn concurrent_remote_appends_load_meta_after_write_serialization() {
 }
 
 #[test]
-fn remote_append_validates_operation_key_range_atomically() {
+fn remote_append_validates_operations_atomically() {
     let conn = setup_conn();
     let replica = ReplicaId::new(b"invalid-key");
     let append = |ops: &[Operation]| -> rusqlite::Result<String> {
@@ -974,6 +974,29 @@ fn remote_append_validates_operation_key_range_atomically() {
     assert_eq!(op_count, 0);
     assert_eq!(read_tree_meta(&conn).3, 0);
     assert_eq!(read_replay_frontier(&conn), (None, None, None));
+
+    let valid_prefix = Operation::insert(
+        &replica,
+        3,
+        3,
+        NodeId::ROOT,
+        materialization_conformance::node(42),
+        materialization_conformance::order_key_from_position(2),
+    );
+    let invalid_order_key = Operation::insert(
+        &replica,
+        4,
+        4,
+        NodeId::ROOT,
+        materialization_conformance::node(43),
+        vec![1],
+    );
+    assert!(append(&[valid_prefix, invalid_order_key]).is_err());
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 
     let max = i64::MAX as u64;
     let boundary = Operation::insert(

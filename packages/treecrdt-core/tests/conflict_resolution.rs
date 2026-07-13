@@ -40,7 +40,7 @@ fn higher_lamport_wins_on_conflict() {
         move_left.meta.lamport + 1,
         x,
         right,
-        Vec::new(),
+        vec![0, 1],
     );
     crdt_b.apply_remote(move_right.clone()).unwrap();
 
@@ -66,12 +66,12 @@ fn moves_reordered_by_lamport_and_id() {
     let x = NodeId(3);
 
     let ops = [
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, Vec::new()),
+        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, vec![0, 1]),
+        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, vec![0, 2]),
+        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, vec![0, 3]),
         // higher lamport move -> should win
-        Operation::move_node(&ReplicaId::new(b"a"), 4, 5, x, a, Vec::new()),
-        Operation::move_node(&ReplicaId::new(b"a"), 5, 4, x, b, Vec::new()),
+        Operation::move_node(&ReplicaId::new(b"a"), 4, 5, x, a, vec![0, 1]),
+        Operation::move_node(&ReplicaId::new(b"a"), 5, 4, x, b, vec![0, 1]),
     ];
 
     // apply out of order
@@ -99,16 +99,16 @@ fn same_lamport_orders_by_op_id() {
     let x = NodeId(3);
 
     let inserts = [
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, Vec::new()),
+        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, vec![0, 1]),
+        Operation::insert(&ReplicaId::new(b"a"), 2, 2, root, b, vec![0, 2]),
+        Operation::insert(&ReplicaId::new(b"a"), 3, 3, root, x, vec![0, 3]),
     ];
     for op in inserts {
         crdt.apply_remote(op).unwrap();
     }
 
-    let move_a = Operation::move_node(&ReplicaId::new(b"a"), 10, 5, x, a, Vec::new());
-    let move_b = Operation::move_node(&ReplicaId::new(b"b"), 10, 5, x, b, Vec::new());
+    let move_a = Operation::move_node(&ReplicaId::new(b"a"), 10, 5, x, a, vec![0, 1]);
+    let move_b = Operation::move_node(&ReplicaId::new(b"b"), 10, 5, x, b, vec![0, 1]);
 
     crdt.apply_remote(move_b.clone()).unwrap();
     crdt.apply_remote(move_a.clone()).unwrap();

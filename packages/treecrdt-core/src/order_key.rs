@@ -6,6 +6,26 @@ const DEFAULT_BOUNDARY: u16 = 10;
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
+/// Validate the canonical encoding used by structural insert and move operations.
+pub(crate) fn validate_order_key(key: &[u8]) -> Result<()> {
+    if key.is_empty() {
+        return Err(Error::InvalidOperation(
+            "structural order_key must be non-empty".into(),
+        ));
+    }
+    if !key.len().is_multiple_of(DIGIT_BYTES) {
+        return Err(Error::InvalidOperation(
+            "structural order_key must contain complete big-endian u16 digits".into(),
+        ));
+    }
+    if key[key.len() - DIGIT_BYTES..] == [0, 0] {
+        return Err(Error::InvalidOperation(
+            "structural order_key must end in a non-zero u16 digit".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn decode_digits(bytes: &[u8]) -> Result<Vec<u16>> {
     if !bytes.len().is_multiple_of(DIGIT_BYTES) {
         return Err(Error::InvalidOperation(

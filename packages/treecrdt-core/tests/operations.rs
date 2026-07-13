@@ -59,7 +59,14 @@ fn persisted_operations_require_portable_key_range() {
         (1, overflow, NodeId(92)),
         (overflow, 1, NodeId(93)),
     ] {
-        let op = Operation::insert(&replica, counter, lamport, NodeId::ROOT, node, vec![0x10]);
+        let op = Operation::insert(
+            &replica,
+            counter,
+            lamport,
+            NodeId::ROOT,
+            node,
+            vec![0, 0x10],
+        );
         assert!(crdt.apply_remote(op).is_err());
     }
     assert!(crdt.children(NodeId::ROOT).unwrap().is_empty());
@@ -135,7 +142,7 @@ fn prevents_cycle_on_move() {
         3,
         a,
         b,
-        Vec::new(),
+        vec![0, 1],
     ))
     .unwrap();
     assert_eq!(crdt.parent(a).unwrap(), Some(root));
@@ -160,7 +167,7 @@ fn rejected_cycle_move_emits_no_visible_change() {
     let mut index = NoopParentOpIndex;
     let delta = crdt
         .apply_remote_with_materialization_seq(
-            Operation::move_node(&ReplicaId::new(b"remote"), 1, 3, parent, child, Vec::new()),
+            Operation::move_node(&ReplicaId::new(b"remote"), 1, 3, parent, child, vec![0, 1]),
             &mut index,
             &mut seq,
         )
@@ -173,7 +180,7 @@ fn rejected_cycle_move_emits_no_visible_change() {
 
     let rejected_insert = crdt
         .apply_remote_with_materialization_seq(
-            Operation::insert(&ReplicaId::new(b"remote"), 2, 4, child, parent, Vec::new()),
+            Operation::insert(&ReplicaId::new(b"remote"), 2, 4, child, parent, vec![0, 1]),
             &mut index,
             &mut seq,
         )
@@ -190,7 +197,7 @@ fn rejected_cycle_move_emits_no_visible_change() {
                 5,
                 child,
                 child,
-                Vec::new(),
+                vec![0, 1],
                 vec![9],
             ),
             &mut index,
@@ -224,7 +231,7 @@ fn rejected_cycle_move_emits_no_visible_change() {
             7,
             NodeId::TRASH,
             root,
-            Vec::new(),
+            vec![0, 1],
         ),
     ] {
         let delta = crdt
@@ -269,9 +276,9 @@ fn malformed_parent_cycle_rejects_move_without_looping() {
     nodes.ensure_node(cycle_a).unwrap();
     nodes.ensure_node(cycle_b).unwrap();
     nodes.ensure_node(node).unwrap();
-    nodes.attach(cycle_a, cycle_b, vec![1]).unwrap();
-    nodes.attach(cycle_b, cycle_a, vec![1]).unwrap();
-    nodes.attach(node, root, vec![1]).unwrap();
+    nodes.attach(cycle_a, cycle_b, vec![0, 1]).unwrap();
+    nodes.attach(cycle_b, cycle_a, vec![0, 1]).unwrap();
+    nodes.attach(node, root, vec![0, 1]).unwrap();
 
     let mut crdt = TreeCrdt::with_stores(
         ReplicaId::new(b"local"),
@@ -285,7 +292,7 @@ fn malformed_parent_cycle_rejects_move_without_looping() {
     let mut index = NoopParentOpIndex;
     let delta = crdt
         .apply_remote_with_materialization_seq(
-            Operation::move_node(&ReplicaId::new(b"remote"), 1, 1, node, cycle_a, Vec::new()),
+            Operation::move_node(&ReplicaId::new(b"remote"), 1, 1, node, cycle_a, vec![0, 1]),
             &mut index,
             &mut seq,
         )
@@ -309,14 +316,14 @@ fn cycles_are_blocked() {
     let b = NodeId(2);
 
     let inserts = [
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, a, b, Vec::new()),
+        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, vec![0, 1]),
+        Operation::insert(&ReplicaId::new(b"a"), 2, 2, a, b, vec![0, 1]),
     ];
     for op in inserts {
         crdt.apply_remote(op).unwrap();
     }
 
-    let bad_move = Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, Vec::new());
+    let bad_move = Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, vec![0, 1]);
     crdt.apply_remote(bad_move).unwrap();
     assert_eq!(crdt.parent(a).unwrap(), Some(root));
     assert_eq!(crdt.parent(b).unwrap(), Some(a));
@@ -339,7 +346,7 @@ fn materialization_seq_advances_only_for_new_ops() {
         1,
         NodeId::ROOT,
         NodeId(1),
-        Vec::new(),
+        vec![0, 1],
     );
 
     let first = crdt
@@ -365,7 +372,7 @@ fn apply_remote_with_materialization_reports_changes() {
     let mut index = NoopParentOpIndex;
     let replica = ReplicaId::new(b"remote");
 
-    let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), Vec::new());
+    let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0, 1]);
     let insert_delta = crdt
         .apply_remote_with_materialization_seq(insert, &mut index, &mut seq)
         .unwrap()
