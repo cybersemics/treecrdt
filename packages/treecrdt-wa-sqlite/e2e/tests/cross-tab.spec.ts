@@ -6,7 +6,8 @@ async function waitForCrossTabHarness(page: Page) {
     () =>
       typeof (window as any).__openSharedOpfsCrossTabClient === 'function' &&
       typeof (window as any).__mutateSharedOpfsCrossTabTree === 'function' &&
-      typeof (window as any).__sharedOpfsCrossTabState === 'function',
+      typeof (window as any).__sharedOpfsCrossTabState === 'function' &&
+      typeof (window as any).__dropSharedOpfsCrossTabClient === 'function',
   );
 }
 
@@ -95,6 +96,13 @@ async function closeClient(page: Page) {
   await page.evaluate(async () => {
     const close = (window as any).__closeSharedOpfsCrossTabClient;
     if (close) await close();
+  });
+}
+
+async function dropClient(page: Page) {
+  await page.evaluate(async () => {
+    const drop = (window as any).__dropSharedOpfsCrossTabClient;
+    if (drop) await drop();
   });
 }
 
@@ -236,3 +244,49 @@ for (const scenario of scenarios) {
     }
   });
 }
+
+test('shared-worker drop invalidates peers and permits a clean replacement', async ({
+  context,
+}, testInfo) => {
+  if (testInfo.project.name !== 'chromium-dev') test.skip();
+  test.setTimeout(120_000);
+
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+  const docId = `e2e-cross-tab-drop-${suffix}`;
+  const filename = `/e2e-ct-drop-${suffix}.db`;
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  pageA.on('console', (msg) => console.log(`[pageA][${msg.type()}] ${msg.text()}`));
+  pageB.on('console', (msg) => console.log(`[pageB][${msg.type()}] ${msg.text()}`));
+
+  try {
+    await Promise.all([waitForCrossTabHarness(pageA), waitForCrossTabHarness(pageB)]);
+    await Promise.all([
+      openClient(pageA, docId, filename, 'shared-worker'),
+      openClient(pageB, docId, filename, 'shared-worker'),
+    ]);
+
+    const inserted = await mutateTree(pageA, {
+      replicaLabel: 'cross-tab-drop',
+      action: 'insert',
+      nodeInt: 711,
+    });
+    await expect
+      .poll(async () => (await state(pageB)).eventCount, { timeout: 15_000 })
+      .toBeGreaterThanOrEqual(1);
+    expect((await state(pageB)).childrenByParent['0'.repeat(32)]).toContain(inserted.node);
+
+    await dropClient(pageA);
+    await expect(state(pageB)).rejects.toThrow('TreeCRDT shared database was dropped');
+
+    expect(await openClient(pageB, docId, filename, 'shared-worker')).toEqual({
+      mode: 'worker',
+      runtime: 'shared-worker',
+      storage: 'opfs',
+    });
+    expect((await state(pageB)).childrenByParent['0'.repeat(32)]).toEqual([]);
+  } finally {
+    await Promise.allSettled([dropClient(pageA), dropClient(pageB)]);
+    await Promise.allSettled([pageA.close(), pageB.close()]);
+  }
+});
