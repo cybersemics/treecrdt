@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
-type LifecycleRuntime = 'direct' | 'dedicated-worker';
+type LifecycleRuntime = 'direct' | 'dedicated-worker' | 'shared-worker';
 
 const scenarios: Array<{
   runtime: LifecycleRuntime;
@@ -9,6 +9,7 @@ const scenarios: Array<{
 }> = [
   { runtime: 'direct', expectedMode: 'direct' },
   { runtime: 'dedicated-worker', expectedMode: 'worker' },
+  { runtime: 'shared-worker', expectedMode: 'worker' },
 ];
 
 const reloadCases: Array<{
@@ -120,7 +121,11 @@ test.describe('browser OPFS lifecycle', () => {
         if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
 
         try {
-          await drop(page, opts);
+          // Start the shared-worker lifecycle without a pre-existing worker port.
+          await drop(page, {
+            ...opts,
+            runtime: scenario.runtime === 'shared-worker' ? 'direct' : scenario.runtime,
+          });
           const initialState = await write(page, {
             ...opts,
             closeBeforeReload: reloadCase.closeBeforeReload,
