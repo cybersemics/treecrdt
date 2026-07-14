@@ -2,7 +2,7 @@ import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from '@t
 import { nodeIdFromInt } from '@treecrdt/benchmark';
 import { replicaFromLabel } from './op-helpers.js';
 
-export type LifecycleRuntime = 'direct' | 'dedicated-worker';
+export type LifecycleRuntime = 'direct' | 'dedicated-worker' | 'shared-worker';
 
 const rootId = '0'.repeat(32);
 const parentId = nodeIdFromInt(901);
