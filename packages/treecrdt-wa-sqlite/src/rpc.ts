@@ -27,7 +27,6 @@ export type RpcSchema = {
     params: [ops: Operation[]];
     result: MaterializationOutcome;
   };
-  broadcastMaterialized: { params: [event: MaterializationEvent]; result: void };
   opsSince: { params: [lamport: number, root?: string]; result: unknown[] };
   opRefsAll: { params: []; result: unknown[] };
   opRefsChildren: { params: [parent: string]; result: unknown[] };
