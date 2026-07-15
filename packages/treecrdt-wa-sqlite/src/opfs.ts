@@ -1,5 +1,6 @@
 import type { Database } from './types.js';
 import { makeDbAdapter } from './db.js';
+import { initializeTreecrdtExtension } from './extension.js';
 
 export type OpfsSupport = {
   available: boolean;
@@ -166,30 +167,54 @@ export async function openWithStorage(
   opts: OpenOptions,
 ): Promise<{ db: Database; close?: () => Promise<void> }> {
   const { moduleFactory, filename = ':memory:', sqliteApi, storage } = opts;
-  let module = await moduleFactory();
+  const module = await moduleFactory();
   const sqlite3 = sqliteApi.Factory(module);
 
   let file = filename;
-  if (storage === 'opfs') {
-    const support = detectOpfsSupport();
-    if (!support.available) {
-      throw new Error(`OPFS unsupported: ${support.reason ?? 'unknown reason'}`);
-    }
-    const vfs = await createOpfsVfs(module, { name: 'opfs', kind: opts.opfsVfs });
-    sqlite3.vfs_register(vfs, true);
-    file = filename === ':memory:' ? '/treecrdt.db' : filename;
-  }
-
-  const handle = await sqlite3.open_v2(file);
-  const db = makeDbAdapter(sqlite3, handle);
-  return {
-    db,
-    close: async () => {
-      try {
-        await sqlite3.close(handle);
-      } catch {
-        /* ignore */
+  let vfs: { close?: () => Promise<void> | void } | undefined;
+  let vfsName: string | undefined;
+  let handle: number | undefined;
+  try {
+    if (storage === 'opfs') {
+      const support = detectOpfsSupport();
+      if (!support.available) {
+        throw new Error(`OPFS unsupported: ${support.reason ?? 'unknown reason'}`);
       }
-    },
-  };
+      vfsName = 'opfs';
+      vfs = await createOpfsVfs(module, { name: vfsName, kind: opts.opfsVfs });
+      sqlite3.vfs_register(vfs, false);
+      file = filename === ':memory:' ? '/treecrdt.db' : filename;
+    }
+
+    const openedHandle = vfsName
+      ? await sqlite3.open_v2(file, undefined, vfsName)
+      : await sqlite3.open_v2(file);
+    handle = openedHandle;
+    const db = makeDbAdapter(sqlite3, openedHandle);
+    await initializeTreecrdtExtension(module, openedHandle);
+    let closePromise: Promise<void> | undefined;
+    return {
+      db,
+      close: () =>
+        (closePromise ??= (async () => {
+          try {
+            await db.close?.();
+          } finally {
+            await vfs?.close?.();
+          }
+        })()),
+    };
+  } catch (err) {
+    try {
+      if (handle !== undefined) await sqlite3.close(handle);
+    } catch {
+      // Preserve the initialization error.
+    }
+    try {
+      await vfs?.close?.();
+    } catch {
+      // Preserve the initialization error.
+    }
+    throw err;
+  }
 }
