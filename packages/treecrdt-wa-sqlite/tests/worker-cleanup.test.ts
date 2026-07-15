@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.js';
-import type { RpcRequest } from '../src/rpc.js';
+import { SHARED_WORKER_DROPPED_ERROR, type RpcRequest } from '../src/rpc.js';
 
 type Runtime = 'dedicated-worker' | 'shared-worker';
 type RpcResponse =
@@ -10,11 +10,13 @@ type RpcResponse =
 
 class FakeEndpoint {
   readonly listeners = new Map<string, Set<(event: any) => void>>();
+  readonly workerErrorListeners = new Set<(event: any) => void>();
   readonly requests: RpcRequest[] = [];
   terminated = false;
   portClosed = false;
+  throwOnPost = false;
 
-  constructor(private readonly respond: (request: RpcRequest) => RpcResponse) {}
+  constructor(private readonly respond: (request: RpcRequest) => RpcResponse | undefined) {}
 
   addEventListener(type: string, listener: (event: any) => void) {
     const listeners = this.listeners.get(type) ?? new Set();
@@ -27,11 +29,25 @@ class FakeEndpoint {
   }
 
   postMessage(request: RpcRequest) {
+    if (this.throwOnPost) throw new Error('port is unavailable');
     this.requests.push(request);
     const response = this.respond(request);
+    if (!response) return;
     queueMicrotask(() => {
       for (const listener of this.listeners.get('message') ?? []) listener({ data: response });
     });
+  }
+
+  emit(message: unknown) {
+    for (const listener of this.listeners.get('message') ?? []) listener({ data: message });
+  }
+
+  emitMessageError() {
+    for (const listener of this.listeners.get('messageerror') ?? []) listener({});
+  }
+
+  emitWorkerError(message: string) {
+    for (const listener of this.workerErrorListeners) listener({ message });
   }
 
   start() {}
@@ -45,7 +61,10 @@ class FakeEndpoint {
   }
 }
 
-function installEndpoint(runtime: Runtime, respond: (request: RpcRequest) => RpcResponse) {
+function installEndpoint(
+  runtime: Runtime,
+  respond: (request: RpcRequest) => RpcResponse | undefined,
+) {
   const endpoint = new FakeEndpoint(respond);
   if (runtime === 'dedicated-worker') {
     vi.stubGlobal(
@@ -61,6 +80,14 @@ function installEndpoint(runtime: Runtime, respond: (request: RpcRequest) => Rpc
       'SharedWorker',
       class {
         port = endpoint;
+
+        addEventListener(type: string, listener: (event: any) => void) {
+          if (type === 'error') endpoint.workerErrorListeners.add(listener);
+        }
+
+        removeEventListener(type: string, listener: (event: any) => void) {
+          if (type === 'error') endpoint.workerErrorListeners.delete(listener);
+        }
       },
     );
   }
@@ -81,6 +108,17 @@ function clientOptions(runtime: Runtime) {
 function expectCleaned(runtime: Runtime, endpoint: FakeEndpoint) {
   expect(runtime === 'dedicated-worker' ? endpoint.terminated : endpoint.portClosed).toBe(true);
   expect([...endpoint.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
+  if (runtime === 'shared-worker') expect(endpoint.workerErrorListeners.size).toBe(0);
+}
+
+async function openSharedClientWithoutRpcResponses() {
+  const endpoint = installEndpoint('shared-worker', (request) =>
+    request.method === 'init'
+      ? { id: request.id, ok: true, result: { storage: 'memory', filename: ':memory:' } }
+      : undefined,
+  );
+  const client = await createTreecrdtClient(clientOptions('shared-worker'));
+  return { client, endpoint };
 }
 
 afterEach(() => {
@@ -129,3 +167,52 @@ for (const runtime of ['dedicated-worker', 'shared-worker'] as const) {
     expectCleaned(runtime, endpoint);
   });
 }
+
+test('shared-worker terminal invalidation rejects pending calls and closes the client', async () => {
+  const { client, endpoint } = await openSharedClientWithoutRpcResponses();
+  const pending = client.meta.headLamport();
+  await vi.waitFor(() => {
+    expect(endpoint.requests.some((request) => request.method === 'headLamport')).toBe(true);
+  });
+
+  endpoint.emit({ type: 'terminal', error: SHARED_WORKER_DROPPED_ERROR });
+
+  await expect(pending).rejects.toThrow(SHARED_WORKER_DROPPED_ERROR);
+  await expect(client.meta.headLamport()).rejects.toThrow(SHARED_WORKER_DROPPED_ERROR);
+  expectCleaned('shared-worker', endpoint);
+  await client.close();
+  await client.close();
+});
+
+test('shared-worker runtime errors reject pending calls and close the client', async () => {
+  const { client, endpoint } = await openSharedClientWithoutRpcResponses();
+  const pending = client.meta.headLamport();
+  await vi.waitFor(() => {
+    expect(endpoint.requests.some((request) => request.method === 'headLamport')).toBe(true);
+  });
+
+  endpoint.emitWorkerError('shared worker script failed');
+
+  await expect(pending).rejects.toThrow('shared worker script failed');
+  expectCleaned('shared-worker', endpoint);
+});
+
+test('shared-worker message errors send a best-effort close before cleanup', async () => {
+  const { client, endpoint } = await openSharedClientWithoutRpcResponses();
+
+  endpoint.emitMessageError();
+
+  expect(endpoint.requests.at(-1)?.method).toBe('close');
+  await expect(client.meta.headLamport()).rejects.toThrow('shared worker message error');
+  expectCleaned('shared-worker', endpoint);
+});
+
+test('shared-worker post failures reject the call and clean up the client', async () => {
+  const { client, endpoint } = await openSharedClientWithoutRpcResponses();
+  endpoint.throwOnPost = true;
+
+  await expect(client.meta.headLamport()).rejects.toThrow(
+    'shared worker post failed: port is unavailable',
+  );
+  expectCleaned('shared-worker', endpoint);
+});

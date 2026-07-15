@@ -33,12 +33,13 @@ export class CommonWorkerSession {
   }
 
   async closeDbAndReset(): Promise<void> {
-    if (this.db?.close) await this.db.close();
+    const db = this.db;
     this.db = null;
     this.api = null;
     this.storedFilename = undefined;
     this.storedStorage = 'memory';
     this.onAfterReset();
+    if (db?.close) await db.close();
   }
 
   async drop(): Promise<null> {

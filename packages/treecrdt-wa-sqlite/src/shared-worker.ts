@@ -2,6 +2,7 @@
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import {
   transferablesForRpcBinaryResult,
+  SHARED_WORKER_DROPPED_ERROR,
   type RpcInitResult,
   type RpcMethod,
   type RpcParams,
@@ -41,6 +42,7 @@ const ports = new Set<MessagePort>();
 const session = new SharedCommonWorkerSession();
 const coreHandlers = createCommonWorkerRpcHandlers(session);
 let callQueue: Promise<void> = Promise.resolve();
+let finalResetQueued = false;
 
 const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
   promise.then(
@@ -52,12 +54,52 @@ function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePor
   if (event.changes.length === 0) return;
   for (const port of ports) {
     if (port === exclude) continue;
-    port.postMessage({ type: 'materialized', event });
+    postToPort(port, { type: 'materialized', event });
   }
 }
 
-function isClientPushMessage(message: RpcRequest | RpcPushMessage): message is RpcPushMessage {
-  return 'type' in message && message.type === 'materialized';
+function postToPort(port: MessagePort, message: unknown, transfer: Transferable[] = []): boolean {
+  try {
+    port.postMessage(message, transfer);
+    return true;
+  } catch {
+    prunePort(port);
+    return false;
+  }
+}
+
+function scheduleFinalReset(): void {
+  if (finalResetQueued || ports.size > 0) return;
+  finalResetQueued = true;
+  const reset = callQueue.then(async () => {
+    finalResetQueued = false;
+    if (ports.size === 0) await session.closeDbAndReset();
+  });
+  callQueue = settleQueue(reset);
+}
+
+function prunePort(port: MessagePort): void {
+  const removed = detachPort(port);
+  port.close();
+  if (removed) scheduleFinalReset();
+}
+
+function detachPort(port: MessagePort): boolean {
+  const removed = ports.delete(port);
+  port.onmessage = null;
+  port.onmessageerror = null;
+  return removed;
+}
+
+function invalidatePeers(sourcePort: MessagePort): void {
+  const terminal: RpcPushMessage = {
+    type: 'terminal',
+    error: SHARED_WORKER_DROPPED_ERROR,
+  };
+  for (const port of ports) {
+    if (port === sourcePort) continue;
+    if (postToPort(port, terminal)) detachPort(port);
+  }
 }
 
 (self as unknown as SharedWorkerGlobal).onconnect = (ev: MessageEvent) => {
@@ -66,8 +108,8 @@ function isClientPushMessage(message: RpcRequest | RpcPushMessage): message is R
   ports.add(port);
   port.onmessage = (message: MessageEvent<RpcRequest | RpcPushMessage>) => {
     const data = message.data;
-    if (isClientPushMessage(data)) {
-      broadcastMaterialized(data.event, port);
+    if ('type' in data) {
+      if (data.type === 'materialized') broadcastMaterialized(data.event, port);
       return;
     }
 
@@ -77,18 +119,28 @@ function isClientPushMessage(message: RpcRequest | RpcPushMessage): message is R
         request.method === 'treePayload' || request.method === 'treeParent'
           ? transferablesForRpcBinaryResult(result)
           : [];
-      port.postMessage({ id: request.id, ok: true, result }, transfer);
+      postToPort(port, { id: request.id, ok: true, result }, transfer);
     };
     const respondError = (error: string) => {
-      port.postMessage({ id: request.id, ok: false, error });
+      postToPort(port, { id: request.id, ok: false, error });
     };
-    const run = callQueue.then(() => handleRequest(port, request));
+    let handled = false;
+    const run = callQueue.then(() => {
+      if (!ports.has(port)) return undefined;
+      handled = true;
+      return handleRequest(port, request);
+    });
     callQueue = settleQueue(run);
     run.then(
-      (result) => respondSuccess(result),
-      (err) => respondError(err instanceof Error ? err.message : String(err)),
+      (result) => {
+        if (handled) respondSuccess(result);
+      },
+      (err) => {
+        if (handled) respondError(err instanceof Error ? err.message : String(err));
+      },
     );
   };
+  port.onmessageerror = () => prunePort(port);
   port.start();
 };
 
@@ -107,7 +159,7 @@ async function handleRequest<M extends RpcMethod>(
   }
 
   if (request.method === 'drop') {
-    await session.drop();
+    await drop(sourcePort);
     return undefined;
   }
 
@@ -154,7 +206,16 @@ async function init(
 }
 
 async function close(port: MessagePort) {
-  ports.delete(port);
+  detachPort(port);
   if (ports.size > 0) return;
   await session.closeDbAndReset();
+}
+
+async function drop(sourcePort: MessagePort): Promise<void> {
+  try {
+    await session.drop();
+  } finally {
+    invalidatePeers(sourcePort);
+    detachPort(sourcePort);
+  }
 }

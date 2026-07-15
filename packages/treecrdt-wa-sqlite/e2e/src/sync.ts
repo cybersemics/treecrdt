@@ -555,6 +555,14 @@ export async function closeSharedOpfsCrossTabClient(): Promise<void> {
   if (client) await client.close();
 }
 
+export async function dropSharedOpfsCrossTabClient(): Promise<void> {
+  sharedOpfsCrossTabUnsubscribe?.();
+  sharedOpfsCrossTabUnsubscribe = null;
+  const client = sharedOpfsCrossTabClient;
+  sharedOpfsCrossTabClient = null;
+  if (client) await client.drop();
+}
+
 export async function runTreecrdtSyncSubscribeE2E(): Promise<{ ok: true }> {
   const docId = `e2e-sync-subscribe-${crypto.randomUUID()}`;
   const a = await createTreecrdtClient({ storage: memoryStorage, docId });
@@ -860,6 +868,7 @@ declare global {
     __mutateSharedOpfsCrossTabTree?: typeof mutateSharedOpfsCrossTabTree;
     __sharedOpfsCrossTabState?: typeof sharedOpfsCrossTabState;
     __closeSharedOpfsCrossTabClient?: typeof closeSharedOpfsCrossTabClient;
+    __dropSharedOpfsCrossTabClient?: typeof dropSharedOpfsCrossTabClient;
   }
 }
 
@@ -874,4 +883,5 @@ if (typeof window !== 'undefined') {
   window.__mutateSharedOpfsCrossTabTree = mutateSharedOpfsCrossTabTree;
   window.__sharedOpfsCrossTabState = sharedOpfsCrossTabState;
   window.__closeSharedOpfsCrossTabClient = closeSharedOpfsCrossTabClient;
+  window.__dropSharedOpfsCrossTabClient = dropSharedOpfsCrossTabClient;
 }
