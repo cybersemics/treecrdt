@@ -13,6 +13,10 @@ pnpm --filter @treecrdt/wa-sqlite build
 
 The build copies wa-sqlite WASM/JS assets into `dist/wa-sqlite/` for Node and packages them for browser apps via the Vite plugin.
 
+Low-level callers that open a wa-sqlite handle themselves must call
+`initializeTreecrdtExtension(module, handle)` before constructing an adapter with
+`createWaSqliteApi`. `createTreecrdtClient()` does this automatically.
+
 ## Browser usage
 
 Use `createTreecrdtClient()` with OPFS or in-memory storage. Browser apps should use `@treecrdt/wa-sqlite/vite-plugin` to copy assets into `public/wa-sqlite/`.
