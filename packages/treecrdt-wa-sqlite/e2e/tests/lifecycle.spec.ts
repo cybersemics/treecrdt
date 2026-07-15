@@ -2,11 +2,13 @@ import { test, expect, type Page } from '@playwright/test';
 
 type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
 type LifecycleRuntime = 'direct' | 'dedicated-worker' | 'shared-worker';
+type LifecycleWriteMode = 'default' | 'single-owner-wal';
 type LifecycleOptions = {
   docId: string;
   filename: string;
   runtime: LifecycleRuntime;
   sharedWorkerName?: string;
+  writeMode?: LifecycleWriteMode;
 };
 
 const scenarios: Array<{
@@ -184,6 +186,44 @@ test.describe('browser OPFS lifecycle', () => {
     } finally {
       await drop(page, { ...firstOpts, runtime: 'direct' }).catch(() => {});
       await drop(page, { ...secondOpts, runtime: 'direct' }).catch(() => {});
+    }
+  });
+
+  test('reopens a dedicated-worker OPFS store in single-owner WAL mode', async ({
+    page,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const opts = {
+      docId: `lifecycle-wal-${suffix}`,
+      filename: `/lifecycle-wal-${'p'.repeat(64)}-${suffix}.db`,
+      runtime: 'dedicated-worker' as const,
+      writeMode: 'single-owner-wal' as const,
+    };
+    const walPathBytes = new TextEncoder().encode(`${opts.filename}-wal`).byteLength;
+    expect(walPathBytes).toBeGreaterThan(64);
+    expect(walPathBytes).toBeLessThan(512);
+
+    await waitForHarness(page);
+    const opfsSupport = await support(page);
+    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+
+    try {
+      await drop(page, opts);
+      const written = await write(page, { ...opts, closeBeforeReload: true });
+      expectReloadedTree(written, { mode: 'worker', runtime: 'dedicated-worker' });
+      expect(written.journalMode).toBe('wal');
+      expect(written.lockingMode).toBe('exclusive');
+
+      const reopened = await read(page, opts);
+      expectReloadedTree(reopened, { mode: 'worker', runtime: 'dedicated-worker' });
+      expect(reopened.journalMode).toBe('wal');
+      expect(reopened.lockingMode).toBe('exclusive');
+    } finally {
+      await drop(page, opts).catch(() => {});
     }
   });
 });

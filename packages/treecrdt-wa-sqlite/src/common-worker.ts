@@ -4,7 +4,7 @@ import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import type { OpenTreecrdtDbResult } from './open.js';
-import { clearOpfsStorage } from './opfs.js';
+import { clearOpfsStorage, type OpfsVfsKind } from './opfs.js';
 import { rpcBinaryResult, type RpcInitResult, type RpcSqlParams } from './rpc.js';
 
 export function openedToRpcInitResult(opened: OpenTreecrdtDbResult): RpcInitResult {
@@ -22,6 +22,8 @@ export class CommonWorkerSession {
   api: TreecrdtAdapter | null = null;
   storedFilename: string | undefined;
   storedStorage: 'memory' | 'opfs' = 'memory';
+  storedOpfsVfsKind: OpfsVfsKind | undefined;
+  storedOpfsVfsName: string | undefined;
 
   protected onAfterReset(): void {}
 
@@ -30,6 +32,8 @@ export class CommonWorkerSession {
     this.api = opened.api;
     this.storedFilename = opened.filename;
     this.storedStorage = opened.storage;
+    this.storedOpfsVfsKind = opened.opfsVfsKind;
+    this.storedOpfsVfsName = opened.opfsVfsName;
   }
 
   async closeDbAndReset(): Promise<void> {
@@ -38,6 +42,8 @@ export class CommonWorkerSession {
     this.api = null;
     this.storedFilename = undefined;
     this.storedStorage = 'memory';
+    this.storedOpfsVfsKind = undefined;
+    this.storedOpfsVfsName = undefined;
     this.onAfterReset();
     if (db?.close) await db.close();
   }
@@ -45,9 +51,11 @@ export class CommonWorkerSession {
   async drop(): Promise<null> {
     const filename = this.storedFilename;
     const storage = this.storedStorage;
+    const opfsVfsKind = this.storedOpfsVfsKind;
+    const opfsVfsName = this.storedOpfsVfsName;
     await this.closeDbAndReset();
     if (storage === 'opfs' && filename) {
-      await clearOpfsStorage(filename);
+      await clearOpfsStorage(filename, { vfsKind: opfsVfsKind, vfsName: opfsVfsName });
     }
     return null;
   }

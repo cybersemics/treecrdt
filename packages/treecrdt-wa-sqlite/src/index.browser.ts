@@ -2,6 +2,7 @@ export type {
   ClientMode,
   ClientOptions,
   Database,
+  OpfsWriteMode,
   RuntimeMode,
   StorageMode,
   TreecrdtAssets,
