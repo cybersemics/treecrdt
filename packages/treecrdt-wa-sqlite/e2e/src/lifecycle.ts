@@ -17,6 +17,7 @@ type LifecycleOptions = {
   docId: string;
   filename: string;
   runtime: LifecycleRuntime;
+  sharedWorkerName?: string;
 };
 
 export type LifecycleState = {
@@ -39,7 +40,10 @@ async function createOpfsLifecycleClient(opts: LifecycleOptions): Promise<Treecr
   return createTreecrdtClient({
     docId: opts.docId,
     storage: { type: 'opfs', filename: opts.filename, fallback: 'throw' },
-    runtime: { type: opts.runtime },
+    runtime:
+      opts.runtime === 'shared-worker' && opts.sharedWorkerName
+        ? { type: 'shared-worker', name: opts.sharedWorkerName }
+        : { type: opts.runtime },
   });
 }
 
