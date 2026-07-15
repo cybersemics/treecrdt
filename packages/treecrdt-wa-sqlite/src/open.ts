@@ -9,6 +9,7 @@ export type { OpenTreecrdtDbOptions, OpenTreecrdtDbResult };
 
 /** Browser/worker entry: loads wa-sqlite assets from public URLs. */
 export async function openTreecrdtDb(opts: OpenTreecrdtDbOptions): Promise<OpenTreecrdtDbResult> {
-  const loaded = await loadWaSqliteBrowser({ assetsDir: opts.baseUrl });
-  return openTreecrdtDbFromLoaded(opts, loaded);
+  const loadFresh = () => loadWaSqliteBrowser({ assetsDir: opts.baseUrl });
+  const loaded = await loadFresh();
+  return openTreecrdtDbFromLoaded(opts, loaded, loadFresh);
 }
