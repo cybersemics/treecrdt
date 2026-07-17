@@ -1,5 +1,11 @@
 # @treecrdt/wa-sqlite
 
+## 0.3.3
+
+### Patch Changes
+
+- 0a2f290: Initialize the statically linked TreeCRDT extension explicitly after opening SQLite.
+
 ## 0.3.2
 
 ### Patch Changes
