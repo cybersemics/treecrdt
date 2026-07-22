@@ -1,5 +1,11 @@
 # @treecrdt/wa-sqlite
 
+## 0.3.4
+
+### Patch Changes
+
+- f81a44d: Allocate local insert and move order keys correctly when adjacent prefix digits have independently ordered suffixes.
+
 ## 0.3.3
 
 ### Patch Changes
