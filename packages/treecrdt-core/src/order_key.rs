@@ -84,7 +84,7 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
             ));
         }
 
-        if rd > ld + 1 {
+        if u32::from(rd) > u32::from(ld) + 1 {
             let gap = rd - ld - 1;
             let boundary = DEFAULT_BOUNDARY.min(gap);
             let choose_left = choose_side(seed, depth);
@@ -100,6 +100,14 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
             };
 
             out.push(choose_in_range(seed, depth, lo, hi));
+            break;
+        }
+
+        // Once a concrete left digit is immediately below the upper digit, its remaining suffix
+        // can be extended without comparing it against the right key's suffix.
+        if rd > ld && depth < left_digits.len() {
+            out.extend_from_slice(&left_digits[depth..]);
+            out.push(choose_in_range(seed, left_digits.len(), 1, u16::MAX));
             break;
         }
 
