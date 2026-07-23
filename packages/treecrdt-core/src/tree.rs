@@ -776,6 +776,7 @@ where
         let mut seq: u64 = 0;
         let mut head: Option<Operation> = None;
         storage.scan_since(0, &mut |op| {
+            op.validate()?;
             clock.observe(op.meta.lamport);
             version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
             let _ = Self::apply_forward(nodes, payloads, &op)?;

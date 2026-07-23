@@ -63,8 +63,10 @@ fn visible_payload_source(
 }
 
 pub fn order_key_from_position(position: u16) -> Vec<u8> {
-    let n = position.wrapping_add(1);
-    n.to_be_bytes().to_vec()
+    match position.checked_add(1) {
+        Some(next) => next.to_be_bytes().to_vec(),
+        None => vec![0xff, 0xff, 0, 1],
+    }
 }
 
 pub fn node(n: u128) -> NodeId {
@@ -843,4 +845,19 @@ pub fn catch_up_omits_replay_only_restore<H: MaterializationConformanceHarness>(
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![parent]);
     assert_eq!(harness.visible_children(parent), vec![child]);
     assert_replay_cleared(harness);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_key_from_position;
+
+    #[test]
+    fn maximum_position_stays_canonical_and_ordered() {
+        let penultimate = order_key_from_position(u16::MAX - 1);
+        let maximum = order_key_from_position(u16::MAX);
+
+        assert_eq!(penultimate, vec![0xff, 0xff]);
+        assert_eq!(maximum, vec![0xff, 0xff, 0, 1]);
+        assert!(maximum > penultimate);
+    }
 }

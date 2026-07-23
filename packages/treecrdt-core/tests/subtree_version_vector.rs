@@ -17,8 +17,8 @@ fn subtree_walk_terminates_on_cycle_and_merges_each_node() {
     let node_b = NodeId(2);
     let mut nodes = MemoryNodeStore::default();
 
-    nodes.attach(node_a, node_b, vec![0x10]).unwrap();
-    nodes.attach(node_b, node_a, vec![0x20]).unwrap();
+    nodes.attach(node_a, node_b, vec![0, 0x10]).unwrap();
+    nodes.attach(node_b, node_a, vec![0, 0x20]).unwrap();
     nodes.merge_last_change(node_a, &version(&replica_a, 1)).unwrap();
     nodes.merge_last_change(node_b, &version(&replica_b, 2)).unwrap();
 
@@ -46,7 +46,7 @@ fn subtree_walk_handles_a_deep_chain_without_recursion() {
 
     for counter in 1..=DEPTH {
         let child = NodeId(counter as u128);
-        nodes.attach(child, parent, vec![0x10]).unwrap();
+        nodes.attach(child, parent, vec![0, 0x10]).unwrap();
         nodes.merge_last_change(child, &version(&replica, counter)).unwrap();
         parent = child;
     }
