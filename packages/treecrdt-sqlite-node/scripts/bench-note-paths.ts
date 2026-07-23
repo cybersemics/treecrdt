@@ -1,7 +1,4 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
-
-import Database from 'better-sqlite3';
 
 import {
   buildFanoutInsertTreeOps,
@@ -12,9 +9,8 @@ import {
 } from '@treecrdt/benchmark';
 import { repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
-import { nodeIdToBytes16 } from '@treecrdt/interface/ids';
 
-import { createTreecrdtClient, createSqliteNodeApi, loadTreecrdtExtension } from '../dist/index.js';
+import { createTreecrdtClient, type SqliteNodeClient } from '../dist/index.js';
 
 type StorageKind = 'memory' | 'file';
 type NotePathBenchKind = 'read-children-payloads' | 'insert-into-large-tree';
@@ -199,7 +195,7 @@ async function openSeededClient(opts: {
   bench: NotePathBenchKind;
   size: number;
   seedOps: Operation[];
-}): Promise<Awaited<ReturnType<typeof createTreecrdtClient>>> {
+}): Promise<SqliteNodeClient> {
   const dbPath =
     opts.storage === 'memory'
       ? ':memory:'
@@ -210,24 +206,15 @@ async function openSeededClient(opts: {
           `${opts.bench}-${opts.size}-${crypto.randomUUID()}.db`,
         );
 
-  if (opts.storage === 'file') {
-    await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  }
-
-  const db = new Database(dbPath);
-  loadTreecrdtExtension(db);
-  const api = createSqliteNodeApi(db);
-  await api.setDocId('treecrdt-note-paths-bench');
-  await api.appendOps!(opts.seedOps, nodeIdToBytes16, (replica) => replica);
-
-  const client = await createTreecrdtClient(db, { docId: 'treecrdt-note-paths-bench' });
+  const client = await createTreecrdtClient({
+    docId: 'treecrdt-note-paths-bench',
+    storage: opts.storage === 'file' ? { type: 'file', filename: dbPath } : { type: 'memory' },
+  });
+  await client.ops.appendMany(opts.seedOps);
   return {
     ...client,
     close: async () => {
-      await client.close();
-      if (opts.storage === 'file') {
-        await fs.rm(dbPath).catch(() => {});
-      }
+      await client.drop();
     },
   };
 }
