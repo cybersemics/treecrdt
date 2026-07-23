@@ -158,6 +158,11 @@ export type TreecrdtEngineOps = {
 
 export type TreecrdtEngineOpRefs = {
   all: () => Promise<Uint8Array[]>;
+  /**
+   * Returns the operation closure needed to reproduce `tree.children(parent)` from an empty
+   * materialization. The closure can contain descendant operations that defensively restore a
+   * direct child, so this filter is a convergence primitive rather than a confidentiality boundary.
+   */
   children: (parent: string) => Promise<Uint8Array[]>;
 };
 

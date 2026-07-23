@@ -252,9 +252,14 @@ fn rejected_local_cycle_move_has_no_visible_change_plan() {
     crdt.local_insert(root, parent, LocalPlacement::First, None).unwrap();
     crdt.local_insert(parent, child, LocalPlacement::First, None).unwrap();
 
-    let (_op, plan) = crdt.local_move(parent, child, LocalPlacement::First).unwrap();
+    let (op, plan) = crdt.local_move(parent, child, LocalPlacement::First).unwrap();
+    let mut index = NoopParentOpIndex;
+    let outcome = crdt.finalize_local_with_outcome(&op, &mut index, 41, &plan).unwrap();
 
+    assert!(plan.operation_inserted);
     assert!(plan.changes.is_empty());
+    assert_eq!(outcome.head_seq, 42);
+    assert!(outcome.changes.is_empty());
     assert_eq!(crdt.parent(parent).unwrap(), Some(root));
     assert_eq!(crdt.parent(child).unwrap(), Some(parent));
 }

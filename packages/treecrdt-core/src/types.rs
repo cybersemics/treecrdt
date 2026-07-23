@@ -213,6 +213,10 @@ impl LocalPlacement {
 
 #[derive(Clone, Debug, Default)]
 pub struct LocalFinalizePlan {
+    /// Whether the operation was newly inserted into storage.
+    ///
+    /// Duplicate retries must not advance the materialization cursor.
+    pub operation_inserted: bool,
     pub parent_hints: Vec<NodeId>,
     pub extra_index_records: Vec<(NodeId, OperationId)>,
     pub changes: Vec<MaterializationChange>,

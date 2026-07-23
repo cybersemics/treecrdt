@@ -19,6 +19,9 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
 
   const normalizeReplicaHex = (hex: string): string => hex.replace(/^0x/i, '').toLowerCase();
 
+  const operationIdKey = (replica: string, counter: number): string =>
+    `${normalizeReplicaHex(replica)}:${counter}`;
+
   const opRefFor = (op: JsOp): Uint8Array => {
     const h = createHash('sha256');
     h.update('treecrdt/opref/wasm-adapter/v0');
@@ -49,11 +52,12 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     opRefsAll: async () => sortedOps().map((op) => Array.from(opRefFor(op))),
     opRefsChildren: async (parent) => {
       const parentHex = bytesToHex(parent);
-      const filtered = sortedOps().filter((op) => {
-        if (op.kind === 'insert') return op.parent === parentHex;
-        if (op.kind === 'move') return op.new_parent === parentHex;
-        return false;
-      });
+      const rawIds = tree.childrenFilterOperationIds(parentHex);
+      const ids = Array.isArray(rawIds) ? (rawIds as JsOperationId[]) : [];
+      const selected = new Set(ids.map((id) => operationIdKey(id.replica, id.counter)));
+      const filtered = sortedOps().filter((op) =>
+        selected.has(operationIdKey(op.replica, op.counter)),
+      );
       return filtered.map((op) => Array.from(opRefFor(op)));
     },
     opsByOpRefs: async (opRefs) => {
@@ -131,6 +135,11 @@ type JsOp = {
   order_key?: string | null;
   known_state?: number[] | null;
   payload?: string | null;
+};
+
+type JsOperationId = {
+  replica: string;
+  counter: number;
 };
 
 function toHex(bytes: Uint8Array): string {
