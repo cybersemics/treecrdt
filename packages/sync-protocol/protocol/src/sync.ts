@@ -1677,7 +1677,10 @@ export class SyncPeer<Op> {
       .catch(() => {
         // A prior batch failure should not permanently poison the queue.
       })
-      .then(() => this.onOpsBatch(transport, batch));
+      .then(async () => {
+        await this.onOpsBatch(transport, batch);
+        if (batch.ops.length > 0 && !batch.done) await yieldToMacrotask();
+      });
     this.opsBatchQueues.set(batch.filterId, current);
     try {
       await current;
