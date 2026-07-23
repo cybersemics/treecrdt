@@ -104,6 +104,9 @@ jobs:
       - name: Run Rust tests
         run: cargo test --workspace --all-targets
 
+      - name: Run SQLite extension roundtrip tests
+        run: cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite
+
       - name: Detect Playwright version
         id: pw-version
         shell: bash

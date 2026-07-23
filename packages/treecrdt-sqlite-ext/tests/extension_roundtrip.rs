@@ -326,6 +326,12 @@ fn oprefs_children(conn: &Connection, parent: &[u8]) -> Vec<Vec<u8>> {
     serde_json::from_str(&refs_json).unwrap()
 }
 
+fn oprefs_all(conn: &Connection) -> Vec<Vec<u8>> {
+    let refs_json: String =
+        conn.query_row("SELECT treecrdt_oprefs_all()", [], |row| row.get(0)).unwrap();
+    serde_json::from_str(&refs_json).unwrap()
+}
+
 fn ops_by_oprefs(conn: &Connection, refs: &[Vec<u8>]) -> Vec<JsonOp> {
     let refs_json = serde_json::to_string(refs).unwrap();
     let ops_json: String = conn
@@ -507,6 +513,41 @@ fn append_and_fetch_ops_via_extension() {
 }
 
 #[test]
+fn empty_order_key_survives_operation_reads() {
+    let conn = setup_conn();
+    let replica = b"empty-order-key".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, 1, 1, 'insert', ?2, ?3, NULL, zeroblob(0), NULL)",
+            rusqlite::params![replica, root, node],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let storage_shape: (String, i64, i64) = conn
+        .query_row(
+            "SELECT typeof(order_key), length(order_key), order_key IS NULL FROM ops",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(storage_shape, ("blob".to_string(), 0, 0));
+
+    let ops_json: String =
+        conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0)).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&ops_json);
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].order_key, Some(Vec::new()));
+
+    let fetched = ops_by_oprefs(&conn, &oprefs_all(&conn));
+    assert_eq!(fetched.len(), 1);
+    assert_eq!(fetched[0].order_key, Some(Vec::new()));
+}
+
+#[test]
 fn empty_payload_survives_canonical_catch_up_and_reopen() {
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("empty-payload.sqlite");
@@ -665,6 +706,83 @@ fn local_empty_payload_is_preserved() {
     assert_eq!(ops.len(), 1);
     assert_eq!(ops[0].payload, Some(Vec::new()));
     assert_eq!(payload_bytes(&conn, &node), Some(Vec::new()));
+}
+
+#[test]
+fn empty_replica_is_rejected_by_local_and_batch_writes() {
+    let conn = setup_conn();
+    let result = conn.query_row(
+        "SELECT treecrdt_local_insert(zeroblob(0), ?1, ?2, 'first', NULL, NULL)",
+        rusqlite::params![node_bytes(0), node_bytes(1)],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+    let batch = serde_json::to_string(&vec![JsonOp {
+        replica: Vec::new(),
+        counter: 1,
+        lamport: 1,
+        kind: "insert".to_string(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node.as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some(vec![0, 1]),
+        known_state: None,
+        payload: None,
+    }])
+    .unwrap();
+    let result = conn.query_row(
+        "SELECT treecrdt_append_ops(?1)",
+        rusqlite::params![batch],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn malformed_empty_replica_row_returns_an_error() {
+    let conn = setup_conn();
+    conn.execute(
+        "INSERT INTO ops(replica,counter,lamport,kind,parent,node,order_key,op_ref) \
+         VALUES(zeroblob(0),1,1,'insert',?1,?2,zeroblob(0),zeroblob(16))",
+        rusqlite::params![node_bytes(0), node_bytes(1)],
+    )
+    .unwrap();
+
+    let result = conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| {
+        row.get::<_, String>(0)
+    });
+    assert!(result.is_err());
+
+    let refs_json = serde_json::to_string(&vec![vec![0u8; 16]]).unwrap();
+    let result = conn.query_row(
+        "SELECT treecrdt_ops_by_oprefs(?1)",
+        rusqlite::params![refs_json],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    conn.execute(
+        "UPDATE tree_meta \
+         SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
+         WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let result = conn.query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
+        row.get::<_, String>(0)
+    });
+    assert!(result.is_err());
+
+    conn.execute_batch("DROP TABLE ops").unwrap();
 }
 
 #[test]

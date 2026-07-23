@@ -1,6 +1,11 @@
 import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import {
+  bytesToHex,
+  nodeIdToBytes16,
+  replicaIdToBytes,
+  TRASH_NODE_ID_HEX,
+} from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -167,6 +172,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'payload: empty bytes survive local writes and canonical replay',
       run: scenarioEmptyPayloadCanonicalReplay,
+    },
+    {
+      name: 'operation bytes: empty order key survives append and read',
+      run: scenarioEmptyOrderKeyRoundTrip,
     },
     {
       name: 'materialized tree: dump/children/meta + oprefs_children',
@@ -952,6 +961,26 @@ async function scenarioEmptyPayloadCanonicalReplay(
   assert(replayed?.kind.type === 'insert', 'replayed empty insert op');
   assertBytesEqual(replayed.kind.payload ?? null, empty, 'op log preserves empty insert payload');
 
+  await engine.ops.append(
+    makePayloadOp({
+      replica,
+      counter: 3,
+      lamport: 3,
+      node: lateNode,
+      payload: empty,
+    }),
+  );
+  assertBytesEqual(
+    await engine.tree.getPayload(lateNode),
+    empty,
+    'remote empty payload op stores empty bytes',
+  );
+  const remotePayload = (await engine.ops.all()).find(
+    (op) => op.meta.id.counter === 3 && op.kind.type === 'payload',
+  );
+  assert(remotePayload?.kind.type === 'payload', 'remote empty payload op');
+  assertBytesEqual(remotePayload.kind.payload, empty, 'op log preserves remote empty payload op');
+
   const localInsert = await engine.local.insert(replica, root, localNode, { type: 'last' }, empty);
   assert(localInsert.kind.type === 'insert', 'local empty insert op');
   assertBytesEqual(localInsert.kind.payload ?? null, empty, 'local insert returns empty payload');
@@ -975,6 +1004,51 @@ async function scenarioEmptyPayloadCanonicalReplay(
     empty,
     'local payload stores empty bytes',
   );
+}
+
+async function scenarioEmptyOrderKeyRoundTrip(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(24);
+  const empty = new Uint8Array();
+
+  await engine.ops.append(
+    makeInsertOp({
+      replica,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node,
+      orderKey: empty,
+    }),
+  );
+  assertArrayEqual(await engine.tree.children(root), [node], 'empty insert order key materializes');
+  const inserted = (await engine.ops.all()).find(
+    (op) => op.meta.id.counter === 1 && op.kind.type === 'insert',
+  );
+  assert(inserted?.kind.type === 'insert', 'empty insert order key op');
+  assertBytesEqual(inserted.kind.orderKey, empty, 'op log preserves empty insert order key');
+
+  await engine.ops.append(
+    makeMoveOp({
+      replica,
+      counter: 2,
+      lamport: 2,
+      node,
+      newParent: TRASH_NODE_ID_HEX,
+      orderKey: empty,
+    }),
+  );
+
+  assertArrayEqual(await engine.tree.children(root), [], 'empty order key move materializes');
+  const replayed = (await engine.ops.all()).find(
+    (op) => op.meta.id.counter === 2 && op.kind.type === 'move',
+  );
+  assert(replayed?.kind.type === 'move', 'empty order key move op');
+  assertBytesEqual(replayed.kind.orderKey, empty, 'op log preserves empty order key');
 }
 
 async function scenarioMaterializedSmokeWithOpRefs(

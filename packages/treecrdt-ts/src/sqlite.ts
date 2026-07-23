@@ -104,44 +104,57 @@ function buildAppendOp(
   )[];
 
   switch (kind.type) {
-    case 'insert':
+    case 'insert': {
+      const emptyOrderKey = kind.orderKey.byteLength === 0;
       if (kind.payload !== undefined) {
         const emptyPayload = kind.payload.byteLength === 0;
         return {
-          sql: emptyPayload
-            ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,zeroblob(0))'
-            : 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
+          sql:
+            emptyOrderKey && emptyPayload
+              ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,zeroblob(0),zeroblob(0))'
+              : emptyOrderKey
+                ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,zeroblob(0),?7)'
+                : emptyPayload
+                  ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,zeroblob(0))'
+                  : 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
           params: [
             ...base,
             'insert',
             opts.serializeNodeId(kind.parent),
             opts.serializeNodeId(kind.node),
-            kind.orderKey,
+            ...(!emptyOrderKey ? [kind.orderKey] : []),
             ...(!emptyPayload ? [kind.payload] : []),
           ],
         };
       }
       return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
+        sql: emptyOrderKey
+          ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,zeroblob(0),NULL)'
+          : 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
         params: [
           ...base,
           'insert',
           opts.serializeNodeId(kind.parent),
           opts.serializeNodeId(kind.node),
-          kind.orderKey,
+          ...(!emptyOrderKey ? [kind.orderKey] : []),
         ],
       };
-    case 'move':
+    }
+    case 'move': {
+      const emptyOrderKey = kind.orderKey.byteLength === 0;
       return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
+        sql: emptyOrderKey
+          ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,zeroblob(0),NULL)'
+          : 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
         params: [
           ...base,
           'move',
           opts.serializeNodeId(kind.node),
           opts.serializeNodeId(kind.newParent),
-          kind.orderKey,
+          ...(!emptyOrderKey ? [kind.orderKey] : []),
         ],
       };
+    }
     case 'delete':
       if (!opts.knownState || opts.knownState.length === 0) {
         throw new Error('treecrdt: delete operations require meta.knownState');

@@ -226,6 +226,9 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
         let kind_ptr = sqlite_column_text(stmt, 3);
         let kind_len = sqlite_column_bytes(stmt, 3);
 
+        if replica_ptr.is_null() || replica_len == 0 || kind_ptr.is_null() || kind_len == 0 {
+            return Err(SQLITE_ERROR as c_int);
+        }
         let replica =
             std::slice::from_raw_parts(replica_ptr as *const u8, replica_len as usize).to_vec();
         let kind = std::str::from_utf8(std::slice::from_raw_parts(
@@ -246,7 +249,9 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
         } else {
             let ptr = sqlite_column_blob(stmt, 7) as *const u8;
             let len = sqlite_column_bytes(stmt, 7) as usize;
-            if ptr.is_null() {
+            if len == 0 {
+                Some(Vec::new())
+            } else if ptr.is_null() {
                 None
             } else {
                 Some(slice::from_raw_parts(ptr, len).to_vec())

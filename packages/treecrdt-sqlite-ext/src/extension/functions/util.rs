@@ -55,8 +55,8 @@ pub(super) fn read_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
 
 pub(super) fn read_required_blob(val: *mut sqlite3_value) -> Result<Vec<u8>, ()> {
     match read_blob(val) {
-        Some(v) => Ok(v),
-        None => Err(()),
+        Some(v) if !v.is_empty() => Ok(v),
+        _ => Err(()),
     }
 }
 
