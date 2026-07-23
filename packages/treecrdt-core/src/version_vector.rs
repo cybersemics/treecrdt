@@ -198,7 +198,7 @@ pub struct VersionVector {
 mod serde_impl {
     use super::{ReplicaVersion, VersionVector};
     use crate::ids::ReplicaId;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::HashMap;
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -211,15 +211,6 @@ mod serde_impl {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct VersionVectorRepr {
         entries: Vec<VersionVectorEntry>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum VersionVectorWire {
-        Repr(VersionVectorRepr),
-        Legacy {
-            entries: HashMap<ReplicaId, ReplicaVersion>,
-        },
     }
 
     impl Serialize for VersionVector {
@@ -246,27 +237,26 @@ mod serde_impl {
         where
             D: Deserializer<'de>,
         {
-            let wire = VersionVectorWire::deserialize(deserializer)?;
-            match wire {
-                VersionVectorWire::Repr(repr) => {
-                    let mut entries: HashMap<ReplicaId, ReplicaVersion> = HashMap::new();
-                    for entry in repr.entries {
-                        let replica = ReplicaId(entry.replica);
-                        let incoming = ReplicaVersion {
+            let repr = VersionVectorRepr::deserialize(deserializer)?;
+            if repr.entries.windows(2).any(|pair| pair[0].replica >= pair[1].replica) {
+                return Err(D::Error::custom(
+                    "version vector replicas must be unique and strictly sorted",
+                ));
+            }
+            let entries = repr
+                .entries
+                .into_iter()
+                .map(|entry| {
+                    (
+                        ReplicaId(entry.replica),
+                        ReplicaVersion {
                             frontier: entry.frontier,
                             ranges: entry.ranges,
-                        };
-
-                        if let Some(existing) = entries.get_mut(&replica) {
-                            existing.union(&incoming);
-                        } else {
-                            entries.insert(replica, incoming);
-                        }
-                    }
-                    Ok(VersionVector { entries })
-                }
-                VersionVectorWire::Legacy { entries } => Ok(VersionVector { entries }),
-            }
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            Ok(VersionVector { entries })
         }
     }
 }
