@@ -24,10 +24,11 @@ Defensive deletion uses a three-phase approach: **Capture**, **Tombstone**, and 
 
 When a delete operation is created:
 
-1. **Calculate Subtree Version Vector**: The system recursively calculates all operations affecting the node and its entire subtree
-   - Includes the node's own operations
+1. **Calculate Subtree Version Vector**: The system recursively calculates the operations that contribute to the node's current effective subtree
+   - Includes gap-aware structural history
+   - Includes each node's current LWW payload writer
+   - Excludes superseded payload writes, since they no longer represent surviving content
    - Recursively includes all children's subtree version vectors
-   - Represents "all operations that affect this subtree"
 
 2. **Store as Known State**: The calculated version vector is stored as `known_state` in the delete operation
    - This captures "what we knew about this subtree when we deleted it"

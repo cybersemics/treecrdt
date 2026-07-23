@@ -255,6 +255,14 @@ fn postgres_backend_deferred_recovery_from_replay_frontier_catches_up_on_ensure(
 }
 
 #[test]
+fn postgres_backend_superseded_payload_gap_does_not_restore_after_replay() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::superseded_payload_gap_does_not_restore_after_replay(&harness);
+}
+
+#[test]
 fn postgres_backend_out_of_order_delete_suffix_falls_back_and_restores_parent() {
     let Some(harness) = setup_conformance_harness() else {
         return;

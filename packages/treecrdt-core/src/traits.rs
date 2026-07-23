@@ -108,6 +108,10 @@ pub trait NodeStore {
     fn tombstone(&self, node: NodeId) -> Result<bool>;
     fn set_tombstone(&mut self, node: NodeId, tombstone: bool) -> Result<()>;
 
+    /// Gap-aware structural history for this node.
+    ///
+    /// Payload winner state is stored separately by [`PayloadStore`]. Tree-level defensive
+    /// deletion combines this structural history with the current LWW payload writer.
     fn last_change(&self, node: NodeId) -> Result<VersionVector>;
     fn merge_last_change(&mut self, node: NodeId, delta: &VersionVector) -> Result<()>;
 
@@ -125,15 +129,22 @@ pub trait NodeStore {
         Ok(Some((self.parent(node)?, self.has_deleted_at(node)?)))
     }
 
-    fn subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
-        if !self.exists(node)? {
-            return Ok(VersionVector::new());
-        }
+    /// Return structural history for this node and its physical descendants.
+    ///
+    /// This deliberately excludes payload writers. Use [`crate::TreeCrdt::subtree_version_vector`]
+    /// when calculating defensive-deletion awareness.
+    fn structural_subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
+        let mut subtree_vv = VersionVector::new();
+        let mut pending = vec![node];
+        let mut visited = HashSet::new();
 
-        let mut subtree_vv = self.last_change(node)?;
-        for child_id in self.children(node)? {
-            let child_vv = self.subtree_version_vector(child_id)?;
-            subtree_vv.merge(&child_vv);
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) || !self.exists(current)? {
+                continue;
+            }
+
+            subtree_vv.merge(&self.last_change(current)?);
+            pending.extend(self.children(current)?);
         }
 
         Ok(subtree_vv)

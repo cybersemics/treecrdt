@@ -442,6 +442,106 @@ fn defensive_delete_parent_then_payload_change_no_restoration_when_aware() {
 }
 
 #[test]
+fn defensive_delete_ignores_unseen_superseded_payload_write() {
+    let mut structure = TreeCrdt::new(
+        ReplicaId::new(b"structure"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut payload_writer = TreeCrdt::new(
+        ReplicaId::new(b"payload"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut deleter = TreeCrdt::new(
+        ReplicaId::new(b"deleter"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    let parent = NodeId(1);
+    let (parent_op, _) = structure
+        .local_insert(NodeId::ROOT, parent, LocalPlacement::First, None)
+        .unwrap();
+    payload_writer.apply_remote(parent_op.clone()).unwrap();
+    deleter.apply_remote(parent_op).unwrap();
+
+    let (superseded_payload_op, _) =
+        payload_writer.local_payload(parent, Some(b"old".to_vec())).unwrap();
+    let (winning_payload_op, _) =
+        payload_writer.local_payload(parent, Some(b"current".to_vec())).unwrap();
+
+    // The deleter sees the current LWW payload, but not the older write it supersedes.
+    deleter.apply_remote(winning_payload_op).unwrap();
+    let (delete_op, _) = deleter.local_delete(parent).unwrap();
+    payload_writer.apply_remote(delete_op).unwrap();
+
+    assert!(deleter.is_tombstoned(parent).unwrap());
+    assert!(payload_writer.is_tombstoned(parent).unwrap());
+
+    // Receiving the superseded write later changes no surviving state, so it must not restore
+    // the node.
+    deleter.apply_remote(superseded_payload_op).unwrap();
+
+    assert!(deleter.is_tombstoned(parent).unwrap());
+    assert!(payload_writer.is_tombstoned(parent).unwrap());
+    assert_eq!(deleter.payload(parent).unwrap(), Some(b"current".to_vec()));
+    assert_eq!(
+        payload_writer.payload(parent).unwrap(),
+        Some(b"current".to_vec())
+    );
+
+    assert_eq!(deleter.nodes().unwrap(), payload_writer.nodes().unwrap());
+    deleter.validate_invariants().unwrap();
+    payload_writer.validate_invariants().unwrap();
+}
+
+#[test]
+fn defensive_delete_counts_a_payload_clear_as_the_current_writer() {
+    let mut structure = TreeCrdt::new(
+        ReplicaId::new(b"structure"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut payload_writer = TreeCrdt::new(
+        ReplicaId::new(b"payload"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let mut deleter = TreeCrdt::new(
+        ReplicaId::new(b"deleter"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    let parent = NodeId(1);
+    let (parent_op, _) = structure
+        .local_insert(NodeId::ROOT, parent, LocalPlacement::First, None)
+        .unwrap();
+    payload_writer.apply_remote(parent_op.clone()).unwrap();
+    deleter.apply_remote(parent_op).unwrap();
+
+    payload_writer.local_payload(parent, Some(b"value".to_vec())).unwrap();
+    let (clear_payload_op, _) = payload_writer.local_payload(parent, None).unwrap();
+
+    // A clear has no payload bytes, but its writer is still the effective LWW payload state.
+    deleter.apply_remote(clear_payload_op).unwrap();
+    let (delete_op, _) = deleter.local_delete(parent).unwrap();
+    payload_writer.apply_remote(delete_op).unwrap();
+
+    assert!(deleter.is_tombstoned(parent).unwrap());
+    assert!(payload_writer.is_tombstoned(parent).unwrap());
+    assert_eq!(deleter.payload(parent).unwrap(), None);
+    assert_eq!(payload_writer.payload(parent).unwrap(), None);
+}
+
+#[test]
 fn defensive_delete_later_delete_unaware_restores_parent() {
     let mut crdt_a = TreeCrdt::new(
         ReplicaId::new(b"a"),
