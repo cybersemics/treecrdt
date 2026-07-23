@@ -10,7 +10,7 @@ use treecrdt_core::{
     OperationKind, ReplicaId, VersionVector,
 };
 use treecrdt_test_support::{
-    self as materialization_conformance, MaterializationConformanceHarness,
+    self as materialization_conformance, MaterializationConformanceHarness, MaterializedNodeState,
 };
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -273,6 +273,23 @@ fn read_replay_frontier(conn: &Connection) -> (Option<i64>, Option<Vec<u8>>, Opt
     .unwrap()
 }
 
+fn read_materialized_node_state(conn: &Connection, node: NodeId) -> MaterializedNodeState {
+    let node = node.0.to_be_bytes();
+    let (parent, tombstone, deleted_at): (Option<Vec<u8>>, i64, Option<Vec<u8>>) = conn
+        .query_row(
+            "SELECT parent, tombstone, deleted_at FROM tree_nodes WHERE node = ?1",
+            rusqlite::params![node],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    MaterializedNodeState {
+        parent: parent.as_deref().map(bytes_to_node_id),
+        tombstone: tombstone != 0,
+        deleted_at: deleted_at.map(|bytes| serde_json::from_slice(&bytes).unwrap()),
+    }
+}
+
 fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (MaterializationOutcome, i64) {
     let json = serde_json::to_string(ops).unwrap();
     let affected_json: String = conn
@@ -383,9 +400,22 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
         }
     }
 
+    fn materialization_head(&self) -> treecrdt_core::MaterializationFrontier {
+        let (lamport, replica, counter, _) = read_tree_meta(&self.conn);
+        treecrdt_core::MaterializationFrontier {
+            lamport: lamport.max(0) as u64,
+            replica,
+            counter: counter.max(0) as u64,
+        }
+    }
+
     fn head_seq(&self) -> u64 {
         let (_, _, _, head_seq) = read_tree_meta(&self.conn);
         head_seq.max(0) as u64
+    }
+
+    fn node_state(&self, node: NodeId) -> MaterializedNodeState {
+        read_materialized_node_state(&self.conn, node)
     }
 
     fn force_replay_from_start(&self) {
@@ -574,9 +604,47 @@ fn remote_append_out_of_order_catches_up_immediately_from_frontier() {
 }
 
 #[test]
-fn remote_append_out_of_order_losing_payload_skips_replay_frontier() {
+fn remote_append_out_of_order_losing_payload_rebuilds_parent_index() {
     let harness = setup_conformance_harness();
-    materialization_conformance::out_of_order_losing_payload_skips_replay_frontier(&harness);
+    materialization_conformance::out_of_order_losing_payload_rebuilds_parent_index(&harness);
+}
+
+#[test]
+fn remote_losing_payload_uses_suffix_replay_without_resetting_nodes() {
+    let harness = setup_conformance_harness();
+    let replica = ReplicaId::new(b"payload-fast-path");
+    let node = materialization_conformance::node(7);
+    let insert = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node,
+        materialization_conformance::order_key_from_position(0),
+    );
+    let winning_payload = Operation::set_payload(&replica, 3, 3, node, vec![9]);
+    let losing_payload = Operation::set_payload(&replica, 2, 2, node, vec![4]);
+
+    harness.append_ops(&[insert, winning_payload]);
+    harness
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER reject_full_node_reset \
+             BEFORE DELETE ON tree_nodes \
+             BEGIN \
+               SELECT RAISE(ABORT, 'full node reset used'); \
+             END;",
+        )
+        .unwrap();
+
+    harness.append_ops(&[losing_payload]);
+
+    assert_eq!(harness.payload(node), Some(vec![9]));
+    assert_eq!(
+        harness.op_ref_counters_for_parent(NodeId::ROOT),
+        vec![1, 2, 3]
+    );
+    assert_eq!(harness.head_seq(), 3);
 }
 
 #[test]
@@ -624,6 +692,24 @@ fn remote_append_out_of_order_delete_suffix_falls_back_and_restores_parent() {
 }
 
 #[test]
+fn remote_append_after_cycle_rejected_moves_keeps_canonical_tree_acyclic() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::out_of_order_append_after_cycle_rejected_moves_keeps_canonical_tree_acyclic(
+        &harness,
+    );
+}
+
+#[test]
+fn remote_out_of_order_concurrent_delete_converges_internal_node_metadata() {
+    let canonical = setup_conformance_harness();
+    let out_of_order = setup_conformance_harness();
+    materialization_conformance::out_of_order_concurrent_delete_converges_internal_node_metadata(
+        &canonical,
+        &out_of_order,
+    );
+}
+
+#[test]
 fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
     let conn = setup_conn();
 
@@ -650,7 +736,7 @@ fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
         "CREATE TRIGGER fail_tree_nodes_insert \
          BEFORE INSERT ON tree_nodes \
          BEGIN \
-           SELECT RAISE(ROLLBACK, 'forced catch-up failure'); \
+           SELECT RAISE(ABORT, 'forced catch-up failure'); \
          END;",
     )
     .unwrap();
@@ -672,6 +758,84 @@ fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
     assert_eq!(
         visible_children(&conn, &node_bytes(0)),
         vec![node_bytes_from_id(materialization_conformance::node(2))]
+    );
+}
+
+#[test]
+fn remote_append_validates_operation_key_range_atomically() {
+    let conn = setup_conn();
+    let replica = ReplicaId::new(b"invalid-key");
+    let append = |ops: &[Operation]| -> rusqlite::Result<String> {
+        let json = serde_json::to_string(&json_ops(ops)).unwrap();
+        conn.query_row(
+            "SELECT treecrdt_append_ops(?1)",
+            rusqlite::params![json],
+            |row| row.get(0),
+        )
+    };
+    let valid = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        materialization_conformance::node(40),
+        materialization_conformance::order_key_from_position(0),
+    );
+    let zero_lamport = Operation::insert(
+        &replica,
+        2,
+        0,
+        NodeId::ROOT,
+        materialization_conformance::node(41),
+        materialization_conformance::order_key_from_position(1),
+    );
+
+    assert!(append(&[valid, zero_lamport]).is_err());
+
+    let op_count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(op_count, 0);
+    assert_eq!(read_tree_meta(&conn).3, 0);
+    assert_eq!(read_replay_frontier(&conn), (None, None, None));
+
+    let max = i64::MAX as u64;
+    let boundary = Operation::insert(
+        &replica,
+        max,
+        max,
+        NodeId::ROOT,
+        materialization_conformance::node(43),
+        materialization_conformance::order_key_from_position(0),
+    );
+    assert!(append(&[boundary]).is_ok());
+    assert_eq!(
+        read_tree_meta(&conn),
+        (i64::MAX, replica.as_bytes().to_vec(), i64::MAX, 1)
+    );
+
+    for op in [
+        Operation::insert(
+            &ReplicaId::new(b"overflow-lamport"),
+            1,
+            max + 1,
+            NodeId::ROOT,
+            materialization_conformance::node(44),
+            materialization_conformance::order_key_from_position(1),
+        ),
+        Operation::insert(
+            &ReplicaId::new(b"overflow-counter"),
+            max + 1,
+            max,
+            NodeId::ROOT,
+            materialization_conformance::node(45),
+            materialization_conformance::order_key_from_position(2),
+        ),
+    ] {
+        assert!(append(&[op]).is_err());
+    }
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
     );
 }
 

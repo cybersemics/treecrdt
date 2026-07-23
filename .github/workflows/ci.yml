@@ -207,6 +207,7 @@ jobs:
         env:
           TREECRDT_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/treecrdt
         run: |
+          cargo test -p treecrdt-postgres
           pnpm -C packages/treecrdt-postgres-napi test
           pnpm -C packages/sync-protocol/material/postgres test
           pnpm -C packages/sync-protocol/server/postgres-node test
