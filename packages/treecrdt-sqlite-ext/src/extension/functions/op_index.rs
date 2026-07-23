@@ -102,3 +102,24 @@ impl treecrdt_core::ParentOpIndex for SqliteParentOpIndex {
         Ok(())
     }
 }
+
+impl treecrdt_core::TruncatingParentOpIndex for SqliteParentOpIndex {
+    fn truncate_from(&mut self, seq: u64) -> treecrdt_core::Result<()> {
+        let sql =
+            CString::new("DELETE FROM oprefs_children WHERE seq >= ?1").expect("truncate oprefs");
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let prep_rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
+        if prep_rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(prep_rc, "prepare truncate oprefs failed"));
+        }
+        unsafe {
+            sqlite_bind_int64(stmt, 1, seq.min(i64::MAX as u64) as i64);
+            let step_rc = sqlite_step(stmt);
+            sqlite_finalize(stmt);
+            if step_rc != SQLITE_DONE as c_int {
+                return Err(sqlite_rc_error(step_rc, "truncate oprefs step failed"));
+            }
+        }
+        Ok(())
+    }
+}
