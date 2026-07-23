@@ -347,6 +347,12 @@ where
         mut prepared: PreparedLocalOp,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let (op, forward, tombstone_changed) = self.commit_local(prepared.op)?;
+        if !forward.effects.any() {
+            prepared.plan.parent_hints.clear();
+            prepared.plan.extra_index_records.clear();
+            prepared.plan.changes.clear();
+            return Ok((op, prepared.plan));
+        }
         prepared.plan.parent_hints =
             self.parents_for_forward_apply(&forward.snapshot, &op, forward.effects)?;
         if !forward.effects.structure_changed {

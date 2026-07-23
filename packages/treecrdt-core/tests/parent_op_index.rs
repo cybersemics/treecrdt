@@ -124,6 +124,31 @@ fn duplicate_local_commit_does_not_create_a_materialized_node() {
 }
 
 #[test]
+fn duplicate_local_payload_changes_are_silent() {
+    let target = node(99);
+    let mut tree = TreeCrdt::new(
+        ReplicaId::new(b"duplicate-payload"),
+        DuplicateStorage,
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    let prepared_insert = tree
+        .prepare_local_insert(NodeId::ROOT, target, LocalPlacement::Last, Some(vec![1]))
+        .unwrap();
+    let (_op, insert_plan) = tree.commit_prepared_local(prepared_insert).unwrap();
+
+    let prepared_payload = tree.prepare_local_payload(target, Some(vec![2])).unwrap();
+    let (_op, payload_plan) = tree.commit_prepared_local(prepared_payload).unwrap();
+
+    assert!(!tree.is_known(target).unwrap());
+    assert!(insert_plan.parent_hints.is_empty());
+    assert!(insert_plan.changes.is_empty());
+    assert!(payload_plan.parent_hints.is_empty());
+    assert!(payload_plan.changes.is_empty());
+}
+
+#[test]
 fn descendant_restore_trigger_is_included_in_parent_filter() {
     let replica = ReplicaId::new(b"restore");
     let parent = node(1);
