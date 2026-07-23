@@ -221,6 +221,7 @@ where
         Ok(PreparedLocalOp {
             op,
             plan: LocalFinalizePlan {
+                operation_inserted: false,
                 parent_hints: vec![parent],
                 extra_index_records: Vec::new(),
                 changes: vec![MaterializationChange::Insert {
@@ -270,6 +271,7 @@ where
         Ok(PreparedLocalOp {
             op,
             plan: LocalFinalizePlan {
+                operation_inserted: false,
                 parent_hints,
                 extra_index_records,
                 changes: vec![MaterializationChange::Move {
@@ -295,6 +297,7 @@ where
         Ok(PreparedLocalOp {
             op,
             plan: LocalFinalizePlan {
+                operation_inserted: false,
                 parent_hints: parent_hints_from(old_parent),
                 extra_index_records: Vec::new(),
                 changes: vec![MaterializationChange::Delete {
@@ -331,6 +334,7 @@ where
         Ok(PreparedLocalOp {
             op,
             plan: LocalFinalizePlan {
+                operation_inserted: false,
                 parent_hints: parent_hints_from(parent),
                 extra_index_records: Vec::new(),
                 changes: vec![MaterializationChange::Payload {
@@ -346,7 +350,9 @@ where
         &mut self,
         mut prepared: PreparedLocalOp,
     ) -> Result<(Operation, LocalFinalizePlan)> {
-        let (op, forward, tombstone_changed) = self.commit_local(prepared.op)?;
+        let (op, operation_inserted, forward, tombstone_changed) =
+            self.commit_local(prepared.op)?;
+        prepared.plan.operation_inserted = operation_inserted;
         if !forward.effects.any() {
             prepared.plan.parent_hints.clear();
             prepared.plan.extra_index_records.clear();
@@ -641,6 +647,9 @@ where
         head_seq: u64,
         plan: &LocalFinalizePlan,
     ) -> Result<MaterializationOutcome> {
+        if !plan.operation_inserted {
+            return Ok(MaterializationOutcome::empty(head_seq));
+        }
         let seq = head_seq.saturating_add(1);
 
         let mut refresh_starts: Vec<NodeId> = plan.parent_hints.to_vec();
@@ -894,7 +903,7 @@ where
     fn commit_local(
         &mut self,
         op: Operation,
-    ) -> Result<(Operation, ForwardApply, Vec<TombstoneDelta>)> {
+    ) -> Result<(Operation, bool, ForwardApply, Vec<TombstoneDelta>)> {
         op.validate()?;
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
         if !self.storage.apply(op.clone())? {
@@ -915,6 +924,7 @@ where
             };
             return Ok((
                 op,
+                false,
                 ForwardApply {
                     snapshot,
                     effects: ApplyEffects::default(),
@@ -936,7 +946,7 @@ where
         };
         self.op_count += 1;
         self.head = Some(op.clone());
-        Ok((op, forward, tombstone_changed))
+        Ok((op, true, forward, tombstone_changed))
     }
 
     fn seed(replica: &ReplicaId, counter: u64) -> Vec<u8> {

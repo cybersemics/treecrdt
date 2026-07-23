@@ -153,6 +153,7 @@ fn finalize_local_records_unique_hints_and_extras() {
     };
 
     let plan = LocalFinalizePlan {
+        operation_inserted: true,
         parent_hints: vec![parent, parent, NodeId::TRASH],
         extra_index_records: vec![
             (parent, extra_op_id.clone()),

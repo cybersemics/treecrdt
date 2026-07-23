@@ -116,11 +116,17 @@ fn duplicate_local_commit_does_not_create_a_materialized_node() {
         .prepare_local_insert(NodeId::ROOT, target, LocalPlacement::Last, None)
         .unwrap();
 
-    let (_op, plan) = tree.commit_prepared_local(prepared).unwrap();
+    let (op, plan) = tree.commit_prepared_local(prepared).unwrap();
+    let mut index = RecordingIndex::default();
+    let outcome = tree.finalize_local_with_outcome(&op, &mut index, 41, &plan).unwrap();
 
     assert!(!tree.is_known(target).unwrap());
+    assert!(!plan.operation_inserted);
     assert!(plan.parent_hints.is_empty());
     assert!(plan.changes.is_empty());
+    assert_eq!(outcome.head_seq, 41);
+    assert!(outcome.changes.is_empty());
+    assert!(index.records.is_empty());
 }
 
 #[test]
@@ -142,8 +148,10 @@ fn duplicate_local_payload_changes_are_silent() {
     let (_op, payload_plan) = tree.commit_prepared_local(prepared_payload).unwrap();
 
     assert!(!tree.is_known(target).unwrap());
+    assert!(!insert_plan.operation_inserted);
     assert!(insert_plan.parent_hints.is_empty());
     assert!(insert_plan.changes.is_empty());
+    assert!(!payload_plan.operation_inserted);
     assert!(payload_plan.parent_hints.is_empty());
     assert!(payload_plan.changes.is_empty());
 }
