@@ -610,6 +610,44 @@ fn remote_append_out_of_order_losing_payload_rebuilds_parent_index() {
 }
 
 #[test]
+fn remote_losing_payload_uses_suffix_replay_without_resetting_nodes() {
+    let harness = setup_conformance_harness();
+    let replica = ReplicaId::new(b"payload-fast-path");
+    let node = materialization_conformance::node(7);
+    let insert = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node,
+        materialization_conformance::order_key_from_position(0),
+    );
+    let winning_payload = Operation::set_payload(&replica, 3, 3, node, vec![9]);
+    let losing_payload = Operation::set_payload(&replica, 2, 2, node, vec![4]);
+
+    harness.append_ops(&[insert, winning_payload]);
+    harness
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER reject_full_node_reset \
+             BEFORE DELETE ON tree_nodes \
+             BEGIN \
+               SELECT RAISE(ABORT, 'full node reset used'); \
+             END;",
+        )
+        .unwrap();
+
+    harness.append_ops(&[losing_payload]);
+
+    assert_eq!(harness.payload(node), Some(vec![9]));
+    assert_eq!(
+        harness.op_ref_counters_for_parent(NodeId::ROOT),
+        vec![1, 2, 3]
+    );
+    assert_eq!(harness.head_seq(), 3);
+}
+
+#[test]
 fn remote_append_out_of_order_move_with_later_payload_catches_up_immediately() {
     let harness = setup_conformance_harness();
     materialization_conformance::out_of_order_move_with_later_payload_catches_up_immediately(
