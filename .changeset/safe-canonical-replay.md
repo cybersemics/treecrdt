@@ -2,4 +2,4 @@
 "@treecrdt/wa-sqlite": patch
 ---
 
-Rebuild derived state from the canonical log so node, payload, and parent-index state cannot diverge after late operations.
+Keep derived node, payload, tombstone, and parent-index state canonical after late operations.

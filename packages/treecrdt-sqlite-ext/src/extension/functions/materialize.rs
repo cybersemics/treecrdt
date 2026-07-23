@@ -9,7 +9,7 @@ use treecrdt_core::Storage;
 use treecrdt_core::{
     orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state,
     LamportClock, MaterializationChange, MaterializationCursor, MaterializationOutcome,
-    MaterializationSource, OperationId, ReplicaId,
+    MaterializationSource, OperationId, PersistedRemoteStores, ReplicaId,
 };
 
 #[derive(serde::Serialize)]
@@ -241,26 +241,34 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
     })
 }
 
+type SqlitePersistedRemoteStores =
+    PersistedRemoteStores<LamportClock, SqliteNodeStore, SqlitePayloadStore, SqliteParentOpIndex>;
+
+fn prepare_persisted_remote_stores(
+    db: *mut sqlite3,
+    doc_id: &[u8],
+) -> Result<SqlitePersistedRemoteStores, c_int> {
+    Ok(PersistedRemoteStores {
+        // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
+        replica_id: ReplicaId::new(b"sqlite-ext"),
+        clock: LamportClock::default(),
+        nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+        payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+        index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+            .map_err(|_| SQLITE_ERROR as c_int)?,
+    })
+}
+
 fn materialize_inserted_ops(
     db: *mut sqlite3,
     doc_id: &[u8],
     meta: &dyn MaterializationCursor,
     ops: Vec<treecrdt_core::Operation>,
 ) -> Result<treecrdt_core::IncrementalApplyResult, c_int> {
-    use treecrdt_core::{
-        materialize_persisted_remote_ops_with_delta, LamportClock, PersistedRemoteStores, ReplicaId,
-    };
+    use treecrdt_core::materialize_persisted_remote_ops_with_delta;
 
     materialize_persisted_remote_ops_with_delta(
-        PersistedRemoteStores {
-            // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
-            replica_id: ReplicaId::new(b"sqlite-ext"),
-            clock: LamportClock::default(),
-            nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-            payloads: SqlitePayloadStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-            index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                .map_err(|_| SQLITE_ERROR as c_int)?,
-        },
+        prepare_persisted_remote_stores(db, doc_id)?,
         &meta,
         ops,
         |_, _| Ok(()),
@@ -312,7 +320,7 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<Materializati
 
     // Catch materialized state up from the pending frontier by replaying the op-log through core
     // semantics.
-    use treecrdt_core::{catch_up_materialized_state, LamportClock, ReplicaId};
+    use treecrdt_core::catch_up_materialized_state;
     let storage = super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.clone());
     let meta = match load_tree_meta(db) {
         Ok(meta) => meta,
@@ -321,40 +329,15 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<Materializati
             return Err(rc);
         }
     };
-    let nodes = match SqliteNodeStore::prepare(db) {
-        Ok(store) => store,
-        Err(_) => {
+    let stores = match prepare_persisted_remote_stores(db, &doc_id) {
+        Ok(stores) => stores,
+        Err(rc) => {
             sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
+            return Err(rc);
         }
     };
-    let payloads = match SqlitePayloadStore::prepare(db) {
-        Ok(store) => store,
-        Err(_) => {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
-        }
-    };
-    let index = match SqliteParentOpIndex::prepare(db, doc_id.clone()) {
-        Ok(index) => index,
-        Err(_) => {
-            sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
-            return Err(SQLITE_ERROR as c_int);
-        }
-    };
-    let catch_up = match catch_up_materialized_state(
-        storage,
-        treecrdt_core::PersistedRemoteStores {
-            replica_id: ReplicaId::new(b"sqlite-ext"),
-            clock: LamportClock::default(),
-            nodes,
-            payloads,
-            index,
-        },
-        &meta,
-        |_| Ok(()),
-        |_| Ok(()),
-    ) {
+    let catch_up = match catch_up_materialized_state(storage, stores, &meta, |_| Ok(()), |_| Ok(()))
+    {
         Ok(v) => v,
         Err(_) => {
             sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
@@ -422,15 +405,7 @@ pub(super) fn append_ops_impl(
                 try_direct_rewind_catch_up_materialized_state(
                     &super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
                     inserted_op_ids,
-                    treecrdt_core::PersistedRemoteStores {
-                        replica_id: ReplicaId::new(b"sqlite-ext"),
-                        clock: LamportClock::default(),
-                        nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                        payloads: SqlitePayloadStore::prepare(db)
-                            .map_err(|_| SQLITE_ERROR as c_int)?,
-                        index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                            .map_err(|_| SQLITE_ERROR as c_int)?,
-                    },
+                    prepare_persisted_remote_stores(db, doc_id)?,
                     &meta,
                     |_| Ok(()),
                     |_| Ok(()),
@@ -440,15 +415,7 @@ pub(super) fn append_ops_impl(
             |meta| {
                 treecrdt_core::catch_up_materialized_state(
                     super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
-                    treecrdt_core::PersistedRemoteStores {
-                        replica_id: ReplicaId::new(b"sqlite-ext"),
-                        clock: LamportClock::default(),
-                        nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
-                        payloads: SqlitePayloadStore::prepare(db)
-                            .map_err(|_| SQLITE_ERROR as c_int)?,
-                        index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
-                            .map_err(|_| SQLITE_ERROR as c_int)?,
-                    },
+                    prepare_persisted_remote_stores(db, doc_id)?,
                     &meta,
                     |_| Ok(()),
                     |_| Ok(()),

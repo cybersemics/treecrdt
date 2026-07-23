@@ -697,7 +697,7 @@ fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
 }
 
 #[test]
-fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
+fn catch_up_materialized_state_reports_rows_restored_by_canonical_rebuild() {
     let author = ReplicaId::new(b"author");
     let deleter = ReplicaId::new(b"deleter");
     let parent = NodeId(10);
@@ -757,7 +757,7 @@ fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
             payload: None,
             source: None,
         }),
-        "catch-up must report rows restored by patching stale backend state"
+        "catch-up must report rows restored while rebuilding stale backend state"
     );
     assert_eq!(
         result.outcome.affected_nodes(),
