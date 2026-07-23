@@ -327,3 +327,40 @@ test('pushLocalOps with no ops is a no-op (no syncOnce)', async () => {
 
   expect((await getAllB()).length).toBe(1);
 });
+
+test('a transport close after live readiness reports the live error', async () => {
+  const docId = `sync-live-close-${Math.random().toString(16).slice(2)}`;
+  const { client: aClient } = createInMemoryTestClient(docId, []);
+  const { client: bClient } = createInMemoryTestClient(docId, []);
+  const [transportA, transportB] = createInMemoryDuplex<SyncMessage<Operation>>();
+  const terminalHandlers = new Set<(error?: unknown) => void>();
+  transportA.onTerminal = (handler) => {
+    terminalHandlers.add(handler);
+    return () => terminalHandlers.delete(handler);
+  };
+  const backendB = createTreecrdtSyncBackendFromClient(bClient, docId, {
+    maxLamport: () => headAsBigint(bClient),
+  });
+  const peerB = new SyncPeer(backendB);
+  const detachB = peerB.attach(transportB);
+  let resolveLiveError!: (error: unknown) => void;
+  const liveError = new Promise<unknown>((resolve) => {
+    resolveLiveError = resolve;
+  });
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, detachB, {
+    onLiveError: resolveLiveError,
+  });
+
+  try {
+    await sync.startLive({ immediate: false, intervalMs: 60_000 });
+    for (const handler of terminalHandlers) {
+      handler(new Error('connection lost after live ready'));
+    }
+
+    await expect(liveError).resolves.toEqual(
+      expect.objectContaining({ message: 'connection lost after live ready' }),
+    );
+  } finally {
+    await sync.close();
+  }
+});
