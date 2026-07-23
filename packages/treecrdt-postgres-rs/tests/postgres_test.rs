@@ -52,6 +52,12 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
         append_ops(&self.client, &self.doc_id, ops).unwrap();
     }
 
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String> {
+        append_ops(&self.client, &self.doc_id, ops)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
         append_ops_with_materialization_outcome(&self.client, &self.doc_id, ops).unwrap()
     }
@@ -229,6 +235,14 @@ fn postgres_backend_append_batch_materializes_only_inserted_ops() {
         return;
     };
     materialization_conformance::append_batch_materializes_only_inserted_ops(&harness);
+}
+
+#[test]
+fn postgres_backend_rejects_operation_id_equivocation_atomically() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::operation_id_equivocation_is_rejected_atomically(&harness);
 }
 
 #[test]

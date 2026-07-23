@@ -135,6 +135,59 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
     })
 }
 
+fn load_operation_by_id(
+    db: *mut sqlite3,
+    replica: &[u8],
+    counter: u64,
+) -> treecrdt_core::Result<Option<treecrdt_core::Operation>> {
+    let sql = CString::new(
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+         FROM ops WHERE replica = ?1 AND counter = ?2",
+    )
+    .expect("op by id sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(sqlite_rc_error(rc, "sqlite_prepare_v2 op by id failed"));
+    }
+
+    let bind_rc = unsafe {
+        let replica_rc = sqlite_bind_blob(
+            stmt,
+            1,
+            replica.as_ptr() as *const c_void,
+            replica.len() as c_int,
+            None,
+        );
+        let counter_rc = sqlite_bind_int64(stmt, 2, counter as i64);
+        if replica_rc != SQLITE_OK as c_int {
+            replica_rc
+        } else {
+            counter_rc
+        }
+    };
+    if bind_rc != SQLITE_OK as c_int {
+        unsafe { sqlite_finalize(stmt) };
+        return Err(sqlite_rc_error(bind_rc, "bind op by id failed"));
+    }
+
+    let step_rc = unsafe { sqlite_step(stmt) };
+    let operation = if step_rc == SQLITE_ROW as c_int {
+        read_operation_row(stmt).map(Some)
+    } else if step_rc == SQLITE_DONE as c_int {
+        Ok(None)
+    } else {
+        unsafe { sqlite_finalize(stmt) };
+        return Err(sqlite_rc_error(step_rc, "op by id step failed"));
+    };
+
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    if finalize_rc != SQLITE_OK as c_int {
+        return Err(sqlite_rc_error(finalize_rc, "finalize op by id failed"));
+    }
+    operation
+}
+
 pub(super) struct SqliteOpStorage {
     db: *mut sqlite3,
     doc_id: Option<Vec<u8>>,
@@ -162,6 +215,7 @@ impl SqliteOpStorage {
 impl treecrdt_core::Storage for SqliteOpStorage {
     fn apply(&mut self, op: treecrdt_core::Operation) -> treecrdt_core::Result<bool> {
         op.validate()?;
+        let incoming = op.clone();
         let doc_id = self.ensure_doc_id()?;
 
         let (kind, parent, node, new_parent, order_key, known_state, payload) = match op.kind {
@@ -346,7 +400,29 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         if finalize_rc != SQLITE_OK as c_int {
             return Err(sqlite_rc_error(finalize_rc, "finalize insert op failed"));
         }
-        Ok(inserted)
+        if inserted {
+            return Ok(true);
+        }
+
+        let existing = load_operation_by_id(
+            self.db,
+            incoming.meta.id.replica.as_bytes(),
+            incoming.meta.id.counter,
+        )?
+        .ok_or_else(|| {
+            treecrdt_core::Error::InconsistentState(
+                "operation insert was ignored but no existing operation was found".into(),
+            )
+        })?;
+        if existing == incoming {
+            Ok(false)
+        } else {
+            Err(treecrdt_core::Error::InvalidOperation(format!(
+                "operation id {:?}:{} has conflicting contents",
+                incoming.meta.id.replica.as_bytes(),
+                incoming.meta.id.counter
+            )))
+        }
     }
 
     fn load_since(&self, lamport: Lamport) -> treecrdt_core::Result<Vec<treecrdt_core::Operation>> {

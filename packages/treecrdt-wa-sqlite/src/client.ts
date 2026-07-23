@@ -21,7 +21,6 @@ import {
 import type {
   LocalWriteOptions,
   MaterializationEvent,
-  MaterializationOutcome,
   WriteOptions,
 } from '@treecrdt/interface/engine';
 import {
@@ -61,8 +60,6 @@ import type {
 } from './types.js';
 
 export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
-// Keep long browser appendMany calls from monopolizing the worker queue.
-const APPEND_MANY_RPC_CHUNK_SIZE = 2500;
 
 function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
   const raw = opts.storage ?? { type: 'auto' };
@@ -844,19 +841,8 @@ function makeTreecrdtClientFromCall(opts: {
   const replicaMaxCounterImpl = async (replica: Operation['meta']['id']['replica']) =>
     Number(await call('replicaMaxCounter', [Array.from(encodeReplica(replica))]));
   const appendManyImpl = async (operations: Operation[], writeOpts?: WriteOptions) => {
-    if (operations.length <= APPEND_MANY_RPC_CHUNK_SIZE) {
-      const outcome = await call('appendMany', [operations]);
-      materialized.emitOutcome(outcome, writeOpts?.writeId);
-      return;
-    }
-
-    const outcomes: MaterializationOutcome[] = [];
-    for (let start = 0; start < operations.length; start += APPEND_MANY_RPC_CHUNK_SIZE) {
-      outcomes.push(
-        await call('appendMany', [operations.slice(start, start + APPEND_MANY_RPC_CHUNK_SIZE)]),
-      );
-    }
-    materialized.emitOutcome(mergeMaterializationOutcomes(outcomes), writeOpts?.writeId);
+    const outcome = await call('appendMany', [operations]);
+    materialized.emitOutcome(outcome, writeOpts?.writeId);
   };
   const localInsertImpl = async (
     replica: ReplicaId,
@@ -961,12 +947,4 @@ function encodeReplica(replica: ReplicaId): Uint8Array {
 
 function toRpcBytes(bytes: Uint8Array | number[]): Uint8Array {
   return bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-}
-
-function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
-  const last = outcomes[outcomes.length - 1];
-  return {
-    headSeq: last?.headSeq ?? 0,
-    changes: outcomes.flatMap((outcome) => outcome.changes),
-  };
 }

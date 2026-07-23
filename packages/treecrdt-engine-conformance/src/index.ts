@@ -145,6 +145,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
     {
+      name: 'append/appendMany: rejects operation id equivocation atomically',
+      run: scenarioRejectsOperationIdEquivocationAtomically,
+    },
+    {
       name: 'materialization events: structural batch',
       run: scenarioMaterializationEventStructuralBatch,
     },
@@ -674,6 +678,64 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
   const refs = await engine.opRefs.all();
   assertEqual(refs.length, 2, 'opRefs.all length after duplicate append');
   assertEqual(await engine.meta.headLamport(), 7, 'meta.headLamport after duplicate append');
+}
+
+async function scenarioRejectsOperationIdEquivocationAtomically(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('equivocation');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(1);
+  const other = nodeIdFromInt(2);
+  const original = makeInsertOp({
+    replica,
+    counter: 1,
+    lamport: 1,
+    parent: root,
+    node,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const expectRejected = async (ops: Operation[], label: string): Promise<void> => {
+    let threw = false;
+    try {
+      await engine.ops.appendMany(ops);
+    } catch {
+      threw = true;
+    }
+    assert(threw, `${label} should reject operation id equivocation`);
+  };
+
+  await engine.ops.appendMany([original, original]);
+  assertEqual((await engine.opRefs.all()).length, 1, 'exact duplicate remains idempotent');
+
+  const validPrefix = makeInsertOp({
+    replica,
+    counter: 2,
+    lamport: 2,
+    parent: root,
+    node: other,
+    orderKey: orderKeyFromPosition(1),
+  });
+  const conflict = makeInsertOp({
+    replica,
+    counter: 1,
+    lamport: 3,
+    parent: root,
+    node,
+    orderKey: orderKeyFromPosition(0),
+  });
+  await expectRejected([validPrefix, conflict], 'conflict after valid prefix');
+  assertEqual((await engine.opRefs.all()).length, 1, 'failed batch must not commit a prefix');
+  assertEqual(await engine.tree.exists(other), false, 'failed batch must not materialize a prefix');
+
+  const cleared = makePayloadOp({ replica, counter: 3, lamport: 3, node, payload: null });
+  await engine.ops.append(cleared);
+  await expectRejected(
+    [makePayloadOp({ replica, counter: 3, lamport: 3, node, payload: new Uint8Array() })],
+    'null versus empty payload',
+  );
+  assertEqual((await engine.opRefs.all()).length, 2, 'conflicts must leave the op log unchanged');
 }
 
 async function scenarioMaterializationEventStructuralBatch(
