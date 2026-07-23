@@ -415,6 +415,36 @@ where
         )?))
     }
 
+    /// Apply a canonically sorted remote op directly against the current materialized state.
+    ///
+    /// This skips storage persistence and out-of-order detection. Callers must first restore the
+    /// stores to the exact prefix immediately before this operation.
+    pub fn apply_sorted_remote_with_materialization<I: ParentOpIndex>(
+        &mut self,
+        op: Operation,
+        index: &mut I,
+        seq: u64,
+    ) -> Result<ApplyDelta> {
+        op.validate()?;
+        self.clock.observe(op.meta.lamport);
+        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
+        if op.meta.id.replica == self.replica_id {
+            self.counter = self.counter.max(op.meta.id.counter);
+        }
+
+        let (snapshot, emit_direct_change) =
+            Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        self.op_count = seq;
+        self.head = Some(op.clone());
+
+        let changes = if emit_direct_change {
+            direct_materialization_changes(snapshot.parent, &op)
+        } else {
+            rejected_structural_fallback_change(&op, Some(MaterializationSource::from_op(&op)))
+        };
+        self.finalize_materialized_apply(snapshot, &op, index, seq, changes)
+    }
+
     /// Finalize adapter-owned local ops by refreshing tombstones and recording parent-op index rows.
     ///
     /// This is intended for adapters that execute local operations directly against core and then

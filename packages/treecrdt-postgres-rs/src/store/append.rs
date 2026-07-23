@@ -6,9 +6,9 @@ use postgres::Client;
 
 use treecrdt_core::{
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    orchestrate_persisted_remote_append, Error, LamportClock, MaterializationCursor,
-    MaterializationHead, MaterializationOutcome, Operation, OperationKind, PersistedRemoteStores,
-    ReplicaId, Result,
+    orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state, Error,
+    LamportClock, MaterializationCursor, MaterializationHead, MaterializationOutcome, Operation,
+    OperationKind, PersistedRemoteStores, ReplicaId, Result,
 };
 
 use crate::profile::{append_profile_enabled, PgAppendProfile};
@@ -154,6 +154,22 @@ fn append_ops_in_tx(
         &mut update_head,
         |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
         || Ok(load_tree_meta_for_update(client, doc_id)?.0),
+        |meta, inserted_op_ids| {
+            try_direct_rewind_catch_up_materialized_state(
+                &PgOpStorage::new(ctx.clone()),
+                inserted_op_ids,
+                PersistedRemoteStores {
+                    replica_id: ReplicaId::new(b"postgres"),
+                    clock: LamportClock::default(),
+                    nodes: PgNodeStore::new(ctx.clone()),
+                    payloads: PgPayloadStore::new(ctx.clone()),
+                    index: PgParentOpIndex::new(ctx.clone()),
+                },
+                &meta,
+                |nodes| nodes.flush_last_change(),
+                |index| index.flush(),
+            )
+        },
         |meta| {
             catch_up_materialized_state(
                 PgOpStorage::new(ctx.clone()),

@@ -149,6 +149,12 @@ pub trait PayloadStore {
     ) -> Result<()>;
 }
 
+/// Exact payload mutations needed to rewind a materialized payload-only suffix.
+pub trait ExactPayloadStore: PayloadStore {
+    /// Remove any current payload winner for `node`.
+    fn clear_payload(&mut self, node: NodeId) -> Result<()>;
+}
+
 /// Persistent index of operations relevant to a `children(parent)` filter.
 ///
 /// This is used by adapters (e.g. SQLite) to support partial sync without re-implementing which
@@ -156,6 +162,11 @@ pub trait PayloadStore {
 pub trait ParentOpIndex {
     fn reset(&mut self) -> Result<()>;
     fn record(&mut self, parent: NodeId, op_id: &OperationId, seq: u64) -> Result<()>;
+}
+
+pub trait TruncatingParentOpIndex: ParentOpIndex {
+    /// Delete derived index rows for the invalidated materialized suffix starting at `seq`.
+    fn truncate_from(&mut self, seq: u64) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -167,6 +178,12 @@ impl ParentOpIndex for NoopParentOpIndex {
     }
 
     fn record(&mut self, _parent: NodeId, _op_id: &OperationId, _seq: u64) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl TruncatingParentOpIndex for NoopParentOpIndex {
+    fn truncate_from(&mut self, _seq: u64) -> Result<()> {
         Ok(())
     }
 }
@@ -295,6 +312,13 @@ impl PayloadStore for MemoryPayloadStore {
         let entry = self.entries.entry(node).or_default();
         entry.payload = payload;
         entry.last_writer = Some(writer);
+        Ok(())
+    }
+}
+
+impl ExactPayloadStore for MemoryPayloadStore {
+    fn clear_payload(&mut self, node: NodeId) -> Result<()> {
+        self.entries.remove(&node);
         Ok(())
     }
 }

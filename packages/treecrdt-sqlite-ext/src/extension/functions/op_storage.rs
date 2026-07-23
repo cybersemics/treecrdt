@@ -489,3 +489,137 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         Ok(val)
     }
 }
+
+impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
+    fn scan_frontier_range(
+        &self,
+        start: &treecrdt_core::MaterializationFrontierRef<'_>,
+        visit: &mut dyn FnMut(treecrdt_core::Operation) -> treecrdt_core::Result<()>,
+    ) -> treecrdt_core::Result<()> {
+        let sql = CString::new(
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+             FROM ops \
+             WHERE (lamport > ?1 OR (lamport = ?1 AND (replica > ?2 OR (replica = ?2 AND counter >= ?3)))) \
+             ORDER BY lamport, replica, counter",
+        )
+        .expect("scan frontier range sql");
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(rc, "prepare frontier range failed"));
+        }
+
+        let mut bind_err = false;
+        unsafe {
+            bind_err |= sqlite_bind_int64(stmt, 1, start.lamport as i64) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                2,
+                start.replica.as_ptr() as *const c_void,
+                start.replica.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 3, start.counter as i64) != SQLITE_OK as c_int;
+        }
+        if bind_err {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                "bind frontier range failed",
+            ));
+        }
+
+        loop {
+            let step_rc = unsafe { sqlite_step(stmt) };
+            if step_rc == SQLITE_ROW as c_int {
+                if let Err(err) = visit(read_operation_row(stmt)?) {
+                    unsafe { sqlite_finalize(stmt) };
+                    return Err(err);
+                }
+            } else if step_rc == SQLITE_DONE as c_int {
+                break;
+            } else {
+                unsafe { sqlite_finalize(stmt) };
+                return Err(sqlite_rc_error(step_rc, "frontier range step failed"));
+            }
+        }
+
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(
+                finalize_rc,
+                "finalize frontier range failed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn latest_payload_before(
+        &self,
+        node: NodeId,
+        before: &treecrdt_core::MaterializationFrontierRef<'_>,
+    ) -> treecrdt_core::Result<Option<treecrdt_core::Operation>> {
+        let sql = CString::new(
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+             FROM ops \
+             WHERE node = ?1 \
+               AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+               AND (lamport < ?2 OR (lamport = ?2 AND (replica < ?3 OR (replica = ?3 AND counter < ?4)))) \
+             ORDER BY lamport DESC, replica DESC, counter DESC \
+             LIMIT 1",
+        )
+        .expect("latest payload before sql");
+        let mut stmt: *mut sqlite3_stmt = null_mut();
+        let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(rc, "prepare latest payload failed"));
+        }
+
+        let node_bytes = sqlite_node_id_bytes(node);
+        let mut bind_err = false;
+        unsafe {
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                1,
+                node_bytes.as_ptr() as *const c_void,
+                node_bytes.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 2, before.lamport as i64) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_blob(
+                stmt,
+                3,
+                before.replica.as_ptr() as *const c_void,
+                before.replica.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 4, before.counter as i64) != SQLITE_OK as c_int;
+        }
+        if bind_err {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                "bind latest payload failed",
+            ));
+        }
+
+        let step_rc = unsafe { sqlite_step(stmt) };
+        let op = if step_rc == SQLITE_ROW as c_int {
+            Some(read_operation_row(stmt)?)
+        } else if step_rc == SQLITE_DONE as c_int {
+            None
+        } else {
+            unsafe { sqlite_finalize(stmt) };
+            return Err(sqlite_rc_error(step_rc, "latest payload step failed"));
+        };
+
+        let finalize_rc = unsafe { sqlite_finalize(stmt) };
+        if finalize_rc != SQLITE_OK as c_int {
+            return Err(sqlite_rc_error(
+                finalize_rc,
+                "finalize latest payload failed",
+            ));
+        }
+        Ok(op)
+    }
+}

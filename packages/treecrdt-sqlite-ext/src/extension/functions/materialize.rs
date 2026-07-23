@@ -7,8 +7,9 @@ use super::util::{sqlite_err_from_core, sqlite_result_json};
 use super::*;
 use treecrdt_core::Storage;
 use treecrdt_core::{
-    orchestrate_persisted_remote_append, LamportClock, MaterializationChange,
-    MaterializationCursor, MaterializationOutcome, MaterializationSource, OperationId, ReplicaId,
+    orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state,
+    LamportClock, MaterializationChange, MaterializationCursor, MaterializationOutcome,
+    MaterializationSource, OperationId, ReplicaId,
 };
 
 #[derive(serde::Serialize)]
@@ -417,6 +418,25 @@ pub(super) fn append_ops_impl(
             |head| update_tree_meta_head(db, Some(head)),
             |frontier| set_tree_meta_replay_frontier(db, frontier),
             || Ok(load_tree_meta(db)?.0),
+            |meta, inserted_op_ids| {
+                try_direct_rewind_catch_up_materialized_state(
+                    &super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
+                    inserted_op_ids,
+                    treecrdt_core::PersistedRemoteStores {
+                        replica_id: ReplicaId::new(b"sqlite-ext"),
+                        clock: LamportClock::default(),
+                        nodes: SqliteNodeStore::prepare(db).map_err(|_| SQLITE_ERROR as c_int)?,
+                        payloads: SqlitePayloadStore::prepare(db)
+                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                        index: SqliteParentOpIndex::prepare(db, doc_id.to_vec())
+                            .map_err(|_| SQLITE_ERROR as c_int)?,
+                    },
+                    &meta,
+                    |_| Ok(()),
+                    |_| Ok(()),
+                )
+                .map_err(|_| SQLITE_ERROR as c_int)
+            },
             |meta| {
                 treecrdt_core::catch_up_materialized_state(
                     super::op_storage::SqliteOpStorage::with_doc_id(db, doc_id.to_vec()),
