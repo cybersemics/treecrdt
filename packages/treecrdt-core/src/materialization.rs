@@ -126,8 +126,7 @@ pub trait FrontierRewindStorage: Storage {
         let mut ops = self.load_since(0)?;
         ops.sort_by(cmp_ops);
         for op in ops {
-            let frontier = frontier_from_op(&op);
-            if cmp_frontiers(&frontier, start) == Ordering::Less {
+            if cmp_op_to_frontier(&op, start) == Ordering::Less {
                 continue;
             }
             visit(op)?;
@@ -143,8 +142,7 @@ pub trait FrontierRewindStorage: Storage {
         let mut ops = self.load_since(0)?;
         ops.sort_by(cmp_ops);
         Ok(ops.into_iter().rfind(|op| {
-            let frontier = frontier_from_op(op);
-            cmp_frontiers(&frontier, before) == Ordering::Less
+            cmp_op_to_frontier(op, before) == Ordering::Less
                 && match &op.kind {
                     crate::ops::OperationKind::Insert {
                         node: n, payload, ..
@@ -264,9 +262,7 @@ impl ReplayChangeScope<'_> {
     fn includes(&self, op: &Operation) -> bool {
         match self {
             Self::All => true,
-            Self::FromFrontier(frontier) => {
-                cmp_frontiers(&frontier_from_op(op), frontier) != Ordering::Less
-            }
+            Self::FromFrontier(frontier) => cmp_op_to_frontier(op, frontier) != Ordering::Less,
         }
     }
 }
@@ -315,16 +311,12 @@ impl<'a> ReplayAccumulator<'a> {
         crdt: &mut TreeCrdt<impl Storage, impl Clock, impl NodeStore, impl PayloadStore>,
         index: &mut impl ParentOpIndex,
         op: Operation,
-        rejected_op_error: Option<&'static str>,
     ) -> Result<()> {
         let collect = self.before_op(&op);
-        match crdt.apply_remote_with_materialization_seq(op.clone(), index, &mut self.seq)? {
-            Some(delta) => self.record_applied(op, collect, delta.changes),
-            None => {
-                if let Some(message) = rejected_op_error {
-                    return Err(Error::Storage(message.into()));
-                }
-            }
+        if let Some(delta) =
+            crdt.apply_remote_with_materialization_seq(op.clone(), index, &mut self.seq)?
+        {
+            self.record_applied(op, collect, delta.changes);
         }
         Ok(())
     }
@@ -381,15 +373,18 @@ fn cmp_frontiers<R1: AsRef<[u8]>, R2: AsRef<[u8]>>(
     )
 }
 
-fn earlier_frontier(
-    left: MaterializationFrontier,
-    right: MaterializationFrontier,
-) -> MaterializationFrontier {
-    if cmp_frontiers(&left, &right) == Ordering::Greater {
-        right
-    } else {
-        left
-    }
+fn cmp_op_to_frontier<R: AsRef<[u8]>>(
+    op: &Operation,
+    frontier: &MaterializationKey<R>,
+) -> Ordering {
+    cmp_op_key(
+        op.meta.lamport,
+        op.meta.id.replica.as_bytes(),
+        op.meta.id.counter,
+        frontier.lamport,
+        frontier.replica.as_ref(),
+        frontier.counter,
+    )
 }
 
 fn start_replay_frontier() -> MaterializationFrontier {
@@ -398,6 +393,10 @@ fn start_replay_frontier() -> MaterializationFrontier {
         replica: Vec::new(),
         counter: 0,
     }
+}
+
+fn is_start_replay_frontier<R: AsRef<[u8]>>(frontier: &MaterializationKey<R>) -> bool {
+    frontier.lamport == 0 && frontier.replica.as_ref().is_empty() && frontier.counter == 0
 }
 
 fn op_requires_full_replay(op: &Operation) -> bool {
@@ -441,29 +440,15 @@ fn restore_payload_before<S: FrontierRewindStorage, P: ExactPayloadStore>(
 fn rewind_existing_payload_suffix_in_place<S, P>(
     payloads: &mut P,
     storage: &S,
-    existing_suffix_ops: &[Operation],
+    affected_nodes: &HashSet<NodeId>,
     frontier: &MaterializationFrontierRef<'_>,
 ) -> Result<()>
 where
     S: FrontierRewindStorage,
     P: ExactPayloadStore,
 {
-    let mut affected_nodes = HashSet::new();
-    for op in existing_suffix_ops {
-        match &op.kind {
-            crate::ops::OperationKind::Payload { node, .. } => {
-                affected_nodes.insert(*node);
-            }
-            _ => {
-                return Err(Error::Storage(
-                    "direct rewind requires a payload-only existing suffix".into(),
-                ));
-            }
-        }
-    }
-
     for node in affected_nodes {
-        restore_payload_before(payloads, storage, node, frontier)?;
+        restore_payload_before(payloads, storage, *node, frontier)?;
     }
 
     Ok(())
@@ -473,19 +458,22 @@ fn next_replay_frontier<M: MaterializationCursor>(
     meta: &M,
     inserted_ops: &[Operation],
 ) -> Option<MaterializationFrontier> {
-    let earliest_inserted = inserted_ops.iter().map(frontier_from_op).min_by(cmp_frontiers)?;
+    let earliest_inserted = inserted_ops.iter().min_by(|left, right| cmp_ops(left, right))?;
     let state = meta.state();
 
     if let Some(existing) = state.replay_from.as_ref() {
-        return Some(earlier_frontier(
-            owned_frontier(existing),
-            earliest_inserted,
-        ));
+        return Some(
+            if cmp_op_to_frontier(earliest_inserted, existing) == Ordering::Less {
+                frontier_from_op(earliest_inserted)
+            } else {
+                owned_frontier(existing)
+            },
+        );
     }
 
     let head = state.head.as_ref()?;
-    if cmp_frontiers(&earliest_inserted, &head.at) == Ordering::Less {
-        Some(earliest_inserted)
+    if cmp_op_to_frontier(earliest_inserted, &head.at) == Ordering::Less {
+        Some(frontier_from_op(earliest_inserted))
     } else {
         None
     }
@@ -561,7 +549,7 @@ where
 
     let mut replay = ReplayAccumulator::new(state.head_seq(), ReplayChangeScope::All);
     for op in ops {
-        replay.apply_remote(crdt, index, op, None)?;
+        replay.apply_remote(crdt, index, op)?;
     }
     let run = replay.finish();
 
@@ -625,7 +613,7 @@ where
     Ok(result)
 }
 
-fn replay_frontier_in_memory<S: Storage>(
+fn replay_canonical_log_in_memory<S: Storage>(
     storage: &S,
     frontier: &MaterializationFrontier,
     replica_id: &ReplicaId,
@@ -640,14 +628,7 @@ fn replay_frontier_in_memory<S: Storage>(
     let mut index = RecordingIndex::default();
     let mut replay = ReplayAccumulator::new(0, ReplayChangeScope::FromFrontier(frontier));
 
-    storage.scan_since(0, &mut |op| {
-        replay.apply_remote(
-            &mut crdt,
-            &mut index,
-            op,
-            Some("frontier replay unexpectedly required nested catch-up"),
-        )
-    })?;
+    storage.scan_since(0, &mut |op| replay.apply_sorted(&mut crdt, &mut index, op))?;
 
     let run = replay.finish();
     let outcome = run.outcome;
@@ -694,7 +675,7 @@ where
         return Ok(None);
     };
 
-    if frontier == &start_replay_frontier().as_borrowed() {
+    if is_start_replay_frontier(frontier) {
         return Ok(None);
     }
     if cmp_frontiers(frontier, &head.at) != Ordering::Less {
@@ -702,33 +683,35 @@ where
     }
 
     let mut full_suffix_ops = Vec::new();
-    let mut existing_suffix_ops = Vec::new();
+    let mut existing_suffix_count = 0_u64;
+    let mut existing_suffix_payload_nodes = HashSet::new();
+    let mut existing_suffix_is_payload_only = true;
     let mut requires_full_replay = false;
     storage.scan_frontier_range(frontier, &mut |op| {
-        let op_frontier = frontier_from_op(&op);
-        if cmp_frontiers(&op_frontier, &head.at) != Ordering::Greater
+        if cmp_op_to_frontier(&op, &head.at) != Ordering::Greater
             && !inserted_op_ids.contains(&op.meta.id)
         {
-            existing_suffix_ops.push(op.clone());
+            existing_suffix_count = existing_suffix_count.saturating_add(1);
+            if let crate::ops::OperationKind::Payload { node, .. } = &op.kind {
+                existing_suffix_payload_nodes.insert(*node);
+            } else {
+                existing_suffix_is_payload_only = false;
+            }
         }
         requires_full_replay |= op_requires_full_replay(&op);
         full_suffix_ops.push(op);
         Ok(())
     })?;
 
-    let existing_suffix_is_payload_only = existing_suffix_ops
-        .iter()
-        .all(|op| matches!(op.kind, crate::ops::OperationKind::Payload { .. }));
     if full_suffix_ops.is_empty()
-        || existing_suffix_ops.is_empty()
+        || existing_suffix_count == 0
         || requires_full_replay
         || !existing_suffix_is_payload_only
     {
         return Ok(None);
     }
 
-    let prefix_seq =
-        head.seq.saturating_sub(existing_suffix_ops.len().min(u64::MAX as usize) as u64);
+    let prefix_seq = head.seq.saturating_sub(existing_suffix_count);
     let truncate_from = prefix_seq.saturating_add(1);
 
     let PersistedRemoteStores {
@@ -743,7 +726,7 @@ where
     rewind_existing_payload_suffix_in_place(
         &mut payloads,
         storage,
-        &existing_suffix_ops,
+        &existing_suffix_payload_nodes,
         frontier,
     )?;
 
@@ -777,27 +760,26 @@ fn validate_rebuilt_state<M: MaterializationCursor>(
         )));
     }
 
-    let rebuilt_frontier = rebuilt.head.as_ref().map(frontier_from_op);
     if let Some(previous_head) = state.head.as_ref() {
-        let Some(rebuilt_head) = rebuilt_frontier.as_ref() else {
+        let Some(rebuilt_head) = rebuilt.head.as_ref() else {
             return Err(Error::InconsistentState(
                 "canonical replay lost the materialized head".into(),
             ));
         };
-        if cmp_frontiers(rebuilt_head, &previous_head.at) == Ordering::Less {
+        if cmp_op_to_frontier(rebuilt_head, &previous_head.at) == Ordering::Less {
             return Err(Error::InconsistentState(
                 "canonical replay moved the materialized head backwards".into(),
             ));
         }
     }
 
-    if frontier != &start_replay_frontier() {
-        let Some(rebuilt_head) = rebuilt_frontier.as_ref() else {
+    if !is_start_replay_frontier(frontier) {
+        let Some(rebuilt_head) = rebuilt.head.as_ref() else {
             return Err(Error::InconsistentState(
                 "replay frontier exists beyond an empty operation log".into(),
             ));
         };
-        if cmp_frontiers(frontier, rebuilt_head) == Ordering::Greater {
+        if cmp_op_to_frontier(rebuilt_head, frontier) == Ordering::Less {
             return Err(Error::InconsistentState(
                 "replay frontier is beyond the canonical operation-log head".into(),
             ));
@@ -946,7 +928,8 @@ where
         mut index,
     } = stores;
 
-    let (mut rebuilt, replay_outcome) = replay_frontier_in_memory(&storage, frontier, &replica_id)?;
+    let (mut rebuilt, replay_outcome) =
+        replay_canonical_log_in_memory(&storage, frontier, &replica_id)?;
     validate_rebuilt_state(meta, frontier, &rebuilt)?;
 
     // Public materialization changes intentionally describe only visible application state. They
@@ -1095,14 +1078,30 @@ where
     MissingHead: FnMut(&'static str) -> E,
 {
     let inserted_count = inserted_ops.len().min(u64::MAX as usize) as u64;
-    let head_seq = meta.state().head_seq();
+    let state = meta.state();
+    let head_seq = state.head_seq();
     if inserted_count == 0 {
         return Ok(PersistedRemoteApplyResult::empty(0, head_seq));
     }
 
-    let inserted_op_ids: HashSet<OperationId> =
-        inserted_ops.iter().map(|op| op.meta.id.clone()).collect();
-    let had_pending_frontier = meta.state().replay_from.is_some();
+    let can_attempt_direct_rewind = if state.replay_from.is_none() {
+        match (
+            state.head.as_ref(),
+            inserted_ops.iter().min_by(|left, right| cmp_ops(left, right)),
+        ) {
+            (Some(head), Some(earliest)) => {
+                cmp_op_to_frontier(earliest, &head.at) == Ordering::Less
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
+    let direct_rewind_op_ids = if can_attempt_direct_rewind {
+        Some(inserted_ops.iter().map(|op| op.meta.id.clone()).collect::<HashSet<_>>())
+    } else {
+        None
+    };
 
     let apply_result = apply_persisted_remote_ops_with_delta(
         meta,
@@ -1119,8 +1118,8 @@ where
     // Scheduling replay mutates adapter-owned cursor state, so catch-up must observe a fresh
     // snapshot rather than the metadata passed to the initial incremental attempt.
     let refreshed_meta = load_catch_up_meta()?;
-    let catch_up_result = if !had_pending_frontier {
-        match try_direct_rewind(&refreshed_meta, &inserted_op_ids)? {
+    let catch_up_result = if let Some(inserted_op_ids) = direct_rewind_op_ids.as_ref() {
+        match try_direct_rewind(&refreshed_meta, inserted_op_ids)? {
             Some(result) => result,
             None => catch_up(&refreshed_meta)?,
         }
