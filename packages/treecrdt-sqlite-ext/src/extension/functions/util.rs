@@ -43,6 +43,9 @@ pub(super) fn read_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
         }
         let ptr = sqlite_value_blob(val) as *const u8;
         let len = sqlite_value_bytes(val) as usize;
+        if len == 0 {
+            return Some(Vec::new());
+        }
         if ptr.is_null() {
             return None;
         }
@@ -52,8 +55,8 @@ pub(super) fn read_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
 
 pub(super) fn read_required_blob(val: *mut sqlite3_value) -> Result<Vec<u8>, ()> {
     match read_blob(val) {
-        Some(v) => Ok(v),
-        None => Err(()),
+        Some(v) if !v.is_empty() => Ok(v),
+        _ => Err(()),
     }
 }
 

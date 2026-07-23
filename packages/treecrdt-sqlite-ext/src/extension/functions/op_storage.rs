@@ -23,10 +23,10 @@ fn sqlite_node_id_bytes(node: NodeId) -> [u8; 16] {
 fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt_core::Operation> {
     let replica_ptr = unsafe { sqlite_column_blob(stmt, 0) } as *const u8;
     let replica_len = unsafe { sqlite_column_bytes(stmt, 0) } as usize;
-    if replica_ptr.is_null() {
+    if replica_ptr.is_null() || replica_len == 0 {
         return Err(sqlite_rc_error(
             SQLITE_ERROR as c_int,
-            "replica missing from op row",
+            "replica missing or empty in op row",
         ));
     }
     let replica = unsafe { slice::from_raw_parts(replica_ptr, replica_len) }.to_vec();
@@ -77,7 +77,9 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
     } else {
         let ptr = unsafe { sqlite_column_blob(stmt, 9) } as *const u8;
         let len = unsafe { sqlite_column_bytes(stmt, 9) } as usize;
-        if ptr.is_null() {
+        if len == 0 {
+            Some(Vec::new())
+        } else if ptr.is_null() {
             None
         } else {
             Some(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
@@ -135,6 +137,18 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
     })
 }
 
+fn read_operation_row_or_finalize(
+    stmt: *mut sqlite3_stmt,
+) -> treecrdt_core::Result<treecrdt_core::Operation> {
+    match read_operation_row(stmt) {
+        Ok(op) => Ok(op),
+        Err(err) => {
+            unsafe { sqlite_finalize(stmt) };
+            Err(err)
+        }
+    }
+}
+
 pub(super) struct SqliteOpStorage {
     db: *mut sqlite3,
     doc_id: Option<Vec<u8>>,
@@ -161,6 +175,11 @@ impl SqliteOpStorage {
 
 impl treecrdt_core::Storage for SqliteOpStorage {
     fn apply(&mut self, op: treecrdt_core::Operation) -> treecrdt_core::Result<bool> {
+        if op.meta.id.replica.as_bytes().is_empty() {
+            return Err(treecrdt_core::Error::Storage(
+                "replica id must not be empty".into(),
+            ));
+        }
         let doc_id = self.ensure_doc_id()?;
 
         let (kind, parent, node, new_parent, order_key, known_state, payload) = match op.kind {
@@ -371,7 +390,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         loop {
             let step_rc = unsafe { sqlite_step(stmt) };
             if step_rc == SQLITE_ROW as c_int {
-                out.push(read_operation_row(stmt)?);
+                out.push(read_operation_row_or_finalize(stmt)?);
             } else if step_rc == SQLITE_DONE as c_int {
                 break;
             } else {
@@ -413,7 +432,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         loop {
             let step_rc = unsafe { sqlite_step(stmt) };
             if step_rc == SQLITE_ROW as c_int {
-                if let Err(err) = visit(read_operation_row(stmt)?) {
+                if let Err(err) = visit(read_operation_row_or_finalize(stmt)?) {
                     unsafe { sqlite_finalize(stmt) };
                     return Err(err);
                 }
@@ -531,7 +550,7 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
         loop {
             let step_rc = unsafe { sqlite_step(stmt) };
             if step_rc == SQLITE_ROW as c_int {
-                if let Err(err) = visit(read_operation_row(stmt)?) {
+                if let Err(err) = visit(read_operation_row_or_finalize(stmt)?) {
                     unsafe { sqlite_finalize(stmt) };
                     return Err(err);
                 }
@@ -604,7 +623,7 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
 
         let step_rc = unsafe { sqlite_step(stmt) };
         let op = if step_rc == SQLITE_ROW as c_int {
-            Some(read_operation_row(stmt)?)
+            Some(read_operation_row_or_finalize(stmt)?)
         } else if step_rc == SQLITE_DONE as c_int {
             None
         } else {
@@ -673,7 +692,7 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
 
         let step_rc = unsafe { sqlite_step(stmt) };
         let op = if step_rc == SQLITE_ROW as c_int {
-            Some(read_operation_row(stmt)?)
+            Some(read_operation_row_or_finalize(stmt)?)
         } else if step_rc == SQLITE_DONE as c_int {
             None
         } else {

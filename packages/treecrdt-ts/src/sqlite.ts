@@ -104,41 +104,57 @@ function buildAppendOp(
   )[];
 
   switch (kind.type) {
-    case 'insert':
+    case 'insert': {
+      const emptyOrderKey = kind.orderKey.byteLength === 0;
       if (kind.payload !== undefined) {
+        const emptyPayload = kind.payload.byteLength === 0;
         return {
-          sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
+          sql:
+            emptyOrderKey && emptyPayload
+              ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,zeroblob(0),zeroblob(0))'
+              : emptyOrderKey
+                ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,zeroblob(0),?7)'
+                : emptyPayload
+                  ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,zeroblob(0))'
+                  : 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
           params: [
             ...base,
             'insert',
             opts.serializeNodeId(kind.parent),
             opts.serializeNodeId(kind.node),
-            kind.orderKey,
-            kind.payload,
+            ...(!emptyOrderKey ? [kind.orderKey] : []),
+            ...(!emptyPayload ? [kind.payload] : []),
           ],
         };
       }
       return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
+        sql: emptyOrderKey
+          ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,zeroblob(0),NULL)'
+          : 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
         params: [
           ...base,
           'insert',
           opts.serializeNodeId(kind.parent),
           opts.serializeNodeId(kind.node),
-          kind.orderKey,
+          ...(!emptyOrderKey ? [kind.orderKey] : []),
         ],
       };
-    case 'move':
+    }
+    case 'move': {
+      const emptyOrderKey = kind.orderKey.byteLength === 0;
       return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
+        sql: emptyOrderKey
+          ? 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,zeroblob(0),NULL)'
+          : 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
         params: [
           ...base,
           'move',
           opts.serializeNodeId(kind.node),
           opts.serializeNodeId(kind.newParent),
-          kind.orderKey,
+          ...(!emptyOrderKey ? [kind.orderKey] : []),
         ],
       };
+    }
     case 'delete':
       if (!opts.knownState || opts.knownState.length === 0) {
         throw new Error('treecrdt: delete operations require meta.knownState');
@@ -153,6 +169,12 @@ function buildAppendOp(
         params: [...base, 'tombstone', opts.serializeNodeId(kind.node), opts.knownState],
       };
     case 'payload':
+      if (kind.payload?.byteLength === 0) {
+        return {
+          sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,zeroblob(0))',
+          params: [...base, 'payload', opts.serializeNodeId(kind.node)],
+        };
+      }
       return {
         sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
         params: [...base, 'payload', opts.serializeNodeId(kind.node), kind.payload],
@@ -549,12 +571,12 @@ async function treecrdtTreePayload(
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<Uint8Array | null> {
   await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const hex = await runner.getText(
-    'SELECT hex(payload) FROM tree_payload WHERE node = ?1 LIMIT 1',
+  const encoded = await runner.getText(
+    "SELECT CASE WHEN payload IS NULL THEN 'n' ELSE 'x' || hex(payload) END FROM tree_payload WHERE node = ?1 LIMIT 1",
     [node],
   );
-  if (hex === null || hex === undefined || hex === '') return null;
-  return hexToBytes(hex);
+  if (encoded === null || encoded === undefined || encoded === 'n') return null;
+  return hexToBytes(encoded.slice(1));
 }
 
 /**
@@ -660,16 +682,18 @@ export function createTreecrdtSqliteWriter(
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
     const payload = o.payload ?? null;
+    const params = [
+      replicaBytes,
+      nodeIdToBytes16(parent),
+      nodeIdToBytes16(node),
+      placement.type,
+      afterNode,
+    ];
     return getLocalOp(
-      'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)',
-      [
-        replicaBytes,
-        nodeIdToBytes16(parent),
-        nodeIdToBytes16(node),
-        placement.type,
-        afterNode,
-        payload,
-      ],
+      payload !== null && payload.byteLength === 0
+        ? 'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,zeroblob(0))'
+        : 'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)',
+      payload !== null && payload.byteLength === 0 ? params : [...params, payload],
       o,
     );
   };
@@ -697,9 +721,12 @@ export function createTreecrdtSqliteWriter(
   };
 
   const payload = async (node: string, next: Uint8Array | null, writeOpts?: LocalWriteOptions) => {
+    const params = [replicaBytes, nodeIdToBytes16(node)];
     return getLocalOp(
-      'SELECT treecrdt_local_payload(?1,?2,?3)',
-      [replicaBytes, nodeIdToBytes16(node), next],
+      next !== null && next.byteLength === 0
+        ? 'SELECT treecrdt_local_payload(?1,?2,zeroblob(0))'
+        : 'SELECT treecrdt_local_payload(?1,?2,?3)',
+      next !== null && next.byteLength === 0 ? params : [...params, next],
       writeOpts,
     );
   };
