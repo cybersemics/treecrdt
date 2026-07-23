@@ -7,6 +7,7 @@ import {
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
+import { createTreecrdtSqliteWriter } from '@treecrdt/interface/sqlite';
 import {
   createTreecrdtClient,
   defaultExtensionPath,
@@ -37,7 +38,31 @@ test('conformance registry includes materialization-event scenarios', () => {
   expect(names).toContain('materialization events: structural batch');
   expect(names).toContain('materialization events: payload coalescing');
   expect(names).toContain('materialization events: defensive restore');
+  expect(names).toContain('materialization events: listener failures are isolated');
   expect(names).toContain('local ops: materialization changes include writeId');
+});
+
+test('low-level sqlite writer isolates a direct materialization callback failure', async () => {
+  const client = await createNodeEngine({ docId: 'sqlite-direct-listener-isolation' });
+  const callback = vi.fn(() => {
+    throw new Error('listener failure');
+  });
+  const writer = createTreecrdtSqliteWriter(client.runner, {
+    replica,
+    onMaterialized: callback,
+  });
+  const node = nodeIdFromInt(9);
+
+  try {
+    await expect(writer.insert(root, node, { type: 'last' })).resolves.toMatchObject({
+      kind: { type: 'insert', node },
+    });
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(await client.tree.exists(node)).toBe(true);
+    expect(await client.ops.all()).toHaveLength(1);
+  } finally {
+    await client.close();
+  }
 });
 
 test('sqlite auth-aware local write rolls back on auth failure', async () => {

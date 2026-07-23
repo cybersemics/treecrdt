@@ -157,6 +157,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializationEventStructuralBatch,
     },
     {
+      name: 'materialization events: listener failures are isolated',
+      run: scenarioMaterializationListenerFailuresAreIsolated,
+    },
+    {
       name: 'materialization events: payload coalescing',
       run: scenarioMaterializationEventPayloadCoalescing,
     },
@@ -888,6 +892,47 @@ async function scenarioMaterializationEventStructuralBatch(
     [root, parent, child],
     'appendMany structural should include root+parent+child',
   );
+}
+
+async function scenarioMaterializationListenerFailuresAreIsolated(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  const replica = replicaFromLabel('listener-isolation');
+  const remoteReplica = replicaFromLabel('listener-isolation-remote');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(61);
+  const remoteNode = nodeIdFromInt(62);
+  let throwingCalls = 0;
+  const observed: MaterializationEvent[] = [];
+  const unsubscribeThrowing = engine.onMaterialized(() => {
+    throwingCalls += 1;
+    throw new Error('listener failure');
+  });
+  const unsubscribeHealthy = engine.onMaterialized((event) => observed.push(event));
+
+  try {
+    await engine.local.insert(replica, root, node, { type: 'last' }, null);
+    await engine.ops.append(
+      makeInsertOp({
+        replica: remoteReplica,
+        counter: 1,
+        lamport: 2,
+        parent: root,
+        node: remoteNode,
+        orderKey: orderKeyFromPosition(1),
+      }),
+    );
+  } finally {
+    unsubscribeThrowing();
+    unsubscribeHealthy();
+  }
+
+  assertEqual(throwingCalls, 2, 'throwing listener call count');
+  assertEqual(observed.length, 2, 'healthy listener must still receive both events');
+  assertEqual(await engine.tree.exists(node), true, 'committed node must remain visible');
+  assertEqual(await engine.tree.exists(remoteNode), true, 'appended node must remain visible');
+  assertEqual((await engine.ops.all()).length, 2, 'listener failure must not remint either write');
 }
 
 async function scenarioMaterializationEventPayloadCoalescing(

@@ -76,12 +76,25 @@ function decodeLocalOpResult(
   };
 }
 
+function notifyMaterializationCallback(
+  callback: ((event: MaterializationEvent) => void) | undefined,
+  event: MaterializationEvent,
+): void {
+  try {
+    callback?.(event);
+  } catch {
+    // The database change is already committed; this callback is observational only.
+  }
+}
+
 function emitLocalOutcome(
   outcome: MaterializationOutcome,
   emit?: (event: MaterializationEvent) => void,
   writeId?: string,
 ): void {
-  if (outcome.changes.length > 0) emit?.(addMaterializationWriteId(outcome, writeId));
+  if (outcome.changes.length > 0) {
+    notifyMaterializationCallback(emit, addMaterializationWriteId(outcome, writeId));
+  }
 }
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
@@ -295,7 +308,7 @@ export function createTreecrdtSqliteAdapter(
 ): TreecrdtAdapter {
   const emitOutcome = (outcome: MaterializationOutcome) => {
     if (outcome.changes.length === 0) return;
-    opts.onMaterialized?.({ ...outcome });
+    notifyMaterializationCallback(opts.onMaterialized, { ...outcome });
   };
   return {
     setDocId: (docId) => treecrdtSetDocId(runner, docId),
