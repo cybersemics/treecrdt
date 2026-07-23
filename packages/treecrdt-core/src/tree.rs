@@ -676,10 +676,6 @@ where
     /// current LWW writer. Superseded payload writes do not represent surviving content and
     /// therefore cannot veto a defensive deletion.
     pub fn subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
-        if !self.nodes.exists(node)? {
-            return Ok(VersionVector::new());
-        }
-
         let mut subtree_vv = VersionVector::new();
         let mut pending = vec![node];
         let mut visited = HashSet::new();
@@ -690,7 +686,7 @@ where
             }
 
             subtree_vv.merge(&self.nodes.last_change(current)?);
-            if let Some((_lamport, writer)) = self.payloads.last_writer(current)? {
+            if let Some((_, writer)) = self.payloads.last_writer(current)? {
                 subtree_vv.observe(&writer.replica, writer.counter);
             }
             pending.extend(self.nodes.children(current)?);

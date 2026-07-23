@@ -1,4 +1,7 @@
-use treecrdt_core::{MemoryNodeStore, NodeId, NodeStore, ReplicaId, VersionVector};
+use treecrdt_core::{
+    LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId, NodeStore, ReplicaId,
+    TreeCrdt, VersionVector,
+};
 
 fn version(replica: &ReplicaId, counter: u64) -> VersionVector {
     let mut vv = VersionVector::new();
@@ -7,7 +10,7 @@ fn version(replica: &ReplicaId, counter: u64) -> VersionVector {
 }
 
 #[test]
-fn structural_subtree_walk_terminates_on_cycle_and_merges_each_node() {
+fn subtree_walk_terminates_on_cycle_and_merges_each_node() {
     let replica_a = ReplicaId::new(b"a");
     let replica_b = ReplicaId::new(b"b");
     let node_a = NodeId(1);
@@ -19,14 +22,22 @@ fn structural_subtree_walk_terminates_on_cycle_and_merges_each_node() {
     nodes.merge_last_change(node_a, &version(&replica_a, 1)).unwrap();
     nodes.merge_last_change(node_b, &version(&replica_b, 2)).unwrap();
 
-    let subtree = nodes.structural_subtree_version_vector(node_a).unwrap();
+    let tree = TreeCrdt::with_stores(
+        ReplicaId::new(b"tree"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+        nodes,
+        MemoryPayloadStore::default(),
+    )
+    .unwrap();
+    let subtree = tree.subtree_version_vector(node_a).unwrap();
 
     assert_eq!(subtree.get(&replica_a), 1);
     assert_eq!(subtree.get(&replica_b), 2);
 }
 
 #[test]
-fn structural_subtree_walk_handles_a_deep_chain_without_recursion() {
+fn subtree_walk_handles_a_deep_chain_without_recursion() {
     const DEPTH: u64 = 50_000;
 
     let replica = ReplicaId::new(b"deep-chain");
@@ -40,7 +51,15 @@ fn structural_subtree_walk_handles_a_deep_chain_without_recursion() {
         parent = child;
     }
 
-    let subtree = nodes.structural_subtree_version_vector(NodeId::ROOT).unwrap();
+    let tree = TreeCrdt::with_stores(
+        ReplicaId::new(b"tree"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+        nodes,
+        MemoryPayloadStore::default(),
+    )
+    .unwrap();
+    let subtree = tree.subtree_version_vector(NodeId::ROOT).unwrap();
 
     assert_eq!(subtree.frontier(&replica), DEPTH);
 }

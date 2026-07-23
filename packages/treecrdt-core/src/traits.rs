@@ -129,27 +129,6 @@ pub trait NodeStore {
         Ok(Some((self.parent(node)?, self.has_deleted_at(node)?)))
     }
 
-    /// Return structural history for this node and its physical descendants.
-    ///
-    /// This deliberately excludes payload writers. Use [`crate::TreeCrdt::subtree_version_vector`]
-    /// when calculating defensive-deletion awareness.
-    fn structural_subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
-        let mut subtree_vv = VersionVector::new();
-        let mut pending = vec![node];
-        let mut visited = HashSet::new();
-
-        while let Some(current) = pending.pop() {
-            if !visited.insert(current) || !self.exists(current)? {
-                continue;
-            }
-
-            subtree_vv.merge(&self.last_change(current)?);
-            pending.extend(self.children(current)?);
-        }
-
-        Ok(subtree_vv)
-    }
-
     fn all_nodes(&self) -> Result<Vec<NodeId>>;
 }
 
