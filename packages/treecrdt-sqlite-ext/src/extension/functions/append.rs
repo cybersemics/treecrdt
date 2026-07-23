@@ -43,10 +43,10 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
 
     let replica_ptr = unsafe { sqlite_value_blob(args[0]) } as *const u8;
     let replica_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
-    if replica_ptr.is_null() {
+    if replica_ptr.is_null() || replica_len == 0 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_append_op: NULL replica\0".as_ptr() as *const c_char,
+            b"treecrdt_append_op: replica must be a non-empty BLOB\0".as_ptr() as *const c_char,
         );
         return;
     }

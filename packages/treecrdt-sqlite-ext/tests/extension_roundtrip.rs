@@ -2,7 +2,7 @@
 use std::env;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::ptr::null_mut;
 
 use rusqlite::Connection;
@@ -510,93 +510,45 @@ fn append_and_fetch_ops_via_extension() {
 }
 
 #[test]
-fn empty_payload_survives_canonical_catch_up_and_reopen() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("empty-payload.sqlite");
-    let replica = b"empty-payload".to_vec();
+fn empty_values_remain_non_null_blobs() {
+    let conn = setup_conn();
+    let replica = b"empty-values".to_vec();
     let root = node_bytes(0);
-    let with_empty_payload = node_bytes(1);
-    let late_node = node_bytes(2);
-    let local_node = node_bytes(3);
+    let node = node_bytes(1);
 
-    {
-        let conn = setup_conn_at(&db_path);
-        let _: String = conn
-            .query_row(
-                "SELECT treecrdt_append_op(?1, 2, 2, 'insert', ?2, ?3, NULL, ?4, zeroblob(0))",
-                rusqlite::params![
-                    replica.clone(),
-                    root.clone(),
-                    with_empty_payload.clone(),
-                    (2u16).to_be_bytes().to_vec(),
-                ],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        assert_eq!(payload_bytes(&conn, &with_empty_payload), Some(Vec::new()));
-
-        // A lower canonical key invalidates the frontier and rebuilds from the persisted op log.
-        let _: String = conn
-            .query_row(
-                "SELECT treecrdt_append_op(?1, 1, 1, 'insert', ?2, ?3, NULL, ?4, NULL)",
-                rusqlite::params![
-                    replica.clone(),
-                    root,
-                    late_node,
-                    (1u16).to_be_bytes().to_vec(),
-                ],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        assert_eq!(payload_bytes(&conn, &with_empty_payload), Some(Vec::new()));
-        let storage_shape: (String, i64, i64) = conn
-            .query_row(
-                "SELECT typeof(payload), length(payload), payload IS NULL \
-                 FROM tree_payload WHERE node = ?1",
-                rusqlite::params![with_empty_payload.clone()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(storage_shape, ("blob".to_string(), 0, 0));
-
-        let local_json: String = conn
-            .query_row(
-                "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, zeroblob(0))",
-                rusqlite::params![replica.clone(), node_bytes(0), local_node.clone()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let local_ops: Vec<JsonOp> = decode_ops_or_local_result(&local_json);
-        assert_eq!(local_ops[0].payload, Some(Vec::new()));
-        assert_eq!(payload_bytes(&conn, &local_node), Some(Vec::new()));
-    }
-
-    {
-        let conn = setup_conn_at(&db_path);
-        assert_eq!(payload_bytes(&conn, &with_empty_payload), Some(Vec::new()));
-
-        let ops_json: String =
-            conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0)).unwrap();
-        let ops: Vec<JsonOp> = decode_ops_or_local_result(&ops_json);
-        let empty_insert = ops.iter().find(|op| op.counter == 2).unwrap();
-        assert_eq!(empty_insert.payload, Some(Vec::new()));
-
-        conn.execute(
-            "UPDATE tree_meta \
-             SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
-             WHERE id = 1",
-            [],
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, 1, 1, 'insert', ?2, ?3, NULL, zeroblob(0), zeroblob(0))",
+            rusqlite::params![replica, root, node.clone()],
+            |row| row.get(0),
         )
         .unwrap();
-        let _: String = conn
-            .query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(payload_bytes(&conn, &with_empty_payload), Some(Vec::new()));
-    }
+
+    let op_shape: (String, i64, String, i64) = conn
+        .query_row(
+            "SELECT typeof(order_key), length(order_key), typeof(payload), length(payload) \
+             FROM ops",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(op_shape, ("blob".to_string(), 0, "blob".to_string(), 0));
+
+    let materialized_shape: (String, i64) = conn
+        .query_row(
+            "SELECT typeof(payload), length(payload) FROM tree_payload WHERE node = ?1",
+            rusqlite::params![node],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(materialized_shape, ("blob".to_string(), 0));
+
+    let ops_json: String =
+        conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0)).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&ops_json);
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].order_key, Some(Vec::new()));
+    assert_eq!(ops[0].payload, Some(Vec::new()));
 }
 
 #[test]
@@ -649,25 +601,77 @@ fn local_insert_returns_appended_insert_op() {
 }
 
 #[test]
-fn local_empty_payload_is_preserved() {
+fn empty_replica_is_rejected_by_direct_local_and_batch_writes() {
     let conn = setup_conn();
-
-    let replica = b"r1".to_vec();
-    let parent = node_bytes(0);
+    let root = node_bytes(0);
     let node = node_bytes(1);
 
-    let json: String = conn
-        .query_row(
-            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'first', NULL, zeroblob(0))",
-            rusqlite::params![replica, parent, node.clone()],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let result = conn.query_row(
+        "SELECT treecrdt_append_op(zeroblob(0), 1, 1, 'insert', ?1, ?2, NULL, zeroblob(0), NULL)",
+        rusqlite::params![root.clone(), node.clone()],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
 
-    let ops: Vec<JsonOp> = decode_ops_or_local_result(&json);
-    assert_eq!(ops.len(), 1);
-    assert_eq!(ops[0].payload, Some(Vec::new()));
-    assert_eq!(payload_bytes(&conn, &node), Some(Vec::new()));
+    let result = conn.query_row(
+        "SELECT treecrdt_local_insert(zeroblob(0), ?1, ?2, 'first', NULL, NULL)",
+        rusqlite::params![root.clone(), node.clone()],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    let batch = serde_json::to_string(&vec![JsonOp {
+        replica: Vec::new(),
+        counter: 1,
+        lamport: 1,
+        kind: "insert".to_string(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node.as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some(vec![0, 1]),
+        known_state: None,
+        payload: None,
+    }])
+    .unwrap();
+    let result = conn.query_row(
+        "SELECT treecrdt_append_ops(?1)",
+        rusqlite::params![batch],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn malformed_empty_replica_row_returns_an_error() {
+    let conn = setup_conn();
+    conn.execute(
+        "INSERT INTO ops(replica,counter,lamport,kind,parent,node,order_key,op_ref) \
+         VALUES(zeroblob(0),1,1,'insert',?1,?2,zeroblob(0),zeroblob(16))",
+        rusqlite::params![node_bytes(0), node_bytes(1)],
+    )
+    .unwrap();
+
+    let result = conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| {
+        row.get::<_, String>(0)
+    });
+    assert!(result.is_err());
+
+    conn.execute(
+        "UPDATE tree_meta \
+         SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
+         WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let result = conn.query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
+        row.get::<_, String>(0)
+    });
+    assert!(result.is_err());
+
+    conn.execute_batch("DROP TABLE ops").unwrap();
 }
 
 #[test]
@@ -1365,15 +1369,8 @@ fn local_payload_does_not_prepare_an_unused_delete_statement() {
 }
 
 fn setup_conn() -> Connection {
-    initialize_conn(Connection::open_in_memory().unwrap())
-}
-
-fn setup_conn_at(path: &Path) -> Connection {
-    initialize_conn(Connection::open(path).unwrap())
-}
-
-fn initialize_conn(conn: Connection) -> Connection {
     let ext_path = find_extension().expect("extension dylib path");
+    let conn = Connection::open_in_memory().unwrap();
     unsafe {
         conn.load_extension_enable().unwrap();
         conn.load_extension(ext_path, Some("sqlite3_treecrdt_init")).unwrap();
