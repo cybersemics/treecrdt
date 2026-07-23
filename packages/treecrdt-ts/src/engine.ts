@@ -59,7 +59,9 @@ export type Change =
  * Coalesced result of advancing materialized state to `headSeq`.
  *
  * This is intentionally not a raw op list. Replays and batched appends collapse multiple writes for
- * the same node into final visible changes before adapters emit events.
+ * the same node before adapters emit events. Conservative catch-up reports the exact node-backed
+ * visible before/after delta, so replay-only transitions that cancel are omitted. `headSeq` can
+ * therefore advance with no changes; outcomes are not an operation log or audit stream.
  */
 export type MaterializationOutcome = {
   headSeq: number;

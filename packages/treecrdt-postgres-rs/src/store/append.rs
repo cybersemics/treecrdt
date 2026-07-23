@@ -16,6 +16,26 @@ use crate::profile::{append_profile_enabled, PgAppendProfile};
 use super::meta::load_tree_meta;
 use super::*;
 
+fn with_materialization_savepoint(
+    client: &Rc<RefCell<Client>>,
+    run: impl FnOnce() -> Result<treecrdt_core::IncrementalApplyResult>,
+) -> Result<treecrdt_core::IncrementalApplyResult> {
+    client
+        .borrow_mut()
+        .batch_execute("SAVEPOINT treecrdt_incremental_materialization")
+        .map_err(storage_debug)?;
+    let result = run();
+    if !matches!(&result, Ok(result) if result.head.is_some()) {
+        client
+            .borrow_mut()
+            .batch_execute("ROLLBACK TO SAVEPOINT treecrdt_incremental_materialization")
+            .map_err(storage_debug)?;
+    }
+    // The outer append transaction releases the savepoint. Keeping it open avoids another
+    // PostgreSQL round trip on the successful hot path.
+    result
+}
+
 fn materialize_inserted_ops(
     ctx: PgCtx,
     meta: &dyn MaterializationCursor,
@@ -23,27 +43,29 @@ fn materialize_inserted_ops(
 ) -> Result<treecrdt_core::IncrementalApplyResult> {
     // At this point treecrdt_ops already contains the inserted operations. This temporary
     // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
-    materialize_persisted_remote_ops_with_delta(
-        PersistedRemoteStores {
-            // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
-            replica_id: ReplicaId::new(b"postgres"),
-            clock: LamportClock::default(),
-            nodes: PgNodeStore::new(ctx.clone()),
-            payloads: PgPayloadStore::new(ctx.clone()),
-            index: PgParentOpIndex::new(ctx.clone()),
-        },
-        &meta,
-        ops,
-        |nodes, ops| {
-            if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
-                // Payload ops can depend on the current node row, so front-load the reads here.
-                nodes.preload_for_ops(ops)?;
-            }
-            Ok(())
-        },
-        |nodes| nodes.flush_last_change(),
-        |index| index.flush(),
-    )
+    with_materialization_savepoint(&ctx.client, || {
+        materialize_persisted_remote_ops_with_delta(
+            PersistedRemoteStores {
+                // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
+                replica_id: ReplicaId::new(b"postgres"),
+                clock: LamportClock::default(),
+                nodes: PgNodeStore::new(ctx.clone()),
+                payloads: PgPayloadStore::new(ctx.clone()),
+                index: PgParentOpIndex::new(ctx.clone()),
+            },
+            &meta,
+            ops,
+            |nodes, ops| {
+                if ops.iter().any(|op| matches!(op.kind, OperationKind::Payload { .. })) {
+                    // Payload ops can depend on the current node row, so front-load the reads here.
+                    nodes.preload_for_ops(ops)?;
+                }
+                Ok(())
+            },
+            |nodes| nodes.flush_last_change(),
+            |index| index.flush(),
+        )
+    })
 }
 
 pub fn append_ops(client: &Rc<RefCell<Client>>, doc_id: &str, ops: &[Operation]) -> Result<u64> {

@@ -153,7 +153,8 @@ impl MaterializationChange {
 /// The result of one materialization pass.
 ///
 /// `head_seq` is the materialized op-log frontier after the pass. Empty `changes` means the pass
-/// did not change any visible materialized state and should not emit a public event.
+/// did not change any visible materialized state and should not emit a public event. Outcomes are
+/// not an operation log: `head_seq` can advance without a change.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
