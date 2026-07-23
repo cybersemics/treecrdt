@@ -250,7 +250,7 @@ where
     pub fn prepare_local_delete(&mut self, node: NodeId) -> Result<PreparedLocalOp> {
         let old_parent = self.parent(node)?;
         let (replica, counter, lamport, _seed) = self.next_op_meta();
-        let known_state = Some(self.nodes.subtree_version_vector(node)?);
+        let known_state = Some(self.subtree_version_vector(node)?);
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
         Ok(PreparedLocalOp {
             op,
@@ -650,7 +650,7 @@ where
         let Some(deleted_vv) = self.nodes.deleted_at(node)? else {
             return Ok(false);
         };
-        let subtree_vv = self.nodes.subtree_version_vector(node)?;
+        let subtree_vv = self.subtree_version_vector(node)?;
         Ok(deleted_vv.is_aware_of(&subtree_vv))
     }
 
@@ -670,8 +670,29 @@ where
         Ok(pairs)
     }
 
+    /// Return the operations that contribute to the subtree's current effective state.
+    ///
+    /// Structural history is gap-aware, while payload history contributes only each node's
+    /// current LWW writer. Superseded payload writes do not represent surviving content and
+    /// therefore cannot veto a defensive deletion.
     pub fn subtree_version_vector(&self, node: NodeId) -> Result<VersionVector> {
-        self.nodes.subtree_version_vector(node)
+        let mut subtree_vv = VersionVector::new();
+        let mut pending = vec![node];
+        let mut visited = HashSet::new();
+
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) || !self.nodes.exists(current)? {
+                continue;
+            }
+
+            subtree_vv.merge(&self.nodes.last_change(current)?);
+            if let Some((_, writer)) = self.payloads.last_writer(current)? {
+                subtree_vv.observe(&writer.replica, writer.counter);
+            }
+            pending.extend(self.nodes.children(current)?);
+        }
+
+        Ok(subtree_vv)
     }
 
     pub fn export_nodes(&self) -> Result<Vec<NodeExport>> {
@@ -831,8 +852,8 @@ where
         nodes.ensure_node(node)?;
         nodes.detach(node)?;
         nodes.attach(node, parent, order_key)?;
-        Self::update_last_change(nodes, op, node)?;
-        Self::update_last_change(nodes, op, parent)?;
+        Self::update_structural_last_change(nodes, op, node)?;
+        Self::update_structural_last_change(nodes, op, parent)?;
         Ok(())
     }
 
@@ -859,14 +880,14 @@ where
         nodes.detach(node)?;
         nodes.attach(node, new_parent, order_key)?;
 
-        Self::update_last_change(nodes, op, node)?;
+        Self::update_structural_last_change(nodes, op, node)?;
         if let Some(old_p) = old_parent {
             if old_p != NodeId::TRASH {
-                Self::update_last_change(nodes, op, old_p)?;
+                Self::update_structural_last_change(nodes, op, old_p)?;
             }
         }
         if new_parent != NodeId::TRASH {
-            Self::update_last_change(nodes, op, new_parent)?;
+            Self::update_structural_last_change(nodes, op, new_parent)?;
         }
         Ok(())
     }
@@ -915,7 +936,6 @@ where
             payload.map(|bytes| bytes.to_vec()),
             (op.meta.lamport, op.meta.id.clone()),
         )?;
-        Self::update_last_change(nodes, op, node)?;
         Ok(())
     }
 
@@ -925,12 +945,8 @@ where
         vv
     }
 
-    fn update_last_change(nodes: &mut N, op: &Operation, node: NodeId) -> Result<()> {
-        nodes.merge_last_change(node, &Self::operation_version_vector(op))?;
-        if let Some(known_state) = &op.meta.known_state {
-            nodes.merge_last_change(node, known_state)?;
-        }
-        Ok(())
+    fn update_structural_last_change(nodes: &mut N, op: &Operation, node: NodeId) -> Result<()> {
+        nodes.merge_last_change(node, &Self::operation_version_vector(op))
     }
 
     fn introduces_cycle(nodes: &N, node: NodeId, potential_parent: NodeId) -> Result<bool> {
