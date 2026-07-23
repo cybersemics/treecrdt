@@ -326,6 +326,51 @@ pub fn deferred_recovery_from_replay_frontier_catches_up_on_ensure<
     assert_eq!(harness.op_ref_counters_for_parent(NodeId::ROOT), vec![1, 2]);
 }
 
+pub fn superseded_payload_gap_does_not_restore_after_replay<
+    H: MaterializationConformanceHarness,
+>(
+    harness: &H,
+) {
+    let structure_replica = ReplicaId::new(b"structure");
+    let payload_replica = ReplicaId::new(b"payload");
+    let delete_replica = ReplicaId::new(b"delete");
+    let parent = node(1);
+
+    let insert_parent = Operation::insert(
+        &structure_replica,
+        1,
+        1,
+        NodeId::ROOT,
+        parent,
+        order_key_from_position(0),
+    );
+    let superseded_payload =
+        Operation::set_payload(&payload_replica, 1, 2, parent, b"old".to_vec());
+    let winning_payload =
+        Operation::set_payload(&payload_replica, 2, 3, parent, b"current".to_vec());
+
+    let mut known_state = treecrdt_core::VersionVector::new();
+    known_state.observe(&structure_replica, 1);
+    known_state.observe(&payload_replica, 2);
+    let delete_parent = Operation::delete(&delete_replica, 1, 4, parent, Some(known_state));
+
+    // The delete sees the current payload writer but has a receipt gap for its predecessor.
+    harness.append_ops(&[insert_parent, winning_payload, delete_parent]);
+    assert_eq!(harness.visible_children(NodeId::ROOT), Vec::<NodeId>::new());
+
+    // The late predecessor is an LWW no-op. Incremental materialization and a canonical replay
+    // must agree that it cannot restore the node.
+    harness.append_ops(&[superseded_payload]);
+    assert_eq!(harness.visible_children(NodeId::ROOT), Vec::<NodeId>::new());
+    harness.force_replay_from_start();
+    harness.ensure_materialized();
+
+    assert_replay_cleared(harness);
+    assert_eq!(harness.head_seq(), 4);
+    assert_eq!(harness.visible_children(NodeId::ROOT), Vec::<NodeId>::new());
+    assert_eq!(harness.payload(parent), Some(b"current".to_vec()));
+}
+
 pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
     H: MaterializationConformanceHarness,
 >(

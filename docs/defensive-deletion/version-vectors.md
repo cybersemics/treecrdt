@@ -77,9 +77,9 @@ Version vectors are used in several key places in the TreeCRDT implementation:
 
 Each node in the tree maintains version vector information:
 
-- **`last_change`**: Version vector tracking the last operation that modified this node
-  - Updated when insert, move, or delete operations affect the node
-  - Represents "what operations have modified this node"
+- **`last_change`**: Version vector tracking structural operations that affected this node
+  - Updated when insert or move operations affect the node
+  - Payload history is tracked separately by the payload store
 
 - **`deleted_at`**: Optional version vector storing delete operation awareness
   - Set when a delete operation is applied
@@ -158,10 +158,14 @@ After merge:
 This is critical for defensive deletion. When calculating what operations affect a subtree:
 
 **Process**:
-1. Start with the node's own `last_change` version vector
-2. For each child, recursively calculate its subtree version vector
-3. Merge each child's subtree version vector into the parent's
-4. Result: A version vector representing all operations affecting this node and all its descendants
+1. Start with the node's structural `last_change` version vector
+2. Add the operation dot for the node's current LWW payload writer, if any
+3. Repeat for every physical child
+4. Merge the results
+
+Only the current payload writer contributes because older payload writes have been superseded and
+no longer represent surviving content. This also applies when the current writer clears a payload.
+The older operations remain in the operation log for synchronization and replay.
 
 **Example**:
 ```
@@ -217,7 +221,11 @@ Check: Is delete aware?
 - Calculate subtree version vector → store as `known_state` in operation
 - Create delete operation's version vector
 - Merge operation VV with `known_state` → store in node's `deleted_at`
-- Update node's `last_change` version vector (if not already updated)
+
+### Payload Operations
+- Persist every operation in the operation log
+- Select the current payload with LWW ordering
+- Include only the current writer's operation dot in subtree deletion awareness
 
 ## How Version Vectors Are Sent Between Clients
 

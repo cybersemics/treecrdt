@@ -610,6 +610,12 @@ fn remote_deferred_recovery_from_replay_frontier_catches_up_on_ensure() {
 }
 
 #[test]
+fn remote_superseded_payload_gap_does_not_restore_after_replay() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::superseded_payload_gap_does_not_restore_after_replay(&harness);
+}
+
+#[test]
 fn remote_append_out_of_order_delete_suffix_falls_back_and_restores_parent() {
     let harness = setup_conformance_harness();
     materialization_conformance::out_of_order_delete_suffix_falls_back_and_restores_parent(
