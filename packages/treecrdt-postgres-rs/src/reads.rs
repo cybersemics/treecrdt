@@ -171,6 +171,8 @@ pub fn get_ops_by_op_refs(
     Ok(out)
 }
 
+/// Return currently stored operations whose Lamport timestamp is strictly greater than `lamport`,
+/// ordered by `(lamport, replica, counter)`. This is not an arrival cursor.
 pub fn ops_since(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,

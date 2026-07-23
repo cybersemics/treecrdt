@@ -262,6 +262,8 @@ impl WasmTree {
         to_value(&affected).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Return currently stored operations whose Lamport timestamp is strictly greater than
+    /// `lamport`. This is an exclusive threshold query, not an arrival cursor.
     #[wasm_bindgen(js_name = opsSince)]
     pub fn ops_since(&self, lamport: u64) -> Result<JsValue, JsValue> {
         let ops = self
