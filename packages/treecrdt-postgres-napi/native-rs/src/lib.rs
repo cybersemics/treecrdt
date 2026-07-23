@@ -422,7 +422,8 @@ impl PgFactory {
         // Test-only convenience: wipe all docs.
         client
             .batch_execute(
-                "TRUNCATE treecrdt_oprefs_children, treecrdt_payload, treecrdt_nodes, treecrdt_ops, treecrdt_meta",
+                "TRUNCATE treecrdt_oprefs_children, treecrdt_payload, treecrdt_nodes, \
+                 treecrdt_ops, treecrdt_meta, treecrdt_replica_meta",
             )
             .map_err(map_err)?;
         Ok(())

@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS treecrdt_meta (
   replay_counter BIGINT
 );
 
+CREATE TABLE IF NOT EXISTS treecrdt_replica_meta (
+  doc_id TEXT NOT NULL,
+  replica BYTEA NOT NULL,
+  max_counter BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (doc_id, replica)
+);
+
 CREATE TABLE IF NOT EXISTS treecrdt_nodes (
   doc_id TEXT NOT NULL,
   node BYTEA NOT NULL,
@@ -72,6 +79,30 @@ CREATE TABLE IF NOT EXISTS treecrdt_oprefs_children (
 
 CREATE INDEX IF NOT EXISTS idx_treecrdt_oprefs_children_doc_parent_seq
   ON treecrdt_oprefs_children (doc_id, parent, seq);
+
+CREATE OR REPLACE FUNCTION treecrdt_update_replica_meta_after_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path FROM CURRENT
+AS $$
+BEGIN
+  INSERT INTO treecrdt_replica_meta (doc_id, replica, max_counter)
+  SELECT doc_id, replica, MAX(counter)
+  FROM treecrdt_inserted_ops
+  GROUP BY doc_id, replica
+  ON CONFLICT (doc_id, replica) DO UPDATE
+  SET max_counter = GREATEST(treecrdt_replica_meta.max_counter, EXCLUDED.max_counter)
+  WHERE treecrdt_replica_meta.max_counter < EXCLUDED.max_counter;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS treecrdt_ops_replica_meta_after_insert ON treecrdt_ops;
+CREATE TRIGGER treecrdt_ops_replica_meta_after_insert
+AFTER INSERT ON treecrdt_ops
+REFERENCING NEW TABLE AS treecrdt_inserted_ops
+FOR EACH STATEMENT
+EXECUTE FUNCTION treecrdt_update_replica_meta_after_insert();
 "#;
 
 pub fn ensure_schema(client: &mut Client) -> Result<()> {
@@ -107,6 +138,12 @@ pub fn reset_doc_for_tests(client: &mut Client, doc_id: &str) -> Result<()> {
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
     client
         .execute("DELETE FROM treecrdt_meta WHERE doc_id = $1", &[&doc_id])
+        .map_err(|e| Error::Storage(format!("{e:?}")))?;
+    client
+        .execute(
+            "DELETE FROM treecrdt_replica_meta WHERE doc_id = $1",
+            &[&doc_id],
+        )
         .map_err(|e| Error::Storage(format!("{e:?}")))?;
     Ok(())
 }
