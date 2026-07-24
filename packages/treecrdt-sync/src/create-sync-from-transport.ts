@@ -7,6 +7,7 @@ import {
   type SyncMessage,
   type SyncOnceOptions,
   type SyncPeerOptions,
+  type SyncPushOptions,
   type SyncSubscribeOptions,
 } from '@treecrdt/sync-protocol';
 import { DEFAULT_LIVE_SUBSCRIBE, DEFAULT_SYNC_ONCE } from './constants.js';
@@ -120,11 +121,12 @@ export function createTreecrdtWebSocketSyncFromTransport(
         liveSub = null;
       }
     },
-    pushLocalOps: async (ops) => {
+    pushLocalOps: async (ops, opts: SyncPushOptions = {}) => {
       assertOpen();
       if (!ops?.length) return;
       await peer.pushOps(transport, ops, {
         maxOpsPerBatch: mergeSyncOnceOptions().maxOpsPerBatch,
+        ...opts,
       });
     },
     close: async () => {
