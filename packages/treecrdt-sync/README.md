@@ -51,6 +51,44 @@ Low-level `SyncPeer` users can pass `notifyLocalUpdate: ops => peer.notifyLocalU
 live mesh subscriptions while keeping those mesh transports separate from the single remote upload
 target.
 
+## Multi-peer inbound sync
+
+Use `createInboundSync` to reconcile or subscribe the same filters across registered peer
+transports. Despite the controller's inbound-oriented name, `syncOnce` performs bidirectional
+reconciliation. It resolves only when every requested peer/filter target succeeds. Equivalent
+filters are reconciled once. If any target fails, it finishes the remaining targets and rejects with
+`InboundSyncAggregateError`; its `failures` entries identify the `peerId`, `filter`, and original
+`error` for each failed target.
+
+```ts
+const inbound = createInboundSync({ localPeer: peer });
+// The app has already attached websocketTransport to peer.
+const unregisterRemote = inbound.addAttachedPeer('remote:server', websocketTransport);
+
+await inbound.syncOnce({ all: {} }, { syncTimeoutMs: 10_000 });
+inbound.subscribe([{ children: { parent: rootId } }]);
+
+unregisterRemote();
+await inbound.close();
+```
+
+`addAttachedPeer` only registers a transport; it deliberately does not attach it to or detach it from
+the `SyncPeer`. This keeps ownership with the app when inbound and outbound controllers share a
+transport. Its returned cleanup is bound to that exact registration and is safe to call after a
+replacement has claimed the same peer id. Use `removePeer(peerId)` when intentionally removing the
+current registration by id. Registering the same peer id and transport more than once creates
+independent leases without restarting its subscription; the registration remains until its last
+cleanup runs.
+
+A `syncTimeoutMs` deadline aborts the underlying `SyncPeer.syncOnce` session, so reconciliation does
+not keep sending after the caller receives the timeout failure. Replacing or removing a peer also
+aborts reconciliation still using its stale registration. Concurrent `syncOnce` calls are
+independent.
+
+`close()` is terminal and idempotent. It aborts active reconciliation, stops subscriptions, and
+resolves after their `syncOnce`, `ready`, and `done` promises settle. After closing, status remains
+readable and repeated `close()` calls return the same promise; other operations throw or reject.
+
 ## When not to
 
 - You only need the protocol types and `SyncPeer` (use **`@treecrdt/sync-protocol`**).
