@@ -19,6 +19,7 @@ vi.mock('../src/opfs.js', async (importOriginal) => {
 const mockedClearOpfsStorage = vi.mocked(clearOpfsStorage);
 
 type TeardownMethod = 'close' | 'drop';
+type RejectedWorkerMethod = 'init' | TeardownMethod;
 
 type TestRpcResponse =
   | { id: number; ok: true; result?: unknown }
@@ -75,19 +76,20 @@ class TestDedicatedWorkerEndpoint {
   }
 }
 
-function installDedicatedWorkerThatRejects(teardown: TeardownMethod): TestDedicatedWorkerEndpoint {
+function installDedicatedWorkerThatRejects(
+  method: RejectedWorkerMethod,
+): TestDedicatedWorkerEndpoint {
   const endpoint = new TestDedicatedWorkerEndpoint((request) => {
-    // Initialization succeeds so the client reaches the teardown path under test.
-    // Only the selected teardown RPC fails.
+    if (request.method === method) {
+      return { id: request.id, ok: false, error: `${method} failed` };
+    }
+    // Initialization succeeds for close/drop tests so the client reaches teardown.
     if (request.method === 'init') {
       return {
         id: request.id,
         ok: true,
         result: { storage: 'memory', filename: ':memory:' },
       };
-    }
-    if (request.method === teardown) {
-      return { id: request.id, ok: false, error: `${teardown} failed` };
     }
     return { id: request.id, ok: true, result: 1 };
   });
@@ -174,6 +176,22 @@ test('direct drop failure leaves the handle terminal without retrying teardown',
   expect(closeDatabase).toHaveBeenCalledTimes(1);
   expect(readNodeCount).not.toHaveBeenCalled();
   expect(mockedClearOpfsStorage).toHaveBeenCalledTimes(1);
+});
+
+test('dedicated-worker init failure terminates the endpoint and removes its listeners', async () => {
+  const endpoint = installDedicatedWorkerThatRejects('init');
+
+  await expect(
+    createTreecrdtClient({
+      docId: 'dedicated-init-failure',
+      runtime: { type: 'dedicated-worker' },
+      storage: { type: 'memory' },
+    }),
+  ).rejects.toThrow('init failed');
+
+  expect(endpoint.terminated).toBe(true);
+  expect(endpoint.listenerCount).toBe(0);
+  expect(endpoint.teardownMethods).toEqual([]);
 });
 
 test('dedicated-worker close failure terminates the endpoint without retrying', async () => {
