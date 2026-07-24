@@ -385,6 +385,7 @@ async function createWorkerClient(opts: {
     materialized.enableCrossTab({ docId: opts.docId, filename: effectiveFilename });
   }
   const cleanup = () => {
+    if (closed) return;
     closed = true;
     materialized.close();
     for (const { reject } of pending.values()) reject(closedError);
@@ -410,9 +411,8 @@ async function createWorkerClient(opts: {
     if (closed) return;
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
-      cleanup();
     } finally {
-      // noop: cleanup already handles terminal teardown, and repeated close is idempotent
+      cleanup();
     }
   };
 
@@ -420,9 +420,8 @@ async function createWorkerClient(opts: {
     if (closed) return;
     try {
       if (!terminalError) await call('drop', [] as RpcParams<'drop'>);
-      cleanup();
     } finally {
-      // noop: cleanup already handles terminal teardown, and repeated drop is idempotent
+      cleanup();
     }
   };
 
@@ -759,16 +758,16 @@ export async function buildDirectClient(
     materialized,
     close: async () => {
       if (closed) return;
-      if (db.close) await db.close();
       closed = true;
+      if (db.close) await db.close();
     },
     drop: async () => {
       if (closed) return;
+      closed = true;
       if (db.close) await db.close();
       if (finalStorage === 'opfs') {
         await clearOpfsStorage(filename);
       }
-      closed = true;
     },
   });
 }
