@@ -370,8 +370,6 @@ pub(super) fn append_ops_impl(
         return Ok(MaterializationOutcome::empty(meta.state().head_seq()));
     }
 
-    let meta = load_tree_meta(db)?;
-
     let begin = CString::new(format!("SAVEPOINT {savepoint_name}")).expect("savepoint begin");
     let commit = CString::new(format!("RELEASE {savepoint_name}")).expect("savepoint commit");
     let rollback = CString::new(format!(
@@ -393,6 +391,11 @@ pub(super) fn append_ops_impl(
                 inserted_ops.push(operation);
             }
         }
+
+        // INSERT OR IGNORE starts SQLite's write transaction even for duplicate-only batches.
+        // Read the materialization cursor only after that serialization point so it cannot become
+        // stale while this append waits for another connection's writer to commit.
+        let meta = load_tree_meta(db)?;
 
         orchestrate_persisted_remote_append(
             &meta,

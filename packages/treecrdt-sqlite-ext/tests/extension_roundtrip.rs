@@ -1,6 +1,8 @@
 #![cfg(all(feature = "rusqlite-storage", feature = "ext-sqlite"))]
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -357,6 +359,48 @@ fn ops_by_oprefs(conn: &Connection, refs: &[Vec<u8>]) -> Vec<JsonOp> {
 
 struct SqliteConformanceHarness {
     conn: Connection,
+}
+
+#[derive(Clone)]
+struct BusyHandlerSync {
+    reached_write_lock: Arc<Barrier>,
+    release_writer: Arc<Barrier>,
+}
+
+static BUSY_HANDLER_SYNC: Mutex<Option<BusyHandlerSync>> = Mutex::new(None);
+
+fn synchronized_busy_handler(retry_count: i32) -> bool {
+    if retry_count == 0 {
+        let sync = BUSY_HANDLER_SYNC.lock().unwrap().clone();
+        if let Some(sync) = sync {
+            sync.reached_write_lock.wait();
+            sync.release_writer.wait();
+        }
+    }
+    true
+}
+
+fn append_after_blocking_writer_commits(
+    writer: &Connection,
+    blocked: Connection,
+    op: Operation,
+) -> (MaterializationOutcome, i64) {
+    let reached_write_lock = Arc::new(Barrier::new(2));
+    let release_writer = Arc::new(Barrier::new(2));
+    *BUSY_HANDLER_SYNC.lock().unwrap() = Some(BusyHandlerSync {
+        reached_write_lock: Arc::clone(&reached_write_lock),
+        release_writer: Arc::clone(&release_writer),
+    });
+    blocked.busy_handler(Some(synchronized_busy_handler)).unwrap();
+
+    let blocked_thread =
+        thread::spawn(move || append_ops_json(&blocked, &json_ops(std::slice::from_ref(&op))));
+    reached_write_lock.wait();
+    writer.execute_batch("COMMIT").unwrap();
+    release_writer.wait();
+    let result = blocked_thread.join().unwrap();
+    *BUSY_HANDLER_SYNC.lock().unwrap() = None;
+    result
 }
 
 impl MaterializationConformanceHarness for SqliteConformanceHarness {
@@ -759,6 +803,77 @@ fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
         visible_children(&conn, &node_bytes(0)),
         vec![node_bytes_from_id(materialization_conformance::node(2))]
     );
+}
+
+#[test]
+fn concurrent_remote_appends_load_meta_after_write_serialization() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("concurrent.sqlite");
+    let writer = setup_file_conn(&path, true);
+    let blocked = setup_file_conn(&path, false);
+
+    let node = materialization_conformance::node(70);
+    let newer = Operation::insert(
+        &ReplicaId::new(b"newer"),
+        1,
+        2,
+        NodeId::ROOT,
+        node,
+        materialization_conformance::order_key_from_position(0),
+    );
+    let older_parent = materialization_conformance::node(71);
+    let older = Operation::insert(
+        &ReplicaId::new(b"older"),
+        1,
+        1,
+        older_parent,
+        node,
+        materialization_conformance::order_key_from_position(1),
+    );
+
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    append_ops_json(&writer, &json_ops(std::slice::from_ref(&newer)));
+
+    let (outcome, op_count) = append_after_blocking_writer_commits(&writer, blocked, older);
+
+    assert_eq!(op_count, 2);
+    assert_eq!(outcome.head_seq, 2);
+    assert_eq!(
+        read_materialized_node_state(&writer, node).parent,
+        Some(NodeId::ROOT)
+    );
+    assert_eq!(
+        read_tree_meta(&writer),
+        (2, b"newer".to_vec(), 1, 2),
+        "the canonical winner and sequence must not regress to the blocked writer's stale cursor"
+    );
+    assert_eq!(
+        read_replay_frontier(&writer),
+        (None, None, None),
+        "the out-of-order append must be fully caught up"
+    );
+
+    let duplicate_conn = setup_file_conn(&path, false);
+    let newest = Operation::insert(
+        &ReplicaId::new(b"newest"),
+        1,
+        3,
+        NodeId::ROOT,
+        materialization_conformance::node(72),
+        materialization_conformance::order_key_from_position(2),
+    );
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    append_ops_json(&writer, &json_ops(std::slice::from_ref(&newest)));
+    let (duplicate_outcome, op_count) =
+        append_after_blocking_writer_commits(&writer, duplicate_conn, newest);
+
+    assert_eq!(op_count, 3);
+    assert_eq!(
+        duplicate_outcome.head_seq, 3,
+        "a duplicate-only blocked batch must return the freshly committed cursor"
+    );
+    assert_eq!(read_tree_meta(&writer), (3, b"newest".to_vec(), 1, 3));
+    assert_eq!(read_replay_frontier(&writer), (None, None, None));
 }
 
 #[test]
@@ -1260,6 +1375,25 @@ fn oprefs_children_include_payload_after_move() {
 fn setup_conn() -> Connection {
     let ext_path = find_extension().expect("extension dylib path");
     let conn = Connection::open_in_memory().unwrap();
+    unsafe {
+        conn.load_extension_enable().unwrap();
+        conn.load_extension(ext_path, Some("sqlite3_treecrdt_init")).unwrap();
+    }
+    conn.query_row(
+        "SELECT treecrdt_set_doc_id('treecrdt-sqlite-ext-test')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap();
+    conn
+}
+
+fn setup_file_conn(path: &Path, enable_wal: bool) -> Connection {
+    let ext_path = find_extension().expect("extension dylib path");
+    let conn = Connection::open(path).unwrap();
+    if enable_wal {
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+    }
     unsafe {
         conn.load_extension_enable().unwrap();
         conn.load_extension(ext_path, Some("sqlite3_treecrdt_init")).unwrap();
