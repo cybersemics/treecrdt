@@ -367,24 +367,8 @@ async function createWorkerClient(opts: {
     for (const { reject } of pending.values()) reject(err);
     pending.clear();
   };
-  worker.addEventListener('message', onMessage);
-  worker.addEventListener('error', onError);
-
-  // init
-  const initResult = (await call('init', [
-    opts.baseUrl ?? '/',
-    opts.filename,
-    opts.storage,
-    opts.docId,
-  ])) as { storage?: StorageMode; filename?: string; opfsError?: string } | undefined;
-  const effectiveStorage: StorageMode = initResult?.storage === 'opfs' ? 'opfs' : 'memory';
-  const effectiveFilename =
-    initResult?.filename ??
-    (effectiveStorage === 'opfs' ? (opts.filename ?? '/treecrdt.db') : ':memory:');
-  if (effectiveStorage === 'opfs') {
-    materialized.enableCrossTab({ docId: opts.docId, filename: effectiveFilename });
-  }
   const cleanup = () => {
+    if (closed) return;
     closed = true;
     materialized.close();
     for (const { reject } of pending.values()) reject(closedError);
@@ -393,6 +377,24 @@ async function createWorkerClient(opts: {
     worker.removeEventListener('message', onMessage);
     worker.terminate();
   };
+  worker.addEventListener('message', onMessage);
+  worker.addEventListener('error', onError);
+
+  // init
+  let initResult: RpcResult<'init'>;
+  try {
+    initResult = await call('init', [opts.baseUrl ?? '/', opts.filename, opts.storage, opts.docId]);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+  const effectiveStorage: StorageMode = initResult?.storage === 'opfs' ? 'opfs' : 'memory';
+  const effectiveFilename =
+    initResult?.filename ??
+    (effectiveStorage === 'opfs' ? (opts.filename ?? '/treecrdt.db') : ':memory:');
+  if (effectiveStorage === 'opfs') {
+    materialized.enableCrossTab({ docId: opts.docId, filename: effectiveFilename });
+  }
 
   if (opts.requireOpfs && effectiveStorage !== 'opfs') {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : '';
@@ -410,9 +412,8 @@ async function createWorkerClient(opts: {
     if (closed) return;
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
-      cleanup();
     } finally {
-      // noop: cleanup already handles terminal teardown, and repeated close is idempotent
+      cleanup();
     }
   };
 
@@ -420,9 +421,8 @@ async function createWorkerClient(opts: {
     if (closed) return;
     try {
       if (!terminalError) await call('drop', [] as RpcParams<'drop'>);
-      cleanup();
     } finally {
-      // noop: cleanup already handles terminal teardown, and repeated drop is idempotent
+      cleanup();
     }
   };
 
@@ -759,16 +759,16 @@ export async function buildDirectClient(
     materialized,
     close: async () => {
       if (closed) return;
-      if (db.close) await db.close();
       closed = true;
+      if (db.close) await db.close();
     },
     drop: async () => {
       if (closed) return;
+      closed = true;
       if (db.close) await db.close();
       if (finalStorage === 'opfs') {
         await clearOpfsStorage(filename);
       }
-      closed = true;
     },
   });
 }
