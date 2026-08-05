@@ -525,18 +525,8 @@ async function createSharedWorkerClient(opts: {
     for (const { reject } of pending.values()) reject(err);
     pending.clear();
   };
-  port.addEventListener('message', onMessage);
-  port.addEventListener('messageerror', onMessageError);
-  port.start();
-
-  const initResult = (await call('init', [
-    opts.baseUrl ?? '/',
-    opts.filename,
-    opts.storage,
-    opts.docId,
-  ])) as { storage?: StorageMode; filename?: string; opfsError?: string } | undefined;
-  const effectiveStorage: StorageMode = initResult?.storage === 'opfs' ? 'opfs' : 'memory';
   const cleanup = () => {
+    if (closed) return;
     closed = true;
     materialized.close();
     for (const { reject } of pending.values()) reject(closedError);
@@ -545,9 +535,27 @@ async function createSharedWorkerClient(opts: {
     port.removeEventListener('messageerror', onMessageError);
     port.close();
   };
+  port.addEventListener('message', onMessage);
+  port.addEventListener('messageerror', onMessageError);
+  port.start();
+
+  let initResult: RpcResult<'init'>;
+  try {
+    initResult = await call('init', [opts.baseUrl ?? '/', opts.filename, opts.storage, opts.docId]);
+  } catch (err) {
+    try {
+      if (!terminalError) await call('close', [] as RpcParams<'close'>);
+    } catch {
+      // Initialization may not have completed, but the shared worker still needs its port removed.
+    } finally {
+      cleanup();
+    }
+    throw err;
+  }
+  const { storage: effectiveStorage, opfsError } = initResult;
 
   if (opts.requireOpfs && effectiveStorage !== 'opfs') {
-    const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : '';
+    const reason = opfsError ? `: ${opfsError}` : '';
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
     } catch {
@@ -562,9 +570,8 @@ async function createSharedWorkerClient(opts: {
     if (closed) return;
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
-      cleanup();
     } finally {
-      // noop
+      cleanup();
     }
   };
 
@@ -572,9 +579,8 @@ async function createSharedWorkerClient(opts: {
     if (closed) return;
     try {
       if (!terminalError) await call('drop', [] as RpcParams<'drop'>);
-      cleanup();
     } finally {
-      // noop
+      cleanup();
     }
   };
 

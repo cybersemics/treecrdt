@@ -1,5 +1,5 @@
 import {
-  openTreecrdtDbFromLoaded,
+  openTreecrdtDbWithLoader,
   type OpenTreecrdtDbOptions,
   type OpenTreecrdtDbResult,
 } from '../open-core.js';
@@ -12,6 +12,7 @@ export async function openTreecrdtDbNode(
   if (opts.storage === 'opfs' && opts.requireOpfs) {
     throw new Error('OPFS is not supported in Node');
   }
-  const loaded = await loadWaSqliteNode(opts.baseUrl);
-  return openTreecrdtDbFromLoaded({ ...opts, storage: 'memory' }, loaded);
+  return openTreecrdtDbWithLoader({ ...opts, storage: 'memory' }, () =>
+    loadWaSqliteNode(opts.baseUrl),
+  );
 }
