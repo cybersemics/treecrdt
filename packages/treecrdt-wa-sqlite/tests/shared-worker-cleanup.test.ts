@@ -73,10 +73,23 @@ test('shared-worker cleans up after rejected initialization', async () => {
     error: 'init failed',
   }));
 
-  await expect(createTreecrdtClient(clientOptions)).rejects.toThrow('init failed');
+  await expect(
+    createTreecrdtClient({
+      ...clientOptions,
+      storage: { type: 'opfs' },
+      docId: 'cleanup-shared-worker-strict-opfs',
+    }),
+  ).rejects.toThrow('init failed');
 
   expectCleaned(port);
   expect(port.requests.map((request) => request.method)).toEqual(['init', 'close']);
+  expect(port.requests[0]?.params).toEqual([
+    '/',
+    undefined,
+    'opfs',
+    'cleanup-shared-worker-strict-opfs',
+    'throw',
+  ]);
 });
 
 test('shared-worker cleans up when close RPC fails', async () => {

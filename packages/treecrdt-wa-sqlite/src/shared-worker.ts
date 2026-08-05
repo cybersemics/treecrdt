@@ -7,6 +7,7 @@ import {
   type RpcParams,
   type RpcRequest,
   type RpcResult,
+  type RpcStorageFallback,
 } from './rpc.js';
 import { openTreecrdtDb } from './open.js';
 import {
@@ -86,8 +87,8 @@ async function handleRequest<M extends RpcMethod>(
   request: RpcRequest<M>,
 ): Promise<RpcResult<M> | void> {
   if (request.method === 'init') {
-    const [baseUrl, filename, storage, docId] = request.params as RpcParams<'init'>;
-    return (await init(baseUrl, filename, storage, docId)) as RpcResult<M>;
+    const [baseUrl, filename, storage, docId, fallback] = request.params as RpcParams<'init'>;
+    return (await init(baseUrl, filename, storage, docId, fallback)) as RpcResult<M>;
   }
 
   if (request.method === 'broadcastMaterialized') {
@@ -118,6 +119,7 @@ async function init(
   filename: string | undefined,
   storageParam: 'memory' | 'opfs',
   docId: string,
+  fallback: RpcStorageFallback,
 ): Promise<RpcInitResult> {
   const requestedFilename = storageParam === 'opfs' ? (filename ?? '/treecrdt.db') : ':memory:';
   if (session.storedConfig && session.initResult) {
@@ -138,7 +140,7 @@ async function init(
     filename,
     storage: storageParam,
     docId,
-    requireOpfs: false,
+    requireOpfs: fallback === 'throw',
     opfsVfs: storageParam === 'opfs' ? 'any-context' : undefined,
     onMaterialized: (event) => broadcastMaterialized(event),
   });

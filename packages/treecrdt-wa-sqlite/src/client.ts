@@ -172,7 +172,7 @@ export async function createBrowserTreecrdtClient(
       baseUrl,
       filename: storage.filename,
       storage: shouldUseOpfs ? 'opfs' : 'memory',
-      requireOpfs: storage.requireOpfs,
+      fallback: storage.fallback,
       docId,
       workerUrl: runtime.type === 'shared-worker' ? runtime.workerUrl : undefined,
       name:
@@ -188,7 +188,7 @@ export async function createBrowserTreecrdtClient(
       baseUrl,
       filename: storage.filename,
       storage: shouldUseOpfs ? 'opfs' : 'memory',
-      requireOpfs: storage.requireOpfs,
+      fallback: storage.fallback,
       docId,
       workerUrl: runtime.type === 'dedicated-worker' ? runtime.workerUrl : undefined,
     });
@@ -320,7 +320,7 @@ async function createWorkerClient(opts: {
   filename?: string;
   storage: StorageMode;
   docId: string;
-  requireOpfs?: boolean;
+  fallback: 'memory' | 'throw';
   workerUrl?: string | URL;
 }): Promise<TreecrdtClient> {
   const materialized = createClientMaterializationDispatcher();
@@ -396,7 +396,13 @@ async function createWorkerClient(opts: {
   // init
   let initResult: RpcResult<'init'>;
   try {
-    initResult = await call('init', [opts.baseUrl ?? '/', opts.filename, opts.storage, opts.docId]);
+    initResult = await call('init', [
+      opts.baseUrl ?? '/',
+      opts.filename,
+      opts.storage,
+      opts.docId,
+      opts.fallback,
+    ]);
   } catch (error) {
     cleanup();
     throw error;
@@ -409,7 +415,7 @@ async function createWorkerClient(opts: {
     materialized.enableCrossTab({ docId: opts.docId, filename: effectiveFilename });
   }
 
-  if (opts.requireOpfs && effectiveStorage !== 'opfs') {
+  if (opts.fallback === 'throw' && effectiveStorage !== 'opfs') {
     const reason = initResult?.opfsError ? `: ${initResult.opfsError}` : '';
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
@@ -459,7 +465,7 @@ async function createSharedWorkerClient(opts: {
   storage: StorageMode;
   docId: string;
   name: string;
-  requireOpfs?: boolean;
+  fallback: 'memory' | 'throw';
   workerUrl?: string | URL;
 }): Promise<TreecrdtClient> {
   const sharedWorker = opts.workerUrl
@@ -541,7 +547,13 @@ async function createSharedWorkerClient(opts: {
 
   let initResult: RpcResult<'init'>;
   try {
-    initResult = await call('init', [opts.baseUrl ?? '/', opts.filename, opts.storage, opts.docId]);
+    initResult = await call('init', [
+      opts.baseUrl ?? '/',
+      opts.filename,
+      opts.storage,
+      opts.docId,
+      opts.fallback,
+    ]);
   } catch (err) {
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
@@ -554,7 +566,7 @@ async function createSharedWorkerClient(opts: {
   }
   const { storage: effectiveStorage, opfsError } = initResult;
 
-  if (opts.requireOpfs && effectiveStorage !== 'opfs') {
+  if (opts.fallback === 'throw' && effectiveStorage !== 'opfs') {
     const reason = opfsError ? `: ${opfsError}` : '';
     try {
       if (!terminalError) await call('close', [] as RpcParams<'close'>);
