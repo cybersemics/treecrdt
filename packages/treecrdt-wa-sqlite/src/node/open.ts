@@ -12,6 +12,7 @@ export async function openTreecrdtDbNode(
   if (opts.storage === 'opfs' && opts.requireOpfs) {
     throw new Error('OPFS is not supported in Node');
   }
-  const loaded = await loadWaSqliteNode(opts.baseUrl);
-  return openTreecrdtDbFromLoaded({ ...opts, storage: 'memory' }, loaded);
+  const loadFresh = () => loadWaSqliteNode(opts.baseUrl);
+  const loaded = await loadFresh();
+  return openTreecrdtDbFromLoaded({ ...opts, storage: 'memory' }, loaded, loadFresh);
 }
