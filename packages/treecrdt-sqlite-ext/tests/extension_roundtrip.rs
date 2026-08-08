@@ -507,6 +507,48 @@ fn append_and_fetch_ops_via_extension() {
 }
 
 #[test]
+fn canonical_replay_keeps_exact_metadata_valid_for_local_writes() {
+    let conn = setup_conn();
+    let replica = b"replay-metadata".to_vec();
+    let root = node_bytes(0);
+
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, 2, 2, 'insert', ?2, ?3, NULL, ?4, NULL)",
+            rusqlite::params![
+                replica.clone(),
+                root.clone(),
+                node_bytes(2),
+                (2u16).to_be_bytes().to_vec(),
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    // The lower canonical key rebuilds the materialized tree and writes exact version vectors.
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, 1, 1, 'insert', ?2, ?3, NULL, ?4, NULL)",
+            rusqlite::params![
+                replica.clone(),
+                root.clone(),
+                node_bytes(1),
+                (1u16).to_be_bytes().to_vec(),
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica, root, node_bytes(3)],
+            |row| row.get(0),
+        )
+        .unwrap();
+}
+
+#[test]
 fn local_insert_returns_appended_insert_op() {
     let conn = setup_conn();
 
