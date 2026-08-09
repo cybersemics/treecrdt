@@ -861,6 +861,7 @@ async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContex
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
   const n2 = nodeIdFromInt(2);
+  const n3 = nodeIdFromInt(3);
 
   // Append out-of-order lamports to force a rebuild path.
   await engine.ops.append(
@@ -889,6 +890,15 @@ async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContex
   assertArrayEqual(sorted, [n1, n2].sort(), 'children after out-of-order inserts');
   assertEqual(await engine.tree.nodeCount(), 2, 'tree.nodeCount after out-of-order inserts');
   assertEqual(await engine.meta.headLamport(), 2, 'meta.headLamport after out-of-order inserts');
+
+  // Rebuilt metadata must remain valid for subsequent local writes.
+  await engine.local.insert(replica, root, n3, { type: 'last' }, null);
+  const childrenAfterLocalWrite = await engine.tree.children(root);
+  assertArrayEqual(
+    [...childrenAfterLocalWrite].sort(),
+    [n1, n2, n3].sort(),
+    'children after local write following rebuild',
+  );
 }
 
 async function scenarioMaterializedSmokeWithOpRefs(
