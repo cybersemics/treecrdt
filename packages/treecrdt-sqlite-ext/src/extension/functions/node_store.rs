@@ -807,7 +807,8 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
             }
             let step_rc = sqlite_step(self.update_last_change);
             let reset_rc = sqlite_reset(self.update_last_change);
-            // Blob bindings use SQLITE_STATIC; clear them before their backing buffers are dropped.
+            // sqlite_reset preserves SQLITE_STATIC bindings, so clear them before node_bytes and
+            // vv_bytes are dropped.
             let clear_rc = sqlite_clear_bindings(self.update_last_change);
             if step_rc != SQLITE_DONE as c_int {
                 return Err(sqlite_rc_error(step_rc, "set exact last_change failed"));
@@ -856,7 +857,8 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
             }
             let step_rc = sqlite_step(self.update_deleted_at);
             let reset_rc = sqlite_reset(self.update_deleted_at);
-            // Blob bindings use SQLITE_STATIC; clear them before their backing buffers are dropped.
+            // sqlite_reset preserves SQLITE_STATIC bindings, so clear them before node_bytes and
+            // vv_bytes are dropped.
             let clear_rc = sqlite_clear_bindings(self.update_deleted_at);
             if step_rc != SQLITE_DONE as c_int {
                 return Err(sqlite_rc_error(step_rc, "set exact deleted_at failed"));
