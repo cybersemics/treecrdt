@@ -1,5 +1,7 @@
+import waSqliteAsyncWasmUrl from './wa-sqlite/wa-sqlite-async.wasm?url';
+
 export type LoadWaSqliteOptions = {
-  /** Public URL prefix for wa-sqlite assets served by the app. */
+  /** Public URL prefix for wa-sqlite JS assets; Vite bundles the WASM with a content hash. */
   assetsDir?: string;
 };
 
@@ -23,8 +25,7 @@ export async function loadWaSqliteBrowser(
   );
   const sqliteApi = await import(/* @vite-ignore */ `${normalized}wa-sqlite/sqlite-api.js`);
   const module = await sqliteModule.default({
-    locateFile: (file: string) =>
-      file.endsWith('.wasm') ? `${normalized}wa-sqlite/wa-sqlite-async.wasm` : file,
+    locateFile: (file: string) => (file.endsWith('.wasm') ? waSqliteAsyncWasmUrl : file),
   });
   return { sqlite3: sqliteApi.Factory(module), module };
 }
