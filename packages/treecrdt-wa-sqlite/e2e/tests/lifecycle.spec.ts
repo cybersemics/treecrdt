@@ -4,6 +4,7 @@ type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
 type LifecycleRuntime = 'direct' | 'dedicated-worker' | 'shared-worker';
 type LifecycleOptions = {
   docId: string;
+  fallback?: 'memory' | 'throw';
   filename: string;
   runtime: LifecycleRuntime;
   sharedWorkerName?: string;
@@ -69,14 +70,18 @@ async function read(page: Page, opts: LifecycleOptions) {
   }, opts);
 }
 
-function expectReloadedTree(
+function expectLifecycleTree(
   state: Awaited<ReturnType<typeof read>>,
-  expected: { mode: 'direct' | 'worker'; runtime: LifecycleRuntime },
+  expected: {
+    mode: 'direct' | 'worker';
+    runtime: LifecycleRuntime;
+    storage?: 'memory' | 'opfs';
+  },
 ) {
   expect(state).toMatchObject({
     mode: expected.mode,
     runtime: expected.runtime,
-    storage: 'opfs',
+    storage: expected.storage ?? 'opfs',
     headLamport: 2,
     parentExists: true,
     childExists: true,
@@ -117,7 +122,7 @@ test.describe('browser OPFS lifecycle', () => {
             ...opts,
             closeBeforeReload: reloadCase.closeBeforeReload,
           });
-          expectReloadedTree(initialState, {
+          expectLifecycleTree(initialState, {
             mode: scenario.expectedMode,
             runtime: scenario.runtime,
           });
@@ -125,7 +130,7 @@ test.describe('browser OPFS lifecycle', () => {
           await page.reload({ waitUntil: 'load' });
           await waitForHarness(page);
 
-          expectReloadedTree(await read(page, opts), {
+          expectLifecycleTree(await read(page, opts), {
             mode: scenario.expectedMode,
             runtime: scenario.runtime,
           });
@@ -135,6 +140,33 @@ test.describe('browser OPFS lifecycle', () => {
       });
     }
   }
+
+  test('opens a usable dedicated-worker memory fallback after OPFS open fails', async ({
+    page,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const opts: LifecycleOptions = {
+      docId: `lifecycle-fallback-${suffix}`,
+      fallback: 'memory',
+      filename: `/${'x'.repeat(512)}.db`,
+      runtime: 'dedicated-worker',
+    };
+
+    await waitForHarness(page);
+    const opfsSupport = await support(page);
+    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+    expect(new TextEncoder().encode(opts.filename).byteLength).toBeGreaterThan(512);
+
+    expectLifecycleTree(await write(page, { ...opts, closeBeforeReload: true }), {
+      mode: 'worker',
+      runtime: 'dedicated-worker',
+      storage: 'memory',
+    });
+  });
 
   test('releases a SharedWorker port after failed OPFS initialization', async ({
     page,
@@ -172,12 +204,12 @@ test.describe('browser OPFS lifecycle', () => {
     try {
       await expect(write(page, failedOpts)).rejects.toThrow(/sqlite3_open_v2|OPFS requested/);
 
-      expectReloadedTree(await write(page, { ...firstOpts, closeBeforeReload: true }), {
+      expectLifecycleTree(await write(page, { ...firstOpts, closeBeforeReload: true }), {
         mode: 'worker',
         runtime: 'shared-worker',
       });
 
-      expectReloadedTree(await write(page, { ...secondOpts, closeBeforeReload: true }), {
+      expectLifecycleTree(await write(page, { ...secondOpts, closeBeforeReload: true }), {
         mode: 'worker',
         runtime: 'shared-worker',
       });
@@ -211,13 +243,13 @@ test.describe('browser OPFS lifecycle', () => {
     try {
       await drop(page, droppedOpts);
 
-      expectReloadedTree(await write(page, { ...firstReuseOpts, closeBeforeReload: true }), {
+      expectLifecycleTree(await write(page, { ...firstReuseOpts, closeBeforeReload: true }), {
         mode: 'worker',
         runtime: 'shared-worker',
       });
 
       // Closing the only live port must reset the worker so the same name can serve another store.
-      expectReloadedTree(await write(page, { ...secondReuseOpts, closeBeforeReload: true }), {
+      expectLifecycleTree(await write(page, { ...secondReuseOpts, closeBeforeReload: true }), {
         mode: 'worker',
         runtime: 'shared-worker',
       });
