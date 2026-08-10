@@ -17,14 +17,9 @@ export type WaSqlitePluginOptions = {
   outDirs?: string[];
 };
 
-const defaultFiles = [
-  'wa-sqlite.mjs',
-  'wa-sqlite-async.mjs',
-  'sqlite-api.js',
-  'sqlite-constants.js',
-];
+const defaultFiles = ['wa-sqlite-async.mjs', 'sqlite-api.js', 'sqlite-constants.js'];
 
-const obsoletePublicFiles = ['wa-sqlite.wasm', 'wa-sqlite-async.wasm'];
+const stalePublicAssets = ['wa-sqlite.mjs', 'wa-sqlite.wasm', 'wa-sqlite-async.wasm'];
 
 /**
  * Copies wa-sqlite JS artifacts into the app's public folder.
@@ -47,7 +42,7 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
       await Promise.all(outDirs.map((dir) => fs.mkdir(dir, { recursive: true })));
       await Promise.all(
         outDirs.flatMap((dir) =>
-          obsoletePublicFiles.map((file) => fs.rm(path.join(dir, file), { force: true })),
+          stalePublicAssets.map((file) => fs.rm(path.join(dir, file), { force: true })),
         ),
       );
       for (const file of defaultFiles) {
