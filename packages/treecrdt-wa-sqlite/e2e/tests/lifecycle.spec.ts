@@ -186,4 +186,44 @@ test.describe('browser OPFS lifecycle', () => {
       await drop(page, { ...secondOpts, runtime: 'direct' }).catch(() => {});
     }
   });
+
+  test('releases a SharedWorker port after drop', async ({ page }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const sharedWorkerName = `lifecycle-drop-${suffix}`;
+    const optsFor = (label: string): LifecycleOptions => ({
+      docId: `lifecycle-drop-${label}-${suffix}`,
+      filename: `/lifecycle-drop-${label}-${suffix}.db`,
+      runtime: 'shared-worker',
+      sharedWorkerName,
+    });
+    const droppedOpts = optsFor('first');
+    const firstReuseOpts = optsFor('second');
+    const secondReuseOpts = optsFor('third');
+
+    await waitForHarness(page);
+    const opfsSupport = await support(page);
+    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+
+    try {
+      await drop(page, droppedOpts);
+
+      expectReloadedTree(await write(page, { ...firstReuseOpts, closeBeforeReload: true }), {
+        mode: 'worker',
+        runtime: 'shared-worker',
+      });
+
+      // Closing the only live port must reset the worker so the same name can serve another store.
+      expectReloadedTree(await write(page, { ...secondReuseOpts, closeBeforeReload: true }), {
+        mode: 'worker',
+        runtime: 'shared-worker',
+      });
+    } finally {
+      await drop(page, { ...firstReuseOpts, runtime: 'direct' }).catch(() => {});
+      await drop(page, { ...secondReuseOpts, runtime: 'direct' }).catch(() => {});
+    }
+  });
 });

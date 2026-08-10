@@ -103,6 +103,7 @@ async function handleRequest<M extends RpcMethod>(
   }
 
   if (request.method === 'drop') {
+    ports.delete(sourcePort);
     await session.drop();
     return undefined;
   }
