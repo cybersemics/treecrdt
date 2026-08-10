@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
-import { createTreecrdtClient } from '../src/client.js';
+import { createTreecrdtClient } from '../src/client.browser.js';
 import type { RpcRequest } from '../src/rpc.js';
 
 type RpcResponse =
