@@ -13,7 +13,9 @@ function createFakeModule(initResult = 0) {
   };
 }
 
-function createFakeSqlite(opts: { failOpen?: string; failOpenError?: Error } = {}) {
+function createFakeSqlite(
+  opts: { failDocId?: string; failOpen?: string; failOpenError?: Error } = {},
+) {
   let nextHandle = 1;
   let nextStatement = 100;
 
@@ -30,7 +32,9 @@ function createFakeSqlite(opts: { failOpen?: string; failOpenError?: Error } = {
         return: async () => undefined,
       };
     }),
-    bind: vi.fn(),
+    bind: vi.fn(async (_statement: number, _index: number, value: unknown) => {
+      if (value === opts.failDocId) throw new Error('setDocId failed');
+    }),
     step: vi.fn(async () => 101),
     column_text: vi.fn(),
     finalize: vi.fn(),
@@ -75,7 +79,34 @@ test('falls back to memory when opening the OPFS database fails', async () => {
   expect(load).toHaveBeenCalledTimes(2);
 });
 
-test('falls back after explicit extension initialization fails', async () => {
+test('falls back to memory when initializing the OPFS VFS fails', async () => {
+  const vfsFailure = new Error('OPFS VFS unavailable');
+  vi.mocked(createOpfsVfs).mockRejectedValue(vfsFailure);
+  const sqlite3 = createFakeSqlite();
+  const memorySqlite3 = createFakeSqlite();
+  const load = vi
+    .fn()
+    .mockResolvedValueOnce({ sqlite3, module: createFakeModule() })
+    .mockResolvedValueOnce({ sqlite3: memorySqlite3, module: createFakeModule() });
+
+  const opened = await openTreecrdtDbWithLoader(
+    {
+      storage: 'opfs',
+      filename: '/fallback-vfs.db',
+      docId: 'fallback-vfs',
+      requireOpfs: false,
+    },
+    load,
+  );
+
+  expect(opened.storage).toBe('memory');
+  expect(opened.opfsError).toBe(vfsFailure.message);
+  expect(sqlite3.open_v2).not.toHaveBeenCalled();
+  expect(memorySqlite3.open_v2).toHaveBeenCalledWith(':memory:');
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+test('does not fall back after explicit extension initialization fails', async () => {
   const vfs = { close: vi.fn() };
   vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
   const sqlite3 = createFakeSqlite();
@@ -85,7 +116,7 @@ test('falls back after explicit extension initialization fails', async () => {
     .mockResolvedValueOnce({ sqlite3, module: createFakeModule(10) })
     .mockResolvedValueOnce({ sqlite3: memorySqlite3, module: createFakeModule() });
 
-  const opened = await openTreecrdtDbWithLoader(
+  const result = openTreecrdtDbWithLoader(
     {
       storage: 'opfs',
       filename: '/fallback-extension.db',
@@ -95,11 +126,38 @@ test('falls back after explicit extension initialization fails', async () => {
     load,
   );
 
-  expect(opened.storage).toBe('memory');
-  expect(opened.opfsError).toBe('TreeCRDT SQLite extension init failed (rc=10)');
+  await expect(result).rejects.toThrow('TreeCRDT SQLite extension init failed (rc=10)');
   expect(sqlite3.close).toHaveBeenCalledWith(1);
   expect(vfs.close).toHaveBeenCalledOnce();
-  expect(memorySqlite3.open_v2).toHaveBeenCalledWith(':memory:');
+  expect(memorySqlite3.open_v2).not.toHaveBeenCalled();
+  expect(load).toHaveBeenCalledOnce();
+});
+
+test('does not fall back after configuring the TreeCRDT adapter fails', async () => {
+  const vfs = { close: vi.fn() };
+  vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
+  const sqlite3 = createFakeSqlite({ failDocId: 'adapter-failure' });
+  const memorySqlite3 = createFakeSqlite();
+  const load = vi
+    .fn()
+    .mockResolvedValueOnce({ sqlite3, module: createFakeModule() })
+    .mockResolvedValueOnce({ sqlite3: memorySqlite3, module: createFakeModule() });
+
+  const result = openTreecrdtDbWithLoader(
+    {
+      storage: 'opfs',
+      filename: '/adapter-failure.db',
+      docId: 'adapter-failure',
+      requireOpfs: false,
+    },
+    load,
+  );
+
+  await expect(result).rejects.toThrow('setDocId failed');
+  expect(sqlite3.close).toHaveBeenCalledWith(1);
+  expect(vfs.close).toHaveBeenCalledOnce();
+  expect(memorySqlite3.open_v2).not.toHaveBeenCalled();
+  expect(load).toHaveBeenCalledOnce();
 });
 
 test('preserves both errors when the fresh memory fallback also fails', async () => {

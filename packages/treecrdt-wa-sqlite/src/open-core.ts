@@ -51,25 +51,56 @@ async function closeIgnoringErrors(close: (() => Promise<void> | void) | undefin
   }
 }
 
-async function openInitializedDatabase(
+async function initializeOpenedDatabase(
   sqlite3: any,
   module: any,
-  filename: string,
+  handle: number,
   opts: OpenTreecrdtDbOptions,
-  vfsName?: string,
 ): Promise<{ db: Database; api: TreecrdtAdapter }> {
   let db: Database | undefined;
   try {
-    const handle = vfsName
-      ? await sqlite3.open_v2(filename, undefined, vfsName)
-      : await sqlite3.open_v2(filename);
     db = makeDbAdapter(sqlite3, handle);
     await initializeTreecrdtExtension(module, handle);
     const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
     await api.setDocId(opts.docId);
     return { db, api };
   } catch (err) {
-    await closeIgnoringErrors(db?.close ? () => db!.close!() : undefined);
+    await closeIgnoringErrors(db?.close ? () => db!.close!() : () => sqlite3.close(handle));
+    throw err;
+  }
+}
+
+async function openInitializedDatabase(
+  sqlite3: any,
+  module: any,
+  filename: string,
+  opts: OpenTreecrdtDbOptions,
+): Promise<{ db: Database; api: TreecrdtAdapter }> {
+  const handle = await sqlite3.open_v2(filename);
+  return initializeOpenedDatabase(sqlite3, module, handle, opts);
+}
+
+type OpenedOpfsHandle = {
+  handle: number;
+  vfs: { close?: () => Promise<void> | void };
+};
+
+async function openOpfsHandle(
+  sqlite3: any,
+  module: any,
+  filename: string,
+  kind: OpfsVfsKind | undefined,
+): Promise<OpenedOpfsHandle> {
+  let vfs: OpenedOpfsHandle['vfs'] | undefined;
+  try {
+    const initializedVfs = await createOpfsVfs(module, { name: OPFS_VFS_NAME, kind });
+    vfs = initializedVfs;
+    // Keep SQLite's default VFS unchanged; open_v2 selects OPFS explicitly by name.
+    sqlite3.vfs_register(initializedVfs, false);
+    const handle = await sqlite3.open_v2(filename, undefined, OPFS_VFS_NAME);
+    return { handle, vfs: initializedVfs };
+  } catch (err) {
+    await closeIgnoringErrors(vfs?.close ? () => vfs!.close!() : undefined);
     throw err;
   }
 }
@@ -103,38 +134,34 @@ export async function openTreecrdtDbWithLoader(
   const requestedFilename = opts.filename ?? '/treecrdt.db';
 
   if (opts.storage === 'opfs') {
-    let vfs: { close?: () => Promise<void> | void } | undefined;
+    let openedOpfs: OpenedOpfsHandle | undefined;
     try {
-      const initializedVfs = await createOpfsVfs(module, {
-        name: OPFS_VFS_NAME,
-        kind: opts.opfsVfs,
-      });
-      vfs = initializedVfs;
-      // Keep SQLite's default VFS unchanged; open_v2 selects OPFS explicitly by name.
-      sqlite3.vfs_register(initializedVfs, false);
-      const opened = await openInitializedDatabase(
-        sqlite3,
-        module,
-        requestedFilename,
-        opts,
-        OPFS_VFS_NAME,
-      );
-      return {
-        ...opened,
-        db: closeDatabaseWithVfs(opened.db, initializedVfs),
-        storage: 'opfs',
-        filename: requestedFilename,
-      };
+      openedOpfs = await openOpfsHandle(sqlite3, module, requestedFilename, opts.opfsVfs);
     } catch (err) {
       opfsFailure = err;
       opfsError = errorMessage(err);
-      await closeIgnoringErrors(vfs?.close ? () => vfs!.close!() : undefined);
       if (opts.requireOpfs) {
         const requiredError = new Error(
           `OPFS requested but could not be initialized: ${opfsError}`,
         ) as Error & { cause?: unknown };
         requiredError.cause = err;
         throw requiredError;
+      }
+    }
+
+    if (openedOpfs) {
+      const { handle, vfs } = openedOpfs;
+      try {
+        const opened = await initializeOpenedDatabase(sqlite3, module, handle, opts);
+        return {
+          ...opened,
+          db: closeDatabaseWithVfs(opened.db, vfs),
+          storage: 'opfs',
+          filename: requestedFilename,
+        };
+      } catch (err) {
+        await closeIgnoringErrors(vfs.close ? () => vfs.close!() : undefined);
+        throw err;
       }
     }
   }
