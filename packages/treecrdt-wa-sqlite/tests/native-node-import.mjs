@@ -1,0 +1,1 @@
+import '@treecrdt/wa-sqlite';

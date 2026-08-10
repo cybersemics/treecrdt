@@ -39,7 +39,7 @@ import {
   type RpcResponse,
   type RpcResult,
 } from './rpc.js';
-import { openTreecrdtDb, type OpenTreecrdtDbOptions, type OpenTreecrdtDbResult } from './open.js';
+import type { OpenTreecrdtDbOptions, OpenTreecrdtDbResult } from './open-core.js';
 import type {
   ClientMaterializationDispatcher,
   ClientMaterializationDispatcherOptions,
@@ -150,7 +150,14 @@ function resolveBrowserEnvironment(
   return { baseUrl, shouldUseOpfs, resolvedRuntime };
 }
 
-export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<TreecrdtClient> {
+/**
+ * Browser client factory. Callers must pass a platform opener so this shared module
+ * never imports the Vite `?url` WASM loader (which would break the Node entry).
+ */
+export async function createBrowserTreecrdtClient(
+  opts: ClientOptions = {},
+  openDb: OpenDbFn,
+): Promise<TreecrdtClient> {
   const storage = normalizeStorageOptions(opts);
   const runtime = normalizeRuntimeOptions(opts);
   const docId = opts.docId ?? 'treecrdt';
@@ -187,13 +194,19 @@ export async function createTreecrdtClient(opts: ClientOptions = {}): Promise<Tr
     });
   }
 
-  return createDirectClient({
-    baseUrl,
-    filename: storage.filename,
-    storage: shouldUseOpfs ? 'opfs' : 'memory',
-    requireOpfs: storage.requireOpfs,
-    docId,
-  });
+  return buildDirectClient(
+    {
+      baseUrl,
+      filename: storage.filename,
+      storage: shouldUseOpfs ? 'opfs' : 'memory',
+      requireOpfs: storage.requireOpfs,
+      docId,
+    },
+    openDb,
+    {
+      opfsVfs: shouldUseOpfs ? 'any-context' : undefined,
+    },
+  );
 }
 
 function resolveRuntimeMode(runtime: TreecrdtRuntime, shouldUseOpfs: boolean): RuntimeMode {
@@ -595,12 +608,6 @@ export type DirectClientOptions = {
 };
 
 export type OpenDbFn = (opts: OpenTreecrdtDbOptions) => Promise<OpenTreecrdtDbResult>;
-
-async function createDirectClient(opts: DirectClientOptions): Promise<TreecrdtClient> {
-  return buildDirectClient(opts, openTreecrdtDb, {
-    opfsVfs: opts.storage === 'opfs' ? 'any-context' : undefined,
-  });
-}
 
 export async function buildDirectClient(
   opts: DirectClientOptions,

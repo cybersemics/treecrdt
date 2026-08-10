@@ -11,23 +11,19 @@ type Plugin = {
 };
 
 export type WaSqlitePluginOptions = {
-  /** Destination directory (relative to project root) where wa-sqlite assets are copied. Defaults to public/wa-sqlite. */
+  /** Destination directory (relative to project root) where wa-sqlite JS assets are copied. Defaults to public/wa-sqlite. */
   outDir?: string;
   /** Multiple destination directories (relative to project root). Useful for apps served from a base path. */
   outDirs?: string[];
 };
 
-const defaultFiles = [
-  'wa-sqlite.mjs',
-  'wa-sqlite.wasm',
-  'wa-sqlite-async.mjs',
-  'wa-sqlite-async.wasm',
-  'sqlite-api.js',
-  'sqlite-constants.js',
-];
+const defaultFiles = ['wa-sqlite-async.mjs', 'sqlite-api.js', 'sqlite-constants.js'];
+
+const stalePublicAssets = ['wa-sqlite.mjs', 'wa-sqlite.wasm', 'wa-sqlite-async.wasm'];
 
 /**
- * Vite plugin that copies the repo's vendored wa-sqlite artifacts into your app's public folder.
+ * Copies wa-sqlite JS artifacts into the app's public folder.
+ * WASM is imported through Vite's asset graph and emitted once with a content hash.
  * This removes the need for ad-hoc copy scripts in example apps.
  */
 export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
@@ -36,7 +32,7 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
     new Set(outDirsRaw.filter((d) => typeof d === 'string' && d.length > 0)),
   );
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const packagedAssetsRoot = path.resolve(here, '../dist/wa-sqlite');
+  const packagedAssetsRoot = path.resolve(here, 'wa-sqlite');
 
   let copied: Promise<void> | null = null;
   const copyOnce = async () => {
@@ -44,6 +40,11 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
     copied = (async () => {
       const srcDir = packagedAssetsRoot;
       await Promise.all(outDirs.map((dir) => fs.mkdir(dir, { recursive: true })));
+      await Promise.all(
+        outDirs.flatMap((dir) =>
+          stalePublicAssets.map((file) => fs.rm(path.join(dir, file), { force: true })),
+        ),
+      );
       for (const file of defaultFiles) {
         const from = path.join(srcDir, file);
         const fromStat = await fs.stat(from);
@@ -71,6 +72,10 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
       return {
         optimizeDeps: {
           exclude: ['@treecrdt/wa-sqlite'],
+        },
+        // Keep Node/Vitest on the native loader so dist/wa-sqlite/*.mjs|wasm resolve from disk.
+        ssr: {
+          external: ['@treecrdt/wa-sqlite'],
         },
         worker: {
           format: 'es',

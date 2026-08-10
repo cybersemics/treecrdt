@@ -21,6 +21,11 @@ test.describe.serial('non-root base path', () => {
     page,
   }, testInfo) => {
     if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
+    const wasmRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith('.wasm')) wasmRequests.push(url.pathname);
+    });
     await page.goto('/base-path/');
     await page.waitForSelector('[data-testid="run-demo"]', { timeout: 30_000 });
     const summary = await page.evaluate(async () => {
@@ -32,6 +37,9 @@ test.describe.serial('non-root base path', () => {
     expect(summary.mode).toBe('worker');
     expect(summary.runtime).toBe('dedicated-worker');
     expect(summary.storage).toBe('opfs');
+    expect(wasmRequests).toContainEqual(
+      expect.stringMatching(/^\/base-path\/assets\/wa-sqlite-async-[A-Za-z0-9_-]+\.wasm$/),
+    );
   });
 
   test("opfs init fails when OPFS VFS chunk can't load (and throws)", async ({

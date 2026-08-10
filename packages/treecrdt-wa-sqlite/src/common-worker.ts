@@ -3,7 +3,7 @@ import type { Database } from './types.js';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
-import type { OpenTreecrdtDbResult } from './open.js';
+import type { OpenTreecrdtDbResult } from './open-core.js';
 import { clearOpfsStorage } from './opfs.js';
 import { rpcBinaryResult, type RpcInitResult, type RpcSqlParams } from './rpc.js';
 

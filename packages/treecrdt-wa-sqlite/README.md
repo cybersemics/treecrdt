@@ -19,7 +19,7 @@ Low-level callers that open a wa-sqlite handle themselves must call
 
 ## Browser usage
 
-Use `createTreecrdtClient()` with OPFS or in-memory storage. Browser apps should use `@treecrdt/wa-sqlite/vite-plugin` to copy assets into `public/wa-sqlite/`.
+Use `createTreecrdtClient()` with OPFS or in-memory storage. Browser apps should use `@treecrdt/wa-sqlite/vite-plugin` to copy the JS assets into `public/wa-sqlite/`. Vite includes the imported WASM in its asset graph and emits it with a content hash.
 
 ```ts
 import { createTreecrdtClient } from '@treecrdt/wa-sqlite';

@@ -1,12 +1,8 @@
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import {
-  buildDirectClient,
-  CLIENT_CLOSED_ERROR,
-  createTreecrdtClient,
-  type OpenDbFn,
-} from '../src/client.js';
+import { createTreecrdtClient } from '../src/client.browser.js';
+import { buildDirectClient, CLIENT_CLOSED_ERROR, type OpenDbFn } from '../src/client.js';
 import { clearOpfsStorage } from '../src/opfs.js';
 import type { RpcRequest } from '../src/rpc.js';
 import type { Database, TreecrdtClient } from '../src/types.js';
