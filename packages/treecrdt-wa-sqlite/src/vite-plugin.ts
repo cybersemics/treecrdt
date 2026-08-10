@@ -37,7 +37,6 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
     new Set(outDirsRaw.filter((d) => typeof d === 'string' && d.length > 0)),
   );
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const packageRoot = path.resolve(here, '..');
   const packagedAssetsRoot = path.resolve(here, 'wa-sqlite');
 
   let copied: Promise<void> | null = null;
@@ -79,18 +78,9 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
         optimizeDeps: {
           exclude: ['@treecrdt/wa-sqlite'],
         },
-        // Keep Node/Vitest on the native loader so dist/wa-sqlite/*.mjs|wasm resolve from disk
-        // (including when the package is symlinked outside the app root).
+        // Keep Node/Vitest on the native loader so dist/wa-sqlite/*.mjs|wasm resolve from disk.
         ssr: {
           external: ['@treecrdt/wa-sqlite'],
-        },
-        server: {
-          deps: {
-            external: ['@treecrdt/wa-sqlite'],
-          },
-          fs: {
-            allow: [packageRoot, packagedAssetsRoot],
-          },
         },
         worker: {
           format: 'es',
