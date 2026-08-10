@@ -48,7 +48,8 @@
     "build:ts": "pnpm run prep:opfs:sources && tsc -p tsconfig.json",
     "build": "pnpm run build:ts && pnpm run prep:wa-sqlite-assets",
     "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
-    "test": "pnpm --filter @treecrdt/wa-sqlite^... run build && pnpm run build && vitest run"
+    "test:native-import": "node ./tests/native-node-import.mjs",
+    "test": "pnpm --filter @treecrdt/wa-sqlite^... run build && pnpm run build && pnpm run test:native-import && vitest run"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*"
