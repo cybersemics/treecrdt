@@ -46,8 +46,8 @@ export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {
       const srcDir = packagedAssetsRoot;
       await Promise.all(outDirs.map((dir) => fs.mkdir(dir, { recursive: true })));
       await Promise.all(
-        outDirs.flatMap(dir =>
-          obsoletePublicFiles.map(file => fs.rm(path.join(dir, file), { force: true })),
+        outDirs.flatMap((dir) =>
+          obsoletePublicFiles.map((file) => fs.rm(path.join(dir, file), { force: true })),
         ),
       );
       for (const file of defaultFiles) {

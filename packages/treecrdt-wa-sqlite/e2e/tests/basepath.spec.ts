@@ -22,7 +22,7 @@ test.describe.serial('non-root base path', () => {
   }, testInfo) => {
     if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
     const wasmRequests: string[] = [];
-    page.on('request', request => {
+    page.on('request', (request) => {
       const url = new URL(request.url());
       if (url.pathname.endsWith('.wasm')) wasmRequests.push(url.pathname);
     });
@@ -38,9 +38,7 @@ test.describe.serial('non-root base path', () => {
     expect(summary.runtime).toBe('dedicated-worker');
     expect(summary.storage).toBe('opfs');
     expect(wasmRequests).toContainEqual(
-      expect.stringMatching(
-        /^\/base-path\/assets\/wa-sqlite-async-[A-Za-z0-9_-]+\.wasm$/,
-      ),
+      expect.stringMatching(/^\/base-path\/assets\/wa-sqlite-async-[A-Za-z0-9_-]+\.wasm$/),
     );
   });
 
