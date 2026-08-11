@@ -104,7 +104,6 @@ export async function openTreecrdtDbWithLoader(
   const loaded = await load();
   const { sqlite3, module } = loaded;
   let opfsError: string | undefined;
-  let opfsFailure: unknown;
   const requestedFilename = opts.filename ?? '/treecrdt.db';
 
   if (opts.storage === 'opfs') {
@@ -112,7 +111,6 @@ export async function openTreecrdtDbWithLoader(
     try {
       openedOpfs = await openOpfsHandle(sqlite3, module, requestedFilename, opts.opfsVfs);
     } catch (error) {
-      opfsFailure = error;
       opfsError = error instanceof Error ? error.message : String(error);
       if (opts.requireOpfs) {
         const requiredError = new Error(
@@ -161,11 +159,8 @@ export async function openTreecrdtDbWithLoader(
     if (opfsError === undefined) throw fallbackFailure;
     const fallbackError =
       fallbackFailure instanceof Error ? fallbackFailure.message : String(fallbackFailure);
-    const error = new Error(
+    throw new Error(
       `OPFS initialization failed: ${opfsError}; memory fallback failed: ${fallbackError}`,
-    ) as Error & { cause?: unknown; opfsCause?: unknown };
-    error.cause = fallbackFailure;
-    error.opfsCause = opfsFailure;
-    throw error;
+    );
   }
 }

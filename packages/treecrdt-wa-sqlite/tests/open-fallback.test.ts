@@ -160,7 +160,7 @@ test('does not fall back after configuring the TreeCRDT adapter fails', async ()
   expect(load).toHaveBeenCalledOnce();
 });
 
-test('preserves both errors when the fresh memory fallback also fails', async () => {
+test('reports both errors when the fresh memory fallback also fails', async () => {
   const opfsFailure = new Error('OPFS open failed');
   const fallbackFailure = new Error('memory module load failed');
   const sqlite3 = createFakeSqlite({ failOpen: '/both-fail.db', failOpenError: opfsFailure });
@@ -180,12 +180,9 @@ test('preserves both errors when the fresh memory fallback also fails', async ()
       .mockRejectedValueOnce(fallbackFailure),
   );
 
-  await expect(result).rejects.toMatchObject({
-    message:
-      'OPFS initialization failed: OPFS open failed; memory fallback failed: memory module load failed',
-    cause: fallbackFailure,
-    opfsCause: opfsFailure,
-  });
+  await expect(result).rejects.toThrow(
+    'OPFS initialization failed: OPFS open failed; memory fallback failed: memory module load failed',
+  );
   expect(vfs.close).toHaveBeenCalledOnce();
 });
 
