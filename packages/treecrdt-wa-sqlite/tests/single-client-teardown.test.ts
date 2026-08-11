@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { createTreecrdtClient } from '../src/client.browser.js';
 import { buildDirectClient, CLIENT_CLOSED_ERROR, type OpenDbFn } from '../src/client.js';
 import { clearOpfsStorage } from '../src/opfs.js';
-import type { RpcRequest } from '../src/rpc.js';
+import type { RpcParams, RpcRequest } from '../src/rpc.js';
 import type { Database, TreecrdtClient } from '../src/types.js';
 
 vi.mock('../src/opfs.js', async (importOriginal) => {
@@ -69,6 +69,12 @@ class TestDedicatedWorkerEndpoint {
     return this.requests
       .filter((request) => request.method === 'close' || request.method === 'drop')
       .map((request) => request.method);
+  }
+
+  get initParams(): RpcParams<'init'> | undefined {
+    return this.requests.find((request) => request.method === 'init')?.params as
+      | RpcParams<'init'>
+      | undefined;
   }
 }
 
@@ -181,13 +187,14 @@ test('dedicated-worker init failure terminates the endpoint and removes its list
     createTreecrdtClient({
       docId: 'dedicated-init-failure',
       runtime: { type: 'dedicated-worker' },
-      storage: { type: 'memory' },
+      storage: { type: 'opfs' },
     }),
   ).rejects.toThrow('init failed');
 
   expect(endpoint.terminated).toBe(true);
   expect(endpoint.listenerCount).toBe(0);
   expect(endpoint.teardownMethods).toEqual([]);
+  expect(endpoint.initParams).toEqual(['/', undefined, 'opfs', 'dedicated-init-failure', 'throw']);
 });
 
 test('dedicated-worker close failure terminates the endpoint without retrying', async () => {

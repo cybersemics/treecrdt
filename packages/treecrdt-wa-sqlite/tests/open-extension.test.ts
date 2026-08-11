@@ -3,7 +3,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 vi.mock('../src/opfs.js', () => ({ createOpfsVfs: vi.fn() }));
 
 import { createOpfsVfs } from '../src/opfs.js';
-import { openTreecrdtDbFromLoaded } from '../src/open-core.js';
+import { openTreecrdtDbWithLoader } from '../src/open-core.js';
 
 function createFakeModule(initResult = 0) {
   const init = vi.fn(async () => initResult);
@@ -43,13 +43,17 @@ beforeEach(() => {
 test('initializes the extension after opening a memory database', async () => {
   const sqlite3 = createFakeSqlite();
   const module = createFakeModule();
+  const load = vi.fn(async () => ({ sqlite3, module }));
 
-  const opened = await openTreecrdtDbFromLoaded(
+  const opened = await openTreecrdtDbWithLoader(
     { storage: 'memory', docId: 'memory-explicit-init' },
-    { sqlite3, module },
+    load,
   );
 
   expect(sqlite3.open_v2).toHaveBeenCalledWith(':memory:');
+  expect(sqlite3.vfs_register).not.toHaveBeenCalled();
+  expect(createOpfsVfs).not.toHaveBeenCalled();
+  expect(load).toHaveBeenCalledOnce();
   expect(module.init).toHaveBeenCalledWith(1);
   expect(module.init.mock.invocationCallOrder[0]).toBeLessThan(
     sqlite3.statements.mock.invocationCallOrder[0]!,
@@ -63,29 +67,31 @@ test('closes the database when explicit extension initialization fails', async (
   const module = createFakeModule(10);
 
   await expect(
-    openTreecrdtDbFromLoaded(
+    openTreecrdtDbWithLoader(
       { storage: 'memory', docId: 'memory-explicit-init-failure' },
-      { sqlite3, module },
+      async () => ({ sqlite3, module }),
     ),
   ).rejects.toThrow('TreeCRDT SQLite extension init failed (rc=10)');
 
   expect(sqlite3.close).toHaveBeenCalledWith(1);
 });
 
-test('uses the named OPFS VFS and closes partial resources when initialization fails', async () => {
+test('uses the named OPFS VFS and closes partial resources when required initialization fails', async () => {
   const sqlite3 = createFakeSqlite();
   const module = createFakeModule(10);
   const vfs = { close: vi.fn() };
+  const load = vi.fn(async () => ({ sqlite3, module }));
   vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
 
   await expect(
-    openTreecrdtDbFromLoaded(
+    openTreecrdtDbWithLoader(
       {
         storage: 'opfs',
         filename: '/explicit-init-failure.db',
         docId: 'opfs-explicit-init-failure',
+        requireOpfs: true,
       },
-      { sqlite3, module },
+      load,
     ),
   ).rejects.toThrow('TreeCRDT SQLite extension init failed (rc=10)');
 
@@ -93,4 +99,5 @@ test('uses the named OPFS VFS and closes partial resources when initialization f
   expect(sqlite3.open_v2).toHaveBeenCalledWith('/explicit-init-failure.db', undefined, 'opfs');
   expect(sqlite3.close).toHaveBeenCalledWith(1);
   expect(vfs.close).toHaveBeenCalledOnce();
+  expect(load).toHaveBeenCalledOnce();
 });

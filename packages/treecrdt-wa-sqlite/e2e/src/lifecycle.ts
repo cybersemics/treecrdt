@@ -15,8 +15,11 @@ let openClient: TreecrdtClient | null = null;
 
 type LifecycleOptions = {
   docId: string;
+  fallback?: 'memory' | 'throw';
   filename: string;
   runtime: LifecycleRuntime;
+  /** Pins differently configured clients to one SharedWorker so lifecycle cleanup is observable. */
+  sharedWorkerName?: string;
 };
 
 export type LifecycleState = {
@@ -38,8 +41,11 @@ export type LifecycleState = {
 async function createOpfsLifecycleClient(opts: LifecycleOptions): Promise<TreecrdtClient> {
   return createTreecrdtClient({
     docId: opts.docId,
-    storage: { type: 'opfs', filename: opts.filename, fallback: 'throw' },
-    runtime: { type: opts.runtime },
+    storage: { type: 'opfs', filename: opts.filename, fallback: opts.fallback ?? 'throw' },
+    runtime:
+      opts.runtime === 'shared-worker' && opts.sharedWorkerName
+        ? { type: 'shared-worker', name: opts.sharedWorkerName }
+        : { type: opts.runtime },
   });
 }
 
