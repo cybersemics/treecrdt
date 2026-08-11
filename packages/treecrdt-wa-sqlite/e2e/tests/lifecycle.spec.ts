@@ -1,14 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 
 type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
-type LifecycleRuntime = 'direct' | 'dedicated-worker' | 'shared-worker';
-type LifecycleOptions = {
-  docId: string;
-  fallback?: 'memory' | 'throw';
-  filename: string;
-  runtime: LifecycleRuntime;
-  sharedWorkerName?: string;
-};
+type LifecycleOptions = Parameters<LifecycleHarness['drop']>[0];
+type LifecycleRuntime = LifecycleOptions['runtime'];
 
 const scenarios: Array<{
   runtime: LifecycleRuntime;

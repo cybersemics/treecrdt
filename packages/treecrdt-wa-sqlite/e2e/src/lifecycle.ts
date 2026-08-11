@@ -18,6 +18,7 @@ type LifecycleOptions = {
   fallback?: 'memory' | 'throw';
   filename: string;
   runtime: LifecycleRuntime;
+  /** Pins differently configured clients to one SharedWorker so lifecycle cleanup is observable. */
   sharedWorkerName?: string;
 };
 
