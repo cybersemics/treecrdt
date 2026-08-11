@@ -1,5 +1,13 @@
 # @treecrdt/wa-sqlite
 
+## 0.4.1
+
+### Patch Changes
+
+- 0a9e515: Keep exact version-vector metadata valid across SQLite canonical replay so subsequent local writes succeed.
+- 8677f29: Emit browser WASM through Vite's asset pipeline with a content-hashed filename and avoid duplicate unhashed public copies.
+- 6fe0e66: Honor the requested OPFS fallback policy in worker runtimes, close failed SQLite and OPFS resources, retry allowed memory fallback with a fresh module, and release SharedWorker ports when initialization or teardown fails.
+
 ## 0.4.0
 
 ### Minor Changes
