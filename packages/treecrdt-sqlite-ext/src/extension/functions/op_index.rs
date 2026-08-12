@@ -1,3 +1,4 @@
+use super::statement::LazyStatement;
 use super::*;
 
 fn sqlite_rc_error(rc: c_int, context: &str) -> treecrdt_core::Error {
@@ -7,30 +8,19 @@ fn sqlite_rc_error(rc: c_int, context: &str) -> treecrdt_core::Error {
 pub(super) struct SqliteParentOpIndex {
     db: *mut sqlite3,
     doc_id: Vec<u8>,
-    insert: *mut sqlite3_stmt,
+    insert: LazyStatement,
 }
 
 impl SqliteParentOpIndex {
     pub(super) fn prepare(db: *mut sqlite3, doc_id: Vec<u8>) -> treecrdt_core::Result<Self> {
-        let insert_sql = CString::new(
-            "INSERT OR IGNORE INTO oprefs_children(parent, op_ref, seq) VALUES (?1, ?2, ?3)",
-        )
-        .expect("oprefs_children insert sql");
-        let mut insert: *mut sqlite3_stmt = null_mut();
-        let rc = sqlite_prepare_v2(db, insert_sql.as_ptr(), -1, &mut insert, null_mut());
-        if rc != SQLITE_OK as c_int {
-            return Err(sqlite_rc_error(
-                rc,
-                "sqlite_prepare_v2 oprefs_children insert failed",
-            ));
-        }
-        Ok(Self { db, doc_id, insert })
-    }
-}
-
-impl Drop for SqliteParentOpIndex {
-    fn drop(&mut self) {
-        unsafe { sqlite_finalize(self.insert) };
+        Ok(Self {
+            db,
+            doc_id,
+            insert: LazyStatement::new(
+                db,
+                c"INSERT OR IGNORE INTO oprefs_children(parent, op_ref, seq) VALUES (?1, ?2, ?3)",
+            ),
+        })
     }
 }
 
@@ -59,40 +49,41 @@ impl treecrdt_core::ParentOpIndex for SqliteParentOpIndex {
 
         let parent_bytes = parent.0.to_be_bytes();
         let op_ref = derive_op_ref_v0(&self.doc_id, op_id.replica.as_bytes(), op_id.counter);
+        let stmt = self.insert.get()?;
 
         unsafe {
-            sqlite_clear_bindings(self.insert);
-            sqlite_reset(self.insert);
+            sqlite_clear_bindings(stmt);
+            sqlite_reset(stmt);
         }
         let mut bind_err = false;
         unsafe {
             bind_err |= sqlite_bind_blob(
-                self.insert,
+                stmt,
                 1,
                 parent_bytes.as_ptr() as *const c_void,
                 parent_bytes.len() as c_int,
                 None,
             ) != SQLITE_OK as c_int;
             bind_err |= sqlite_bind_blob(
-                self.insert,
+                stmt,
                 2,
                 op_ref.as_ptr() as *const c_void,
                 op_ref.len() as c_int,
                 None,
             ) != SQLITE_OK as c_int;
-            bind_err |= sqlite_bind_int64(self.insert, 3, seq.min(i64::MAX as u64) as i64)
-                != SQLITE_OK as c_int;
+            bind_err |=
+                sqlite_bind_int64(stmt, 3, seq.min(i64::MAX as u64) as i64) != SQLITE_OK as c_int;
         }
         if bind_err {
-            unsafe { sqlite_reset(self.insert) };
+            unsafe { sqlite_reset(stmt) };
             return Err(sqlite_rc_error(
                 SQLITE_ERROR as c_int,
                 "bind oprefs_children insert failed",
             ));
         }
 
-        let step_rc = unsafe { sqlite_step(self.insert) };
-        unsafe { sqlite_reset(self.insert) };
+        let step_rc = unsafe { sqlite_step(stmt) };
+        unsafe { sqlite_reset(stmt) };
         if step_rc != SQLITE_DONE as c_int {
             return Err(sqlite_rc_error(
                 step_rc,

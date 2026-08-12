@@ -1,6 +1,9 @@
 #![cfg(all(feature = "rusqlite-storage", feature = "ext-sqlite"))]
 use std::env;
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int, c_void};
 use std::path::PathBuf;
+use std::ptr::null_mut;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -1091,6 +1094,162 @@ fn oprefs_children_include_payload_after_move() {
         .unwrap();
     let refs: Vec<Vec<u8>> = serde_json::from_str(&refs_json).unwrap();
     assert_eq!(refs.len(), 2);
+}
+
+#[test]
+fn repeated_local_ops_release_statements_before_connection_close() {
+    let conn = setup_conn();
+
+    let replica = b"lifecycle".to_vec();
+    let root = node_bytes(0);
+    let parent_a = node_bytes(1);
+    let parent_b = node_bytes(2);
+
+    for parent in [&parent_a, &parent_b] {
+        let _: String = conn
+            .query_row(
+                "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+                rusqlite::params![replica, root, parent],
+                |row| row.get(0),
+            )
+            .unwrap();
+    }
+
+    for id in 3..35u128 {
+        let node = node_bytes(id);
+        let payload = id.to_be_bytes().to_vec();
+
+        let _: String = conn
+            .query_row(
+                "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, ?4)",
+                rusqlite::params![replica, parent_a, node, payload],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let _: String = conn
+            .query_row(
+                "SELECT treecrdt_local_payload(?1, ?2, ?3)",
+                rusqlite::params![replica, node, vec![id as u8; 32]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let _: String = conn
+            .query_row(
+                "SELECT treecrdt_local_move(?1, ?2, ?3, 'last', NULL)",
+                rusqlite::params![replica, node, parent_b],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let _: String = conn
+            .query_row(
+                "SELECT treecrdt_local_delete(?1, ?2)",
+                rusqlite::params![replica, node],
+                |row| row.get(0),
+            )
+            .unwrap();
+    }
+
+    conn.close()
+        .expect("local helper statements should be finalized before connection close");
+}
+
+#[test]
+fn failed_local_op_releases_statements_before_the_next_write() {
+    let conn = setup_conn();
+
+    let replica = b"failure-recovery".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'first', NULL, ?4)",
+            rusqlite::params![replica, root, node, vec![1u8]],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    conn.execute_batch(
+        "CREATE TRIGGER fail_tree_payload_upsert \
+         BEFORE INSERT ON tree_payload \
+         BEGIN \
+           SELECT RAISE(ABORT, 'forced local write failure'); \
+         END;",
+    )
+    .unwrap();
+    let failed: rusqlite::Result<String> = conn.query_row(
+        "SELECT treecrdt_local_payload(?1, ?2, ?3)",
+        rusqlite::params![replica, node, vec![2u8]],
+        |row| row.get(0),
+    );
+    assert!(failed.is_err());
+
+    conn.execute_batch("DROP TRIGGER fail_tree_payload_upsert").unwrap();
+    let recovered: String = conn
+        .query_row(
+            "SELECT treecrdt_local_payload(?1, ?2, ?3)",
+            rusqlite::params![replica, node, vec![3u8]],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&recovered);
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].payload, Some(vec![3u8]));
+
+    conn.close()
+        .expect("failed local helper statements should not leak into connection close");
+}
+
+unsafe extern "C" fn deny_tree_payload_delete(
+    _context: *mut c_void,
+    action: c_int,
+    table: *const c_char,
+    _column: *const c_char,
+    _database: *const c_char,
+    _trigger: *const c_char,
+) -> c_int {
+    let is_tree_payload =
+        !table.is_null() && unsafe { CStr::from_ptr(table) }.to_bytes() == b"tree_payload";
+    if action == rusqlite::ffi::SQLITE_DELETE && is_tree_payload {
+        rusqlite::ffi::SQLITE_DENY
+    } else {
+        rusqlite::ffi::SQLITE_OK
+    }
+}
+
+#[test]
+fn local_payload_does_not_prepare_an_unused_delete_statement() {
+    let conn = setup_conn();
+
+    let replica = b"lazy-prepare".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'first', NULL, ?4)",
+            rusqlite::params![replica, root, node, vec![1u8]],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let set_authorizer_rc = unsafe {
+        rusqlite::ffi::sqlite3_set_authorizer(
+            conn.handle(),
+            Some(deny_tree_payload_delete),
+            null_mut(),
+        )
+    };
+    assert_eq!(set_authorizer_rc, rusqlite::ffi::SQLITE_OK);
+
+    let result: rusqlite::Result<String> = conn.query_row(
+        "SELECT treecrdt_local_payload(?1, ?2, ?3)",
+        rusqlite::params![replica, node, vec![2u8]],
+        |row| row.get(0),
+    );
+
+    let clear_authorizer_rc =
+        unsafe { rusqlite::ffi::sqlite3_set_authorizer(conn.handle(), None, null_mut()) };
+    assert_eq!(clear_authorizer_rc, rusqlite::ffi::SQLITE_OK);
+    result.expect("payload writes should not prepare the unused payload-delete statement");
 }
 
 fn setup_conn() -> Connection {
