@@ -100,6 +100,7 @@ function closeDatabaseWithVfs(db: Database, vfs: { close?: () => Promise<void> |
 export async function openTreecrdtDbWithLoader(
   opts: OpenTreecrdtDbOptions,
   load: () => Promise<{ sqlite3: any; module: any }>,
+  loadMemoryFallback: () => Promise<{ sqlite3: any; module: any }> = load,
 ): Promise<OpenTreecrdtDbResult> {
   const loaded = await load();
   const { sqlite3, module } = loaded;
@@ -145,7 +146,7 @@ export async function openTreecrdtDbWithLoader(
   // A failed OPFS attempt leaves its registered VFS and callback state on the module even after
   // the VFS is closed. Isolate the memory fallback in a fresh module instead of reusing that state.
   try {
-    const memoryLoaded = opfsError !== undefined ? await load() : loaded;
+    const memoryLoaded = opfsError !== undefined ? await loadMemoryFallback() : loaded;
     const handle = await memoryLoaded.sqlite3.open_v2(':memory:');
     const opened = await initializeOpenedDatabase(
       memoryLoaded.sqlite3,

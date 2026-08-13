@@ -17,13 +17,18 @@ export type WaSqlitePluginOptions = {
   outDirs?: string[];
 };
 
-const defaultFiles = ['wa-sqlite-async.mjs', 'sqlite-api.js', 'sqlite-constants.js'];
+const defaultFiles = [
+  'wa-sqlite.mjs',
+  'wa-sqlite-async.mjs',
+  'sqlite-api.js',
+  'sqlite-constants.js',
+];
 
-const stalePublicAssets = ['wa-sqlite.mjs', 'wa-sqlite.wasm', 'wa-sqlite-async.wasm'];
+const stalePublicAssets = ['wa-sqlite.wasm', 'wa-sqlite-async.wasm'];
 
 /**
  * Copies wa-sqlite JS artifacts into the app's public folder.
- * WASM is imported through Vite's asset graph and emitted once with a content hash.
+ * WASM is imported through Vite's asset graph and emitted with content hashes.
  * This removes the need for ad-hoc copy scripts in example apps.
  */
 export function treecrdt(opts: WaSqlitePluginOptions = {}): Plugin {

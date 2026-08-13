@@ -17,26 +17,58 @@ test.describe.serial('non-root base path', () => {
     expect(summary.storage).toBe('memory');
   });
 
-  test('opfs client uses dedicated worker mode in preview build with base path', async ({
+  test('opfs client uses the synchronous build in a dedicated worker with a base path', async ({
     page,
   }, testInfo) => {
     if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
     const wasmRequests: string[] = [];
+    const moduleRequests: string[] = [];
     page.on('request', (request) => {
       const url = new URL(request.url());
       if (url.pathname.endsWith('.wasm')) wasmRequests.push(url.pathname);
+      if (url.pathname.endsWith('.mjs')) moduleRequests.push(url.pathname);
     });
     await page.goto('/base-path/');
     await page.waitForSelector('[data-testid="run-demo"]', { timeout: 30_000 });
     const summary = await page.evaluate(async () => {
       const fn = (window as any).__createTreecrdtClient;
       if (!fn) return null;
-      return await fn('opfs');
+      return await fn('opfs', undefined, 'dedicated-worker');
     });
     expect(summary).not.toBeNull();
     expect(summary.mode).toBe('worker');
     expect(summary.runtime).toBe('dedicated-worker');
     expect(summary.storage).toBe('opfs');
+    expect(moduleRequests).toContain('/base-path/wa-sqlite/wa-sqlite.mjs');
+    expect(wasmRequests).toContainEqual(
+      expect.stringMatching(/^\/base-path\/assets\/wa-sqlite-[A-Za-z0-9_-]+\.wasm$/),
+    );
+    expect(wasmRequests.some((path) => path.includes('/wa-sqlite-async-'))).toBe(false);
+  });
+
+  test('direct opfs uses the Asyncify build in preview with base path', async ({
+    page,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
+    const wasmRequests: string[] = [];
+    const moduleRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith('.wasm')) wasmRequests.push(url.pathname);
+      if (url.pathname.endsWith('.mjs')) moduleRequests.push(url.pathname);
+    });
+    await page.goto('/base-path/');
+    await page.waitForSelector('[data-testid="run-demo"]', { timeout: 30_000 });
+    const summary = await page.evaluate(async () => {
+      const fn = (window as any).__createTreecrdtClient;
+      if (!fn) return null;
+      return await fn('opfs', undefined, 'direct');
+    });
+    expect(summary).not.toBeNull();
+    expect(summary.mode).toBe('direct');
+    expect(summary.runtime).toBe('direct');
+    expect(summary.storage).toBe('opfs');
+    expect(moduleRequests).toContain('/base-path/wa-sqlite/wa-sqlite-async.mjs');
     expect(wasmRequests).toContainEqual(
       expect.stringMatching(/^\/base-path\/assets\/wa-sqlite-async-[A-Za-z0-9_-]+\.wasm$/),
     );
