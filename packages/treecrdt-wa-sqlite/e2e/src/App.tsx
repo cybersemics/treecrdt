@@ -16,7 +16,7 @@ export default function App() {
       (window as any).__createTreecrdtClient = async (
         storage: 'memory' | 'opfs',
         baseUrl?: string,
-        runtime: 'auto' | 'dedicated-worker' | 'shared-worker' = 'auto',
+        runtime: 'auto' | 'direct' | 'dedicated-worker' | 'shared-worker' = 'auto',
       ) => {
         const c = await createTreecrdtClient({
           storage: storage === 'opfs' ? { type: 'opfs' } : { type: 'memory' },

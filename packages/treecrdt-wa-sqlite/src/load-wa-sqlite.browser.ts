@@ -1,8 +1,13 @@
+import waSqliteWasmUrl from './wa-sqlite/wa-sqlite.wasm?url';
 import waSqliteAsyncWasmUrl from './wa-sqlite/wa-sqlite-async.wasm?url';
+
+export type WaSqliteBuild = 'sync' | 'asyncify';
 
 export type LoadWaSqliteOptions = {
   /** Public URL prefix for wa-sqlite JS assets; Vite bundles the WASM with a content hash. */
   assetsDir?: string;
+  /** wa-sqlite build to load. Asyncify is required by VFS implementations that run async I/O. */
+  build?: WaSqliteBuild;
 };
 
 export type LoadWaSqliteResult = {
@@ -20,12 +25,13 @@ export async function loadWaSqliteBrowser(
 ): Promise<LoadWaSqliteResult> {
   const baseUrl = opts.assetsDir ?? defaultBrowserBaseUrl();
   const normalized = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  const sqliteModule = await import(
-    /* @vite-ignore */ `${normalized}wa-sqlite/wa-sqlite-async.mjs`
-  );
+  const build = opts.build ?? 'asyncify';
+  const moduleFilename = build === 'sync' ? 'wa-sqlite.mjs' : 'wa-sqlite-async.mjs';
+  const wasmUrl = build === 'sync' ? waSqliteWasmUrl : waSqliteAsyncWasmUrl;
+  const sqliteModule = await import(/* @vite-ignore */ `${normalized}wa-sqlite/${moduleFilename}`);
   const sqliteApi = await import(/* @vite-ignore */ `${normalized}wa-sqlite/sqlite-api.js`);
   const module = await sqliteModule.default({
-    locateFile: (file: string) => (file.endsWith('.wasm') ? waSqliteAsyncWasmUrl : file),
+    locateFile: (file: string) => (file.endsWith('.wasm') ? wasmUrl : file),
   });
   return { sqlite3: sqliteApi.Factory(module), module };
 }

@@ -79,6 +79,34 @@ test('falls back to memory when opening the OPFS database fails', async () => {
   expect(load).toHaveBeenCalledTimes(2);
 });
 
+test('uses a separate loader for memory fallback', async () => {
+  const vfs = { close: vi.fn() };
+  vi.mocked(createOpfsVfs).mockResolvedValue(vfs);
+  const opfsSqlite3 = createFakeSqlite({ failOpen: '/separate-loader.db' });
+  const memorySqlite3 = createFakeSqlite();
+  const load = vi.fn(async () => ({ sqlite3: opfsSqlite3, module: createFakeModule() }));
+  const loadMemoryFallback = vi.fn(async () => ({
+    sqlite3: memorySqlite3,
+    module: createFakeModule(),
+  }));
+
+  const opened = await openTreecrdtDbWithLoader(
+    {
+      storage: 'opfs',
+      filename: '/separate-loader.db',
+      docId: 'separate-loader',
+      requireOpfs: false,
+    },
+    load,
+    loadMemoryFallback,
+  );
+
+  expect(opened.storage).toBe('memory');
+  expect(load).toHaveBeenCalledOnce();
+  expect(loadMemoryFallback).toHaveBeenCalledOnce();
+  expect(memorySqlite3.open_v2).toHaveBeenCalledWith(':memory:');
+});
+
 test('falls back to memory when initializing the OPFS VFS fails', async () => {
   const vfsFailure = new Error('OPFS VFS unavailable');
   vi.mocked(createOpfsVfs).mockRejectedValue(vfsFailure);
