@@ -1,5 +1,12 @@
 # @treecrdt/wa-sqlite
 
+## 0.4.2
+
+### Patch Changes
+
+- 7842e93: Use the synchronous wa-sqlite build for dedicated-worker OPFS and memory databases while retaining
+  the Asyncify build for direct and shared-worker OPFS access.
+
 ## 0.4.1
 
 ### Patch Changes
