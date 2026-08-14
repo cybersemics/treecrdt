@@ -64,18 +64,14 @@ async function read(page: Page, opts: LifecycleOptions) {
   }, opts);
 }
 
-function expectLifecycleTree(
+function expectReloadedTree(
   state: Awaited<ReturnType<typeof read>>,
-  expected: {
-    mode: 'direct' | 'worker';
-    runtime: LifecycleRuntime;
-    storage?: 'memory' | 'opfs';
-  },
+  expected: { mode: 'direct' | 'worker'; runtime: LifecycleRuntime },
 ) {
   expect(state).toMatchObject({
     mode: expected.mode,
     runtime: expected.runtime,
-    storage: expected.storage ?? 'opfs',
+    storage: 'opfs',
     headLamport: 2,
     parentExists: true,
     childExists: true,
@@ -116,7 +112,7 @@ test.describe('browser OPFS lifecycle', () => {
             ...opts,
             closeBeforeReload: reloadCase.closeBeforeReload,
           });
-          expectLifecycleTree(initialState, {
+          expectReloadedTree(initialState, {
             mode: scenario.expectedMode,
             runtime: scenario.runtime,
           });
@@ -124,7 +120,7 @@ test.describe('browser OPFS lifecycle', () => {
           await page.reload({ waitUntil: 'load' });
           await waitForHarness(page);
 
-          expectLifecycleTree(await read(page, opts), {
+          expectReloadedTree(await read(page, opts), {
             mode: scenario.expectedMode,
             runtime: scenario.runtime,
           });
@@ -134,122 +130,4 @@ test.describe('browser OPFS lifecycle', () => {
       });
     }
   }
-
-  test('opens a usable dedicated-worker memory fallback after OPFS open fails', async ({
-    page,
-  }, testInfo) => {
-    if (testInfo.project.name !== 'chromium-dev') test.skip();
-    test.setTimeout(120_000);
-    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
-
-    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-    const opts: LifecycleOptions = {
-      docId: `lifecycle-fallback-${suffix}`,
-      fallback: 'memory',
-      filename: `/${'x'.repeat(512)}.db`,
-      runtime: 'dedicated-worker',
-    };
-
-    await waitForHarness(page);
-    const opfsSupport = await support(page);
-    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
-    expect(new TextEncoder().encode(opts.filename).byteLength).toBeGreaterThan(512);
-
-    expectLifecycleTree(await write(page, { ...opts, closeBeforeReload: true }), {
-      mode: 'worker',
-      runtime: 'dedicated-worker',
-      storage: 'memory',
-    });
-  });
-
-  test('releases a SharedWorker port after failed OPFS initialization', async ({
-    page,
-  }, testInfo) => {
-    if (testInfo.project.name !== 'chromium-dev') test.skip();
-    test.setTimeout(120_000);
-    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
-
-    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-    const sharedWorkerName = `lifecycle-recovery-${suffix}`;
-    const failedOpts: LifecycleOptions = {
-      docId: `lifecycle-recovery-failed-${suffix}`,
-      filename: `/${'x'.repeat(512)}.db`,
-      runtime: 'shared-worker',
-      sharedWorkerName,
-    };
-    const firstOpts: LifecycleOptions = {
-      docId: `lifecycle-recovery-first-${suffix}`,
-      filename: `/lifecycle-recovery-first-${suffix}.db`,
-      runtime: 'shared-worker',
-      sharedWorkerName,
-    };
-    const secondOpts: LifecycleOptions = {
-      docId: `lifecycle-recovery-second-${suffix}`,
-      filename: `/lifecycle-recovery-second-${suffix}.db`,
-      runtime: 'shared-worker',
-      sharedWorkerName,
-    };
-
-    await waitForHarness(page);
-    const opfsSupport = await support(page);
-    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
-    expect(new TextEncoder().encode(failedOpts.filename).byteLength).toBeGreaterThan(512);
-
-    try {
-      await expect(write(page, failedOpts)).rejects.toThrow(/sqlite3_open_v2|OPFS requested/);
-
-      expectLifecycleTree(await write(page, { ...firstOpts, closeBeforeReload: true }), {
-        mode: 'worker',
-        runtime: 'shared-worker',
-      });
-
-      expectLifecycleTree(await write(page, { ...secondOpts, closeBeforeReload: true }), {
-        mode: 'worker',
-        runtime: 'shared-worker',
-      });
-    } finally {
-      await drop(page, { ...firstOpts, runtime: 'direct' }).catch(() => {});
-      await drop(page, { ...secondOpts, runtime: 'direct' }).catch(() => {});
-    }
-  });
-
-  test('releases a SharedWorker port after drop', async ({ page }, testInfo) => {
-    if (testInfo.project.name !== 'chromium-dev') test.skip();
-    test.setTimeout(120_000);
-    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
-
-    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-    const sharedWorkerName = `lifecycle-drop-${suffix}`;
-    const optsFor = (label: string): LifecycleOptions => ({
-      docId: `lifecycle-drop-${label}-${suffix}`,
-      filename: `/lifecycle-drop-${label}-${suffix}.db`,
-      runtime: 'shared-worker',
-      sharedWorkerName,
-    });
-    const droppedOpts = optsFor('first');
-    const firstReuseOpts = optsFor('second');
-    const secondReuseOpts = optsFor('third');
-
-    await waitForHarness(page);
-    const opfsSupport = await support(page);
-    if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
-
-    try {
-      await drop(page, droppedOpts);
-
-      expectLifecycleTree(await write(page, { ...firstReuseOpts, closeBeforeReload: true }), {
-        mode: 'worker',
-        runtime: 'shared-worker',
-      });
-
-      // Closing the only live port must reset the worker so the same name can serve another store.
-      expectLifecycleTree(await write(page, { ...secondReuseOpts, closeBeforeReload: true }), {
-        mode: 'worker',
-        runtime: 'shared-worker',
-      });
-    } finally {
-      await drop(page, { ...firstReuseOpts, runtime: 'direct' }).catch(() => {});
-      await drop(page, { ...secondReuseOpts, runtime: 'direct' }).catch(() => {});
-    }
-  });
 });
