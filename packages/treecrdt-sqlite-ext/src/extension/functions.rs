@@ -17,6 +17,7 @@ mod ops;
 mod payload_store;
 mod schema;
 mod sqlite_api;
+mod statement;
 mod util;
 
 use append::{treecrdt_append_op, treecrdt_append_ops};
