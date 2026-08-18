@@ -224,9 +224,6 @@ importers:
 
   packages/sync-protocol/server/postgres-node:
     dependencies:
-      '@treecrdt/auth':
-        specifier: workspace:*
-        version: link:../../../treecrdt-auth
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../../../treecrdt-ts
