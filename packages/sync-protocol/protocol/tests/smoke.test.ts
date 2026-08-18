@@ -641,22 +641,75 @@ test('unsubscribe only removes responder state owned by its transport', async ()
     };
     receiveSync(transportA, docId, subscribe);
     receiveSync(transportB, docId, subscribe);
-    await waitUntil(() => (peer as any).responderSubscriptions.get(subscriptionId)?.size === 2);
+    await waitUntil(
+      () =>
+        (peer as any).responderSubscriptions.get(transportA.transport)?.has(subscriptionId) &&
+        (peer as any).responderSubscriptions.get(transportB.transport)?.has(subscriptionId),
+    );
 
     receiveSync(transportB, docId, {
       case: 'unsubscribe',
       value: { subscriptionId },
     });
-    await waitUntil(() => (peer as any).responderSubscriptions.get(subscriptionId)?.size === 1);
+    await waitUntil(
+      () => !(peer as any).responderSubscriptions.get(transportB.transport)?.has(subscriptionId),
+    );
     expect(
-      (peer as any).responderSubscriptions.get(subscriptionId)?.has(transportA.transport),
+      (peer as any).responderSubscriptions.get(transportA.transport)?.has(subscriptionId),
     ).toBe(true);
 
     receiveSync(transportA, docId, {
       case: 'unsubscribe',
       value: { subscriptionId },
     });
-    await waitUntil(() => !(peer as any).responderSubscriptions.has(subscriptionId));
+    await waitUntil(
+      () => !(peer as any).responderSubscriptions.get(transportA.transport)?.has(subscriptionId),
+    );
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('terminating one same-id subscription leaves the other transport live', async () => {
+  const docId = 'doc-transport-scoped-live-subscription';
+  const subscriptionId = 'shared_subscription';
+  const root = '0'.repeat(32);
+  const backend = new MemoryBackend(docId);
+  const transportA = createTerminalTransport<SyncMessage<Operation>>();
+  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detachA = peer.attach(transportA.transport);
+  const detachB = peer.attach(transportB.transport);
+
+  try {
+    const subscribe: OperationSyncPayloadFor<'subscribe'> = {
+      case: 'subscribe',
+      value: { subscriptionId, filter: { all: {} } },
+    };
+    receiveSync(transportA, docId, subscribe);
+    receiveSync(transportB, docId, subscribe);
+    await waitUntil(
+      () =>
+        sentValues(transportA, 'subscribeAck').length === 1 &&
+        sentValues(transportB, 'subscribeAck').length === 1,
+    );
+    await peer.notifyLocalUpdate();
+
+    transportA.terminate(new Error('transport A closed'));
+    const op = makeOp(replicas.s, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(42),
+      orderKey: orderKeyFromPosition(0),
+    });
+    await backend.applyOps([op]);
+    await peer.notifyLocalUpdate();
+
+    expect(sentValues(transportA, 'opsBatch')).toEqual([]);
+    expect(sentValues(transportB, 'opsBatch')).toEqual([
+      expect.objectContaining({ filterId: subscriptionId, ops: [op] }),
+    ]);
   } finally {
     detachA();
     detachB();
@@ -684,20 +737,28 @@ test('identical responder filter ids remain independent across transports', asyn
   try {
     receiveSync(transportA, docId, hello);
     receiveSync(transportB, docId, hello);
-    await waitUntil(() => (peer as any).responderSessions.get(filterId)?.size === 2);
+    await waitUntil(
+      () =>
+        (peer as any).responderSessions.get(transportA.transport)?.has(filterId) &&
+        (peer as any).responderSessions.get(transportB.transport)?.has(filterId),
+    );
 
     const outOfOrder: OperationSyncPayloadFor<'ribltCodewords'> = {
       case: 'ribltCodewords',
       value: { filterId, round: 0, startIndex: 1n, codewords: [] },
     };
     receiveSync(transportB, docId, outOfOrder);
-    await waitUntil(() => (peer as any).responderSessions.get(filterId)?.size === 1);
-    expect((peer as any).responderSessions.get(filterId)?.has(transportA.transport)).toBe(true);
+    await waitUntil(
+      () => !(peer as any).responderSessions.get(transportB.transport)?.has(filterId),
+    );
+    expect((peer as any).responderSessions.get(transportA.transport)?.has(filterId)).toBe(true);
     expect(transportA.sent.some((msg) => msg.payload.case === 'ribltStatus')).toBe(false);
     expect(transportB.sent.some((msg) => msg.payload.case === 'ribltStatus')).toBe(true);
 
     receiveSync(transportA, docId, outOfOrder);
-    await waitUntil(() => !(peer as any).responderSessions.has(filterId));
+    await waitUntil(
+      () => !(peer as any).responderSessions.get(transportA.transport)?.has(filterId),
+    );
     expect(transportA.sent.some((msg) => msg.payload.case === 'ribltStatus')).toBe(true);
   } finally {
     detachA();
@@ -730,18 +791,22 @@ test('direct-upload acknowledgements are scoped by transport and filter id', asy
   try {
     receiveSync(transportA, docId, hello);
     receiveSync(transportB, docId, hello);
-    await waitUntil(() => (peer as any).responderAwaitingUploadAcks.get(filterId)?.size === 2);
+    await waitUntil(
+      () =>
+        (peer as any).responderAwaitingUploadAcks.get(transportA.transport)?.has(filterId) &&
+        (peer as any).responderAwaitingUploadAcks.get(transportB.transport)?.has(filterId),
+    );
 
     receiveSync(transportA, docId, doneBatch);
     await waitUntil(() => transportA.sent.some((msg) => msg.payload.case === 'opsBatch'));
     expect(transportB.sent.some((msg) => msg.payload.case === 'opsBatch')).toBe(false);
-    expect((peer as any).responderAwaitingUploadAcks.get(filterId)?.has(transportB.transport)).toBe(
+    expect((peer as any).responderAwaitingUploadAcks.get(transportB.transport)?.has(filterId)).toBe(
       true,
     );
 
     receiveSync(transportB, docId, doneBatch);
     await waitUntil(() => transportB.sent.some((msg) => msg.payload.case === 'opsBatch'));
-    expect((peer as any).responderAwaitingUploadAcks.has(filterId)).toBe(false);
+    expect((peer as any).responderAwaitingUploadAcks.size).toBe(0);
   } finally {
     detachA();
     detachB();
@@ -750,23 +815,46 @@ test('direct-upload acknowledgements are scoped by transport and filter id', asy
 
 test('ops batches with the same filter id queue independently across transports', async () => {
   const docId = 'doc-transport-scoped-ops-queue';
+  const root = '0'.repeat(32);
   const backend = new BlockingFirstApplyBackend(docId);
   const transportA = createTerminalTransport<SyncMessage<Operation>>();
   const transportB = createTerminalTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
-  const batch: OperationSyncPayloadFor<'opsBatch'> = {
+  const opA = makeOp(replicas.a, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(1),
+    orderKey: orderKeyFromPosition(0),
+  });
+  const opB = makeOp(replicas.b, 1, 1, {
+    type: 'insert',
+    parent: root,
+    node: nodeIdFromInt(2),
+    orderKey: orderKeyFromPosition(1),
+  });
+  const batchA: OperationSyncPayloadFor<'opsBatch'> = {
     case: 'opsBatch',
-    value: { filterId: 'shared_ops_stream', ops: [], done: false },
+    value: { filterId: 'shared_ops_stream', ops: [opA], done: false },
+  };
+  const batchB: OperationSyncPayloadFor<'opsBatch'> = {
+    case: 'opsBatch',
+    value: { filterId: 'shared_ops_stream', ops: [opB], done: false },
   };
 
   try {
-    receiveSync(transportA, docId, batch);
+    receiveSync(transportA, docId, batchA);
     await waitUntil(() => backend.applyOpsCalls === 1);
-    receiveSync(transportB, docId, batch);
-    await waitUntil(() => backend.applyOpsCalls === 2, {
+    receiveSync(transportB, docId, batchB);
+    await waitUntil(() => backend.hasOp(replicaHex.b, 1), {
       message: 'expected the second transport to use an independent ops queue',
+    });
+    expect(backend.hasOp(replicaHex.a, 1)).toBe(false);
+
+    backend.release();
+    await waitUntil(() => backend.hasOp(replicaHex.a, 1), {
+      message: 'expected the first transport to finish after its apply is released',
     });
   } finally {
     backend.release();

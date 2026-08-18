@@ -243,14 +243,14 @@ type PendingPushOp<Op> = {
 
 type SyncTransport<Op> = DuplexTransport<SyncMessage<Op>>;
 // Responder ids are peer-chosen and only unique within one transport session.
-type TransportOwnedMap<Op, Value> = Map<string, Map<SyncTransport<Op>, Value>>;
+type TransportOwnedMap<Op, Value> = Map<SyncTransport<Op>, Map<string, Value>>;
 
 function getTransportOwned<Op, Value>(
   state: TransportOwnedMap<Op, Value>,
   transport: SyncTransport<Op>,
   id: string,
 ): Value | undefined {
-  return state.get(id)?.get(transport);
+  return state.get(transport)?.get(id);
 }
 
 function setTransportOwned<Op, Value>(
@@ -259,9 +259,9 @@ function setTransportOwned<Op, Value>(
   id: string,
   value: Value,
 ): void {
-  const byTransport = state.get(id) ?? new Map<SyncTransport<Op>, Value>();
-  byTransport.set(transport, value);
-  state.set(id, byTransport);
+  const byId = state.get(transport) ?? new Map<string, Value>();
+  byId.set(id, value);
+  state.set(transport, byId);
 }
 
 function deleteTransportOwned<Op, Value>(
@@ -269,10 +269,10 @@ function deleteTransportOwned<Op, Value>(
   transport: SyncTransport<Op>,
   id: string,
 ): boolean {
-  const byTransport = state.get(id);
-  if (!byTransport) return false;
-  const deleted = byTransport.delete(transport);
-  if (byTransport.size === 0) state.delete(id);
+  const byId = state.get(transport);
+  if (!byId) return false;
+  const deleted = byId.delete(id);
+  if (byId.size === 0) state.delete(transport);
   return deleted;
 }
 
@@ -280,7 +280,7 @@ function dropTransportOwned<Op, Value>(
   state: TransportOwnedMap<Op, Value>,
   transport: SyncTransport<Op>,
 ): void {
-  for (const id of state.keys()) deleteTransportOwned(state, transport, id);
+  state.delete(transport);
 }
 
 function peerAdvertisedOpAuth(capabilities: readonly Capability[]): boolean {
@@ -345,6 +345,13 @@ export class SyncPeer<Op> {
     this.deriveOpRef = opts.deriveOpRef;
   }
 
+  /**
+   * Attach a transport for one connection lifecycle.
+   *
+   * A transport object must be attached at most once and must not be reused after
+   * detachment or terminal notification. Reconnect with a fresh transport object;
+   * negotiated capability and authorization state is scoped to this lifecycle.
+   */
   attach(
     transport: DuplexTransport<SyncMessage<Op>>,
     attachOpts: SyncPeerAttachOptions<Op> = {},

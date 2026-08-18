@@ -447,7 +447,11 @@ export async function startWebSocketSyncServer<Op>(
       addDocPeer(docId, peer);
       detach = peer.attach(transport, {
         onError: () => {
-          if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'sync handler error');
+          // Let a codec-triggered protocol close (1002) start before falling back
+          // to a generic handler-error close.
+          queueMicrotask(() => {
+            if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'sync handler error');
+          });
         },
       });
 

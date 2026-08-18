@@ -21,7 +21,7 @@ export type BroadcastPresencePeer = {
 };
 
 type Connection<M> = {
-  transport: DuplexTransport<M> & { close?: () => void };
+  transport: DuplexTransport<M>;
   detach: () => void;
 };
 
@@ -101,7 +101,7 @@ export function createBroadcastPresenceMesh<M>(opts: {
       createChannel: opts.createChannel,
     });
 
-    const transport: DuplexTransport<M> & { close?: () => void } = {
+    const transport: DuplexTransport<M> = {
       ...rawTransport,
       async send(msg) {
         if (!isOnline()) return;

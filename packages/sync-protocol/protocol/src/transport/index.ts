@@ -1,6 +1,7 @@
 import { createTerminalSignal } from './terminal.js';
 
 export { createTerminalSignal } from './terminal.js';
+export type { TerminalHandler, TerminalSignal } from './terminal.js';
 
 export type Unsubscribe = () => void;
 
@@ -13,8 +14,10 @@ export interface DuplexTransport<M> {
    * Subscribe to the transport becoming permanently unusable.
    *
    * Message-only transports may omit this capability. Implementations that expose
-   * it must notify each handler at most once. A missing error denotes an ordinary
-   * close rather than a protocol or I/O failure.
+   * it must notify each handler at most once. The optional error is a best-effort
+   * diagnostic cause. Implementations may report an error for any terminal event,
+   * including a clean WebSocket closing handshake, so consumers must not infer
+   * successful protocol completion from its absence.
    */
   onTerminal?(handler: (error?: unknown) => void): Unsubscribe;
 }
@@ -116,12 +119,14 @@ export function wrapDuplexTransportWithCodec<Wire, Message>(
   const terminal = createTerminalSignal();
 
   const closeForProtocolError = (error: unknown) => {
+    // Settle before close() so a synchronous terminal callback or reentrant
+    // message cannot replace the decode failure or deliver another message.
+    terminal.notify(error);
     try {
       transport.close?.(error);
     } catch {
       // The decode failure remains the primary terminal cause.
     }
-    terminal.notify(error);
   };
 
   return {

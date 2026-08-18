@@ -5,6 +5,10 @@ export type BrowserWebSocketMessageListener = (event: { data: unknown }) => void
 export type BrowserWebSocketCloseListener = (event: { code?: number; reason?: string }) => void;
 export type BrowserWebSocketErrorListener = (event: unknown) => void;
 
+/**
+ * Minimal standards-compatible WebSocket surface used by the browser adapter.
+ * Custom implementations must expose message, close, and error events.
+ */
 export type BrowserWebSocketLike = {
   readonly readyState: number;
   readonly bufferedAmount: number;
