@@ -291,7 +291,7 @@ export function usePlaygroundSync(opts: UsePlaygroundSyncOptions): PlaygroundSyn
       // ignore
     }
     try {
-      (conn.transport as any).close?.();
+      conn.transport.close();
     } catch {
       // ignore
     }

@@ -1,7 +1,10 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { createBrowserWebSocketTransport } from '../dist/browser.js';
-import { wrapDuplexTransportWithCodec } from '../dist/transport/index.js';
+import {
+  createTransportCloseController,
+  wrapDuplexTransportWithCodec,
+} from '../dist/transport/index.js';
 import type { DuplexTransport } from '../dist/transport/index.js';
 
 type Listener = (event: any) => void;
@@ -108,11 +111,11 @@ test('browser websocket transport serializes sends until buffered data drains', 
   await second;
 });
 
-test('browser websocket transport reports close and error as terminal', async () => {
+test('browser websocket transport reports close and error reasons', async () => {
   const closedSocket = new MockBrowserWebSocket();
   const closedTransport = createBrowserWebSocketTransport(closedSocket);
   const closeError = new Promise<unknown>((resolve) =>
-    closedTransport.onTerminal?.((error) => resolve(error)),
+    closedTransport.closeSignal.subscribe((error) => resolve(error)),
   );
 
   closedSocket.emitClose(1006, 'connection lost');
@@ -123,13 +126,24 @@ test('browser websocket transport reports close and error as terminal', async ()
   const erroredSocket = new MockBrowserWebSocket();
   const erroredTransport = createBrowserWebSocketTransport(erroredSocket);
   const socketError = new Promise<unknown>((resolve) =>
-    erroredTransport.onTerminal?.((error) => resolve(error)),
+    erroredTransport.closeSignal.subscribe((error) => resolve(error)),
   );
 
   erroredSocket.emitError();
   await expect(socketError).resolves.toEqual(
     expect.objectContaining({ message: 'websocket error' }),
   );
+});
+
+test('explicit browser websocket close preserves a clean reason', () => {
+  const ws = new MockBrowserWebSocket();
+  const transport = createBrowserWebSocketTransport(ws);
+
+  transport.close();
+
+  expect(transport.closeSignal.closed).toBe(true);
+  expect(transport.closeSignal.reason).toBeUndefined();
+  expect(ws.readyState).toBe(MockBrowserWebSocket.CLOSED);
 });
 
 test('a malformed codec frame closes the browser websocket without escaping', async () => {
@@ -142,7 +156,7 @@ test('a malformed codec frame closes the browser websocket without escaping', as
     },
   });
   const failure = new Promise<unknown>((resolve) =>
-    transport.onTerminal?.((error) => resolve(error)),
+    transport.closeSignal.subscribe((error) => resolve(error)),
   );
   transport.onMessage(() => {
     throw new Error('malformed frame must not be delivered');
@@ -156,14 +170,28 @@ test('a malformed codec frame closes the browser websocket without escaping', as
   expect(ws.readyState).toBe(MockBrowserWebSocket.CLOSED);
 });
 
-test('codec wrapper removes its upstream terminal listener when detached', () => {
-  const terminalHandlers = new Set<(error?: unknown) => void>();
+test('codec wrapper removes its upstream close listener when closed', () => {
+  const closeController = createTransportCloseController();
+  let closeSubscriberCount = 0;
   const wire: DuplexTransport<Uint8Array> = {
     send: async () => {},
     onMessage: () => () => {},
-    onTerminal: (handler) => {
-      terminalHandlers.add(handler);
-      return () => terminalHandlers.delete(handler);
+    close: (reason) => closeController.close(reason),
+    closeSignal: {
+      get closed() {
+        return closeController.signal.closed;
+      },
+      get reason() {
+        return closeController.signal.reason;
+      },
+      subscribe(handler) {
+        closeSubscriberCount += 1;
+        const unsubscribe = closeController.signal.subscribe(handler);
+        return () => {
+          closeSubscriberCount -= 1;
+          unsubscribe();
+        };
+      },
     },
   };
   const transport = wrapDuplexTransportWithCodec(wire, {
@@ -171,8 +199,7 @@ test('codec wrapper removes its upstream terminal listener when detached', () =>
     decode: (bytes) => new TextDecoder().decode(bytes),
   });
 
-  const unsubscribe = transport.onTerminal?.(() => {});
-  expect(terminalHandlers.size).toBe(1);
-  unsubscribe?.();
-  expect(terminalHandlers.size).toBe(0);
+  expect(closeSubscriberCount).toBe(1);
+  transport.close();
+  expect(closeSubscriberCount).toBe(0);
 });

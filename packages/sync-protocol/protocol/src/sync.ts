@@ -242,6 +242,7 @@ type PendingPushOp<Op> = {
 };
 
 type SyncTransport<Op> = DuplexTransport<SyncMessage<Op>>;
+const attachedTransports = new WeakSet<object>();
 // Responder ids are peer-chosen and only unique within one transport session.
 type TransportOwnedMap<Op, Value> = Map<SyncTransport<Op>, Map<string, Value>>;
 
@@ -349,21 +350,31 @@ export class SyncPeer<Op> {
    * Attach a transport for one connection lifecycle.
    *
    * A transport object must be attached at most once and must not be reused after
-   * detachment or terminal notification. Reconnect with a fresh transport object;
+   * detachment or closure. Reconnect with a fresh transport object;
    * negotiated capability and authorization state is scoped to this lifecycle.
    */
   attach(
     transport: DuplexTransport<SyncMessage<Op>>,
     attachOpts: SyncPeerAttachOptions<Op> = {},
   ): () => void {
+    if (attachedTransports.has(transport)) {
+      throw new Error('sync transport objects may only be attached once');
+    }
+    if (transport.closeSignal.closed) {
+      throw transport.closeSignal.reason instanceof Error
+        ? transport.closeSignal.reason
+        : new Error('cannot attach a closed sync transport');
+    }
+    attachedTransports.add(transport);
+
     let failed = false;
     let unsubscribeMessage: (() => void) | undefined;
-    let unsubscribeTerminal: (() => void) | undefined;
+    let unsubscribeClose: (() => void) | undefined;
     const stopListening = () => {
       ignoreErrors(unsubscribeMessage);
       unsubscribeMessage = undefined;
-      ignoreErrors(unsubscribeTerminal);
-      unsubscribeTerminal = undefined;
+      ignoreErrors(unsubscribeClose);
+      unsubscribeClose = undefined;
     };
     const fail = (error: unknown, report: boolean, close: boolean) => {
       if (failed) return;
@@ -373,7 +384,7 @@ export class SyncPeer<Op> {
         error instanceof Error ? error : new Error(String(error ?? 'sync transport closed'));
       this.failPendingSessionsForTransport(transport, normalized);
       this.dropResponderStateForTransport(transport);
-      if (close) ignoreErrors(() => transport.close?.(normalized));
+      if (close) ignoreErrors(() => transport.close(normalized));
       if (report) ignoreErrors(() => attachOpts.onError?.({ error: normalized, transport }));
     };
 
@@ -389,11 +400,9 @@ export class SyncPeer<Op> {
     });
     if (failed) stopListening();
 
-    if (!failed && transport.onTerminal) {
-      const unsubscribe = transport.onTerminal((error) => fail(error, true, false));
-      if (failed) ignoreErrors(unsubscribe);
-      else unsubscribeTerminal = unsubscribe;
-    }
+    const unsubscribe = transport.closeSignal.subscribe((reason) => fail(reason, true, false));
+    if (failed) ignoreErrors(unsubscribe);
+    else unsubscribeClose = unsubscribe;
 
     return () => fail(new Error('sync transport detached'), false, false);
   }

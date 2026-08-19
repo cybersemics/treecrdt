@@ -4,8 +4,11 @@ import { test, expect } from 'vitest';
 import WebSocket from 'ws';
 
 import { SyncPeer, type SyncBackend, type SyncMessage } from '@treecrdt/sync-protocol';
-import type { WireCodec } from '@treecrdt/sync-protocol/transport';
-import { wrapDuplexTransportWithCodec } from '@treecrdt/sync-protocol/transport';
+import type { DuplexTransport, WireCodec } from '@treecrdt/sync-protocol/transport';
+import {
+  createTransportCloseController,
+  wrapDuplexTransportWithCodec,
+} from '@treecrdt/sync-protocol/transport';
 
 import { startWebSocketSyncServer } from '../dist/index.js';
 
@@ -137,14 +140,36 @@ async function waitUntil(
   }
 }
 
-function createClientWebSocketTransport(ws: WebSocket) {
+function createClientWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
+  const closeController = createTransportCloseController();
+
+  ws.once('close', () => closeController.close());
+  ws.once('error', (error) => closeController.close(error));
+
   return {
-    send: (bytes: Uint8Array) =>
-      new Promise<void>((resolve, reject) => {
-        ws.send(bytes, { binary: true }, (err) => (err ? reject(err) : resolve()));
-      }),
+    send: (bytes) => {
+      if (closeController.signal.closed) {
+        return Promise.reject(
+          closeController.signal.reason instanceof Error
+            ? closeController.signal.reason
+            : new Error('websocket transport is closed'),
+        );
+      }
+      return new Promise<void>((resolve, reject) => {
+        ws.send(bytes, { binary: true }, (error) => {
+          if (error) {
+            closeController.close(error);
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    },
     onMessage: (handler: (bytes: Uint8Array) => void) => {
+      if (closeController.signal.closed) return () => {};
       const onMessage = (data: WebSocket.RawData) => {
+        if (closeController.signal.closed) return;
         if (data instanceof Uint8Array) handler(data);
         else if (data instanceof ArrayBuffer) handler(new Uint8Array(data));
         else if (Array.isArray(data)) handler(Buffer.concat(data));
@@ -153,6 +178,12 @@ function createClientWebSocketTransport(ws: WebSocket) {
       ws.on('message', onMessage);
       return () => ws.off('message', onMessage);
     },
+    close: (reason) => {
+      if (closeController.signal.closed) return;
+      closeController.close(reason);
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+    },
+    closeSignal: closeController.signal,
   };
 }
 
@@ -520,8 +551,8 @@ test(
 
       expect(opens).toBe(1);
       expect(releases).toBe(1);
-      expect(peersAdded <= 1).toBe(true);
-      expect(peersRemoved).toBe(peersAdded);
+      expect(peersAdded).toBe(0);
+      expect(peersRemoved).toBe(0);
     } finally {
       await server.close();
     }

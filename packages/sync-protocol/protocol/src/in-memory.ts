@@ -69,6 +69,7 @@ export function createInMemoryConnectedPeers<Op>(opts: {
     detach: () => {
       detachA();
       detachB();
+      transportA.close();
     },
   };
 }

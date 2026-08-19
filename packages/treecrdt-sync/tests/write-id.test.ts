@@ -31,7 +31,7 @@ test('onMaterialized receives per-change writeIds from appendMany(…, { writeId
   const docId = `write-id-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
-  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
+  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport);
 
   const events: MaterializationEvent[] = [];
   const u = client.onMaterialized((e) => {
@@ -53,6 +53,7 @@ test('onMaterialized receives per-change writeIds from appendMany(…, { writeId
     await sync.close();
   }
 
+  expect(transport.closeSignal.closed).toBe(true);
   const withWrite = events.find((e) =>
     e.changes.some(
       (c) => c.kind === 'insert' && c.node === n1 && c.source?.writeIds?.includes('my-batch-42'),
@@ -69,7 +70,7 @@ test('onMaterialized receives per-change writeIds from append(…, { writeId })'
   const docId = `write-id-s-${Math.random().toString(16).slice(2)}`;
   const { client } = createInMemoryTestClientWithWriteId(docId, []);
   const transport = noopTransport();
-  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport, undefined);
+  const sync = createTreecrdtWebSocketSyncFromTransport(client, transport);
   const seen: string[] = [];
   let sawRootWriteIds = false;
   const u = client.onMaterialized((e) => {

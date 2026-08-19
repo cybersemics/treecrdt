@@ -39,13 +39,12 @@ function mergeLiveSubscribeOptions(opts: SyncSubscribeOptions = {}): SyncSubscri
 
 /**
  * Build a high-level sync handle for an existing duplex transport (used by WebSocket in production;
- * in-memory transport in tests). Attaches a {@link SyncPeer} to the transport; `onCloseTransport`
- * runs after the peer is detached (e.g. close WebSocket).
+ * in-memory transport in tests). Takes ownership of a single-use transport, attaches a
+ * {@link SyncPeer}, and closes the transport after the peer is detached.
  */
 export function createTreecrdtWebSocketSyncFromTransport(
   client: TreecrdtWebSocketSyncClient,
   transport: DuplexTransport<SyncMessage<Operation>>,
-  onCloseTransport: (() => void) | undefined,
   options: CreateTreecrdtWebSocketSyncFromTransportOptions = {},
 ): TreecrdtWebSocketSync {
   const {
@@ -137,7 +136,7 @@ export function createTreecrdtWebSocketSyncFromTransport(
         // ignore
       }
       try {
-        onCloseTransport?.();
+        transport.close();
       } catch {
         // ignore
       }

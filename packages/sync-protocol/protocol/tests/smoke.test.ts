@@ -9,7 +9,10 @@ import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { treecrdtSyncV0ProtobufCodec } from '../dist/protobuf.js';
 import { SyncPeer } from '../dist/sync.js';
 import { createInMemoryConnectedPeers } from '../dist/in-memory.js';
-import { wrapDuplexTransportWithCodec } from '../dist/transport/index.js';
+import {
+  createTransportCloseController,
+  wrapDuplexTransportWithCodec,
+} from '../dist/transport/index.js';
 import type { DuplexTransport } from '../dist/transport/index.js';
 import { ErrorCode } from '../dist/types.js';
 import type { Filter, OpRef, SyncBackend, SyncMessage } from '../dist/types.js';
@@ -65,31 +68,57 @@ function createTimedDuplex<M>(
 ): [DuplexTransport<M>, DuplexTransport<M>] {
   const aHandlers = new Set<(msg: M) => void>();
   const bHandlers = new Set<(msg: M) => void>();
+  const aClose = createTransportCloseController();
+  const bClose = createTransportCloseController();
   const aToBDelayMs = opts.aToBDelayMs ?? 0;
   const bToADelayMs = opts.bToADelayMs ?? 0;
+  const closePair = (reason?: unknown) => {
+    aClose.close(reason);
+    bClose.close(reason);
+    aHandlers.clear();
+    bHandlers.clear();
+  };
 
   const a: DuplexTransport<M> = {
     async send(msg) {
+      if (aClose.signal.closed) {
+        throw aClose.signal.reason instanceof Error
+          ? aClose.signal.reason
+          : new Error('transport is closed');
+      }
       setTimeout(() => {
+        if (aClose.signal.closed || bClose.signal.closed) return;
         for (const h of bHandlers) h(msg);
       }, aToBDelayMs);
     },
     onMessage(handler) {
+      if (aClose.signal.closed) return () => {};
       aHandlers.add(handler);
       return () => aHandlers.delete(handler);
     },
+    close: closePair,
+    closeSignal: aClose.signal,
   };
 
   const b: DuplexTransport<M> = {
     async send(msg) {
+      if (bClose.signal.closed) {
+        throw bClose.signal.reason instanceof Error
+          ? bClose.signal.reason
+          : new Error('transport is closed');
+      }
       setTimeout(() => {
+        if (aClose.signal.closed || bClose.signal.closed) return;
         for (const h of aHandlers) h(msg);
       }, bToADelayMs);
     },
     onMessage(handler) {
+      if (bClose.signal.closed) return () => {};
       bHandlers.add(handler);
       return () => bHandlers.delete(handler);
     },
+    close: closePair,
+    closeSignal: bClose.signal,
   };
 
   return [a, b];
@@ -100,34 +129,60 @@ function createLoggedTimedDuplex<M>(
 ): [DuplexTransport<M>, DuplexTransport<M>, Array<{ dir: 'aToB' | 'bToA'; msg: M }>] {
   const aHandlers = new Set<(msg: M) => void>();
   const bHandlers = new Set<(msg: M) => void>();
+  const aClose = createTransportCloseController();
+  const bClose = createTransportCloseController();
   const log: Array<{ dir: 'aToB' | 'bToA'; msg: M }> = [];
   const aToBDelayMs = opts.aToBDelayMs ?? 0;
   const bToADelayMs = opts.bToADelayMs ?? 0;
+  const closePair = (reason?: unknown) => {
+    aClose.close(reason);
+    bClose.close(reason);
+    aHandlers.clear();
+    bHandlers.clear();
+  };
 
   const a: DuplexTransport<M> = {
     async send(msg) {
+      if (aClose.signal.closed) {
+        throw aClose.signal.reason instanceof Error
+          ? aClose.signal.reason
+          : new Error('transport is closed');
+      }
       log.push({ dir: 'aToB', msg });
       setTimeout(() => {
+        if (aClose.signal.closed || bClose.signal.closed) return;
         for (const h of bHandlers) h(msg);
       }, aToBDelayMs);
     },
     onMessage(handler) {
+      if (aClose.signal.closed) return () => {};
       aHandlers.add(handler);
       return () => aHandlers.delete(handler);
     },
+    close: closePair,
+    closeSignal: aClose.signal,
   };
 
   const b: DuplexTransport<M> = {
     async send(msg) {
+      if (bClose.signal.closed) {
+        throw bClose.signal.reason instanceof Error
+          ? bClose.signal.reason
+          : new Error('transport is closed');
+      }
       log.push({ dir: 'bToA', msg });
       setTimeout(() => {
+        if (aClose.signal.closed || bClose.signal.closed) return;
         for (const h of aHandlers) h(msg);
       }, bToADelayMs);
     },
     onMessage(handler) {
+      if (bClose.signal.closed) return () => {};
       bHandlers.add(handler);
       return () => bHandlers.delete(handler);
     },
+    close: closePair,
+    closeSignal: bClose.signal,
   };
 
   return [a, b, log];
@@ -137,39 +192,45 @@ function createMacrotaskDuplex<M>(): [DuplexTransport<M>, DuplexTransport<M>] {
   return createTimedDuplex();
 }
 
-function createTerminalTransport<M>(): {
+function createCloseControlledTransport<M>(): {
   transport: DuplexTransport<M>;
   sent: M[];
   messageHandlerCount: () => number;
   receive: (message: M) => void;
-  terminate: (error?: unknown) => void;
+  close: (reason?: unknown) => void;
 } {
   const messageHandlers = new Set<(msg: M) => void>();
-  const terminalHandlers = new Set<(error?: unknown) => void>();
+  const closeController = createTransportCloseController();
   const sent: M[] = [];
+  const close = (reason?: unknown) => {
+    closeController.close(reason);
+    messageHandlers.clear();
+  };
   return {
     sent,
     messageHandlerCount: () => messageHandlers.size,
     transport: {
       async send(msg) {
+        if (closeController.signal.closed) {
+          throw closeController.signal.reason instanceof Error
+            ? closeController.signal.reason
+            : new Error('transport is closed');
+        }
         sent.push(msg);
       },
       onMessage(handler) {
+        if (closeController.signal.closed) return () => {};
         messageHandlers.add(handler);
         return () => messageHandlers.delete(handler);
       },
-      onTerminal(handler) {
-        terminalHandlers.add(handler);
-        return () => terminalHandlers.delete(handler);
-      },
+      close,
+      closeSignal: closeController.signal,
     },
     receive(message) {
+      if (closeController.signal.closed) return;
       for (const handler of messageHandlers) handler(message);
     },
-    terminate(error) {
-      for (const handler of terminalHandlers) handler(error);
-      terminalHandlers.clear();
-    },
+    close,
   };
 }
 
@@ -179,7 +240,9 @@ type OperationSyncPayloadFor<Case extends OperationSyncCase> = Extract<
   OperationSyncPayload,
   { case: Case }
 >;
-type OperationTransportControl = ReturnType<typeof createTerminalTransport<SyncMessage<Operation>>>;
+type OperationTransportControl = ReturnType<
+  typeof createCloseControlledTransport<SyncMessage<Operation>>
+>;
 
 function receiveSync<Case extends OperationSyncCase>(
   control: OperationTransportControl,
@@ -439,10 +502,36 @@ class BlockingFirstApplyBackend extends MemoryBackend {
   }
 }
 
+test('a sync transport object can only be attached once', () => {
+  const backend = new MemoryBackend('doc-transport-attach-once');
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detach = peer.attach(control.transport);
+
+  expect(() => peer.attach(control.transport)).toThrow('may only be attached once');
+  detach();
+  expect(() => peer.attach(control.transport)).toThrow('may only be attached once');
+  const otherPeer = new SyncPeer(new MemoryBackend('doc-transport-attach-once-other-peer'));
+  expect(() => otherPeer.attach(control.transport)).toThrow('may only be attached once');
+
+  control.close();
+});
+
+test('an already closed transport cannot be attached', () => {
+  const backend = new MemoryBackend('doc-transport-closed-before-attach');
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const reason = new Error('closed before attach');
+
+  control.close(reason);
+
+  expect(() => peer.attach(control.transport)).toThrow('closed before attach');
+});
+
 test('transport close rejects only its own syncOnce handshake', async () => {
   const backend = new MemoryBackend('doc-transport-scoped-close');
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
@@ -453,14 +542,14 @@ test('transport close rejects only its own syncOnce handshake', async () => {
   await waitUntil(() => transportA.sent.length > 0 && transportB.sent.length > 0, {
     message: 'expected both syncOnce calls to send Hello',
   });
-  transportA.terminate(new Error('transport A closed'));
+  transportA.close(new Error('transport A closed'));
 
   await rejectedA;
   expect(transportA.messageHandlerCount()).toBe(0);
   expect(transportB.messageHandlerCount()).toBe(1);
 
   const rejectedB = expect(syncB).rejects.toThrow('transport B closed');
-  transportB.terminate(new Error('transport B closed'));
+  transportB.close(new Error('transport B closed'));
   await rejectedB;
   detachA();
   detachB();
@@ -469,8 +558,8 @@ test('transport close rejects only its own syncOnce handshake', async () => {
 test('riblt status only advances the session owned by its transport', async () => {
   const docId = 'doc-transport-scoped-riblt-status';
   const backend = new MemoryBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
@@ -558,8 +647,8 @@ test('riblt status only advances the session owned by its transport', async () =
 test('subscription acknowledgements and errors are scoped to their transport', async () => {
   const docId = 'doc-transport-scoped-subscription';
   const backend = new MemoryBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const verifiedPurposes: string[] = [];
   const peer = new SyncPeer(backend, {
     requireAuthForFilters: false,
@@ -628,8 +717,8 @@ test('unsubscribe only removes responder state owned by its transport', async ()
   const docId = 'doc-transport-scoped-unsubscribe';
   const subscriptionId = 'sub_transport_a';
   const backend = new MemoryBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
@@ -676,8 +765,8 @@ test('terminating one same-id subscription leaves the other transport live', asy
   const subscriptionId = 'shared_subscription';
   const root = '0'.repeat(32);
   const backend = new MemoryBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
@@ -696,7 +785,7 @@ test('terminating one same-id subscription leaves the other transport live', asy
     );
     await peer.notifyLocalUpdate();
 
-    transportA.terminate(new Error('transport A closed'));
+    transportA.close(new Error('transport A closed'));
     const op = makeOp(replicas.s, 1, 1, {
       type: 'insert',
       parent: root,
@@ -720,8 +809,8 @@ test('identical responder filter ids remain independent across transports', asyn
   const docId = 'doc-transport-scoped-responder-filter';
   const filterId = 'shared_filter_id';
   const backend = new MemoryBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
@@ -770,8 +859,8 @@ test('direct-upload acknowledgements are scoped by transport and filter id', asy
   const docId = 'doc-transport-scoped-upload-ack';
   const filterId = 'shared_upload_filter';
   const backend = new MemoryBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
@@ -817,8 +906,8 @@ test('ops batches with the same filter id queue independently across transports'
   const docId = 'doc-transport-scoped-ops-queue';
   const root = '0'.repeat(32);
   const backend = new BlockingFirstApplyBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);
@@ -867,8 +956,8 @@ test('ops batches with the same filter id queue independently across transports'
 test('addressed and global errors only reject sessions owned by their transport', async () => {
   const docId = 'doc-transport-scoped-errors';
   const backend = new MemoryBackend(docId);
-  const transportA = createTerminalTransport<SyncMessage<Operation>>();
-  const transportB = createTerminalTransport<SyncMessage<Operation>>();
+  const transportA = createCloseControlledTransport<SyncMessage<Operation>>();
+  const transportB = createCloseControlledTransport<SyncMessage<Operation>>();
   const peer = new SyncPeer(backend);
   const detachA = peer.attach(transportA.transport);
   const detachB = peer.attach(transportB.transport);

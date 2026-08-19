@@ -1,5 +1,5 @@
 import type { DuplexTransport } from './index.js';
-import { createTerminalSignal } from './terminal.js';
+import { createTransportCloseController } from './close-signal.js';
 
 export type BrowserWebSocketMessageListener = (event: { data: unknown }) => void;
 export type BrowserWebSocketCloseListener = (event: { code?: number; reason?: string }) => void;
@@ -85,7 +85,7 @@ function waitForWebSocketDrain(
 export function createBrowserWebSocketTransport(
   ws: BrowserWebSocketLike,
   opts: BrowserWebSocketTransportOptions = {},
-): DuplexTransport<Uint8Array> & { close: (error?: unknown) => void } {
+): DuplexTransport<Uint8Array> {
   const resolvedOpts: Required<BrowserWebSocketTransportOptions> = {
     highWaterMark: opts.highWaterMark ?? DEFAULT_HIGH_WATER_MARK,
     lowWaterMark: opts.lowWaterMark ?? DEFAULT_LOW_WATER_MARK,
@@ -94,9 +94,10 @@ export function createBrowserWebSocketTransport(
   };
 
   let sendQueue: Promise<void> = Promise.resolve();
-  const terminal = createTerminalSignal();
-  const closeWithError = (error: unknown) => {
-    terminal.notify(error);
+  const closeController = createTransportCloseController();
+  const closeWithReason = (reason: unknown) => {
+    if (closeController.signal.closed) return;
+    closeController.close(reason);
     try {
       ws.close();
     } catch {
@@ -107,23 +108,25 @@ export function createBrowserWebSocketTransport(
   const onClose: BrowserWebSocketCloseListener = (event) => {
     const code = typeof event.code === 'number' ? ` (${event.code})` : '';
     const reason = event.reason ? `: ${event.reason}` : '';
-    terminal.notify(new Error(`websocket closed${code}${reason}`));
+    closeController.close(new Error(`websocket closed${code}${reason}`));
   };
   const onError: BrowserWebSocketErrorListener = () => {
-    closeWithError(new Error('websocket error'));
+    closeWithReason(new Error('websocket error'));
   };
   ws.addEventListener('close', onClose);
   ws.addEventListener('error', onError);
 
   if (ws.readyState > browserWebSocketOpenState(ws)) {
-    terminal.notify(new Error('websocket is not open'));
+    closeController.close(new Error('websocket is not open'));
   }
 
   return {
     send: (bytes) => {
       const run = async () => {
-        if (terminal.settled) {
-          throw terminal.error instanceof Error ? terminal.error : new Error('websocket is closed');
+        if (closeController.signal.closed) {
+          throw closeController.signal.reason instanceof Error
+            ? closeController.signal.reason
+            : new Error('websocket is closed');
         }
         const openState = browserWebSocketOpenState(ws);
         if (ws.readyState !== openState) {
@@ -145,16 +148,17 @@ export function createBrowserWebSocketTransport(
       return next;
     },
     onMessage: (handler) => {
+      if (closeController.signal.closed) return () => {};
       let active = true;
       const onMessage = (event: { data: unknown }) => {
         void Promise.resolve(coerceWebSocketDataToBytes(event.data)).then((bytes) => {
-          if (!active || terminal.settled) return;
+          if (!active || closeController.signal.closed) return;
           if (!bytes) {
-            closeWithError(new Error('unsupported websocket message type'));
+            closeWithReason(new Error('unsupported websocket message type'));
             return;
           }
           handler(bytes);
-        }, closeWithError);
+        }, closeWithReason);
       };
       ws.addEventListener('message', onMessage);
       return () => {
@@ -162,14 +166,7 @@ export function createBrowserWebSocketTransport(
         ws.removeEventListener('message', onMessage);
       };
     },
-    onTerminal: terminal.subscribe,
-    close: (error) => {
-      terminal.notify(error ?? new Error('websocket closed'));
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-    },
+    close: closeWithReason,
+    closeSignal: closeController.signal,
   };
 }
