@@ -1,4 +1,4 @@
-#![cfg(all(feature = "rusqlite-storage", feature = "ext-sqlite"))]
+#![cfg(feature = "ext-sqlite")]
 use std::env;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};

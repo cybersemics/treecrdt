@@ -1475,7 +1475,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlite3ext-sys",
- "tempfile",
  "treecrdt-core",
  "treecrdt-test-support",
 ]
