@@ -238,38 +238,36 @@ operation; tombstones use the explicit absent-state form. Because every operatio
 presence tag, a relay cannot strip delete state to bypass this policy. Applications use
 `signTreecrdtOp` and `verifyTreecrdtOp`, which enforce these invariants.
 
-## Subtree scope enforcement and `pending_context`
+## Subtree reads and operation writes
 
-Subtree ACLs require the verifier to answer: “is the node touched by this op within the granted subtree?”
+### Stateful subtree scopes remain available for reads
 
-That check depends on **tree context** (ancestry). Under partial replication and/or out-of-order delivery, a verifier may
-receive an op before it has enough structure to decide.
+Read/filter authorization can evaluate the requested node against the receiver's current materialized ancestry. The
+reference evaluator uses a tri-state result:
 
-This extension uses a **tri-state** outcome for scope checks:
+- `allow`: the requested node is within scope
+- `deny`: the requested node is outside scope
+- `unknown`: the receiver lacks enough ancestry to decide
 
-- `allow`: op is within scope
-- `deny`: op is outside scope (reject immediately)
-- `unknown`: verifier lacks enough local ancestry context to decide
+An `unknown` read decision fails closed. `filterOutgoingOps` also applies these scopes when projecting operations for an
+authorized filter.
 
-### `pending_context` disposition (fail-closed, replayable)
+### Operation writes require a document-wide grant
 
-When the scope check is `unknown`, verifiers MUST NOT apply the op to CRDT state.
+The reference implementation does **not** authorize insert, move, payload, delete, or tombstone operations from a
+non-document-wide ancestry scope. This includes a non-ROOT `root`, any `max_depth`, and any `exclude` restriction.
 
-Instead, the sync layer can return a `pending_context` disposition and store the op in a sidecar pending table. Once more
-structure arrives (e.g. an insert/move that establishes the parent chain), the verifier retries authorization and either:
+Current ancestry is not a stable authorization witness: one peer can accept an operation while a node appears inside the
+scope, then receive an earlier move and replay the same operation with that node outside the scope. A peer that received
+the move first would reject the operation, so receiver-local ancestry can create both an authorization bypass and
+permanent op-set divergence. Insert/move destination checks and defensive delete subtree effects have the same problem.
 
-- applies the op if it becomes `allow`, or
-- drops it if it becomes provably `deny`
+Until an operation carries an authenticated causal ancestry witness that every peer can verify, only a ROOT scope with no
+`max_depth` or `exclude` is state-independent enough to authorize writes. Non-document-wide write grants return `deny`
+immediately; they are not placed in `pending_context`. Existing subtree read/filter behavior is unchanged.
 
-This gives **fail-closed behavior** without permanently losing valid ops.
-
-### Practical guidance
-
-To avoid pending ops that never resolve, deployments SHOULD ensure that any peer expected to *verify* subtree-scoped ops
-syncs enough **clear structural metadata** for the affected subtree (and potentially its ancestor chain).
-
-“Server” and “client” are not fundamentally different here: both are just peers with different local views. A sync server
-often stores more structure (full tree index), so it can resolve `allow/deny` more often and avoid pending.
+`pending_context` remains a protocol mechanism for custom auth schemes that have a stable, verifiable way to resolve
+missing context. It is not used to make mutable receiver ancestry authoritative for reference operation writes.
 
 ## Sidecar storage (same SQLite database)
 
