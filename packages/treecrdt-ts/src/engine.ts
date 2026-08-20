@@ -17,7 +17,7 @@ export type MaterializationSource = {
   };
   /** Local write ids supplied to the append/local write API that produced this visible change. */
   writeIds?: string[];
-  /** Future auth metadata for the operation signer, when available. */
+  /** Verified public key for an authenticated operation, when available. */
   signer?: {
     publicKey: Uint8Array;
   };

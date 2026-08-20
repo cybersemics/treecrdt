@@ -8,6 +8,12 @@ import {
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
 import {
+  getEd25519PublicKey,
+  issueTreecrdtCapabilityTokenV1,
+  randomEd25519SecretKey,
+} from '@treecrdt/auth';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
+import {
   createTreecrdtClient,
   defaultExtensionPath,
   loadTreecrdtExtension,
@@ -70,28 +76,57 @@ test('sqlite auth-aware local write rolls back on auth failure', async () => {
   }
 });
 
-test('sqlite auth-aware local write emits materialization after auth succeeds', async () => {
-  const client = await createNodeEngine({ docId: 'sqlite-auth-local-success' });
-  const events: unknown[] = [];
+test('sqlite materialization exposes the committed signer only for authenticated writes', async () => {
+  const docId = 'sqlite-auth-local-signer';
+  const client = await createNodeEngine({ docId });
+  const events: MaterializationEvent[] = [];
   const unsubscribe = client.onMaterialized((event) => events.push(event));
-  const authSession = {
-    authorizeLocalOps: vi.fn(async () => {
-      expect(events).toHaveLength(0);
-      return [validAuthProof()];
-    }),
-  };
-  const node = nodeIdFromInt(11);
+  const issuerPrivateKey = randomEd25519SecretKey();
+  const issuerPublicKey = await getEd25519PublicKey(issuerPrivateKey);
+  const signerPrivateKey = randomEd25519SecretKey();
+  const signerPublicKey = await getEd25519PublicKey(signerPrivateKey);
+  const authSession = client.auth.createSession({
+    trust: { issuerPublicKeys: [issuerPublicKey] },
+    local: {
+      privateKey: signerPrivateKey,
+      publicKey: signerPublicKey,
+      capabilityTokens: [
+        issueTreecrdtCapabilityTokenV1({
+          issuerPrivateKey,
+          subjectPublicKey: signerPublicKey,
+          docId,
+          actions: ['write_structure'],
+        }),
+      ],
+    },
+  });
+  await authSession.ready;
+  const unauthenticatedNode = nodeIdFromInt(11);
+  const authenticatedNode = nodeIdFromInt(12);
 
   try {
-    const op = await client.local.insert(replica, root, node, { type: 'last' }, null, {
-      authSession,
-    });
+    await client.local.insert(signerPublicKey, root, unauthenticatedNode, { type: 'last' }, null);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.changes[0]!.source?.signer).toBeUndefined();
+    events.length = 0;
+
+    const op = await client.local.insert(
+      signerPublicKey,
+      root,
+      authenticatedNode,
+      { type: 'last' },
+      null,
+      {
+        authSession,
+      },
+    );
 
     expect(op.kind.type).toBe('insert');
-    expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
     expect(events).toHaveLength(1);
-    expect(await client.tree.exists(node)).toBe(true);
-    expect(await client.ops.all()).toHaveLength(1);
+    expect(events[0]!.changes[0]!.source?.operation?.id).toEqual(op.meta.id);
+    expect(events[0]!.changes[0]!.source?.signer?.publicKey).toEqual(op.meta.id.replica);
+    expect(await client.tree.exists(authenticatedNode)).toBe(true);
+    expect(await client.ops.all()).toHaveLength(2);
   } finally {
     unsubscribe();
     await client.close();
@@ -190,6 +225,8 @@ test('sqlite rejects authenticated prepare and commit inside caller transactions
 
 test('sqlite reauthorizes against fresh tree state after an optimistic conflict', async () => {
   const client = await createNodeEngine({ docId: 'sqlite-auth-local-stale-tree' });
+  const events: MaterializationEvent[] = [];
+  const unsubscribe = client.onMaterialized((event) => events.push(event));
   const otherReplica = Uint8Array.from(replica, (value, index) =>
     index === replica.length - 1 ? value + 1 : value,
   );
@@ -245,7 +282,14 @@ test('sqlite reauthorizes against fresh tree state after an optimistic conflict'
     expect(committed).toEqual(proposals[1].op);
     expect(await client.tree.parent(node)).toBe(destination);
     expect(await client.ops.all()).toHaveLength(6);
+    const signedChanges = events
+      .flatMap((event) => event.changes)
+      .filter((change) => change.source?.signer);
+    expect(signedChanges).toHaveLength(1);
+    expect(signedChanges[0]!.source?.operation?.id).toEqual(committed.meta.id);
+    expect(signedChanges[0]!.source?.signer?.publicKey).toEqual(committed.meta.id.replica);
   } finally {
+    unsubscribe();
     await client.close();
   }
 });

@@ -141,6 +141,34 @@ function emitLocalOutcome(
   if (outcome.changes.length > 0) emit?.(addMaterializationWriteId(outcome, writeId));
 }
 
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+function annotateCommittedSigner(
+  outcome: MaterializationOutcome,
+  committedOp: Operation,
+): MaterializationOutcome {
+  const publicKey = replicaIdToBytes(committedOp.meta.id.replica);
+  const counter = committedOp.meta.id.counter;
+  return {
+    ...outcome,
+    changes: outcome.changes.map((change) => {
+      const sourceId = change.source?.operation?.id;
+      if (!sourceId || sourceId.counter !== counter || !equalBytes(sourceId.replica, publicKey)) {
+        return change;
+      }
+      return {
+        ...change,
+        source: {
+          ...change.source,
+          signer: { publicKey: Uint8Array.from(publicKey) },
+        },
+      };
+    }),
+  };
+}
+
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
 
 function buildAppendOp(
@@ -742,7 +770,11 @@ export function createTreecrdtSqliteWriter(
       if (committedRaw?.conflict === true) continue;
 
       const committed = decodeLocalOpResult(committedRaw, proofSql);
-      emitLocalOutcome(committed.outcome, opts.onMaterialized, writeOpts?.writeId);
+      emitLocalOutcome(
+        annotateCommittedSigner(committed.outcome, committed.op),
+        opts.onMaterialized,
+        writeOpts?.writeId,
+      );
       return committed.op;
     }
 
