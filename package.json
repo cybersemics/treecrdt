@@ -19,7 +19,7 @@
     "clippy:fix": "cargo clippy --fix --workspace --all-targets -- -D warnings -D clippy::panic -D clippy::todo -D clippy::unimplemented",
     "proto:generate": "buf generate",
     "build:ext:wasm": "cargo build -p treecrdt-sqlite-ext --target wasm32-unknown-emscripten --release --no-default-features --features static-link",
-    "build:ext:native": "cargo rustc -p treecrdt-sqlite-ext --release --no-default-features --features \"ext-sqlite rusqlite-storage\" -- --crate-type=cdylib",
+    "build:ext:native": "cargo rustc -p treecrdt-sqlite-ext --release --no-default-features --features ext-sqlite -- --crate-type=cdylib",
     "build": "pnpm -r --if-present run build",
     "test:browser": "pnpm -C packages/treecrdt-wa-sqlite/e2e test:e2e",
     "test:native-node": "pnpm -C packages/sync-protocol/material/sqlite run test && pnpm -C packages/treecrdt-sqlite-node run test && pnpm -C packages/treecrdt-wa-sqlite run test && pnpm -C packages/treecrdt-benchmark run test",
