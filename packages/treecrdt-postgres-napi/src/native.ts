@@ -47,10 +47,17 @@ export type NativeLocalOpResult = {
   outcome: NativeMaterializationOutcome;
 };
 
-export type NativePreparedLocalOpTx = {
+export type NativeLocalOpAuthProof = {
+  sig: Uint8Array;
+  proofRef: Uint8Array;
+};
+
+/** Owned proposal; the native layer retains no connection, transaction, or row lock. */
+export type NativePreparedLocalOp = {
   op(): NativeOp;
-  commit(): NativeLocalOpResult;
-  rollback(): void;
+  recoveryOutcome(): NativeMaterializationOutcome;
+  /** `null` is the only retryable optimistic-conflict signal. */
+  commit(proof: NativeLocalOpAuthProof): NativeLocalOpResult | null;
 };
 
 export type NativeBackend = {
@@ -95,7 +102,7 @@ export type NativeBackend = {
     placement: string,
     after: Uint8Array | null,
     payload: Uint8Array | null,
-  ): NativePreparedLocalOpTx;
+  ): NativePreparedLocalOp | null;
   localMove(
     replica: Uint8Array,
     node: Uint8Array,
@@ -109,9 +116,9 @@ export type NativeBackend = {
     newParent: Uint8Array,
     placement: string,
     after: Uint8Array | null,
-  ): NativePreparedLocalOpTx;
+  ): NativePreparedLocalOp | null;
   localDelete(replica: Uint8Array, node: Uint8Array): NativeLocalOpResult;
-  prepareLocalDelete(replica: Uint8Array, node: Uint8Array): NativePreparedLocalOpTx;
+  prepareLocalDelete(replica: Uint8Array, node: Uint8Array): NativePreparedLocalOp | null;
   localPayload(
     replica: Uint8Array,
     node: Uint8Array,
@@ -121,7 +128,7 @@ export type NativeBackend = {
     replica: Uint8Array,
     node: Uint8Array,
     payload: Uint8Array | null,
-  ): NativePreparedLocalOpTx;
+  ): NativePreparedLocalOp | null;
 };
 
 export type NativeFactory = {

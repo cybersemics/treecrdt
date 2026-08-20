@@ -20,7 +20,7 @@ pub(crate) use self::append::ensure_materialized_in_tx;
 pub use self::append::{append_ops, append_ops_with_materialization_outcome, ensure_materialized};
 pub(crate) use self::meta::{
     ensure_doc_meta, load_tree_meta_for_update, set_tree_meta_replay_frontier,
-    update_tree_meta_head, PgCtx, TreeMeta,
+    try_load_tree_meta_for_update, update_tree_meta_head, PgCtx, TreeMeta,
 };
 
 pub(crate) fn storage_debug<E: std::fmt::Debug>(e: E) -> Error {
