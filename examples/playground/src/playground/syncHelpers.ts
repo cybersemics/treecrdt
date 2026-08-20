@@ -1,5 +1,3 @@
-import type { Operation } from '@treecrdt/interface';
-import { bytesToHex } from '@treecrdt/interface/ids';
 import {
   createStringStoreRouteCache,
   isDiscoveryBootstrapUrl,
@@ -16,20 +14,59 @@ import {
 
 const REMOTE_SYNC_CODEWORDS_PER_MESSAGE = 512;
 
-export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
+export function isCurrentSyncGeneration(
+  activeGeneration: number | null,
+  expectedGeneration: number,
+): boolean {
+  return activeGeneration === expectedGeneration;
+}
+
+export function isCurrentConnection<T>(
+  connections: ReadonlyMap<string, T>,
+  peerId: string,
+  expectedConnection: T,
+): boolean {
+  return connections.has(peerId) && connections.get(peerId) === expectedConnection;
+}
+
+export function areCurrentConnections<T>(
+  connections: ReadonlyMap<string, T>,
+  expectedConnections: ReadonlyMap<string, T>,
+): boolean {
+  for (const [peerId, connection] of expectedConnections) {
+    if (!isCurrentConnection(connections, peerId, connection)) return false;
+  }
+  return true;
+}
+
+export function deleteCurrentConnection<T>(
+  connections: Map<string, T>,
+  peerId: string,
+  expectedConnection: T,
+): boolean {
+  if (!isCurrentConnection(connections, peerId, expectedConnection)) return false;
+  return connections.delete(peerId);
+}
+
+export function runConnectionCleanup(layers: {
+  deleteCurrent: () => void;
+  unregisterInbound: () => void;
+  unsetOutbound: () => void;
+  detachPeer: () => void;
+}): void {
+  try {
+    layers.deleteCurrent();
+  } finally {
+    try {
+      layers.unregisterInbound();
+    } finally {
+      try {
+        layers.unsetOutbound();
+      } finally {
+        layers.detachPeer();
+      }
+    }
+  }
 }
 
 export function normalizeSyncServerUrl(raw: string, docId: string): URL {
@@ -58,24 +95,6 @@ export function previewDiscoveryHost(raw: string): string {
     throw new Error('Discovery endpoint must use http:// or https://');
   }
   return url.host;
-}
-
-export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-export function isCapabilityRevokedError(err: unknown): boolean {
-  return /capability token revoked/i.test(errorMessage(err));
-}
-
-export function formatSyncError(err: unknown): string {
-  if (isCapabilityRevokedError(err)) {
-    return 'Access revoked for this capability. Import/update access, then sync again.';
-  }
-  if (/unknown author:/i.test(errorMessage(err))) {
-    return 'This document contains ops from an author whose capability token is not available here yet. Sync from a peer that has the full author history, or try a fresh doc.';
-  }
-  return errorMessage(err);
 }
 
 export function isTransientRemoteConnectError(message: string | null): boolean {
@@ -150,8 +169,10 @@ export function syncTimeoutMsForPeer(
   return opts.multipleTargets ? 8_000 : 15_000;
 }
 
-export function localOpUploadKey(op: Operation): string {
-  return `${bytesToHex(op.meta.id.replica)}:${op.meta.id.counter}`;
-}
-
 export { isDiscoveryBootstrapUrl };
+export {
+  errorMessage,
+  formatSyncError,
+  inboundSyncPeerIdsToDrop,
+  isCapabilityRevokedError,
+} from './syncErrorHelpers';

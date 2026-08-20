@@ -7,7 +7,8 @@ import {
   type SetStateAction,
 } from 'react';
 import type { Operation } from '@treecrdt/interface';
-import type { SyncPeer, SyncSubscription } from '@treecrdt/sync-protocol';
+import { createInboundSync, type InboundSync, type InboundSyncOnceOptions } from '@treecrdt/sync';
+import type { Filter, SyncMessage, SyncPeer } from '@treecrdt/sync-protocol';
 import type { DuplexTransport } from '@treecrdt/sync-protocol/transport';
 
 import { hexToBytes16 } from '../../sync-v0';
@@ -18,156 +19,135 @@ export type PlaygroundSyncConnection = {
   detach: () => void;
 };
 
+function subscriptionFilterLabel(filter: Filter): string {
+  return 'all' in filter ? 'all' : 'children';
+}
+
+function childrenFilter(parentId: string): Filter {
+  return { children: { parent: hexToBytes16(parentId) } };
+}
+
 export function usePlaygroundLiveSubscriptions(opts: {
   syncPeerRef: MutableRefObject<SyncPeer<Operation> | null>;
-  syncConnRef: MutableRefObject<Map<string, PlaygroundSyncConnection>>;
   setSyncError: Dispatch<SetStateAction<string | null>>;
   authCanSyncAll: boolean;
 }) {
-  const { syncPeerRef, syncConnRef, setSyncError, authCanSyncAll } = opts;
+  const { syncPeerRef, setSyncError, authCanSyncAll } = opts;
   const [liveBusy, setLiveBusy] = useState(false);
   const [liveChildrenParents, setLiveChildrenParents] = useState<Set<string>>(() => new Set());
   const [liveAllEnabled, setLiveAllEnabled] = useState(false);
   const liveChildrenParentsRef = useRef<Set<string>>(new Set());
-  const liveChildSubsRef = useRef<Map<string, Map<string, SyncSubscription>>>(new Map());
   const liveAllEnabledRef = useRef(false);
-  const liveAllSubsRef = useRef<Map<string, SyncSubscription>>(new Map());
-  const liveAllStartingRef = useRef<Set<string>>(new Set());
-  const liveChildrenStartingRef = useRef<Set<string>>(new Set());
-  const liveBusyCountRef = useRef(0);
-
-  const beginLiveWork = () => {
-    liveBusyCountRef.current += 1;
-    setLiveBusy(true);
-  };
-
-  const endLiveWork = () => {
-    liveBusyCountRef.current = Math.max(0, liveBusyCountRef.current - 1);
-    setLiveBusy(liveBusyCountRef.current > 0);
-  };
-
-  const stopLiveAllForPeer = (peerId: string) => {
-    const existing = liveAllSubsRef.current.get(peerId);
-    if (!existing) return;
-    existing.stop();
-    liveAllSubsRef.current.delete(peerId);
-  };
-
-  const stopAllLiveAll = () => {
-    for (const sub of liveAllSubsRef.current.values()) sub.stop();
-    liveAllSubsRef.current.clear();
-  };
-
-  const startLiveAll = (peerId: string) => {
-    const conn = syncConnRef.current.get(peerId);
-    const peer = syncPeerRef.current;
-    if (!conn || !peer) return;
-
-    if (liveAllSubsRef.current.has(peerId)) return;
-    if (liveAllStartingRef.current.has(peerId)) return;
-    liveAllStartingRef.current.add(peerId);
-    beginLiveWork();
-
-    void (async () => {
-      let started = false;
-      const sub = peer.subscribe(
-        conn.transport,
-        { all: {} },
-        {
-          immediate: true,
-          intervalMs: 0,
-          ...syncOnceOptionsForPeer(peerId, 1024),
-        },
-      );
-      liveAllSubsRef.current.set(peerId, sub);
-      void sub.done.catch((err) => {
-        if (!started) return;
-        console.error('Live sync(all) failed', err);
-        stopLiveAllForPeer(peerId);
-        setSyncError(formatSyncError(err));
-      });
-
-      try {
-        await sub.ready;
-        started = true;
-      } catch (err) {
-        console.error('Live sync(all) initial catch-up failed', err);
-        stopLiveAllForPeer(peerId);
-        setSyncError(formatSyncError(err));
+  const inboundSyncRef = useRef<InboundSync<Operation> | null>(null);
+  const inboundSyncPeerRef = useRef<SyncPeer<Operation> | null>(null);
+  const inboundGenerationCounterRef = useRef(0);
+  const activeInboundGenerationRef = useRef<number | null>(null);
+  const inboundPeerRegistrationsRef = useRef<
+    Map<
+      string,
+      {
+        connection: PlaygroundSyncConnection;
+        transport: DuplexTransport<SyncMessage<Operation>>;
+        unregister: () => void;
       }
-    })().finally(() => {
-      liveAllStartingRef.current.delete(peerId);
-      endLiveWork();
-    });
+    >
+  >(new Map());
+
+  const clearInboundPeerRegistrations = () => {
+    const registrations = Array.from(inboundPeerRegistrationsRef.current.values());
+    inboundPeerRegistrationsRef.current.clear();
+    for (const { unregister } of registrations) unregister();
   };
 
-  const stopLiveChildrenForPeer = (peerId: string) => {
-    const byParent = liveChildSubsRef.current.get(peerId);
-    if (!byParent) return;
-    for (const sub of byParent.values()) sub.stop();
-    liveChildSubsRef.current.delete(peerId);
+  const currentSubscriptionFilters = () => {
+    if (liveAllEnabledRef.current) return [{ all: {} } satisfies Filter];
+    return Array.from(liveChildrenParentsRef.current).map(childrenFilter);
   };
 
-  const stopLiveChildren = (peerId: string, parentId: string) => {
-    const byParent = liveChildSubsRef.current.get(peerId);
-    if (!byParent) return;
-    const sub = byParent.get(parentId);
-    if (!sub) return;
-    sub.stop();
-    byParent.delete(parentId);
-    if (byParent.size === 0) liveChildSubsRef.current.delete(peerId);
-  };
-
-  const stopAllLiveChildren = () => {
-    for (const peerId of Array.from(liveChildSubsRef.current.keys()))
-      stopLiveChildrenForPeer(peerId);
-  };
-
-  const startLiveChildren = (peerId: string, parentId: string) => {
-    const conn = syncConnRef.current.get(peerId);
+  const ensureInboundSync = () => {
     const peer = syncPeerRef.current;
-    if (!conn || !peer) return;
+    if (!peer) return null;
+    if (inboundSyncRef.current && inboundSyncPeerRef.current === peer) {
+      return inboundSyncRef.current;
+    }
 
-    const existing = liveChildSubsRef.current.get(peerId);
-    if (existing?.has(parentId)) return;
-    const startKey = `${peerId}\u0000${parentId}`;
-    if (liveChildrenStartingRef.current.has(startKey)) return;
-    liveChildrenStartingRef.current.add(startKey);
-    beginLiveWork();
+    activeInboundGenerationRef.current = null;
+    clearInboundPeerRegistrations();
+    const previousInbound = inboundSyncRef.current;
+    inboundSyncRef.current = null;
+    inboundSyncPeerRef.current = null;
+    if (previousInbound) void previousInbound.close();
 
-    const byParent = existing ?? new Map<string, SyncSubscription>();
-    void (async () => {
-      let started = false;
-      const sub = peer.subscribe(
-        conn.transport,
-        { children: { parent: hexToBytes16(parentId) } },
-        {
-          immediate: true,
-          intervalMs: 0,
-          ...syncOnceOptionsForPeer(peerId, 1024),
-        },
-      );
-      byParent.set(parentId, sub);
-      liveChildSubsRef.current.set(peerId, byParent);
-      void sub.done.catch((err) => {
-        if (!started) return;
-        console.error('Live sync failed', err);
-        stopLiveChildren(peerId, parentId);
-        setSyncError(formatSyncError(err));
-      });
+    const generation = ++inboundGenerationCounterRef.current;
+    activeInboundGenerationRef.current = generation;
+    let inbound: InboundSync<Operation> | undefined;
+    const isCurrentInbound = () =>
+      activeInboundGenerationRef.current === generation &&
+      (inbound === undefined || inboundSyncRef.current === inbound);
 
-      try {
-        await sub.ready;
-        started = true;
-      } catch (err) {
-        console.error('Live sync(children) initial catch-up failed', err);
-        stopLiveChildren(peerId, parentId);
-        setSyncError(formatSyncError(err));
-      }
-    })().finally(() => {
-      liveChildrenStartingRef.current.delete(startKey);
-      endLiveWork();
+    inbound = createInboundSync<Operation>({
+      localPeer: peer,
+      syncOptions: (peerId) => syncOnceOptionsForPeer(peerId, 2048),
+      subscribeOptions: (peerId) => syncOnceOptionsForPeer(peerId, 1024),
+      onStatus: (status) => {
+        if (isCurrentInbound()) setLiveBusy(status.busy);
+      },
+      onError: ({ peerId, filter, error, phase }) => {
+        if (!isCurrentInbound()) return;
+        console.error(
+          `Inbound sync(${subscriptionFilterLabel(filter)}) ${phase} failed`,
+          peerId,
+          error,
+        );
+        setSyncError(formatSyncError(error));
+      },
     });
+    inboundSyncRef.current = inbound;
+    inboundSyncPeerRef.current = peer;
+    return inbound;
+  };
+
+  const applySubscriptions = () => {
+    ensureInboundSync()?.subscribe(currentSubscriptionFilters());
+  };
+
+  const addInboundPeer = (peerId: string, conn: PlaygroundSyncConnection) => {
+    const inbound = ensureInboundSync();
+    if (!inbound) return;
+    const transport = conn.transport as DuplexTransport<SyncMessage<Operation>>;
+    const previous = inboundPeerRegistrationsRef.current.get(peerId);
+    if (previous?.connection !== conn) {
+      const registration = {
+        connection: conn,
+        transport,
+        unregister: inbound.addAttachedPeer(peerId, transport),
+      };
+      inboundPeerRegistrationsRef.current.set(peerId, registration);
+      previous?.unregister();
+    }
+    inbound.subscribe(currentSubscriptionFilters());
+  };
+
+  const removeLivePeer = (peerId: string, conn: PlaygroundSyncConnection) => {
+    const registration = inboundPeerRegistrationsRef.current.get(peerId);
+    if (
+      !registration ||
+      registration.connection !== conn ||
+      registration.transport !== conn.transport
+    ) {
+      return;
+    }
+    inboundPeerRegistrationsRef.current.delete(peerId);
+    registration.unregister();
+  };
+
+  const syncInboundOnce = async (
+    filters: Filter | readonly Filter[],
+    opts?: InboundSyncOnceOptions,
+  ) => {
+    const inbound = ensureInboundSync();
+    if (!inbound) throw new Error('Inbound sync is not ready yet.');
+    await inbound.syncOnce(filters, opts);
   };
 
   const toggleLiveChildren = (parentId: string) => {
@@ -179,43 +159,28 @@ export function usePlaygroundLiveSubscriptions(opts: {
     });
   };
 
-  const resetLiveWork = () => {
-    liveAllStartingRef.current.clear();
-    liveChildrenStartingRef.current.clear();
-    liveBusyCountRef.current = 0;
+  const resetLiveWork = (expectedPeer?: SyncPeer<Operation>) => {
+    if (expectedPeer && inboundSyncPeerRef.current && inboundSyncPeerRef.current !== expectedPeer) {
+      return;
+    }
+    activeInboundGenerationRef.current = null;
+    clearInboundPeerRegistrations();
+    const inbound = inboundSyncRef.current;
+    inboundSyncRef.current = null;
+    inboundSyncPeerRef.current = null;
+    if (inbound) void inbound.close();
     setLiveBusy(false);
   };
 
   useEffect(() => {
     liveChildrenParentsRef.current = liveChildrenParents;
-
-    const connections = syncConnRef.current;
-    for (const peerId of connections.keys()) {
-      for (const parentId of liveChildrenParents) startLiveChildren(peerId, parentId);
-    }
-
-    for (const peerId of Array.from(liveChildSubsRef.current.keys())) {
-      if (!connections.has(peerId)) {
-        stopLiveChildrenForPeer(peerId);
-        continue;
-      }
-      const byParent = liveChildSubsRef.current.get(peerId);
-      if (!byParent) continue;
-      for (const parentId of Array.from(byParent.keys())) {
-        if (!liveChildrenParents.has(parentId)) stopLiveChildren(peerId, parentId);
-      }
-    }
+    applySubscriptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveChildrenParents]);
 
   useEffect(() => {
     liveAllEnabledRef.current = liveAllEnabled;
-    const connections = syncConnRef.current;
-    if (liveAllEnabled) {
-      for (const peerId of connections.keys()) startLiveAll(peerId);
-    } else {
-      stopAllLiveAll();
-    }
+    applySubscriptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveAllEnabled]);
 
@@ -230,16 +195,9 @@ export function usePlaygroundLiveSubscriptions(opts: {
     liveAllEnabled,
     setLiveAllEnabled,
     toggleLiveChildren,
-    liveChildrenParentsRef,
-    liveAllEnabledRef,
-    beginLiveWork,
-    endLiveWork,
-    startLiveAll,
-    stopLiveAllForPeer,
-    stopAllLiveAll,
-    startLiveChildren,
-    stopLiveChildrenForPeer,
-    stopAllLiveChildren,
+    addInboundPeer,
+    removeLivePeer,
+    syncInboundOnce,
     resetLiveWork,
   };
 }

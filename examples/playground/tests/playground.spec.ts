@@ -784,13 +784,12 @@ test("remote live sync all pushes new ops without a manual sync click", async ({
       })(),
     ]);
     await Promise.race([
-      server.waitForServedOps(doc, 1),
+      expect(treeRowByLabel(pageB, nodeLabel)).toBeVisible({ timeout: 60_000 }),
       (async () => {
-        await pageB.getByTestId("sync-error").waitFor({ state: "visible", timeout: 30_000 });
+        await pageB.getByTestId("sync-error").waitFor({ state: "visible", timeout: 60_000 });
         throw new Error(`sync error (B): ${await pageB.getByTestId("sync-error").textContent()}`);
       })(),
     ]);
-    await expect(treeRowByLabel(pageB, nodeLabel)).toBeVisible({ timeout: 60_000 });
 
     await expect(pageA.getByTestId("sync-error")).toBeHidden();
     await expect(pageB.getByTestId("sync-error")).toBeHidden();
