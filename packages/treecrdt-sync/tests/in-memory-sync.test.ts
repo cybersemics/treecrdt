@@ -47,17 +47,9 @@ async function runSyncOnceInMemory(
     deriveOpRef: (op, ctx) =>
       deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
-  const detachB = peerB.attach(transportB);
+  peerB.attach(transportB);
 
-  const onCloseB = () => {
-    try {
-      detachB();
-    } catch {
-      // ignore
-    }
-  };
-
-  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, onCloseB, {
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, {
     syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
   });
   try {
@@ -129,8 +121,8 @@ test('syncOnce defaults split inbound applies into modest batches', async () => 
     deriveOpRef: (op, ctx) =>
       deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
-  const detachB = peerB.attach(transportB);
-  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, detachB);
+  peerB.attach(transportB);
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA);
 
   try {
     await sync.syncOnce({ all: {} }, { maxCodewords: 100_000 });
@@ -251,16 +243,9 @@ test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', 
     deriveOpRef: (op, ctx) =>
       deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
-  const detachB = peerB.attach(transportB);
-  const onCloseB = () => {
-    try {
-      detachB();
-    } catch {
-      // ignore
-    }
-  };
+  peerB.attach(transportB);
 
-  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, onCloseB, {
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, {
     syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
   });
   try {
@@ -304,16 +289,9 @@ test('pushLocalOps with no ops is a no-op (no syncOnce)', async () => {
     deriveOpRef: (op, ctx) =>
       deriveOpRefV0(ctx.docId, { replica: op.meta.id.replica, counter: op.meta.id.counter }),
   });
-  const detachB = peerB.attach(transportB);
-  const onCloseB = () => {
-    try {
-      detachB();
-    } catch {
-      // ignore
-    }
-  };
+  peerB.attach(transportB);
 
-  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, onCloseB, {
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, {
     syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
   });
   try {
@@ -326,4 +304,34 @@ test('pushLocalOps with no ops is a no-op (no syncOnce)', async () => {
   }
 
   expect((await getAllB()).length).toBe(1);
+});
+
+test('a transport close after live readiness reports the live error', async () => {
+  const docId = `sync-live-close-${Math.random().toString(16).slice(2)}`;
+  const { client: aClient } = createInMemoryTestClient(docId, []);
+  const { client: bClient } = createInMemoryTestClient(docId, []);
+  const [transportA, transportB] = createInMemoryDuplex<SyncMessage<Operation>>();
+  const backendB = createTreecrdtSyncBackendFromClient(bClient, docId, {
+    maxLamport: () => headAsBigint(bClient),
+  });
+  const peerB = new SyncPeer(backendB);
+  peerB.attach(transportB);
+  let resolveLiveError!: (error: unknown) => void;
+  const liveError = new Promise<unknown>((resolve) => {
+    resolveLiveError = resolve;
+  });
+  const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, {
+    onLiveError: resolveLiveError,
+  });
+
+  try {
+    await sync.startLive({ immediate: false, intervalMs: 60_000 });
+    transportA.close(new Error('connection lost after live ready'));
+
+    await expect(liveError).resolves.toEqual(
+      expect.objectContaining({ message: 'connection lost after live ready' }),
+    );
+  } finally {
+    await sync.close();
+  }
 });

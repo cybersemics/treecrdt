@@ -138,16 +138,5 @@ export async function connectTreecrdtWebSocketSync(
     onLiveError,
   };
 
-  return createTreecrdtWebSocketSyncFromTransport(
-    client,
-    transport,
-    () => {
-      try {
-        wire.close();
-      } catch {
-        // ignore
-      }
-    },
-    inner,
-  );
+  return createTreecrdtWebSocketSyncFromTransport(client, transport, inner);
 }

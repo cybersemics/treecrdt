@@ -50,6 +50,7 @@ import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backe
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import {
   createInMemoryDuplex,
+  createTransportCloseController,
   wrapDuplexTransportWithCodec,
   type DuplexTransport,
 } from '@treecrdt/sync-protocol/transport';
@@ -634,6 +635,8 @@ function createProfiledSyncTransport(transport: DuplexTransport<any>): {
           recordTransportMessage(profile, 'received', profile.received, message);
           handler(message);
         }),
+      close: (reason) => transport.close(reason),
+      closeSignal: transport.closeSignal,
     },
     snapshot: () => snapshotTransportProfile(profile),
   };
@@ -957,8 +960,20 @@ async function openBuiltinWebSocket(url: URL): Promise<BuiltinWebSocket> {
 }
 
 function createNodeWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
+  const closeController = createTransportCloseController();
+  ws.once('close', (code, reason) => {
+    const detail = reason.length > 0 ? `: ${reason.toString()}` : '';
+    closeController.close(new Error(`websocket closed (${code})${detail}`));
+  });
+  ws.once('error', (error) => closeController.close(error));
+
   return {
-    send: async (bytes) =>
+    send: async (bytes) => {
+      if (closeController.signal.closed) {
+        throw closeController.signal.reason instanceof Error
+          ? closeController.signal.reason
+          : new Error('websocket is closed');
+      }
       await new Promise<void>((resolve, reject) => {
         ws.send(bytes, { binary: true }, (error) => {
           if (!error) {
@@ -967,9 +982,12 @@ function createNodeWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array
           }
           reject(error instanceof Error ? error : new Error(String(error)));
         });
-      }),
+      });
+    },
     onMessage: (handler) => {
+      if (closeController.signal.closed) return () => {};
       const onMessage = (data: WebSocket.RawData) => {
+        if (closeController.signal.closed) return;
         if (data instanceof Uint8Array) {
           handler(data);
         } else if (data instanceof ArrayBuffer) {
@@ -983,12 +1001,31 @@ function createNodeWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array
       ws.on('message', onMessage);
       return () => ws.off('message', onMessage);
     },
+    close: (reason) => {
+      if (closeController.signal.closed) return;
+      closeController.close(reason);
+      ws.close();
+    },
+    closeSignal: closeController.signal,
   };
 }
 
 function createBuiltinWebSocketTransport(ws: BuiltinWebSocket): DuplexTransport<Uint8Array> {
+  const closeController = createTransportCloseController();
+  ws.addEventListener('close', (event) => {
+    closeController.close(
+      new Error(`websocket closed (${event.code})${event.reason ? `: ${event.reason}` : ''}`),
+    );
+  });
+  ws.addEventListener('error', () => closeController.close(new Error('websocket error')));
+
   return {
     send: async (bytes) => {
+      if (closeController.signal.closed) {
+        throw closeController.signal.reason instanceof Error
+          ? closeController.signal.reason
+          : new Error('websocket is closed');
+      }
       try {
         ws.send(bytes);
       } catch (error) {
@@ -996,7 +1033,9 @@ function createBuiltinWebSocketTransport(ws: BuiltinWebSocket): DuplexTransport<
       }
     },
     onMessage: (handler) => {
+      if (closeController.signal.closed) return () => {};
       const onMessage = (event: { data: unknown }) => {
+        if (closeController.signal.closed) return;
         const { data } = event;
         if (data instanceof Uint8Array) {
           handler(data);
@@ -1013,6 +1052,12 @@ function createBuiltinWebSocketTransport(ws: BuiltinWebSocket): DuplexTransport<
       ws.addEventListener('message', onMessage as EventListener);
       return () => ws.removeEventListener('message', onMessage as EventListener);
     },
+    close: (reason) => {
+      if (closeController.signal.closed) return;
+      closeController.close(reason);
+      ws.close();
+    },
+    closeSignal: closeController.signal,
   };
 }
 

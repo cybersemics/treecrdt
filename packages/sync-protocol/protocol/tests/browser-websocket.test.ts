@@ -1,8 +1,13 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { createBrowserWebSocketTransport } from '../dist/browser.js';
+import {
+  createTransportCloseController,
+  wrapDuplexTransportWithCodec,
+} from '../dist/transport/index.js';
+import type { DuplexTransport } from '../dist/transport/index.js';
 
-type MessageListener = (event: { data: unknown }) => void;
+type Listener = (event: any) => void;
 
 class MockBrowserWebSocket {
   static readonly OPEN = 1;
@@ -11,7 +16,7 @@ class MockBrowserWebSocket {
   readyState = MockBrowserWebSocket.OPEN;
   bufferedAmount = 0;
   readonly sent: Uint8Array[] = [];
-  private readonly listeners = new Set<MessageListener>();
+  private readonly listeners = new Map<string, Set<Listener>>();
 
   send(data: Uint8Array): void {
     this.sent.push(data);
@@ -20,20 +25,34 @@ class MockBrowserWebSocket {
 
   close(): void {
     this.readyState = MockBrowserWebSocket.CLOSED;
+    this.emit('close', { code: 1000 });
   }
 
-  addEventListener(type: 'message', listener: MessageListener): void {
-    if (type !== 'message') return;
-    this.listeners.add(listener);
+  addEventListener(type: string, listener: Listener): void {
+    const listeners = this.listeners.get(type) ?? new Set<Listener>();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
   }
 
-  removeEventListener(type: 'message', listener: MessageListener): void {
-    if (type !== 'message') return;
-    this.listeners.delete(listener);
+  removeEventListener(type: string, listener: Listener): void {
+    this.listeners.get(type)?.delete(listener);
   }
 
   emitMessage(data: unknown): void {
-    for (const listener of this.listeners) listener({ data });
+    this.emit('message', { data });
+  }
+
+  emitClose(code = 1006, reason = ''): void {
+    this.readyState = MockBrowserWebSocket.CLOSED;
+    this.emit('close', { code, reason });
+  }
+
+  emitError(): void {
+    this.emit('error', {});
+  }
+
+  private emit(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
 }
 
@@ -90,4 +109,97 @@ test('browser websocket transport serializes sends until buffered data drains', 
   ws.bufferedAmount = 0;
   await vi.advanceTimersByTimeAsync(5);
   await second;
+});
+
+test('browser websocket transport reports close and error reasons', async () => {
+  const closedSocket = new MockBrowserWebSocket();
+  const closedTransport = createBrowserWebSocketTransport(closedSocket);
+  const closeError = new Promise<unknown>((resolve) =>
+    closedTransport.closeSignal.subscribe((error) => resolve(error)),
+  );
+
+  closedSocket.emitClose(1006, 'connection lost');
+  await expect(closeError).resolves.toEqual(
+    expect.objectContaining({ message: 'websocket closed (1006): connection lost' }),
+  );
+
+  const erroredSocket = new MockBrowserWebSocket();
+  const erroredTransport = createBrowserWebSocketTransport(erroredSocket);
+  const socketError = new Promise<unknown>((resolve) =>
+    erroredTransport.closeSignal.subscribe((error) => resolve(error)),
+  );
+
+  erroredSocket.emitError();
+  await expect(socketError).resolves.toEqual(
+    expect.objectContaining({ message: 'websocket error' }),
+  );
+});
+
+test('explicit browser websocket close preserves a clean reason', () => {
+  const ws = new MockBrowserWebSocket();
+  const transport = createBrowserWebSocketTransport(ws);
+
+  transport.close();
+
+  expect(transport.closeSignal.closed).toBe(true);
+  expect(transport.closeSignal.reason).toBeUndefined();
+  expect(ws.readyState).toBe(MockBrowserWebSocket.CLOSED);
+});
+
+test('a malformed codec frame closes the browser websocket without escaping', async () => {
+  const ws = new MockBrowserWebSocket();
+  const wire = createBrowserWebSocketTransport(ws);
+  const transport = wrapDuplexTransportWithCodec(wire, {
+    encode: (value: string) => new TextEncoder().encode(value),
+    decode: () => {
+      throw new Error('invalid protobuf frame');
+    },
+  });
+  const failure = new Promise<unknown>((resolve) =>
+    transport.closeSignal.subscribe((error) => resolve(error)),
+  );
+  transport.onMessage(() => {
+    throw new Error('malformed frame must not be delivered');
+  });
+
+  ws.emitMessage(new Uint8Array([0xff]).buffer);
+
+  await expect(failure).resolves.toEqual(
+    expect.objectContaining({ message: 'invalid protobuf frame' }),
+  );
+  expect(ws.readyState).toBe(MockBrowserWebSocket.CLOSED);
+});
+
+test('codec wrapper removes its upstream close listener when closed', () => {
+  const closeController = createTransportCloseController();
+  let closeSubscriberCount = 0;
+  const wire: DuplexTransport<Uint8Array> = {
+    send: async () => {},
+    onMessage: () => () => {},
+    close: (reason) => closeController.close(reason),
+    closeSignal: {
+      get closed() {
+        return closeController.signal.closed;
+      },
+      get reason() {
+        return closeController.signal.reason;
+      },
+      subscribe(handler) {
+        closeSubscriberCount += 1;
+        const unsubscribe = closeController.signal.subscribe(handler);
+        return () => {
+          closeSubscriberCount -= 1;
+          unsubscribe();
+        };
+      },
+    },
+  };
+  const transport = wrapDuplexTransportWithCodec(wire, {
+    encode: (value: string) => new TextEncoder().encode(value),
+    decode: (bytes) => new TextDecoder().decode(bytes),
+  });
+
+  expect(closeSubscriberCount).toBe(1);
+  transport.close();
+  expect(closeSubscriberCount).toBe(0);
 });

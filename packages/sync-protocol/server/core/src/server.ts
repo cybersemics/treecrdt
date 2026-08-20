@@ -5,7 +5,10 @@ import WebSocket, { WebSocketServer } from 'ws';
 import type { SyncBackend, SyncMessage, SyncPeerOptions } from '@treecrdt/sync-protocol';
 import { SyncPeer } from '@treecrdt/sync-protocol';
 import type { DuplexTransport, WireCodec } from '@treecrdt/sync-protocol/transport';
-import { wrapDuplexTransportWithCodec } from '@treecrdt/sync-protocol/transport';
+import {
+  createTransportCloseController,
+  wrapDuplexTransportWithCodec,
+} from '@treecrdt/sync-protocol/transport';
 
 type Awaitable<T> = T | Promise<T>;
 type UpgradeSocket = {
@@ -24,9 +27,29 @@ function toUint8Array(data: WebSocket.RawData): Uint8Array {
 }
 
 function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
+  const closeController = createTransportCloseController();
+
+  ws.once('close', (code, reason) => {
+    const detail = reason.length > 0 ? `: ${reason.toString()}` : '';
+    closeController.close(new Error(`websocket closed (${code})${detail}`));
+  });
+  ws.once('error', (error) => closeController.close(error));
+
+  if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+    closeController.close(new Error('websocket is not open'));
+  }
+
   return {
     send: (bytes) =>
       new Promise<void>((resolve, reject) => {
+        if (closeController.signal.closed) {
+          reject(
+            closeController.signal.reason instanceof Error
+              ? closeController.signal.reason
+              : new Error('websocket is closed'),
+          );
+          return;
+        }
         try {
           ws.send(bytes, { binary: true }, (err) => (err ? reject(err) : resolve()));
         } catch (err) {
@@ -34,10 +57,22 @@ function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
         }
       }),
     onMessage: (handler) => {
-      const onMessage = (data: WebSocket.RawData) => handler(toUint8Array(data));
+      if (closeController.signal.closed) return () => {};
+      const onMessage = (data: WebSocket.RawData) => {
+        if (closeController.signal.closed) return;
+        handler(toUint8Array(data));
+      };
       ws.on('message', onMessage);
       return () => ws.off('message', onMessage);
     },
+    close: (reason) => {
+      if (closeController.signal.closed) return;
+      closeController.close(reason);
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (reason) ws.close(1002, 'invalid sync frame');
+      else ws.close();
+    },
+    closeSignal: closeController.signal,
   };
 }
 
@@ -359,6 +394,7 @@ export async function startWebSocketSyncServer<Op>(
       let doc: WebSocketSyncServerDocHandle<Op> | undefined;
       let peer: SyncPeer<Op> | undefined;
       let detach: (() => void) | undefined;
+      let peerAnnounced = false;
 
       const cleanup = async () => {
         if (cleaned) return;
@@ -370,15 +406,16 @@ export async function startWebSocketSyncServer<Op>(
           if (peer) removeDocPeer(docId, peer);
         } catch {}
         try {
-          if (doc && peer) doc.onPeerRemoved?.(peer);
+          if (doc && peer && peerAnnounced) doc.onPeerRemoved?.(peer);
         } catch {}
         try {
           await doc?.release?.();
         } catch {}
       };
 
-      ws.once('close', () => void cleanup());
-      ws.once('error', () => void cleanup());
+      // Let the transport's close subscribers reject protocol work before detaching them.
+      ws.once('close', () => queueMicrotask(() => void cleanup()));
+      ws.once('error', () => queueMicrotask(() => void cleanup()));
 
       let openedDoc: WebSocketSyncServerDocHandle<Op>;
       try {
@@ -390,7 +427,7 @@ export async function startWebSocketSyncServer<Op>(
         return;
       }
 
-      if (cleaned) {
+      if (cleaned || ws.readyState !== WebSocket.OPEN) {
         try {
           await openedDoc.release?.();
         } catch {}
@@ -422,13 +459,23 @@ export async function startWebSocketSyncServer<Op>(
           : {}),
       };
       peer = new SyncPeer<Op>(backend, doc.peerOptions);
-      addDocPeer(docId, peer);
-      detach = peer.attach(transport, {
-        onError: () => {
-          if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'sync handler error');
-        },
-      });
+      try {
+        detach = peer.attach(transport, {
+          onError: () => {
+            // Let a codec-triggered protocol close (1002) start before falling back
+            // to a generic handler-error close.
+            queueMicrotask(() => {
+              if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'sync handler error');
+            });
+          },
+        });
+      } catch {
+        await cleanup();
+        return;
+      }
 
+      addDocPeer(docId, peer);
+      peerAnnounced = true;
       doc.onPeerAdded?.(peer);
     })();
   });

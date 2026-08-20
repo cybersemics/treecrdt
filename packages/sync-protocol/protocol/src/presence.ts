@@ -21,7 +21,7 @@ export type BroadcastPresencePeer = {
 };
 
 type Connection<M> = {
-  transport: DuplexTransport<M> & { close?: () => void };
+  transport: DuplexTransport<M>;
   detach: () => void;
 };
 
@@ -101,9 +101,14 @@ export function createBroadcastPresenceMesh<M>(opts: {
       createChannel: opts.createChannel,
     });
 
-    const transport: DuplexTransport<M> & { close?: () => void } = {
+    const transport: DuplexTransport<M> = {
       ...rawTransport,
       async send(msg) {
+        if (rawTransport.closeSignal.closed) {
+          throw rawTransport.closeSignal.reason instanceof Error
+            ? rawTransport.closeSignal.reason
+            : new Error('broadcast transport is closed');
+        }
         if (!isOnline()) return;
         return rawTransport.send(msg);
       },
@@ -129,7 +134,7 @@ export function createBroadcastPresenceMesh<M>(opts: {
       try {
         conn.detach();
       } finally {
-        conn.transport.close?.();
+        conn.transport.close();
         connections.delete(peerId);
       }
     }
@@ -206,7 +211,7 @@ export function createBroadcastPresenceMesh<M>(opts: {
         try {
           conn.detach();
         } finally {
-          conn.transport.close?.();
+          conn.transport.close();
           connections.delete(id);
         }
       }
@@ -237,7 +242,7 @@ export function createBroadcastPresenceMesh<M>(opts: {
         try {
           conn.detach();
         } finally {
-          conn.transport.close?.();
+          conn.transport.close();
         }
         connections.delete(peerId);
       }

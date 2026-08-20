@@ -4,8 +4,11 @@ import { test, expect } from 'vitest';
 import WebSocket from 'ws';
 
 import { SyncPeer, type SyncBackend, type SyncMessage } from '@treecrdt/sync-protocol';
-import type { WireCodec } from '@treecrdt/sync-protocol/transport';
-import { wrapDuplexTransportWithCodec } from '@treecrdt/sync-protocol/transport';
+import type { DuplexTransport, WireCodec } from '@treecrdt/sync-protocol/transport';
+import {
+  createTransportCloseController,
+  wrapDuplexTransportWithCodec,
+} from '@treecrdt/sync-protocol/transport';
 
 import { startWebSocketSyncServer } from '../dist/index.js';
 
@@ -137,14 +140,36 @@ async function waitUntil(
   }
 }
 
-function createClientWebSocketTransport(ws: WebSocket) {
+function createClientWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
+  const closeController = createTransportCloseController();
+
+  ws.once('close', () => closeController.close());
+  ws.once('error', (error) => closeController.close(error));
+
   return {
-    send: (bytes: Uint8Array) =>
-      new Promise<void>((resolve, reject) => {
-        ws.send(bytes, { binary: true }, (err) => (err ? reject(err) : resolve()));
-      }),
+    send: (bytes) => {
+      if (closeController.signal.closed) {
+        return Promise.reject(
+          closeController.signal.reason instanceof Error
+            ? closeController.signal.reason
+            : new Error('websocket transport is closed'),
+        );
+      }
+      return new Promise<void>((resolve, reject) => {
+        ws.send(bytes, { binary: true }, (error) => {
+          if (error) {
+            closeController.close(error);
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    },
     onMessage: (handler: (bytes: Uint8Array) => void) => {
+      if (closeController.signal.closed) return () => {};
       const onMessage = (data: WebSocket.RawData) => {
+        if (closeController.signal.closed) return;
         if (data instanceof Uint8Array) handler(data);
         else if (data instanceof ArrayBuffer) handler(new Uint8Array(data));
         else if (Array.isArray(data)) handler(Buffer.concat(data));
@@ -153,6 +178,12 @@ function createClientWebSocketTransport(ws: WebSocket) {
       ws.on('message', onMessage);
       return () => ws.off('message', onMessage);
     },
+    close: (reason) => {
+      if (closeController.signal.closed) return;
+      closeController.close(reason);
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+    },
+    closeSignal: closeController.signal,
   };
 }
 
@@ -199,6 +230,80 @@ class MemoryBackend implements SyncBackend<TestOp> {
 function opRefForId(id: string): Uint8Array {
   return Uint8Array.from(Buffer.from(id, 'hex'));
 }
+
+test(
+  'malformed frames close only the offending websocket',
+  async () => {
+    const docId = 'malformed-frame';
+    const serverBackend = new MemoryBackend(docId);
+    const serverPeers = new Set<SyncPeer<TestOp>>();
+    const server = await startWebSocketSyncServer<TestOp>({
+      host: '127.0.0.1',
+      port: 0,
+      codec: jsonCodec(),
+      docs: {
+        async open() {
+          return {
+            backend: serverBackend,
+            onPeerAdded: (peer) => serverPeers.add(peer),
+            onPeerRemoved: (peer) => serverPeers.delete(peer),
+          };
+        },
+      },
+    });
+    const wsUrl = `ws://${server.host}:${server.port}/sync?docId=${encodeURIComponent(docId)}`;
+    let malformedSocket: WebSocket | undefined;
+    let healthySocket: WebSocket | undefined;
+    let detachHealthyPeer: (() => void) | undefined;
+
+    try {
+      malformedSocket = await connectWebSocket(wsUrl);
+      healthySocket = await connectWebSocket(wsUrl);
+      const healthyBackend = new MemoryBackend(docId);
+      const healthyOp: TestOp = { id: '01'.repeat(16), lamport: 1 };
+      await healthyBackend.applyOps([healthyOp]);
+      const healthyTransport = wrapDuplexTransportWithCodec(
+        createClientWebSocketTransport(healthySocket),
+        jsonCodec<TestOp>(),
+      );
+      const healthyPeer = new SyncPeer(healthyBackend);
+      detachHealthyPeer = healthyPeer.attach(healthyTransport);
+
+      await waitUntil(() => serverPeers.size === 2, {
+        message: 'expected both websocket peers to attach',
+      });
+      const closed = new Promise<number>((resolve) =>
+        malformedSocket.once('close', (code) => resolve(code)),
+      );
+      malformedSocket.send(Buffer.from('{not valid json', 'utf8'));
+
+      await expect(withTimeout(closed, 5_000, 'malformed websocket close')).resolves.toBe(1002);
+      await waitUntil(() => serverPeers.size === 1, {
+        message: 'expected only the malformed websocket peer to detach',
+      });
+      await expect(httpGet(`http://${server.host}:${server.port}/health`)).resolves.toEqual({
+        status: 200,
+        body: 'ok',
+      });
+
+      await withTimeout(
+        healthyPeer.syncOnce(healthyTransport, { all: {} }),
+        5_000,
+        'healthy websocket sync',
+      );
+      await waitUntil(() => serverBackend.hasOp(healthyOp.id), {
+        message: 'expected the existing healthy websocket to keep syncing',
+      });
+      expect(healthySocket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      detachHealthyPeer?.();
+      if (malformedSocket?.readyState === WebSocket.OPEN) malformedSocket.close();
+      if (healthySocket?.readyState === WebSocket.OPEN) healthySocket.close();
+      await server.close();
+    }
+  },
+  { timeout: 20_000 },
+);
 
 test('health endpoint returns ok', async () => {
   const server = await startWebSocketSyncServer({
@@ -446,8 +551,8 @@ test(
 
       expect(opens).toBe(1);
       expect(releases).toBe(1);
-      expect(peersAdded <= 1).toBe(true);
-      expect(peersRemoved).toBe(peersAdded);
+      expect(peersAdded).toBe(0);
+      expect(peersRemoved).toBe(0);
     } finally {
       await server.close();
     }

@@ -144,6 +144,12 @@ jobs:
       - name: Run sync protocol tests
         run: pnpm -C packages/sync-protocol/protocol exec vitest run
 
+      - name: Run sync server core tests
+        run: pnpm -C packages/sync-protocol/server/core exec vitest run
+
+      - name: Run high-level sync tests
+        run: pnpm -C packages/treecrdt-sync exec vitest run
+
       - name: Run browser tests
         run: pnpm run test:browser
 
