@@ -49,12 +49,9 @@ import { signTreecrdtOp, verifyTreecrdtOp } from './op-sig.js';
 import { getField } from './claims.js';
 import {
   capAllowsNode,
-  capsAllowsNodeAccess,
   capsAllowsOp,
   isDocWideScope,
   parseScope,
-  triOr,
-  type ScopeTri,
   type TreecrdtScopeEvaluator,
 } from './scope.js';
 
@@ -456,6 +453,47 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     throw new Error('capability does not allow op');
   };
 
+  const grantsAllowDocWideRead = async (
+    grants: readonly CapabilityGrant[],
+    docId: string,
+    requiredActions: readonly string[],
+  ): Promise<boolean> => {
+    for (const grant of grants) {
+      for (const cap of grant.caps) {
+        const res = getField(cap, 'res');
+        if (!res || typeof res !== 'object') continue;
+        if (getField(res, 'doc_id') !== docId) continue;
+        if (!isDocWideScope(parseScope(res))) continue;
+
+        const tri = await capAllowsNode({
+          cap,
+          docId,
+          node: nodeIdToBytes16(ROOT_NODE_ID_HEX),
+          requiredActions,
+        });
+        if (tri === 'allow') return true;
+      }
+    }
+    return false;
+  };
+
+  const containsPayloadState = (op: Operation): boolean => {
+    switch (op.kind.type) {
+      case 'insert':
+        return op.kind.payload !== undefined;
+      case 'payload':
+        return true;
+      case 'move':
+      case 'delete':
+      case 'tombstone':
+        return false;
+      default: {
+        const _exhaustive: never = op.kind;
+        throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
+      }
+    }
+  };
+
   return {
     helloCapabilities: async (ctx) => helloCaps(ctx.docId),
     onHello: async (hello: Hello, ctx) => {
@@ -475,59 +513,14 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
       if (grants.length === 0) throw new Error(`no trusted "${AUTH_CAPABILITY_NAME}" token`);
 
-      const requiredActions = ['read_structure'];
-      const node =
-        'all' in filter
-          ? nodeIdToBytes16(ROOT_NODE_ID_HEX)
-          : 'children' in filter
-            ? filter.children.parent
-            : (() => {
-                throw new Error('unsupported filter');
-              })();
+      if (!('all' in filter) && !('children' in filter)) throw new Error('unsupported filter');
 
-      // `filter(all)` is only safe for doc-wide scopes. If a token has any scope restrictions
-      // (e.g. `max_depth`/`exclude` or a non-root `root`), allow it to use `children(parent)` instead.
-      if ('all' in filter) {
-        for (const grant of grants) {
-          for (const cap of grant.caps) {
-            const res = getField(cap, 'res');
-            if (!res || typeof res !== 'object') continue;
-            if (getField(res, 'doc_id') !== ctx.docId) continue;
-
-            const scope = parseScope(res);
-            if (!isDocWideScope(scope)) continue;
-
-            const tri = await capAllowsNode({
-              cap,
-              docId: ctx.docId,
-              node,
-              requiredActions,
-              scopeEvaluator: opts.scopeEvaluator,
-            });
-            if (tri === 'allow') return;
-          }
-        }
-        throw new Error('capability does not allow filter');
-      }
-
-      let best: ScopeTri = 'deny';
-      for (const grant of grants) {
-        best = triOr(
-          best,
-          await capsAllowsNodeAccess({
-            caps: grant.caps,
-            docId: ctx.docId,
-            node,
-            requiredActions,
-            scopeEvaluator: opts.scopeEvaluator,
-          }),
-        );
-        if (best === 'allow') return;
-      }
-
-      if (best === 'unknown') {
-        throw new Error('missing subtree context to authorize filter');
-      }
+      // The current wire format reconciles historical operations. Current materialized ancestry
+      // cannot prove where an operation's node lived when that operation was authored: a node may
+      // leave an excluded subtree and later re-enter readable state. Until filtered reads carry an
+      // authenticated historical ancestry witness or use redacted snapshot records, every
+      // operation-log filter requires state-independent, document-wide structure access.
+      if (await grantsAllowDocWideRead(grants, ctx.docId, ['read_structure'])) return;
       throw new Error('capability does not allow filter');
     },
     filterOutgoingOps: async (ops, ctx) => {
@@ -537,70 +530,21 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
       const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
       if (grants.length === 0) return ops.map(() => false);
 
-      // Fast path: if the peer has any doc-wide read_structure capability, we don't need to filter.
-      const requiredStructure = ['read_structure'];
-      for (const grant of grants) {
-        for (const cap of grant.caps) {
-          const res = getField(cap, 'res');
-          if (!res || typeof res !== 'object') continue;
-          if (getField(res, 'doc_id') !== ctx.docId) continue;
-
-          const scope = parseScope(res);
-          if (!isDocWideScope(scope)) continue;
-
-          const tri = await capAllowsNode({
-            cap,
-            docId: ctx.docId,
-            node: nodeIdToBytes16(ROOT_NODE_ID_HEX),
-            requiredActions: requiredStructure,
-            scopeEvaluator: opts.scopeEvaluator,
-          });
-          if (tri === 'allow') return ops.map(() => true);
-        }
+      if (!(await grantsAllowDocWideRead(grants, ctx.docId, ['read_structure']))) {
+        throw new Error('capability does not allow operation-log projection');
       }
 
-      const allowNode = async (
-        node: Uint8Array,
-        requiredActions: readonly string[],
-      ): Promise<boolean> => {
-        let best: ScopeTri = 'deny';
-        for (const grant of grants) {
-          best = triOr(
-            best,
-            await capsAllowsNodeAccess({
-              caps: grant.caps,
-              docId: ctx.docId,
-              node,
-              requiredActions,
-              scopeEvaluator: opts.scopeEvaluator,
-            }),
-          );
-          if (best === 'allow') return true;
-        }
-        // Fail closed: if scope membership is unknown, do not reveal the op.
-        return false;
-      };
-
-      const out: boolean[] = [];
-      for (const op of ops) {
-        // For `children(parent)` we still need to hide ops for nodes outside scope
-        // (e.g. excluded private roots) so peers cannot discover them by syncing the parent's children.
-        switch (op.kind.type) {
-          case 'insert':
-          case 'payload':
-          case 'move':
-          case 'delete':
-          case 'tombstone':
-            out.push(await allowNode(nodeIdToBytes16(op.kind.node), requiredStructure));
-            break;
-          default: {
-            const _exhaustive: never = op.kind;
-            throw new Error(`unknown op kind: ${String((_exhaustive as any)?.type)}`);
-          }
-        }
+      // Payload updates (including clears) and payload-bearing inserts cannot be omitted without
+      // changing the selected op set and cannot be redacted in Sync v0. Reject the entire
+      // projection unless payload state is also readable document-wide.
+      if (
+        ops.some(containsPayloadState) &&
+        !(await grantsAllowDocWideRead(grants, ctx.docId, ['read_payload']))
+      ) {
+        throw new Error('operation-log projection requires read_payload for payload state');
       }
 
-      return out;
+      return ops.map(() => true);
     },
     signOps: async (ops, ctx) => {
       await ensureLocalTokensRecorded(ctx.docId);

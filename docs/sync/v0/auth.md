@@ -246,17 +246,27 @@ presence tag, a relay cannot strip delete state to bypass this policy. Applicati
 
 ## Subtree reads and operation writes
 
-### Stateful subtree scopes remain available for reads
+### Reference operation-log reads require document-wide grants
 
-Read/filter authorization can evaluate the requested node against the receiver's current materialized ancestry. The
-reference evaluator uses a tri-state result:
+The reference COSE+CWT implementation authorizes `Filter.all` and `Filter.children(parent)` only with a document-wide
+`read_structure` grant: ROOT with no `max_depth` or `exclude`. The filter can still reduce synchronization work, but it
+does not reduce the authorization scope.
 
-- `allow`: the requested node is within scope
-- `deny`: the requested node is outside scope
-- `unknown`: the receiver lacks enough ancestry to decide
+Sync v0 filters reconcile historical operations, while a subtree evaluator sees only current materialized ancestry. If a
+node moves into an excluded subtree and later re-enters readable state, a current-state check would expose the historical
+move's excluded destination and payload updates authored during the private interval. The same ambiguity applies to
+boundary moves, defensive restoration, and superseded payload operations. Per-operation allow/deny flags cannot safely
+repair the projection: omitting a selected dependency changes the reconciled op set and can leave stale state.
 
-An `unknown` read decision fails closed. `filterOutgoingOps` also applies these scopes when projecting operations for an
-authorized filter.
+Until the protocol carries authenticated historical ancestry or redacted snapshot/removal records, the reference auth
+layer therefore rejects the entire operation-log projection for non-document-wide read scopes. It does not consult the
+stateful scope evaluator for this decision. Applications can still provide a custom `SyncAuth` implementation when their
+backend exposes a different, authenticated projection that is safe for scoped reads.
+
+Payload operations (including clears) and inserts with an inline payload additionally require a document-wide
+`read_payload` grant. Sync v0 cannot redact their payload state while preserving the selected operation, so a
+structure-only projection fails as a whole when it encounters one. Structure-only batches retain the direct fast path,
+as do batches whose peer has both document-wide read grants.
 
 ### Operation writes require a document-wide grant
 
@@ -270,7 +280,7 @@ permanent op-set divergence. Insert/move destination checks and defensive delete
 
 Until an operation carries an authenticated causal ancestry witness that every peer can verify, only a ROOT scope with no
 `max_depth` or `exclude` is state-independent enough to authorize writes. Non-document-wide write grants return `deny`
-immediately; they are not placed in `pending_context`. Existing subtree read/filter behavior is unchanged.
+immediately; they are not placed in `pending_context`.
 
 `pending_context` remains a protocol mechanism for custom auth schemes that have a stable, verifiable way to resolve
 missing context. It is not used to make mutable receiver ancestry authoritative for reference operation writes.
