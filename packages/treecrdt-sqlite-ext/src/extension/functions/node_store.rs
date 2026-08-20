@@ -1,7 +1,6 @@
 use super::statement::LazyStatement;
 use super::*;
 use std::slice;
-use treecrdt_core::NodeStore;
 
 fn sqlite_node_id_bytes(node: NodeId) -> [u8; 16] {
     node.0.to_be_bytes()
@@ -729,109 +728,5 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
             sqlite_reset(stmt);
         }
         Ok(out)
-    }
-}
-
-impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
-    fn set_last_change_exact(
-        &mut self,
-        node: NodeId,
-        vv: &VersionVector,
-    ) -> treecrdt_core::Result<()> {
-        self.ensure_node(node)?;
-        let node_bytes = sqlite_node_id_bytes(node);
-        let vv_bytes = (!vv.is_empty()).then(|| vv_to_bytes(vv)).transpose()?;
-        let stmt = self.update_last_change.get()?;
-        unsafe {
-            sqlite_clear_bindings(stmt);
-            sqlite_reset(stmt);
-            sqlite_bind_blob(
-                stmt,
-                1,
-                node_bytes.as_ptr() as *const c_void,
-                node_bytes.len() as c_int,
-                None,
-            );
-            if let Some(bytes) = vv_bytes.as_ref() {
-                sqlite_bind_blob(
-                    stmt,
-                    2,
-                    bytes.as_ptr() as *const c_void,
-                    bytes.len() as c_int,
-                    None,
-                );
-            } else {
-                sqlite_bind_null(stmt, 2);
-            }
-            let step_rc = sqlite_step(stmt);
-            let reset_rc = sqlite_reset(stmt);
-            // sqlite_reset preserves SQLITE_STATIC bindings, so clear them before node_bytes and
-            // vv_bytes are dropped.
-            let clear_rc = sqlite_clear_bindings(stmt);
-            if step_rc != SQLITE_DONE as c_int {
-                return Err(sqlite_rc_error(step_rc, "set exact last_change failed"));
-            }
-            if reset_rc != SQLITE_OK as c_int {
-                return Err(sqlite_rc_error(reset_rc, "reset exact last_change failed"));
-            }
-            if clear_rc != SQLITE_OK as c_int {
-                return Err(sqlite_rc_error(
-                    clear_rc,
-                    "clear exact last_change bindings failed",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn set_deleted_at_exact(
-        &mut self,
-        node: NodeId,
-        vv: Option<&VersionVector>,
-    ) -> treecrdt_core::Result<()> {
-        self.ensure_node(node)?;
-        let node_bytes = sqlite_node_id_bytes(node);
-        let vv_bytes = vv.filter(|vv| !vv.is_empty()).map(vv_to_bytes).transpose()?;
-        let stmt = self.update_deleted_at.get()?;
-        unsafe {
-            sqlite_clear_bindings(stmt);
-            sqlite_reset(stmt);
-            sqlite_bind_blob(
-                stmt,
-                1,
-                node_bytes.as_ptr() as *const c_void,
-                node_bytes.len() as c_int,
-                None,
-            );
-            if let Some(bytes) = vv_bytes.as_ref() {
-                sqlite_bind_blob(
-                    stmt,
-                    2,
-                    bytes.as_ptr() as *const c_void,
-                    bytes.len() as c_int,
-                    None,
-                );
-            } else {
-                sqlite_bind_null(stmt, 2);
-            }
-            let step_rc = sqlite_step(stmt);
-            let reset_rc = sqlite_reset(stmt);
-            // sqlite_reset preserves SQLITE_STATIC bindings, so clear them before node_bytes and
-            // vv_bytes are dropped.
-            let clear_rc = sqlite_clear_bindings(stmt);
-            if step_rc != SQLITE_DONE as c_int {
-                return Err(sqlite_rc_error(step_rc, "set exact deleted_at failed"));
-            }
-            if reset_rc != SQLITE_OK as c_int {
-                return Err(sqlite_rc_error(reset_rc, "reset exact deleted_at failed"));
-            }
-            if clear_rc != SQLITE_OK as c_int {
-                return Err(sqlite_rc_error(
-                    clear_rc,
-                    "clear exact deleted_at bindings failed",
-                ));
-            }
-        }
-        Ok(())
     }
 }

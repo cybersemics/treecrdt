@@ -16,6 +16,20 @@ use crate::profile::{append_profile_enabled, PgAppendProfile};
 use super::meta::load_tree_meta;
 use super::*;
 
+type PgPersistedRemoteStores =
+    PersistedRemoteStores<LamportClock, PgNodeStore, PgPayloadStore, PgParentOpIndex>;
+
+fn persisted_remote_stores(ctx: &PgCtx) -> PgPersistedRemoteStores {
+    PersistedRemoteStores {
+        // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
+        replica_id: ReplicaId::new(b"postgres"),
+        clock: LamportClock::default(),
+        nodes: PgNodeStore::new(ctx.clone()),
+        payloads: PgPayloadStore::new(ctx.clone()),
+        index: PgParentOpIndex::new(ctx.clone()),
+    }
+}
+
 fn materialize_inserted_ops(
     ctx: PgCtx,
     meta: &dyn MaterializationCursor,
@@ -24,14 +38,7 @@ fn materialize_inserted_ops(
     // At this point treecrdt_ops already contains the inserted operations. This temporary
     // TreeCrdt exists only to replay those ops through core semantics and update derived tables.
     materialize_persisted_remote_ops_with_delta(
-        PersistedRemoteStores {
-            // Scratch identity for the temporary TreeCrdt; replayed ops keep their own ids.
-            replica_id: ReplicaId::new(b"postgres"),
-            clock: LamportClock::default(),
-            nodes: PgNodeStore::new(ctx.clone()),
-            payloads: PgPayloadStore::new(ctx.clone()),
-            index: PgParentOpIndex::new(ctx.clone()),
-        },
+        persisted_remote_stores(&ctx),
         &meta,
         ops,
         |nodes, ops| {
@@ -150,10 +157,6 @@ fn append_ops_in_tx(
     let apply_result = orchestrate_persisted_remote_append(
         &meta,
         inserted_ops,
-        {
-            let payloads = PgPayloadStore::new(ctx.clone());
-            move |node| payloads.last_writer(node)
-        },
         |meta, inserted| materialize_inserted_ops(ctx.clone(), meta, inserted),
         &mut update_head,
         |frontier| set_tree_meta_replay_frontier(client, doc_id, frontier),
@@ -162,13 +165,7 @@ fn append_ops_in_tx(
             try_direct_rewind_catch_up_materialized_state(
                 &PgOpStorage::new(ctx.clone()),
                 inserted_op_ids,
-                PersistedRemoteStores {
-                    replica_id: ReplicaId::new(b"postgres"),
-                    clock: LamportClock::default(),
-                    nodes: PgNodeStore::new(ctx.clone()),
-                    payloads: PgPayloadStore::new(ctx.clone()),
-                    index: PgParentOpIndex::new(ctx.clone()),
-                },
+                persisted_remote_stores(&ctx),
                 &meta,
                 |nodes| nodes.flush_last_change(),
                 |index| index.flush(),
@@ -177,13 +174,7 @@ fn append_ops_in_tx(
         |meta| {
             catch_up_materialized_state(
                 PgOpStorage::new(ctx.clone()),
-                PersistedRemoteStores {
-                    replica_id: ReplicaId::new(b"postgres"),
-                    clock: LamportClock::default(),
-                    nodes: PgNodeStore::new(ctx.clone()),
-                    payloads: PgPayloadStore::new(ctx.clone()),
-                    index: PgParentOpIndex::new(ctx.clone()),
-                },
+                persisted_remote_stores(&ctx),
                 &meta,
                 |nodes| nodes.flush_last_change(),
                 |index| index.flush(),
@@ -255,13 +246,7 @@ pub(crate) fn ensure_materialized_in_tx(
     let storage = PgOpStorage::new(ctx.clone());
     let catch_up = catch_up_materialized_state(
         storage,
-        PersistedRemoteStores {
-            replica_id: ReplicaId::new(b"postgres"),
-            clock: LamportClock::default(),
-            nodes: PgNodeStore::new(ctx.clone()),
-            payloads: PgPayloadStore::new(ctx.clone()),
-            index: PgParentOpIndex::new(ctx.clone()),
-        },
+        persisted_remote_stores(&ctx),
         &meta,
         |nodes| nodes.flush_last_change(),
         |index| index.flush(),
