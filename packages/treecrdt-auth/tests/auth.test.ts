@@ -307,10 +307,18 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const opDelete = makeOp(aPk, 2, 2, {
-    type: 'delete',
-    node: nodeIdFromInt(1),
-  });
+  const knownState = (frontier: number) =>
+    new TextEncoder().encode(
+      JSON.stringify({ entries: [{ replica: Array.from(aPk), frontier, ranges: [] }] }),
+    );
+  const opDelete: Operation = {
+    meta: {
+      id: { replica: aPk, counter: 2 },
+      lamport: 2,
+      knownState: knownState(1),
+    },
+    kind: { type: 'delete', node: nodeIdFromInt(1) },
+  };
 
   const ops = [opInsert, opDelete];
   const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
@@ -328,6 +336,23 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   expect(bytesToHex(auth?.[1]!.proofRef!)).toBe(bytesToHex(tokenDeleteId));
 
   await authB.verifyOps?.(ops, auth, ctx);
+
+  const changedState: Operation = {
+    ...opDelete,
+    meta: { ...opDelete.meta, knownState: knownState(2) },
+  };
+  await expect(authB.verifyOps?.([changedState], [auth![1]!], ctx)).rejects.toThrow(
+    /invalid op signature/i,
+  );
+
+  const strippedState: Operation = {
+    ...opDelete,
+    meta: { id: opDelete.meta.id, lamport: opDelete.meta.lamport },
+  };
+  await expect(authA.signOps?.([strippedState], ctx)).rejects.toThrow(/require.*knownState/i);
+  await expect(authB.verifyOps?.([strippedState], [auth![1]!], ctx)).rejects.toThrow(
+    /require.*knownState/i,
+  );
 
   const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(
