@@ -130,6 +130,7 @@ mod ffi {
         pub fn sqlite3_column_type(stmt: *mut sqlite3_stmt, idx: c_int) -> c_int;
 
         pub fn sqlite3_changes(db: *mut sqlite3) -> c_int;
+        pub fn sqlite3_get_autocommit(db: *mut sqlite3) -> c_int;
 
         pub fn sqlite3_auto_extension(xEntryPoint: Option<unsafe extern "C" fn()>) -> c_int;
     }
@@ -256,6 +257,18 @@ pub(super) fn sqlite_changes(db: *mut sqlite3) -> c_int {
     #[cfg(feature = "static-link")]
     unsafe {
         ffi::sqlite3_changes(db)
+    }
+}
+
+pub(super) fn sqlite_get_autocommit(db: *mut sqlite3) -> c_int {
+    #[cfg(feature = "ext-sqlite")]
+    {
+        let api = api().expect("api table");
+        unsafe { (api.get_autocommit.unwrap())(db) }
+    }
+    #[cfg(feature = "static-link")]
+    unsafe {
+        ffi::sqlite3_get_autocommit(db)
     }
 }
 
