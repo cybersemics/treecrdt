@@ -1,5 +1,11 @@
 # @treecrdt/wa-sqlite
 
+## 0.4.3
+
+### Patch Changes
+
+- 49ca3c9: Reduce local insert, move, delete, and payload overhead by preparing SQLite helper statements only when each operation needs them.
+
 ## 0.4.2
 
 ### Patch Changes
