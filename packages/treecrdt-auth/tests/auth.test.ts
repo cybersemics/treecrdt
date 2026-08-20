@@ -27,7 +27,7 @@ import {
   signTreecrdtOp,
   verifyTreecrdtRevocationRecordV1,
 } from '../dist/treecrdt-auth.js';
-import type { Capability, Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
+import type { Capability, Filter, Hello, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 
 ed25519Hashes.sha512 = sha512;
 
@@ -55,6 +55,10 @@ function setHex(opRefs: readonly Uint8Array[]): Set<string> {
 
 async function tick(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function helloWithCapabilities(capabilities: Capability[]): Hello {
+  return { exchangeId: 'test', capabilities, filters: [], maxLamport: 0n };
 }
 
 async function waitUntil(
@@ -258,6 +262,69 @@ test('syncOnce with COSE+CWT auth converges and verifies ops', async () => {
   }
 });
 
+test('auth: direct upload requires a live reader grant from the responder', async () => {
+  const docId = 'doc-auth-direct-upload-reader';
+  const root = '0'.repeat(32);
+  const a = new MemoryBackend(docId);
+  const b = new MemoryBackend(docId);
+
+  const issuerSk = ed25519Utils.randomSecretKey();
+  const issuerPk = await getPublicKey(issuerSk);
+  const aSk = ed25519Utils.randomSecretKey();
+  const aPk = await getPublicKey(aSk);
+  const bSk = ed25519Utils.randomSecretKey();
+  const bPk = await getPublicKey(bSk);
+
+  await a.applyOps([
+    makeOp(aPk, 1, 1, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(1),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+
+  const tokenA = issueTreecrdtCapabilityTokenV1({
+    issuerPrivateKey: issuerSk,
+    subjectPublicKey: aPk,
+    docId,
+    actions: ['read_structure', 'write_structure'],
+  });
+  const authA = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: aSk,
+    localPublicKey: aPk,
+    localCapabilityTokens: [tokenA],
+    requireProofRef: true,
+  });
+  // B can verify A's token, but has no live token of its own. Its HelloAck only
+  // relays A's token as replay proof material, which must not authorize reading A.
+  const authB = createTreecrdtCoseCwtAuth({
+    issuerPublicKeys: [issuerPk],
+    localPrivateKey: bSk,
+    localPublicKey: bPk,
+    requireProofRef: true,
+  });
+
+  const { peerA, transportA, detach } = createInMemoryConnectedPeers({
+    backendA: a,
+    backendB: b,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA },
+    peerBOptions: { auth: authB },
+  });
+
+  try {
+    await expect(peerA.syncOnce(transportA, { all: {} })).rejects.toThrow(
+      /missing "auth\.capability" token/i,
+    );
+    await tick();
+    expect(b.hasOp(bytesToHex(aPk), 1)).toBe(false);
+  } finally {
+    detach();
+  }
+});
+
 test('auth: signOps selects proof_ref per op when multiple tokens exist', async () => {
   const docId = 'doc-auth-multitoken';
   const root = '0'.repeat(32);
@@ -300,7 +367,7 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   });
 
   const helloCapsA = await authA.helloCapabilities?.({ docId });
-  await authB.onHello?.({ capabilities: helloCapsA ?? [], filters: [], maxLamport: 0n }, { docId });
+  await authB.onHello?.(helloWithCapabilities(helloCapsA ?? []), { docId });
 
   const opInsert = makeOp(aPk, 1, 1, {
     type: 'insert',
@@ -411,11 +478,7 @@ test('auth: operation writes require a state-independent doc-wide grant', async 
       requireProofRef: true,
     });
     await verifier.onHello?.(
-      {
-        capabilities: [{ name: 'auth.capability', value: base64urlEncode(token) }],
-        filters: [],
-        maxLamport: 0n,
-      },
+      helloWithCapabilities([{ name: 'auth.capability', value: base64urlEncode(token) }]),
       { docId },
     );
     return verifier;
@@ -548,10 +611,13 @@ test('auth ignores foreign peer capability tokens during hello and still verifie
   await expect(
     authVerifier.onHelloAck?.(
       {
+        exchangeId: 'test',
         capabilities: [
           ...writerHelloCaps,
           { name: 'auth.capability', value: base64urlEncode(foreignToken) },
         ],
+        acceptedFilters: [],
+        rejectedFilters: [],
         maxLamport: 0n,
       },
       { docId },
@@ -634,10 +700,7 @@ test('auth re-advertises trusted author capability tokens from the capability st
   });
 
   const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
-  await authRelay.onHello?.(
-    { capabilities: writerHelloCaps, filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authRelay.onHello?.(helloWithCapabilities(writerHelloCaps), { docId });
 
   const reloadedRelay = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -662,10 +725,7 @@ test('auth re-advertises trusted author capability tokens from the capability st
     ]),
   );
 
-  await authJoiner.onHello?.(
-    { capabilities: relayHelloCaps, filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authJoiner.onHello?.(helloWithCapabilities(relayHelloCaps), { docId });
 
   const op = makeOp(writerPk, 1, 1, {
     type: 'insert',
@@ -774,10 +834,7 @@ test('auth: replayed author capability tokens do not widen peer filter scope', a
   });
 
   const writerHelloCaps = (await authWriter.helloCapabilities?.({ docId })) ?? [];
-  await authScopedPeer.onHello?.(
-    { capabilities: writerHelloCaps, filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authScopedPeer.onHello?.(helloWithCapabilities(writerHelloCaps), { docId });
 
   const reloadedScopedPeer = createTreecrdtCoseCwtAuth({
     issuerPublicKeys: [issuerPk],
@@ -1898,10 +1955,7 @@ test('auth: delegated capability token can be verified via issuer-signed proof',
 
   const helloCaps = await authRecipient.helloCapabilities?.({ docId });
   expect(helloCaps).toBeTruthy();
-  await authVerifier.onHello?.(
-    { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(helloCaps ?? []), { docId });
 
   const node = nodeIdFromInt(1);
   const op: Operation = makeOp(recipientPk, 1, 1, {
@@ -2116,10 +2170,7 @@ test('auth: onHello rejects revoked peer capability tokens', async () => {
   expect(helloCaps).toBeTruthy();
 
   await expect(
-    authReceiver.onHello!(
-      { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
-      { docId },
-    ),
+    authReceiver.onHello!(helloWithCapabilities(helloCaps ?? []), { docId }),
   ).rejects.toThrow(/capability token revoked/i);
 });
 
@@ -2160,14 +2211,10 @@ test('auth: onHello ignores revoked replay capability tokens', async () => {
 
   await expect(
     authReceiver.onHello!(
-      {
-        capabilities: [
-          { name: 'auth.capability', value: base64urlEncode(activeToken) },
-          { name: 'auth.capability.replay', value: base64urlEncode(revokedReplayToken) },
-        ],
-        filters: [],
-        maxLamport: 0n,
-      },
+      helloWithCapabilities([
+        { name: 'auth.capability', value: base64urlEncode(activeToken) },
+        { name: 'auth.capability.replay', value: base64urlEncode(revokedReplayToken) },
+      ]),
       { docId },
     ),
   ).resolves.toEqual([{ name: 'auth.capability.replay', value: base64urlEncode(activeToken) }]);
@@ -2212,10 +2259,7 @@ test('auth: late hard revocation rejects future ops and re-verification of past 
   });
 
   const helloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(helloCaps ?? []), { docId });
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
     type: 'insert',
@@ -2300,10 +2344,7 @@ test('auth: runtime revocation callback supports counter cutover policy', async 
   });
 
   const helloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: helloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(helloCaps ?? []), { docId });
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
     type: 'insert',
@@ -2393,10 +2434,7 @@ test('auth: revocation record from hello capabilities hard-revokes token across 
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(writerHelloCaps ?? []), { docId });
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
     type: 'insert',
@@ -2412,10 +2450,7 @@ test('auth: revocation record from hello capabilities hard-revokes token across 
   });
 
   const revokerHelloCaps = await authRevoker.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: revokerHelloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(revokerHelloCaps ?? []), { docId });
 
   const op2: Operation = makeOp(writerPk, 2, 2, {
     type: 'insert',
@@ -2542,10 +2577,7 @@ test('auth: highest rev_seq revocation record wins for a token', async () => {
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(writerHelloCaps ?? []), { docId });
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
     type: 'insert',
@@ -2561,10 +2593,7 @@ test('auth: highest rev_seq revocation record wins for a token', async () => {
   });
 
   const highSeqCaps = await authHighSeq.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(highSeqCaps ?? []), { docId });
 
   // High-seq cutover keeps pre-cutover ops valid.
   await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
@@ -2574,10 +2603,7 @@ test('auth: highest rev_seq revocation record wins for a token', async () => {
   });
 
   const lowSeqCaps = await authLowSeq.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(lowSeqCaps ?? []), { docId });
 
   // Lower-seq hard revoke must not override higher-seq cutover.
   await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
@@ -2674,10 +2700,7 @@ test('auth: out-of-order revocation records use highest rev_seq even when it arr
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(writerHelloCaps ?? []), { docId });
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
     type: 'insert',
@@ -2688,10 +2711,7 @@ test('auth: out-of-order revocation records use highest rev_seq even when it arr
   const auth1 = await authWriter.signOps?.([op1], { docId, purpose: 'reconcile', filterId: 'all' });
 
   const lowSeqCaps = await authLowSeqPeer.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: lowSeqCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(lowSeqCaps ?? []), { docId });
   await expect(
     authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
       docId,
@@ -2701,10 +2721,7 @@ test('auth: out-of-order revocation records use highest rev_seq even when it arr
   ).rejects.toThrow(/capability token revoked/i);
 
   const highSeqCaps = await authHighSeqPeer.helloCapabilities?.({ docId });
-  await authVerifier.onHello?.(
-    { capabilities: highSeqCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifier.onHello?.(helloWithCapabilities(highSeqCaps ?? []), { docId });
   await authVerifier.verifyOps?.([op1], auth1 ?? undefined, {
     docId,
     purpose: 'reconcile',
@@ -2809,14 +2826,8 @@ test('auth: same rev_seq revocation conflicts converge regardless delivery order
   });
 
   const writerHelloCaps = await authWriter.helloCapabilities?.({ docId });
-  await authVerifierA.onHello?.(
-    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
-  await authVerifierB.onHello?.(
-    { capabilities: writerHelloCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifierA.onHello?.(helloWithCapabilities(writerHelloCaps ?? []), { docId });
+  await authVerifierB.onHello?.(helloWithCapabilities(writerHelloCaps ?? []), { docId });
 
   const op1: Operation = makeOp(writerPk, 1, 1, {
     type: 'insert',
@@ -2838,23 +2849,11 @@ test('auth: same rev_seq revocation conflicts converge regardless delivery order
   const cutoverCaps = await authCutoverPeer.helloCapabilities?.({ docId });
 
   // A sees hard then cutover.
-  await authVerifierA.onHello?.(
-    { capabilities: hardCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
-  await authVerifierA.onHello?.(
-    { capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifierA.onHello?.(helloWithCapabilities(hardCaps ?? []), { docId });
+  await authVerifierA.onHello?.(helloWithCapabilities(cutoverCaps ?? []), { docId });
   // B sees cutover then hard.
-  await authVerifierB.onHello?.(
-    { capabilities: cutoverCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
-  await authVerifierB.onHello?.(
-    { capabilities: hardCaps ?? [], filters: [], maxLamport: 0n },
-    { docId },
-  );
+  await authVerifierB.onHello?.(helloWithCapabilities(cutoverCaps ?? []), { docId });
+  await authVerifierB.onHello?.(helloWithCapabilities(hardCaps ?? []), { docId });
 
   const winnerIsHard = bytesToHex(hardRecord) > bytesToHex(cutoverRecord);
 
@@ -3040,7 +3039,7 @@ test('auth: records peer identity chain capability via onPeerIdentityChain', asy
     },
   });
 
-  await auth.onHello?.({ capabilities: [chainCap], filters: [], maxLamport: 0n }, { docId });
+  await auth.onHello?.(helloWithCapabilities([chainCap]), { docId });
 
   expect(seen).toEqual({
     identityPkHex: bytesToHex(identityPk),

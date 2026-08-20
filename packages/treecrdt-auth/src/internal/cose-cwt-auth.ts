@@ -525,7 +525,9 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
     },
     filterOutgoingOps: async (ops, ctx) => {
       const tokenCaps = ctx.capabilities.filter(isAuthCapability);
-      if (tokenCaps.length === 0) return ops.map(() => true);
+      // A replay capability can verify historical op proofs, but only a live
+      // capability proves that this peer may read the outgoing operations.
+      if (tokenCaps.length === 0) throw new Error(`missing "${AUTH_CAPABILITY_NAME}" token`);
 
       const grants = await parsePeerCapabilityGrants(tokenCaps, ctx.docId);
       if (grants.length === 0) return ops.map(() => false);

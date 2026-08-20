@@ -20,6 +20,8 @@ message Hello {
   repeated Capability capabilities = 1;
   repeated FilterSpec filters = 2;
   uint64 max_lamport = 3;
+  // Chosen by the sender and unique for this transport. The responder MUST echo it.
+  string exchange_id = 4;
 }
 
 message RejectedFilter {
@@ -33,6 +35,7 @@ message HelloAck {
   repeated string accepted_filters = 2;
   repeated RejectedFilter rejected_filters = 3;
   uint64 max_lamport = 4;
+  string exchange_id = 5;
 }
 
 // Reconciliation via RIBLT (rateless IBLT codewords).
@@ -146,6 +149,8 @@ message SyncError {
   string message = 2;
   string filter_id = 3;
   string subscription_id = 4;
+  // Set when the error terminates a Hello exchange before HelloAck can be sent.
+  string exchange_id = 5;
 }
 
 enum ErrorCode {
