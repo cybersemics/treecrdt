@@ -666,7 +666,6 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         throw new Error(`op auth length ${auth.length} does not match ops length ${ops.length}`);
       }
 
-      const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
       for (let i = 0; i < ops.length; i += 1) {
         const op = ops[i]!;
         const a = auth[i]!;
@@ -719,11 +718,21 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           publicKey: replica,
         });
         if (!ok) throw new Error('invalid op signature');
-        const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
-        opAuthByOpRefHex.set(bytesToHex(opRef), a);
-        if (opts.opAuthStore) toPersist.push({ opRef, auth: a });
       }
-
+    },
+    onVerifiedOps: async (ops, auth, ctx) => {
+      if (ops.length !== auth.length) {
+        throw new Error(`verified auth has ${auth.length} entries for ${ops.length} ops`);
+      }
+      const toPersist: Array<{ opRef: OpRef; auth: OpAuth }> = [];
+      for (let i = 0; i < ops.length; i += 1) {
+        const op = ops[i]!;
+        const entry = auth[i]!;
+        const replica = replicaIdToBytes(op.meta.id.replica);
+        const opRef = deriveOpRefV0(ctx.docId, { replica, counter: op.meta.id.counter });
+        opAuthByOpRefHex.set(bytesToHex(opRef), entry);
+        if (opts.opAuthStore) toPersist.push({ opRef, auth: entry });
+      }
       if (opts.opAuthStore && toPersist.length > 0) {
         await ensureOpAuthStoreReady();
         await opts.opAuthStore.storeOpAuth(toPersist);
