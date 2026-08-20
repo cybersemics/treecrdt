@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const browserChannel = process.env.TREECRDT_BROWSER_CHANNEL;
+
 export default defineConfig({
   testDir: './tests',
   fullyParallel: false,
@@ -11,7 +13,11 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium-dev',
-      use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:4166' },
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://localhost:4166',
+        ...(browserChannel ? { channel: browserChannel } : {}),
+      },
     },
     {
       name: 'chromium-basepath-preview',
