@@ -8,7 +8,7 @@ use treecrdt_core::{Error, Lamport, NodeId, Operation, Result};
 use crate::opref::{derive_op_ref_v0, OPREF_V0_WIDTH};
 use crate::store::{
     bytes_to_node, ensure_doc_meta, ensure_materialized, node_to_bytes, op_ref_from_bytes,
-    row_to_op, row_to_op_at, storage_debug, PgCtx,
+    replica_max_counter_in_tx, row_to_op, row_to_op_at, storage_debug, PgCtx,
 };
 
 pub fn max_lamport(client: &Rc<RefCell<Client>>, doc_id: &str) -> Result<Lamport> {
@@ -396,13 +396,5 @@ pub fn replica_max_counter(
     replica: &[u8],
 ) -> Result<u64> {
     ensure_doc_meta(client, doc_id)?;
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
-    let mut c = client.borrow_mut();
-    let stmt = ctx.stmt(
-        &mut c,
-        "SELECT COALESCE(MAX(counter), 0) FROM treecrdt_ops WHERE doc_id = $1 AND replica = $2",
-    )?;
-    let rows = c.query(&stmt, &[&doc_id, &replica]).map_err(storage_debug)?;
-    let row = rows.first().ok_or_else(|| Error::Storage("missing MAX(counter) row".into()))?;
-    Ok(row.get::<_, i64>(0).max(0) as u64)
+    replica_max_counter_in_tx(client, doc_id, replica)
 }
