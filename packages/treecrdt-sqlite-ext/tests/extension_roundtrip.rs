@@ -510,6 +510,48 @@ fn append_and_fetch_ops_via_extension() {
 }
 
 #[test]
+fn empty_values_remain_non_null_blobs() {
+    let conn = setup_conn();
+    let replica = b"empty-values".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, 1, 1, 'insert', ?2, ?3, NULL, zeroblob(0), zeroblob(0))",
+            rusqlite::params![replica, root, node.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let op_shape: (String, i64, String, i64) = conn
+        .query_row(
+            "SELECT typeof(order_key), length(order_key), typeof(payload), length(payload) \
+             FROM ops",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(op_shape, ("blob".to_string(), 0, "blob".to_string(), 0));
+
+    let materialized_shape: (String, i64) = conn
+        .query_row(
+            "SELECT typeof(payload), length(payload) FROM tree_payload WHERE node = ?1",
+            rusqlite::params![node],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(materialized_shape, ("blob".to_string(), 0));
+
+    let ops_json: String =
+        conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0)).unwrap();
+    let ops: Vec<JsonOp> = decode_ops_or_local_result(&ops_json);
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].order_key, Some(Vec::new()));
+    assert_eq!(ops[0].payload, Some(Vec::new()));
+}
+
+#[test]
 fn local_insert_returns_appended_insert_op() {
     let conn = setup_conn();
 
@@ -556,6 +598,80 @@ fn local_insert_returns_appended_insert_op() {
     assert_eq!(head_replica, b"r1".to_vec());
     assert_eq!(head_counter, 1);
     assert_eq!(head_seq, 1);
+}
+
+#[test]
+fn empty_replica_is_rejected_by_direct_local_and_batch_writes() {
+    let conn = setup_conn();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+
+    let result = conn.query_row(
+        "SELECT treecrdt_append_op(zeroblob(0), 1, 1, 'insert', ?1, ?2, NULL, zeroblob(0), NULL)",
+        rusqlite::params![root.clone(), node.clone()],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    let result = conn.query_row(
+        "SELECT treecrdt_local_insert(zeroblob(0), ?1, ?2, 'first', NULL, NULL)",
+        rusqlite::params![root.clone(), node.clone()],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    let batch = serde_json::to_string(&vec![JsonOp {
+        replica: Vec::new(),
+        counter: 1,
+        lamport: 1,
+        kind: "insert".to_string(),
+        parent: Some(<[u8; 16]>::try_from(root.as_slice()).unwrap()),
+        node: <[u8; 16]>::try_from(node.as_slice()).unwrap(),
+        new_parent: None,
+        order_key: Some(vec![0, 1]),
+        known_state: None,
+        payload: None,
+    }])
+    .unwrap();
+    let result = conn.query_row(
+        "SELECT treecrdt_append_ops(?1)",
+        rusqlite::params![batch],
+        |row| row.get::<_, String>(0),
+    );
+    assert!(result.is_err());
+
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn malformed_empty_replica_row_returns_an_error() {
+    let conn = setup_conn();
+    conn.execute(
+        "INSERT INTO ops(replica,counter,lamport,kind,parent,node,order_key,op_ref) \
+         VALUES(zeroblob(0),1,1,'insert',?1,?2,zeroblob(0),zeroblob(16))",
+        rusqlite::params![node_bytes(0), node_bytes(1)],
+    )
+    .unwrap();
+
+    let result = conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| {
+        row.get::<_, String>(0)
+    });
+    assert!(result.is_err());
+
+    conn.execute(
+        "UPDATE tree_meta \
+         SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
+         WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let result = conn.query_row("SELECT treecrdt_ensure_materialized()", [], |row| {
+        row.get::<_, String>(0)
+    });
+    assert!(result.is_err());
+
+    conn.execute_batch("DROP TABLE ops").unwrap();
 }
 
 #[test]
