@@ -14,6 +14,7 @@ pnpm benchmark:sync:help
 Useful top-level entrypoints:
 
 ```sh
+pnpm benchmark:quick
 pnpm benchmark
 pnpm benchmark:sqlite-node
 pnpm benchmark:sqlite-node:ops
@@ -29,7 +30,20 @@ pnpm benchmark:wasm
 pnpm benchmark:postgres
 ```
 
-`pnpm benchmark` writes JSON results under `benchmarks/`.
+Both `pnpm benchmark:quick` and `pnpm benchmark` write JSON results under `benchmarks/`.
+The quick suite samples the main local implementations at a representative scale; the full suite retains the exhaustive size and iteration matrix.
+
+### Pull Request Comparisons
+
+Repository members can trigger base/head comparisons from a pull request:
+
+- `/bench` or `/bench quick`: representative browser/OPFS, native SQLite, direct sync, WASM, and Rust core coverage
+- `/bench web`: full browser memory and OPFS coverage
+- `/bench full`: the exhaustive suite
+
+Use quick for routine feedback and full when confirming a broad or performance-sensitive change.
+Quick keeps browser memory/OPFS operation coverage and native direct-sync coverage; use
+`/bench web` for the browser-specific sync matrix.
 
 ## Which Benchmark Answers What?
 

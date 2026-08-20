@@ -12,11 +12,12 @@ on:
       suite:
         description: Benchmark suite
         required: true
-        default: full
+        default: quick
         type: choice
         options:
-          - full
+          - quick
           - web
+          - full
 
 permissions:
   contents: read
@@ -28,7 +29,7 @@ jobs:
     if: |
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
-        startsWith(github.event.comment.body, '/bench') &&
+        contains(fromJSON('["/bench","/bench quick","/bench web","/bench full"]'), github.event.comment.body) &&
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
       ) || (github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-22.04
@@ -54,10 +55,21 @@ jobs:
               throw new Error('Unable to determine pull request number');
             }
 
+            const commentSuites = {
+              '/bench': 'quick',
+              '/bench quick': 'quick',
+              '/bench web': 'web',
+              '/bench full': 'full',
+            };
+            const commentBody = context.payload.comment?.body?.trim().toLowerCase();
             const suite = context.eventName === 'workflow_dispatch'
-              ? context.payload.inputs?.suite ?? 'full'
-              : 'full';
-            const benchmarkScripts = { full: 'benchmark', web: 'benchmark:web' };
+              ? context.payload.inputs?.suite ?? 'quick'
+              : commentSuites[commentBody];
+            const benchmarkScripts = {
+              quick: 'benchmark:quick',
+              full: 'benchmark',
+              web: 'benchmark:web',
+            };
             if (!Object.hasOwn(benchmarkScripts, suite)) {
               throw new Error(`Unsupported benchmark suite: ${suite}`);
             }
@@ -124,7 +136,6 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.base_sha }}
           path: bench-base
-          fetch-depth: 0
           submodules: recursive
 
       - name: Checkout head
@@ -133,8 +144,15 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           path: bench-head
-          fetch-depth: 0
           submodules: recursive
+
+      - name: Checkout benchmark tools
+        if: steps.pr.outputs.same_repo == 'true' && steps.pr.outputs.suite == 'quick'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: bench-tools
+          sparse-checkout: scripts
 
       - name: Use Node.js 20.x
         if: steps.pr.outputs.same_repo == 'true'
@@ -151,8 +169,6 @@ jobs:
       - name: Install Rust toolchain
         if: steps.pr.outputs.same_repo == 'true'
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - name: Add wasm targets
         if: steps.pr.outputs.same_repo == 'true'
@@ -219,8 +235,16 @@ jobs:
         run: |
           set -o pipefail
           status=0
-          env -u CI pnpm run "$BENCHMARK_SCRIPT" 2>&1 | tee benchmark.log || status=$?
-          pnpm run benchmark:aggregate || status=$?
+          if [ "$BENCHMARK_SCRIPT" = "benchmark:quick" ]; then
+            env -u CI TREECRDT_BENCH_ROOT="$PWD" \
+              node "$GITHUB_WORKSPACE/bench-tools/scripts/run-quick-bench.mjs" \
+              2>&1 | tee benchmark.log || status=$?
+          else
+            env -u CI pnpm run "$BENCHMARK_SCRIPT" 2>&1 | tee benchmark.log || status=$?
+          fi
+          if [ ! -f benchmarks/summary.json ]; then
+            pnpm run benchmark:aggregate || status=$?
+          fi
           exit "$status"
 
       - name: Run benchmarks (head)
@@ -234,8 +258,16 @@ jobs:
         run: |
           set -o pipefail
           status=0
-          env -u CI pnpm run "$BENCHMARK_SCRIPT" 2>&1 | tee benchmark.log || status=$?
-          pnpm run benchmark:aggregate || status=$?
+          if [ "$BENCHMARK_SCRIPT" = "benchmark:quick" ]; then
+            env -u CI TREECRDT_BENCH_ROOT="$PWD" \
+              node "$GITHUB_WORKSPACE/bench-tools/scripts/run-quick-bench.mjs" \
+              2>&1 | tee benchmark.log || status=$?
+          else
+            env -u CI pnpm run "$BENCHMARK_SCRIPT" 2>&1 | tee benchmark.log || status=$?
+          fi
+          if [ ! -f benchmarks/summary.json ]; then
+            pnpm run benchmark:aggregate || status=$?
+          fi
           exit "$status"
 
       - name: Upload benchmark artifacts
@@ -342,8 +374,9 @@ jobs:
             const baseOutcome = '${{ steps.benchmark_base.outcome }}';
             const headOutcome = '${{ steps.benchmark_head.outcome }}';
             const benchmarkFailed = [baseOutcome, headOutcome].includes('failure');
-            const triggerLabel =
-              context.eventName === 'workflow_dispatch' ? '`workflow_dispatch`' : '`/bench`';
+            const triggerLabel = context.eventName === 'workflow_dispatch'
+              ? '`workflow_dispatch`'
+              : `\`${context.payload.comment.body.trim()}\``;
 
             const parts = [
               marker,
