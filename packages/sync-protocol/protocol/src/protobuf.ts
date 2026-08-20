@@ -364,20 +364,28 @@ function fromProtoOperation(op: any): Operation {
 }
 
 function toProtoOpAuth(auth: OpAuth) {
+  if (!(auth.sig instanceof Uint8Array) || auth.sig.length !== 64) {
+    throw new Error('OpAuth.sig must be 64 bytes');
+  }
+  if (!(auth.proofRef instanceof Uint8Array) || auth.proofRef.length !== 16) {
+    throw new Error('OpAuth.proofRef must be 16 bytes');
+  }
   return create(OpAuthSchema, {
     sig: auth.sig,
-    ...(auth.proofRef ? { proofRef: auth.proofRef } : {}),
+    proofRef: auth.proofRef,
   });
 }
 
 function fromProtoOpAuth(auth: any): OpAuth {
   const sig = auth.sig as Uint8Array | undefined;
   const proofRef = auth.proofRef as Uint8Array | undefined;
-  if (!sig) throw new Error('OpAuth.sig missing');
-  return {
-    sig,
-    ...(proofRef && proofRef.length > 0 ? { proofRef } : {}),
-  };
+  if (!(sig instanceof Uint8Array) || sig.length !== 64) {
+    throw new Error('OpAuth.sig must be 64 bytes');
+  }
+  if (!(proofRef instanceof Uint8Array) || proofRef.length !== 16) {
+    throw new Error('OpAuth.proofRef must be 16 bytes');
+  }
+  return { sig, proofRef };
 }
 
 function toProtoOpsBatch(batch: OpsBatch<Operation>) {

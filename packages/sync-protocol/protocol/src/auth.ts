@@ -1,7 +1,7 @@
 import type { Capability, Hello, HelloAck, OpAuth } from './types.js';
 import type { Filter } from './types.js';
 
-export type SyncOpPurpose = 'reconcile' | 'subscribe' | 'reprocess_pending';
+export type SyncOpPurpose = 'local_write' | 'reconcile' | 'subscribe' | 'reprocess_pending';
 
 export type SyncAuthOpDisposition =
   | { status: 'allow' }

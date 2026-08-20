@@ -363,6 +363,7 @@ async function runAuthLocalWriteCase(opts: { storage: 'memory' | 'opfs' }): Prom
     const allowAuth: LocalWriteOptions['authSession'] = {
       authorizeLocalOps: async () => {
         authorizedBeforeEvent = events.length === 0;
+        return [{ sig: new Uint8Array(64), proofRef: new Uint8Array(16) }];
       },
     };
 

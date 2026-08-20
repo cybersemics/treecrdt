@@ -58,8 +58,10 @@ If present, `auth` MUST be either empty (no auth) or exactly the same length as 
 Each op may carry:
 
 - `sig`: Ed25519 signature bytes (64 bytes)
-- `proof_ref` (optional but RECOMMENDED): 16-byte reference to the capability token used
-  to authorize this op
+- `proof_ref`: 16-byte reference to the capability token used to authorize this op
+
+Auth is optional at the batch level. If an `OpAuth` entry is present, both fields are required
+and must have the exact lengths above.
 
 Rationale:
 
@@ -116,7 +118,7 @@ their current tree view is not delegation authority.
 
 Wire format (reference implementation):
 
-- Delegated tokens are still COSE_Sign1 + CWT, but they are signed by the **subject key** of a *proof token*.
+- Delegated tokens are still COSE_Sign1 + CWT, but they are signed by the **subject key** of a _proof token_.
 - The delegated token carries exactly one proof token in the COSE unprotected header:
   - key: `"treecrdt.delegation_proof_v1"`
   - value: a single `bstr` (or a 1-element array of `bstr`) containing the proof token bytes
@@ -186,6 +188,7 @@ Ops are signed with the doc-scoped Ed25519 key. The signature covers:
 - explicit defensive-delete `known_state` presence and bytes
 - op kind + fields
 - payload bytes (ciphertext bytes if payloads are encrypted)
+- the selected `proof_ref`
 
 ### Canonical signing bytes
 
@@ -194,6 +197,7 @@ All integers are big-endian. Strings are UTF-8 with length prefixes.
 ```
 sig_input = concat(
   "treecrdt/op-sig/v1", 0x00,
+  proof_ref, // exactly 16 bytes
   u32_be(len(doc_id)), doc_id_utf8,
   u32_be(len(replica_id)), replica_id_bytes,
   u64_be(counter),
@@ -292,9 +296,9 @@ database as the CRDT state (not separate files).
 
 Two useful sidecar concepts:
 
-1) **Verified proof cache** (optional): re-verify later without re-downloading proofs.
-2) **Pending ops** (recommended): store ops that are validly signed and well-formed but not yet authorizable.
-3) **Op auth cache** (recommended for forwarders): persist per-op auth (`sig` + `proof_ref`) for already-applied ops so a peer/server can re-serve ops it did not author after restart.
+1. **Verified proof cache** (optional): re-verify later without re-downloading proofs.
+2. **Pending ops** (recommended): store ops that are validly signed and well-formed but not yet authorizable.
+3. **Op auth cache** (recommended for forwarders): persist per-op auth (`sig` + `proof_ref`) for already-applied ops so a peer/server can re-serve ops it did not author after restart.
 
 ### Suggested SQLite schema (illustrative)
 
@@ -311,8 +315,8 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   doc_id TEXT NOT NULL,
   op_ref BLOB NOT NULL,              -- 16 bytes
   op BLOB NOT NULL,                  -- encoded sync/v0 Operation protobuf bytes (not a full SyncMessage)
-  sig BLOB NOT NULL,
-  proof_ref BLOB,
+  sig BLOB NOT NULL CHECK(length(sig) = 64),
+  proof_ref BLOB NOT NULL CHECK(length(proof_ref) = 16),
   reason TEXT NOT NULL,              -- e.g. "missing_context"
   message TEXT,
   created_at_ms INTEGER NOT NULL,
@@ -327,8 +331,8 @@ metadata for already-applied ops:
 CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
   doc_id TEXT NOT NULL,
   op_ref BLOB NOT NULL,              -- 16 bytes
-  sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
-  proof_ref BLOB,                    -- 16 bytes (token id), nullable
+  sig BLOB NOT NULL CHECK(length(sig) = 64),
+  proof_ref BLOB NOT NULL CHECK(length(proof_ref) = 16),
   created_at_ms INTEGER NOT NULL,
   PRIMARY KEY (doc_id, op_ref)
 );
@@ -339,14 +343,13 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
 TreeCRDT’s JS SQLite adapters intentionally use a minimal `SqliteRunner` API (`exec` + `getText`). This has two practical
 implications for sidecar tables:
 
-1) **DML via `getText`**: some runners implement `getText` using a “query” primitive (for example `better-sqlite3`’s
+1. **DML via `getText`**: some runners implement `getText` using a “query” primitive (for example `better-sqlite3`’s
    `.get()`), which fails for statements that return no rows. A portable pattern is to use `RETURNING` so the statement
    yields a row:
-
    - `INSERT ... RETURNING 1`
    - `DELETE ... RETURNING 1`
 
-2) **BLOB reads via text**: if the bridge only returns strings, read `BLOB` columns with `hex(blob_col)` and decode on
+2. **BLOB reads via text**: if the bridge only returns strings, read `BLOB` columns with `hex(blob_col)` and decode on
    the JS side. For bulk reads, SQLite’s JSON1 functions are convenient (`json_object`, `json_group_array`).
 
 ## Subscription note: push vs catch-up

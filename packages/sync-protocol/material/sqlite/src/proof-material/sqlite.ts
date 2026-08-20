@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_pending_ops (
   doc_id TEXT NOT NULL,
   op_ref BLOB NOT NULL,              -- 16 bytes
   op BLOB NOT NULL,                  -- protobuf bytes (sync/v0 Operation)
-  sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
-  proof_ref BLOB,                    -- 16 bytes (token id), nullable
+  sig BLOB NOT NULL CHECK(length(sig) = 64),
+  proof_ref BLOB NOT NULL CHECK(length(proof_ref) = 16),
   reason TEXT NOT NULL,              -- e.g. "missing_context"
   message TEXT,
   created_at_ms INTEGER NOT NULL,
@@ -55,8 +55,8 @@ const OP_AUTH_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
   doc_id TEXT NOT NULL,
   op_ref BLOB NOT NULL,              -- 16 bytes
-  sig BLOB NOT NULL,                 -- 64 bytes (Ed25519)
-  proof_ref BLOB,                    -- 16 bytes (token id), nullable
+  sig BLOB NOT NULL CHECK(length(sig) = 64),
+  proof_ref BLOB NOT NULL CHECK(length(proof_ref) = 16),
   created_at_ms INTEGER NOT NULL,
   PRIMARY KEY (doc_id, op_ref)
 );
@@ -131,14 +131,13 @@ RETURNING 1
       for (const p of pending) {
         const opRef = opRefForOp(p.op);
         const opBytes = encodeTreecrdtSyncV0Operation(p.op);
-        const proofRef = p.auth.proofRef ?? null;
         const message = p.message ?? null;
         await opts.runner.getText(insertSql, [
           opts.docId,
           opRef,
           opBytes,
           p.auth.sig,
-          proofRef,
+          p.auth.proofRef,
           p.reason,
           message,
           nowMs(),
@@ -152,7 +151,7 @@ RETURNING 1
       const rows = JSON.parse(text) as Array<{
         op_hex: string;
         sig_hex: string;
-        proof_ref_hex: string | null;
+        proof_ref_hex: string;
         reason: string;
         message: string | null;
       }>;
@@ -162,9 +161,7 @@ RETURNING 1
         const op = decodeTreecrdtSyncV0Operation(opBytes);
 
         const sig = hexToBytesStrict(r.sig_hex, 64, 'pending sig');
-        const proofRef = r.proof_ref_hex
-          ? hexToBytesStrict(r.proof_ref_hex, 16, 'pending proof_ref')
-          : undefined;
+        const proofRef = hexToBytesStrict(r.proof_ref_hex, 16, 'pending proof_ref');
 
         if (r.reason !== 'missing_context') {
           throw new Error(`unexpected pending reason: ${r.reason}`);
@@ -172,7 +169,7 @@ RETURNING 1
 
         return {
           op,
-          auth: { sig, ...(proofRef ? { proofRef } : {}) },
+          auth: { sig, proofRef },
           reason: 'missing_context',
           ...(r.message ? { message: r.message } : {}),
         } satisfies PendingOp<Operation>;
@@ -236,8 +233,13 @@ FROM (
       if (entries.length === 0) return;
 
       for (const e of entries) {
-        const proofRef = e.auth.proofRef ?? null;
-        await opts.runner.getText(insertSql, [opts.docId, e.opRef, e.auth.sig, proofRef, nowMs()]);
+        await opts.runner.getText(insertSql, [
+          opts.docId,
+          e.opRef,
+          e.auth.sig,
+          e.auth.proofRef,
+          nowMs(),
+        ]);
       }
     },
 
@@ -250,17 +252,15 @@ FROM (
       const rows = JSON.parse(text) as Array<{
         op_ref_hex: string;
         sig_hex: string;
-        proof_ref_hex: string | null;
+        proof_ref_hex: string;
       }>;
 
       const byHex = new Map<string, OpAuth>();
       for (const r of rows) {
         const opRefHex = String(r.op_ref_hex).toLowerCase();
         const sig = hexToBytesStrict(r.sig_hex, 64, 'op_auth sig');
-        const proofRef = r.proof_ref_hex
-          ? hexToBytesStrict(r.proof_ref_hex, 16, 'op_auth proof_ref')
-          : undefined;
-        byHex.set(opRefHex, { sig, ...(proofRef ? { proofRef } : {}) });
+        const proofRef = hexToBytesStrict(r.proof_ref_hex, 16, 'op_auth proof_ref');
+        byHex.set(opRefHex, { sig, proofRef });
       }
 
       return opRefs.map((ref) => byHex.get(bytesToHex(ref)) ?? null);

@@ -1,13 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { Operation } from "@treecrdt/interface";
-import type { LocalWriteOptions } from "@treecrdt/interface/engine";
-import { bytesToHex } from "@treecrdt/interface/ids";
-import { base64urlDecode, type TreecrdtAuthSession } from "@treecrdt/auth";
-import type { SyncAuth } from "@treecrdt/sync-protocol";
-import type { TreecrdtSqliteAuthApi } from "@treecrdt/sync-sqlite/auth";
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import type { Operation } from '@treecrdt/interface';
+import type { LocalWriteOptions } from '@treecrdt/interface/engine';
+import { bytesToHex } from '@treecrdt/interface/ids';
+import { base64urlDecode, type TreecrdtAuthSession } from '@treecrdt/auth';
+import type { SyncAuth } from '@treecrdt/sync-protocol';
+import type { TreecrdtSqliteAuthApi } from '@treecrdt/sync-sqlite/auth';
 
-import { createLocalIdentityChainV1, type StoredAuthMaterial } from "../../auth";
-import { hexToBytes16 } from "../../sync-v0";
+import { createLocalIdentityChainV1, type StoredAuthMaterial } from '../../auth';
+import { hexToBytes16 } from '../../sync-v0';
 
 type UsePlaygroundAuthSessionOptions = {
   authEnabled: boolean;
@@ -48,9 +48,9 @@ export function usePlaygroundAuthSession(
   } = opts;
   const [syncAuth, setSyncAuth] = useState<SyncAuth<Operation> | null>(null);
   const localAuthSessionRef = useRef<TreecrdtAuthSession | null>(null);
-  const localIdentityChainPromiseRef = useRef<
-    Promise<Awaited<ReturnType<typeof createLocalIdentityChainV1>> | null> | null
-  >(null);
+  const localIdentityChainPromiseRef = useRef<Promise<Awaited<
+    ReturnType<typeof createLocalIdentityChainV1>
+  > | null> | null>(null);
 
   useEffect(() => {
     // Local identity chains are doc-bound (replica cert includes `docId`) and depend on the current replica key.
@@ -68,7 +68,7 @@ export function usePlaygroundAuthSession(
         docId,
         replicaPublicKey: replicaPk,
       }).catch((err) => {
-        console.error("Failed to create identity chain", err);
+        console.error('Failed to create identity chain', err);
         return null;
       });
     }
@@ -127,7 +127,6 @@ export function usePlaygroundAuthSession(
             capabilityTokens: localTokens,
           },
           revokedCapabilityTokenIds: hardRevokedTokenIdBytes,
-          requireProofRef: true,
           identity: {
             onPeer: onPeerIdentityChain,
             local: getLocalIdentityChain,
@@ -176,7 +175,7 @@ export function usePlaygroundAuthSession(
   const getLocalWriteOptions = React.useCallback((): LocalWriteOptions | undefined => {
     if (!authEnabled) return;
     const session = localAuthSessionRef.current;
-    if (!session) throw new Error("auth is enabled but not configured");
+    if (!session) throw new Error('auth is enabled but not configured');
     return { authSession: session };
   }, [authEnabled]);
 
