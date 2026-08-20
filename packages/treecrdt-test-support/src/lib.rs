@@ -169,10 +169,7 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
 
     harness.append_ops(&[second]);
     let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&first));
-    assert_eq!(
-        changed_nodes(&outcome),
-        vec![NodeId::ROOT, node(1), node(2)]
-    );
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, node(1)]);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 2);
     assert_eq!(
@@ -199,7 +196,9 @@ pub fn out_of_order_losing_payload_rebuilds_parent_index<H: MaterializationConfo
     let losing_payload = Operation::set_payload(&replica, 2, 2, payload_node, vec![4]);
 
     harness.append_ops(&[insert, winning_payload]);
-    harness.append_ops(&[losing_payload]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[losing_payload]);
+    assert!(outcome.changes.is_empty());
+    assert_eq!(outcome.head_seq, 3);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 3);
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![payload_node]);
@@ -208,6 +207,94 @@ pub fn out_of_order_losing_payload_rebuilds_parent_index<H: MaterializationConfo
         harness.op_ref_counters_for_parent(NodeId::ROOT),
         vec![1, 2, 3]
     );
+
+    let cleared_node = node(88);
+    let delayed_clear = Operation::clear_payload(&replica, 4, 5, cleared_node);
+    let later_payload = Operation::set_payload(&replica, 5, 6, payload_node, vec![10]);
+    harness.append_ops(&[later_payload]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[delayed_clear]);
+
+    assert_eq!(
+        outcome.changes,
+        vec![MaterializationChange::Payload {
+            node: cleared_node,
+            payload: None,
+            source: None,
+        }]
+    );
+    assert_eq!(outcome.head_seq, 5);
+    assert_replay_cleared(harness);
+    assert_eq!(harness.node_state(cleared_node).parent, None);
+}
+
+pub fn catch_up_reports_same_parent_reorder_as_move<H: MaterializationConformanceHarness>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"same-parent-reorder");
+    let first = node(9);
+    let second = node(10);
+    let insert_first = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        first,
+        order_key_from_position(1),
+    );
+    let insert_second = Operation::insert(
+        &replica,
+        2,
+        2,
+        NodeId::ROOT,
+        second,
+        order_key_from_position(2),
+    );
+    let delayed_reorder = Operation::move_node(
+        &replica,
+        3,
+        3,
+        second,
+        NodeId::ROOT,
+        order_key_from_position(0),
+    );
+    let later_payload = Operation::set_payload(&replica, 4, 4, first, vec![7]);
+
+    harness.append_ops(&[insert_first, insert_second, later_payload]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[delayed_reorder]);
+
+    assert_eq!(
+        outcome.changes,
+        vec![MaterializationChange::Move {
+            node: second,
+            parent_before: Some(NodeId::ROOT),
+            parent_after: NodeId::ROOT,
+            source: None,
+        }]
+    );
+    assert_eq!(outcome.head_seq, 4);
+    assert_replay_cleared(harness);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![second, first]);
+    assert_eq!(harness.payload(first), Some(vec![7]));
+
+    let delayed_trash_move =
+        Operation::move_node(&replica, 5, 5, second, NodeId::TRASH, Vec::new());
+    let later_payload = Operation::set_payload(&replica, 6, 6, first, vec![8]);
+    harness.append_ops(&[later_payload]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[delayed_trash_move]);
+
+    assert_eq!(
+        outcome.changes,
+        vec![MaterializationChange::Move {
+            node: second,
+            parent_before: Some(NodeId::ROOT),
+            parent_after: NodeId::TRASH,
+            source: None,
+        }]
+    );
+    assert_eq!(outcome.head_seq, 6);
+    assert_replay_cleared(harness);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![first]);
+    assert_eq!(harness.node_state(second).parent, Some(NodeId::TRASH));
 }
 
 pub fn out_of_order_move_with_later_payload_catches_up_immediately<
@@ -230,7 +317,22 @@ pub fn out_of_order_move_with_later_payload_catches_up_immediately<
     harness.append_ops(&[insert_p1, insert_p2, insert_child, earlier_payload]);
     let outcome =
         harness.append_ops_with_materialization_outcome(&[later_payload, out_of_order_move]);
-    assert_eq!(changed_nodes(&outcome), vec![p1, p2, child]);
+    assert_eq!(
+        outcome.changes,
+        vec![
+            MaterializationChange::Move {
+                node: child,
+                parent_before: Some(p1),
+                parent_after: p2,
+                source: None,
+            },
+            MaterializationChange::Payload {
+                node: child,
+                payload: Some(vec![9]),
+                source: None,
+            },
+        ]
+    );
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 6);
     assert_eq!(harness.visible_children(p1), Vec::<NodeId>::new());
@@ -291,10 +393,7 @@ pub fn replay_from_start_frontier_catches_up_immediately<H: MaterializationConfo
     harness.force_replay_from_start();
 
     let outcome = harness.append_ops_with_materialization_outcome(&[second]);
-    assert_eq!(
-        changed_nodes(&outcome),
-        vec![NodeId::ROOT, node(1), node(2)]
-    );
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, node(2)]);
     assert_replay_cleared(harness);
     assert_eq!(
         harness.visible_children(NodeId::ROOT),
@@ -392,27 +491,55 @@ pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
     let parent = node(1);
     let child = node(2);
 
-    let insert_parent = Operation::insert(
+    let insert_parent = Operation::insert_with_payload(
         &replica,
         1,
         1,
         NodeId::ROOT,
         parent,
         order_key_from_position(0),
+        vec![7],
     );
-    let insert_child = Operation::insert(&replica, 2, 2, parent, child, order_key_from_position(0));
+    let insert_child = Operation::insert_with_payload(
+        &replica,
+        2,
+        2,
+        parent,
+        child,
+        order_key_from_position(0),
+        vec![8],
+    );
 
     let mut vv = treecrdt_core::VersionVector::new();
     vv.observe(&replica, 1);
     let delete_parent = Operation::delete(&replica, 3, 3, parent, Some(vv));
 
     harness.append_ops(&[insert_parent, delete_parent]);
-    let _ = harness.append_ops_with_materialization_outcome(&[insert_child]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[insert_child]);
+    assert_eq!(
+        outcome.changes,
+        vec![
+            MaterializationChange::Insert {
+                node: child,
+                parent_after: parent,
+                payload: Some(vec![8]),
+                source: None,
+            },
+            MaterializationChange::Restore {
+                node: parent,
+                parent_after: Some(NodeId::ROOT),
+                payload: Some(vec![7]),
+                source: None,
+            },
+        ]
+    );
 
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 3);
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![parent]);
     assert_eq!(harness.visible_children(parent), vec![child]);
+    assert_eq!(harness.payload(parent), Some(vec![7]));
+    assert_eq!(harness.payload(child), Some(vec![8]));
 }
 
 fn assert_parent_chain_acyclic<H: MaterializationConformanceHarness>(harness: &H, start: NodeId) {
@@ -549,7 +676,10 @@ pub fn out_of_order_concurrent_delete_converges_internal_node_metadata<
         later_payload.clone(),
     ]);
     out_of_order.append_ops(&[insert_parent, insert_child, later_payload]);
-    out_of_order.append_ops(&[concurrent_delete]);
+    let outcome =
+        out_of_order.append_ops_with_materialization_outcome(slice::from_ref(&concurrent_delete));
+    assert!(outcome.changes.is_empty());
+    assert_eq!(outcome.head_seq, 4);
 
     let canonical_state = canonical.node_state(parent);
     let out_of_order_state = out_of_order.node_state(parent);
@@ -573,4 +703,55 @@ pub fn out_of_order_concurrent_delete_converges_internal_node_metadata<
     assert_eq!(out_of_order.head_seq(), 4);
     assert_replay_cleared(canonical);
     assert_replay_cleared(out_of_order);
+}
+
+pub fn catch_up_omits_replay_only_move<H: MaterializationConformanceHarness>(harness: &H) {
+    let creator = ReplicaId::new(b"net-move-creator");
+    let late = ReplicaId::new(b"net-move-late");
+    let winner = ReplicaId::new(b"net-move-winner");
+    let p1 = node(11);
+    let p2 = node(12);
+    let child = node(13);
+
+    let insert_p1 = Operation::insert(&creator, 1, 1, NodeId::ROOT, p1, order_key_from_position(0));
+    let insert_p2 = Operation::insert(&creator, 2, 2, NodeId::ROOT, p2, order_key_from_position(1));
+    let insert_child = Operation::insert(&creator, 3, 3, p1, child, order_key_from_position(0));
+    let late_move = Operation::move_node(&late, 1, 4, child, p2, order_key_from_position(0));
+    let winning_move = Operation::move_node(&winner, 1, 5, child, p2, order_key_from_position(0));
+
+    harness.append_ops(&[insert_p1, insert_p2, insert_child, winning_move]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[late_move]);
+
+    assert!(outcome.changes.is_empty());
+    assert_eq!(outcome.head_seq, 5);
+    assert_eq!(harness.visible_children(p1), Vec::<NodeId>::new());
+    assert_eq!(harness.visible_children(p2), vec![child]);
+    assert_replay_cleared(harness);
+}
+
+pub fn catch_up_omits_replay_only_restore<H: MaterializationConformanceHarness>(harness: &H) {
+    let creator = ReplicaId::new(b"net-restore-creator");
+    let deleter = ReplicaId::new(b"net-restore-deleter");
+    let late = ReplicaId::new(b"net-restore-late");
+    let winner = ReplicaId::new(b"net-restore-winner");
+    let parent = node(21);
+    let child = node(22);
+    let key = order_key_from_position(0);
+
+    let insert_parent = Operation::insert(&creator, 1, 1, NodeId::ROOT, parent, key.clone());
+    let insert_child = Operation::insert(&creator, 2, 2, parent, child, key.clone());
+    let mut known_state = VersionVector::new();
+    known_state.observe(&creator, 2);
+    let delete_parent = Operation::delete(&deleter, 1, 3, parent, Some(known_state));
+    let late_move = Operation::move_node(&late, 1, 4, child, parent, key.clone());
+    let winning_move = Operation::move_node(&winner, 1, 5, child, parent, key);
+
+    harness.append_ops(&[insert_parent, insert_child, delete_parent, winning_move]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[late_move]);
+
+    assert!(outcome.changes.is_empty());
+    assert_eq!(outcome.head_seq, 5);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![parent]);
+    assert_eq!(harness.visible_children(parent), vec![child]);
+    assert_replay_cleared(harness);
 }

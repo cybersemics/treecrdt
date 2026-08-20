@@ -259,6 +259,28 @@ fn prepare_persisted_remote_stores(
     })
 }
 
+fn with_materialization_savepoint(
+    db: *mut sqlite3,
+    run: impl FnOnce() -> Result<treecrdt_core::IncrementalApplyResult, c_int>,
+) -> Result<treecrdt_core::IncrementalApplyResult, c_int> {
+    const BEGIN: &[u8] = b"SAVEPOINT treecrdt_incremental_materialization\0";
+    const ROLLBACK: &[u8] = b"ROLLBACK TO treecrdt_incremental_materialization\0";
+
+    let rc = sqlite_exec(db, BEGIN.as_ptr().cast(), None, null_mut(), null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(rc);
+    }
+    let result = run();
+    if !matches!(&result, Ok(result) if result.head.is_some()) {
+        let rc = sqlite_exec(db, ROLLBACK.as_ptr().cast(), None, null_mut(), null_mut());
+        if rc != SQLITE_OK as c_int {
+            return Err(rc);
+        }
+    }
+    // Releasing the outer append savepoint also releases this nested one.
+    result
+}
+
 fn materialize_inserted_ops(
     db: *mut sqlite3,
     doc_id: &[u8],
@@ -267,15 +289,17 @@ fn materialize_inserted_ops(
 ) -> Result<treecrdt_core::IncrementalApplyResult, c_int> {
     use treecrdt_core::materialize_persisted_remote_ops_with_delta;
 
-    materialize_persisted_remote_ops_with_delta(
-        prepare_persisted_remote_stores(db, doc_id)?,
-        &meta,
-        ops,
-        |_, _| Ok(()),
-        |_| Ok(()),
-        |_| Ok(()),
-    )
-    .map_err(|_| SQLITE_ERROR as c_int)
+    with_materialization_savepoint(db, || {
+        materialize_persisted_remote_ops_with_delta(
+            prepare_persisted_remote_stores(db, doc_id)?,
+            &meta,
+            ops,
+            |_, _| Ok(()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .map_err(|_| SQLITE_ERROR as c_int)
+    })
 }
 
 pub(super) fn ensure_materialized(db: *mut sqlite3) -> Result<MaterializationOutcome, c_int> {

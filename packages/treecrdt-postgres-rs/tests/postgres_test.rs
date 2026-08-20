@@ -256,6 +256,21 @@ fn postgres_backend_out_of_order_losing_payload_rebuilds_parent_index() {
 }
 
 #[test]
+fn postgres_backend_net_catch_up_outcomes() {
+    let scenarios: [fn(&PgConformanceHarness); 3] = [
+        materialization_conformance::catch_up_reports_same_parent_reorder_as_move,
+        materialization_conformance::catch_up_omits_replay_only_move,
+        materialization_conformance::catch_up_omits_replay_only_restore,
+    ];
+    for scenario in scenarios {
+        let Some(harness) = setup_conformance_harness() else {
+            return;
+        };
+        scenario(&harness);
+    }
+}
+
+#[test]
 fn postgres_backend_out_of_order_move_with_later_payload_catches_up_immediately() {
     let Some(harness) = setup_conformance_harness() else {
         return;
