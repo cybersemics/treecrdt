@@ -1,6 +1,6 @@
 use treecrdt_core::{
-    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId,
-    TreeCrdt,
+    LamportClock, LocalPlacement, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId,
+    NodeStore, NoopParentOpIndex, Operation, ReplicaId, TreeCrdt,
 };
 
 #[test]
@@ -40,6 +40,46 @@ fn duplicate_operations_are_ignored() {
     crdt.apply_remote(op.clone()).unwrap();
     crdt.apply_remote(op).unwrap();
     assert_eq!(crdt.children(NodeId::ROOT).unwrap(), &[NodeId(1)]);
+}
+
+#[test]
+fn persisted_operations_require_portable_key_range() {
+    let replica = ReplicaId::new(b"remote");
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    let overflow = i64::MAX as u64 + 1;
+    for (counter, lamport, node) in [
+        (1, 0, NodeId(90)),
+        (0, 1, NodeId(91)),
+        (1, overflow, NodeId(92)),
+        (overflow, 1, NodeId(93)),
+    ] {
+        let op = Operation::insert(&replica, counter, lamport, NodeId::ROOT, node, vec![0x10]);
+        assert!(crdt.apply_remote(op).is_err());
+        assert_eq!(crdt.lamport(), 0);
+    }
+    assert!(crdt.children(NodeId::ROOT).unwrap().is_empty());
+    assert!(crdt.operations_since(0).unwrap().is_empty());
+
+    let max = i64::MAX as u64;
+    let accepted = NodeId(94);
+    crdt.apply_remote(Operation::insert(
+        &replica,
+        max,
+        max,
+        NodeId::ROOT,
+        accepted,
+        vec![0x10],
+    ))
+    .unwrap();
+    assert_eq!(crdt.lamport(), max);
+    assert_eq!(crdt.children(NodeId::ROOT).unwrap(), &[accepted]);
+    assert_eq!(crdt.operations_since(0).unwrap().len(), 1);
 }
 
 #[test]
@@ -90,58 +130,70 @@ fn delete_marks_tombstone_and_removes_from_parent() {
 }
 
 #[test]
-fn prevents_cycle_on_move() {
+fn structural_cycle_is_rejected_without_changing_ancestry() {
     let mut crdt = TreeCrdt::new(
-        ReplicaId::new(b"a"),
+        ReplicaId::new(b"local"),
         MemoryStorage::default(),
         LamportClock::default(),
     )
     .unwrap();
-
     let root = NodeId::ROOT;
-    let a = NodeId(1);
-    let b = NodeId(2);
+    let parent = NodeId(1);
+    let child = NodeId(2);
 
-    crdt.local_insert(root, a, LocalPlacement::First, None).unwrap();
-    crdt.local_insert(a, b, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(root, parent, LocalPlacement::First, None).unwrap();
+    crdt.local_insert(parent, child, LocalPlacement::First, None).unwrap();
 
     crdt.apply_remote(Operation::move_node(
-        &ReplicaId::new(b"a"),
+        &ReplicaId::new(b"remote"),
+        1,
         3,
-        3,
-        a,
-        b,
+        parent,
+        child,
         Vec::new(),
     ))
     .unwrap();
-    assert_eq!(crdt.parent(a).unwrap(), Some(root));
+
+    assert_eq!(crdt.parent(parent).unwrap(), Some(root));
+    assert_eq!(crdt.parent(child).unwrap(), Some(parent));
+    crdt.validate_invariants().unwrap();
 }
 
 #[test]
-fn cycles_are_blocked() {
-    let mut crdt = TreeCrdt::new(
-        ReplicaId::new(b"a"),
+fn malformed_parent_cycle_rejects_move_without_looping() {
+    let root = NodeId::ROOT;
+    let cycle_a = NodeId(1);
+    let cycle_b = NodeId(2);
+    let node = NodeId(3);
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(cycle_a).unwrap();
+    nodes.ensure_node(cycle_b).unwrap();
+    nodes.ensure_node(node).unwrap();
+    nodes.attach(cycle_a, cycle_b, vec![1]).unwrap();
+    nodes.attach(cycle_b, cycle_a, vec![1]).unwrap();
+    nodes.attach(node, root, vec![1]).unwrap();
+
+    let mut crdt = TreeCrdt::with_stores(
+        ReplicaId::new(b"local"),
         MemoryStorage::default(),
         LamportClock::default(),
+        nodes,
+        MemoryPayloadStore::default(),
     )
     .unwrap();
-    let root = NodeId::ROOT;
-    let a = NodeId(1);
-    let b = NodeId(2);
+    let mut seq = 0;
+    let mut index = NoopParentOpIndex;
+    let delta = crdt
+        .apply_remote_with_materialization_seq(
+            Operation::move_node(&ReplicaId::new(b"remote"), 1, 1, node, cycle_a, Vec::new()),
+            &mut index,
+            &mut seq,
+        )
+        .unwrap()
+        .unwrap();
 
-    let inserts = [
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, a, b, Vec::new()),
-    ];
-    for op in inserts {
-        crdt.apply_remote(op).unwrap();
-    }
-
-    let bad_move = Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, Vec::new());
-    crdt.apply_remote(bad_move).unwrap();
-    assert_eq!(crdt.parent(a).unwrap(), Some(root));
-    assert_eq!(crdt.parent(b).unwrap(), Some(a));
-    crdt.validate_invariants().unwrap();
+    assert!(delta.changes.is_empty());
+    assert_eq!(crdt.parent(node).unwrap(), Some(root));
 }
 
 #[test]

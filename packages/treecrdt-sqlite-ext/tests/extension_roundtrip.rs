@@ -346,8 +346,16 @@ struct SqliteConformanceHarness {
 }
 
 impl MaterializationConformanceHarness for SqliteConformanceHarness {
-    fn append_ops(&self, ops: &[Operation]) {
-        append_ops_json(&self.conn, &json_ops(ops));
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String> {
+        let json = serde_json::to_string(&json_ops(ops)).map_err(|err| err.to_string())?;
+        self.conn
+            .query_row(
+                "SELECT treecrdt_append_ops(?1)",
+                rusqlite::params![json],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
@@ -383,6 +391,15 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
                 })
             }
             _ => None,
+        }
+    }
+
+    fn materialization_head(&self) -> treecrdt_core::MaterializationFrontier {
+        let (lamport, replica, counter, _) = read_tree_meta(&self.conn);
+        treecrdt_core::MaterializationFrontier {
+            lamport: lamport.max(0) as u64,
+            replica,
+            counter: counter.max(0) as u64,
         }
     }
 
@@ -565,7 +582,7 @@ fn remote_append_materializes_only_inserted_ops() {
 }
 
 #[test]
-fn remote_append_representative_batch_matches_postgres_shape() {
+fn remote_append_representative_batch_matches_conformance_shape() {
     let harness = setup_conformance_harness();
     materialization_conformance::representative_remote_batch_matches_shape(&harness);
 }
@@ -577,9 +594,44 @@ fn remote_append_out_of_order_catches_up_immediately_from_frontier() {
 }
 
 #[test]
-fn remote_append_out_of_order_losing_payload_skips_replay_frontier() {
+fn remote_losing_payload_uses_suffix_replay_without_resetting_nodes() {
     let harness = setup_conformance_harness();
-    materialization_conformance::out_of_order_losing_payload_skips_replay_frontier(&harness);
+    let replica = ReplicaId::new(b"payload-fast-path");
+    let node = materialization_conformance::node(7);
+    let insert = Operation::insert_with_payload(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node,
+        materialization_conformance::order_key_from_position(0),
+        vec![1],
+    );
+    let winning_payload = Operation::set_payload(&replica, 3, 3, node, vec![9]);
+    let losing_payload = Operation::set_payload(&replica, 2, 2, node, vec![4]);
+
+    harness.append_ops(&[insert, winning_payload]);
+    harness
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER reject_full_node_reset \
+             BEFORE DELETE ON tree_nodes \
+             BEGIN \
+               SELECT RAISE(ABORT, 'full node reset used'); \
+             END;",
+        )
+        .unwrap();
+
+    let outcome = harness.append_ops_with_materialization_outcome(&[losing_payload]);
+
+    assert!(outcome.changes.is_empty());
+    assert_eq!(harness.replay_frontier(), None);
+    assert_eq!(harness.payload(node), Some(vec![9]));
+    assert_eq!(
+        harness.op_ref_counters_for_parent(NodeId::ROOT),
+        vec![1, 2, 3]
+    );
+    assert_eq!(harness.head_seq(), 3);
 }
 
 #[test]
@@ -653,7 +705,7 @@ fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
         "CREATE TRIGGER fail_tree_nodes_insert \
          BEFORE INSERT ON tree_nodes \
          BEGIN \
-           SELECT RAISE(ROLLBACK, 'forced catch-up failure'); \
+           SELECT RAISE(ABORT, 'forced catch-up failure'); \
          END;",
     )
     .unwrap();
@@ -676,6 +728,12 @@ fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
         visible_children(&conn, &node_bytes(0)),
         vec![node_bytes_from_id(materialization_conformance::node(2))]
     );
+}
+
+#[test]
+fn remote_append_validates_operation_key_range_atomically() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::operation_key_range_is_validated_atomically(&harness);
 }
 
 #[test]

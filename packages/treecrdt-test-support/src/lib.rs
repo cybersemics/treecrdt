@@ -6,12 +6,16 @@ use treecrdt_core::{
 };
 
 pub trait MaterializationConformanceHarness {
-    fn append_ops(&self, ops: &[Operation]);
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String>;
+    fn append_ops(&self, ops: &[Operation]) {
+        self.try_append_ops(ops).unwrap();
+    }
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome;
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId>;
     fn payload(&self, node: NodeId) -> Option<Vec<u8>>;
     fn op_count(&self) -> u64;
     fn replay_frontier(&self) -> Option<MaterializationFrontier>;
+    fn materialization_head(&self) -> MaterializationFrontier;
     fn head_seq(&self) -> u64;
     fn force_replay_from_start(&self);
     fn ensure_materialized(&self);
@@ -105,6 +109,82 @@ pub fn append_batch_materializes_only_inserted_ops<H: MaterializationConformance
     assert_eq!(harness.head_seq(), 2);
 }
 
+pub fn operation_key_range_is_validated_atomically<H: MaterializationConformanceHarness>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"invalid-key");
+    let max = i64::MAX as u64;
+    let valid = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node(40),
+        order_key_from_position(0),
+    );
+    let invalid_ops = [
+        Operation::insert(
+            &replica,
+            2,
+            0,
+            NodeId::ROOT,
+            node(41),
+            order_key_from_position(1),
+        ),
+        Operation::insert(
+            &replica,
+            0,
+            2,
+            NodeId::ROOT,
+            node(42),
+            order_key_from_position(2),
+        ),
+        Operation::insert(
+            &ReplicaId::new(b"overflow-lamport"),
+            1,
+            max + 1,
+            NodeId::ROOT,
+            node(44),
+            order_key_from_position(3),
+        ),
+        Operation::insert(
+            &ReplicaId::new(b"overflow-counter"),
+            max + 1,
+            max,
+            NodeId::ROOT,
+            node(45),
+            order_key_from_position(4),
+        ),
+    ];
+
+    for invalid in invalid_ops {
+        assert!(harness.try_append_ops(&[valid.clone(), invalid]).is_err());
+        assert_eq!(harness.op_count(), 0);
+        assert_eq!(harness.replay_frontier(), None);
+        assert_eq!(harness.head_seq(), 0);
+        assert_eq!(harness.visible_children(NodeId::ROOT), Vec::<NodeId>::new());
+    }
+
+    let boundary = Operation::insert(
+        &replica,
+        max,
+        max,
+        NodeId::ROOT,
+        node(43),
+        order_key_from_position(0),
+    );
+    assert!(harness.try_append_ops(&[boundary]).is_ok());
+    assert_eq!(
+        harness.materialization_head(),
+        MaterializationFrontier {
+            lamport: max,
+            replica: replica.as_bytes().to_vec(),
+            counter: max,
+        }
+    );
+    assert_eq!(harness.head_seq(), 1);
+}
+
 pub fn representative_remote_batch_matches_shape<H: MaterializationConformanceHarness>(
     harness: &H,
 ) {
@@ -160,10 +240,7 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
 
     harness.append_ops(&[second]);
     let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&first));
-    assert_eq!(
-        changed_nodes(&outcome),
-        vec![NodeId::ROOT, node(1), node(2)]
-    );
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, node(1)]);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 2);
     assert_eq!(
@@ -171,30 +248,6 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
         vec![node(1), node(2)]
     );
     assert_eq!(harness.op_ref_counters_for_parent(NodeId::ROOT), vec![1, 2]);
-}
-
-pub fn out_of_order_losing_payload_skips_replay_frontier<H: MaterializationConformanceHarness>(
-    harness: &H,
-) {
-    let replica = ReplicaId::new(b"payload-shortcut");
-    let payload_node = node(7);
-    let insert = Operation::insert(
-        &replica,
-        1,
-        1,
-        NodeId::ROOT,
-        payload_node,
-        order_key_from_position(0),
-    );
-    let winning_payload = Operation::set_payload(&replica, 3, 3, payload_node, vec![9]);
-    let losing_payload = Operation::set_payload(&replica, 2, 2, payload_node, vec![4]);
-
-    harness.append_ops(&[insert, winning_payload]);
-    let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&losing_payload));
-    assert!(outcome.changes.is_empty());
-    assert_replay_cleared(harness);
-    assert_eq!(harness.head_seq(), 3);
-    assert_eq!(harness.payload(payload_node), Some(vec![9]));
 }
 
 pub fn out_of_order_move_with_later_payload_catches_up_immediately<
@@ -278,10 +331,7 @@ pub fn replay_from_start_frontier_catches_up_immediately<H: MaterializationConfo
     harness.force_replay_from_start();
 
     let outcome = harness.append_ops_with_materialization_outcome(&[second]);
-    assert_eq!(
-        changed_nodes(&outcome),
-        vec![NodeId::ROOT, node(1), node(2)]
-    );
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, node(2)]);
     assert_replay_cleared(harness);
     assert_eq!(
         harness.visible_children(NodeId::ROOT),

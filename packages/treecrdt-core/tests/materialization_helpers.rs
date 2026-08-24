@@ -1,16 +1,14 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use treecrdt_core::NodeStore;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
-    catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, LocalFinalizePlan,
-    LocalPlacement, MaterializationChange, MaterializationCursor, MaterializationHead,
-    MaterializationKey, MaterializationOutcome, MaterializationState, MemoryNodeStore,
-    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, TruncatingParentOpIndex,
-    VersionVector,
+    catch_up_materialized_state, materialize_persisted_remote_ops_with_delta, Lamport,
+    LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationCursor,
+    MaterializationHead, MaterializationKey, MaterializationOutcome, MaterializationState,
+    MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation,
+    OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt,
 };
+use treecrdt_core::{NodeStore, PayloadStore};
 
 #[derive(Default)]
 struct RecordingIndex {
@@ -80,16 +78,35 @@ impl ParentOpIndex for RecordingIndex {
     }
 }
 
-impl TruncatingParentOpIndex for RecordingIndex {
-    fn truncate_from(&mut self, seq: u64) -> treecrdt_core::Result<()> {
-        self.records.retain(|(_, _, existing_seq)| *existing_seq < seq);
-        Ok(())
-    }
-}
-
 struct CountingStorage {
     inner: MemoryStorage,
     scan_count: Rc<Cell<u64>>,
+}
+
+#[derive(Clone, Default)]
+struct SharedPayloadStore(Rc<RefCell<MemoryPayloadStore>>);
+
+impl PayloadStore for SharedPayloadStore {
+    fn reset(&mut self) -> treecrdt_core::Result<()> {
+        self.0.borrow_mut().reset()
+    }
+
+    fn payload(&self, node: NodeId) -> treecrdt_core::Result<Option<Vec<u8>>> {
+        self.0.borrow().payload(node)
+    }
+
+    fn last_writer(&self, node: NodeId) -> treecrdt_core::Result<Option<(Lamport, OperationId)>> {
+        self.0.borrow().last_writer(node)
+    }
+
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> treecrdt_core::Result<()> {
+        self.0.borrow_mut().set_payload(node, payload, writer)
+    }
 }
 
 impl Storage for CountingStorage {
@@ -171,19 +188,27 @@ fn apply_incremental_ops_with_delta_sorts_and_returns_head() {
     let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
     let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
 
-    let next =
-        apply_incremental_ops_with_delta(&mut crdt, &mut index, &cursor, vec![second, first])
-            .unwrap()
-            .head
-            .expect("expected materialization head");
+    let next = apply_incremental_ops_with_delta(
+        &mut crdt,
+        &mut index,
+        &cursor,
+        vec![second.clone(), first.clone()],
+    )
+    .unwrap()
+    .head
+    .expect("expected materialization head");
 
     assert_eq!(next.at.lamport, 2);
     assert_eq!(next.at.replica, replica.as_bytes());
     assert_eq!(next.at.counter, 2);
     assert_eq!(next.seq, 2);
-    assert_eq!(index.records.len(), 2);
-    assert_eq!(index.records[0].2, 1);
-    assert_eq!(index.records[1].2, 2);
+    assert_eq!(
+        index.records,
+        vec![
+            (NodeId::ROOT, first.meta.id, 1),
+            (NodeId::ROOT, second.meta.id, 2),
+        ]
+    );
 }
 
 #[test]
@@ -321,7 +346,7 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
 }
 
 #[test]
-fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
+fn apply_persisted_remote_ops_forwards_inserted_entries_and_updates_head() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
     let op2 = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
@@ -384,7 +409,7 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
     let mut runs = 0u64;
-    let mut scheduled_replay = 0u64;
+    let mut scheduled_replay = None;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -397,15 +422,22 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
             })
         },
         |_| Ok::<_, ()>(()),
-        |_| {
-            scheduled_replay += 1;
+        |frontier| {
+            scheduled_replay = Some(frontier.clone());
             Ok::<_, ()>(())
         },
     )
     .unwrap();
 
     assert_eq!(runs, 1);
-    assert_eq!(scheduled_replay, 1);
+    assert_eq!(
+        scheduled_replay,
+        Some(treecrdt_core::MaterializationFrontier {
+            lamport: 0,
+            replica: Vec::new(),
+            counter: 0,
+        })
+    );
     assert_eq!(result.inserted_count, 1);
     assert_eq!(result.outcome.affected_nodes(), Vec::<NodeId>::new());
     assert!(result.catch_up_needed);
@@ -416,7 +448,7 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
-    let mut scheduled_replay = 0u64;
+    let mut scheduled_replay = None;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -449,14 +481,21 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
             })
         },
         |_| Err::<(), ()>(()),
-        |_| {
-            scheduled_replay += 1;
+        |frontier| {
+            scheduled_replay = Some(frontier.clone());
             Ok::<(), ()>(())
         },
     )
     .unwrap();
 
-    assert_eq!(scheduled_replay, 1);
+    assert_eq!(
+        scheduled_replay,
+        Some(treecrdt_core::MaterializationFrontier {
+            lamport: 0,
+            replica: Vec::new(),
+            counter: 0,
+        })
+    );
     assert_eq!(result.inserted_count, 1);
     assert!(result.outcome.changes.is_empty());
     assert!(result.catch_up_needed);
@@ -597,119 +636,6 @@ fn materialize_persisted_remote_ops_with_delta_runs_prepare_and_flush_hooks() {
 }
 
 #[test]
-fn payload_noop_shortcut_skips_out_of_order_payload_dominated_by_current_winner() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let node = NodeId(7);
-    let op = Operation::set_payload(&replica, 4, 4, node, vec![1]);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(&cursor, vec![op.clone()], |lookup| {
-        assert_eq!(lookup, node);
-        Ok::<_, ()>(Some((
-            9,
-            OperationId {
-                replica: replica.clone(),
-                counter: 9,
-            },
-        )))
-    })
-    .unwrap()
-    .expect("expected payload noop shortcut");
-
-    assert_eq!(shortcut.resumed_head.at.counter, 10);
-    assert_eq!(shortcut.resumed_head.seq, 6);
-    assert!(shortcut.remaining_ops.is_empty());
-    assert!(shortcut.outcome.changes.is_empty());
-}
-
-#[test]
-fn payload_noop_shortcut_keeps_later_in_order_payload_for_incremental_materialization() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let node = NodeId(8);
-    let older = Operation::set_payload(&replica, 4, 4, node, vec![1]);
-    let newer = Operation::set_payload(&replica, 12, 12, node, vec![2]);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(
-        &cursor,
-        vec![newer.clone(), older.clone()],
-        |_| Ok::<_, ()>(None),
-    )
-    .unwrap()
-    .expect("expected payload noop shortcut");
-
-    assert_eq!(shortcut.resumed_head.seq, 6);
-    assert_eq!(shortcut.remaining_ops, vec![newer]);
-    assert!(shortcut.outcome.changes.is_empty());
-}
-
-#[test]
-fn payload_noop_shortcut_rejects_out_of_order_payload_that_becomes_final_winner() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let node = NodeId(9);
-    let op = Operation::set_payload(&replica, 4, 4, node, vec![1]);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(&cursor, vec![op], |_| {
-        Ok::<_, ()>(Some((
-            2,
-            OperationId {
-                replica: ReplicaId::new(b"old"),
-                counter: 2,
-            },
-        )))
-    })
-    .unwrap();
-
-    assert!(shortcut.is_none());
-}
-
-#[test]
-fn payload_noop_shortcut_rejects_out_of_order_move() {
-    let cursor = Cursor {
-        head_lamport: 10,
-        head_replica: b"r".to_vec(),
-        head_counter: 10,
-        head_seq: 5,
-        ..Cursor::default()
-    };
-    let replica = ReplicaId::new(b"r");
-    let move_op = Operation::move_node(&replica, 4, 4, NodeId(3), NodeId::ROOT, vec![0x10]);
-    let called = Cell::new(false);
-
-    let shortcut = try_shortcut_out_of_order_payload_noops(
-        &cursor,
-        vec![move_op],
-        |_| -> Result<Option<(u64, OperationId)>, ()> {
-            called.set(true);
-            Ok(None)
-        },
-    )
-    .unwrap();
-
-    assert!(shortcut.is_none());
-    assert!(!called.get());
-}
-
-#[test]
 fn catch_up_materialized_state_scans_storage_once() {
     let replica = ReplicaId::new(b"scan-once");
     let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
@@ -819,42 +745,41 @@ fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
 }
 
 #[test]
-fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
-    let author = ReplicaId::new(b"author");
-    let deleter = ReplicaId::new(b"deleter");
-    let parent = NodeId(10);
-    let child = NodeId(11);
-
-    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
-    let child_op = Operation::insert(&author, 2, 2, parent, child, vec![0x20]);
-    let mut known_state = VersionVector::new();
-    known_state.observe(&author, 1);
-    let delete_op = Operation::delete(&deleter, 1, 3, parent, Some(known_state.clone()));
+fn catch_up_rebuild_removes_orphan_node_payload_and_index_rows() {
+    let replica = ReplicaId::new(b"orphan-repair");
+    let canonical = NodeId(30);
+    let orphan = NodeId(31);
+    let canonical_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, canonical, vec![0x10]);
 
     let mut storage = MemoryStorage::default();
-    storage.apply(parent_op.clone()).unwrap();
-    storage.apply(child_op.clone()).unwrap();
-    storage.apply(delete_op.clone()).unwrap();
+    storage.apply(canonical_op.clone()).unwrap();
 
-    let mut deleted_at = known_state;
-    deleted_at.observe(&deleter, 1);
-
-    // Simulate the stale materialized backend state before catch-up: the parent insert and later
-    // delete were materialized, but the out-of-order child insert has not been replayed yet.
     let mut nodes = MemoryNodeStore::default();
-    nodes.ensure_node(parent).unwrap();
-    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
-    nodes.merge_deleted_at(parent, &deleted_at).unwrap();
-    nodes.set_tombstone(parent, true).unwrap();
+    nodes.ensure_node(canonical).unwrap();
+    nodes.attach(canonical, NodeId::ROOT, vec![0x10]).unwrap();
+    nodes.ensure_node(orphan).unwrap();
+    nodes.attach(orphan, NodeId::ROOT, vec![0x20]).unwrap();
+
+    let mut index = RecordingIndex::default();
+    index.record(NodeId::ROOT, &canonical_op.meta.id, 1).unwrap();
+    index.record(NodeId::ROOT, &OperationId::new(&replica, 99), 99).unwrap();
+    let mut payloads = SharedPayloadStore::default();
+    payloads
+        .set_payload(
+            orphan,
+            Some(vec![0x30]),
+            (99, OperationId::new(&replica, 99)),
+        )
+        .unwrap();
 
     let meta = Cursor {
-        head_lamport: delete_op.meta.lamport,
-        head_replica: delete_op.meta.id.replica.as_bytes().to_vec(),
-        head_counter: delete_op.meta.id.counter,
-        head_seq: 2,
-        replay_lamport: Some(child_op.meta.lamport),
-        replay_replica: Some(child_op.meta.id.replica.as_bytes().to_vec()),
-        replay_counter: Some(child_op.meta.id.counter),
+        head_lamport: canonical_op.meta.lamport,
+        head_replica: canonical_op.meta.id.replica.as_bytes().to_vec(),
+        head_counter: canonical_op.meta.id.counter,
+        head_seq: 1,
+        replay_lamport: Some(0),
+        replay_replica: Some(Vec::new()),
+        replay_counter: Some(0),
     };
 
     let result = catch_up_materialized_state(
@@ -863,26 +788,111 @@ fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
             replica_id: ReplicaId::new(b"adapter"),
             clock: LamportClock::default(),
             nodes,
-            payloads: MemoryPayloadStore::default(),
-            index: NoopParentOpIndex,
+            payloads: payloads.clone(),
+            index,
         },
         &meta,
-        |_| Ok(()),
-        |_| Ok(()),
+        |nodes| {
+            assert!(nodes.exists(canonical)?);
+            assert!(!nodes.exists(orphan)?);
+            Ok(())
+        },
+        |index| {
+            assert_eq!(
+                index.records,
+                vec![(NodeId::ROOT, canonical_op.meta.id.clone(), 1)]
+            );
+            Ok(())
+        },
     )
     .unwrap();
 
-    assert!(
-        result.outcome.changes.contains(&MaterializationChange::Restore {
-            node: parent,
-            parent_after: Some(NodeId::ROOT),
-            payload: None,
-            source: None,
-        }),
-        "catch-up must report rows restored by patching stale backend state"
-    );
-    assert_eq!(
-        result.outcome.affected_nodes(),
-        vec![NodeId::ROOT, parent, child],
-    );
+    assert!(result.outcome.changes.iter().any(|change| {
+        matches!(change, MaterializationChange::Delete { node, .. } if *node == orphan)
+    }));
+    assert_eq!(payloads.payload(orphan).unwrap(), None);
+}
+
+#[test]
+fn catch_up_rejects_invalid_rebuilds_before_rewriting_stores() {
+    let replica = ReplicaId::new(b"invalid-rebuild");
+    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(50), vec![0x10]);
+    let cases = [
+        (
+            "sequence regression",
+            Cursor {
+                head_lamport: 1,
+                head_replica: replica.as_bytes().to_vec(),
+                head_counter: 1,
+                head_seq: 2,
+                replay_lamport: Some(0),
+                replay_replica: Some(Vec::new()),
+                replay_counter: Some(0),
+            },
+            "canonical replay regressed",
+        ),
+        (
+            "backwards head",
+            Cursor {
+                head_lamport: 2,
+                head_replica: replica.as_bytes().to_vec(),
+                head_counter: 2,
+                head_seq: 1,
+                replay_lamport: Some(0),
+                replay_replica: Some(Vec::new()),
+                replay_counter: Some(0),
+            },
+            "canonical replay moved the materialized head backwards",
+        ),
+        (
+            "frontier beyond log",
+            Cursor {
+                replay_lamport: Some(2),
+                replay_replica: Some(replica.as_bytes().to_vec()),
+                replay_counter: Some(2),
+                ..Cursor::default()
+            },
+            "replay frontier is beyond the canonical operation-log head",
+        ),
+    ];
+
+    for (label, meta, expected_error) in cases {
+        let mut storage = MemoryStorage::default();
+        storage.apply(only_op.clone()).unwrap();
+
+        let mut payloads = SharedPayloadStore::default();
+        let sentinel = NodeId(99);
+        payloads
+            .set_payload(
+                sentinel,
+                Some(vec![99]),
+                (99, OperationId::new(&replica, 99)),
+            )
+            .unwrap();
+
+        let result = catch_up_materialized_state(
+            storage,
+            PersistedRemoteStores {
+                replica_id: ReplicaId::new(b"adapter"),
+                clock: LamportClock::default(),
+                nodes: MemoryNodeStore::default(),
+                payloads: payloads.clone(),
+                index: NoopParentOpIndex,
+            },
+            &meta,
+            |_| unreachable!("{label}: nodes must not be flushed"),
+            |_| unreachable!("{label}: index must not be flushed"),
+        );
+
+        let error = result.expect_err(label);
+        assert!(
+            error.to_string().contains(expected_error),
+            "{label}: unexpected error: {error}"
+        );
+        assert_eq!(
+            payloads.payload(sentinel).unwrap(),
+            Some(vec![99]),
+            "{label}"
+        );
+    }
 }

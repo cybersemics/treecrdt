@@ -1,5 +1,9 @@
 import { clearOpfsStorage, detectOpfsSupport } from './opfs.js';
-import type { Operation, ReplicaId } from '@treecrdt/interface';
+import {
+  assertPersistableOperationKeys,
+  type Operation,
+  type ReplicaId,
+} from '@treecrdt/interface';
 import {
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
@@ -869,6 +873,8 @@ function makeTreecrdtClientFromCall(opts: {
   const replicaMaxCounterImpl = async (replica: Operation['meta']['id']['replica']) =>
     Number(await call('replicaMaxCounter', [Array.from(encodeReplica(replica))]));
   const appendManyImpl = async (operations: Operation[], writeOpts?: WriteOptions) => {
+    // Preflight the full logical batch before splitting it across worker RPCs.
+    assertPersistableOperationKeys(operations);
     if (operations.length <= APPEND_MANY_RPC_CHUNK_SIZE) {
       const outcome = await call('appendMany', [operations]);
       materialized.emitOutcome(outcome, writeOpts?.writeId);
@@ -953,6 +959,7 @@ function makeTreecrdtClientFromCall(opts: {
     runner,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
+        assertPersistableOperationKeys([op]);
         const outcome = await call('append', [op]);
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },

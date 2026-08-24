@@ -14,7 +14,12 @@ import {
   ROOT_NODE_ID_HEX,
   replicaIdToBytes,
 } from './ids.js';
-import type { Operation, OperationKind, ReplicaId } from './index.js';
+import {
+  assertPersistableOperationKeys,
+  type Operation,
+  type OperationKind,
+  type ReplicaId,
+} from './index.js';
 
 export type SqlCall = {
   sql: string;
@@ -233,6 +238,7 @@ async function treecrdtAppendOp(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
 ): Promise<MaterializationOutcome> {
+  assertPersistableOperationKeys([op]);
   if (op.kind.type === 'delete' && (!op.meta.knownState || op.meta.knownState.length === 0)) {
     throw new Error('treecrdt: delete operations require meta.knownState');
   }
@@ -267,6 +273,10 @@ async function treecrdtAppendOps(
   opts: { maxBulkOps?: number } = {},
 ): Promise<MaterializationOutcome> {
   if (ops.length === 0) return emptyMaterializationOutcome();
+
+  // Validate the entire batch before bulk chunking or the compatibility fallback can write a
+  // valid prefix. The Rust backends enforce the same key bounds at their persistence boundary.
+  assertPersistableOperationKeys(ops);
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
   const bulkSql = 'SELECT treecrdt_append_ops(?1)';

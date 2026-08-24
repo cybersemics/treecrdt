@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use postgres::{Client, NoTls};
 use uuid::Uuid;
 
-use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId, VersionVector};
+use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId};
 use treecrdt_postgres::{
     append_ops, append_ops_with_materialization_outcome, ensure_materialized, ensure_schema,
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
@@ -48,8 +48,10 @@ struct PgConformanceHarness {
 }
 
 impl MaterializationConformanceHarness for PgConformanceHarness {
-    fn append_ops(&self, ops: &[Operation]) {
-        append_ops(&self.client, &self.doc_id, ops).unwrap();
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String> {
+        append_ops(&self.client, &self.doc_id, ops)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
@@ -71,12 +73,12 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
     fn replay_frontier(&self) -> Option<treecrdt_core::MaterializationFrontier> {
         let mut c = self.client.borrow_mut();
         let row = c
-            .query_one(
+            .query_opt(
                 "SELECT replay_lamport, replay_replica, replay_counter \
                  FROM treecrdt_meta WHERE doc_id = $1",
                 &[&self.doc_id],
             )
-            .unwrap();
+            .unwrap()?;
         match (
             row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
             row.get::<_, Option<Vec<u8>>>(1),
@@ -93,15 +95,31 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
         }
     }
 
-    fn head_seq(&self) -> u64 {
+    fn materialization_head(&self) -> treecrdt_core::MaterializationFrontier {
         let mut c = self.client.borrow_mut();
         let row = c
             .query_one(
+                "SELECT head_lamport, head_replica, head_counter \
+                 FROM treecrdt_meta WHERE doc_id = $1",
+                &[&self.doc_id],
+            )
+            .unwrap();
+        treecrdt_core::MaterializationFrontier {
+            lamport: row.get::<_, i64>(0).max(0) as u64,
+            replica: row.get(1),
+            counter: row.get::<_, i64>(2).max(0) as u64,
+        }
+    }
+
+    fn head_seq(&self) -> u64 {
+        let mut c = self.client.borrow_mut();
+        let row = c
+            .query_opt(
                 "SELECT head_seq FROM treecrdt_meta WHERE doc_id = $1",
                 &[&self.doc_id],
             )
             .unwrap();
-        row.get::<_, i64>(0).max(0) as u64
+        row.map(|row| row.get::<_, i64>(0).max(0) as u64).unwrap_or(0)
     }
 
     fn force_replay_from_start(&self) {
@@ -193,6 +211,14 @@ fn postgres_backend_append_batch_materializes_only_inserted_ops() {
 }
 
 #[test]
+fn postgres_backend_validates_operation_key_range_atomically() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::operation_key_range_is_validated_atomically(&harness);
+}
+
+#[test]
 fn postgres_backend_append_with_materialization_outcome_matches_representative_remote_batch() {
     let Some(harness) = setup_conformance_harness() else {
         return;
@@ -206,14 +232,6 @@ fn postgres_backend_out_of_order_append_catches_up_immediately_from_frontier() {
         return;
     };
     materialization_conformance::out_of_order_append_catches_up_immediately_from_frontier(&harness);
-}
-
-#[test]
-fn postgres_backend_out_of_order_losing_payload_skips_replay_frontier() {
-    let Some(harness) = setup_conformance_harness() else {
-        return;
-    };
-    materialization_conformance::out_of_order_losing_payload_skips_replay_frontier(&harness);
 }
 
 #[test]
@@ -576,45 +594,6 @@ fn postgres_backend_children_filter_includes_move_and_payload() {
     assert!(ops_p1
         .iter()
         .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
-}
-
-#[test]
-fn postgres_backend_defensive_delete_restores_parent_after_child_insert() {
-    let Some(client) = connect() else {
-        return;
-    };
-    ensure_schema_once(&client);
-
-    let doc_id = format!("test-{}", Uuid::new_v4());
-    {
-        let mut c = client.borrow_mut();
-        reset_doc_for_tests(&mut c, &doc_id).unwrap();
-    }
-
-    let replica = ReplicaId::new(b"r1");
-    let root = NodeId::ROOT;
-    let parent = node(1);
-    let child = node(2);
-
-    let op1 = Operation::insert(&replica, 1, 1, root, parent, order_key_from_position(0));
-    let mut vv = VersionVector::new();
-    vv.observe(&replica, 1);
-    let op2 = Operation::delete(&replica, 2, 2, parent, Some(vv));
-    let op3 = Operation::insert(&replica, 3, 3, parent, child, order_key_from_position(0));
-
-    append_ops(&client, &doc_id, &[op1, op2, op3]).unwrap();
-    ensure_materialized(&client, &doc_id).unwrap();
-
-    let parent_bytes = parent.0.to_be_bytes();
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT tombstone FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2 LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .unwrap();
-    let tombstone: bool = rows[0].get(0);
-    assert!(!tombstone);
 }
 
 #[test]
