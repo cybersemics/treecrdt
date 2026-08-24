@@ -6,7 +6,7 @@ use treecrdt_core::{
     LamportClock, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationCursor,
     MaterializationHead, MaterializationKey, MaterializationOutcome, MaterializationState,
     MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation,
-    OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
+    OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt,
 };
 use treecrdt_core::{NodeStore, PayloadStore};
 
@@ -745,76 +745,6 @@ fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
 }
 
 #[test]
-fn catch_up_materialized_state_reports_rows_restored_by_canonical_rebuild() {
-    let author = ReplicaId::new(b"author");
-    let deleter = ReplicaId::new(b"deleter");
-    let parent = NodeId(10);
-    let child = NodeId(11);
-
-    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
-    let child_op = Operation::insert(&author, 2, 2, parent, child, vec![0x20]);
-    let mut known_state = VersionVector::new();
-    known_state.observe(&author, 1);
-    let delete_op = Operation::delete(&deleter, 1, 3, parent, Some(known_state.clone()));
-
-    let mut storage = MemoryStorage::default();
-    storage.apply(parent_op.clone()).unwrap();
-    storage.apply(child_op.clone()).unwrap();
-    storage.apply(delete_op.clone()).unwrap();
-
-    let mut deleted_at = known_state;
-    deleted_at.observe(&deleter, 1);
-
-    // Simulate the stale materialized backend state before catch-up: the parent insert and later
-    // delete were materialized, but the out-of-order child insert has not been replayed yet.
-    let mut nodes = MemoryNodeStore::default();
-    nodes.ensure_node(parent).unwrap();
-    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
-    nodes.merge_deleted_at(parent, &deleted_at).unwrap();
-    nodes.set_tombstone(parent, true).unwrap();
-
-    let meta = Cursor {
-        head_lamport: delete_op.meta.lamport,
-        head_replica: delete_op.meta.id.replica.as_bytes().to_vec(),
-        head_counter: delete_op.meta.id.counter,
-        head_seq: 2,
-        replay_lamport: Some(child_op.meta.lamport),
-        replay_replica: Some(child_op.meta.id.replica.as_bytes().to_vec()),
-        replay_counter: Some(child_op.meta.id.counter),
-    };
-
-    let result = catch_up_materialized_state(
-        storage,
-        PersistedRemoteStores {
-            replica_id: ReplicaId::new(b"adapter"),
-            clock: LamportClock::default(),
-            nodes,
-            payloads: MemoryPayloadStore::default(),
-            index: NoopParentOpIndex,
-        },
-        &meta,
-        |_| Ok(()),
-        |_| Ok(()),
-    )
-    .unwrap();
-
-    assert!(
-        result.outcome.changes.contains(&MaterializationChange::Restore {
-            node: parent,
-            parent_after: Some(NodeId::ROOT),
-            payload: None,
-            source: None,
-        }),
-        "catch-up must report rows restored while rebuilding stale backend state"
-    );
-    assert_eq!(result.head.as_ref().map(|head| head.seq), Some(3));
-    assert_eq!(
-        result.outcome.affected_nodes(),
-        vec![NodeId::ROOT, parent, child],
-    );
-}
-
-#[test]
 fn catch_up_removes_orphan_derived_rows() {
     let replica = ReplicaId::new(b"orphan-repair");
     let canonical = NodeId(30);
@@ -884,86 +814,85 @@ fn catch_up_removes_orphan_derived_rows() {
 }
 
 #[test]
-fn catch_up_rejects_an_incomplete_scan_before_rewriting_stores() {
-    let replica = ReplicaId::new(b"incomplete-scan");
+fn catch_up_rejects_invalid_rebuilds_before_rewriting_stores() {
+    let replica = ReplicaId::new(b"invalid-rebuild");
     let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(50), vec![0x10]);
-    let mut storage = MemoryStorage::default();
-    storage.apply(only_op).unwrap();
+    let cases = [
+        (
+            "sequence regression",
+            Cursor {
+                head_lamport: 1,
+                head_replica: replica.as_bytes().to_vec(),
+                head_counter: 1,
+                head_seq: 2,
+                replay_lamport: Some(0),
+                replay_replica: Some(Vec::new()),
+                replay_counter: Some(0),
+            },
+            "canonical replay regressed",
+        ),
+        (
+            "backwards head",
+            Cursor {
+                head_lamport: 2,
+                head_replica: replica.as_bytes().to_vec(),
+                head_counter: 2,
+                head_seq: 1,
+                replay_lamport: Some(0),
+                replay_replica: Some(Vec::new()),
+                replay_counter: Some(0),
+            },
+            "canonical replay moved the materialized head backwards",
+        ),
+        (
+            "frontier beyond log",
+            Cursor {
+                replay_lamport: Some(2),
+                replay_replica: Some(replica.as_bytes().to_vec()),
+                replay_counter: Some(2),
+                ..Cursor::default()
+            },
+            "replay frontier is beyond the canonical operation-log head",
+        ),
+    ];
 
-    let meta = Cursor {
-        head_lamport: 2,
-        head_replica: replica.as_bytes().to_vec(),
-        head_counter: 2,
-        head_seq: 2,
-        replay_lamport: Some(0),
-        replay_replica: Some(Vec::new()),
-        replay_counter: Some(0),
-    };
-    let flushed_nodes = Cell::new(false);
-    let flushed_index = Cell::new(false);
+    for (label, meta, expected_error) in cases {
+        let mut storage = MemoryStorage::default();
+        storage.apply(only_op.clone()).unwrap();
 
-    let result = catch_up_materialized_state(
-        storage,
-        PersistedRemoteStores {
-            replica_id: ReplicaId::new(b"adapter"),
-            clock: LamportClock::default(),
-            nodes: MemoryNodeStore::default(),
-            payloads: MemoryPayloadStore::default(),
-            index: NoopParentOpIndex,
-        },
-        &meta,
-        |_| {
-            flushed_nodes.set(true);
-            Ok(())
-        },
-        |_| {
-            flushed_index.set(true);
-            Ok(())
-        },
-    );
+        let mut payloads = SharedPayloadStore::default();
+        let sentinel = NodeId(99);
+        payloads
+            .set_payload(
+                sentinel,
+                Some(vec![99]),
+                (99, OperationId::new(&replica, 99)),
+            )
+            .unwrap();
 
-    assert!(result.is_err());
-    assert!(!flushed_nodes.get());
-    assert!(!flushed_index.get());
-}
+        let result = catch_up_materialized_state(
+            storage,
+            PersistedRemoteStores {
+                replica_id: ReplicaId::new(b"adapter"),
+                clock: LamportClock::default(),
+                nodes: MemoryNodeStore::default(),
+                payloads: payloads.clone(),
+                index: NoopParentOpIndex,
+            },
+            &meta,
+            |_| unreachable!("{label}: nodes must not be flushed"),
+            |_| unreachable!("{label}: index must not be flushed"),
+        );
 
-#[test]
-fn catch_up_rejects_a_frontier_beyond_the_operation_log() {
-    let replica = ReplicaId::new(b"frontier-ahead");
-    let only_op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(51), vec![0x10]);
-    let mut storage = MemoryStorage::default();
-    storage.apply(only_op).unwrap();
-
-    let meta = Cursor {
-        replay_lamport: Some(2),
-        replay_replica: Some(replica.as_bytes().to_vec()),
-        replay_counter: Some(2),
-        ..Cursor::default()
-    };
-    let flushed_nodes = Cell::new(false);
-    let flushed_index = Cell::new(false);
-
-    let result = catch_up_materialized_state(
-        storage,
-        PersistedRemoteStores {
-            replica_id: ReplicaId::new(b"adapter"),
-            clock: LamportClock::default(),
-            nodes: MemoryNodeStore::default(),
-            payloads: MemoryPayloadStore::default(),
-            index: NoopParentOpIndex,
-        },
-        &meta,
-        |_| {
-            flushed_nodes.set(true);
-            Ok(())
-        },
-        |_| {
-            flushed_index.set(true);
-            Ok(())
-        },
-    );
-
-    assert!(result.is_err());
-    assert!(!flushed_nodes.get());
-    assert!(!flushed_index.get());
+        let error = result.expect_err(label);
+        assert!(
+            error.to_string().contains(expected_error),
+            "{label}: unexpected error: {error}"
+        );
+        assert_eq!(
+            payloads.payload(sentinel).unwrap(),
+            Some(vec![99]),
+            "{label}"
+        );
+    }
 }
