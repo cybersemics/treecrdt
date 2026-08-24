@@ -1147,6 +1147,7 @@ mod tests {
     use super::*;
     use crate::ops::Operation;
     use crate::traits::NoopParentOpIndex;
+    use crate::VersionVector;
 
     #[derive(Clone, Default)]
     struct SharedPayloadStore(Rc<RefCell<MemoryPayloadStore>>);
@@ -1180,6 +1181,38 @@ mod tests {
         }
     }
 
+    fn storage_with_ops(ops: &[&Operation]) -> MemoryStorage {
+        let mut storage = MemoryStorage::default();
+        for op in ops {
+            storage.apply((*op).clone()).unwrap();
+        }
+        storage
+    }
+
+    fn materialized_prefix(
+        ops: &[&Operation],
+    ) -> (MemoryNodeStore, SharedPayloadStore, RecordingIndex) {
+        let payloads = SharedPayloadStore::default();
+        let mut crdt = TreeCrdt::with_stores(
+            ReplicaId::new(b"prefix"),
+            NoopStorage,
+            LamportClock::default(),
+            MemoryNodeStore::default(),
+            payloads.clone(),
+        )
+        .unwrap();
+        let mut index = RecordingIndex::default();
+        for (offset, op) in ops.iter().enumerate() {
+            crdt.apply_sorted_remote_with_materialization(
+                (*op).clone(),
+                &mut index,
+                offset as u64 + 1,
+            )
+            .unwrap();
+        }
+        (crdt.node_store().clone(), payloads, index)
+    }
+
     #[test]
     fn direct_rewind_replays_payload_only_existing_suffix() {
         let replica = ReplicaId::new(b"payload-only-direct-rewind");
@@ -1188,32 +1221,8 @@ mod tests {
         let late_payload = Operation::set_payload(&replica, 2, 2, node, vec![4]);
         let winning_payload = Operation::set_payload(&replica, 3, 3, node, vec![9]);
 
-        let mut storage = MemoryStorage::default();
-        storage.apply(insert.clone()).unwrap();
-        storage.apply(winning_payload.clone()).unwrap();
-        storage.apply(late_payload.clone()).unwrap();
-
-        let mut nodes = MemoryNodeStore::default();
-        nodes.ensure_node(node).unwrap();
-        nodes.attach(node, NodeId::ROOT, vec![0x10]).unwrap();
-
-        let payloads = SharedPayloadStore::default();
-        payloads
-            .0
-            .borrow_mut()
-            .set_payload(
-                node,
-                Some(vec![9]),
-                (
-                    winning_payload.meta.lamport,
-                    winning_payload.meta.id.clone(),
-                ),
-            )
-            .unwrap();
-
-        let mut index = RecordingIndex::default();
-        index.record(NodeId::ROOT, &insert.meta.id, 1).unwrap();
-        index.record(NodeId::ROOT, &winning_payload.meta.id, 2).unwrap();
+        let storage = storage_with_ops(&[&insert, &winning_payload, &late_payload]);
+        let (nodes, payloads, index) = materialized_prefix(&[&insert, &winning_payload]);
 
         let meta = MaterializationState {
             head: Some(MaterializationHead::from_op(&winning_payload, 2)),
@@ -1271,50 +1280,28 @@ mod tests {
         let insert_a = Operation::insert(&replica, 1, 1, NodeId::ROOT, parent_a, vec![0x10]);
         let insert_b = Operation::insert(&replica, 2, 2, NodeId::ROOT, parent_b, vec![0x20]);
         let insert_child = Operation::insert(&replica, 3, 3, parent_a, child, vec![0x10]);
-        let late_move = Operation::move_node(&replica, 4, 4, child, parent_b, vec![0x10]);
-        let winning_payload = Operation::set_payload(&replica, 5, 5, child, vec![9]);
+        let prefix_payload = Operation::set_payload(&replica, 4, 4, child, vec![1]);
+        let late_move = Operation::move_node(&replica, 5, 5, child, parent_b, vec![0x10]);
+        let winning_payload = Operation::set_payload(&replica, 6, 6, child, vec![9]);
 
-        let mut storage = MemoryStorage::default();
-        for op in [
+        let storage = storage_with_ops(&[
             &insert_a,
             &insert_b,
             &insert_child,
+            &prefix_payload,
             &winning_payload,
             &late_move,
-        ] {
-            storage.apply(op.clone()).unwrap();
-        }
-
-        let mut nodes = MemoryNodeStore::default();
-        nodes.ensure_node(parent_a).unwrap();
-        nodes.attach(parent_a, NodeId::ROOT, vec![0x10]).unwrap();
-        nodes.ensure_node(parent_b).unwrap();
-        nodes.attach(parent_b, NodeId::ROOT, vec![0x20]).unwrap();
-        nodes.ensure_node(child).unwrap();
-        nodes.attach(child, parent_a, vec![0x10]).unwrap();
-
-        let payloads = SharedPayloadStore::default();
-        payloads
-            .0
-            .borrow_mut()
-            .set_payload(
-                child,
-                Some(vec![9]),
-                (
-                    winning_payload.meta.lamport,
-                    winning_payload.meta.id.clone(),
-                ),
-            )
-            .unwrap();
-
-        let mut index = RecordingIndex::default();
-        index.record(NodeId::ROOT, &insert_a.meta.id, 1).unwrap();
-        index.record(NodeId::ROOT, &insert_b.meta.id, 2).unwrap();
-        index.record(parent_a, &insert_child.meta.id, 3).unwrap();
-        index.record(parent_a, &winning_payload.meta.id, 4).unwrap();
+        ]);
+        let (nodes, payloads, index) = materialized_prefix(&[
+            &insert_a,
+            &insert_b,
+            &insert_child,
+            &prefix_payload,
+            &winning_payload,
+        ]);
 
         let meta = MaterializationState {
-            head: Some(MaterializationHead::from_op(&winning_payload, 4)),
+            head: Some(MaterializationHead::from_op(&winning_payload, 5)),
             replay_from: Some(frontier_from_op(&late_move)),
         };
         let inserted_ids = HashSet::from([late_move.meta.id.clone()]);
@@ -1330,7 +1317,7 @@ mod tests {
                 replica_id: ReplicaId::new(b"adapter"),
                 clock: LamportClock::default(),
                 nodes,
-                payloads,
+                payloads: payloads.clone(),
                 index,
             },
             &meta,
@@ -1346,12 +1333,95 @@ mod tests {
         .unwrap()
         .expect("new structural op with a payload-only existing suffix should use direct rewind");
 
-        assert_eq!(result.head.as_ref().map(|head| head.seq), Some(5));
+        assert_eq!(result.head.as_ref().map(|head| head.seq), Some(6));
         assert_eq!(*final_parent.borrow(), Some(parent_b));
-        assert!(flushed_records.borrow().contains(&(parent_b, late_move.meta.id.clone(), 4)));
+        assert_eq!(payloads.payload(child).unwrap(), Some(vec![9]));
         assert!(flushed_records
             .borrow()
-            .contains(&(parent_b, winning_payload.meta.id.clone(), 5)));
+            .contains(&(parent_b, prefix_payload.meta.id.clone(), 5)));
+        assert!(flushed_records.borrow().contains(&(parent_b, late_move.meta.id.clone(), 5)));
+        assert!(flushed_records
+            .borrow()
+            .contains(&(parent_b, winning_payload.meta.id.clone(), 6)));
+    }
+
+    #[test]
+    fn direct_rewind_restores_recursive_ancestor_for_a_late_insert() {
+        let author = ReplicaId::new(b"ancestor-author");
+        let deleter = ReplicaId::new(b"ancestor-deleter");
+        let late_author = ReplicaId::new(b"ancestor-late-author");
+        let grandparent = NodeId(1);
+        let parent = NodeId(2);
+        let unrelated = NodeId(3);
+        let child = NodeId(4);
+
+        let insert_grandparent =
+            Operation::insert(&author, 1, 1, NodeId::ROOT, grandparent, vec![0x10]);
+        let insert_parent = Operation::insert(&author, 2, 2, grandparent, parent, vec![0x10]);
+        let insert_unrelated =
+            Operation::insert(&author, 3, 3, NodeId::ROOT, unrelated, vec![0x20]);
+        let mut known_state = VersionVector::new();
+        known_state.observe(&author, 1);
+        known_state.observe(&author, 2);
+        let delete_grandparent =
+            Operation::delete(&deleter, 1, 4, grandparent, Some(known_state.clone()));
+        let late_insert = Operation::insert(&late_author, 1, 5, parent, child, vec![0x10]);
+        let existing_payload = Operation::set_payload(&author, 4, 6, unrelated, vec![6]);
+
+        let storage = storage_with_ops(&[
+            &insert_grandparent,
+            &insert_parent,
+            &insert_unrelated,
+            &delete_grandparent,
+            &existing_payload,
+            &late_insert,
+        ]);
+        let (nodes, payloads, index) = materialized_prefix(&[
+            &insert_grandparent,
+            &insert_parent,
+            &insert_unrelated,
+            &delete_grandparent,
+            &existing_payload,
+        ]);
+        assert!(nodes.tombstone(grandparent).unwrap());
+
+        let meta = MaterializationState {
+            head: Some(MaterializationHead::from_op(&existing_payload, 5)),
+            replay_from: Some(frontier_from_op(&late_insert)),
+        };
+        let inserted_ids = HashSet::from([late_insert.meta.id.clone()]);
+        let flushed_state = Rc::new(RefCell::new(None));
+        let flushed_state_out = flushed_state.clone();
+
+        let result = try_direct_rewind_catch_up_materialized_state(
+            &storage,
+            &inserted_ids,
+            PersistedRemoteStores {
+                replica_id: ReplicaId::new(b"adapter"),
+                clock: LamportClock::default(),
+                nodes,
+                payloads,
+                index,
+            },
+            &meta,
+            move |nodes| {
+                *flushed_state_out.borrow_mut() =
+                    Some((nodes.tombstone(grandparent)?, nodes.parent(child)?));
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap()
+        .expect("late insert before a payload suffix should use direct rewind");
+
+        assert_eq!(result.head.as_ref().map(|head| head.seq), Some(6));
+        assert!(result.outcome.changes.iter().any(|change| {
+            matches!(change, MaterializationChange::Restore { node, .. } if *node == grandparent)
+        }));
+        assert!(result.outcome.changes.iter().any(|change| {
+            matches!(change, MaterializationChange::Insert { node, .. } if *node == child)
+        }));
+        assert_eq!(*flushed_state.borrow(), Some((false, Some(parent))));
     }
 
     #[test]
@@ -1362,16 +1432,50 @@ mod tests {
         let late_payload = Operation::set_payload(&replica, 2, 2, node, vec![4]);
         let existing_move = Operation::move_node(&replica, 3, 3, node, NodeId::ROOT, vec![0x20]);
 
-        let mut storage = MemoryStorage::default();
-        storage.apply(insert).unwrap();
-        storage.apply(existing_move.clone()).unwrap();
-        storage.apply(late_payload.clone()).unwrap();
+        let storage = storage_with_ops(&[&insert, &existing_move, &late_payload]);
 
         let meta = MaterializationState {
             head: Some(MaterializationHead::from_op(&existing_move, 2)),
             replay_from: Some(frontier_from_op(&late_payload)),
         };
         let inserted_ids = HashSet::from([late_payload.meta.id.clone()]);
+
+        let result = try_direct_rewind_catch_up_materialized_state(
+            &storage,
+            &inserted_ids,
+            PersistedRemoteStores {
+                replica_id: ReplicaId::new(b"adapter"),
+                clock: LamportClock::default(),
+                nodes: MemoryNodeStore::default(),
+                payloads: MemoryPayloadStore::default(),
+                index: NoopParentOpIndex,
+            },
+            &meta,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn direct_rewind_declines_an_inserted_delete() {
+        let replica = ReplicaId::new(b"delete-fallback");
+        let node = NodeId(1);
+        let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, node, vec![0x10]);
+        let mut known_state = VersionVector::new();
+        known_state.observe(&replica, 1);
+        let late_delete = Operation::delete(&replica, 2, 2, node, Some(known_state));
+        let existing_payload = Operation::set_payload(&replica, 3, 3, node, vec![9]);
+
+        let storage = storage_with_ops(&[&insert, &existing_payload, &late_delete]);
+
+        let meta = MaterializationState {
+            head: Some(MaterializationHead::from_op(&existing_payload, 2)),
+            replay_from: Some(frontier_from_op(&late_delete)),
+        };
+        let inserted_ids = HashSet::from([late_delete.meta.id.clone()]);
 
         let result = try_direct_rewind_catch_up_materialized_state(
             &storage,
