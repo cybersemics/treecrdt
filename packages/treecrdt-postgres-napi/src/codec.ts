@@ -1,4 +1,9 @@
-import type { Operation, SerializeNodeId, SerializeReplica } from '@treecrdt/interface';
+import {
+  assertPersistableOperationKeys,
+  type Operation,
+  type SerializeNodeId,
+  type SerializeReplica,
+} from '@treecrdt/interface';
 import {
   decodeReplicaId,
   nodeIdFromBytes16,
@@ -107,8 +112,7 @@ export function operationToNativeWithSerializers(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
 ): NativeOp {
-  assertSafeNonNegativeInteger('lamport', op.meta.lamport);
-  assertSafeNonNegativeInteger('counter', op.meta.id.counter);
+  assertPersistableOperationKeys([op]);
 
   const replicaBytes = serializeReplica(op.meta.id.replica);
   const meta = {

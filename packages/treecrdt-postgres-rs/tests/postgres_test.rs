@@ -48,8 +48,10 @@ struct PgConformanceHarness {
 }
 
 impl MaterializationConformanceHarness for PgConformanceHarness {
-    fn append_ops(&self, ops: &[Operation]) {
-        append_ops(&self.client, &self.doc_id, ops).unwrap();
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String> {
+        append_ops(&self.client, &self.doc_id, ops)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
@@ -232,6 +234,14 @@ fn postgres_backend_append_batch_materializes_only_inserted_ops() {
 }
 
 #[test]
+fn postgres_backend_validates_operation_key_range_atomically() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::operation_key_range_is_validated_atomically(&harness);
+}
+
+#[test]
 fn postgres_backend_append_with_materialization_outcome_matches_representative_remote_batch() {
     let Some(harness) = setup_conformance_harness() else {
         return;
@@ -245,14 +255,6 @@ fn postgres_backend_out_of_order_append_catches_up_immediately_from_frontier() {
         return;
     };
     materialization_conformance::out_of_order_append_catches_up_immediately_from_frontier(&harness);
-}
-
-#[test]
-fn postgres_backend_out_of_order_losing_payload_rebuilds_parent_index() {
-    let Some(harness) = setup_conformance_harness() else {
-        return;
-    };
-    materialization_conformance::out_of_order_losing_payload_rebuilds_parent_index(&harness);
 }
 
 #[test]
@@ -307,16 +309,6 @@ fn postgres_backend_out_of_order_delete_suffix_falls_back_and_restores_parent() 
         return;
     };
     materialization_conformance::out_of_order_delete_suffix_falls_back_and_restores_parent(
-        &harness,
-    );
-}
-
-#[test]
-fn postgres_backend_out_of_order_append_after_cycle_rejected_moves_keeps_canonical_tree_acyclic() {
-    let Some(harness) = setup_conformance_harness() else {
-        return;
-    };
-    materialization_conformance::out_of_order_append_after_cycle_rejected_moves_keeps_canonical_tree_acyclic(
         &harness,
     );
 }

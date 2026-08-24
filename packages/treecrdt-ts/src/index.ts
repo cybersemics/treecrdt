@@ -72,6 +72,19 @@ export type Operation = {
   kind: OperationKind;
 };
 
+/** Reject operation keys that cannot be persisted losslessly by JavaScript adapters. */
+export function assertPersistableOperationKeys(operations: readonly Operation[]): void {
+  for (const operation of operations) {
+    const { lamport, id } = operation.meta;
+    if (!Number.isSafeInteger(lamport) || lamport <= 0) {
+      throw new Error(`operation lamport must be a positive safe integer, got: ${lamport}`);
+    }
+    if (!Number.isSafeInteger(id.counter) || id.counter <= 0) {
+      throw new Error(`operation counter must be a positive safe integer, got: ${id.counter}`);
+    }
+  }
+}
+
 export type SubtreeFilter = {
   root: NodeId;
   depth?: number;

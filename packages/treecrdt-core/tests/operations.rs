@@ -114,35 +114,7 @@ fn delete_marks_tombstone_and_removes_from_parent() {
 }
 
 #[test]
-fn prevents_cycle_on_move() {
-    let mut crdt = TreeCrdt::new(
-        ReplicaId::new(b"a"),
-        MemoryStorage::default(),
-        LamportClock::default(),
-    )
-    .unwrap();
-
-    let root = NodeId::ROOT;
-    let a = NodeId(1);
-    let b = NodeId(2);
-
-    crdt.local_insert(root, a, LocalPlacement::First, None).unwrap();
-    crdt.local_insert(a, b, LocalPlacement::First, None).unwrap();
-
-    crdt.apply_remote(Operation::move_node(
-        &ReplicaId::new(b"a"),
-        3,
-        3,
-        a,
-        b,
-        Vec::new(),
-    ))
-    .unwrap();
-    assert_eq!(crdt.parent(a).unwrap(), Some(root));
-}
-
-#[test]
-fn rejected_cycle_move_emits_no_visible_change() {
+fn rejected_structural_ops_emit_only_effective_changes() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"local"),
         MemoryStorage::default(),
@@ -235,6 +207,7 @@ fn rejected_cycle_move_emits_no_visible_change() {
     }
     assert_eq!(crdt.parent(NodeId::ROOT).unwrap(), None);
     assert_eq!(crdt.parent(NodeId::TRASH).unwrap(), None);
+    crdt.validate_invariants().unwrap();
 }
 
 #[test]
@@ -294,33 +267,6 @@ fn malformed_parent_cycle_rejects_move_without_looping() {
 
     assert!(delta.changes.is_empty());
     assert_eq!(crdt.parent(node).unwrap(), Some(root));
-}
-
-#[test]
-fn cycles_are_blocked() {
-    let mut crdt = TreeCrdt::new(
-        ReplicaId::new(b"a"),
-        MemoryStorage::default(),
-        LamportClock::default(),
-    )
-    .unwrap();
-    let root = NodeId::ROOT;
-    let a = NodeId(1);
-    let b = NodeId(2);
-
-    let inserts = [
-        Operation::insert(&ReplicaId::new(b"a"), 1, 1, root, a, Vec::new()),
-        Operation::insert(&ReplicaId::new(b"a"), 2, 2, a, b, Vec::new()),
-    ];
-    for op in inserts {
-        crdt.apply_remote(op).unwrap();
-    }
-
-    let bad_move = Operation::move_node(&ReplicaId::new(b"a"), 3, 3, a, b, Vec::new());
-    crdt.apply_remote(bad_move).unwrap();
-    assert_eq!(crdt.parent(a).unwrap(), Some(root));
-    assert_eq!(crdt.parent(b).unwrap(), Some(a));
-    crdt.validate_invariants().unwrap();
 }
 
 #[test]

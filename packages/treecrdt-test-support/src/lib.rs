@@ -1,4 +1,4 @@
-use std::{collections::HashSet, slice};
+use std::slice;
 
 use treecrdt_core::{
     MaterializationChange, MaterializationFrontier, MaterializationOutcome, MaterializationSource,
@@ -13,7 +13,10 @@ pub struct MaterializedNodeState {
 }
 
 pub trait MaterializationConformanceHarness {
-    fn append_ops(&self, ops: &[Operation]);
+    fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String>;
+    fn append_ops(&self, ops: &[Operation]) {
+        self.try_append_ops(ops).unwrap();
+    }
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome;
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId>;
     fn payload(&self, node: NodeId) -> Option<Vec<u8>>;
@@ -114,6 +117,82 @@ pub fn append_batch_materializes_only_inserted_ops<H: MaterializationConformance
     assert_eq!(harness.head_seq(), 2);
 }
 
+pub fn operation_key_range_is_validated_atomically<H: MaterializationConformanceHarness>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"invalid-key");
+    let max = i64::MAX as u64;
+    let valid = Operation::insert(
+        &replica,
+        1,
+        1,
+        NodeId::ROOT,
+        node(40),
+        order_key_from_position(0),
+    );
+    let invalid_ops = [
+        Operation::insert(
+            &replica,
+            2,
+            0,
+            NodeId::ROOT,
+            node(41),
+            order_key_from_position(1),
+        ),
+        Operation::insert(
+            &replica,
+            0,
+            2,
+            NodeId::ROOT,
+            node(42),
+            order_key_from_position(2),
+        ),
+        Operation::insert(
+            &ReplicaId::new(b"overflow-lamport"),
+            1,
+            max + 1,
+            NodeId::ROOT,
+            node(44),
+            order_key_from_position(3),
+        ),
+        Operation::insert(
+            &ReplicaId::new(b"overflow-counter"),
+            max + 1,
+            max,
+            NodeId::ROOT,
+            node(45),
+            order_key_from_position(4),
+        ),
+    ];
+
+    for invalid in invalid_ops {
+        assert!(harness.try_append_ops(&[valid.clone(), invalid]).is_err());
+        assert_eq!(harness.op_count(), 0);
+        assert_eq!(harness.replay_frontier(), None);
+        assert_eq!(harness.head_seq(), 0);
+        assert_eq!(harness.visible_children(NodeId::ROOT), Vec::<NodeId>::new());
+    }
+
+    let boundary = Operation::insert(
+        &replica,
+        max,
+        max,
+        NodeId::ROOT,
+        node(43),
+        order_key_from_position(0),
+    );
+    assert!(harness.try_append_ops(&[boundary]).is_ok());
+    assert_eq!(
+        harness.materialization_head(),
+        MaterializationFrontier {
+            lamport: max,
+            replica: replica.as_bytes().to_vec(),
+            counter: max,
+        }
+    );
+    assert_eq!(harness.head_seq(), 1);
+}
+
 pub fn representative_remote_batch_matches_shape<H: MaterializationConformanceHarness>(
     harness: &H,
 ) {
@@ -180,34 +259,6 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
         vec![node(1), node(2)]
     );
     assert_eq!(harness.op_ref_counters_for_parent(NodeId::ROOT), vec![1, 2]);
-}
-
-pub fn out_of_order_losing_payload_rebuilds_parent_index<H: MaterializationConformanceHarness>(
-    harness: &H,
-) {
-    let replica = ReplicaId::new(b"payload-replay");
-    let payload_node = node(7);
-    let insert = Operation::insert(
-        &replica,
-        1,
-        1,
-        NodeId::ROOT,
-        payload_node,
-        order_key_from_position(0),
-    );
-    let winning_payload = Operation::set_payload(&replica, 3, 3, payload_node, vec![9]);
-    let losing_payload = Operation::set_payload(&replica, 2, 2, payload_node, vec![4]);
-
-    harness.append_ops(&[insert, winning_payload]);
-    harness.append_ops(&[losing_payload]);
-    assert_replay_cleared(harness);
-    assert_eq!(harness.head_seq(), 3);
-    assert_eq!(harness.visible_children(NodeId::ROOT), vec![payload_node]);
-    assert_eq!(harness.payload(payload_node), Some(vec![9]));
-    assert_eq!(
-        harness.op_ref_counters_for_parent(NodeId::ROOT),
-        vec![1, 2, 3]
-    );
 }
 
 pub fn out_of_order_move_with_later_payload_catches_up_immediately<
@@ -413,101 +464,6 @@ pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
     assert_eq!(harness.head_seq(), 3);
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![parent]);
     assert_eq!(harness.visible_children(parent), vec![child]);
-}
-
-fn assert_parent_chain_acyclic<H: MaterializationConformanceHarness>(harness: &H, start: NodeId) {
-    let mut seen = HashSet::new();
-    let mut current = Some(start);
-
-    while let Some(node) = current {
-        if node == NodeId::ROOT || node == NodeId::TRASH {
-            return;
-        }
-        assert!(
-            seen.insert(node),
-            "cycle detected from {start:?} at {node:?}"
-        );
-        current = harness.node_state(node).parent;
-    }
-}
-
-pub fn out_of_order_append_after_cycle_rejected_moves_keeps_canonical_tree_acyclic<
-    H: MaterializationConformanceHarness,
->(
-    harness: &H,
-) {
-    let replicas: Vec<_> = (1u8..=6).map(|byte| ReplicaId::new(vec![byte; 32])).collect();
-    let parent = node(1);
-    let child = node(2);
-    let unrelated = node(3);
-
-    let insert_parent = Operation::insert(
-        &replicas[0],
-        1,
-        1,
-        NodeId::ROOT,
-        parent,
-        order_key_from_position(0),
-    );
-    let insert_child = Operation::insert(
-        &replicas[1],
-        1,
-        2,
-        parent,
-        child,
-        order_key_from_position(1),
-    );
-    let rejected_move = Operation::move_node(
-        &replicas[2],
-        1,
-        3,
-        parent,
-        child,
-        order_key_from_position(2),
-    );
-    let mut known_state = VersionVector::new();
-    known_state.observe(&replicas[0], 1);
-    let delete_parent = Operation::delete(&replicas[3], 1, 4, parent, Some(known_state));
-    let delayed_payload = Operation::set_payload(&replicas[4], 1, 5, unrelated, vec![5]);
-    let later_rejected_move = Operation::move_node(
-        &replicas[5],
-        1,
-        6,
-        parent,
-        child,
-        order_key_from_position(5),
-    );
-
-    harness.append_ops(&[
-        insert_parent,
-        insert_child,
-        rejected_move,
-        delete_parent,
-        later_rejected_move,
-    ]);
-    let outcome = harness.append_ops_with_materialization_outcome(&[delayed_payload]);
-    assert_eq!(changed_nodes(&outcome), vec![unrelated]);
-
-    assert_eq!(harness.op_count(), 6);
-    assert_replay_cleared(harness);
-    assert_eq!(
-        harness.materialization_head(),
-        MaterializationFrontier {
-            lamport: 6,
-            replica: replicas[5].as_bytes().to_vec(),
-            counter: 1,
-        }
-    );
-    assert_eq!(harness.head_seq(), 6);
-
-    let parent_state = harness.node_state(parent);
-    let child_state = harness.node_state(child);
-    assert_eq!(parent_state.parent, Some(NodeId::ROOT));
-    assert_eq!(child_state.parent, Some(parent));
-    assert!(!parent_state.tombstone);
-    assert!(!child_state.tombstone);
-    assert_parent_chain_acyclic(harness, parent);
-    assert_parent_chain_acyclic(harness, child);
 }
 
 pub fn out_of_order_concurrent_delete_converges_internal_node_metadata<

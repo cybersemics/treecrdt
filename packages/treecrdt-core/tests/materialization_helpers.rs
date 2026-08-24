@@ -1,6 +1,5 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use treecrdt_core::NodeStore;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta, Lamport,
@@ -9,6 +8,7 @@ use treecrdt_core::{
     MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation,
     OperationId, ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, VersionVector,
 };
+use treecrdt_core::{NodeStore, PayloadStore};
 
 #[derive(Default)]
 struct RecordingIndex {
@@ -81,6 +81,32 @@ impl ParentOpIndex for RecordingIndex {
 struct CountingStorage {
     inner: MemoryStorage,
     scan_count: Rc<Cell<u64>>,
+}
+
+#[derive(Clone, Default)]
+struct SharedPayloadStore(Rc<RefCell<MemoryPayloadStore>>);
+
+impl PayloadStore for SharedPayloadStore {
+    fn reset(&mut self) -> treecrdt_core::Result<()> {
+        self.0.borrow_mut().reset()
+    }
+
+    fn payload(&self, node: NodeId) -> treecrdt_core::Result<Option<Vec<u8>>> {
+        self.0.borrow().payload(node)
+    }
+
+    fn last_writer(&self, node: NodeId) -> treecrdt_core::Result<Option<(Lamport, OperationId)>> {
+        self.0.borrow().last_writer(node)
+    }
+
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> treecrdt_core::Result<()> {
+        self.0.borrow_mut().set_payload(node, payload, writer)
+    }
 }
 
 impl Storage for CountingStorage {
@@ -162,19 +188,27 @@ fn apply_incremental_ops_with_delta_sorts_and_returns_head() {
     let first = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
     let second = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
 
-    let next =
-        apply_incremental_ops_with_delta(&mut crdt, &mut index, &cursor, vec![second, first])
-            .unwrap()
-            .head
-            .expect("expected materialization head");
+    let next = apply_incremental_ops_with_delta(
+        &mut crdt,
+        &mut index,
+        &cursor,
+        vec![second.clone(), first.clone()],
+    )
+    .unwrap()
+    .head
+    .expect("expected materialization head");
 
     assert_eq!(next.at.lamport, 2);
     assert_eq!(next.at.replica, replica.as_bytes());
     assert_eq!(next.at.counter, 2);
     assert_eq!(next.seq, 2);
-    assert_eq!(index.records.len(), 2);
-    assert_eq!(index.records[0].2, 1);
-    assert_eq!(index.records[1].2, 2);
+    assert_eq!(
+        index.records,
+        vec![
+            (NodeId::ROOT, first.meta.id, 1),
+            (NodeId::ROOT, second.meta.id, 2),
+        ]
+    );
 }
 
 #[test]
@@ -312,7 +346,7 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
 }
 
 #[test]
-fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
+fn apply_persisted_remote_ops_forwards_inserted_entries_and_updates_head() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
     let op2 = Operation::insert(&replica, 2, 2, NodeId::ROOT, NodeId(2), vec![0x20]);
@@ -375,7 +409,7 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
     let mut runs = 0u64;
-    let mut scheduled_replay = 0u64;
+    let mut scheduled_replay = None;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -388,15 +422,22 @@ fn apply_persisted_remote_ops_schedules_replay_from_start_when_head_is_missing()
             })
         },
         |_| Ok::<_, ()>(()),
-        |_| {
-            scheduled_replay += 1;
+        |frontier| {
+            scheduled_replay = Some(frontier.clone());
             Ok::<_, ()>(())
         },
     )
     .unwrap();
 
     assert_eq!(runs, 1);
-    assert_eq!(scheduled_replay, 1);
+    assert_eq!(
+        scheduled_replay,
+        Some(treecrdt_core::MaterializationFrontier {
+            lamport: 0,
+            replica: Vec::new(),
+            counter: 0,
+        })
+    );
     assert_eq!(result.inserted_count, 1);
     assert_eq!(result.outcome.affected_nodes(), Vec::<NodeId>::new());
     assert!(result.catch_up_needed);
@@ -407,7 +448,7 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
     let op = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
-    let mut scheduled_replay = 0u64;
+    let mut scheduled_replay = None;
 
     let result = apply_persisted_remote_ops_with_delta(
         &cursor,
@@ -440,14 +481,21 @@ fn apply_persisted_remote_ops_schedules_full_replay_when_update_head_fails() {
             })
         },
         |_| Err::<(), ()>(()),
-        |_| {
-            scheduled_replay += 1;
+        |frontier| {
+            scheduled_replay = Some(frontier.clone());
             Ok::<(), ()>(())
         },
     )
     .unwrap();
 
-    assert_eq!(scheduled_replay, 1);
+    assert_eq!(
+        scheduled_replay,
+        Some(treecrdt_core::MaterializationFrontier {
+            lamport: 0,
+            replica: Vec::new(),
+            counter: 0,
+        })
+    );
     assert_eq!(result.inserted_count, 1);
     assert!(result.outcome.changes.is_empty());
     assert!(result.catch_up_needed);
@@ -759,83 +807,10 @@ fn catch_up_materialized_state_reports_rows_restored_by_canonical_rebuild() {
         }),
         "catch-up must report rows restored while rebuilding stale backend state"
     );
+    assert_eq!(result.head.as_ref().map(|head| head.seq), Some(3));
     assert_eq!(
         result.outcome.affected_nodes(),
         vec![NodeId::ROOT, parent, child],
-    );
-}
-
-#[test]
-fn catch_up_does_not_cancel_restore_reported_by_replay_and_repair() {
-    let author = ReplicaId::new(b"author");
-    let child_author = ReplicaId::new(b"child-author");
-    let parent = NodeId(20);
-    let child = NodeId(21);
-    let unrelated = NodeId(22);
-
-    let parent_op = Operation::insert(&author, 1, 1, NodeId::ROOT, parent, vec![0x10]);
-    let mut known_state = VersionVector::new();
-    known_state.observe(&author, 1);
-    let delete_op = Operation::delete(&author, 2, 2, parent, Some(known_state.clone()));
-    // This arrives late, but canonically follows the delete and therefore restores the parent.
-    let child_op = Operation::insert(&child_author, 1, 3, parent, child, vec![0x20]);
-    let unrelated_op = Operation::insert(&author, 3, 4, NodeId::ROOT, unrelated, vec![0x30]);
-
-    let mut storage = MemoryStorage::default();
-    for op in [&parent_op, &delete_op, &child_op, &unrelated_op] {
-        storage.apply(op.clone()).unwrap();
-    }
-
-    // State before the late child arrives: parent/delete/unrelated are already materialized.
-    let mut nodes = MemoryNodeStore::default();
-    nodes.ensure_node(parent).unwrap();
-    nodes.attach(parent, NodeId::ROOT, vec![0x10]).unwrap();
-    let mut deleted_at = known_state;
-    deleted_at.observe(&author, 2);
-    nodes.merge_deleted_at(parent, &deleted_at).unwrap();
-    nodes.set_tombstone(parent, true).unwrap();
-    nodes.ensure_node(unrelated).unwrap();
-    nodes.attach(unrelated, NodeId::ROOT, vec![0x30]).unwrap();
-
-    let meta = Cursor {
-        head_lamport: unrelated_op.meta.lamport,
-        head_replica: unrelated_op.meta.id.replica.as_bytes().to_vec(),
-        head_counter: unrelated_op.meta.id.counter,
-        head_seq: 3,
-        replay_lamport: Some(child_op.meta.lamport),
-        replay_replica: Some(child_op.meta.id.replica.as_bytes().to_vec()),
-        replay_counter: Some(child_op.meta.id.counter),
-    };
-
-    let result = catch_up_materialized_state(
-        storage,
-        PersistedRemoteStores {
-            replica_id: ReplicaId::new(b"adapter"),
-            clock: LamportClock::default(),
-            nodes,
-            payloads: MemoryPayloadStore::default(),
-            index: NoopParentOpIndex,
-        },
-        &meta,
-        |_| Ok(()),
-        |_| Ok(()),
-    )
-    .unwrap();
-
-    let restores = result
-        .outcome
-        .changes
-        .iter()
-        .filter(|change| {
-            matches!(
-                change,
-                MaterializationChange::Restore { node, .. } if *node == parent
-            )
-        })
-        .count();
-    assert_eq!(
-        restores, 1,
-        "the replayed restore must be emitted exactly once"
     );
 }
 
@@ -858,6 +833,14 @@ fn catch_up_removes_orphan_derived_rows() {
     let mut index = RecordingIndex::default();
     index.record(NodeId::ROOT, &canonical_op.meta.id, 1).unwrap();
     index.record(NodeId::ROOT, &OperationId::new(&replica, 99), 99).unwrap();
+    let mut payloads = SharedPayloadStore::default();
+    payloads
+        .set_payload(
+            orphan,
+            Some(vec![0x30]),
+            (99, OperationId::new(&replica, 99)),
+        )
+        .unwrap();
 
     let meta = Cursor {
         head_lamport: canonical_op.meta.lamport,
@@ -875,7 +858,7 @@ fn catch_up_removes_orphan_derived_rows() {
             replica_id: ReplicaId::new(b"adapter"),
             clock: LamportClock::default(),
             nodes,
-            payloads: MemoryPayloadStore::default(),
+            payloads: payloads.clone(),
             index,
         },
         &meta,
@@ -897,6 +880,7 @@ fn catch_up_removes_orphan_derived_rows() {
     assert!(result.outcome.changes.iter().any(|change| {
         matches!(change, MaterializationChange::Delete { node, .. } if *node == orphan)
     }));
+    assert_eq!(payloads.payload(orphan).unwrap(), None);
 }
 
 #[test]
@@ -956,6 +940,8 @@ fn catch_up_rejects_a_frontier_beyond_the_operation_log() {
         replay_counter: Some(2),
         ..Cursor::default()
     };
+    let flushed_nodes = Cell::new(false);
+    let flushed_index = Cell::new(false);
 
     let result = catch_up_materialized_state(
         storage,
@@ -967,9 +953,17 @@ fn catch_up_rejects_a_frontier_beyond_the_operation_log() {
             index: NoopParentOpIndex,
         },
         &meta,
-        |_| Ok(()),
-        |_| Ok(()),
+        |_| {
+            flushed_nodes.set(true);
+            Ok(())
+        },
+        |_| {
+            flushed_index.set(true);
+            Ok(())
+        },
     );
 
     assert!(result.is_err());
+    assert!(!flushed_nodes.get());
+    assert!(!flushed_index.get());
 }

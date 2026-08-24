@@ -141,7 +141,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalOpsMaterializationWriteId,
     },
     {
-      name: 'append/appendMany: idempotent + headLamport monotonic',
+      name: 'append/appendMany: validation, idempotency + monotonic head',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
     {
@@ -153,7 +153,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializationEventPayloadCoalescing,
     },
     {
-      name: 'materialization events: defensive restore',
+      name: 'materialization events: late defensive restore emitted once',
       run: scenarioMaterializationEventDefensiveRestore,
     },
     {
@@ -161,8 +161,12 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioChildrenPagination,
     },
     {
-      name: 'materialized tree: out-of-order ops rebuild correctly',
+      name: 'materialized tree: out-of-order ops rebuild canonical state and indexes',
       run: scenarioOutOfOrderOpsRebuild,
+    },
+    {
+      name: 'materialized tree: replay preserves cycle rejection',
+      run: scenarioReplayPreservesCycleRejection,
     },
     {
       name: 'materialized tree: dump/children/meta + oprefs_children',
@@ -662,6 +666,42 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
   const refs = await engine.opRefs.all();
   assertEqual(refs.length, 2, 'opRefs.all length after duplicate append');
   assertEqual(await engine.meta.headLamport(), 7, 'meta.headLamport after duplicate append');
+
+  const validNode = nodeIdFromInt(2);
+  const invalidNode = nodeIdFromInt(3);
+  let rejected = false;
+  try {
+    await engine.ops.appendMany([
+      makeInsertOp({
+        replica,
+        counter: 3,
+        lamport: 8,
+        parent: root,
+        node: validNode,
+        orderKey: orderKeyFromPosition(1),
+      }),
+      makeInsertOp({
+        replica,
+        counter: 4,
+        lamport: 0,
+        parent: root,
+        node: invalidNode,
+        orderKey: orderKeyFromPosition(2),
+      }),
+    ]);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, 'appendMany with zero lamport should reject');
+  assertEqual(await engine.tree.exists(validNode), false, 'valid batch prefix should roll back');
+  assertEqual(await engine.tree.exists(invalidNode), false, 'invalid operation should not persist');
+  assertEqual((await engine.ops.all()).length, 2, 'rejected batch should preserve the oplog');
+  const refsAfterRejection = await engine.opRefs.all();
+  assertEqual(refsAfterRejection.length, refs.length, 'rejected batch operation ref count');
+  for (let i = 0; i < refs.length; i += 1) {
+    assertBytesEqual(refsAfterRejection[i]!, refs[i]!, `rejected batch operation ref ${i}`);
+  }
+  assertEqual(await engine.meta.headLamport(), 7, 'invalid appendMany should preserve headLamport');
 }
 
 async function scenarioMaterializationEventStructuralBatch(
@@ -763,6 +803,7 @@ async function scenarioMaterializationEventDefensiveRestore(
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(31);
   const child = nodeIdFromInt(32);
+  const unrelated = nodeIdFromInt(33);
   const rA = replicaFromLabel('rA');
   const rB = replicaFromLabel('rB');
 
@@ -779,17 +820,27 @@ async function scenarioMaterializationEventDefensiveRestore(
 
   const childInsert = await b.local.insert(rB, parent, child, { type: 'last' }, null);
   await a.local.delete(rA, parent);
+  // Keep a later structural suffix materialized so the late child exercises canonical catch-up.
+  await a.local.insert(rA, root, unrelated, { type: 'last' }, null);
   const events = await captureMaterializationEvents(a, () => a.ops.appendMany([childInsert]));
   assertEqual(events.length, 1, 'defensive restore should emit one materialization event');
   const refs = materializationEventNodeRefs(events[0]!);
+  const restores = events
+    .flatMap((event) => event.changes)
+    .filter((change) => change.kind === 'restore' && change.node === parent);
 
+  assertEqual(restores.length, 1, 'late replay should emit the parent restore exactly once');
   assertEventNodeRefsSortedUnique(refs, 'appendMany defensive restore event node refs');
   assertEventNodeRefsContain(
     refs,
     [parent, child],
     'appendMany defensive restore should include restored parent+child',
   );
-  assertArrayEqual(await a.tree.children(root), [parent], 'restored parent should be visible');
+  assertArrayEqual(
+    [...(await a.tree.children(root))].sort(),
+    [parent, unrelated].sort(),
+    'restored parent should be visible beside the structural suffix',
+  );
   assertArrayEqual(await a.tree.children(parent), [child], 'child should remain visible');
 }
 
@@ -899,6 +950,116 @@ async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContex
     [n1, n2, n3].sort(),
     'children after local write following rebuild',
   );
+
+  const losingPayload = makePayloadOp({
+    replica,
+    counter: 4,
+    lamport: 4,
+    node: n1,
+    payload: new Uint8Array([4]),
+  });
+  const winningPayload = makePayloadOp({
+    replica,
+    counter: 5,
+    lamport: 5,
+    node: n1,
+    payload: new Uint8Array([9]),
+  });
+
+  await engine.ops.append(winningPayload);
+  await engine.ops.append(losingPayload);
+
+  assertBytesEqual(await engine.tree.getPayload(n1), new Uint8Array([9]), 'winning payload');
+  assertEqual(await engine.meta.headLamport(), 5, 'late payload materialization head');
+
+  const indexedOps = await engine.ops.get(await engine.opRefs.children(root));
+  assertEqual(
+    indexedOps.map((op) => op.meta.id.counter).join(','),
+    '2,1,3,4,5',
+    'late payload parent oprefs should use canonical order',
+  );
+}
+
+async function scenarioReplayPreservesCycleRejection(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replicas = Array.from({ length: 6 }, (_, index) => replicaFromLabel(`cycle-r${index + 1}`));
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(101);
+  const child = nodeIdFromInt(102);
+  const unrelated = nodeIdFromInt(103);
+
+  const insertParent = makeInsertOp({
+    replica: replicas[0]!,
+    counter: 1,
+    lamport: 1,
+    parent: root,
+    node: parent,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const insertChild = makeInsertOp({
+    replica: replicas[1]!,
+    counter: 1,
+    lamport: 2,
+    parent,
+    node: child,
+    orderKey: orderKeyFromPosition(1),
+  });
+  const rejectedMove = makeMoveOp({
+    replica: replicas[2]!,
+    counter: 1,
+    lamport: 3,
+    node: parent,
+    newParent: child,
+    orderKey: orderKeyFromPosition(2),
+  });
+  const deleteParent = makeDeleteOp({
+    replica: replicas[3]!,
+    counter: 1,
+    lamport: 4,
+    node: parent,
+    knownState: vvBytes([{ replica: replicas[0]!, frontier: 1 }]),
+  });
+  const delayedPayload = makePayloadOp({
+    replica: replicas[4]!,
+    counter: 1,
+    lamport: 5,
+    node: unrelated,
+    payload: new Uint8Array([5]),
+  });
+  const laterRejectedMove = makeMoveOp({
+    replica: replicas[5]!,
+    counter: 1,
+    lamport: 6,
+    node: parent,
+    newParent: child,
+    orderKey: orderKeyFromPosition(5),
+  });
+
+  await engine.ops.appendMany([insertParent, insertChild]);
+  const rejectedMoveEvents = await captureMaterializationEvents(engine, () =>
+    engine.ops.append(rejectedMove),
+  );
+  assertEqual(rejectedMoveEvents.length, 0, 'rejected cycle move should not emit an event');
+  assertEqual(await engine.tree.parent(parent), root, 'rejected move should preserve parent');
+  assertEqual(await engine.tree.parent(child), parent, 'rejected move should preserve child');
+
+  await engine.ops.appendMany([deleteParent, laterRejectedMove]);
+  const events = await captureMaterializationEvents(engine, () =>
+    engine.ops.append(delayedPayload),
+  );
+
+  assertEqual(events.length, 1, 'late replay should emit one materialization event');
+  assertEqual(events[0]!.changes.length, 1, 'rejected moves should not emit changes during replay');
+  assertEqual(events[0]!.changes[0]!.kind, 'payload', 'late replay change kind');
+  assertEqual(events[0]!.changes[0]!.node, unrelated, 'late replay changed node');
+  assertEqual((await engine.ops.all()).length, 6, 'all replayed operations should remain stored');
+  assertEqual(await engine.meta.headLamport(), 6, 'materialization head after replay');
+  assertArrayEqual(await engine.tree.children(root), [parent], 'root children after replay');
+  assertArrayEqual(await engine.tree.children(parent), [child], 'parent children after replay');
+  assertEqual(await engine.tree.parent(parent), root, 'parent ancestry after replay');
+  assertEqual(await engine.tree.parent(child), parent, 'child ancestry after replay');
 }
 
 async function scenarioMaterializedSmokeWithOpRefs(

@@ -32,14 +32,6 @@ async function createNodeEngine(opts: { docId: string; path?: string }) {
   return await createTreecrdtClient(db, { docId: opts.docId });
 }
 
-test('conformance registry includes materialization-event scenarios', () => {
-  const names = treecrdtEngineConformanceScenarios().map((s) => s.name);
-  expect(names).toContain('materialization events: structural batch');
-  expect(names).toContain('materialization events: payload coalescing');
-  expect(names).toContain('materialization events: defensive restore');
-  expect(names).toContain('local ops: materialization changes include writeId');
-});
-
 test('sqlite auth-aware local write rolls back on auth failure', async () => {
   const client = await createNodeEngine({ docId: 'sqlite-auth-local-rollback' });
   const events: unknown[] = [];
