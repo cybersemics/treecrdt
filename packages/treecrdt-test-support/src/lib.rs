@@ -240,10 +240,7 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
 
     harness.append_ops(&[second]);
     let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&first));
-    assert_eq!(
-        changed_nodes(&outcome),
-        vec![NodeId::ROOT, node(1), node(2)]
-    );
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, node(1)]);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 2);
     assert_eq!(
@@ -334,10 +331,7 @@ pub fn replay_from_start_frontier_catches_up_immediately<H: MaterializationConfo
     harness.force_replay_from_start();
 
     let outcome = harness.append_ops_with_materialization_outcome(&[second]);
-    assert_eq!(
-        changed_nodes(&outcome),
-        vec![NodeId::ROOT, node(1), node(2)]
-    );
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, node(2)]);
     assert_replay_cleared(harness);
     assert_eq!(
         harness.visible_children(NodeId::ROOT),

@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::affected::coalesce_materialization_changes;
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
@@ -9,8 +9,8 @@ use crate::traits::{
 };
 use crate::tree::TreeCrdt;
 use crate::{
-    Error, Lamport, MaterializationChange, MaterializationOutcome, NodeId, OperationId, ReplicaId,
-    Result,
+    Error, Lamport, MaterializationChange, MaterializationOutcome, MaterializationSource,
+    MaterializationSourceOperation, NodeId, OperationId, ReplicaId, Result,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -722,6 +722,15 @@ where
         mut index,
     } = stores;
 
+    let replayed_payload_nodes = full_suffix_ops
+        .iter()
+        .filter_map(|op| payload_from_op(op).map(|_| op.kind.node()))
+        .collect::<HashSet<_>>();
+    let original_payload_states = replayed_payload_nodes
+        .into_iter()
+        .map(|node| Ok((node, (payloads.payload(node)?, payloads.last_writer(node)?))))
+        .collect::<Result<HashMap<_, _>>>()?;
+
     index.truncate_from(truncate_from)?;
     rewind_existing_payload_suffix_in_place(
         &mut payloads,
@@ -736,13 +745,28 @@ where
         replay.apply_sorted(&mut crdt, &mut index, op)?;
     }
     let run = replay.finish();
+    let mut outcome = run.outcome;
+    let mut unchanged_payload_nodes = HashSet::new();
+    for (node, before) in original_payload_states {
+        let after = (crdt.payload(node)?, crdt.payload_last_writer(node)?);
+        if after == before {
+            unchanged_payload_nodes.insert(node);
+        }
+    }
+    outcome.changes.retain(|change| {
+        !matches!(
+            change,
+            MaterializationChange::Payload { node, .. }
+                if unchanged_payload_nodes.contains(node)
+        )
+    });
 
     flush_nodes(crdt.node_store_mut())?;
     flush_index(&mut index)?;
 
     Ok(Some(CatchUpResult {
         head: run.head.as_ref().map(|head| MaterializationHead::from_op(head, run.seq)),
-        outcome: run.outcome,
+        outcome,
     }))
 }
 
@@ -838,6 +862,149 @@ fn visibility_transition_key(change: &MaterializationChange) -> Option<(NodeId, 
     }
 }
 
+#[derive(Eq, PartialEq)]
+struct MaterializedNodeState {
+    attached: bool,
+    visible: bool,
+    parent: Option<NodeId>,
+    order_key: Option<Vec<u8>>,
+    payload: Option<Vec<u8>>,
+    payload_writer: Option<(Lamport, OperationId)>,
+}
+
+fn materialized_node_state<N: NodeStore>(
+    nodes: &N,
+    node: NodeId,
+    payload: Option<Vec<u8>>,
+    payload_writer: Option<(Lamport, OperationId)>,
+) -> Result<MaterializedNodeState> {
+    let exists = nodes.exists(node)?;
+    let parent = exists.then(|| nodes.parent(node)).transpose()?.flatten();
+    let attached = parent.is_some_and(|parent| parent != NodeId::TRASH);
+    Ok(MaterializedNodeState {
+        attached,
+        visible: attached && !nodes.tombstone(node)?,
+        parent,
+        order_key: exists.then(|| nodes.order_key(node)).transpose()?.flatten(),
+        payload,
+        payload_writer,
+    })
+}
+
+#[derive(Default)]
+struct ReplaySources {
+    insert: Option<MaterializationSource>,
+    r#move: Option<MaterializationSource>,
+    delete: Option<MaterializationSource>,
+    restore: Option<MaterializationSource>,
+}
+
+fn payload_source(state: &MaterializedNodeState) -> Option<MaterializationSource> {
+    state.payload_writer.as_ref().map(|(lamport, id)| MaterializationSource {
+        operation: MaterializationSourceOperation {
+            id: id.clone(),
+            lamport: *lamport,
+        },
+    })
+}
+
+fn net_replay_outcome<N: NodeStore, P: PayloadStore>(
+    replay_outcome: MaterializationOutcome,
+    rebuilt: &RebuiltMaterialization,
+    nodes: &N,
+    payloads: &P,
+) -> Result<MaterializationOutcome> {
+    // Canonical replay starts from an empty scratch tree, so its suffix changes can include
+    // transitions that were already reflected in the persisted materialization. Derive public
+    // events from persisted-before to rebuilt-final state instead. Keep sources by exact change
+    // kind so normalization never attributes a derived move/restore to a different operation kind.
+    let mut sources = BTreeMap::<NodeId, ReplaySources>::new();
+    for change in replay_outcome.changes {
+        let node = change.node();
+        let entry = sources.entry(node).or_default();
+        match change {
+            MaterializationChange::Insert { source, .. } => entry.insert = source,
+            MaterializationChange::Move { source, .. } => entry.r#move = source,
+            MaterializationChange::Delete { source, .. } => entry.delete = source,
+            MaterializationChange::Restore { source, .. } => entry.restore = source,
+            MaterializationChange::Payload { .. } => {}
+        }
+    }
+
+    let mut changes = Vec::new();
+    for (node, sources) in sources {
+        let before = materialized_node_state(
+            nodes,
+            node,
+            payloads.payload(node)?,
+            payloads.last_writer(node)?,
+        )?;
+        let after = materialized_node_state(
+            rebuilt.crdt.node_store(),
+            node,
+            rebuilt.crdt.payload(node)?,
+            rebuilt.crdt.payload_last_writer(node)?,
+        )?;
+
+        match (before.visible, after.visible) {
+            (false, true) if before.attached => changes.push(MaterializationChange::Restore {
+                node,
+                parent_after: after.parent.filter(|parent| *parent != NodeId::TRASH),
+                payload: after.payload.clone(),
+                source: sources.restore,
+            }),
+            (false, true) => {
+                let parent_after =
+                    after.parent.filter(|parent| *parent != NodeId::TRASH).ok_or_else(|| {
+                        Error::InconsistentState("visible replayed insert has no parent".into())
+                    })?;
+                changes.push(MaterializationChange::Insert {
+                    node,
+                    parent_after,
+                    payload: after.payload.clone(),
+                    source: sources.insert,
+                });
+            }
+            (true, false) => changes.push(MaterializationChange::Delete {
+                node,
+                parent_before: before.parent.filter(|parent| *parent != NodeId::TRASH),
+                source: sources.delete,
+            }),
+            (true, true)
+                if before.parent != after.parent || before.order_key != after.order_key =>
+            {
+                let parent_after =
+                    after.parent.filter(|parent| *parent != NodeId::TRASH).ok_or_else(|| {
+                        Error::InconsistentState("visible replayed move has no parent".into())
+                    })?;
+                changes.push(MaterializationChange::Move {
+                    node,
+                    parent_before: before.parent.filter(|parent| *parent != NodeId::TRASH),
+                    parent_after,
+                    source: sources.r#move,
+                });
+            }
+            _ => {}
+        }
+
+        if before.visible == after.visible
+            && (before.payload != after.payload || before.payload_writer != after.payload_writer)
+        {
+            let source = payload_source(&after);
+            changes.push(MaterializationChange::Payload {
+                node,
+                payload: after.payload,
+                source,
+            });
+        }
+    }
+
+    Ok(MaterializationOutcome::from_changes(
+        replay_outcome.head_seq,
+        changes,
+    ))
+}
+
 fn rebuild_derived_state<N, P, I>(
     rebuilt: &mut RebuiltMaterialization,
     nodes: &mut N,
@@ -931,6 +1098,8 @@ where
     let (mut rebuilt, replay_outcome) =
         replay_canonical_log_in_memory(&storage, frontier, &replica_id)?;
     validate_rebuilt_state(meta, frontier, &rebuilt)?;
+
+    let replay_outcome = net_replay_outcome(replay_outcome, &rebuilt, &nodes, &payloads)?;
 
     // Public materialization changes intentionally describe only visible application state. They
     // are not a safe proxy for rows whose internal CRDT metadata changed: a non-dominating delete,
@@ -1213,13 +1382,41 @@ mod tests {
         (crdt.node_store().clone(), payloads, index)
     }
 
+    fn try_direct_rewind_with_empty_stores(
+        storage: &MemoryStorage,
+        inserted: &Operation,
+        head: &Operation,
+    ) -> Option<CatchUpResult> {
+        let meta = MaterializationState {
+            head: Some(MaterializationHead::from_op(head, 2)),
+            replay_from: Some(frontier_from_op(inserted)),
+        };
+        try_direct_rewind_catch_up_materialized_state(
+            storage,
+            &HashSet::from([inserted.meta.id.clone()]),
+            PersistedRemoteStores {
+                replica_id: ReplicaId::new(b"adapter"),
+                clock: LamportClock::default(),
+                nodes: MemoryNodeStore::default(),
+                payloads: MemoryPayloadStore::default(),
+                index: NoopParentOpIndex,
+            },
+            &meta,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn direct_rewind_replays_payload_only_existing_suffix() {
+    fn direct_rewind_restores_clear_after_rejected_insert_payload() {
         let replica = ReplicaId::new(b"payload-only-direct-rewind");
         let node = NodeId(1);
-        let insert = Operation::insert(&replica, 1, 1, NodeId::ROOT, node, vec![0x10]);
-        let late_payload = Operation::set_payload(&replica, 2, 2, node, vec![4]);
-        let winning_payload = Operation::set_payload(&replica, 3, 3, node, vec![9]);
+        let insert =
+            Operation::insert_with_payload(&replica, 1, 1, NodeId::ROOT, node, vec![0x10], vec![1]);
+        let late_payload =
+            Operation::insert_with_payload(&replica, 2, 2, node, node, vec![0x20], vec![4]);
+        let winning_payload = Operation::clear_payload(&replica, 3, 3, node);
 
         let storage = storage_with_ops(&[&insert, &winning_payload, &late_payload]);
         let (nodes, payloads, index) = materialized_prefix(&[&insert, &winning_payload]);
@@ -1253,7 +1450,8 @@ mod tests {
         .expect("payload-only suffix should use direct rewind");
 
         assert_eq!(result.head.as_ref().map(|head| head.seq), Some(3));
-        assert_eq!(payloads.payload(node).unwrap(), Some(vec![9]));
+        assert_eq!(result.outcome, MaterializationOutcome::empty(3));
+        assert_eq!(payloads.payload(node).unwrap(), None);
         assert_eq!(
             payloads.last_writer(node).unwrap(),
             Some((
@@ -1261,18 +1459,17 @@ mod tests {
                 winning_payload.meta.id.clone()
             ))
         );
-        assert_eq!(
-            flushed_records
-                .borrow()
-                .iter()
-                .map(|(_, op_id, seq)| (op_id.counter, *seq))
-                .collect::<Vec<_>>(),
-            vec![(1, 1), (2, 2), (3, 3)]
-        );
+        let mut record_keys = flushed_records
+            .borrow()
+            .iter()
+            .map(|(_, op_id, seq)| (op_id.counter, *seq))
+            .collect::<Vec<_>>();
+        record_keys.dedup();
+        assert_eq!(record_keys, vec![(1, 1), (2, 2), (3, 3)]);
     }
 
     #[test]
-    fn direct_rewind_can_replay_a_new_move_before_an_existing_payload_suffix() {
+    fn direct_rewind_replays_inserted_move_before_existing_payload_suffix() {
         let replica = ReplicaId::new(b"move-before-payload");
         let parent_a = NodeId(1);
         let parent_b = NodeId(2);
@@ -1334,6 +1531,18 @@ mod tests {
         .expect("new structural op with a payload-only existing suffix should use direct rewind");
 
         assert_eq!(result.head.as_ref().map(|head| head.seq), Some(6));
+        assert_eq!(
+            result.outcome,
+            MaterializationOutcome {
+                head_seq: 6,
+                changes: vec![MaterializationChange::Move {
+                    node: child,
+                    parent_before: Some(parent_a),
+                    parent_after: parent_b,
+                    source: Some(crate::MaterializationSource::from_op(&late_move)),
+                }],
+            }
+        );
         assert_eq!(*final_parent.borrow(), Some(parent_b));
         assert_eq!(payloads.payload(child).unwrap(), Some(vec![9]));
         assert!(flushed_records
@@ -1343,6 +1552,11 @@ mod tests {
         assert!(flushed_records
             .borrow()
             .contains(&(parent_b, winning_payload.meta.id.clone(), 6)));
+        assert!(!flushed_records.borrow().contains(&(
+            parent_a,
+            winning_payload.meta.id.clone(),
+            5
+        )));
     }
 
     #[test]
@@ -1415,12 +1629,26 @@ mod tests {
         .expect("late insert before a payload suffix should use direct rewind");
 
         assert_eq!(result.head.as_ref().map(|head| head.seq), Some(6));
-        assert!(result.outcome.changes.iter().any(|change| {
-            matches!(change, MaterializationChange::Restore { node, .. } if *node == grandparent)
-        }));
-        assert!(result.outcome.changes.iter().any(|change| {
-            matches!(change, MaterializationChange::Insert { node, .. } if *node == child)
-        }));
+        assert_eq!(
+            result.outcome,
+            MaterializationOutcome {
+                head_seq: 6,
+                changes: vec![
+                    MaterializationChange::Insert {
+                        node: child,
+                        parent_after: parent,
+                        payload: None,
+                        source: Some(crate::MaterializationSource::from_op(&late_insert)),
+                    },
+                    MaterializationChange::Restore {
+                        node: grandparent,
+                        parent_after: Some(NodeId::ROOT),
+                        payload: None,
+                        source: Some(crate::MaterializationSource::from_op(&late_insert)),
+                    },
+                ],
+            }
+        );
         assert_eq!(*flushed_state.borrow(), Some((false, Some(parent))));
     }
 
@@ -1434,28 +1662,7 @@ mod tests {
 
         let storage = storage_with_ops(&[&insert, &existing_move, &late_payload]);
 
-        let meta = MaterializationState {
-            head: Some(MaterializationHead::from_op(&existing_move, 2)),
-            replay_from: Some(frontier_from_op(&late_payload)),
-        };
-        let inserted_ids = HashSet::from([late_payload.meta.id.clone()]);
-
-        let result = try_direct_rewind_catch_up_materialized_state(
-            &storage,
-            &inserted_ids,
-            PersistedRemoteStores {
-                replica_id: ReplicaId::new(b"adapter"),
-                clock: LamportClock::default(),
-                nodes: MemoryNodeStore::default(),
-                payloads: MemoryPayloadStore::default(),
-                index: NoopParentOpIndex,
-            },
-            &meta,
-            |_| Ok(()),
-            |_| Ok(()),
-        )
-        .unwrap();
-
+        let result = try_direct_rewind_with_empty_stores(&storage, &late_payload, &existing_move);
         assert!(result.is_none());
     }
 
@@ -1471,28 +1678,7 @@ mod tests {
 
         let storage = storage_with_ops(&[&insert, &existing_payload, &late_delete]);
 
-        let meta = MaterializationState {
-            head: Some(MaterializationHead::from_op(&existing_payload, 2)),
-            replay_from: Some(frontier_from_op(&late_delete)),
-        };
-        let inserted_ids = HashSet::from([late_delete.meta.id.clone()]);
-
-        let result = try_direct_rewind_catch_up_materialized_state(
-            &storage,
-            &inserted_ids,
-            PersistedRemoteStores {
-                replica_id: ReplicaId::new(b"adapter"),
-                clock: LamportClock::default(),
-                nodes: MemoryNodeStore::default(),
-                payloads: MemoryPayloadStore::default(),
-                index: NoopParentOpIndex,
-            },
-            &meta,
-            |_| Ok(()),
-            |_| Ok(()),
-        )
-        .unwrap();
-
+        let result = try_direct_rewind_with_empty_stores(&storage, &late_delete, &existing_payload);
         assert!(result.is_none());
     }
 }

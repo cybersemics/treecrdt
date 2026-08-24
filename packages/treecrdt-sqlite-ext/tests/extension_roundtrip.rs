@@ -622,8 +622,10 @@ fn remote_losing_payload_uses_suffix_replay_without_resetting_nodes() {
         )
         .unwrap();
 
-    harness.append_ops(&[losing_payload]);
+    let outcome = harness.append_ops_with_materialization_outcome(&[losing_payload]);
 
+    assert!(outcome.changes.is_empty());
+    assert_eq!(harness.replay_frontier(), None);
     assert_eq!(harness.payload(node), Some(vec![9]));
     assert_eq!(
         harness.op_ref_counters_for_parent(NodeId::ROOT),
