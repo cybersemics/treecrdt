@@ -745,7 +745,7 @@ fn catch_up_materialized_state_reports_only_invalidated_suffix_changes() {
 }
 
 #[test]
-fn catch_up_removes_orphan_derived_rows() {
+fn catch_up_rebuild_removes_orphan_node_payload_and_index_rows() {
     let replica = ReplicaId::new(b"orphan-repair");
     let canonical = NodeId(30);
     let orphan = NodeId(31);

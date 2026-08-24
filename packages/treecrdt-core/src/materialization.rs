@@ -1409,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_rewind_restores_clear_after_rejected_insert_payload() {
+    fn direct_rewind_preserves_winning_clear_after_rejected_insert_payload() {
         let replica = ReplicaId::new(b"payload-only-direct-rewind");
         let node = NodeId(1);
         let insert =
@@ -1469,7 +1469,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_rewind_replays_inserted_move_before_existing_payload_suffix() {
+    fn direct_rewind_replays_late_move_and_reindexes_payload_suffix() {
         let replica = ReplicaId::new(b"move-before-payload");
         let parent_a = NodeId(1);
         let parent_b = NodeId(2);

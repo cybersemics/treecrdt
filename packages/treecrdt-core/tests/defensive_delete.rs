@@ -4,7 +4,9 @@ use treecrdt_core::{
 };
 
 #[test]
-fn remote_delete_metadata_includes_known_state_and_operation_id() {
+fn delete_merges_known_state_and_operation_dot_into_deleted_at() {
+    // Every engine delegates defensive-delete semantics to core. Pin the internal causal metadata
+    // invariant here; engine conformance covers its visible restoration and convergence effects.
     let author = ReplicaId::new(b"author");
     let deleter = ReplicaId::new(b"deleter");
     let parent = NodeId(1);
