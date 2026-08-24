@@ -2,15 +2,8 @@ use std::slice;
 
 use treecrdt_core::{
     MaterializationChange, MaterializationFrontier, MaterializationOutcome, MaterializationSource,
-    NodeId, Operation, ReplicaId, VersionVector,
+    NodeId, Operation, ReplicaId,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MaterializedNodeState {
-    pub parent: Option<NodeId>,
-    pub tombstone: bool,
-    pub deleted_at: Option<VersionVector>,
-}
 
 pub trait MaterializationConformanceHarness {
     fn try_append_ops(&self, ops: &[Operation]) -> Result<(), String>;
@@ -24,7 +17,6 @@ pub trait MaterializationConformanceHarness {
     fn replay_frontier(&self) -> Option<MaterializationFrontier>;
     fn materialization_head(&self) -> MaterializationFrontier;
     fn head_seq(&self) -> u64;
-    fn node_state(&self, node: NodeId) -> MaterializedNodeState;
     fn force_replay_from_start(&self);
     fn ensure_materialized(&self);
     fn op_ref_counters_for_parent(&self, parent: NodeId) -> Vec<u64>;
@@ -464,69 +456,4 @@ pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
     assert_eq!(harness.head_seq(), 3);
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![parent]);
     assert_eq!(harness.visible_children(parent), vec![child]);
-}
-
-pub fn out_of_order_concurrent_delete_converges_internal_node_metadata<
-    H: MaterializationConformanceHarness,
->(
-    canonical: &H,
-    out_of_order: &H,
-) {
-    let replicas: Vec<_> = (1u8..=4).map(|byte| ReplicaId::new(vec![byte; 32])).collect();
-    let parent = node(1);
-    let child = node(2);
-    let unrelated = node(3);
-
-    let insert_parent = Operation::insert(
-        &replicas[0],
-        1,
-        1,
-        NodeId::ROOT,
-        parent,
-        order_key_from_position(0),
-    );
-    let insert_child = Operation::insert(
-        &replicas[1],
-        1,
-        2,
-        parent,
-        child,
-        order_key_from_position(1),
-    );
-    let mut known_state = VersionVector::new();
-    known_state.observe(&replicas[0], 1);
-    let concurrent_delete = Operation::delete(&replicas[2], 1, 3, parent, Some(known_state));
-    let later_payload = Operation::set_payload(&replicas[3], 1, 4, unrelated, vec![4]);
-
-    canonical.append_ops(&[
-        insert_parent.clone(),
-        insert_child.clone(),
-        concurrent_delete.clone(),
-        later_payload.clone(),
-    ]);
-    out_of_order.append_ops(&[insert_parent, insert_child, later_payload]);
-    out_of_order.append_ops(&[concurrent_delete]);
-
-    let canonical_state = canonical.node_state(parent);
-    let out_of_order_state = out_of_order.node_state(parent);
-    let deleted_at = canonical_state
-        .deleted_at
-        .as_ref()
-        .expect("concurrent delete must be retained even when the node stays visible");
-    assert_eq!(deleted_at.get(&replicas[0]), 1);
-    assert_eq!(deleted_at.get(&replicas[2]), 1);
-    assert!(!canonical_state.tombstone);
-    assert_eq!(out_of_order_state, canonical_state);
-
-    let expected_head = MaterializationFrontier {
-        lamport: 4,
-        replica: replicas[3].as_bytes().to_vec(),
-        counter: 1,
-    };
-    assert_eq!(canonical.materialization_head(), expected_head);
-    assert_eq!(out_of_order.materialization_head(), expected_head);
-    assert_eq!(canonical.head_seq(), 4);
-    assert_eq!(out_of_order.head_seq(), 4);
-    assert_replay_cleared(canonical);
-    assert_replay_cleared(out_of_order);
 }

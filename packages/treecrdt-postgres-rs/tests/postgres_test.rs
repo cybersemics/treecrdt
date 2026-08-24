@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use postgres::{Client, NoTls};
 use uuid::Uuid;
 
-use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId, VersionVector};
+use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId};
 use treecrdt_postgres::{
     append_ops, append_ops_with_materialization_outcome, ensure_materialized, ensure_schema,
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
@@ -14,7 +14,7 @@ use treecrdt_postgres::{
 };
 use treecrdt_test_support::{
     self as materialization_conformance, node, order_key_from_position,
-    MaterializationConformanceHarness, MaterializedNodeState,
+    MaterializationConformanceHarness,
 };
 
 fn connect() -> Option<Rc<RefCell<Client>>> {
@@ -120,29 +120,6 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
             )
             .unwrap();
         row.map(|row| row.get::<_, i64>(0).max(0) as u64).unwrap_or(0)
-    }
-
-    fn node_state(&self, node: NodeId) -> MaterializedNodeState {
-        let mut c = self.client.borrow_mut();
-        let node_bytes = node.0.to_be_bytes();
-        let row = c
-            .query_one(
-                "SELECT parent, tombstone, deleted_at \
-                 FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
-                &[&self.doc_id, &node_bytes.as_slice()],
-            )
-            .unwrap();
-        let parent = row
-            .get::<_, Option<Vec<u8>>>(0)
-            .map(|bytes| NodeId(u128::from_be_bytes(bytes.try_into().unwrap())));
-        let deleted_at = row
-            .get::<_, Option<Vec<u8>>>(2)
-            .map(|bytes| serde_json::from_slice(&bytes).unwrap());
-        MaterializedNodeState {
-            parent,
-            tombstone: row.get(1),
-            deleted_at,
-        }
     }
 
     fn force_replay_from_start(&self) {
@@ -310,20 +287,6 @@ fn postgres_backend_out_of_order_delete_suffix_falls_back_and_restores_parent() 
     };
     materialization_conformance::out_of_order_delete_suffix_falls_back_and_restores_parent(
         &harness,
-    );
-}
-
-#[test]
-fn postgres_backend_out_of_order_concurrent_delete_converges_internal_node_metadata() {
-    let Some(canonical) = setup_conformance_harness() else {
-        return;
-    };
-    let Some(out_of_order) = setup_conformance_harness() else {
-        return;
-    };
-    materialization_conformance::out_of_order_concurrent_delete_converges_internal_node_metadata(
-        &canonical,
-        &out_of_order,
     );
 }
 
@@ -631,45 +594,6 @@ fn postgres_backend_children_filter_includes_move_and_payload() {
     assert!(ops_p1
         .iter()
         .any(|op| matches!(op.kind, treecrdt_core::OperationKind::Move { .. })));
-}
-
-#[test]
-fn postgres_backend_defensive_delete_restores_parent_after_child_insert() {
-    let Some(client) = connect() else {
-        return;
-    };
-    ensure_schema_once(&client);
-
-    let doc_id = format!("test-{}", Uuid::new_v4());
-    {
-        let mut c = client.borrow_mut();
-        reset_doc_for_tests(&mut c, &doc_id).unwrap();
-    }
-
-    let replica = ReplicaId::new(b"r1");
-    let root = NodeId::ROOT;
-    let parent = node(1);
-    let child = node(2);
-
-    let op1 = Operation::insert(&replica, 1, 1, root, parent, order_key_from_position(0));
-    let mut vv = VersionVector::new();
-    vv.observe(&replica, 1);
-    let op2 = Operation::delete(&replica, 2, 2, parent, Some(vv));
-    let op3 = Operation::insert(&replica, 3, 3, parent, child, order_key_from_position(0));
-
-    append_ops(&client, &doc_id, &[op1, op2, op3]).unwrap();
-    ensure_materialized(&client, &doc_id).unwrap();
-
-    let parent_bytes = parent.0.to_be_bytes();
-    let mut c = client.borrow_mut();
-    let rows = c
-        .query(
-            "SELECT tombstone FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2 LIMIT 1",
-            &[&doc_id, &parent_bytes.as_slice()],
-        )
-        .unwrap();
-    let tombstone: bool = rows[0].get(0);
-    assert!(!tombstone);
 }
 
 #[test]

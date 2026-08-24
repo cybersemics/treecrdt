@@ -13,7 +13,7 @@ use treecrdt_core::{
     OperationKind, ReplicaId, VersionVector,
 };
 use treecrdt_test_support::{
-    self as materialization_conformance, MaterializationConformanceHarness, MaterializedNodeState,
+    self as materialization_conformance, MaterializationConformanceHarness,
 };
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -276,23 +276,6 @@ fn read_replay_frontier(conn: &Connection) -> (Option<i64>, Option<Vec<u8>>, Opt
     .unwrap()
 }
 
-fn read_materialized_node_state(conn: &Connection, node: NodeId) -> MaterializedNodeState {
-    let node = node.0.to_be_bytes();
-    let (parent, tombstone, deleted_at): (Option<Vec<u8>>, i64, Option<Vec<u8>>) = conn
-        .query_row(
-            "SELECT parent, tombstone, deleted_at FROM tree_nodes WHERE node = ?1",
-            rusqlite::params![node],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-
-    MaterializedNodeState {
-        parent: parent.as_deref().map(bytes_to_node_id),
-        tombstone: tombstone != 0,
-        deleted_at: deleted_at.map(|bytes| serde_json::from_slice(&bytes).unwrap()),
-    }
-}
-
 fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (MaterializationOutcome, i64) {
     let json = serde_json::to_string(ops).unwrap();
     let affected_json: String = conn
@@ -423,10 +406,6 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
     fn head_seq(&self) -> u64 {
         let (_, _, _, head_seq) = read_tree_meta(&self.conn);
         head_seq.max(0) as u64
-    }
-
-    fn node_state(&self, node: NodeId) -> MaterializedNodeState {
-        read_materialized_node_state(&self.conn, node)
     }
 
     fn force_replay_from_start(&self) {
@@ -694,16 +673,6 @@ fn remote_append_out_of_order_delete_suffix_falls_back_and_restores_parent() {
     let harness = setup_conformance_harness();
     materialization_conformance::out_of_order_delete_suffix_falls_back_and_restores_parent(
         &harness,
-    );
-}
-
-#[test]
-fn remote_out_of_order_concurrent_delete_converges_internal_node_metadata() {
-    let canonical = setup_conformance_harness();
-    let out_of_order = setup_conformance_harness();
-    materialization_conformance::out_of_order_concurrent_delete_converges_internal_node_metadata(
-        &canonical,
-        &out_of_order,
     );
 }
 

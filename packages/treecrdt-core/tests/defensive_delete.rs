@@ -1,6 +1,44 @@
 use treecrdt_core::{
-    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, ReplicaId, TreeCrdt,
+    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId,
+    TreeCrdt, VersionVector,
 };
+
+#[test]
+fn remote_delete_metadata_includes_known_state_and_operation_id() {
+    let author = ReplicaId::new(b"author");
+    let deleter = ReplicaId::new(b"deleter");
+    let parent = NodeId(1);
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"local"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+
+    crdt.apply_remote(Operation::insert(
+        &author,
+        1,
+        1,
+        NodeId::ROOT,
+        parent,
+        vec![1],
+    ))
+    .unwrap();
+    let mut known_state = VersionVector::new();
+    known_state.observe(&author, 1);
+    crdt.apply_remote(Operation::delete(&deleter, 1, 2, parent, Some(known_state)))
+        .unwrap();
+
+    let deleted_at = crdt
+        .export_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|state| state.node == parent)
+        .and_then(|state| state.deleted_at)
+        .expect("delete metadata should be present");
+    assert_eq!(deleted_at.get(&author), 1);
+    assert_eq!(deleted_at.get(&deleter), 1);
+}
 
 #[test]
 fn defensive_delete_parent_then_insert_child_restores_parent() {

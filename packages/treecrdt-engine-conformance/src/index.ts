@@ -205,6 +205,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioDefensiveDeleteOutOfOrderChildInsert,
     },
     {
+      name: 'defensive delete: late delete causal knowledge survives replay',
+      run: scenarioDefensiveDeleteLateDeleteKnowledgeSurvivesReplay,
+    },
+    {
       name: 'sync: delete known_state propagates (receiver must not recompute)',
       run: scenarioSyncKnownStatePropagation,
     },
@@ -1496,6 +1500,78 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     'child visible under restored parent',
   );
   assertEqual(await engine.tree.nodeCount(), 2, 'nodeCount after restore');
+}
+
+async function scenarioDefensiveDeleteLateDeleteKnowledgeSurvivesReplay(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  const unrelated = nodeIdFromInt(3);
+  const parentReplica = replicaFromLabel('parent');
+  const childReplica = replicaFromLabel('child');
+  const concurrentDeleteReplica = replicaFromLabel('concurrent-delete');
+  const headReplica = replicaFromLabel('later-head');
+  const complementaryDeleteReplica = replicaFromLabel('complementary-delete');
+
+  const insertParent = makeInsertOp({
+    replica: parentReplica,
+    counter: 1,
+    lamport: 1,
+    parent: root,
+    node: parent,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const insertChild = makeInsertOp({
+    replica: childReplica,
+    counter: 1,
+    lamport: 2,
+    parent,
+    node: child,
+    orderKey: orderKeyFromPosition(0),
+  });
+  const concurrentDelete = makeDeleteOp({
+    replica: concurrentDeleteReplica,
+    counter: 1,
+    lamport: 3,
+    node: parent,
+    knownState: vvBytes([{ replica: parentReplica, frontier: 1 }]),
+  });
+  const laterPayload = makePayloadOp({
+    replica: headReplica,
+    counter: 1,
+    lamport: 4,
+    node: unrelated,
+    payload: new Uint8Array([4]),
+  });
+
+  await engine.ops.appendMany([insertParent, insertChild, laterPayload]);
+  await engine.ops.append(concurrentDelete);
+
+  assertArrayEqual(
+    await engine.tree.children(root),
+    [parent],
+    'late concurrent delete must leave parent visible',
+  );
+  assertArrayEqual(await engine.tree.children(parent), [child], 'concurrent child remains visible');
+
+  // The first delete knows the parent insert, while the second knows only the concurrent child.
+  // Their combined knowledge must dominate the subtree. This observes replayed causal metadata
+  // through public tree behavior without exposing backend `deleted_at` state.
+  await engine.ops.append(
+    makeDeleteOp({
+      replica: complementaryDeleteReplica,
+      counter: 1,
+      lamport: 5,
+      node: parent,
+      knownState: vvBytes([{ replica: childReplica, frontier: 1 }]),
+    }),
+  );
+
+  assertArrayEqual(await engine.tree.children(root), [], 'combined delete knowledge hides parent');
+  assertEqual(await engine.tree.exists(parent), false, 'parent hidden after complementary delete');
 }
 
 async function scenarioSyncKnownStatePropagation(
