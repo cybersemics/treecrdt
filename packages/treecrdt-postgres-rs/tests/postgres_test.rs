@@ -73,12 +73,12 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
     fn replay_frontier(&self) -> Option<treecrdt_core::MaterializationFrontier> {
         let mut c = self.client.borrow_mut();
         let row = c
-            .query_one(
+            .query_opt(
                 "SELECT replay_lamport, replay_replica, replay_counter \
                  FROM treecrdt_meta WHERE doc_id = $1",
                 &[&self.doc_id],
             )
-            .unwrap();
+            .unwrap()?;
         match (
             row.get::<_, Option<i64>>(0).map(|v| v.max(0) as u64),
             row.get::<_, Option<Vec<u8>>>(1),
@@ -114,12 +114,12 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
     fn head_seq(&self) -> u64 {
         let mut c = self.client.borrow_mut();
         let row = c
-            .query_one(
+            .query_opt(
                 "SELECT head_seq FROM treecrdt_meta WHERE doc_id = $1",
                 &[&self.doc_id],
             )
             .unwrap();
-        row.get::<_, i64>(0).max(0) as u64
+        row.map(|row| row.get::<_, i64>(0).max(0) as u64).unwrap_or(0)
     }
 
     fn node_state(&self, node: NodeId) -> MaterializedNodeState {
