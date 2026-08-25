@@ -487,6 +487,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      comlink:
+        specifier: ^4.4.2
+        version: 4.4.2
     devDependencies:
       '@treecrdt/benchmark':
         specifier: workspace:*
@@ -1630,6 +1633,9 @@ packages:
 
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
+
+  comlink@4.4.2:
+    resolution: {integrity: sha512-OxGdvBmJuNKSCMO4NTl1L47VRp6xn2wG4F/2hYzB6tiCb709otOxtEYCSvK80PtjODfXXZu8ds+Nw5kVCjqd2g==}
 
   commander@13.1.0:
     resolution: {integrity: sha512-/rFeCpNJQbhSZjGVwO9RFV3xPqbnERS8MmIQzCtD/zl6gpJuV/bMLuN92oG3F7d8oDEHHRrujSXNUr8fpjntKw==}
@@ -3620,6 +3626,8 @@ snapshots:
       fsevents: 2.3.3
 
   chownr@1.1.4: {}
+
+  comlink@4.4.2: {}
 
   commander@13.1.0: {}
 

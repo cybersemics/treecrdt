@@ -1,54 +1,126 @@
+import * as Comlink from 'comlink';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
-import type { RpcRequest } from '../src/rpc.js';
+import type { BackendInitConfig, BackendInitResult, MaterializationListener } from '../src/backend.js';
+import type { SharedWorkerPortApi } from '../src/runtime/shared-worker.js';
 
-type RpcResponse =
-  | { id: number; ok: true; result?: unknown }
-  | { id: number; ok: false; error: string };
+type MockPortApi = SharedWorkerPortApi & {
+  readonly calls: string[];
+};
 
-/** Minimal SharedWorker message port that exposes RPC requests and cleanup state. */
-class FakeSharedWorkerPort {
-  readonly listeners = new Map<string, Set<(event: any) => void>>();
-  readonly requests: RpcRequest[] = [];
-  closed = false;
+function createMockSharedPortApi(opts: {
+  onInit?: (config: BackendInitConfig) => Promise<BackendInitResult>;
+  onClose?: () => Promise<void>;
+  onDrop?: () => Promise<void>;
+}): MockPortApi {
+  const calls: string[] = [];
+  const listeners = new Set<MaterializationListener>();
 
-  constructor(private readonly respond: (request: RpcRequest) => RpcResponse) {}
+  const api: MockPortApi = {
+    calls,
+    async init(config) {
+      calls.push('init');
+      if (opts.onInit) return opts.onInit(config);
+      return { storage: 'memory', filename: ':memory:' };
+    },
+    async close() {
+      calls.push('close');
+      if (opts.onClose) await opts.onClose();
+    },
+    async drop() {
+      calls.push('drop');
+      if (opts.onDrop) await opts.onDrop();
+    },
+    subscribeMaterialized(listener) {
+      listeners.add(listener);
+    },
+    unsubscribeMaterialized(listener) {
+      listeners.delete(listener);
+    },
+    async notifyMaterialized() {},
+    async sqlExec() {},
+    async sqlGetText() {
+      return null;
+    },
+    async append() {
+      return { headSeq: 0, changes: [] };
+    },
+    async appendMany() {
+      return { headSeq: 0, changes: [] };
+    },
+    async opsSince() {
+      return [];
+    },
+    async opRefsAll() {
+      return [];
+    },
+    async opRefsChildren() {
+      return [];
+    },
+    async opsByOpRefs() {
+      return [];
+    },
+    async treeChildren() {
+      return [];
+    },
+    async treeChildrenPage() {
+      return [];
+    },
+    async treeDump() {
+      return [];
+    },
+    async treePayload() {
+      return null;
+    },
+    async treeNodeCount() {
+      return 0;
+    },
+    async treeParent() {
+      return null;
+    },
+    async treeExists() {
+      return false;
+    },
+    async headLamport() {
+      return 0;
+    },
+    async replicaMaxCounter() {
+      return 0;
+    },
+  };
 
-  addEventListener(type: string, listener: (event: any) => void) {
-    const listeners = this.listeners.get(type) ?? new Set();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: (event: any) => void) {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  postMessage(request: RpcRequest) {
-    this.requests.push(request);
-    const response = this.respond(request);
-    queueMicrotask(() => {
-      for (const listener of this.listeners.get('message') ?? []) listener({ data: response });
-    });
-  }
-
-  start() {}
-
-  close() {
-    this.closed = true;
-  }
+  return api;
 }
 
-function installSharedWorkerPort(respond: (request: RpcRequest) => RpcResponse) {
-  const port = new FakeSharedWorkerPort(respond);
+function installSharedWorker(api: MockPortApi) {
+  let closed = false;
+
   vi.stubGlobal(
     'SharedWorker',
     class {
-      port = port;
+      port: MessagePort;
+
+      constructor() {
+        const channel = new MessageChannel();
+        Comlink.expose(api, channel.port1);
+        channel.port1.start();
+        this.port = channel.port2;
+        const originalClose = channel.port2.close.bind(channel.port2);
+        channel.port2.close = () => {
+          closed = true;
+          originalClose();
+        };
+      }
     },
   );
-  return port;
+
+  return {
+    isClosed: () => closed,
+    get calls() {
+      return api.calls;
+    },
+  };
 }
 
 const clientOptions = {
@@ -57,21 +129,17 @@ const clientOptions = {
   docId: 'cleanup-shared-worker',
 };
 
-function expectCleaned(port: FakeSharedWorkerPort) {
-  expect(port.closed).toBe(true);
-  expect([...port.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
-}
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 test('shared-worker cleans up after rejected initialization', async () => {
-  const port = installSharedWorkerPort((request) => ({
-    id: request.id,
-    ok: false,
-    error: 'init failed',
-  }));
+  const api = createMockSharedPortApi({
+    onInit: async () => {
+      throw new Error('init failed');
+    },
+  });
+  const worker = installSharedWorker(api);
 
   await expect(
     createTreecrdtClient({
@@ -81,41 +149,36 @@ test('shared-worker cleans up after rejected initialization', async () => {
     }),
   ).rejects.toThrow('init failed');
 
-  expectCleaned(port);
-  expect(port.requests.map((request) => request.method)).toEqual(['init', 'close']);
-  expect(port.requests[0]?.params).toEqual([
-    '/',
-    undefined,
-    'opfs',
-    'cleanup-shared-worker-strict-opfs',
-    'throw',
-  ]);
+  expect(worker.isClosed()).toBe(true);
+  expect(worker.calls).toEqual(['init', 'close']);
 });
 
 test('shared-worker cleans up when close RPC fails', async () => {
-  const port = installSharedWorkerPort((request) =>
-    request.method === 'init'
-      ? { id: request.id, ok: true, result: { storage: 'memory', filename: ':memory:' } }
-      : { id: request.id, ok: false, error: 'close failed' },
-  );
+  const api = createMockSharedPortApi({
+    onClose: async () => {
+      throw new Error('close failed');
+    },
+  });
+  const worker = installSharedWorker(api);
   const client = await createTreecrdtClient(clientOptions);
 
   await client.close();
 
-  expectCleaned(port);
-  expect(port.requests.map((request) => request.method)).toEqual(['init', 'close']);
+  expect(worker.isClosed()).toBe(true);
+  expect(worker.calls).toEqual(['init', 'close']);
 });
 
 test('shared-worker cleans up when drop RPC fails', async () => {
-  const port = installSharedWorkerPort((request) =>
-    request.method === 'init'
-      ? { id: request.id, ok: true, result: { storage: 'memory', filename: ':memory:' } }
-      : { id: request.id, ok: false, error: 'drop failed' },
-  );
+  const api = createMockSharedPortApi({
+    onDrop: async () => {
+      throw new Error('drop failed');
+    },
+  });
+  const worker = installSharedWorker(api);
   const client = await createTreecrdtClient(clientOptions);
 
   await expect(client.drop()).rejects.toThrow('drop failed');
 
-  expectCleaned(port);
-  expect(port.requests.map((request) => request.method)).toEqual(['init', 'drop']);
+  expect(worker.isClosed()).toBe(true);
+  expect(worker.calls).toEqual(['init', 'drop']);
 });

@@ -30,6 +30,16 @@ const client = await createTreecrdtClient({
 });
 ```
 
+`createTreecrdtClient()` resolves a **runtime strategy** and talks to one shared `TreecrdtBackend`:
+
+| Runtime | When | Transport |
+| --- | --- | --- |
+| `direct` | memory (default) or opt-in | in-process backend |
+| `dedicated-worker` | OPFS + `auto` (default) | Comlink over `Worker` |
+| `shared-worker` | opt-in | Comlink over `SharedWorker` port |
+
+Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`). Low-level `createWaSqliteApi` remains available for benches and custom open paths; it is not part of the client architecture.
+
 See the [playground](../../examples/playground/README.md) for a full browser demo.
 
 ## Node usage (in-memory WASM)

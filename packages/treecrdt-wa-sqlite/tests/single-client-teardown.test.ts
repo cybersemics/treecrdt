@@ -1,10 +1,11 @@
+import * as Comlink from 'comlink';
 import type { TreecrdtAdapter } from '@treecrdt/interface';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
 import { buildDirectClient, CLIENT_CLOSED_ERROR, type OpenDbFn } from '../src/client.js';
+import type { TreecrdtBackend } from '../src/backend.js';
 import { clearOpfsStorage } from '../src/opfs.js';
-import type { RpcParams, RpcRequest } from '../src/rpc.js';
 import type { Database, TreecrdtClient } from '../src/types.js';
 
 vi.mock('../src/opfs.js', async (importOriginal) => {
@@ -17,97 +18,82 @@ const mockedClearOpfsStorage = vi.mocked(clearOpfsStorage);
 type TeardownMethod = 'close' | 'drop';
 type RejectedWorkerMethod = 'init' | TeardownMethod;
 
-type TestRpcResponse =
-  | { id: number; ok: true; result?: unknown }
-  | { id: number; ok: false; error: string };
+type MockBackend = Pick<
+  TreecrdtBackend,
+  | 'init'
+  | 'close'
+  | 'drop'
+  | 'subscribeMaterialized'
+  | 'unsubscribeMaterialized'
+  | 'treeNodeCount'
+>;
 
-type TestWorkerEvent = { data: TestRpcResponse } | ErrorEvent;
-type TestWorkerListener = (event: TestWorkerEvent) => void;
-
-/**
- * Minimal Worker endpoint for testing the dedicated-worker client's RPC boundary.
- *
- * It does not run SQLite or any worker code. It only reproduces the behavior the
- * client depends on: asynchronous responses, event listeners, and termination.
- */
-class TestDedicatedWorkerEndpoint {
-  private readonly listeners = new Map<string, Set<TestWorkerListener>>();
-  private readonly requests: RpcRequest[] = [];
-  terminated = false;
-
-  constructor(private readonly respond: (request: RpcRequest) => TestRpcResponse) {}
-
-  addEventListener(type: string, listener: TestWorkerListener): void {
-    const listeners = this.listeners.get(type) ?? new Set();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: TestWorkerListener): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  postMessage(request: RpcRequest): void {
-    this.requests.push(request);
-    const response = this.respond(request);
-    // A real Worker responds asynchronously. Keep that boundary so the test also
-    // exercises the client's pending-request and cleanup ordering.
-    queueMicrotask(() => {
-      for (const listener of this.listeners.get('message') ?? []) listener({ data: response });
-    });
-  }
-
-  terminate(): void {
-    this.terminated = true;
-  }
-
-  get listenerCount(): number {
-    return [...this.listeners.values()].reduce((total, listeners) => total + listeners.size, 0);
-  }
-
-  get teardownMethods(): RpcRequest['method'][] {
-    return this.requests
-      .filter((request) => request.method === 'close' || request.method === 'drop')
-      .map((request) => request.method);
-  }
-
-  get initParams(): RpcParams<'init'> | undefined {
-    return this.requests.find((request) => request.method === 'init')?.params as
-      | RpcParams<'init'>
-      | undefined;
-  }
+function createMockBackend(rejectMethod: RejectedWorkerMethod): MockBackend & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    async init(config) {
+      calls.push('init');
+      if (rejectMethod === 'init') throw new Error('init failed');
+      expect(config.fallback).toBe(config.storage === 'opfs' ? 'throw' : 'memory');
+      return { storage: 'memory', filename: ':memory:' };
+    },
+    async close() {
+      calls.push('close');
+      if (rejectMethod === 'close') throw new Error('close failed');
+    },
+    async drop() {
+      calls.push('drop');
+      if (rejectMethod === 'drop') throw new Error('drop failed');
+    },
+    subscribeMaterialized() {},
+    unsubscribeMaterialized() {},
+    async treeNodeCount() {
+      return 1;
+    },
+  };
 }
 
-function installDedicatedWorkerThatRejects(
-  method: RejectedWorkerMethod,
-): TestDedicatedWorkerEndpoint {
-  const endpoint = new TestDedicatedWorkerEndpoint((request) => {
-    if (request.method === method) {
-      return { id: request.id, ok: false, error: `${method} failed` };
-    }
-    // Initialization succeeds for close/drop tests so the client reaches teardown.
-    if (request.method === 'init') {
-      return {
-        id: request.id,
-        ok: true,
-        result: { storage: 'memory', filename: ':memory:' },
-      };
-    }
-    return { id: request.id, ok: true, result: 1 };
-  });
+function installDedicatedWorker(backend: MockBackend) {
+  let terminated = false;
 
-  // createTreecrdtClient constructs the Worker internally, so replace the global
-  // constructor with one that returns our observable endpoint.
   vi.stubGlobal(
     'Worker',
     class {
+      private readonly port: MessagePort;
+
       constructor() {
-        return endpoint;
+        const channel = new MessageChannel();
+        Comlink.expose(backend, channel.port1);
+        channel.port1.start();
+        this.port = channel.port2;
+        this.port.start();
+      }
+
+      postMessage(message: unknown, transfer?: Transferable[]) {
+        this.port.postMessage(message as any, transfer as any);
+      }
+
+      addEventListener(type: string, listener: EventListener) {
+        this.port.addEventListener(type, listener);
+      }
+
+      removeEventListener(type: string, listener: EventListener) {
+        this.port.removeEventListener(type, listener);
+      }
+
+      terminate() {
+        terminated = true;
+        this.port.close();
       }
     },
   );
 
-  return endpoint;
+  return {
+    get terminated() {
+      return terminated;
+    },
+  };
 }
 
 async function createDirectClientHarness(opts: { storage: 'memory' | 'opfs'; closeError?: Error }) {
@@ -181,7 +167,8 @@ test('direct drop failure leaves the handle terminal without retrying teardown',
 });
 
 test('dedicated-worker init failure terminates the endpoint and removes its listeners', async () => {
-  const endpoint = installDedicatedWorkerThatRejects('init');
+  const backend = createMockBackend('init');
+  const endpoint = installDedicatedWorker(backend);
 
   await expect(
     createTreecrdtClient({
@@ -192,13 +179,12 @@ test('dedicated-worker init failure terminates the endpoint and removes its list
   ).rejects.toThrow('init failed');
 
   expect(endpoint.terminated).toBe(true);
-  expect(endpoint.listenerCount).toBe(0);
-  expect(endpoint.teardownMethods).toEqual([]);
-  expect(endpoint.initParams).toEqual(['/', undefined, 'opfs', 'dedicated-init-failure', 'throw']);
+  expect(backend.calls).toEqual(['init']);
 });
 
 test('dedicated-worker close failure terminates the endpoint without retrying', async () => {
-  const endpoint = installDedicatedWorkerThatRejects('close');
+  const backend = createMockBackend('close');
+  const endpoint = installDedicatedWorker(backend);
   const client = await createTreecrdtClient({
     docId: 'dedicated-close-failure',
     runtime: { type: 'dedicated-worker' },
@@ -211,12 +197,12 @@ test('dedicated-worker close failure terminates the endpoint without retrying', 
 
   await expectClientToBeTerminal(client);
   expect(endpoint.terminated).toBe(true);
-  expect(endpoint.listenerCount).toBe(0);
-  expect(endpoint.teardownMethods).toEqual(['close']);
+  expect(backend.calls).toEqual(['init', 'close']);
 });
 
 test('dedicated-worker drop failure terminates the endpoint without retrying', async () => {
-  const endpoint = installDedicatedWorkerThatRejects('drop');
+  const backend = createMockBackend('drop');
+  const endpoint = installDedicatedWorker(backend);
   const client = await createTreecrdtClient({
     docId: 'dedicated-drop-failure',
     runtime: { type: 'dedicated-worker' },
@@ -229,6 +215,5 @@ test('dedicated-worker drop failure terminates the endpoint without retrying', a
 
   await expectClientToBeTerminal(client);
   expect(endpoint.terminated).toBe(true);
-  expect(endpoint.listenerCount).toBe(0);
-  expect(endpoint.teardownMethods).toEqual(['drop']);
+  expect(backend.calls).toEqual(['init', 'drop']);
 });

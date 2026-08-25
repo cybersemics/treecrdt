@@ -52,13 +52,14 @@
     "test": "pnpm --filter @treecrdt/wa-sqlite^... run build && pnpm run build && pnpm run test:native-import && vitest run"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "comlink": "^4.4.2"
   },
   "devDependencies": {
+    "@treecrdt/benchmark": "workspace:*",
     "@treecrdt/engine-conformance": "workspace:*",
     "@treecrdt/wa-sqlite-vendor": "workspace:*",
     "@types/node": "^20.19.25",
-    "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"

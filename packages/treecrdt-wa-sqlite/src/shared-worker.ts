@@ -1,20 +1,13 @@
 /// <reference lib="webworker" />
+import * as Comlink from 'comlink';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import {
-  transferablesForRpcBinaryResult,
-  type RpcInitResult,
-  type RpcMethod,
-  type RpcParams,
-  type RpcRequest,
-  type RpcResult,
-  type RpcStorageFallback,
-} from './rpc.js';
+  TreecrdtBackend,
+  type BackendInitConfig,
+  type BackendInitResult,
+  type MaterializationListener,
+} from './backend.js';
 import { openTreecrdtDb } from './open.js';
-import {
-  CommonWorkerSession,
-  createCommonWorkerRpcHandlers,
-  openedToRpcInitResult,
-} from './common-worker.js';
 
 type SharedWorkerGlobal = typeof globalThis & {
   onconnect: ((ev: MessageEvent) => void) | null;
@@ -27,132 +20,136 @@ type StoredConfig = {
   docId: string;
 };
 
-class SharedCommonWorkerSession extends CommonWorkerSession {
-  storedConfig: StoredConfig | null = null;
-  initResult: RpcInitResult | null = null;
+/** Forwards unknown properties to `backend`; overridden methods live on `overrides`. */
+function decorateBackend<T extends object>(overrides: object, backend: TreecrdtBackend): T {
+  return new Proxy(overrides, {
+    get(target, prop, receiver) {
+      if (Reflect.has(target, prop)) {
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      const value = Reflect.get(backend, prop, backend);
+      if (typeof value === 'function') return value.bind(backend);
+      return value;
+    },
+  }) as T;
+}
 
-  protected onAfterReset(): void {
+/**
+ * One shared DB session with per-port Comlink endpoints.
+ * Port bookkeeping (init lock, last-close, peer notify) stays here — not on TreecrdtBackend.
+ */
+class SharedWorkerHost {
+  readonly backend = new TreecrdtBackend(openTreecrdtDb);
+  private readonly ports = new Set<SharedWorkerPort>();
+  private storedConfig: StoredConfig | null = null;
+  private initResult: BackendInitResult | null = null;
+
+  attach(port: MessagePort): void {
+    const decorator = new SharedWorkerPort(this);
+    this.ports.add(decorator);
+    Comlink.expose(decorateBackend(decorator, this.backend), port);
+    port.start();
+  }
+
+  async init(config: BackendInitConfig): Promise<BackendInitResult> {
+    const requestedFilename =
+      config.storage === 'opfs' ? (config.filename ?? '/treecrdt.db') : ':memory:';
+    if (this.storedConfig && this.initResult) {
+      const cfg = this.storedConfig;
+      if (
+        cfg.baseUrl !== (config.baseUrl ?? '/') ||
+        cfg.requestedFilename !== requestedFilename ||
+        cfg.requestedStorage !== config.storage ||
+        cfg.docId !== config.docId
+      ) {
+        throw new Error('shared worker already initialized with a different TreeCRDT database');
+      }
+      return this.initResult;
+    }
+
+    const result = await this.backend.init({
+      ...config,
+      baseUrl: config.baseUrl ?? '/',
+      opfsVfs: config.storage === 'opfs' ? 'any-context' : undefined,
+    });
+    this.storedConfig = {
+      baseUrl: config.baseUrl ?? '/',
+      requestedFilename,
+      requestedStorage: config.storage,
+      docId: config.docId,
+    };
+    this.initResult = result;
+    return result;
+  }
+
+  async closePort(endpoint: SharedWorkerPort): Promise<void> {
+    this.ports.delete(endpoint);
+    endpoint.detachListener();
+    if (this.ports.size > 0) return;
+    await this.backend.close();
     this.storedConfig = null;
     this.initResult = null;
   }
-}
 
-const ports = new Set<MessagePort>();
-const session = new SharedCommonWorkerSession();
-const coreHandlers = createCommonWorkerRpcHandlers(session);
-let callQueue: Promise<void> = Promise.resolve();
+  async dropPort(endpoint: SharedWorkerPort): Promise<void> {
+    this.ports.delete(endpoint);
+    endpoint.detachListener();
+    await this.backend.drop();
+    this.storedConfig = null;
+    this.initResult = null;
+  }
 
-const settleQueue = <T>(promise: Promise<T>): Promise<void> =>
-  promise.then(
-    () => undefined,
-    () => undefined,
-  );
-
-function broadcastMaterialized(event: MaterializationEvent, exclude?: MessagePort) {
-  if (event.changes.length === 0) return;
-  for (const port of ports) {
-    if (port === exclude) continue;
-    port.postMessage({ type: 'materialized', event });
+  notifyPeers(event: MaterializationEvent, exclude: MaterializationListener | null): void {
+    this.backend.emitMaterialized(event, exclude ?? undefined);
   }
 }
+
+/** Per-port decorator: same backend API, with shared lifecycle + notify overrides only. */
+class SharedWorkerPort {
+  private listener: MaterializationListener | null = null;
+
+  constructor(private readonly host: SharedWorkerHost) {}
+
+  init(config: BackendInitConfig): Promise<BackendInitResult> {
+    return this.host.init(config);
+  }
+
+  close(): Promise<void> {
+    return this.host.closePort(this);
+  }
+
+  drop(): Promise<void> {
+    return this.host.dropPort(this);
+  }
+
+  subscribeMaterialized(listener: MaterializationListener): void {
+    this.detachListener();
+    this.listener = listener;
+    this.host.backend.subscribeMaterialized(listener);
+  }
+
+  unsubscribeMaterialized(listener: MaterializationListener): void {
+    if (this.listener === listener) this.detachListener();
+    else this.host.backend.unsubscribeMaterialized(listener);
+  }
+
+  /** Peer notify for client-side local writers (excludes this port's listener). */
+  async notifyMaterialized(event: MaterializationEvent): Promise<void> {
+    this.host.notifyPeers(event, this.listener);
+  }
+
+  detachListener(): void {
+    if (!this.listener) return;
+    this.host.backend.unsubscribeMaterialized(this.listener);
+    this.listener = null;
+  }
+}
+
+const host = new SharedWorkerHost();
 
 (self as unknown as SharedWorkerGlobal).onconnect = (ev: MessageEvent) => {
   const port = ev.ports[0];
   if (!port) return;
-  ports.add(port);
-  port.onmessage = (message: MessageEvent<RpcRequest>) => {
-    const request = message.data;
-    const respondSuccess = (result?: unknown) => {
-      const transfer =
-        request.method === 'treePayload' || request.method === 'treeParent'
-          ? transferablesForRpcBinaryResult(result)
-          : [];
-      port.postMessage({ id: request.id, ok: true, result }, transfer);
-    };
-    const respondError = (error: string) => {
-      port.postMessage({ id: request.id, ok: false, error });
-    };
-    const run = callQueue.then(() => handleRequest(port, request));
-    callQueue = settleQueue(run);
-    run.then(
-      (result) => respondSuccess(result),
-      (err) => respondError(err instanceof Error ? err.message : String(err)),
-    );
-  };
-  port.start();
+  host.attach(port);
 };
-
-async function handleRequest<M extends RpcMethod>(
-  sourcePort: MessagePort,
-  request: RpcRequest<M>,
-): Promise<RpcResult<M> | void> {
-  if (request.method === 'init') {
-    const [baseUrl, filename, storage, docId, fallback] = request.params as RpcParams<'init'>;
-    return (await init(baseUrl, filename, storage, docId, fallback)) as RpcResult<M>;
-  }
-
-  if (request.method === 'broadcastMaterialized') {
-    const [event] = request.params as RpcParams<'broadcastMaterialized'>;
-    broadcastMaterialized(event, sourcePort);
-    return undefined;
-  }
-
-  if (request.method === 'close') {
-    await close(sourcePort);
-    return undefined;
-  }
-
-  if (request.method === 'drop') {
-    ports.delete(sourcePort);
-    await session.drop();
-    return undefined;
-  }
-
-  const methodFn = coreHandlers[request.method as keyof typeof coreHandlers] as
-    | ((...args: any[]) => Promise<unknown>)
-    | undefined;
-  if (!methodFn) throw new Error(`unknown method: ${request.method}`);
-  return (await methodFn(...((request.params ?? []) as any[]))) as RpcResult<M>;
-}
-
-async function init(
-  baseUrl: string,
-  filename: string | undefined,
-  storageParam: 'memory' | 'opfs',
-  docId: string,
-  fallback: RpcStorageFallback,
-): Promise<RpcInitResult> {
-  const requestedFilename = storageParam === 'opfs' ? (filename ?? '/treecrdt.db') : ':memory:';
-  if (session.storedConfig && session.initResult) {
-    const cfg = session.storedConfig;
-    if (
-      cfg.baseUrl !== baseUrl ||
-      cfg.requestedFilename !== requestedFilename ||
-      cfg.requestedStorage !== storageParam ||
-      cfg.docId !== docId
-    ) {
-      throw new Error('shared worker already initialized with a different TreeCRDT database');
-    }
-    return session.initResult;
-  }
-
-  const opened = await openTreecrdtDb({
-    baseUrl,
-    filename,
-    storage: storageParam,
-    docId,
-    requireOpfs: fallback === 'throw',
-    opfsVfs: storageParam === 'opfs' ? 'any-context' : undefined,
-    onMaterialized: (event) => broadcastMaterialized(event),
-  });
-  session.applyOpened(opened);
-  session.storedConfig = { baseUrl, requestedFilename, requestedStorage: storageParam, docId };
-  session.initResult = openedToRpcInitResult(opened);
-  return session.initResult;
-}
-
-async function close(port: MessagePort) {
-  ports.delete(port);
-  if (ports.size > 0) return;
-  await session.closeDbAndReset();
-}

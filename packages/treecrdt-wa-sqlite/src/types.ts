@@ -1,7 +1,6 @@
 import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
-import type { RpcMethod, RpcParams, RpcRequest, RpcResult } from './rpc.js';
 
 // Minimal wa-sqlite surface needed by the adapter. Exported so consumers
 // don't need to import types from wa-sqlite directly.
@@ -56,26 +55,6 @@ export type NormalizedStorageOptions = {
 
 export type NormalizedRuntimeOptions = TreecrdtRuntime;
 
-export type WorkerProxy = {
-  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
-  terminate: () => void;
-  addEventListener: (type: 'message' | 'error', fn: (ev: any) => void) => void;
-  removeEventListener: (type: 'message' | 'error', fn: (ev: any) => void) => void;
-};
-
-export type MessagePortProxy = {
-  postMessage(msg: RpcRequest, transfer?: Transferable[]): void;
-  start: () => void;
-  close: () => void;
-  addEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
-  removeEventListener: (type: 'message' | 'messageerror', fn: (ev: any) => void) => void;
-};
-
-export type RpcCall = <M extends RpcMethod>(
-  method: M,
-  params: RpcParams<M>,
-) => Promise<RpcResult<M>>;
-export type SharedWorkerFactory = (options?: WorkerOptions & { name?: string }) => SharedWorker;
 export type CrossTabMaterializationScope = {
   docId: string;
   filename: string;
