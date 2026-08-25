@@ -1,5 +1,5 @@
 import type { Database } from './types.js';
-import { makeDbAdapter } from './db.js';
+import { createDatabase } from './db.js';
 import { initializeTreecrdtExtension } from './extension.js';
 
 export type OpfsSupport = {
@@ -191,7 +191,7 @@ export async function openWithStorage(
       ? await sqlite3.open_v2(file, undefined, vfsName)
       : await sqlite3.open_v2(file);
     handle = openedHandle;
-    const db = makeDbAdapter(sqlite3, openedHandle);
+    const db = createDatabase(sqlite3, openedHandle);
     await initializeTreecrdtExtension(module, openedHandle);
     let closePromise: Promise<void> | undefined;
     return {

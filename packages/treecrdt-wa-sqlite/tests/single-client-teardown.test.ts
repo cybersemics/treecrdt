@@ -1,5 +1,4 @@
 import * as Comlink from 'comlink';
-import type { TreecrdtAdapter } from '@treecrdt/interface';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
@@ -150,14 +149,21 @@ async function createDirectClientHarness(opts: { storage: 'memory' | 'opfs'; clo
   const closeDatabase = vi.fn(async () => {
     if (opts.closeError) throw opts.closeError;
   });
-  const readNodeCount = vi.fn(async () => 1);
   const filename = opts.storage === 'opfs' ? '/teardown-failure.db' : ':memory:';
 
   // Inject a minimal database so these tests isolate client lifecycle behavior
   // from the SQLite implementation itself.
   const openDb: OpenDbFn = async () => ({
-    api: { treeNodeCount: readNodeCount } as unknown as TreecrdtAdapter,
-    db: { close: closeDatabase } as unknown as Database,
+    db: {
+      close: closeDatabase,
+      exec: async () => undefined,
+      getText: async () => null,
+      prepare: async () => 0,
+      bind: async () => undefined,
+      step: async () => 101,
+      column_text: async () => null,
+      finalize: async () => undefined,
+    } as unknown as Database,
     filename,
     storage: opts.storage,
   });
@@ -165,7 +171,7 @@ async function createDirectClientHarness(opts: { storage: 'memory' | 'opfs'; clo
     { docId: `direct-${opts.storage}-teardown`, filename, storage: opts.storage },
     openDb,
   );
-  return { client, closeDatabase, readNodeCount };
+  return { client, closeDatabase };
 }
 
 async function expectClientToBeTerminal(client: TreecrdtClient): Promise<void> {
@@ -182,7 +188,7 @@ afterEach(() => {
 });
 
 test('direct close failure leaves the handle terminal without retrying teardown', async () => {
-  const { client, closeDatabase, readNodeCount } = await createDirectClientHarness({
+  const { client, closeDatabase } = await createDirectClientHarness({
     storage: 'memory',
     closeError: new Error('close failed'),
   });
@@ -194,13 +200,12 @@ test('direct close failure leaves the handle terminal without retrying teardown'
 
   await expectClientToBeTerminal(client);
   expect(closeDatabase).toHaveBeenCalledTimes(1);
-  expect(readNodeCount).not.toHaveBeenCalled();
   expect(mockedClearOpfsStorage).not.toHaveBeenCalled();
 });
 
 test('direct drop failure leaves the handle terminal without retrying teardown', async () => {
   mockedClearOpfsStorage.mockRejectedValueOnce(new Error('drop failed'));
-  const { client, closeDatabase, readNodeCount } = await createDirectClientHarness({
+  const { client, closeDatabase } = await createDirectClientHarness({
     storage: 'opfs',
   });
 
@@ -212,7 +217,6 @@ test('direct drop failure leaves the handle terminal without retrying teardown',
 
   await expectClientToBeTerminal(client);
   expect(closeDatabase).toHaveBeenCalledTimes(1);
-  expect(readNodeCount).not.toHaveBeenCalled();
   expect(mockedClearOpfsStorage).toHaveBeenCalledTimes(1);
 });
 

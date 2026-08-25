@@ -1,9 +1,6 @@
 import { createOpfsVfs, type OpfsVfsKind } from './opfs.js';
-import { createWaSqliteApi } from './adapter.js';
+import { createDatabase } from './db.js';
 import type { Database } from './types.js';
-import { makeDbAdapter } from './db.js';
-import type { TreecrdtAdapter } from '@treecrdt/interface';
-import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import { initializeTreecrdtExtension } from './extension.js';
 
 export type OpenTreecrdtDbOptions = {
@@ -12,13 +9,11 @@ export type OpenTreecrdtDbOptions = {
   storage: 'memory' | 'opfs';
   docId: string;
   requireOpfs?: boolean;
-  onMaterialized?: (event: MaterializationEvent) => void;
   opfsVfs?: OpfsVfsKind;
 };
 
 export type OpenTreecrdtDbResult = {
   db: Database;
-  api: TreecrdtAdapter;
   storage: 'memory' | 'opfs';
   filename: string;
   opfsError?: string;
@@ -26,19 +21,20 @@ export type OpenTreecrdtDbResult = {
 
 const OPFS_VFS_NAME = 'opfs';
 
+/** Open handle, register extension, and pin docId — no TreecrdtAdapter here. */
 async function initializeOpenedDatabase(
   sqlite3: any,
   module: any,
   handle: number,
   opts: OpenTreecrdtDbOptions,
-): Promise<{ db: Database; api: TreecrdtAdapter }> {
+): Promise<Database> {
   let db: Database | undefined;
   try {
-    db = makeDbAdapter(sqlite3, handle);
+    db = createDatabase(sqlite3, handle);
     await initializeTreecrdtExtension(module, handle);
-    const api = createWaSqliteApi(db, { onMaterialized: opts.onMaterialized });
-    await api.setDocId(opts.docId);
-    return { db, api };
+    // Doc id must be set before CRDT ops; session owns the TreecrdtAdapter separately.
+    await db.getText('SELECT treecrdt_set_doc_id(?1)', [opts.docId]);
+    return db;
   } catch (error) {
     try {
       if (db?.close) await db.close();
@@ -125,10 +121,9 @@ export async function openTreecrdtDbWithLoader(
     if (openedOpfs) {
       const { handle, vfs } = openedOpfs;
       try {
-        const opened = await initializeOpenedDatabase(sqlite3, module, handle, opts);
+        const db = await initializeOpenedDatabase(sqlite3, module, handle, opts);
         return {
-          ...opened,
-          db: closeDatabaseWithVfs(opened.db, vfs),
+          db: closeDatabaseWithVfs(db, vfs),
           storage: 'opfs',
           filename: requestedFilename,
         };
@@ -148,13 +143,13 @@ export async function openTreecrdtDbWithLoader(
   try {
     const memoryLoaded = opfsError !== undefined ? await loadMemoryFallback() : loaded;
     const handle = await memoryLoaded.sqlite3.open_v2(':memory:');
-    const opened = await initializeOpenedDatabase(
+    const db = await initializeOpenedDatabase(
       memoryLoaded.sqlite3,
       memoryLoaded.module,
       handle,
       opts,
     );
-    const result = { ...opened, storage: 'memory' as const, filename: ':memory:' };
+    const result = { db, storage: 'memory' as const, filename: ':memory:' };
     return opfsError !== undefined ? { ...result, opfsError } : result;
   } catch (fallbackFailure) {
     if (opfsError === undefined) throw fallbackFailure;

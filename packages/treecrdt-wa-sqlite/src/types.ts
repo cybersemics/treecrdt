@@ -2,17 +2,18 @@ import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/e
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
-// Minimal wa-sqlite surface needed by the adapter. Exported so consumers
-// don't need to import types from wa-sqlite directly.
+/**
+ * Open wa-sqlite handle: statement APIs + SqliteRunner (exec/getText).
+ * Pass directly to createTreecrdtSqliteAdapter — no runner wrapper.
+ */
 export type Database = {
   prepare(sql: string): Promise<number> | number;
   bind(stmt: number, index: number, value: unknown): Promise<void> | void;
   step(stmt: number): Promise<number> | number;
   column_text(stmt: number, index: number): Promise<string> | string;
   finalize(stmt: number): Promise<void> | void;
-  exec(sql: string): Promise<void> | void;
   close?(): Promise<void> | void;
-};
+} & SqliteRunner;
 
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';

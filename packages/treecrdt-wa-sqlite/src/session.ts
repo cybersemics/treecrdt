@@ -1,10 +1,10 @@
 import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
+import { createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
 import type { OpfsVfsKind } from './opfs.js';
 import { clearOpfsStorage } from './opfs.js';
 import type { OpenTreecrdtDbOptions, OpenTreecrdtDbResult } from './open-core.js';
-import { dbGetText } from './sql.js';
 import type { Database, StorageMode } from './types.js';
 
 export type SessionOpenFn = (opts: OpenTreecrdtDbOptions) => Promise<OpenTreecrdtDbResult>;
@@ -138,10 +138,12 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
         docId: config.docId,
         requireOpfs: config.fallback === 'throw',
         opfsVfs: config.opfsVfs,
-        onMaterialized: (event) => emitMaterialized(event),
       });
       db = opened.db;
-      api = opened.api;
+      // CRDT SQL mapping lives on the session; open only returns a Database (SqliteRunner).
+      api = createTreecrdtSqliteAdapter(opened.db, {
+        onMaterialized: (event) => emitMaterialized(event),
+      });
       storedFilename = opened.filename;
       storedStorage = opened.storage;
       return toInitResult(opened);
@@ -165,7 +167,7 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
       run(async () => {
         await ensureDb().exec(sql);
       }),
-    sqlGetText: (sql, params = []) => run(() => dbGetText(ensureDb(), sql, params)),
+    sqlGetText: (sql, params = []) => run(async () => ensureDb().getText(sql, params)),
 
     append: (op) => run(async () => ensureApi().appendOp(op, nodeIdToBytes16, replicaIdToBytes)),
     appendMany: (ops) =>
