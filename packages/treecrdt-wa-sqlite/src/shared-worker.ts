@@ -1,12 +1,14 @@
 /// <reference lib="webworker" />
 import * as Comlink from 'comlink';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import {
-  TreecrdtBackend,
-  type BackendInitConfig,
-  type BackendInitResult,
-  type MaterializationListener,
-} from './backend.js';
+import type { TreecrdtConnection } from './connection.js';
+import type {
+  BackendInitConfig,
+  BackendInitResult,
+  MaterializationListener,
+  TreecrdtSessionOwner,
+} from './session.js';
+import createTreecrdtSession from './session.js';
 import { openTreecrdtDb } from './open.js';
 
 type SharedWorkerGlobal = typeof globalThis & {
@@ -20,43 +22,71 @@ type StoredConfig = {
   docId: string;
 };
 
-/** Forwards unknown properties to `backend`; overridden methods live on `overrides`. */
-function decorateBackend<T extends object>(overrides: object, backend: TreecrdtBackend): T {
-  return new Proxy(overrides, {
-    get(target, prop, receiver) {
-      if (Reflect.has(target, prop)) {
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
-      }
-      const value = Reflect.get(backend, prop, backend);
-      if (typeof value === 'function') return value.bind(backend);
-      return value;
+type SharedPortConnection = TreecrdtConnection & {
+  detachListener: () => void;
+};
+
+type SharedConnectionHost = {
+  owner: TreecrdtSessionOwner;
+  init: (config: BackendInitConfig) => Promise<BackendInitResult>;
+  closePort: (endpoint: SharedPortConnection) => Promise<void>;
+  dropPort: (endpoint: SharedPortConnection) => Promise<void>;
+};
+
+/**
+ * Per-port connection: N tabs share one session via the host.
+ * session is Comlink.proxy'd — no runtime Proxy decoration of the wire surface.
+ */
+const createSharedConnection = (host: SharedConnectionHost): SharedPortConnection => {
+  let listener: MaterializationListener | null = null;
+
+  /** Remove this port's materialization listener if subscribed. */
+  const detachListener = (): void => {
+    if (!listener) return;
+    host.owner.unsubscribeMaterialized(listener);
+    listener = null;
+  };
+
+  const connection: SharedPortConnection = {
+    session: Comlink.proxy(host.owner.session),
+    init: (config) => host.init(config),
+    close: () => host.closePort(connection),
+    drop: () => host.dropPort(connection),
+    subscribeMaterialized: (next) => {
+      detachListener();
+      listener = next;
+      host.owner.subscribeMaterialized(next);
     },
-  }) as T;
-}
+    unsubscribeMaterialized: (next) => {
+      if (listener === next) detachListener();
+      else host.owner.unsubscribeMaterialized(next);
+    },
+    /** Peer notify for client-side local writers (excludes this port's listener). */
+    notifyMaterialized: async (event: MaterializationEvent) => {
+      host.owner.emitMaterialized(event, listener ?? undefined);
+    },
+    detachListener,
+  };
+
+  return connection;
+};
 
 /**
  * One shared DB session with per-port Comlink endpoints.
- * Port bookkeeping (init lock, last-close, peer notify) stays here — not on TreecrdtBackend.
+ * Init lock, last-close, and peer notify live here — not on TreecrdtSession.
  */
-class SharedWorkerHost {
-  readonly backend = new TreecrdtBackend(openTreecrdtDb);
-  private readonly ports = new Set<SharedWorkerPort>();
-  private storedConfig: StoredConfig | null = null;
-  private initResult: BackendInitResult | null = null;
+const createSharedWorkerHost = () => {
+  const owner = createTreecrdtSession(openTreecrdtDb);
+  const ports = new Set<SharedPortConnection>();
+  let storedConfig: StoredConfig | null = null;
+  let initResult: BackendInitResult | null = null;
 
-  attach(port: MessagePort): void {
-    const decorator = new SharedWorkerPort(this);
-    this.ports.add(decorator);
-    Comlink.expose(decorateBackend(decorator, this.backend), port);
-    port.start();
-  }
-
-  async init(config: BackendInitConfig): Promise<BackendInitResult> {
+  /** Join an existing session or open once; rejects mismatched configs. */
+  const init = async (config: BackendInitConfig): Promise<BackendInitResult> => {
     const requestedFilename =
       config.storage === 'opfs' ? (config.filename ?? '/treecrdt.db') : ':memory:';
-    if (this.storedConfig && this.initResult) {
-      const cfg = this.storedConfig;
+    if (storedConfig && initResult) {
+      const cfg = storedConfig;
       if (
         cfg.baseUrl !== (config.baseUrl ?? '/') ||
         cfg.requestedFilename !== requestedFilename ||
@@ -65,88 +95,60 @@ class SharedWorkerHost {
       ) {
         throw new Error('shared worker already initialized with a different TreeCRDT database');
       }
-      return this.initResult;
+      return initResult;
     }
 
-    const result = await this.backend.init({
+    const result = await owner.open({
       ...config,
       baseUrl: config.baseUrl ?? '/',
       opfsVfs: config.storage === 'opfs' ? 'any-context' : undefined,
     });
-    this.storedConfig = {
+    storedConfig = {
       baseUrl: config.baseUrl ?? '/',
       requestedFilename,
       requestedStorage: config.storage,
       docId: config.docId,
     };
-    this.initResult = result;
+    initResult = result;
     return result;
-  }
+  };
 
-  async closePort(endpoint: SharedWorkerPort): Promise<void> {
-    this.ports.delete(endpoint);
+  /** Detach a port; close the session when the last port leaves. */
+  const closePort = async (endpoint: SharedPortConnection): Promise<void> => {
+    ports.delete(endpoint);
     endpoint.detachListener();
-    if (this.ports.size > 0) return;
-    await this.backend.close();
-    this.storedConfig = null;
-    this.initResult = null;
-  }
+    if (ports.size > 0) return;
+    await owner.closeDb();
+    storedConfig = null;
+    initResult = null;
+  };
 
-  async dropPort(endpoint: SharedWorkerPort): Promise<void> {
-    this.ports.delete(endpoint);
+  /** Detach a port and drop durable storage for every peer. */
+  const dropPort = async (endpoint: SharedPortConnection): Promise<void> => {
+    ports.delete(endpoint);
     endpoint.detachListener();
-    await this.backend.drop();
-    this.storedConfig = null;
-    this.initResult = null;
-  }
+    await owner.dropStorage();
+    storedConfig = null;
+    initResult = null;
+  };
 
-  notifyPeers(event: MaterializationEvent, exclude: MaterializationListener | null): void {
-    this.backend.emitMaterialized(event, exclude ?? undefined);
-  }
-}
+  /** Expose a new SharedConnection on this MessagePort. */
+  const attach = (port: MessagePort): void => {
+    const connection = createSharedConnection({
+      owner,
+      init,
+      closePort,
+      dropPort,
+    });
+    ports.add(connection);
+    Comlink.expose(connection, port);
+    port.start();
+  };
 
-/** Per-port decorator: same backend API, with shared lifecycle + notify overrides only. */
-class SharedWorkerPort {
-  private listener: MaterializationListener | null = null;
+  return { attach };
+};
 
-  constructor(private readonly host: SharedWorkerHost) {}
-
-  init(config: BackendInitConfig): Promise<BackendInitResult> {
-    return this.host.init(config);
-  }
-
-  close(): Promise<void> {
-    return this.host.closePort(this);
-  }
-
-  drop(): Promise<void> {
-    return this.host.dropPort(this);
-  }
-
-  subscribeMaterialized(listener: MaterializationListener): void {
-    this.detachListener();
-    this.listener = listener;
-    this.host.backend.subscribeMaterialized(listener);
-  }
-
-  unsubscribeMaterialized(listener: MaterializationListener): void {
-    if (this.listener === listener) this.detachListener();
-    else this.host.backend.unsubscribeMaterialized(listener);
-  }
-
-  /** Peer notify for client-side local writers (excludes this port's listener). */
-  async notifyMaterialized(event: MaterializationEvent): Promise<void> {
-    this.host.notifyPeers(event, this.listener);
-  }
-
-  detachListener(): void {
-    if (!this.listener) return;
-    this.host.backend.unsubscribeMaterialized(this.listener);
-    this.listener = null;
-  }
-}
-
-const host = new SharedWorkerHost();
+const host = createSharedWorkerHost();
 
 (self as unknown as SharedWorkerGlobal).onconnect = (ev: MessageEvent) => {
   const port = ev.ports[0];

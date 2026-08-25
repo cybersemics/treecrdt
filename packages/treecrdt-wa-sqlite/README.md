@@ -30,13 +30,13 @@ const client = await createTreecrdtClient({
 });
 ```
 
-`createTreecrdtClient()` resolves a **runtime strategy** and talks to one shared `TreecrdtBackend`:
+`createTreecrdtClient()` resolves a **runtime strategy** and talks to a `TreecrdtConnection` whose `session` is the shared data API:
 
 | Runtime | When | Transport |
 | --- | --- | --- |
-| `direct` | memory (default) or opt-in | in-process backend |
-| `dedicated-worker` | OPFS + `auto` (default) | Comlink over `Worker` |
-| `shared-worker` | opt-in | Comlink over `SharedWorker` port |
+| `direct` | memory (default) or opt-in | in-process exclusive connection |
+| `dedicated-worker` | OPFS + `auto` (default) | Comlink over `Worker` (exclusive connection) |
+| `shared-worker` | opt-in | Comlink over `SharedWorker` port (shared connection) |
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`). Low-level `createWaSqliteApi` remains available for benches and custom open paths; it is not part of the client architecture.
 

@@ -1,18 +1,11 @@
 import * as Comlink from 'comlink';
-import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import type { TreecrdtBackend } from '../backend.js';
-import type { BackendInitConfig, BackendInitResult } from '../backend.js';
+import type { BackendInitConfig, BackendInitResult } from '../session.js';
 import type {
+  RemoteTreecrdtConnection,
   ResolvedClientOptions,
   RuntimeConnection,
   RuntimeStrategy,
-  SharedBackendHandle,
 } from './types.js';
-
-/** Comlink surface exposed per SharedWorker port (see shared-worker.ts). */
-export type SharedWorkerPortApi = TreecrdtBackend & {
-  notifyMaterialized(event: MaterializationEvent): Promise<void>;
-};
 
 export const sharedWorkerStrategy: RuntimeStrategy = {
   runtime: 'shared-worker',
@@ -28,14 +21,14 @@ export const sharedWorkerStrategy: RuntimeStrategy = {
 
     const port = sharedWorker.port;
     port.start();
-    const backend = Comlink.wrap<SharedWorkerPortApi>(port) as SharedBackendHandle;
+    const connection = Comlink.wrap(port) as unknown as RemoteTreecrdtConnection;
     let closed = false;
 
     const cleanup = async () => {
       if (closed) return;
       closed = true;
       try {
-        (backend as Comlink.Remote<SharedWorkerPortApi>)[Comlink.releaseProxy]();
+        connection[Comlink.releaseProxy]();
       } catch {
         // Proxy may already be released.
       }
@@ -52,10 +45,10 @@ export const sharedWorkerStrategy: RuntimeStrategy = {
 
     let initResult: BackendInitResult;
     try {
-      initResult = await backend.init(initConfig);
+      initResult = await connection.init(initConfig);
     } catch (error) {
       try {
-        await backend.close();
+        await connection.close();
       } catch {
         // Initialization may not have completed; still detach the port.
       } finally {
@@ -67,7 +60,7 @@ export const sharedWorkerStrategy: RuntimeStrategy = {
     if (opts.fallback === 'throw' && initResult.storage !== 'opfs') {
       const reason = initResult.opfsError ? `: ${initResult.opfsError}` : '';
       try {
-        await backend.close();
+        await connection.close();
       } catch {
         // ignore close errors on init failure
       } finally {
@@ -77,14 +70,13 @@ export const sharedWorkerStrategy: RuntimeStrategy = {
     }
 
     return {
-      backend,
+      connection,
       mode: 'worker',
       runtime: 'shared-worker',
       storage: initResult.storage,
       filename: initResult.filename,
       docId: opts.docId,
       local: false,
-      notifyPeers: (event) => backend.notifyMaterialized(event),
       dispose: cleanup,
     };
   },

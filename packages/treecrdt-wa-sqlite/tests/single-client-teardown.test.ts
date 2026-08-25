@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
 import { buildDirectClient, CLIENT_CLOSED_ERROR, type OpenDbFn } from '../src/client.js';
-import type { TreecrdtBackend } from '../src/backend.js';
+import type { TreecrdtConnection } from '../src/connection.js';
 import { clearOpfsStorage } from '../src/opfs.js';
 import type { Database, TreecrdtClient } from '../src/types.js';
 
@@ -18,17 +18,18 @@ const mockedClearOpfsStorage = vi.mocked(clearOpfsStorage);
 type TeardownMethod = 'close' | 'drop';
 type RejectedWorkerMethod = 'init' | TeardownMethod;
 
-type MockBackend = Pick<
-  TreecrdtBackend,
+type MockConnection = Pick<
+  TreecrdtConnection,
   | 'init'
   | 'close'
   | 'drop'
   | 'subscribeMaterialized'
   | 'unsubscribeMaterialized'
-  | 'treeNodeCount'
->;
+  | 'notifyMaterialized'
+  | 'session'
+> & { calls: string[] };
 
-function createMockBackend(rejectMethod: RejectedWorkerMethod): MockBackend & { calls: string[] } {
+function createMockConnection(rejectMethod: RejectedWorkerMethod): MockConnection {
   const calls: string[] = [];
   return {
     calls,
@@ -48,13 +49,62 @@ function createMockBackend(rejectMethod: RejectedWorkerMethod): MockBackend & { 
     },
     subscribeMaterialized() {},
     unsubscribeMaterialized() {},
-    async treeNodeCount() {
-      return 1;
-    },
+    async notifyMaterialized() {},
+    session: Comlink.proxy({
+      async sqlExec() {},
+      async sqlGetText() {
+        return null;
+      },
+      async append() {
+        return { headSeq: 0, changes: [] };
+      },
+      async appendMany() {
+        return { headSeq: 0, changes: [] };
+      },
+      async opsSince() {
+        return [];
+      },
+      async opRefsAll() {
+        return [];
+      },
+      async opRefsChildren() {
+        return [];
+      },
+      async opsByOpRefs() {
+        return [];
+      },
+      async treeChildren() {
+        return [];
+      },
+      async treeChildrenPage() {
+        return [];
+      },
+      async treeDump() {
+        return [];
+      },
+      async treePayload() {
+        return null;
+      },
+      async treeNodeCount() {
+        return 1;
+      },
+      async treeParent() {
+        return null;
+      },
+      async treeExists() {
+        return false;
+      },
+      async headLamport() {
+        return 0;
+      },
+      async replicaMaxCounter() {
+        return 0;
+      },
+    }),
   };
 }
 
-function installDedicatedWorker(backend: MockBackend) {
+function installDedicatedWorker(connection: MockConnection) {
   let terminated = false;
 
   vi.stubGlobal(
@@ -64,7 +114,7 @@ function installDedicatedWorker(backend: MockBackend) {
 
       constructor() {
         const channel = new MessageChannel();
-        Comlink.expose(backend, channel.port1);
+        Comlink.expose(connection, channel.port1);
         channel.port1.start();
         this.port = channel.port2;
         this.port.start();
@@ -167,8 +217,8 @@ test('direct drop failure leaves the handle terminal without retrying teardown',
 });
 
 test('dedicated-worker init failure terminates the endpoint and removes its listeners', async () => {
-  const backend = createMockBackend('init');
-  const endpoint = installDedicatedWorker(backend);
+  const connection = createMockConnection('init');
+  const endpoint = installDedicatedWorker(connection);
 
   await expect(
     createTreecrdtClient({
@@ -179,12 +229,12 @@ test('dedicated-worker init failure terminates the endpoint and removes its list
   ).rejects.toThrow('init failed');
 
   expect(endpoint.terminated).toBe(true);
-  expect(backend.calls).toEqual(['init']);
+  expect(connection.calls).toEqual(['init']);
 });
 
 test('dedicated-worker close failure terminates the endpoint without retrying', async () => {
-  const backend = createMockBackend('close');
-  const endpoint = installDedicatedWorker(backend);
+  const connection = createMockConnection('close');
+  const endpoint = installDedicatedWorker(connection);
   const client = await createTreecrdtClient({
     docId: 'dedicated-close-failure',
     runtime: { type: 'dedicated-worker' },
@@ -197,12 +247,12 @@ test('dedicated-worker close failure terminates the endpoint without retrying', 
 
   await expectClientToBeTerminal(client);
   expect(endpoint.terminated).toBe(true);
-  expect(backend.calls).toEqual(['init', 'close']);
+  expect(connection.calls).toEqual(['init', 'close']);
 });
 
 test('dedicated-worker drop failure terminates the endpoint without retrying', async () => {
-  const backend = createMockBackend('drop');
-  const endpoint = installDedicatedWorker(backend);
+  const connection = createMockConnection('drop');
+  const endpoint = installDedicatedWorker(connection);
   const client = await createTreecrdtClient({
     docId: 'dedicated-drop-failure',
     runtime: { type: 'dedicated-worker' },
@@ -215,5 +265,5 @@ test('dedicated-worker drop failure terminates the endpoint without retrying', a
 
   await expectClientToBeTerminal(client);
   expect(endpoint.terminated).toBe(true);
-  expect(backend.calls).toEqual(['init', 'drop']);
+  expect(connection.calls).toEqual(['init', 'drop']);
 });

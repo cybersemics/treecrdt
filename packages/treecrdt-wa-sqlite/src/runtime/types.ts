@@ -1,31 +1,29 @@
 import type { Remote } from 'comlink';
-import type { MaterializationEvent } from '@treecrdt/interface/engine';
-import type { TreecrdtBackend } from '../backend.js';
+import type { TreecrdtConnection } from '../connection.js';
+import type { TreecrdtSession } from '../session.js';
 import type { OpenDbFn } from './direct.js';
 import type { ClientMode, RuntimeMode, StorageMode } from '../types.js';
 
-/** In-process backend or Comlink remote of the same surface. */
-export type BackendHandle = TreecrdtBackend | Remote<TreecrdtBackend>;
-
 /**
- * Shared-worker port API: same data surface as TreecrdtBackend, plus peer notify for
- * client-side local writer materialization (adapter events already fan out via subscribe).
+ * Comlink remote of TreecrdtConnection with a nested session proxy.
+ * Default Remote<> would type `session` as Promise because it is not ProxyMarked.
  */
-export type SharedBackendHandle = BackendHandle & {
-  notifyMaterialized(event: MaterializationEvent): Promise<void>;
+export type RemoteTreecrdtConnection = Omit<Remote<TreecrdtConnection>, 'session'> & {
+  readonly session: Remote<TreecrdtSession>;
 };
 
+/** In-process connection or Comlink remote of the same surface. */
+export type ConnectionHandle = TreecrdtConnection | RemoteTreecrdtConnection;
+
 export type RuntimeConnection = {
-  backend: BackendHandle;
+  connection: ConnectionHandle;
   mode: ClientMode;
   runtime: RuntimeMode;
   storage: StorageMode;
   filename: string;
   docId: string;
-  /** False when `backend` is a Comlink remote (needs proxied materialization callbacks). */
+  /** False when `connection` is a Comlink remote (needs proxied materialization callbacks). */
   local: boolean;
-  /** When set, local writer materialization is forwarded to peer tabs through the shared backend. */
-  notifyPeers?: (event: MaterializationEvent) => Promise<void>;
   dispose: () => Promise<void>;
 };
 

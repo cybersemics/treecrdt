@@ -1,5 +1,6 @@
 import type { OpenTreecrdtDbOptions, OpenTreecrdtDbResult } from '../open-core.js';
-import { TreecrdtBackend } from '../backend.js';
+import createExclusiveConnection from '../connection.js';
+import createTreecrdtSession from '../session.js';
 import type { ResolvedClientOptions, RuntimeConnection, RuntimeStrategy } from './types.js';
 
 export type OpenDbFn = (opts: OpenTreecrdtDbOptions) => Promise<OpenTreecrdtDbResult>;
@@ -8,8 +9,8 @@ export const directRuntimeStrategy: RuntimeStrategy = {
   runtime: 'direct',
 
   async connect(opts: ResolvedClientOptions): Promise<RuntimeConnection> {
-    const backend = new TreecrdtBackend(opts.openDb);
-    const initResult = await backend.init({
+    const connection = createExclusiveConnection(createTreecrdtSession(opts.openDb));
+    const initResult = await connection.init({
       baseUrl: opts.baseUrl,
       filename: opts.filename,
       storage: opts.storage,
@@ -22,7 +23,7 @@ export const directRuntimeStrategy: RuntimeStrategy = {
     if (opts.fallback === 'throw' && initResult.storage !== 'opfs') {
       const reason = initResult.opfsError ? `: ${initResult.opfsError}` : '';
       try {
-        await backend.close();
+        await connection.close();
       } catch {
         // ignore close errors on init failure
       }
@@ -30,7 +31,7 @@ export const directRuntimeStrategy: RuntimeStrategy = {
     }
 
     return {
-      backend,
+      connection,
       mode: 'direct',
       runtime: 'direct',
       storage: initResult.storage,
@@ -38,7 +39,7 @@ export const directRuntimeStrategy: RuntimeStrategy = {
       docId: opts.docId,
       local: true,
       dispose: async () => {
-        // close/drop on the public client already tear down the backend.
+        // close/drop on the public client already tear down the session.
       },
     };
   },

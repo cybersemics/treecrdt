@@ -15,12 +15,11 @@ import {
 import { bytesToHex, nodeIdFromBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type {
   LocalWriteOptions,
-  MaterializationEvent,
   MaterializationOutcome,
   WriteOptions,
 } from '@treecrdt/interface/engine';
 import { createTreecrdtEngineLocal } from '@treecrdt/interface/engine';
-import type { MaterializationListener } from './backend.js';
+import type { MaterializationListener } from './session.js';
 import type { ResolvedClientOptions, RuntimeConnection } from './runtime/types.js';
 import { defaultSharedWorkerName, resolveBrowserEnvironment } from './runtime/resolve.js';
 import { directRuntimeStrategy, type OpenDbFn } from './runtime/direct.js';
@@ -99,26 +98,23 @@ export async function buildDirectClient(
   );
 }
 
-/** Builds the public TreecrdtClient façade over a connected backend (local or Comlink). */
+/** Builds the public TreecrdtClient façade over a connected session (local or Comlink). */
 export async function createClientFromBackend(
-  connection: RuntimeConnection,
+  runtime: RuntimeConnection,
 ): Promise<TreecrdtClient> {
-  const { backend, mode, runtime, storage, filename, docId, local, notifyPeers, dispose } =
-    connection;
+  const { connection, mode, runtime: runtimeMode, storage, filename, docId, local, dispose } =
+    runtime;
+  const session = connection.session;
 
-  const materialized = createClientMaterializationDispatcher(
-    notifyPeers
-      ? {
-          broadcast: (event) => {
-            void notifyPeers(event).catch(() => {
-              // Closing tabs can race a final materialization notification.
-            });
-          },
-        }
-      : {},
-  );
+  const materialized = createClientMaterializationDispatcher({
+    broadcast: (event) => {
+      void Promise.resolve(connection.notifyMaterialized(event)).catch(() => {
+        // Closing tabs can race a final materialization notification.
+      });
+    },
+  });
 
-  if (storage === 'opfs' && runtime !== 'shared-worker') {
+  if (storage === 'opfs' && runtimeMode !== 'shared-worker') {
     materialized.enableCrossTab({ docId, filename });
   }
 
@@ -128,7 +124,7 @@ export async function createClientFromBackend(
   const subscribedListener = local
     ? materializationListener
     : Comlink.proxy(materializationListener);
-  await Promise.resolve(backend.subscribeMaterialized(subscribedListener));
+  await Promise.resolve(connection.subscribeMaterialized(subscribedListener));
 
   let closePromise: Promise<void> | null = null;
   let dropPromise: Promise<void> | null = null;
@@ -141,8 +137,8 @@ export async function createClientFromBackend(
   };
 
   const runner: SqliteRunner = {
-    exec: (sql) => guard(() => backend.sqlExec(sql)),
-    getText: (sql, params = []) => guard(() => backend.sqlGetText(sql, params as any)),
+    exec: (sql) => guard(() => session.sqlExec(sql)),
+    getText: (sql, params = []) => guard(() => session.sqlGetText(sql, params as any)),
   };
 
   const localWriters = new Map<string, TreecrdtSqliteWriter>();
@@ -160,7 +156,7 @@ export async function createClientFromBackend(
 
   const appendMany = async (operations: Operation[], writeOpts?: WriteOptions) => {
     if (operations.length <= APPEND_MANY_CHUNK_SIZE) {
-      const outcome = await guard(() => backend.appendMany(operations));
+      const outcome = await guard(() => session.appendMany(operations));
       materialized.emitOutcome(outcome, writeOpts?.writeId);
       return;
     }
@@ -169,7 +165,7 @@ export async function createClientFromBackend(
     for (let start = 0; start < operations.length; start += APPEND_MANY_CHUNK_SIZE) {
       outcomes.push(
         await guard(() =>
-          backend.appendMany(operations.slice(start, start + APPEND_MANY_CHUNK_SIZE)),
+          session.appendMany(operations.slice(start, start + APPEND_MANY_CHUNK_SIZE)),
         ),
       );
     }
@@ -208,7 +204,7 @@ export async function createClientFromBackend(
 
   const releaseSubscription = async () => {
     try {
-      await Promise.resolve(backend.unsubscribeMaterialized(subscribedListener));
+      await Promise.resolve(connection.unsubscribeMaterialized(subscribedListener));
     } catch {
       // Closing remotes can already have released the proxy.
     }
@@ -216,59 +212,59 @@ export async function createClientFromBackend(
 
   return {
     mode,
-    runtime,
+    runtime: runtimeMode,
     storage,
     docId,
     runner,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
-        const outcome = await guard(() => backend.append(op));
+        const outcome = await guard(() => session.append(op));
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       appendMany,
-      all: () => guard(async () => decodeSqliteOps(await backend.opsSince(0))),
+      all: () => guard(async () => decodeSqliteOps(await session.opsSince(0))),
       since: (lamport, root?) =>
-        guard(async () => decodeSqliteOps(await backend.opsSince(lamport, root))),
+        guard(async () => decodeSqliteOps(await session.opsSince(lamport, root))),
       children: (parent) =>
         guard(async () => {
-          const opRefs = decodeSqliteOpRefs(await backend.opRefsChildren(parent));
-          return decodeSqliteOps(await backend.opsByOpRefs(opRefs));
+          const opRefs = decodeSqliteOpRefs(await session.opRefsChildren(parent));
+          return decodeSqliteOps(await session.opsByOpRefs(opRefs));
         }),
-      get: (opRefs) => guard(async () => decodeSqliteOps(await backend.opsByOpRefs(opRefs))),
+      get: (opRefs) => guard(async () => decodeSqliteOps(await session.opsByOpRefs(opRefs))),
     },
     opRefs: {
-      all: () => guard(async () => decodeSqliteOpRefs(await backend.opRefsAll())),
+      all: () => guard(async () => decodeSqliteOpRefs(await session.opRefsAll())),
       children: (parent) =>
-        guard(async () => decodeSqliteOpRefs(await backend.opRefsChildren(parent))),
+        guard(async () => decodeSqliteOpRefs(await session.opRefsChildren(parent))),
     },
     tree: {
       children: (parent) =>
-        guard(async () => decodeSqliteNodeIds(await backend.treeChildren(parent))),
+        guard(async () => decodeSqliteNodeIds(await session.treeChildren(parent))),
       childrenPage: (
         parent: string,
         cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
         limit: number,
       ): Promise<SqliteTreeChildRow[]> =>
         guard(async () =>
-          decodeSqliteTreeChildRows(await backend.treeChildrenPage(parent, cursor, limit)),
+          decodeSqliteTreeChildRows(await session.treeChildrenPage(parent, cursor, limit)),
         ),
-      dump: () => guard(async () => decodeSqliteTreeRows(await backend.treeDump())),
-      nodeCount: () => guard(async () => Number(await backend.treeNodeCount())),
+      dump: () => guard(async () => decodeSqliteTreeRows(await session.treeDump())),
+      nodeCount: () => guard(async () => Number(await session.treeNodeCount())),
       parent: async (node) => {
-        const result = await guard(() => backend.treeParent(node));
+        const result = await guard(() => session.treeParent(node));
         if (result === null) return null;
         return nodeIdFromBytes16(toBytes(result));
       },
-      exists: (node) => guard(async () => Boolean(await backend.treeExists(node))),
+      exists: (node) => guard(async () => Boolean(await session.treeExists(node))),
       getPayload: async (node) => {
-        const result = await guard(() => backend.treePayload(node));
+        const result = await guard(() => session.treePayload(node));
         return result === null ? null : toBytes(result);
       },
     },
     meta: {
-      headLamport: () => guard(async () => Number(await backend.headLamport())),
+      headLamport: () => guard(async () => Number(await session.headLamport())),
       replicaMaxCounter: (replica) =>
-        guard(async () => Number(await backend.replicaMaxCounter(replicaIdToBytes(replica)))),
+        guard(async () => Number(await session.replicaMaxCounter(replicaIdToBytes(replica)))),
     },
     local: localEngine,
     onMaterialized: materialized.onMaterialized,
@@ -284,7 +280,7 @@ export async function createClientFromBackend(
       closePromise = (async () => {
         closed = true;
         try {
-          await backend.close();
+          await connection.close();
         } catch {
           // Client teardown is best-effort. Fast refresh and overlapping resets can race a prior
           // close, and the underlying sqlite handle may already be gone by the time this runs.
@@ -305,7 +301,7 @@ export async function createClientFromBackend(
       dropPromise = (async () => {
         closed = true;
         try {
-          await backend.drop();
+          await connection.drop();
         } finally {
           await releaseSubscription();
           materialized.close();

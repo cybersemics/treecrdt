@@ -1,7 +1,7 @@
 import * as Comlink from 'comlink';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import { TreecrdtBackend } from '../src/backend.js';
+import createTreecrdtSession from '../src/session.js';
 
 const openTreecrdtDb = vi.hoisted(() => vi.fn());
 
@@ -19,11 +19,11 @@ afterEach(() => {
 test.each([
   ['throw', true],
   ['memory', false],
-] as const)('backend maps %s fallback to requireOpfs=%s', async (fallback, requireOpfs) => {
-  const backend = new TreecrdtBackend(openTreecrdtDb);
+] as const)('session maps %s fallback to requireOpfs=%s', async (fallback, requireOpfs) => {
+  const session = createTreecrdtSession(openTreecrdtDb);
 
   await expect(
-    backend.init({
+    session.open({
       baseUrl: '/',
       filename: '/policy.db',
       storage: 'opfs',

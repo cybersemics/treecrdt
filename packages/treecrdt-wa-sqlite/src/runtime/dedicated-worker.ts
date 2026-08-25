@@ -1,7 +1,11 @@
 import * as Comlink from 'comlink';
-import type { TreecrdtBackend } from '../backend.js';
-import type { BackendInitConfig, BackendInitResult } from '../backend.js';
-import type { ResolvedClientOptions, RuntimeConnection, RuntimeStrategy } from './types.js';
+import type { BackendInitConfig, BackendInitResult } from '../session.js';
+import type {
+  RemoteTreecrdtConnection,
+  ResolvedClientOptions,
+  RuntimeConnection,
+  RuntimeStrategy,
+} from './types.js';
 
 export const dedicatedWorkerStrategy: RuntimeStrategy = {
   runtime: 'dedicated-worker',
@@ -13,14 +17,14 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
         : new Worker(new URL('../worker.js', import.meta.url), { type: 'module' })
     ) as Worker;
 
-    const backend = Comlink.wrap<TreecrdtBackend>(worker);
+    const connection = Comlink.wrap(worker) as unknown as RemoteTreecrdtConnection;
     let closed = false;
 
     const cleanup = async () => {
       if (closed) return;
       closed = true;
       try {
-        (backend as Comlink.Remote<TreecrdtBackend>)[Comlink.releaseProxy]();
+        connection[Comlink.releaseProxy]();
       } catch {
         // Proxy may already be released.
       }
@@ -37,7 +41,7 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
 
     let initResult: BackendInitResult;
     try {
-      initResult = await backend.init(initConfig);
+      initResult = await connection.init(initConfig);
     } catch (error) {
       await cleanup();
       throw error;
@@ -46,7 +50,7 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
     if (opts.fallback === 'throw' && initResult.storage !== 'opfs') {
       const reason = initResult.opfsError ? `: ${initResult.opfsError}` : '';
       try {
-        await backend.close();
+        await connection.close();
       } catch {
         // ignore close errors on init failure
       } finally {
@@ -56,7 +60,7 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
     }
 
     return {
-      backend,
+      connection,
       mode: 'worker',
       runtime: 'dedicated-worker',
       storage: initResult.storage === 'opfs' ? 'opfs' : 'memory',

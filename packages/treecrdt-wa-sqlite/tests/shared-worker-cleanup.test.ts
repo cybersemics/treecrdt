@@ -2,43 +2,16 @@ import * as Comlink from 'comlink';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
-import type { BackendInitConfig, BackendInitResult, MaterializationListener } from '../src/backend.js';
-import type { SharedWorkerPortApi } from '../src/runtime/shared-worker.js';
+import type { TreecrdtConnection } from '../src/connection.js';
+import type { BackendInitConfig, BackendInitResult, MaterializationListener } from '../src/session.js';
+import type { TreecrdtSession } from '../src/session.js';
 
-type MockPortApi = SharedWorkerPortApi & {
+type MockConnection = TreecrdtConnection & {
   readonly calls: string[];
 };
 
-function createMockSharedPortApi(opts: {
-  onInit?: (config: BackendInitConfig) => Promise<BackendInitResult>;
-  onClose?: () => Promise<void>;
-  onDrop?: () => Promise<void>;
-}): MockPortApi {
-  const calls: string[] = [];
-  const listeners = new Set<MaterializationListener>();
-
-  const api: MockPortApi = {
-    calls,
-    async init(config) {
-      calls.push('init');
-      if (opts.onInit) return opts.onInit(config);
-      return { storage: 'memory', filename: ':memory:' };
-    },
-    async close() {
-      calls.push('close');
-      if (opts.onClose) await opts.onClose();
-    },
-    async drop() {
-      calls.push('drop');
-      if (opts.onDrop) await opts.onDrop();
-    },
-    subscribeMaterialized(listener) {
-      listeners.add(listener);
-    },
-    unsubscribeMaterialized(listener) {
-      listeners.delete(listener);
-    },
-    async notifyMaterialized() {},
+function createMockSession(): TreecrdtSession {
+  return {
     async sqlExec() {},
     async sqlGetText() {
       return null;
@@ -89,11 +62,44 @@ function createMockSharedPortApi(opts: {
       return 0;
     },
   };
-
-  return api;
 }
 
-function installSharedWorker(api: MockPortApi) {
+function createMockSharedConnection(opts: {
+  onInit?: (config: BackendInitConfig) => Promise<BackendInitResult>;
+  onClose?: () => Promise<void>;
+  onDrop?: () => Promise<void>;
+}): MockConnection {
+  const calls: string[] = [];
+  const listeners = new Set<MaterializationListener>();
+  const session = Comlink.proxy(createMockSession());
+
+  return {
+    calls,
+    session,
+    async init(config) {
+      calls.push('init');
+      if (opts.onInit) return opts.onInit(config);
+      return { storage: 'memory', filename: ':memory:' };
+    },
+    async close() {
+      calls.push('close');
+      if (opts.onClose) await opts.onClose();
+    },
+    async drop() {
+      calls.push('drop');
+      if (opts.onDrop) await opts.onDrop();
+    },
+    subscribeMaterialized(listener) {
+      listeners.add(listener);
+    },
+    unsubscribeMaterialized(listener) {
+      listeners.delete(listener);
+    },
+    async notifyMaterialized() {},
+  };
+}
+
+function installSharedWorker(connection: MockConnection) {
   let closed = false;
 
   vi.stubGlobal(
@@ -103,7 +109,7 @@ function installSharedWorker(api: MockPortApi) {
 
       constructor() {
         const channel = new MessageChannel();
-        Comlink.expose(api, channel.port1);
+        Comlink.expose(connection, channel.port1);
         channel.port1.start();
         this.port = channel.port2;
         const originalClose = channel.port2.close.bind(channel.port2);
@@ -118,7 +124,7 @@ function installSharedWorker(api: MockPortApi) {
   return {
     isClosed: () => closed,
     get calls() {
-      return api.calls;
+      return connection.calls;
     },
   };
 }
@@ -134,12 +140,12 @@ afterEach(() => {
 });
 
 test('shared-worker cleans up after rejected initialization', async () => {
-  const api = createMockSharedPortApi({
+  const connection = createMockSharedConnection({
     onInit: async () => {
       throw new Error('init failed');
     },
   });
-  const worker = installSharedWorker(api);
+  const worker = installSharedWorker(connection);
 
   await expect(
     createTreecrdtClient({
@@ -154,12 +160,12 @@ test('shared-worker cleans up after rejected initialization', async () => {
 });
 
 test('shared-worker cleans up when close RPC fails', async () => {
-  const api = createMockSharedPortApi({
+  const connection = createMockSharedConnection({
     onClose: async () => {
       throw new Error('close failed');
     },
   });
-  const worker = installSharedWorker(api);
+  const worker = installSharedWorker(connection);
   const client = await createTreecrdtClient(clientOptions);
 
   await client.close();
@@ -169,12 +175,12 @@ test('shared-worker cleans up when close RPC fails', async () => {
 });
 
 test('shared-worker cleans up when drop RPC fails', async () => {
-  const api = createMockSharedPortApi({
+  const connection = createMockSharedConnection({
     onDrop: async () => {
       throw new Error('drop failed');
     },
   });
-  const worker = installSharedWorker(api);
+  const worker = installSharedWorker(connection);
   const client = await createTreecrdtClient(clientOptions);
 
   await expect(client.drop()).rejects.toThrow('drop failed');
