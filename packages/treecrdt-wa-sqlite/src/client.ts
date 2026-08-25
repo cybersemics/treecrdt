@@ -99,11 +99,17 @@ export async function buildDirectClient(
 }
 
 /** Builds the public TreecrdtClient façade over a connected session (local or Comlink). */
-export async function createClientFromBackend(
-  runtime: RuntimeConnection,
-): Promise<TreecrdtClient> {
-  const { connection, mode, runtime: runtimeMode, storage, filename, docId, local, dispose } =
-    runtime;
+export async function createClientFromBackend(runtime: RuntimeConnection): Promise<TreecrdtClient> {
+  const {
+    connection,
+    mode,
+    runtime: runtimeMode,
+    storage,
+    filename,
+    docId,
+    local,
+    dispose,
+  } = runtime;
   const session = connection.session;
 
   const materialized = createClientMaterializationDispatcher({

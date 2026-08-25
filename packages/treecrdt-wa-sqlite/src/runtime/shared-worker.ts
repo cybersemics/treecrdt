@@ -11,9 +11,12 @@ export const sharedWorkerStrategy: RuntimeStrategy = {
   runtime: 'shared-worker',
 
   async connect(opts: ResolvedClientOptions): Promise<RuntimeConnection> {
-    const name = opts.sharedWorkerName ?? `treecrdt:${opts.docId}:${opts.filename ?? '/treecrdt.db'}`;
+    const name =
+      opts.sharedWorkerName ?? `treecrdt:${opts.docId}:${opts.filename ?? '/treecrdt.db'}`;
     const sharedWorker = opts.workerUrl
-      ? new SharedWorker(opts.workerUrl, { name, type: 'module' } as WorkerOptions & { name: string })
+      ? new SharedWorker(opts.workerUrl, { name, type: 'module' } as WorkerOptions & {
+          name: string;
+        })
       : new SharedWorker(
           new URL('../shared-worker.js', import.meta.url),
           /* @vite-ignore */ { name, type: 'module' } as WorkerOptions & { name: string },

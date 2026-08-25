@@ -3,7 +3,11 @@ import { afterEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
 import type { TreecrdtConnection } from '../src/connection.js';
-import type { BackendInitConfig, BackendInitResult, MaterializationListener } from '../src/session.js';
+import type {
+  BackendInitConfig,
+  BackendInitResult,
+  MaterializationListener,
+} from '../src/session.js';
 import type { TreecrdtSession } from '../src/session.js';
 
 type MockConnection = TreecrdtConnection & {
