@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -39,7 +40,33 @@ export type LoadableDatabase = {
   loadExtension: (path: string, entryPoint?: string) => void;
 };
 
+export type SqliteNodeStorage = { type: 'memory' } | { type: 'file'; filename: string };
+export type SqliteNodeRuntime = { type: 'direct' };
+export type SqliteNodeClientOptions = {
+  storage?: SqliteNodeStorage;
+  runtime?: SqliteNodeRuntime;
+  extension?: LoadOptions;
+  docId?: string;
+};
+
+export type TreecrdtSqliteNodeDatabaseClient = TreecrdtEngine & {
+  mode: 'node';
+  storage: 'sqlite';
+  docId: string;
+  runner: SqliteRunner;
+  auth: TreecrdtSqliteAuthApi;
+  close: () => Promise<void>;
+};
+
+export type SqliteNodeClient = Omit<TreecrdtSqliteNodeDatabaseClient, 'storage'> & {
+  runtime: 'direct';
+  storage: 'memory' | 'file';
+  filename: string;
+  drop: () => Promise<void>;
+};
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SQLITE_FILE_SUFFIXES = ['', '-journal', '-wal', '-shm'];
 
 function platformExt(): '.dylib' | '.so' | '.dll' {
   switch (process.platform) {
@@ -113,24 +140,113 @@ function createRunner(db: any): SqliteRunner {
   return runner;
 }
 
-export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {}): TreecrdtAdapter {
-  return createTreecrdtSqliteAdapter(createRunner(db), opts);
+export function createSqliteNodeApi(db: any): TreecrdtAdapter {
+  return createTreecrdtSqliteAdapter(createRunner(db));
+}
+
+async function loadDatabaseCtor(): Promise<new (filename: string) => any> {
+  return (
+    (await import('better-sqlite3').catch((err) => {
+      throw new Error(
+        `better-sqlite3 native binding not available; ensure it is installed/built before using @treecrdt/sqlite-node: ${err}`,
+      );
+    })) as { default: new (filename: string) => any }
+  ).default;
+}
+
+function normalizeManagedRuntime(opts: SqliteNodeClientOptions): SqliteNodeRuntime {
+  const runtime = opts.runtime ?? { type: 'direct' };
+  if (!runtime || typeof runtime !== 'object' || runtime.type !== 'direct') {
+    throw new Error('@treecrdt/sqlite-node only supports runtime: { type: "direct" }');
+  }
+  return runtime;
+}
+
+function normalizeManagedStorage(opts: SqliteNodeClientOptions): SqliteNodeStorage {
+  const storage = opts.storage ?? { type: 'memory' };
+  if (!storage || typeof storage !== 'object') {
+    throw new Error(
+      '@treecrdt/sqlite-node storage must use object options, e.g. { type: "memory" } or { type: "file", filename }',
+    );
+  }
+  if (storage.type === 'memory') return storage;
+  if (storage.type === 'file') {
+    if (!storage.filename) {
+      throw new Error('@treecrdt/sqlite-node file storage requires a filename');
+    }
+    return storage;
+  }
+  throw new Error('@treecrdt/sqlite-node storage.type must be "memory" or "file"');
+}
+
+async function removeSqliteFiles(filename: string): Promise<void> {
+  await Promise.all(
+    SQLITE_FILE_SUFFIXES.map((suffix) => fs.rm(`${filename}${suffix}`, { force: true })),
+  );
 }
 
 /**
- * High-level engine API (matches `@treecrdt/wa-sqlite` client shape).
+ * Managed Node runtime entrypoint for native SQLite.
  *
- * This is the recommended surface for applications: it exposes local op minting via the SQLite
- * extension UDFs and typed reads (decoded ops/opRefs/tree rows).
+ * This mirrors the runtime/storage matrix used by `@treecrdt/wa-sqlite`, but keeps the native
+ * Node package explicit: direct runtime only, backed by either an in-memory or file database.
  */
-export function createTreecrdtClient(
+export async function createTreecrdtClient(
+  opts: SqliteNodeClientOptions = {},
+): Promise<SqliteNodeClient> {
+  normalizeManagedRuntime(opts);
+  const storage = normalizeManagedStorage(opts);
+  // Keep teardown bound to the file that was opened even if the process changes cwd later.
+  const filename = storage.type === 'file' ? path.resolve(storage.filename) : ':memory:';
+
+  if (storage.type === 'file') {
+    await fs.mkdir(path.dirname(filename), { recursive: true });
+  }
+
+  const Database = await loadDatabaseCtor();
+  const db = new Database(filename);
+  let client: TreecrdtSqliteNodeDatabaseClient;
+  try {
+    loadTreecrdtExtension(db, opts.extension);
+    client = await createTreecrdtClientFromDatabase(db, { docId: opts.docId });
+  } catch (err) {
+    try {
+      db.close();
+    } catch {
+      // Preserve the initialization failure.
+    }
+    throw err;
+  }
+
+  let closePromise: Promise<void> | null = null;
+  const close = () => (closePromise ??= client.close());
+  let dropPromise: Promise<void> | null = null;
+  const drop = () =>
+    (dropPromise ??= (async () => {
+      await close();
+      if (storage.type === 'file') await removeSqliteFiles(filename);
+    })());
+
+  return {
+    ...client,
+    runtime: 'direct',
+    storage: storage.type,
+    filename,
+    close,
+    drop,
+  };
+}
+
+/**
+ * Wrap an existing better-sqlite3 Database in the TreeCRDT engine API.
+ */
+export function createTreecrdtClientFromDatabase(
   db: any,
-  opts: { docId?: string; maxBulkOps?: number } = {},
-): Promise<TreecrdtEngine & { runner: SqliteRunner; auth: TreecrdtSqliteAuthApi }> {
+  opts: { docId?: string } = {},
+): Promise<TreecrdtSqliteNodeDatabaseClient> {
   const runner = createRunner(db);
   const materialized = createMaterializationDispatcher();
   const adapter = createTreecrdtSqliteAdapter(runner, {
-    maxBulkOps: opts.maxBulkOps,
     onMaterialized: materialized.emitEvent,
   });
   const docId = opts.docId ?? 'treecrdt';
