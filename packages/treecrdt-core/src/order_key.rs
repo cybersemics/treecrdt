@@ -13,8 +13,10 @@ fn decode_digits(bytes: &[u8]) -> Result<Vec<u16>> {
         ));
     }
     Ok(bytes
-        .chunks_exact(DIGIT_BYTES)
-        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+        .as_chunks::<DIGIT_BYTES>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_be_bytes(*chunk))
         .collect())
 }
 
