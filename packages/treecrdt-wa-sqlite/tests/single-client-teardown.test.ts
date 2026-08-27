@@ -1,11 +1,10 @@
-import * as Comlink from 'comlink';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
 import { buildDirectClient, CLIENT_CLOSED_ERROR, type OpenDbFn } from '../src/client.js';
-import type { TreecrdtConnection } from '../src/connection.js';
 import { clearOpfsStorage } from '../src/opfs.js';
 import type { Database, TreecrdtClient } from '../src/types.js';
+import { createMockConnection, installDedicatedWorker } from './mockWorker.js';
 
 vi.mock('../src/opfs.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../src/opfs.js')>();
@@ -13,137 +12,6 @@ vi.mock('../src/opfs.js', async (importOriginal) => {
 });
 
 const mockedClearOpfsStorage = vi.mocked(clearOpfsStorage);
-
-type TeardownMethod = 'close' | 'drop';
-type RejectedWorkerMethod = 'init' | TeardownMethod;
-
-type MockConnection = Pick<
-  TreecrdtConnection,
-  | 'init'
-  | 'close'
-  | 'drop'
-  | 'subscribeMaterialized'
-  | 'unsubscribeMaterialized'
-  | 'notifyMaterialized'
-  | 'session'
-> & { calls: string[] };
-
-function createMockConnection(rejectMethod: RejectedWorkerMethod): MockConnection {
-  const calls: string[] = [];
-  return {
-    calls,
-    async init(config) {
-      calls.push('init');
-      if (rejectMethod === 'init') throw new Error('init failed');
-      expect(config.fallback).toBe(config.storage === 'opfs' ? 'throw' : 'memory');
-      return { storage: 'memory', filename: ':memory:' };
-    },
-    async close() {
-      calls.push('close');
-      if (rejectMethod === 'close') throw new Error('close failed');
-    },
-    async drop() {
-      calls.push('drop');
-      if (rejectMethod === 'drop') throw new Error('drop failed');
-    },
-    subscribeMaterialized() {},
-    unsubscribeMaterialized() {},
-    async notifyMaterialized() {},
-    session: Comlink.proxy({
-      async sqlExec() {},
-      async sqlGetText() {
-        return null;
-      },
-      async append() {
-        return { headSeq: 0, changes: [] };
-      },
-      async appendMany() {
-        return { headSeq: 0, changes: [] };
-      },
-      async opsSince() {
-        return [];
-      },
-      async opRefsAll() {
-        return [];
-      },
-      async opRefsChildren() {
-        return [];
-      },
-      async opsByOpRefs() {
-        return [];
-      },
-      async treeChildren() {
-        return [];
-      },
-      async treeChildrenPage() {
-        return [];
-      },
-      async treeDump() {
-        return [];
-      },
-      async treePayload() {
-        return null;
-      },
-      async treeNodeCount() {
-        return 1;
-      },
-      async treeParent() {
-        return null;
-      },
-      async treeExists() {
-        return false;
-      },
-      async headLamport() {
-        return 0;
-      },
-      async replicaMaxCounter() {
-        return 0;
-      },
-    }),
-  };
-}
-
-function installDedicatedWorker(connection: MockConnection) {
-  let terminated = false;
-
-  vi.stubGlobal(
-    'Worker',
-    class {
-      private readonly port: MessagePort;
-
-      constructor() {
-        const channel = new MessageChannel();
-        Comlink.expose(connection, channel.port1);
-        channel.port1.start();
-        this.port = channel.port2;
-        this.port.start();
-      }
-
-      postMessage(message: unknown, transfer?: Transferable[]) {
-        this.port.postMessage(message as any, transfer as any);
-      }
-
-      addEventListener(type: string, listener: EventListener) {
-        this.port.addEventListener(type, listener);
-      }
-
-      removeEventListener(type: string, listener: EventListener) {
-        this.port.removeEventListener(type, listener);
-      }
-
-      terminate() {
-        terminated = true;
-        this.port.close();
-      }
-    },
-  );
-
-  return {
-    get terminated() {
-      return terminated;
-    },
-  };
-}
 
 async function createDirectClientHarness(opts: { storage: 'memory' | 'opfs'; closeError?: Error }) {
   const closeDatabase = vi.fn(async () => {
@@ -154,16 +22,7 @@ async function createDirectClientHarness(opts: { storage: 'memory' | 'opfs'; clo
   // Inject a minimal database so these tests isolate client lifecycle behavior
   // from the SQLite implementation itself.
   const openDb: OpenDbFn = async () => ({
-    db: {
-      close: closeDatabase,
-      exec: async () => undefined,
-      getText: async () => null,
-      prepare: async () => 0,
-      bind: async () => undefined,
-      step: async () => 101,
-      column_text: async () => null,
-      finalize: async () => undefined,
-    } as unknown as Database,
+    db: { close: closeDatabase } as unknown as Database,
     filename,
     storage: opts.storage,
   });

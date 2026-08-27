@@ -1,6 +1,7 @@
 import * as Comlink from 'comlink';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
+import type { TreecrdtConnection } from '../src/connection.js';
 import createTreecrdtSession from '../src/session.js';
 
 const openTreecrdtDb = vi.hoisted(() => vi.fn());
@@ -50,15 +51,7 @@ test.each([
 
     scope.onconnect?.({ ports: [channel.port1] } as unknown as MessageEvent);
     channel.port2.start();
-    const remote = Comlink.wrap<{
-      init(config: {
-        baseUrl: string;
-        filename: string;
-        storage: 'opfs';
-        docId: string;
-        fallback: 'memory' | 'throw';
-      }): Promise<unknown>;
-    }>(channel.port2);
+    const remote = Comlink.wrap<TreecrdtConnection>(channel.port2);
 
     await expect(
       remote.init({
