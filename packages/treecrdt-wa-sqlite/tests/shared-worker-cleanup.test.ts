@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { createTreecrdtClient } from '../src/client.browser.js';
-import { createMockConnection, installSharedWorker } from './mockWorker.js';
+import { createMockConnection, installSharedWorker } from './mock-worker.js';
 
 const clientOptions = {
   storage: { type: 'memory' as const },

@@ -4,7 +4,7 @@ vi.mock('../src/opfs.js', () => ({ createOpfsVfs: vi.fn() }));
 
 import { createOpfsVfs } from '../src/opfs.js';
 import { openTreecrdtDbWithLoader } from '../src/open-core.js';
-import { createFakeModule, createFakeSqlite } from './fakeSqlite.js';
+import { createFakeModule, createFakeSqlite } from './fake-sqlite.js';
 
 beforeEach(() => {
   vi.mocked(createOpfsVfs).mockReset();

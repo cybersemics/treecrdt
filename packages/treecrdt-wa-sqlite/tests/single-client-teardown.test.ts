@@ -4,7 +4,7 @@ import { createTreecrdtClient } from '../src/client.browser.js';
 import { buildDirectClient, CLIENT_CLOSED_ERROR, type OpenDbFn } from '../src/client.js';
 import { clearOpfsStorage } from '../src/opfs.js';
 import type { Database, TreecrdtClient } from '../src/types.js';
-import { createMockConnection, installDedicatedWorker } from './mockWorker.js';
+import { createMockConnection, installDedicatedWorker } from './mock-worker.js';
 
 vi.mock('../src/opfs.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../src/opfs.js')>();
