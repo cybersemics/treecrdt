@@ -125,7 +125,8 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
   }
 
   const materializationListener: MaterializationListener = (event) => {
-    materialized.emitIncomingEvent(event);
+    if (runtimeMode === 'shared-worker') materialized.emitIncomingEvent(event);
+    else materialized.emitEvent(event);
   };
   const subscribedListener = local
     ? materializationListener
