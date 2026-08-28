@@ -118,18 +118,18 @@ const createSharedWorkerHost = () => {
     ports.delete(endpoint);
     endpoint.detachListener();
     if (ports.size > 0) return;
-    await owner.closeDb();
     storedConfig = null;
     initResult = null;
+    await owner.closeDb();
   };
 
   /** Detach a port and drop durable storage for every peer. */
   const dropPort = async (endpoint: SharedPortConnection): Promise<void> => {
     ports.delete(endpoint);
     endpoint.detachListener();
-    await owner.dropStorage();
     storedConfig = null;
     initResult = null;
+    await owner.dropStorage();
   };
 
   /** Expose a new SharedConnection on this MessagePort. */
