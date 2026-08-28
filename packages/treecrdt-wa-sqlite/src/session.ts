@@ -2,6 +2,7 @@ import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 import { createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
+import * as Comlink from 'comlink';
 import type { OpfsVfsKind } from './opfs.js';
 import { clearOpfsStorage } from './opfs.js';
 import type { OpenTreecrdtDbOptions, OpenTreecrdtDbResult } from './open-core.js';
@@ -183,10 +184,10 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
       run(async () => ensureApi().treeChildrenPage!(nodeIdToBytes16(parent), cursor, limit)),
     treeDump: () => run(async () => ensureApi().treeDump()),
     treePayload: (node) =>
-      run(async () => cloneBinary(await ensureApi().treePayload(nodeIdToBytes16(node)))),
+      run(async () => transferBinary(await ensureApi().treePayload(nodeIdToBytes16(node)))),
     treeNodeCount: () => run(async () => ensureApi().treeNodeCount()),
     treeParent: (node) =>
-      run(async () => cloneBinary(await ensureApi().treeParent(nodeIdToBytes16(node)))),
+      run(async () => transferBinary(await ensureApi().treeParent(nodeIdToBytes16(node)))),
     treeExists: (node) => run(async () => ensureApi().treeExists(nodeIdToBytes16(node))),
     headLamport: () => run(async () => ensureApi().headLamport()),
     replicaMaxCounter: (replica) => run(async () => ensureApi().replicaMaxCounter(replica)),
@@ -215,16 +216,21 @@ function toInitResult(opened: OpenTreecrdtDbResult): BackendInitResult {
     : { storage: opened.storage, filename: opened.filename };
 }
 
-/** Ensure binary results are structured-clone / transferable friendly. */
-const cloneBinary = (bytes: Uint8Array | null): Uint8Array | null => {
+/**
+ * Copy off WASM / SharedArrayBuffer / subarray views, then mark the owned
+ * ArrayBuffer for Comlink to transfer instead of structured-cloning.
+ * Direct (same-thread) calls only set a WeakMap hint; the buffer is not detached.
+ */
+const transferBinary = (bytes: Uint8Array | null): Uint8Array | null => {
   if (bytes === null) return null;
-  const buffer = bytes.buffer;
+  const { buffer } = bytes;
   if (
     buffer instanceof ArrayBuffer &&
     bytes.byteOffset === 0 &&
     bytes.byteLength === buffer.byteLength
   ) {
-    return bytes;
+    return Comlink.transfer(bytes, [buffer]);
   }
-  return Uint8Array.from(bytes);
+  const copy = Uint8Array.from(bytes);
+  return Comlink.transfer(copy, [copy.buffer]);
 };
