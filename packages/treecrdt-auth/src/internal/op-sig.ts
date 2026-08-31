@@ -7,6 +7,9 @@ import { signEd25519, verifyEd25519 } from '../ed25519.js';
 import { concatBytes, u32be, u64be, u8 } from './bytes.js';
 
 const OP_SIG_DOMAIN = utf8ToBytes('treecrdt/op-sig/v1');
+const MAX_KNOWN_STATE_BYTES = 1024 * 1024;
+const MAX_KNOWN_STATE_ENTRIES = 4096;
+const V0_REPLICA_ID_BYTES = 32;
 
 function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Array {
   const docIdBytes = utf8ToBytes(opts.docId);
@@ -91,24 +94,39 @@ function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Ar
   );
 }
 
-function encodeKnownState(op: Operation): Uint8Array {
-  const knownState = op.meta.knownState;
+function encodeKnownState(knownState: Uint8Array | undefined): Uint8Array {
   return knownState === undefined || knownState.length === 0
     ? u8(0)
-    : concatBytes(u8(1), u32be(knownState.length), assertCanonicalKnownState(knownState));
+    : concatBytes(u8(1), u32be(knownState.length), knownState);
 }
 
 function invalidKnownState(): never {
   throw new Error(
-    'knownState must use canonical TreeCRDT v0 version-vector JSON with counters within Number.MAX_SAFE_INTEGER',
+    'knownState must use canonical TreeCRDT v0 version-vector JSON with 32-byte replica ids and counters within Number.MAX_SAFE_INTEGER',
   );
+}
+
+function assertKnownStateSize(bytes: Uint8Array): void {
+  if (bytes.length > MAX_KNOWN_STATE_BYTES) {
+    throw new Error(
+      `knownState exceeds the ${MAX_KNOWN_STATE_BYTES}-byte operation-signature limit`,
+    );
+  }
 }
 
 function isV0VersionVectorCounter(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+function compareReplicaBytes(a: number[], b: number[]): number {
+  for (let i = 0; i < V0_REPLICA_ID_BYTES; i += 1) {
+    if (a[i] !== b[i]) return a[i]! - b[i]!;
+  }
+  return 0;
+}
+
 function assertCanonicalKnownState(bytes: Uint8Array): Uint8Array {
+  assertKnownStateSize(bytes);
   let parsed: any;
   try {
     parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -118,13 +136,19 @@ function assertCanonicalKnownState(bytes: Uint8Array): Uint8Array {
   if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.entries)) {
     return invalidKnownState();
   }
+  if (parsed.entries.length > MAX_KNOWN_STATE_ENTRIES) {
+    throw new Error(
+      `knownState exceeds the ${MAX_KNOWN_STATE_ENTRIES}-entry operation-signature limit`,
+    );
+  }
 
-  const replicas = new Set<string>();
+  let previousReplica: number[] | undefined;
   const entries = parsed.entries.map((entry: any) => {
     if (
       !entry ||
       typeof entry !== 'object' ||
       !Array.isArray(entry.replica) ||
+      entry.replica.length !== V0_REPLICA_ID_BYTES ||
       !entry.replica.every(
         (byte: unknown) =>
           typeof byte === 'number' && Number.isInteger(byte) && byte >= 0 && byte <= 255,
@@ -153,21 +177,15 @@ function assertCanonicalKnownState(bytes: Uint8Array): Uint8Array {
       previousEnd = range[1];
     }
 
-    const replicaKey = entry.replica.join(',');
-    if (replicas.has(replicaKey)) return invalidKnownState();
-    replicas.add(replicaKey);
+    if (previousReplica && compareReplicaBytes(previousReplica, entry.replica) >= 0) {
+      return invalidKnownState();
+    }
+    previousReplica = entry.replica;
     return {
       replica: entry.replica,
       frontier: entry.frontier,
       ranges: entry.ranges,
     };
-  });
-  entries.sort((a: any, b: any) => {
-    const length = Math.min(a.replica.length, b.replica.length);
-    for (let i = 0; i < length; i += 1) {
-      if (a.replica[i] !== b.replica[i]) return a.replica[i] - b.replica[i];
-    }
-    return a.replica.length - b.replica.length;
   });
 
   const canonical = utf8ToBytes(JSON.stringify({ entries }));
@@ -177,8 +195,9 @@ function assertCanonicalKnownState(bytes: Uint8Array): Uint8Array {
   return bytes;
 }
 
-function assertPolicyOperation(op: Operation): void {
-  const hasKnownState = op.meta.knownState !== undefined && op.meta.knownState.length > 0;
+function assertPolicyOperation(op: Operation, knownState: Uint8Array | undefined): void {
+  if (knownState !== undefined) assertKnownStateSize(knownState);
+  const hasKnownState = knownState !== undefined && knownState.length > 0;
   if (op.kind.type === 'delete' && !hasKnownState) {
     throw new Error('delete operations require non-empty knownState');
   }
@@ -187,9 +206,37 @@ function assertPolicyOperation(op: Operation): void {
   }
 }
 
+function assertCanonicalOperationKnownState(knownState: Uint8Array | undefined): void {
+  if (knownState !== undefined && knownState.length > 0) {
+    assertCanonicalKnownState(knownState);
+  }
+}
+
+function encodeTreecrdtOpSigInputUnchecked(
+  opts: { docId: string; op: Operation },
+  knownState: Uint8Array | undefined,
+): { message: Uint8Array; signedKnownState: Uint8Array | undefined } {
+  const message = concatBytes(
+    OP_SIG_DOMAIN,
+    u8(0),
+    encodeTreecrdtOpFields(opts),
+    encodeKnownState(knownState),
+  );
+  return {
+    message,
+    signedKnownState:
+      knownState === undefined || knownState.length === 0
+        ? undefined
+        : message.subarray(message.length - knownState.length),
+  };
+}
+
 export function encodeTreecrdtOpSigInput(opts: { docId: string; op: Operation }): Uint8Array {
-  assertPolicyOperation(opts.op);
-  return concatBytes(OP_SIG_DOMAIN, u8(0), encodeTreecrdtOpFields(opts), encodeKnownState(opts.op));
+  const knownState = opts.op.meta.knownState;
+  assertPolicyOperation(opts.op, knownState);
+  const encoded = encodeTreecrdtOpSigInputUnchecked(opts, knownState);
+  assertCanonicalOperationKnownState(encoded.signedKnownState);
+  return encoded.message;
 }
 
 export async function signTreecrdtOp(opts: {
@@ -207,6 +254,12 @@ export async function verifyTreecrdtOp(opts: {
   signature: Uint8Array;
   publicKey: Uint8Array;
 }): Promise<boolean> {
-  const msg = encodeTreecrdtOpSigInput({ docId: opts.docId, op: opts.op });
-  return await verifyEd25519(opts.signature, msg, opts.publicKey);
+  const knownState = opts.op.meta.knownState;
+  assertPolicyOperation(opts.op, knownState);
+  const encoded = encodeTreecrdtOpSigInputUnchecked({ docId: opts.docId, op: opts.op }, knownState);
+  const verified = await verifyEd25519(opts.signature, encoded.message, opts.publicKey);
+  if (!verified) return false;
+  // Validate the suffix copied into the signed message, not the caller-owned mutable input.
+  assertCanonicalOperationKnownState(encoded.signedKnownState);
+  return true;
 }

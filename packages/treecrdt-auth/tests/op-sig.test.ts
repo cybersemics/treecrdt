@@ -1,5 +1,10 @@
-import { expect, test } from 'vitest';
-import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
+import { expect, test, vi } from 'vitest';
+import {
+  hashes as ed25519Hashes,
+  getPublicKey,
+  sign as signEd25519,
+  utils as ed25519Utils,
+} from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
 
 import type { Operation } from '@treecrdt/interface';
@@ -23,8 +28,14 @@ function operation(kind: Operation['kind'], state?: Uint8Array): Operation {
 
 function knownState(frontier = 0, ranges: Array<[number, number]> = []): Uint8Array {
   return new TextEncoder().encode(
-    JSON.stringify({ entries: [{ replica: [1], frontier, ranges }] }),
+    JSON.stringify({ entries: [{ replica: Array.from(meta.id.replica), frontier, ranges }] }),
   );
+}
+
+function versionVectorState(
+  entries: Array<{ replica: number[]; frontier: number; ranges: Array<[number, number]> }>,
+): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({ entries }));
 }
 
 test('one signature format binds the explicit knownState field', async () => {
@@ -68,6 +79,57 @@ test('one signature format binds the explicit knownState field', async () => {
   ).toThrow(/canonical/i);
 });
 
+test('invalid signatures are rejected before knownState is parsed', async () => {
+  const privateKey = ed25519Utils.randomSecretKey();
+  const publicKey = await getPublicKey(privateKey);
+  const kind = { type: 'delete', node } as const;
+  const signature = await signTreecrdtOp({
+    docId: 'doc',
+    op: operation(kind, knownState()),
+    privateKey,
+  });
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+
+  try {
+    await expect(
+      verifyTreecrdtOp({
+        docId: 'doc',
+        op: operation(kind, new Uint8Array([0xff])),
+        signature,
+        publicKey,
+      }),
+    ).resolves.toBe(false);
+    expect(decode).not.toHaveBeenCalled();
+  } finally {
+    decode.mockRestore();
+  }
+});
+
+test('valid signatures are followed by canonical knownState validation', async () => {
+  const privateKey = ed25519Utils.randomSecretKey();
+  const publicKey = await getPublicKey(privateKey);
+  const kind = { type: 'delete', node } as const;
+  const canonicalState = versionVectorState([]);
+  const malformedState = new TextEncoder().encode('{"entries":{}}');
+  expect(malformedState).toHaveLength(canonicalState.length);
+
+  const input = encodeTreecrdtOpSigInput({
+    docId: 'doc',
+    op: operation(kind, canonicalState),
+  });
+  input.set(malformedState, input.length - malformedState.length);
+  const signature = signEd25519(input, privateKey);
+
+  await expect(
+    verifyTreecrdtOp({
+      docId: 'doc',
+      op: operation(kind, malformedState),
+      signature,
+      publicKey,
+    }),
+  ).rejects.toThrow(/canonical/i);
+});
+
 test('canonical knownState accepts normalized gapped ranges', () => {
   const state = knownState(2, [
     [4, 5],
@@ -80,6 +142,93 @@ test('canonical knownState accepts normalized gapped ranges', () => {
       op: operation({ type: 'delete', node }, state),
     }),
   ).not.toThrow();
+});
+
+test.each([0, 1, 31, 33])('canonical knownState rejects %i-byte replica ids', (replicaLength) => {
+  const state = versionVectorState([
+    { replica: new Array(replicaLength).fill(1), frontier: 0, ranges: [] },
+  ]);
+  expect(() =>
+    encodeTreecrdtOpSigInput({
+      docId: 'doc',
+      op: operation({ type: 'delete', node }, state),
+    }),
+  ).toThrow(/32-byte replica ids/i);
+});
+
+test('canonical knownState requires strictly sorted unique replica ids', () => {
+  const firstReplica = new Array(32).fill(0);
+  const secondReplica = [...firstReplica];
+  secondReplica[31] = 1;
+  const entry = (replica: number[]) => ({ replica, frontier: 0, ranges: [] });
+
+  expect(() =>
+    encodeTreecrdtOpSigInput({
+      docId: 'doc',
+      op: operation(
+        { type: 'delete', node },
+        versionVectorState([entry(firstReplica), entry(secondReplica)]),
+      ),
+    }),
+  ).not.toThrow();
+
+  for (const entries of [
+    [entry(secondReplica), entry(firstReplica)],
+    [entry(firstReplica), entry(firstReplica)],
+  ]) {
+    expect(() =>
+      encodeTreecrdtOpSigInput({
+        docId: 'doc',
+        op: operation({ type: 'delete', node }, versionVectorState(entries)),
+      }),
+    ).toThrow(/canonical/i);
+  }
+});
+
+test('knownState byte limit is enforced before canonical parsing', async () => {
+  const oversizedState = new Uint8Array(1024 * 1024 + 1);
+  const oversizedOp = operation({ type: 'delete', node }, oversizedState);
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+
+  try {
+    expect(() => encodeTreecrdtOpSigInput({ docId: 'doc', op: oversizedOp })).toThrow(
+      /1048576-byte operation-signature limit/i,
+    );
+    await expect(
+      verifyTreecrdtOp({
+        docId: 'doc',
+        op: oversizedOp,
+        signature: new Uint8Array(64),
+        publicKey: meta.id.replica,
+      }),
+    ).rejects.toThrow(/1048576-byte operation-signature limit/i);
+    expect(decode).not.toHaveBeenCalled();
+  } finally {
+    decode.mockRestore();
+  }
+});
+
+test('knownState entry limit is enforced before per-entry validation', () => {
+  const entries = Array.from({ length: 4097 }, (_, index) => {
+    const replica = new Array(32).fill(0);
+    replica[30] = (index >>> 8) & 0xff;
+    replica[31] = index & 0xff;
+    return { replica, frontier: 0, ranges: [] as Array<[number, number]> };
+  });
+  const tooManyEntries = versionVectorState(entries);
+  expect(tooManyEntries.length).toBeLessThanOrEqual(1024 * 1024);
+  expect(() =>
+    encodeTreecrdtOpSigInput({
+      docId: 'doc',
+      op: operation({ type: 'delete', node }, versionVectorState(entries.slice(0, 4096))),
+    }),
+  ).not.toThrow();
+  expect(() =>
+    encodeTreecrdtOpSigInput({
+      docId: 'doc',
+      op: operation({ type: 'delete', node }, tooManyEntries),
+    }),
+  ).toThrow(/4096-entry operation-signature limit/i);
 });
 
 test.each<[string, number, Array<[number, number]>]>([

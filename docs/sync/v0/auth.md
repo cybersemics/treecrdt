@@ -226,7 +226,8 @@ The present form must contain the canonical UTF-8 JSON version-vector encoding u
 auth-enabled persistent backends: `{"entries":[...]}` without whitespace, with entries sorted
 lexicographically by replica bytes and each entry encoded as
 `{"replica":[...],"frontier":n,"ranges":[[start,end],...]}`. Signers and verifiers reject other
-spellings so persistence cannot change signed bytes.
+spellings so persistence cannot change signed bytes. Each replica MUST be the 32-byte Ed25519
+public key required by Sync v0. A serialized `known_state` MUST NOT exceed 1 MiB or 4,096 entries.
 
 The v0 cross-language counter limit is `Number.MAX_SAFE_INTEGER` (`9007199254740991`). Frontiers
 and range bounds MUST be integers at or below that limit; range bounds MUST be positive. Ranges
@@ -237,6 +238,11 @@ Policy APIs require non-empty `known_state` on deletes and reject non-empty stat
 operation; tombstones use the explicit absent-state form. Because every operation signs the
 presence tag, a relay cannot strip delete state to bypass this policy. Applications use
 `signTreecrdtOp` and `verifyTreecrdtOp`, which enforce these invariants.
+
+Verifiers enforce the size limit before allocating the signature input. They verify Ed25519 over
+the exact tagged `known_state` bytes before parsing canonical JSON, then validate canonical form
+only for an authentic signature. This bounds unauthenticated parsing work while preserving the
+same signing bytes.
 
 ## Subtree scope enforcement and `pending_context`
 
