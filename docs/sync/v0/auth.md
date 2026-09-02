@@ -11,6 +11,11 @@ and by any server that chooses to validate inbound ops.
 
 Status: draft. Backwards compatibility is not guaranteed.
 
+This draft is revised in place until the auth profile is declared stable. Implementations do not
+negotiate or verify earlier draft auth profiles: development signatures and proof material produced
+by a superseded format must be recreated. These revisions do not change the surrounding Sync v0
+envelope.
+
 ## Threat model (baseline)
 
 - The sync server is untrusted: it may reorder, drop, replay, and inject messages.
