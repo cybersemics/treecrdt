@@ -188,7 +188,9 @@ Ops are signed with the doc-scoped Ed25519 key. The signature covers:
 
 ### Canonical signing bytes
 
-All integers are big-endian. Strings are UTF-8 with length prefixes.
+All integers are big-endian. Strings are UTF-8 with length prefixes. Number-valued operation
+counters and Lamport timestamps MUST be safe non-negative JavaScript integers. Signature
+verification uses strict RFC 8032 semantics and rejects small-order identity keys.
 
 ```
 sig_input = concat(

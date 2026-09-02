@@ -79,6 +79,40 @@ test('one signature format binds the explicit knownState field', async () => {
   ).toThrow(/canonical/i);
 });
 
+test('strict verification rejects small-order Ed25519 identities', async () => {
+  const op = operation({ type: 'tombstone', node });
+
+  await expect(
+    verifyTreecrdtOp({
+      docId: 'doc',
+      op,
+      signature: new Uint8Array(64),
+      publicKey: new Uint8Array(32),
+    }),
+  ).resolves.toBe(false);
+});
+
+test.each(['counter', 'lamport'] as const)(
+  'operation signature input rejects an unsafe %s',
+  (field) => {
+    const op = operation({ type: 'tombstone', node });
+    if (field === 'counter') op.meta.id.counter = Number.MAX_SAFE_INTEGER + 1;
+    else op.meta.lamport = Number.MAX_SAFE_INTEGER + 1;
+
+    expect(() => encodeTreecrdtOpSigInput({ docId: 'doc', op })).toThrow(
+      /safe non-negative integer/i,
+    );
+  },
+);
+
+test('operation signature input accepts the maximum safe operation clocks', () => {
+  const op = operation({ type: 'tombstone', node });
+  op.meta.id.counter = Number.MAX_SAFE_INTEGER;
+  op.meta.lamport = Number.MAX_SAFE_INTEGER;
+
+  expect(() => encodeTreecrdtOpSigInput({ docId: 'doc', op })).not.toThrow();
+});
+
 test('invalid signatures are rejected before knownState is parsed', async () => {
   const privateKey = ed25519Utils.randomSecretKey();
   const publicKey = await getPublicKey(privateKey);
