@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { expect, test } from 'vitest';
 import {
   hashes as ed25519Hashes,
   getPublicKey,
@@ -8,6 +8,10 @@ import {
 import { sha512 } from '@noble/hashes/sha512';
 
 import type { Operation } from '@treecrdt/interface';
+import {
+  encodeVersionVectorV0,
+  type VersionVectorRangeV0,
+} from '@treecrdt/interface/version-vector';
 import {
   encodeTreecrdtOpSigInput,
   signTreecrdtOp,
@@ -26,16 +30,20 @@ function operation(kind: Operation['kind'], state?: Uint8Array): Operation {
   return { meta: { ...meta, ...(state ? { knownState: state } : {}) }, kind };
 }
 
-function knownState(frontier = 0, ranges: Array<[number, number]> = []): Uint8Array {
-  return new TextEncoder().encode(
-    JSON.stringify({ entries: [{ replica: Array.from(meta.id.replica), frontier, ranges }] }),
-  );
+function knownState(frontier = 0n): Uint8Array {
+  return encodeVersionVectorV0({
+    entries: frontier === 0n ? [] : [{ replica: meta.id.replica, frontier, ranges: [] }],
+  });
 }
 
 function versionVectorState(
-  entries: Array<{ replica: number[]; frontier: number; ranges: Array<[number, number]> }>,
+  entries: Array<{
+    replica: Uint8Array;
+    frontier: bigint;
+    ranges: readonly VersionVectorRangeV0[];
+  }>,
 ): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({ entries }));
+  return encodeVersionVectorV0({ entries });
 }
 
 test('one signature format binds the explicit knownState field', async () => {
@@ -57,7 +65,7 @@ test('one signature format binds the explicit knownState field', async () => {
   await expect(
     verifyTreecrdtOp({
       docId: 'doc',
-      op: { ...op, meta: { ...op.meta, knownState: knownState(1) } },
+      op: { ...op, meta: { ...op.meta, knownState: knownState(1n) } },
       signature,
       publicKey,
     }),
@@ -70,13 +78,6 @@ test('one signature format binds the explicit knownState field', async () => {
       publicKey,
     }),
   ).rejects.toThrow(/require.*knownState/i);
-
-  expect(() =>
-    encodeTreecrdtOpSigInput({
-      docId: 'doc',
-      op: operation({ type: 'delete', node }, new TextEncoder().encode('{ "entries": [] }')),
-    }),
-  ).toThrow(/canonical/i);
 });
 
 test('strict verification rejects small-order Ed25519 identities', async () => {
@@ -122,21 +123,14 @@ test('invalid signatures are rejected before knownState is parsed', async () => 
     op: operation(kind, knownState()),
     privateKey,
   });
-  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
-
-  try {
-    await expect(
-      verifyTreecrdtOp({
-        docId: 'doc',
-        op: operation(kind, new Uint8Array([0xff])),
-        signature,
-        publicKey,
-      }),
-    ).resolves.toBe(false);
-    expect(decode).not.toHaveBeenCalled();
-  } finally {
-    decode.mockRestore();
-  }
+  await expect(
+    verifyTreecrdtOp({
+      docId: 'doc',
+      op: operation(kind, new Uint8Array([0xff])),
+      signature,
+      publicKey,
+    }),
+  ).resolves.toBe(false);
 });
 
 test('valid signatures are followed by canonical knownState validation', async () => {
@@ -144,8 +138,8 @@ test('valid signatures are followed by canonical knownState validation', async (
   const publicKey = await getPublicKey(privateKey);
   const kind = { type: 'delete', node } as const;
   const canonicalState = versionVectorState([]);
-  const malformedState = new TextEncoder().encode('{"entries":{}}');
-  expect(malformedState).toHaveLength(canonicalState.length);
+  const malformedState = canonicalState.slice();
+  malformedState[0] ^= 0xff;
 
   const input = encodeTreecrdtOpSigInput({
     docId: 'doc',
@@ -164,23 +158,22 @@ test('valid signatures are followed by canonical knownState validation', async (
   ).rejects.toThrow(/canonical/i);
 });
 
-test('canonical knownState accepts normalized gapped ranges', () => {
-  const state = knownState(2, [
-    [4, 5],
-    [7, 7],
-  ]);
+test('verification owns the signed knownState bytes across the async boundary', async () => {
+  const privateKey = ed25519Utils.randomSecretKey();
+  const publicKey = await getPublicKey(privateKey);
+  const state = knownState(1n);
+  const op = operation({ type: 'delete', node }, state);
+  const signature = await signTreecrdtOp({ docId: 'doc', op, privateKey });
 
-  expect(() =>
-    encodeTreecrdtOpSigInput({
-      docId: 'doc',
-      op: operation({ type: 'delete', node }, state),
-    }),
-  ).not.toThrow();
+  const verification = verifyTreecrdtOp({ docId: 'doc', op, signature, publicKey });
+  state.fill(0xff);
+
+  await expect(verification).resolves.toBe(true);
 });
 
-test.each([0, 1, 31, 33])('canonical knownState rejects %i-byte replica ids', (replicaLength) => {
+test.each([0, 1, 31, 33])('auth profile rejects %i-byte replica ids', (replicaLength) => {
   const state = versionVectorState([
-    { replica: new Array(replicaLength).fill(1), frontier: 0, ranges: [] },
+    { replica: new Uint8Array(replicaLength).fill(1), frontier: 1n, ranges: [] },
   ]);
   expect(() =>
     encodeTreecrdtOpSigInput({
@@ -190,64 +183,38 @@ test.each([0, 1, 31, 33])('canonical knownState rejects %i-byte replica ids', (r
   ).toThrow(/32-byte replica ids/i);
 });
 
-test('canonical knownState requires strictly sorted unique replica ids', () => {
-  const firstReplica = new Array(32).fill(0);
-  const secondReplica = [...firstReplica];
-  secondReplica[31] = 1;
-  const entry = (replica: number[]) => ({ replica, frontier: 0, ranges: [] });
-
+test('knownState accepts the full u64 counter range', () => {
+  const state = knownState((1n << 64n) - 1n);
   expect(() =>
     encodeTreecrdtOpSigInput({
       docId: 'doc',
-      op: operation(
-        { type: 'delete', node },
-        versionVectorState([entry(firstReplica), entry(secondReplica)]),
-      ),
+      op: operation({ type: 'delete', node }, state),
     }),
   ).not.toThrow();
-
-  for (const entries of [
-    [entry(secondReplica), entry(firstReplica)],
-    [entry(firstReplica), entry(firstReplica)],
-  ]) {
-    expect(() =>
-      encodeTreecrdtOpSigInput({
-        docId: 'doc',
-        op: operation({ type: 'delete', node }, versionVectorState(entries)),
-      }),
-    ).toThrow(/canonical/i);
-  }
 });
 
-test('knownState byte limit is enforced before canonical parsing', async () => {
+test('knownState byte limit is enforced before signature work', async () => {
   const oversizedState = new Uint8Array(1024 * 1024 + 1);
   const oversizedOp = operation({ type: 'delete', node }, oversizedState);
-  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
-
-  try {
-    expect(() => encodeTreecrdtOpSigInput({ docId: 'doc', op: oversizedOp })).toThrow(
-      /1048576-byte operation-signature limit/i,
-    );
-    await expect(
-      verifyTreecrdtOp({
-        docId: 'doc',
-        op: oversizedOp,
-        signature: new Uint8Array(64),
-        publicKey: meta.id.replica,
-      }),
-    ).rejects.toThrow(/1048576-byte operation-signature limit/i);
-    expect(decode).not.toHaveBeenCalled();
-  } finally {
-    decode.mockRestore();
-  }
+  expect(() => encodeTreecrdtOpSigInput({ docId: 'doc', op: oversizedOp })).toThrow(
+    /1048576-byte operation-signature limit/i,
+  );
+  await expect(
+    verifyTreecrdtOp({
+      docId: 'doc',
+      op: oversizedOp,
+      signature: new Uint8Array(64),
+      publicKey: meta.id.replica,
+    }),
+  ).rejects.toThrow(/1048576-byte operation-signature limit/i);
 });
 
-test('knownState entry limit is enforced before per-entry validation', () => {
+test('knownState entry limit is enforced by the auth profile', () => {
   const entries = Array.from({ length: 4097 }, (_, index) => {
-    const replica = new Array(32).fill(0);
+    const replica = new Uint8Array(32);
     replica[30] = (index >>> 8) & 0xff;
     replica[31] = index & 0xff;
-    return { replica, frontier: 0, ranges: [] as Array<[number, number]> };
+    return { replica, frontier: 1n, ranges: [] };
   });
   const tooManyEntries = versionVectorState(entries);
   expect(tooManyEntries.length).toBeLessThanOrEqual(1024 * 1024);
@@ -263,45 +230,6 @@ test('knownState entry limit is enforced before per-entry validation', () => {
       op: operation({ type: 'delete', node }, tooManyEntries),
     }),
   ).toThrow(/4096-entry operation-signature limit/i);
-});
-
-test.each<[string, number, Array<[number, number]>]>([
-  ['zero bounds', 0, [[0, 1]]],
-  ['reversed ranges', 0, [[3, 2]]],
-  ['frontier overlap', 2, [[2, 4]]],
-  ['frontier adjacency', 2, [[3, 4]]],
-  [
-    'unsorted ranges',
-    0,
-    [
-      [5, 6],
-      [3, 3],
-    ],
-  ],
-  [
-    'overlapping ranges',
-    0,
-    [
-      [3, 5],
-      [5, 7],
-    ],
-  ],
-  [
-    'adjacent ranges',
-    0,
-    [
-      [3, 4],
-      [5, 6],
-    ],
-  ],
-  ['unsafe counters', Number.MAX_SAFE_INTEGER + 1, []],
-])('canonical knownState rejects %s', (_name, frontier, ranges) => {
-  expect(() =>
-    encodeTreecrdtOpSigInput({
-      docId: 'doc',
-      op: operation({ type: 'delete', node }, knownState(frontier, ranges)),
-    }),
-  ).toThrow(/Number\.MAX_SAFE_INTEGER/);
 });
 
 test('signature policy only allows knownState on deletes', async () => {
@@ -330,6 +258,13 @@ test('signature policy only allows knownState on deletes', async () => {
       signTreecrdtOp({ docId: 'doc', op: operation(kind, state), privateKey }),
     ).rejects.toThrow(/only allowed on delete/i);
   }
+
+  expect(() =>
+    encodeTreecrdtOpSigInput({
+      docId: 'doc',
+      op: operation({ type: 'tombstone', node }, new Uint8Array()),
+    }),
+  ).toThrow(/only allowed on delete/i);
 
   const tombstone = operation({ type: 'tombstone', node });
   expect(encodeTreecrdtOpSigInput({ docId: 'doc', op: tombstone }).at(-1)).toBe(0);

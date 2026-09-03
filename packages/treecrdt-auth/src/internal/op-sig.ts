@@ -2,6 +2,7 @@ import { utf8ToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import { decodeVersionVectorV0 } from '@treecrdt/interface/version-vector';
 
 import { signEd25519, verifyEd25519 } from '../ed25519.js';
 import { concatBytes, u32be, u64be, u8 } from './bytes.js';
@@ -95,14 +96,14 @@ function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Ar
 }
 
 function encodeKnownState(knownState: Uint8Array | undefined): Uint8Array {
-  return knownState === undefined || knownState.length === 0
+  return knownState === undefined
     ? u8(0)
     : concatBytes(u8(1), u32be(knownState.length), knownState);
 }
 
 function invalidKnownState(): never {
   throw new Error(
-    'knownState must use canonical TreeCRDT v0 version-vector JSON with 32-byte replica ids and counters within Number.MAX_SAFE_INTEGER',
+    'knownState must use canonical TreeCRDT VersionVector v0 bytes with 32-byte replica ids',
   );
 }
 
@@ -114,102 +115,37 @@ function assertKnownStateSize(bytes: Uint8Array): void {
   }
 }
 
-function isV0VersionVectorCounter(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function compareReplicaBytes(a: number[], b: number[]): number {
-  for (let i = 0; i < V0_REPLICA_ID_BYTES; i += 1) {
-    if (a[i] !== b[i]) return a[i]! - b[i]!;
-  }
-  return 0;
-}
-
-function assertCanonicalKnownState(bytes: Uint8Array): Uint8Array {
+function assertCanonicalKnownState(bytes: Uint8Array): void {
   assertKnownStateSize(bytes);
-  let parsed: any;
+  let vector: ReturnType<typeof decodeVersionVectorV0>;
   try {
-    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    vector = decodeVersionVectorV0(bytes);
   } catch {
     return invalidKnownState();
   }
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.entries)) {
-    return invalidKnownState();
-  }
-  if (parsed.entries.length > MAX_KNOWN_STATE_ENTRIES) {
+  if (vector.entries.length > MAX_KNOWN_STATE_ENTRIES) {
     throw new Error(
       `knownState exceeds the ${MAX_KNOWN_STATE_ENTRIES}-entry operation-signature limit`,
     );
   }
-
-  let previousReplica: number[] | undefined;
-  const entries = parsed.entries.map((entry: any) => {
-    if (
-      !entry ||
-      typeof entry !== 'object' ||
-      !Array.isArray(entry.replica) ||
-      entry.replica.length !== V0_REPLICA_ID_BYTES ||
-      !entry.replica.every(
-        (byte: unknown) =>
-          typeof byte === 'number' && Number.isInteger(byte) && byte >= 0 && byte <= 255,
-      ) ||
-      !isV0VersionVectorCounter(entry.frontier) ||
-      !Array.isArray(entry.ranges)
-    ) {
-      return invalidKnownState();
-    }
-
-    // Rust keeps ranges normalized: positive inclusive bounds, separated by at least one
-    // missing counter, and strictly beyond the contiguous frontier.
-    let previousEnd = entry.frontier;
-    for (const range of entry.ranges) {
-      if (
-        !Array.isArray(range) ||
-        range.length !== 2 ||
-        !isV0VersionVectorCounter(range[0]) ||
-        !isV0VersionVectorCounter(range[1]) ||
-        range[0] === 0 ||
-        range[0] > range[1] ||
-        range[0] - previousEnd <= 1
-      ) {
-        return invalidKnownState();
-      }
-      previousEnd = range[1];
-    }
-
-    if (previousReplica && compareReplicaBytes(previousReplica, entry.replica) >= 0) {
-      return invalidKnownState();
-    }
-    previousReplica = entry.replica;
-    return {
-      replica: entry.replica,
-      frontier: entry.frontier,
-      ranges: entry.ranges,
-    };
-  });
-
-  const canonical = utf8ToBytes(JSON.stringify({ entries }));
-  if (canonical.length !== bytes.length || canonical.some((byte, index) => byte !== bytes[index])) {
-    return invalidKnownState();
+  for (const entry of vector.entries) {
+    if (entry.replica.length !== V0_REPLICA_ID_BYTES) invalidKnownState();
   }
-  return bytes;
 }
 
 function assertPolicyOperation(op: Operation, knownState: Uint8Array | undefined): void {
   if (knownState !== undefined) assertKnownStateSize(knownState);
-  const hasKnownState = knownState !== undefined && knownState.length > 0;
-  if (op.kind.type === 'delete' && !hasKnownState) {
-    throw new Error('delete operations require non-empty knownState');
-  }
-  if (op.kind.type !== 'delete' && hasKnownState) {
+  if (op.kind.type === 'delete') {
+    if (knownState === undefined || knownState.length === 0) {
+      throw new Error('delete operations require non-empty knownState');
+    }
+  } else if (knownState !== undefined) {
     throw new Error('knownState is only allowed on delete operations');
   }
 }
 
 function assertCanonicalOperationKnownState(knownState: Uint8Array | undefined): void {
-  if (knownState !== undefined && knownState.length > 0) {
-    assertCanonicalKnownState(knownState);
-  }
+  if (knownState !== undefined) assertCanonicalKnownState(knownState);
 }
 
 function encodeTreecrdtOpSigInputUnchecked(
@@ -225,9 +161,7 @@ function encodeTreecrdtOpSigInputUnchecked(
   return {
     message,
     signedKnownState:
-      knownState === undefined || knownState.length === 0
-        ? undefined
-        : message.subarray(message.length - knownState.length),
+      knownState === undefined ? undefined : message.subarray(message.length - knownState.length),
   };
 }
 

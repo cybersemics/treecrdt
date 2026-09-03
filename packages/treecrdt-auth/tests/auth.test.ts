@@ -5,6 +5,7 @@ import { encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { encodeVersionVectorV0 } from '@treecrdt/interface/version-vector';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
@@ -307,15 +308,13 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const knownState = (frontier: number) =>
-    new TextEncoder().encode(
-      JSON.stringify({ entries: [{ replica: Array.from(aPk), frontier, ranges: [] }] }),
-    );
+  const knownState = (frontier: bigint) =>
+    encodeVersionVectorV0({ entries: [{ replica: aPk, frontier, ranges: [] }] });
   const opDelete: Operation = {
     meta: {
       id: { replica: aPk, counter: 2 },
       lamport: 2,
-      knownState: knownState(1),
+      knownState: knownState(1n),
     },
     kind: { type: 'delete', node: nodeIdFromInt(1) },
   };
@@ -339,7 +338,7 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
 
   const changedState: Operation = {
     ...opDelete,
-    meta: { ...opDelete.meta, knownState: knownState(2) },
+    meta: { ...opDelete.meta, knownState: knownState(2n) },
   };
   await expect(authB.verifyOps?.([changedState], [auth![1]!], ctx)).rejects.toThrow(
     /invalid op signature/i,

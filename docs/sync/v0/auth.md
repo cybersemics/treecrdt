@@ -182,9 +182,9 @@ Ops are signed with the doc-scoped Ed25519 key. The signature covers:
 - `doc_id`
 - `op_id` (`replica_id` + `counter`)
 - `lamport`
-- explicit defensive-delete `known_state` presence and bytes
 - op kind + fields
 - payload bytes (ciphertext bytes if payloads are encrypted)
+- explicit defensive-delete `known_state` presence and bytes
 
 ### Canonical signing bytes
 
@@ -229,27 +229,20 @@ known_state = absent:  u8(0)
               present: u8(1) || u32_be(len(bytes)) || bytes
 ```
 
-The present form must contain the canonical UTF-8 JSON version-vector encoding used by the
-auth-enabled persistent backends: `{"entries":[...]}` without whitespace, with entries sorted
-lexicographically by replica bytes and each entry encoded as
-`{"replica":[...],"frontier":n,"ranges":[[start,end],...]}`. Signers and verifiers reject other
-spellings so persistence cannot change signed bytes. Each replica MUST be the 32-byte Ed25519
-public key required by Sync v0. A serialized `known_state` MUST NOT exceed 1 MiB or 4,096 entries.
+The present form MUST contain the canonical
+[TreeCRDT VersionVector v0 bytes](../../version-vector-v0.md). Auth adds three profile constraints:
+each replica id is exactly the 32-byte Ed25519 public key required by Sync v0, the value is at most
+1 MiB, and it contains at most 4,096 entries. Version-vector counters retain the codec's full `u64`
+range; only the JavaScript operation counter and Lamport fields above use safe integers.
 
-The v0 cross-language counter limit is `Number.MAX_SAFE_INTEGER` (`9007199254740991`). Frontiers
-and range bounds MUST be integers at or below that limit; range bounds MUST be positive. Ranges
-MUST be normalized exactly as the Rust version vector stores them: each `start <= end`, starts are
-strictly ordered, ranges neither overlap nor touch, and every start is greater than `frontier + 1`.
+Policy APIs require a present, non-zero-length `known_state` byte field on deletes and reject the
+field on every other operation; tombstones use the explicit absent-state form. The canonical empty
+vector is valid because its encoding is nine bytes. Because every operation signs the presence tag,
+a relay cannot strip delete state to bypass this policy.
 
-Policy APIs require non-empty `known_state` on deletes and reject non-empty state on every other
-operation; tombstones use the explicit absent-state form. Because every operation signs the
-presence tag, a relay cannot strip delete state to bypass this policy. Applications use
-`signTreecrdtOp` and `verifyTreecrdtOp`, which enforce these invariants.
-
-Verifiers enforce the size limit before allocating the signature input. They verify Ed25519 over
-the exact tagged `known_state` bytes before parsing canonical JSON, then validate canonical form
-only for an authentic signature. This bounds unauthenticated parsing work while preserving the
-same signing bytes.
+Signers validate the canonical bytes before signing. Verifiers size-check and copy the exact bytes
+into the signature input, verify Ed25519 first, and only then run canonical decoding plus the auth
+profile checks. Invalid signatures therefore cannot trigger version-vector parsing.
 
 ## Subtree scope enforcement and `pending_context`
 
