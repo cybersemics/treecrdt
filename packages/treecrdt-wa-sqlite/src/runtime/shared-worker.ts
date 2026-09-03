@@ -46,39 +46,18 @@ export const sharedWorkerStrategy: RuntimeStrategy = {
       fallback: opts.fallback,
     };
 
-    // Comlink does not reject in-flight RPCs when the worker dies; race init
-    // against SharedWorker `error` so a load/crash cannot hang client creation.
-    let rejectWorkerError!: (error: Error) => void;
-    const workerError = new Promise<never>((_, reject) => {
-      rejectWorkerError = reject;
-    });
-    let workerCrashed = false;
-    const onWorkerError = (event: Event) => {
-      workerCrashed = true;
-      const message =
-        'message' in event && typeof event.message === 'string' && event.message.length > 0
-          ? event.message
-          : 'shared worker failed';
-      rejectWorkerError(new Error(message));
-    };
-    sharedWorker.addEventListener('error', onWorkerError);
-
     let initResult: BackendInitResult;
     try {
-      initResult = await Promise.race([connection.init(initConfig), workerError]);
+      initResult = await connection.init(initConfig);
     } catch (error) {
-      // A dead worker cannot answer close(); only detach the local port.
-      if (!workerCrashed) {
-        try {
-          await connection.close();
-        } catch {
-          // Initialization may not have completed; still detach the port.
-        }
+      try {
+        await connection.close();
+      } catch {
+        // Initialization may not have completed; still detach the port.
+      } finally {
+        await cleanup();
       }
-      await cleanup();
       throw error;
-    } finally {
-      sharedWorker.removeEventListener('error', onWorkerError);
     }
 
     if (opts.fallback === 'throw' && initResult.storage !== 'opfs') {

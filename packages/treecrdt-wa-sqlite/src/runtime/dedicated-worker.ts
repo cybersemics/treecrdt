@@ -39,29 +39,12 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
       fallback: opts.fallback,
     };
 
-    // Comlink does not reject in-flight RPCs when the worker dies; race init
-    // against Worker `error` so a load/crash cannot hang client creation.
-    let rejectWorkerError!: (error: Error) => void;
-    const workerError = new Promise<never>((_, reject) => {
-      rejectWorkerError = reject;
-    });
-    const onWorkerError = (event: Event) => {
-      const message =
-        'message' in event && typeof event.message === 'string' && event.message.length > 0
-          ? event.message
-          : 'dedicated worker failed';
-      rejectWorkerError(new Error(message));
-    };
-    worker.addEventListener('error', onWorkerError);
-
     let initResult: BackendInitResult;
     try {
-      initResult = await Promise.race([connection.init(initConfig), workerError]);
+      initResult = await connection.init(initConfig);
     } catch (error) {
       await cleanup();
       throw error;
-    } finally {
-      worker.removeEventListener('error', onWorkerError);
     }
 
     if (opts.fallback === 'throw' && initResult.storage !== 'opfs') {
