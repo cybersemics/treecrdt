@@ -72,27 +72,6 @@ export type Operation = {
   kind: OperationKind;
 };
 
-export type SubtreeFilter = {
-  root: NodeId;
-  depth?: number;
-};
-
-export interface AccessControl {
-  canApply(op: Operation): Promise<void> | void;
-  canRead(node: NodeId): Promise<void> | void;
-}
-
-export interface StorageAdapter {
-  apply(op: Operation): Promise<void> | void;
-  loadSince(lamport: Lamport): Promise<Operation[]> | Operation[];
-  latestLamport(): Promise<Lamport> | Lamport;
-}
-
-export interface SyncProtocol {
-  push(ops: Operation[]): Promise<void> | void;
-  pull(since: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
-}
-
 export * from './adapter.js';
 export * from './ids.js';
 export * from './engine.js';

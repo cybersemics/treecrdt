@@ -14,7 +14,7 @@ pnpm test
 
 - `@treecrdt/wa-sqlite`: browser SQLite client adapter (in-memory WASM on Node).
 - `@treecrdt/sync`: client sync over discovery + WebSocket + SQLite backends.
-- `@treecrdt/interface`: shared TypeScript interfaces.
+- `@treecrdt/interface`: shared operation and engine types, adapter contracts, and SQLite bindings.
 - `@treecrdt/sync-protocol`: transport-agnostic sync protocol runtime.
 - `@treecrdt/discovery`: bootstrap contract for resolving docs to sync attachments.
 - `@treecrdt/sync-server-postgres-node`: Postgres-backed WebSocket sync server.
