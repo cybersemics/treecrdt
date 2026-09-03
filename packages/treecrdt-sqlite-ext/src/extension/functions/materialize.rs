@@ -191,8 +191,8 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
     let parent = parse_optional_node_id(&op.parent)?;
     let new_parent = parse_optional_node_id(&op.new_parent)?;
 
-    let parsed_known_state = match op.known_state.as_ref() {
-        Some(bytes) => Some(deserialize_version_vector(bytes)?),
+    let decoded_known_state = match op.known_state.as_ref() {
+        Some(bytes) => Some(decode_version_vector_v0(bytes)?),
         None => None,
     };
 
@@ -216,9 +216,9 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
         ),
         "delete" => (
             OperationKind::Delete { node },
-            Some(parsed_known_state.ok_or(SQLITE_ERROR as c_int)?),
+            Some(decoded_known_state.ok_or(SQLITE_ERROR as c_int)?),
         ),
-        "tombstone" => (OperationKind::Tombstone { node }, parsed_known_state),
+        "tombstone" => (OperationKind::Tombstone { node }, decoded_known_state),
         "payload" => (
             OperationKind::Payload {
                 node,

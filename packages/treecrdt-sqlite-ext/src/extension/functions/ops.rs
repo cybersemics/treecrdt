@@ -264,7 +264,7 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             } else {
                 slice::from_raw_parts(ptr, len).to_vec()
             };
-            deserialize_version_vector(&bytes)?;
+            decode_version_vector_v0(&bytes)?;
             Some(bytes)
         };
         let payload = if sqlite_column_type(stmt, 9) == SQLITE_NULL as c_int {

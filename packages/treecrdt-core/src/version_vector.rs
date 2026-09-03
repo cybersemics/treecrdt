@@ -24,10 +24,10 @@ impl ReplicaVersion {
         self.frontier == 0 && self.ranges.is_empty()
     }
 
-    fn validate(&self) -> std::result::Result<(), &'static str> {
+    fn validate_ranges(&self) -> std::result::Result<(), &'static str> {
         let mut previous_end = self.frontier;
         for &(start, end) in &self.ranges {
-            validate_range(previous_end, start, end)?;
+            validate_next_range(previous_end, start, end)?;
             previous_end = end;
         }
         Ok(())
@@ -202,7 +202,7 @@ impl ReplicaVersion {
     }
 }
 
-fn validate_range(
+fn validate_next_range(
     previous_end: u64,
     start: u64,
     end: u64,
@@ -289,7 +289,7 @@ mod serde_impl {
                         "version vector entries must not be semantically empty",
                     ));
                 }
-                version.validate().map_err(D::Error::custom)?;
+                version.validate_ranges().map_err(D::Error::custom)?;
                 entries.insert(ReplicaId(entry.replica), version);
             }
             Ok(VersionVector { entries })
@@ -391,7 +391,7 @@ impl VersionVector {
         for (replica, version) in &entries {
             checked_u32(replica.as_bytes().len(), "replica id length")?;
             checked_u32(version.ranges.len(), "range count")?;
-            version.validate().map_err(invalid_v0)?;
+            version.validate_ranges().map_err(invalid_v0)?;
             checked_add_size(&mut encoded_len, 4)?;
             checked_add_size(&mut encoded_len, replica.as_bytes().len())?;
             checked_add_size(&mut encoded_len, 8 + 4)?;
@@ -467,7 +467,7 @@ impl VersionVector {
             for _ in 0..range_count {
                 let start = cursor.read_u64()?;
                 let end = cursor.read_u64()?;
-                validate_range(previous_end, start, end).map_err(invalid_v0)?;
+                validate_next_range(previous_end, start, end).map_err(invalid_v0)?;
                 previous_end = end;
                 ranges.push((start, end));
             }

@@ -4,5 +4,5 @@
 ---
 
 Define one strict, versioned binary encoding for gap-aware version vectors and use it across the
-TypeScript API, storage adapters, and runtimes. Existing development data that contains
-JSON-encoded version vectors must be recreated.
+TypeScript API, storage adapters, and runtimes. This replaces the unreleased JSON development
+format; recreate development databases that contain it.

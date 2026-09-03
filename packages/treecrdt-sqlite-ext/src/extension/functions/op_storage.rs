@@ -4,14 +4,6 @@ fn sqlite_rc_error(rc: c_int, context: &str) -> treecrdt_core::Error {
     treecrdt_core::Error::Storage(format!("{context} (rc={rc})"))
 }
 
-fn vv_to_bytes(vv: &VersionVector) -> treecrdt_core::Result<Vec<u8>> {
-    vv.encode_v0()
-}
-
-fn vv_from_bytes(bytes: &[u8]) -> treecrdt_core::Result<VersionVector> {
-    VersionVector::decode_v0(bytes)
-}
-
 fn sqlite_bytes_to_node_id(bytes: [u8; 16]) -> NodeId {
     NodeId(u128::from_be_bytes(bytes))
 }
@@ -75,7 +67,7 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
         } else {
             unsafe { slice::from_raw_parts(ptr, len) }
         };
-        Some(vv_from_bytes(bytes)?)
+        Some(VersionVector::decode_v0(bytes)?)
     };
 
     let payload = if unsafe { sqlite_column_type(stmt, 9) } == SQLITE_NULL as c_int {
@@ -226,7 +218,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
             ),
         };
 
-        let known_state_bytes = known_state.as_ref().map(vv_to_bytes).transpose()?;
+        let known_state_bytes = known_state.as_ref().map(VersionVector::encode_v0).transpose()?;
         let op_ref = derive_op_ref_v0(doc_id, op.meta.id.replica.as_bytes(), op.meta.id.counter);
 
         let insert_sql = CString::new(

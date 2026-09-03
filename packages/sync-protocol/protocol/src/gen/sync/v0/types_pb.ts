@@ -103,8 +103,9 @@ export type OperationMetadata = Message<'treecrdt.sync.v0.OperationMetadata'> & 
   lamport: bigint;
 
   /**
-   * Defensive-deletion awareness payload: absent for most operation kinds, but
-   * required and non-empty for delete. Uses canonical TreeCRDT VersionVector v0 bytes.
+   * Defensive-deletion awareness payload. Protobuf represents an omitted bytes field as empty
+   * bytes. Delete operations therefore require a non-zero-length value containing canonical
+   * TreeCRDT VersionVector v0 bytes; other operation kinds do not require it.
    *
    * @generated from field: bytes known_state = 3;
    */

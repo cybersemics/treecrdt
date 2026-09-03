@@ -195,8 +195,8 @@ fn decode_ops_or_local_result(json: &str) -> Vec<JsonOp> {
     vec![serde_json::from_str::<JsonLocalOpResult>(json).unwrap().op]
 }
 
-fn vv_to_bytes(vv: &VersionVector) -> Vec<u8> {
-    vv.encode_v0().unwrap()
+fn encode_version_vector_v0(version_vector: &VersionVector) -> Vec<u8> {
+    version_vector.encode_v0().unwrap()
 }
 
 fn json_op(op: &Operation) -> JsonOp {
@@ -249,7 +249,7 @@ fn json_op(op: &Operation) -> JsonOp {
         node,
         new_parent,
         order_key,
-        known_state: op.meta.known_state.as_ref().map(vv_to_bytes),
+        known_state: op.meta.known_state.as_ref().map(encode_version_vector_v0),
         payload,
     }
 }
@@ -892,7 +892,7 @@ fn local_move_to_trash_returns_empty_order_key() {
 }
 
 #[test]
-fn local_delete_includes_known_state_bytes() {
+fn local_delete_emits_canonical_known_state() {
     let conn = setup_conn();
 
     let replica = b"r1".to_vec();
@@ -932,7 +932,7 @@ fn local_delete_includes_known_state_bytes() {
 }
 
 #[test]
-fn materialization_repairs_noncanonical_deleted_at_bytes() {
+fn materialization_repairs_invalid_deleted_at_bytes() {
     for deleted_at in [Vec::new(), br#"{"entries":[]}"#.to_vec()] {
         let conn = setup_conn();
         let replica = b"r1".to_vec();

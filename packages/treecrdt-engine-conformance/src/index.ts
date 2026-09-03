@@ -186,7 +186,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioOpRefsChildrenCanonicalOrderingOnLamportTies,
     },
     {
-      name: 'append/appendMany: rejects invalid delete known_state',
+      name: 'append/appendMany: rejects invalid delete knownState',
       run: scenarioRejectsInvalidDeleteKnownState,
     },
     {
@@ -202,7 +202,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioDefensiveDeleteOutOfOrderChildInsert,
     },
     {
-      name: 'sync: delete known_state propagates (receiver must not recompute)',
+      name: 'sync: delete knownState bytes propagate unchanged',
       run: scenarioSyncKnownStatePropagation,
     },
     {
@@ -386,7 +386,7 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
-function vvBytes(
+function versionVectorBytes(
   entries: { replica: ReplicaId; frontier: number; ranges?: [number, number][] }[],
 ): Uint8Array {
   return encodeVersionVectorV0({
@@ -1193,8 +1193,8 @@ async function scenarioRejectsInvalidDeleteKnownState(
   const initialOpCount = (await engine.ops.all()).length;
   const invalidStates: { name: string; knownState?: Uint8Array }[] = [
     { name: 'missing' },
-    { name: 'empty', knownState: new Uint8Array() },
-    { name: 'noncanonical JSON', knownState: new TextEncoder().encode('{"entries":[]}') },
+    { name: 'zero-length', knownState: new Uint8Array() },
+    { name: 'JSON instead of v0', knownState: new TextEncoder().encode('{"entries":[]}') },
   ];
   const appenders: { name: string; run: (op: Operation) => Promise<void> }[] = [
     { name: 'append', run: (op) => engine.ops.append(op) },
@@ -1273,7 +1273,7 @@ async function scenarioDefensiveDeleteReactiveInsert(
       counter: 2,
       lamport: 2,
       node: parent,
-      knownState: vvBytes([{ replica, frontier: 1 }]),
+      knownState: versionVectorBytes([{ replica, frontier: 1 }]),
     }),
   );
 
@@ -1328,7 +1328,7 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
       counter: 2,
       lamport: 3,
       node: parent,
-      knownState: vvBytes([{ replica: rA, frontier: 1 }]),
+      knownState: versionVectorBytes([{ replica: rA, frontier: 1 }]),
     }),
   );
 
@@ -1385,7 +1385,7 @@ async function scenarioSyncKnownStatePropagation(
     'local delete must emit knownState',
   );
 
-  // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
+  // Sync A -> B. The delete MUST carry knownState so B doesn't treat it as aware of the child.
   const eventsOnB = await captureMaterializationEvents(b, async () => {
     await b.ops.appendMany(await a.ops.all());
   });
@@ -1396,10 +1396,10 @@ async function scenarioSyncKnownStatePropagation(
     del.meta.knownState ?? null,
     'receiver must preserve exact delete knownState bytes',
   );
-  assert(eventsOnB.length > 0, 'sync known_state should emit a materialization event on B');
+  assert(eventsOnB.length > 0, 'sync knownState should emit a materialization event on B');
   assertEventNodeRefsSortedUnique(
     materializationEventNodeRefs(eventsOnB[eventsOnB.length - 1]!),
-    'sync known_state: materialization event node refs shape',
+    'sync knownState: materialization event node refs shape',
   );
 
   assertArrayEqual(await b.tree.children(root), [parent], 'parent restored after sync delete');

@@ -38,7 +38,7 @@ fn v0_empty_vector_has_stable_bytes() {
 }
 
 #[test]
-fn v0_comprehensive_vector_has_stable_cross_runtime_bytes() {
+fn v0_prefix_order_gaps_and_max_counter_have_stable_cross_runtime_bytes() {
     let short_replica = ReplicaId::new([0]);
     let prefixed_replica = ReplicaId::new([0, 1]);
     let mut vector = VersionVector::new();
@@ -49,9 +49,9 @@ fn v0_comprehensive_vector_has_stable_cross_runtime_bytes() {
         vector.observe(&short_replica, counter);
     }
 
-    let bytes = vector.encode_v0().expect("encode comprehensive vector");
-    assert_eq!(hex(&bytes), fixture_hex("comprehensive"));
-    let decoded = VersionVector::decode_v0(&bytes).expect("decode comprehensive vector");
+    let bytes = vector.encode_v0().expect("encode fixture vector");
+    assert_eq!(hex(&bytes), fixture_hex("prefixOrderGapsAndMaxCounter"));
+    let decoded = VersionVector::decode_v0(&bytes).expect("decode fixture vector");
     assert_eq!(decoded, vector);
     assert_eq!(decoded.get(&short_replica), u64::MAX);
 }
@@ -65,18 +65,18 @@ fn zero_observations_do_not_create_semantic_entries() {
 }
 
 #[test]
-fn v0_preserves_the_full_core_replica_id_domain() {
+fn v0_preserves_zero_length_replica_id() {
     let replica = ReplicaId::new([]);
     let mut vector = VersionVector::new();
     vector.observe(&replica, 1);
 
-    let bytes = vector.encode_v0().expect("encode empty replica id");
-    let decoded = VersionVector::decode_v0(&bytes).expect("decode empty replica id");
+    let bytes = vector.encode_v0().expect("encode zero-length replica ID");
+    let decoded = VersionVector::decode_v0(&bytes).expect("decode zero-length replica ID");
     assert_eq!(decoded, vector);
 }
 
 #[test]
-fn v0_rejects_shared_invalid_vectors() {
+fn v0_rejects_shared_invalid_encodings() {
     let fixture = fixture();
     let invalid = fixture["invalidEncodedHex"]
         .as_object()

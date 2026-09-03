@@ -152,7 +152,9 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
                 return Err("delete op missing known_state".into());
             };
             if bytes.is_empty() {
-                return Err("delete known_state must not be empty".into());
+                return Err(
+                    "delete known_state must contain non-zero-length VersionVector v0 bytes".into(),
+                );
             }
             let vv = VersionVector::decode_v0(&bytes).map_err(|e| e.to_string())?;
             Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, Some(vv))
@@ -378,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_rejects_noncanonical_known_state() {
+    fn delete_rejects_zero_length_and_wrong_format_known_state() {
         for bytes in [Vec::new(), br#"{"entries":[]}"#.to_vec()] {
             assert!(js_to_op(delete_js_op(bytes)).is_err());
         }

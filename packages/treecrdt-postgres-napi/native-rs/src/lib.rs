@@ -38,14 +38,6 @@ fn node_buffer(node: NodeId) -> Buffer {
     Buffer::from(node_to_bytes16(node).to_vec())
 }
 
-fn vv_from_bytes(bytes: &[u8]) -> CoreResult<VersionVector> {
-    VersionVector::decode_v0(bytes)
-}
-
-fn vv_to_bytes(vv: &VersionVector) -> CoreResult<Vec<u8>> {
-    vv.encode_v0()
-}
-
 #[napi(object)]
 pub struct NativeOp {
     pub lamport: BigInt,
@@ -262,7 +254,7 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
 
     let known_state = match op.known_state {
         None => None,
-        Some(b) => Some(vv_from_bytes(&b)?),
+        Some(b) => Some(VersionVector::decode_v0(&b)?),
     };
 
     let meta = treecrdt_core::OperationMetadata {
@@ -320,7 +312,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
 
     let known_state = match op.meta.known_state.as_ref() {
         None => None,
-        Some(vv) => Some(Buffer::from(vv_to_bytes(vv)?)),
+        Some(vv) => Some(Buffer::from(vv.encode_v0()?)),
     };
 
     match op.kind {

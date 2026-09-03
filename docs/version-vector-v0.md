@@ -1,7 +1,8 @@
 # TreeCRDT VersionVector v0 encoding
 
-Fields declared as `VersionVector` v0 contain this canonical byte encoding directly. Transports may
-carry it as an opaque byte string, but must not re-encode the value as JSON or another representation.
+VersionVector v0 is the canonical binary encoding of a gap-aware version vector. Fields specified to
+contain VersionVector v0 bytes carry this encoding directly. Transports may carry it as an opaque byte
+string, but must not re-encode the value as JSON or another representation.
 
 ## Layout
 
@@ -19,10 +20,12 @@ inclusive additional observations after gaps.
 
 ## Canonical validity
 
-- Replica ids MUST be unique and sorted in unsigned bytewise lexicographic order. If one id is a
-  prefix of another, the shorter id sorts first. The format permits a zero-length id; higher-level
+- Replica IDs MUST be unique and sorted in unsigned bytewise lexicographic order. If one ID is a
+  prefix of another, the shorter ID sorts first. The format permits a zero-length ID; higher-level
   profiles may impose narrower constraints.
 - An entry with `frontier = 0` and no ranges is invalid and MUST be omitted.
+- The canonical empty vector contains no entries and is nine bytes long. A zero-length byte string is
+  not a VersionVector v0 encoding.
 - For each range, `1 <= start <= end`, and `start` MUST be at least two greater than `previous_end`.
   `previous_end` is the frontier for the first range and the prior range's end thereafter.
 - Counts and lengths MUST consume exactly the input. Truncation, trailing bytes, and versions other

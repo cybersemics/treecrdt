@@ -26,7 +26,7 @@ function entry(
   return { replica: Uint8Array.from(replica), frontier, ranges };
 }
 
-function malformed(value: unknown): VersionVectorV0 {
+function uncheckedVersionVector(value: unknown): VersionVectorV0 {
   return value as VersionVectorV0;
 }
 
@@ -37,7 +37,7 @@ describe('VersionVectorV0 codec', () => {
     expect(decodeVersionVectorV0(encoded)).toEqual({ entries: [] });
   });
 
-  test('matches the comprehensive cross-runtime test vector', () => {
+  test('matches the cross-runtime vector for prefix ordering, gaps, and the maximum counter', () => {
     const vector: VersionVectorV0 = {
       entries: [
         entry([0], 2n, [
@@ -47,7 +47,7 @@ describe('VersionVectorV0 codec', () => {
         entry([0, 1], 1n, [[3n, 3n]]),
       ],
     };
-    const expected = fromHex(fixture.validEncodedHex.comprehensive);
+    const expected = fromHex(fixture.validEncodedHex.prefixOrderGapsAndMaxCounter);
 
     expect(encodeVersionVectorV0(vector)).toEqual(expected);
     expect(decodeVersionVectorV0(expected)).toEqual(vector);
@@ -80,9 +80,11 @@ describe('VersionVectorV0 codec', () => {
     expect(decodedReplica instanceof Uint8Array).toBe(true);
   });
 
-  test('encoder preserves empty replica ids and requires strict unique ordering', () => {
-    const emptyReplica = { entries: [entry([])] };
-    expect(decodeVersionVectorV0(encodeVersionVectorV0(emptyReplica))).toEqual(emptyReplica);
+  test('encoder accepts zero-length replica IDs and rejects invalid replica values or ordering', () => {
+    const zeroLengthReplica = { entries: [entry([])] };
+    expect(decodeVersionVectorV0(encodeVersionVectorV0(zeroLengthReplica))).toEqual(
+      zeroLengthReplica,
+    );
     expect(() => encodeVersionVectorV0({ entries: [entry([2]), entry([1])] })).toThrow(
       /strictly sorted/i,
     );
@@ -90,7 +92,9 @@ describe('VersionVectorV0 codec', () => {
       /strictly sorted/i,
     );
     expect(() =>
-      encodeVersionVectorV0(malformed({ entries: [{ replica: [1], frontier: 1n, ranges: [] }] })),
+      encodeVersionVectorV0(
+        uncheckedVersionVector({ entries: [{ replica: [1], frontier: 1n, ranges: [] }] }),
+      ),
     ).toThrow(/Uint8Array/i);
   });
 
@@ -102,7 +106,9 @@ describe('VersionVectorV0 codec', () => {
     for (const frontier of [-1n, MAX_U64 + 1n, 1] as unknown[]) {
       expect(() =>
         encodeVersionVectorV0(
-          malformed({ entries: [{ replica: Uint8Array.of(1), frontier, ranges: [] }] }),
+          uncheckedVersionVector({
+            entries: [{ replica: Uint8Array.of(1), frontier, ranges: [] }],
+          }),
         ),
       ).toThrow(/u64 range/i);
     }
@@ -141,7 +147,7 @@ describe('VersionVectorV0 codec', () => {
   ])('encoder rejects %s', (_name, frontier, ranges) => {
     expect(() =>
       encodeVersionVectorV0(
-        malformed({ entries: [{ replica: Uint8Array.of(1), frontier, ranges }] }),
+        uncheckedVersionVector({ entries: [{ replica: Uint8Array.of(1), frontier, ranges }] }),
       ),
     ).toThrow(VersionVectorV0CodecError);
   });
@@ -150,7 +156,7 @@ describe('VersionVectorV0 codec', () => {
     for (const range of [[2n], [2n, 3n, 4n], [2, 3]]) {
       expect(() =>
         encodeVersionVectorV0(
-          malformed({
+          uncheckedVersionVector({
             entries: [{ replica: Uint8Array.of(1), frontier: 0n, ranges: [range] }],
           }),
         ),
@@ -159,7 +165,7 @@ describe('VersionVectorV0 codec', () => {
   });
 
   test.each(Object.entries(fixture.invalidEncodedHex))(
-    'decoder rejects shared invalid vector %s',
+    'decoder rejects shared invalid encoding %s',
     (_name, encodedHex) => {
       expect(() => decodeVersionVectorV0(fromHex(encodedHex))).toThrow(VersionVectorV0CodecError);
     },
