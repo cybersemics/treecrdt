@@ -11,6 +11,11 @@ and by any server that chooses to validate inbound ops.
 
 Status: draft. Backwards compatibility is not guaranteed.
 
+This draft is revised in place until the auth profile is declared stable. Implementations do not
+negotiate or verify earlier draft auth profiles: development signatures and proof material produced
+by a superseded format must be recreated. These revisions do not change the surrounding Sync v0
+envelope.
+
 ## Threat model (baseline)
 
 - The sync server is untrusted: it may reorder, drop, replay, and inject messages.
@@ -179,10 +184,13 @@ Ops are signed with the doc-scoped Ed25519 key. The signature covers:
 - `lamport`
 - op kind + fields
 - payload bytes (ciphertext bytes if payloads are encrypted)
+- explicit defensive-delete `known_state` presence and bytes
 
 ### Canonical signing bytes
 
-All integers are big-endian. Strings are UTF-8 with length prefixes.
+All integers are big-endian. Strings are UTF-8 with length prefixes. Number-valued operation
+counters and Lamport timestamps MUST be safe non-negative JavaScript integers. Signature
+verification uses strict RFC 8032 semantics and rejects small-order identity keys.
 
 ```
 sig_input = concat(
@@ -192,7 +200,8 @@ sig_input = concat(
   u64_be(counter),
   u64_be(lamport),
   u8(kind_tag),
-  kind_fields
+  kind_fields,
+  known_state
 )
 ```
 
@@ -212,6 +221,28 @@ Kind tags and fields:
   - node(16)
   - value_tag(u8): 0=clear, 1=payload
   - if value_tag=1: u32_be(len(payload)) || payload_bytes
+
+Every operation uses this one signature format. `known_state` is encoded after the operation fields:
+
+```
+known_state = absent:  u8(0)
+              present: u8(1) || u32_be(len(bytes)) || bytes
+```
+
+The present form MUST contain the canonical
+[TreeCRDT VersionVector v0 bytes](../../version-vector-v0.md). Auth adds three profile constraints:
+each replica id is exactly the 32-byte Ed25519 public key required by Sync v0, the value is at most
+1 MiB, and it contains at most 4,096 entries. Version-vector counters retain the codec's full `u64`
+range; only the JavaScript operation counter and Lamport fields above use safe integers.
+
+Policy APIs require a present, non-zero-length `known_state` byte field on deletes and reject the
+field on every other operation; tombstones use the explicit absent-state form. The canonical empty
+vector is valid because its encoding is nine bytes. Because every operation signs the presence tag,
+a relay cannot strip delete state to bypass this policy.
+
+Signers validate the canonical bytes before signing. Verifiers size-check and copy the exact bytes
+into the signature input, verify Ed25519 first, and only then run canonical decoding plus the auth
+profile checks. Invalid signatures therefore cannot trigger version-vector parsing.
 
 ## Subtree scope enforcement and `pending_context`
 

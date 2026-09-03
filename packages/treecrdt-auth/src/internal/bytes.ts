@@ -22,6 +22,9 @@ export function u32be(n: number): Uint8Array {
 }
 
 export function u64be(n: bigint | number): Uint8Array {
+  if (typeof n === 'number' && (!Number.isSafeInteger(n) || n < 0)) {
+    throw new Error(`u64 must be a safe non-negative integer, got: ${n}`);
+  }
   const v = typeof n === 'bigint' ? n : BigInt(n);
   if (v < 0n || v > 0xffff_ffff_ffff_ffffn) throw new Error(`u64 out of range: ${v}`);
   const out = new Uint8Array(8);
