@@ -105,7 +105,3 @@ export interface TreecrdtAdapter {
   opsSince(lamport: number, root?: string): Promise<unknown[]>;
   close?(): Promise<void> | void;
 }
-
-export type AdapterFactory<TConfig = void> = (
-  config: TConfig,
-) => Promise<TreecrdtAdapter> | TreecrdtAdapter;

@@ -94,24 +94,24 @@ flowchart TD
 - Operation log with `(OperationId { replica, counter }, lamport, kind)`; kinds: insert/move/delete/tombstone.
 - Deterministic application rules following Kleppmann Tree CRDT; extend to support alternative tombstone semantics if needed (per linked proposal).
 - Access control hooks applied before state mutation.
-- Partial sync support via subtree filters + index provider for efficient fetch.
+- Partial sync support via indexed direct-children filters.
 
 ## Trait contracts (Rust)
 - `Clock`: lamport/HLC pluggable (`LamportClock` provided).
 - `AccessControl`: guards apply/read.
 - `Storage`: append operations, load since lamport, latest_lamport.
-- `IndexProvider`: optional acceleration for subtree queries and existence checks.
+- `IndexProvider`: optional acceleration for filtered tree queries and existence checks.
 - These traits are the seam for SQLite/wa-sqlite implementations; extension just implements them over tables/indexes.
 
 ## WASM + TypeScript bindings
 - `treecrdt-wasm`: wasm-bindgen surface mapping to `@treecrdt/interface`.
-- `@treecrdt/interface`: TS types for operations, storage adapters, sync protocol, access control.
-- Provide both in-memory adapter and SQLite-backed adapter (via wa-sqlite) to satisfy the interface.
+- `@treecrdt/interface`: shared operation and engine types, low-level adapter contracts, materialization helpers, and SQLite bindings.
+- Concrete clients adapt in-memory, PostgreSQL, native SQLite, and wa-sqlite runtimes to those shared contracts.
 
 ## Sync engine concept
 - **Protocol & runtime** (`@treecrdt/sync-protocol`, `packages/sync-protocol/protocol`): transport-agnostic peer, codecs, in-memory test helpers, and generated Protobuf types.
 - **Client integration** (`@treecrdt/sync`, `packages/treecrdt-sync`): optional wiring for spec `WebSocket` clients (browser global, or `webSocketCtor` e.g. from `undici` in Node; see `packages/treecrdt-sync` README)—uses `@treecrdt/discovery` to resolve docs to websocket URLs, `@treecrdt/sync-protocol` for the wire session, and `@treecrdt/sync-sqlite` for a `SyncBackend` backed by the SQLite material layer. App code that wants full control can depend on the protocol and discovery packages only.
-- Transport-agnostic: push/pull batches with causal metadata + optional subtree filters.
+- Transport-agnostic RIBLT reconciliation with full-document and `children(parent)` filters.
 - Progress hooks for UI, resumable checkpoints via lamport/head.
-- Access control enforced at responder using subtree filters and ACL callbacks.
+- Access control enforced at the responder through auth hooks; capability scopes can be subtree-scoped.
 - Draft protocol: [`sync/v0.md`](sync/v0.md)
