@@ -1436,7 +1436,6 @@ version = "0.0.1"
 dependencies = [
  "blake3",
  "postgres",
- "serde",
  "serde_json",
  "treecrdt-core",
  "treecrdt-test-support",
@@ -1451,7 +1450,6 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "postgres",
- "serde_json",
  "treecrdt-core",
  "treecrdt-postgres",
 ]

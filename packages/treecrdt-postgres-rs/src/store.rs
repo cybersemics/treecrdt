@@ -49,14 +49,6 @@ pub(crate) fn op_ref_from_bytes(bytes: &[u8]) -> Result<[u8; OPREF_V0_WIDTH]> {
     Ok(arr)
 }
 
-fn vv_to_bytes(vv: &VersionVector) -> Result<Vec<u8>> {
-    serde_json::to_vec(vv).map_err(|e| Error::Storage(e.to_string()))
-}
-
-pub(crate) fn vv_from_bytes(bytes: &[u8]) -> Result<VersionVector> {
-    serde_json::from_slice(bytes).map_err(|e| Error::Storage(e.to_string()))
-}
-
 #[derive(Clone, Debug)]
 struct CachedNodeRow {
     parent: Option<NodeId>,
@@ -583,8 +575,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         };
         match row.last_change {
             None => Ok(VersionVector::new()),
-            Some(b) if b.is_empty() => Ok(VersionVector::new()),
-            Some(b) => vv_from_bytes(&b),
+            Some(b) => VersionVector::decode_v0(&b),
         }
     }
 
@@ -593,7 +584,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         let started_at = Instant::now();
         let mut vv = self.last_change(node)?;
         vv.merge(delta);
-        let bytes = vv_to_bytes(&vv)?;
+        let bytes = vv.encode_v0()?;
 
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.last_change = Some(bytes);
@@ -614,8 +605,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         };
         match row.deleted_at {
             None => Ok(None),
-            Some(b) if b.is_empty() => Ok(None),
-            Some(b) => vv_from_bytes(&b).map(Some),
+            Some(b) => VersionVector::decode_v0(&b).map(Some),
         }
     }
 
@@ -624,7 +614,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         let started_at = Instant::now();
         let mut vv = self.deleted_at(node)?.unwrap_or_else(VersionVector::new);
         vv.merge(delta);
-        let bytes = vv_to_bytes(&vv)?;
+        let bytes = vv.encode_v0()?;
 
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
@@ -669,7 +659,7 @@ impl ExactNodeStore for PgNodeStore {
         let bytes = if vv.is_empty() {
             None
         } else {
-            Some(vv_to_bytes(vv)?)
+            Some(vv.encode_v0()?)
         };
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -692,7 +682,7 @@ impl ExactNodeStore for PgNodeStore {
         self.ensure_node(node)?;
         let node_bytes = node_to_bytes(node);
         let bytes = match vv {
-            Some(vv) if !vv.is_empty() => Some(vv_to_bytes(vv)?),
+            Some(vv) if !vv.is_empty() => Some(vv.encode_v0()?),
             _ => None,
         };
         let mut c = self.ctx.client.borrow_mut();
@@ -1147,8 +1137,7 @@ pub(crate) fn row_to_op(row: Row) -> Result<Operation> {
     let known_state_bytes: Option<Vec<u8>> = row.get(9);
     let known_state = match known_state_bytes {
         None => None,
-        Some(b) if b.is_empty() => None,
-        Some(b) => Some(vv_from_bytes(&b)?),
+        Some(b) => Some(VersionVector::decode_v0(&b)?),
     };
 
     let replica_id = ReplicaId(replica);
@@ -1211,8 +1200,7 @@ pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     let known_state_bytes: Option<Vec<u8>> = row.get(base + 9);
     let known_state = match known_state_bytes {
         None => None,
-        Some(b) if b.is_empty() => None,
-        Some(b) => Some(vv_from_bytes(&b)?),
+        Some(b) => Some(VersionVector::decode_v0(&b)?),
     };
 
     let replica_id = ReplicaId(replica);
@@ -1275,7 +1263,7 @@ struct OpDbFields {
 fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
     let known_state = match op.meta.known_state.as_ref() {
         None => None,
-        Some(vv) => Some(vv_to_bytes(vv)?),
+        Some(vv) => Some(vv.encode_v0()?),
     };
 
     match &op.kind {
@@ -1307,17 +1295,11 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
             known_state,
         }),
         OperationKind::Delete { node } => {
-            let Some(vv) = op.meta.known_state.as_ref() else {
+            let Some(bytes) = known_state else {
                 return Err(Error::InvalidOperation(
                     "treecrdt: delete operations require meta.known_state".into(),
                 ));
             };
-            let bytes = vv_to_bytes(vv)?;
-            if bytes.is_empty() {
-                return Err(Error::InvalidOperation(
-                    "treecrdt: delete known_state must not be empty".into(),
-                ));
-            }
             Ok(OpDbFields {
                 kind: "delete",
                 parent: None,

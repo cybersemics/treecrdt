@@ -94,7 +94,7 @@ Each operation carries version vector information:
   - Created from the operation's replica ID and counter
   - Represents "this specific operation"
 
-- **`known_state`** (in delete operations): Optional version vector capturing subtree awareness at delete time
+- **`known_state`** (in delete operations): Required version-vector snapshot containing canonical VersionVector v0 bytes
   - Calculated when creating a delete operation
   - Represents "what we knew about the subtree when deleting"
   - Travels with the delete operation to other replicas
@@ -229,12 +229,14 @@ Check: Is delete aware?
 
 ## How Version Vectors Are Sent Between Clients
 
-Version vectors are serialized and sent as part of operations during synchronization:
+Version vectors are encoded and sent as part of operations during synchronization:
 
 ### In Delete Operations
 
-Delete operations carry `known_state` as an optional field:
-- Serialized as part of the operation metadata
+Delete operations must carry a `known_state` field containing canonical VersionVector v0 bytes. The
+canonical empty vector is a valid nine-byte value; a zero-length byte field is invalid.
+
+- Carried directly in the operation metadata
 - Sent to other replicas when syncing
 - Other replicas use it to check awareness when applying the delete
 
@@ -245,27 +247,12 @@ When replicas sync:
 2. **Operation Transfer**: Operations are sent with their version vector information
 3. **Awareness Updates**: Receiving replicas merge version vectors to update their knowledge
 
-### Serialization Format
+### Binary Encoding
 
-Version vectors are serialized as:
-- A map/dictionary from replica identifiers to version information
-- Each replica's version includes:
-  - Frontier: single number (highest contiguous counter)
-  - Ranges: array of [start, end] pairs for non-contiguous ranges
-
-**Example serialized format**:
-```
-{
-  "replica_A": {
-    "frontier": 5,
-    "ranges": [[7, 8], [10, 10]]
-  },
-  "replica_B": {
-    "frontier": 3,
-    "ranges": []
-  }
-}
-```
+Version vectors use the canonical binary format specified in
+[`docs/version-vector-v0.md`](../version-vector-v0.md). It encodes replica IDs as raw bytes and counters as `u64`, with
+replicas and ranges in a single normalized order. Storage adapters and sync peers use the same exact bytes;
+operation-auth profiles must cover them without re-encoding.
 
 ## Why Dotted Version Vectors for Defensive Deletion?
 
@@ -329,7 +316,7 @@ Dotted version vectors in TreeCRDT:
 - **Used in operations**: `known_state` in delete operations
 - **Calculated recursively**: Subtree version vectors include all descendants
 - **Enable awareness checks**: Determine if delete operations were aware of modifications
-- **Serialized for sync**: Sent between replicas as part of operations
+- **Encoded for sync**: Sent between replicas as part of operations
 - **Essential for correctness**: Enable defensive deletion to work correctly with partial replication and out-of-order delivery
 
 This gap-aware tracking is what makes defensive deletion safe and correct in distributed systems with eventual consistency.

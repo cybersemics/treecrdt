@@ -24,6 +24,10 @@
     "./engine": {
       "import": "./dist/src/engine.js",
       "types": "./dist/src/engine.d.ts"
+    },
+    "./version-vector": {
+      "import": "./dist/src/version-vector.js",
+      "types": "./dist/src/version-vector.d.ts"
     }
   },
   "files": [
@@ -33,10 +37,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"TODO: add linting\"",
-    "test": "echo \"TODO: add tests\""
+    "test": "pnpm run build && vitest run"
   },
   "devDependencies": {
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^1.6.0"
   },
   "license": "MIT",
   "repository": {

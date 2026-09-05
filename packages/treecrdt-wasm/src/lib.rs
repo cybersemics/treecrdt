@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::to_value;
 use treecrdt_core::{
     Lamport, LamportClock, MaterializationOutcome, MemoryStorage, NodeId, Operation, OperationKind,
-    ReplicaId, TreeCrdt,
+    ReplicaId, TreeCrdt, VersionVector,
 };
 use wasm_bindgen::prelude::*;
 
@@ -55,7 +55,7 @@ fn node_to_hex(id: NodeId) -> String {
     format!("{:032x}", id.0)
 }
 
-fn op_to_js(op: &Operation) -> JsOp {
+fn op_to_js(op: &Operation) -> Result<JsOp, String> {
     let (kind, parent, node, new_parent, order_key, payload) = match &op.kind {
         OperationKind::Insert {
             parent,
@@ -93,8 +93,14 @@ fn op_to_js(op: &Operation) -> JsOp {
             payload.as_deref().map(bytes_to_hex),
         ),
     };
-    let known_state = op.meta.known_state.as_ref().and_then(|vv| serde_json::to_vec(vv).ok());
-    JsOp {
+    let known_state = op
+        .meta
+        .known_state
+        .as_ref()
+        .map(VersionVector::encode_v0)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    Ok(JsOp {
         replica: bytes_to_hex(&op.meta.id.replica.0),
         counter: op.meta.id.counter,
         lamport: op.meta.lamport,
@@ -105,7 +111,7 @@ fn op_to_js(op: &Operation) -> JsOp {
         order_key,
         known_state,
         payload,
-    }
+    })
 }
 
 fn js_to_op(js: JsOp) -> Result<Operation, String> {
@@ -146,9 +152,11 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
                 return Err("delete op missing known_state".into());
             };
             if bytes.is_empty() {
-                return Err("delete known_state must not be empty".into());
+                return Err(
+                    "delete known_state must contain non-zero-length VersionVector v0 bytes".into(),
+                );
             }
-            let vv = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            let vv = VersionVector::decode_v0(&bytes).map_err(|e| e.to_string())?;
             Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, Some(vv))
         }
         "tombstone" => Operation::tombstone(&replica, counter, lamport, hex_to_node(&js.node)?),
@@ -219,7 +227,11 @@ impl WasmTree {
             .inner
             .operations_since(lamport)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        let mapped: Vec<JsOp> = ops.iter().map(op_to_js).collect();
+        let mapped: Vec<JsOp> = ops
+            .iter()
+            .map(op_to_js)
+            .collect::<Result<_, _>>()
+            .map_err(|e| JsValue::from_str(&e))?;
         to_value(&mapped).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -230,7 +242,7 @@ impl WasmTree {
             .inner
             .subtree_version_vector(node)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        serde_json::to_vec(&vv).map_err(|e| JsValue::from_str(&e.to_string()))
+        vv.encode_v0().map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = treeChildren)]
@@ -330,5 +342,47 @@ impl WasmTree {
         }
 
         to_value(&rows).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delete_js_op(known_state: Vec<u8>) -> JsOp {
+        JsOp {
+            replica: "7265706c696361".into(),
+            counter: 7,
+            lamport: 9,
+            kind: "delete".into(),
+            parent: None,
+            node: node_to_hex(NodeId(1)),
+            new_parent: None,
+            order_key: None,
+            known_state: Some(known_state),
+            payload: None,
+        }
+    }
+
+    #[test]
+    fn delete_known_state_roundtrips_as_exact_v0_bytes() {
+        let replica = ReplicaId::new(b"replica");
+        let mut known_state = VersionVector::new();
+        for counter in [1, 2, 4] {
+            known_state.observe(&replica, counter);
+        }
+        let expected_bytes = known_state.encode_v0().unwrap();
+        let operation = Operation::delete(&replica, 7, 9, NodeId(1), Some(known_state));
+
+        let js = op_to_js(&operation).unwrap();
+        assert_eq!(js.known_state.as_deref(), Some(expected_bytes.as_slice()));
+        assert_eq!(js_to_op(js).unwrap(), operation);
+    }
+
+    #[test]
+    fn delete_rejects_zero_length_and_wrong_format_known_state() {
+        for bytes in [Vec::new(), br#"{"entries":[]}"#.to_vec()] {
+            assert!(js_to_op(delete_js_op(bytes)).is_err());
+        }
     }
 }

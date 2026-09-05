@@ -15,12 +15,30 @@ fn sqlite_rc_error(rc: c_int, context: &str) -> treecrdt_core::Error {
     treecrdt_core::Error::Storage(format!("{context} (rc={rc})"))
 }
 
-fn vv_to_bytes(vv: &VersionVector) -> treecrdt_core::Result<Vec<u8>> {
-    serde_json::to_vec(vv).map_err(|e| treecrdt_core::Error::Storage(e.to_string()))
-}
+fn read_optional_version_vector_v0_column(
+    stmt: *mut sqlite3_stmt,
+    column: c_int,
+    context: &str,
+) -> treecrdt_core::Result<Option<VersionVector>> {
+    unsafe {
+        if sqlite_column_type(stmt, column) == SQLITE_NULL as c_int {
+            return Ok(None);
+        }
 
-fn vv_from_bytes(bytes: &[u8]) -> treecrdt_core::Result<VersionVector> {
-    serde_json::from_slice(bytes).map_err(|e| treecrdt_core::Error::Storage(e.to_string()))
+        let ptr = sqlite_column_blob(stmt, column) as *const u8;
+        let len = sqlite_column_bytes(stmt, column) as usize;
+        let bytes = if len == 0 {
+            &[]
+        } else if ptr.is_null() {
+            return Err(sqlite_rc_error(
+                SQLITE_ERROR as c_int,
+                &format!("{context} blob pointer is null"),
+            ));
+        } else {
+            slice::from_raw_parts(ptr, len)
+        };
+        VersionVector::decode_v0(bytes).map(Some)
+    }
 }
 
 pub(super) struct SqliteNodeStore {
@@ -502,8 +520,13 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
 
             let step_rc = sqlite_step(stmt);
             let has = if step_rc == SQLITE_ROW as c_int {
-                sqlite_column_type(stmt, 3) != SQLITE_NULL as c_int
-                    && sqlite_column_bytes(stmt, 3) > 0
+                match read_optional_version_vector_v0_column(stmt, 3, "deleted_at") {
+                    Ok(value) => value.is_some(),
+                    Err(error) => {
+                        sqlite_reset(stmt);
+                        return Err(error);
+                    }
+                }
             } else if step_rc == SQLITE_DONE as c_int {
                 false
             } else {
@@ -546,8 +569,14 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
                         return Err(sqlite_rc_error(rc, "read parent failed"));
                     }
                 };
-                let has_deleted_at = sqlite_column_type(stmt, 3) != SQLITE_NULL as c_int
-                    && sqlite_column_bytes(stmt, 3) > 0;
+                let has_deleted_at =
+                    match read_optional_version_vector_v0_column(stmt, 3, "deleted_at") {
+                        Ok(value) => value.is_some(),
+                        Err(error) => {
+                            sqlite_reset(stmt);
+                            return Err(error);
+                        }
+                    };
                 Some((parent, has_deleted_at))
             } else if step_rc == SQLITE_DONE as c_int {
                 None
@@ -578,15 +607,11 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
                 sqlite_reset(stmt);
                 return Err(sqlite_rc_error(step_rc, "select_node last_change failed"));
             }
-            let vv = if sqlite_column_type(stmt, 2) == SQLITE_NULL as c_int {
-                VersionVector::new()
-            } else {
-                let ptr = sqlite_column_blob(stmt, 2) as *const u8;
-                let len = sqlite_column_bytes(stmt, 2) as usize;
-                if ptr.is_null() || len == 0 {
-                    VersionVector::new()
-                } else {
-                    vv_from_bytes(slice::from_raw_parts(ptr, len))?
+            let vv = match read_optional_version_vector_v0_column(stmt, 2, "last_change") {
+                Ok(value) => value.unwrap_or_default(),
+                Err(error) => {
+                    sqlite_reset(stmt);
+                    return Err(error);
                 }
             };
             sqlite_reset(stmt);
@@ -602,7 +627,7 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
         self.ensure_node(node)?;
         let mut vv = self.last_change(node)?;
         vv.merge(delta);
-        let bytes = vv_to_bytes(&vv)?;
+        let bytes = vv.encode_v0()?;
 
         let node_bytes = sqlite_node_id_bytes(node);
         let stmt = self.update_last_change.get()?;
@@ -651,15 +676,11 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
                 sqlite_reset(stmt);
                 return Ok(None);
             }
-            let vv = if sqlite_column_type(stmt, 3) == SQLITE_NULL as c_int {
-                None
-            } else {
-                let ptr = sqlite_column_blob(stmt, 3) as *const u8;
-                let len = sqlite_column_bytes(stmt, 3) as usize;
-                if ptr.is_null() || len == 0 {
-                    None
-                } else {
-                    Some(vv_from_bytes(slice::from_raw_parts(ptr, len))?)
+            let vv = match read_optional_version_vector_v0_column(stmt, 3, "deleted_at") {
+                Ok(value) => value,
+                Err(error) => {
+                    sqlite_reset(stmt);
+                    return Err(error);
                 }
             };
             sqlite_reset(stmt);
@@ -675,7 +696,7 @@ impl treecrdt_core::NodeStore for SqliteNodeStore {
         self.ensure_node(node)?;
         let mut vv = self.deleted_at(node)?.unwrap_or_else(VersionVector::new);
         vv.merge(delta);
-        let bytes = vv_to_bytes(&vv)?;
+        let bytes = vv.encode_v0()?;
 
         let node_bytes = sqlite_node_id_bytes(node);
         let stmt = self.update_deleted_at.get()?;
@@ -740,7 +761,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
     ) -> treecrdt_core::Result<()> {
         self.ensure_node(node)?;
         let node_bytes = sqlite_node_id_bytes(node);
-        let vv_bytes = (!vv.is_empty()).then(|| vv_to_bytes(vv)).transpose()?;
+        let vv_bytes = (!vv.is_empty()).then(|| vv.encode_v0()).transpose()?;
         let stmt = self.update_last_change.get()?;
         unsafe {
             sqlite_clear_bindings(stmt);
@@ -791,7 +812,7 @@ impl treecrdt_core::ExactNodeStore for SqliteNodeStore {
     ) -> treecrdt_core::Result<()> {
         self.ensure_node(node)?;
         let node_bytes = sqlite_node_id_bytes(node);
-        let vv_bytes = vv.filter(|vv| !vv.is_empty()).map(vv_to_bytes).transpose()?;
+        let vv_bytes = vv.filter(|vv| !vv.is_empty()).map(VersionVector::encode_v0).transpose()?;
         let stmt = self.update_deleted_at.get()?;
         unsafe {
             sqlite_clear_bindings(stmt);

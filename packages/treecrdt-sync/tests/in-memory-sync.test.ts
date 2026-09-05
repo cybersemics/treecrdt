@@ -9,6 +9,7 @@ import {
   wrapDuplexTransportWithCodec,
 } from '@treecrdt/sync-protocol/transport';
 import type { Operation } from '@treecrdt/interface';
+import { encodeVersionVectorV0 } from '@treecrdt/interface/version-vector';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import { DEFAULT_MAX_OPS_PER_BATCH } from '../src/constants.js';
@@ -169,7 +170,7 @@ test('syncOnce pulls insert, move, payload, and delete operations', async () => 
       meta: {
         id: { replica: replicas.b, counter: 5 },
         lamport: 5,
-        knownState: new Uint8Array([0x5b, 0x5d]), // minimal non-empty (sync requires this for delete)
+        knownState: encodeVersionVectorV0({ entries: [] }),
       },
       kind: { type: 'delete' as const, node: n2 },
     },

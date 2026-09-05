@@ -11,8 +11,9 @@ export type OperationId = {
 export type OperationMetadata = {
   id: OperationId;
   lamport: Lamport;
-  // Optional defensive-deletion awareness payload for delete operations.
-  // This is carried end-to-end as an opaque blob (JSON-encoded VersionVector in v0).
+  // Defensive-deletion awareness: absent for most kinds. Delete requires non-zero-length bytes;
+  // the canonical empty VersionVector is a valid nine-byte value.
+  // Carried end-to-end as an opaque canonical VersionVector v0 binary value.
   knownState?: Uint8Array;
 };
 
