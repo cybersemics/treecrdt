@@ -4,37 +4,7 @@ vi.mock('../src/opfs.js', () => ({ createOpfsVfs: vi.fn() }));
 
 import { createOpfsVfs } from '../src/opfs.js';
 import { openTreecrdtDbWithLoader } from '../src/open-core.js';
-
-function createFakeModule(initResult = 0) {
-  const init = vi.fn(async () => initResult);
-  return {
-    cwrap: vi.fn(() => init),
-    init,
-    retryOps: [] as Promise<unknown>[],
-    pendingOps: [] as Promise<unknown>[],
-  };
-}
-
-function createFakeSqlite() {
-  let nextStatement = 100;
-  return {
-    vfs_register: vi.fn(),
-    open_v2: vi.fn(async () => 1),
-    statements: vi.fn(() => {
-      const statement = nextStatement++;
-      return {
-        next: async () => ({ value: statement }),
-        return: async () => undefined,
-      };
-    }),
-    bind: vi.fn(),
-    step: vi.fn(async () => 101),
-    column_text: vi.fn(),
-    finalize: vi.fn(),
-    exec: vi.fn(),
-    close: vi.fn(),
-  };
-}
+import { createFakeModule, createFakeSqlite } from './fake-sqlite.js';
 
 beforeEach(() => {
   vi.mocked(createOpfsVfs).mockReset();

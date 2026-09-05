@@ -14,8 +14,10 @@ pnpm --filter @treecrdt/wa-sqlite build
 The build copies wa-sqlite WASM/JS assets into `dist/wa-sqlite/` for Node and packages them for browser apps via the Vite plugin.
 
 Low-level callers that open a wa-sqlite handle themselves must call
-`initializeTreecrdtExtension(module, handle)` before constructing an adapter with
-`createWaSqliteApi`. `createTreecrdtClient()` does this automatically.
+`initializeTreecrdtExtension(module, handle)`, set the doc id, then
+`createTreecrdtSqliteAdapter(db)` from `@treecrdt/interface/sqlite` (a `Database`
+from this package is already a `SqliteRunner`).
+`createTreecrdtClient()` does this automatically.
 
 ## Browser usage
 
@@ -29,6 +31,16 @@ const client = await createTreecrdtClient({
   docId: 'my-doc',
 });
 ```
+
+`createTreecrdtClient()` resolves a **runtime strategy** and talks to a `TreecrdtConnection` whose `session` is the shared data API:
+
+| Runtime | When | Transport |
+| --- | --- | --- |
+| `direct` | memory (default) or opt-in | in-process exclusive connection |
+| `dedicated-worker` | OPFS + `auto` (default) | Comlink over `Worker` (exclusive connection) |
+| `shared-worker` | opt-in | Comlink over `SharedWorker` port (shared connection) |
+
+Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
 
 See the [playground](../../examples/playground/README.md) for a full browser demo.
 

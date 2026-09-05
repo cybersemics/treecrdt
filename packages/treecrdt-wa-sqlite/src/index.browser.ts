@@ -22,5 +22,4 @@ export {
 export { CLIENT_CLOSED_ERROR } from './client.js';
 export { createTreecrdtClient } from './client.browser.js';
 
-export { createWaSqliteApi } from './adapter.js';
 export { initializeTreecrdtExtension } from './extension.js';

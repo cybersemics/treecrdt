@@ -1,18 +1,12 @@
+import * as Comlink from 'comlink';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import type { RpcRequest, RpcStorageFallback } from '../src/rpc.js';
+import type { TreecrdtConnection } from '../src/connection.js';
+import createTreecrdtSession from '../src/session.js';
 
 const openTreecrdtDb = vi.hoisted(() => vi.fn());
 
 vi.mock('../src/open.js', () => ({ openTreecrdtDb }));
-
-function initRequest(fallback: RpcStorageFallback): RpcRequest<'init'> {
-  return {
-    id: 1,
-    method: 'init',
-    params: ['/', '/policy.db', 'opfs', 'fallback-policy', fallback],
-  };
-}
 
 beforeEach(() => {
   vi.resetModules();
@@ -26,40 +20,55 @@ afterEach(() => {
 test.each([
   ['throw', true],
   ['memory', false],
-] as const)(
-  'dedicated worker maps %s fallback to requireOpfs=%s',
-  async (fallback, requireOpfs) => {
-    const scope = {
-      onmessage: null as ((event: MessageEvent<RpcRequest>) => Promise<void>) | null,
-      postMessage: vi.fn(),
-    };
-    vi.stubGlobal('self', scope);
-    await import('../src/worker.js');
+] as const)('session maps %s fallback to requireOpfs=%s', async (fallback, requireOpfs) => {
+  const session = createTreecrdtSession(openTreecrdtDb);
 
-    await scope.onmessage?.({ data: initRequest(fallback) } as MessageEvent<RpcRequest>);
+  await expect(
+    session.open({
+      baseUrl: '/',
+      filename: '/policy.db',
+      storage: 'opfs',
+      docId: 'fallback-policy',
+      fallback,
+    }),
+  ).rejects.toThrow('stop after inspecting options');
 
-    expect(openTreecrdtDb).toHaveBeenCalledWith(expect.objectContaining({ requireOpfs }));
-  },
-);
+  expect(openTreecrdtDb).toHaveBeenCalledWith(expect.objectContaining({ requireOpfs }));
+});
 
 test.each([
   ['throw', true],
   ['memory', false],
-] as const)('shared worker maps %s fallback to requireOpfs=%s', async (fallback, requireOpfs) => {
-  const port = {
-    onmessage: null as ((event: MessageEvent<RpcRequest>) => void) | null,
-    postMessage: vi.fn(),
-    start: vi.fn(),
-  };
-  const scope = {
-    onconnect: null as ((event: MessageEvent) => void) | null,
-  };
-  vi.stubGlobal('self', scope);
-  await import('../src/shared-worker.js');
+] as const)(
+  'shared worker maps %s fallback to requireOpfs=%s with any-context VFS',
+  async (fallback, requireOpfs) => {
+    const channel = new MessageChannel();
+    const scope = {
+      onconnect: null as ((event: MessageEvent) => void) | null,
+    };
+    vi.stubGlobal('self', scope);
+    await import('../src/shared-worker.js');
 
-  scope.onconnect?.({ ports: [port] } as unknown as MessageEvent);
-  port.onmessage?.({ data: initRequest(fallback) } as MessageEvent<RpcRequest>);
+    scope.onconnect?.({ ports: [channel.port1] } as unknown as MessageEvent);
+    channel.port2.start();
+    const remote = Comlink.wrap<TreecrdtConnection>(channel.port2);
 
-  await vi.waitFor(() => expect(openTreecrdtDb).toHaveBeenCalledOnce());
-  expect(openTreecrdtDb).toHaveBeenCalledWith(expect.objectContaining({ requireOpfs }));
-});
+    await expect(
+      remote.init({
+        baseUrl: '/',
+        filename: '/policy.db',
+        storage: 'opfs',
+        docId: 'fallback-policy',
+        fallback,
+      }),
+    ).rejects.toThrow('stop after inspecting options');
+
+    expect(openTreecrdtDb).toHaveBeenCalledWith(
+      expect.objectContaining({ requireOpfs, opfsVfs: 'any-context' }),
+    );
+
+    remote[Comlink.releaseProxy]();
+    channel.port1.close();
+    channel.port2.close();
+  },
+);
