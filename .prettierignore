@@ -6,4 +6,5 @@ vendor
 packages/**/generated
 packages/treecrdt-wa-sqlite-vendor
 packages/treecrdt-riblt-wasm-js/pkg-web
+packages/treecrdt-wasm-js/pkg-web
 pkg
