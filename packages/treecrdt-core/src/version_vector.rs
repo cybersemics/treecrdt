@@ -5,9 +5,9 @@ use crate::{Error, Result};
 
 const VERSION_VECTOR_V0_MAGIC: &[u8; 4] = b"TCVV";
 const VERSION_VECTOR_V0_VERSION: u8 = 0;
-const VERSION_VECTOR_V0_HEADER_LEN: usize = VERSION_VECTOR_V0_MAGIC.len() + 1 + 4;
-const VERSION_VECTOR_V0_MIN_ENTRY_LEN: usize = 4 + 8 + 4;
-const VERSION_VECTOR_V0_RANGE_LEN: usize = 16;
+const VERSION_VECTOR_V0_HEADER_LEN: usize = VERSION_VECTOR_V0_MAGIC.len() + 1 + 4; // magic + version + entry count
+const VERSION_VECTOR_V0_MIN_ENTRY_LEN: usize = 4 + 8 + 4; // replica length + frontier + range count
+const VERSION_VECTOR_V0_RANGE_LEN: usize = 8 + 8; // inclusive start + end
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct ReplicaVersion {
@@ -226,7 +226,7 @@ pub struct VersionVector {
 
 #[cfg(feature = "serde")]
 mod serde_impl {
-    //! Generic serde support for diagnostics and snapshots only.
+    //! Structured serde representation for diagnostics, snapshots, and the JavaScript bridge.
     //! Protocol and storage boundaries must use the explicit v0 binary codec.
 
     use super::{ReplicaVersion, VersionVector};

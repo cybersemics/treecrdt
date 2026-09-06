@@ -195,10 +195,6 @@ fn decode_ops_or_local_result(json: &str) -> Vec<JsonOp> {
     vec![serde_json::from_str::<JsonLocalOpResult>(json).unwrap().op]
 }
 
-fn encode_version_vector_v0(version_vector: &VersionVector) -> Vec<u8> {
-    version_vector.encode_v0().unwrap()
-}
-
 fn json_op(op: &Operation) -> JsonOp {
     let (kind, parent, node, new_parent, order_key, payload) = match &op.kind {
         OperationKind::Insert {
@@ -249,7 +245,7 @@ fn json_op(op: &Operation) -> JsonOp {
         node,
         new_parent,
         order_key,
-        known_state: op.meta.known_state.as_ref().map(encode_version_vector_v0),
+        known_state: op.meta.known_state.as_ref().map(|vector| vector.encode_v0().unwrap()),
         payload,
     }
 }
