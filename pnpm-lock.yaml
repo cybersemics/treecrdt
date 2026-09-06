@@ -339,6 +339,9 @@ importers:
       '@treecrdt/sync-sqlite':
         specifier: workspace:*
         version: link:../sync-protocol/material/sqlite
+      '@treecrdt/wasm':
+        specifier: workspace:*
+        version: link:../treecrdt-wasm-js
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -466,6 +469,9 @@ importers:
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
+      '@treecrdt/wasm':
+        specifier: workspace:*
+        version: link:../treecrdt-wasm-js
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25
@@ -481,9 +487,6 @@ importers:
       typescript:
         specifier: ^5.3.3
         version: 5.9.3
-      vitest:
-        specifier: ^1.6.0
-        version: 1.6.1(@types/node@20.19.25)
 
   packages/treecrdt-wa-sqlite:
     dependencies:
@@ -579,6 +582,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
 
 packages:
 

@@ -2,7 +2,7 @@ import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/e
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
-import { encodeVersionVectorV0 } from '@treecrdt/interface/version-vector';
+import { encodeVersionVectorV0 } from '@treecrdt/wasm/codec';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 import {
@@ -388,7 +388,7 @@ function orderKeyFromPosition(position: number): Uint8Array {
 
 function versionVectorBytes(
   entries: { replica: ReplicaId; frontier: number; ranges?: [number, number][] }[],
-): Uint8Array {
+): Promise<Uint8Array> {
   return encodeVersionVectorV0({
     entries: entries.map((e) => ({
       replica: replicaIdToBytes(e.replica),
@@ -1273,7 +1273,7 @@ async function scenarioDefensiveDeleteReactiveInsert(
       counter: 2,
       lamport: 2,
       node: parent,
-      knownState: versionVectorBytes([{ replica, frontier: 1 }]),
+      knownState: await versionVectorBytes([{ replica, frontier: 1 }]),
     }),
   );
 
@@ -1328,7 +1328,7 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
       counter: 2,
       lamport: 3,
       node: parent,
-      knownState: versionVectorBytes([{ replica: rA, frontier: 1 }]),
+      knownState: await versionVectorBytes([{ replica: rA, frontier: 1 }]),
     }),
   );
 

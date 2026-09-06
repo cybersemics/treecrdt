@@ -22,7 +22,8 @@
     "@treecrdt/auth": "workspace:*",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync-protocol": "workspace:*",
-    "@treecrdt/sync-sqlite": "workspace:*"
+    "@treecrdt/sync-sqlite": "workspace:*",
+    "@treecrdt/wasm": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

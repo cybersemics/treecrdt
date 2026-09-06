@@ -31,5 +31,8 @@ inclusive additional observations after gaps.
 - Counts and lengths MUST consume exactly the input. Truncation, trailing bytes, and versions other
   than `0` are invalid.
 
-The [shared test vectors](../fixtures/version-vector-v0.json) are normative: implementations MUST
-produce the exact valid encodings and reject every invalid value.
+The [shared test vectors](../fixtures/version-vector-v0.json) are normative: native Rust and the
+JavaScript WASM bridge MUST produce the exact valid encodings and reject every invalid value.
+
+JavaScript consumers use `await encodeVersionVectorV0(value)` or `await decodeVersionVectorV0(bytes)`
+from `@treecrdt/wasm/codec`. Both call the Rust implementation and load WASM on first use.

@@ -2,6 +2,8 @@
 //! WASM-friendly bridge for TreeCRDT.
 //! Exposes a small wasm-bindgen surface that matches the JS adapter needs.
 
+mod version_vector;
+
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::to_value;
 use treecrdt_core::{
