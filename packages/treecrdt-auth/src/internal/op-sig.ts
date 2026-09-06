@@ -2,7 +2,11 @@ import { utf8ToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import { decodeVersionVectorV0 } from '@treecrdt/interface/version-vector';
+import {
+  decodeVersionVectorV0,
+  VersionVectorCodecError,
+  type VersionVector,
+} from '@treecrdt/wasm/codec';
 
 import { signEd25519, verifyEd25519 } from '../ed25519.js';
 import { concatBytes, u32be, u64be, u8 } from './bytes.js';
@@ -115,13 +119,15 @@ function assertKnownStateSize(bytes: Uint8Array): void {
   }
 }
 
-function assertCanonicalKnownState(bytes: Uint8Array): void {
+async function assertCanonicalKnownState(bytes: Uint8Array | undefined): Promise<void> {
+  if (bytes === undefined) return;
   assertKnownStateSize(bytes);
-  let vector: ReturnType<typeof decodeVersionVectorV0>;
+  let vector: VersionVector;
   try {
-    vector = decodeVersionVectorV0(bytes);
-  } catch {
-    return invalidKnownState();
+    vector = await decodeVersionVectorV0(bytes);
+  } catch (error) {
+    if (error instanceof VersionVectorCodecError) return invalidKnownState();
+    throw error;
   }
   if (vector.entries.length > MAX_KNOWN_STATE_ENTRIES) {
     throw new Error(
@@ -144,10 +150,6 @@ function assertPolicyOperation(op: Operation, knownState: Uint8Array | undefined
   }
 }
 
-function assertCanonicalOperationKnownState(knownState: Uint8Array | undefined): void {
-  if (knownState !== undefined) assertCanonicalKnownState(knownState);
-}
-
 function encodeTreecrdtOpSigInputUnchecked(
   opts: { docId: string; op: Operation },
   knownState: Uint8Array | undefined,
@@ -165,11 +167,14 @@ function encodeTreecrdtOpSigInputUnchecked(
   };
 }
 
-export function encodeTreecrdtOpSigInput(opts: { docId: string; op: Operation }): Uint8Array {
+export async function encodeTreecrdtOpSigInput(opts: {
+  docId: string;
+  op: Operation;
+}): Promise<Uint8Array> {
   const knownState = opts.op.meta.knownState;
   assertPolicyOperation(opts.op, knownState);
   const encoded = encodeTreecrdtOpSigInputUnchecked(opts, knownState);
-  assertCanonicalOperationKnownState(encoded.signedKnownState);
+  await assertCanonicalKnownState(encoded.signedKnownState);
   return encoded.message;
 }
 
@@ -178,8 +183,9 @@ export async function signTreecrdtOp(opts: {
   op: Operation;
   privateKey: Uint8Array;
 }): Promise<Uint8Array> {
-  const msg = encodeTreecrdtOpSigInput({ docId: opts.docId, op: opts.op });
-  return signEd25519(msg, opts.privateKey);
+  const privateKey = new Uint8Array(opts.privateKey);
+  const message = await encodeTreecrdtOpSigInput({ docId: opts.docId, op: opts.op });
+  return signEd25519(message, privateKey);
 }
 
 export async function verifyTreecrdtOp(opts: {
@@ -194,6 +200,6 @@ export async function verifyTreecrdtOp(opts: {
   const verified = await verifyEd25519(opts.signature, encoded.message, opts.publicKey);
   if (!verified) return false;
   // Validate the suffix copied into the signed message, not the caller-owned mutable input.
-  assertCanonicalOperationKnownState(encoded.signedKnownState);
+  await assertCanonicalKnownState(encoded.signedKnownState);
   return true;
 }

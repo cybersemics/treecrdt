@@ -5,7 +5,7 @@ import { encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
-import { encodeVersionVectorV0 } from '@treecrdt/interface/version-vector';
+import { encodeVersionVectorV0 } from '@treecrdt/wasm/codec';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
@@ -314,7 +314,7 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     meta: {
       id: { replica: aPk, counter: 2 },
       lamport: 2,
-      knownState: knownState(1n),
+      knownState: await knownState(1n),
     },
     kind: { type: 'delete', node: nodeIdFromInt(1) },
   };
@@ -338,7 +338,7 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
 
   const changedState: Operation = {
     ...opDelete,
-    meta: { ...opDelete.meta, knownState: knownState(2n) },
+    meta: { ...opDelete.meta, knownState: await knownState(2n) },
   };
   await expect(authB.verifyOps?.([changedState], [auth![1]!], ctx)).rejects.toThrow(
     /invalid op signature/i,

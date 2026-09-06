@@ -10,3 +10,7 @@ signatures from the earlier draft format and replaces the public `encodeTreecrdt
 `signTreecrdtOpV1`, and `verifyTreecrdtOpV1` exports with their unsuffixed forms. Use strict RFC 8032
 verification for identity signatures and reject unsafe JavaScript operation counters and Lamport
 timestamps.
+
+`encodeTreecrdtOpSigInput` now returns `Promise<Uint8Array>` because it validates version vectors
+through the shared Rust WASM codec. Await this helper; `signTreecrdtOp` and `verifyTreecrdtOp`
+keep their existing asynchronous signatures.
