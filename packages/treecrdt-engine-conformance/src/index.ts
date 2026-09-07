@@ -6,6 +6,7 @@ import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 import {
+  createTreecrdtAuthSession,
   createTreecrdtCoseCwtAuth,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   getEd25519PublicKey,
@@ -206,7 +207,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioSyncKnownStatePropagation,
     },
     {
-      name: 'sync auth: signed ops converge (COSE+CWT)',
+      name: 'sync auth: signed ops and defensive deletes converge (COSE+CWT)',
       run: scenarioSyncAuthSignedOps,
     },
     {
@@ -1568,9 +1569,8 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
   const bPk = await getEd25519PublicKey(bSk);
 
   const root = nodeIdFromInt(0);
-  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: 'last' }, null);
-  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null);
-  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: 'last' }, null);
+  const parent = nodeIdFromInt(1);
+  const child = nodeIdFromInt(4);
 
   const tokenA = makeCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
@@ -1583,20 +1583,27 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     docId,
   });
 
-  const authA = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: aSk,
-    localPublicKey: aPk,
-    localCapabilityTokens: [tokenA],
+  const sessionA = createTreecrdtAuthSession({
+    docId,
+    trust: { issuerPublicKeys: [issuerPk] },
+    local: { privateKey: aSk, publicKey: aPk, capabilityTokens: [tokenA] },
     requireProofRef: true,
   });
 
-  const authB = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: bSk,
-    localPublicKey: bPk,
-    localCapabilityTokens: [tokenB],
+  const sessionB = createTreecrdtAuthSession({
+    docId,
+    trust: { issuerPublicKeys: [issuerPk] },
+    local: { privateKey: bSk, publicKey: bPk, capabilityTokens: [tokenB] },
     requireProofRef: true,
+  });
+  await Promise.all([sessionA.ready, sessionB.ready]);
+
+  await a.local.insert(aPk, root, parent, { type: 'last' }, null, { authSession: sessionA });
+  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null, {
+    authSession: sessionB,
+  });
+  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: 'last' }, null, {
+    authSession: sessionB,
   });
 
   const backendA = createEngineSyncBackend(a);
@@ -1606,11 +1613,11 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     backendA,
     backendB,
     codec: treecrdtSyncV0ProtobufCodec,
-    peerAOptions: { auth: authA },
-    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+    peerAOptions: { auth: sessionA.syncAuth },
+    peerBOptions: { auth: sessionB.syncAuth, maxOpsPerBatch: 1 },
   });
 
-  try {
+  const syncAndAssertConverged = async () => {
     await peerA.syncOnce(
       transportA,
       { all: {} },
@@ -1630,6 +1637,49 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
         message: 'sync auth conformance: expected peers to converge',
       },
     );
+  };
+
+  try {
+    await syncAndAssertConverged();
+
+    // A deletes the parent without seeing B's concurrent child insertion.
+    await b.local.insert(bPk, parent, child, { type: 'last' }, null, { authSession: sessionB });
+    assertArrayEqual(await a.tree.children(parent), [], 'deleter has not seen the child');
+    let authorizedState: Uint8Array | undefined;
+    const deletion = await a.local.delete(aPk, parent, {
+      authSession: {
+        authorizeLocalOps: async (ops) => {
+          const state = ops[0]?.meta.knownState?.slice();
+          const auth = await sessionA.authorizeLocalOps(ops);
+          authorizedState = state;
+          return auth;
+        },
+      },
+    });
+    assert(authorizedState, 'local delete must authorize its knownState before committing');
+    assertBytesEqual(deletion.meta.knownState ?? null, authorizedState, 'authorized delete state');
+    assert(!(await a.tree.children(root)).includes(parent), 'delete initially hides parent');
+
+    await syncAndAssertConverged();
+
+    for (const [name, engine] of [
+      ['author', a],
+      ['receiver', b],
+    ] as const) {
+      const storedDelete = (await engine.ops.all()).find((op) => op.kind.type === 'delete');
+      assert(storedDelete, `${name} stores the signed delete`);
+      assertBytesEqual(
+        storedDelete.meta.knownState ?? null,
+        authorizedState,
+        `${name} preserves the authorized delete state`,
+      );
+      assert((await engine.tree.children(root)).includes(parent), `${name} restores parent`);
+      assertArrayEqual(
+        await engine.tree.children(parent),
+        [child],
+        `${name} preserves unseen child`,
+      );
+    }
   } finally {
     detach();
   }
