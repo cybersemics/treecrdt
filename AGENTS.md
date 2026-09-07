@@ -1,7 +1,5 @@
 # Working agreements
 
-Follow [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for checks and release metadata.
-
 ## Code Review Rules
 
 - Prefer simple, explainable solutions. Additional complexity should provide a
@@ -31,3 +29,9 @@ Follow [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for checks and release metad
   findings, rerun affected checks, and re-review substantive fixes. A review with
   no new actionable findings is a valid outcome. For high-risk changes without an
   independent review, recommend a fresh-context review before merge.
+
+## Changesets
+
+Include a changeset for release-tracked package changes. Use an empty changeset
+when no release is intended, including package-local docs/tests. Changes outside
+release-tracked packages need none.

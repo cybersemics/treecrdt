@@ -33,4 +33,4 @@ For benchmark commands, product-facing note/sync scenarios, and the sync target 
 
 ## Contributing
 
-For PR expectations, local checks, and changeset/release notes, see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+For implementation and review expectations, see [AGENTS.md](AGENTS.md).
