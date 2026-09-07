@@ -1,12 +1,15 @@
-import { createVersionVectorCodec } from './codec.js';
+import { createVersionVectorCodecLoader } from './codec.js';
 
-export type { VersionVector, VersionVectorEntry, VersionVectorRange } from './codec.js';
+export type {
+  VersionVector,
+  VersionVectorCodec,
+  VersionVectorEntry,
+  VersionVectorRange,
+} from './codec.js';
 export { VersionVectorCodecError } from './codec.js';
 
-export const { encodeVersionVectorV0, decodeVersionVectorV0 } = createVersionVectorCodec(
-  async () => {
-    const wasm = await import('../pkg-web/treecrdt_wasm.js');
-    await wasm.default();
-    return wasm;
-  },
-);
+export const loadVersionVectorCodec = createVersionVectorCodecLoader(async () => {
+  const wasm = await import('../pkg-web/treecrdt_wasm.js');
+  await wasm.default();
+  return wasm;
+});
