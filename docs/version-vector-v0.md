@@ -33,5 +33,3 @@ inclusive additional observations after gaps.
 
 The [shared test vectors](../fixtures/version-vector-v0.json) are normative: native Rust and the
 JavaScript WASM bridge MUST produce the exact valid encodings and reject every invalid value.
-
-See the [JavaScript usage example](../packages/treecrdt-wasm-js/README.md).

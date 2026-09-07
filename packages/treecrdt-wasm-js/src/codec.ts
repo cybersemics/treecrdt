@@ -37,6 +37,7 @@ function assertBytes(value: unknown): asserts value is Uint8Array {
   }
 }
 
+/** Create a lazy, cached loader for synchronous codec methods; failed loads can be retried. */
 export function createVersionVectorCodecLoader(
   loadWasm: () => Promise<VersionVectorCodec>,
 ): () => Promise<VersionVectorCodec> {
