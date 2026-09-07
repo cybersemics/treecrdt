@@ -9,12 +9,8 @@ It is intentionally **ACL-agnostic at the TreeCRDT core layer**: the CRDT operat
 types and merge semantics do not change. Authorization is enforced by the sync layer
 and by any server that chooses to validate inbound ops.
 
-Status: draft. Backwards compatibility is not guaranteed.
-
-This draft is revised in place until the auth profile is declared stable. Implementations do not
-negotiate or verify earlier draft auth profiles: development signatures and proof material produced
-by a superseded format must be recreated. These revisions do not change the surrounding Sync v0
-envelope.
+Draft: revised in place without compatibility with earlier profiles. Recreate signatures and proof
+material after format changes; the surrounding Sync v0 envelope is unchanged.
 
 ## Threat model (baseline)
 
@@ -177,14 +173,8 @@ Reference implementation status:
 
 ## Signed operations
 
-Ops are signed with the doc-scoped Ed25519 key. The signature covers:
-
-- `doc_id`
-- `op_id` (`replica_id` + `counter`)
-- `lamport`
-- op kind + fields
-- payload bytes (ciphertext bytes if payloads are encrypted)
-- explicit defensive-delete `known_state` presence and bytes
+Ops are signed with the doc-scoped Ed25519 key using the bytes below. Payload bytes are signed as
+transmitted (ciphertext when encrypted).
 
 ### Canonical signing bytes
 
@@ -222,7 +212,7 @@ Kind tags and fields:
   - value_tag(u8): 0=clear, 1=payload
   - if value_tag=1: u32_be(len(payload)) || payload_bytes
 
-Every operation uses this one signature format. `known_state` is encoded after the operation fields:
+`known_state` is encoded after the operation fields:
 
 ```
 known_state = absent:  u8(0)
@@ -235,14 +225,17 @@ each replica id is exactly the 32-byte Ed25519 public key required by Sync v0, t
 1 MiB, and it contains at most 4,096 entries. Version-vector counters retain the codec's full `u64`
 range; only the JavaScript operation counter and Lamport fields above use safe integers.
 
-Policy APIs require a present, non-zero-length `known_state` byte field on deletes and reject the
-field on every other operation; tombstones use the explicit absent-state form. The canonical empty
-vector is valid because its encoding is nine bytes. Because every operation signs the presence tag,
-a relay cannot strip delete state to bypass this policy.
+Policy APIs require canonical `known_state` on deletes (the canonical empty vector is valid) and
+reject the field on all other operations. Every operation signs its presence tag.
 
 Signers validate the canonical bytes before signing. Verifiers size-check and copy the exact bytes
 into the signature input, verify Ed25519 first, and only then run canonical decoding plus the auth
 profile checks. Invalid signatures therefore cannot trigger version-vector parsing.
+
+### JavaScript integration
+
+`@treecrdt/auth` initializes WASM automatically when validating `knownState`, not on import.
+Browser builds must serve the generated WASM asset; applications do not initialize the codec themselves.
 
 ## Subtree scope enforcement and `pending_context`
 
