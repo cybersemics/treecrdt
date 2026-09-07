@@ -203,10 +203,6 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioDefensiveDeleteOutOfOrderChildInsert,
     },
     {
-      name: 'sync: delete knownState bytes propagate unchanged',
-      run: scenarioSyncKnownStatePropagation,
-    },
-    {
       name: 'sync auth: signed ops and defensive deletes converge (COSE+CWT)',
       run: scenarioSyncAuthSignedOps,
     },
@@ -762,19 +758,35 @@ async function scenarioMaterializationEventDefensiveRestore(
   const rA = replicaFromLabel('rA');
   const rB = replicaFromLabel('rB');
 
-  const parentInsert = makeInsertOp({
-    replica: rA,
-    counter: 1,
-    lamport: 1,
-    parent: root,
-    node: parent,
-    orderKey: orderKeyFromPosition(0),
-  });
-  await a.ops.append(parentInsert);
-  await b.ops.appendMany([parentInsert]);
+  await b.local.insert(rB, root, parent, { type: 'last' }, null);
+  await a.ops.appendMany(await b.ops.all());
 
+  // A deletes B's parent without seeing B's child insertion.
   const childInsert = await b.local.insert(rB, parent, child, { type: 'last' }, null);
-  await a.local.delete(rA, parent);
+  const deletion = await a.local.delete(rA, parent);
+  assert(
+    deletion.meta.knownState && deletion.meta.knownState.length > 0,
+    'local delete must emit knownState',
+  );
+
+  const deleteEvents = await captureMaterializationEvents(b, async () => {
+    await b.ops.appendMany(await a.ops.all());
+  });
+  const receivedDelete = (await b.ops.all()).find((op) => op.kind.type === 'delete');
+  assert(receivedDelete, 'receiver must store the delete operation');
+  assertBytesEqual(
+    receivedDelete.meta.knownState ?? null,
+    deletion.meta.knownState,
+    'receiver must preserve exact delete knownState bytes',
+  );
+  assert(deleteEvents.length > 0, 'received delete must emit a materialization event');
+  assertEventNodeRefsSortedUnique(
+    materializationEventNodeRefs(deleteEvents[deleteEvents.length - 1]!),
+    'received delete event node refs',
+  );
+  assertArrayEqual(await b.tree.children(root), [parent], 'receiver preserves parent');
+  assertArrayEqual(await b.tree.children(parent), [child], 'receiver preserves unseen child');
+
   const events = await captureMaterializationEvents(a, () => a.ops.appendMany([childInsert]));
   assertEqual(events.length, 1, 'defensive restore should emit one materialization event');
   const refs = materializationEventNodeRefs(events[0]!);
@@ -1353,53 +1365,6 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     'child visible under restored parent',
   );
   assertEqual(await engine.tree.nodeCount(), 2, 'nodeCount after restore');
-}
-
-async function scenarioSyncKnownStatePropagation(
-  ctx: TreecrdtEngineConformanceContext,
-): Promise<void> {
-  const a = ctx.engine;
-  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
-
-  const root = nodeIdFromInt(0);
-  const parent = nodeIdFromInt(1);
-  const child = nodeIdFromInt(2);
-  const rA = replicaFromLabel('rA');
-  const rB = replicaFromLabel('rB');
-
-  // Replica B inserts parent, then syncs it to A.
-  await b.local.insert(rB, root, parent, { type: 'last' }, null);
-  await a.ops.appendMany(await b.ops.all());
-
-  // Replica B inserts a child under parent, but A never sees it.
-  await b.local.insert(rB, parent, child, { type: 'last' }, null);
-
-  // Replica A deletes parent without being aware of B's child insert.
-  const del = await a.local.delete(rA, parent);
-  assert(
-    del.meta.knownState && del.meta.knownState.length > 0,
-    'local delete must emit knownState',
-  );
-
-  // Sync A -> B. The delete MUST carry knownState so B doesn't treat it as aware of the child.
-  const eventsOnB = await captureMaterializationEvents(b, async () => {
-    await b.ops.appendMany(await a.ops.all());
-  });
-  const receivedDelete = (await b.ops.all()).find((op) => op.kind.type === 'delete');
-  assert(receivedDelete, 'receiver must store the delete operation');
-  assertBytesEqual(
-    receivedDelete.meta.knownState ?? null,
-    del.meta.knownState ?? null,
-    'receiver must preserve exact delete knownState bytes',
-  );
-  assert(eventsOnB.length > 0, 'sync knownState should emit a materialization event on B');
-  assertEventNodeRefsSortedUnique(
-    materializationEventNodeRefs(eventsOnB[eventsOnB.length - 1]!),
-    'sync knownState: materialization event node refs shape',
-  );
-
-  assertArrayEqual(await b.tree.children(root), [parent], 'parent restored after sync delete');
-  assertArrayEqual(await b.tree.children(parent), [child], 'child still present after sync delete');
 }
 
 async function scenarioPersistenceMaterializedTreeReopen(
