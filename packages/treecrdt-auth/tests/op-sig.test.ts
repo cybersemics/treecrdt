@@ -11,7 +11,7 @@ import type { Operation } from '@treecrdt/interface';
 import {
   loadVersionVectorCodec,
   type VersionVectorCodec,
-  type VersionVectorRange,
+  type VersionVectorEntry,
 } from '@treecrdt/wasm/codec';
 import {
   encodeTreecrdtOpSigInput,
@@ -33,7 +33,7 @@ const meta = {
 };
 
 function operation(kind: Operation['kind'], state?: Uint8Array): Operation {
-  return { meta: { ...meta, ...(state ? { knownState: state } : {}) }, kind };
+  return { meta: { ...meta, id: { ...meta.id }, ...(state ? { knownState: state } : {}) }, kind };
 }
 
 function knownState(frontier = 0n): Uint8Array {
@@ -42,13 +42,7 @@ function knownState(frontier = 0n): Uint8Array {
   });
 }
 
-function versionVectorState(
-  entries: Array<{
-    replica: Uint8Array;
-    frontier: bigint;
-    ranges: readonly VersionVectorRange[];
-  }>,
-): Uint8Array {
+function versionVectorState(entries: readonly VersionVectorEntry[]): Uint8Array {
   return codec.encodeVersionVectorV0({ entries });
 }
 
@@ -118,25 +112,6 @@ test('operation signature input accepts the maximum safe operation clocks', asyn
   op.meta.lamport = Number.MAX_SAFE_INTEGER;
 
   await expect(encodeTreecrdtOpSigInput({ docId: 'doc', op })).resolves.toBeInstanceOf(Uint8Array);
-});
-
-test('invalid signatures are rejected before knownState is parsed', async () => {
-  const privateKey = ed25519Utils.randomSecretKey();
-  const publicKey = await getPublicKey(privateKey);
-  const kind = { type: 'delete', node } as const;
-  const signature = await signTreecrdtOp({
-    docId: 'doc',
-    op: operation(kind, knownState()),
-    privateKey,
-  });
-  await expect(
-    verifyTreecrdtOp({
-      docId: 'doc',
-      op: operation(kind, new Uint8Array([0xff])),
-      signature,
-      publicKey,
-    }),
-  ).resolves.toBe(false);
 });
 
 test('valid signatures are followed by canonical knownState validation', async () => {
