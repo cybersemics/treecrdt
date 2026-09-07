@@ -1,16 +1,16 @@
-import { utf8ToBytes } from '@noble/hashes/utils';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import { signEd25519, verifyEd25519 } from '../ed25519.js';
-import { concatBytes, u32be, u64be, u8 } from './bytes.js';
+import { u32be, u64be, u8 } from './bytes.js';
 
 const OP_SIG_DOMAIN = utf8ToBytes('treecrdt/op-sig/v1');
 const MAX_KNOWN_STATE_BYTES = 1024 * 1024;
 const MAX_KNOWN_STATE_ENTRIES = 4096;
-const V0_REPLICA_ID_BYTES = 32;
+const ED25519_PUBLIC_KEY_LEN = 32;
 
 function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Array {
   const docIdBytes = utf8ToBytes(opts.docId);
@@ -95,39 +95,28 @@ function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Ar
   );
 }
 
-function encodeKnownState(knownState: Uint8Array | undefined): Uint8Array {
-  return knownState === undefined
-    ? u8(0)
-    : concatBytes(u8(1), u32be(knownState.length), knownState);
-}
-
-function assertKnownStateSize(bytes: Uint8Array): void {
-  if (bytes.length > MAX_KNOWN_STATE_BYTES) {
-    throw new Error(
-      `knownState exceeds the ${MAX_KNOWN_STATE_BYTES}-byte operation-signature limit`,
-    );
-  }
-}
-
 async function assertCanonicalKnownState(bytes: Uint8Array | undefined): Promise<void> {
   if (bytes === undefined) return;
-  assertKnownStateSize(bytes);
   const codec = await loadVersionVectorCodec();
-  const vector = codec.decodeVersionVectorV0(bytes);
+  const vector = codec.decodeVersionVector(bytes);
   if (vector.entries.length > MAX_KNOWN_STATE_ENTRIES) {
     throw new Error(
       `knownState exceeds the ${MAX_KNOWN_STATE_ENTRIES}-entry operation-signature limit`,
     );
   }
   for (const entry of vector.entries) {
-    if (entry.replica.length !== V0_REPLICA_ID_BYTES) {
+    if (entry.replica.length !== ED25519_PUBLIC_KEY_LEN) {
       throw new Error('knownState must use 32-byte replica ids');
     }
   }
 }
 
 function assertPolicyOperation(op: Operation, knownState: Uint8Array | undefined): void {
-  if (knownState !== undefined) assertKnownStateSize(knownState);
+  if (knownState !== undefined && knownState.length > MAX_KNOWN_STATE_BYTES) {
+    throw new Error(
+      `knownState exceeds the ${MAX_KNOWN_STATE_BYTES}-byte operation-signature limit`,
+    );
+  }
   if (op.kind.type === 'delete') {
     if (knownState === undefined || knownState.length === 0) {
       throw new Error('delete operations require non-empty knownState');
@@ -145,7 +134,7 @@ function encodeTreecrdtOpSigInputUnchecked(
     OP_SIG_DOMAIN,
     u8(0),
     encodeTreecrdtOpFields(opts),
-    encodeKnownState(knownState),
+    ...(knownState === undefined ? [u8(0)] : [u8(1), u32be(knownState.length), knownState]),
   );
   return {
     message,

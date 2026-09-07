@@ -50,8 +50,8 @@ test('auth loads the codec only for canonical knownState validation', async () =
 
   const failure = new WebAssembly.RuntimeError('unreachable');
   loadCodec.mockResolvedValue({
-    encodeVersionVectorV0: vi.fn(),
-    decodeVersionVectorV0() {
+    encodeVersionVector: vi.fn(),
+    decodeVersionVector() {
       throw failure;
     },
   });

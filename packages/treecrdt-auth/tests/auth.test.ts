@@ -314,7 +314,7 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     orderKey: orderKeyFromPosition(0),
   });
   const knownState = (frontier: bigint) =>
-    codec.encodeVersionVectorV0({ entries: [{ replica: aPk, frontier, ranges: [] }] });
+    codec.encodeVersionVector({ entries: [{ replica: aPk, frontier, ranges: [] }] });
   const opDelete: Operation = {
     meta: {
       id: { replica: aPk, counter: 2 },

@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { beforeAll, expect, test } from 'vitest';
 import {
   hashes as ed25519Hashes,
@@ -37,13 +38,13 @@ function operation(kind: Operation['kind'], state?: Uint8Array): Operation {
 }
 
 function knownState(frontier = 0n): Uint8Array {
-  return codec.encodeVersionVectorV0({
+  return codec.encodeVersionVector({
     entries: frontier === 0n ? [] : [{ replica: meta.id.replica, frontier, ranges: [] }],
   });
 }
 
 function versionVectorState(entries: readonly VersionVectorEntry[]): Uint8Array {
-  return codec.encodeVersionVectorV0({ entries });
+  return codec.encodeVersionVector({ entries });
 }
 
 test('one signature format binds the explicit knownState field', async () => {
@@ -78,6 +79,24 @@ test('one signature format binds the explicit knownState field', async () => {
       publicKey,
     }),
   ).rejects.toThrow(/require.*knownState/i);
+});
+
+test('knownState byte views preserve the signed encoding', async () => {
+  const state = knownState(1n);
+  const kind = { type: 'delete', node } as const;
+  const expected = await encodeTreecrdtOpSigInput({ docId: 'doc', op: operation(kind, state) });
+  const padded = new Uint8Array(state.length + 2);
+  padded.set(state, 1);
+
+  for (const bytes of [
+    Buffer.from(state),
+    padded.subarray(1, -1),
+    runInNewContext('new Uint8Array(bytes)', { bytes: [...state] }),
+  ]) {
+    await expect(
+      encodeTreecrdtOpSigInput({ docId: 'doc', op: operation(kind, bytes) }),
+    ).resolves.toEqual(expected);
+  }
 });
 
 test('strict verification rejects small-order Ed25519 identities', async () => {
