@@ -2,11 +2,7 @@ import { utf8ToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import {
-  loadVersionVectorCodec,
-  VersionVectorCodecError,
-  type VersionVector,
-} from '@treecrdt/wasm/codec';
+import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import { signEd25519, verifyEd25519 } from '../ed25519.js';
 import { concatBytes, u32be, u64be, u8 } from './bytes.js';
@@ -105,12 +101,6 @@ function encodeKnownState(knownState: Uint8Array | undefined): Uint8Array {
     : concatBytes(u8(1), u32be(knownState.length), knownState);
 }
 
-function invalidKnownState(): never {
-  throw new Error(
-    'knownState must use canonical TreeCRDT VersionVector v0 bytes with 32-byte replica ids',
-  );
-}
-
 function assertKnownStateSize(bytes: Uint8Array): void {
   if (bytes.length > MAX_KNOWN_STATE_BYTES) {
     throw new Error(
@@ -123,20 +113,16 @@ async function assertCanonicalKnownState(bytes: Uint8Array | undefined): Promise
   if (bytes === undefined) return;
   assertKnownStateSize(bytes);
   const codec = await loadVersionVectorCodec();
-  let vector: VersionVector;
-  try {
-    vector = codec.decodeVersionVectorV0(bytes);
-  } catch (error) {
-    if (error instanceof VersionVectorCodecError) return invalidKnownState();
-    throw error;
-  }
+  const vector = codec.decodeVersionVectorV0(bytes);
   if (vector.entries.length > MAX_KNOWN_STATE_ENTRIES) {
     throw new Error(
       `knownState exceeds the ${MAX_KNOWN_STATE_ENTRIES}-entry operation-signature limit`,
     );
   }
   for (const entry of vector.entries) {
-    if (entry.replica.length !== V0_REPLICA_ID_BYTES) invalidKnownState();
+    if (entry.replica.length !== V0_REPLICA_ID_BYTES) {
+      throw new Error('knownState must use 32-byte replica ids');
+    }
   }
 }
 

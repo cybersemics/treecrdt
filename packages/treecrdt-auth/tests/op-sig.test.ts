@@ -136,7 +136,7 @@ test('valid signatures are followed by canonical knownState validation', async (
       signature,
       publicKey,
     }),
-  ).rejects.toThrow(/canonical/i);
+  ).rejects.toThrow(/invalid version vector/i);
 });
 
 test('verification owns the signed knownState bytes across the async boundary', async () => {

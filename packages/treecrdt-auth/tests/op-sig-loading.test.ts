@@ -47,4 +47,13 @@ test('auth loads the codec only for canonical knownState validation', async () =
 
   await expect(encodeTreecrdtOpSigInput({ docId: 'doc', op: deletion })).rejects.toBe(unavailable);
   expect(loadCodec).toHaveBeenCalledOnce();
+
+  const failure = new WebAssembly.RuntimeError('unreachable');
+  loadCodec.mockResolvedValue({
+    encodeVersionVectorV0: vi.fn(),
+    decodeVersionVectorV0() {
+      throw failure;
+    },
+  });
+  await expect(encodeTreecrdtOpSigInput({ docId: 'doc', op: deletion })).rejects.toBe(failure);
 });
