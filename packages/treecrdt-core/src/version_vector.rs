@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use crate::ids::ReplicaId;
 use crate::{Error, Result};
 
-const VERSION_VECTOR_MAGIC: &[u8; 4] = b"TCVV";
 const VERSION_VECTOR_VERSION: u8 = 0;
-const VERSION_VECTOR_HEADER_LEN: usize = VERSION_VECTOR_MAGIC.len() + 1 + 4; // magic + version + entry count
+const VERSION_VECTOR_HEADER_LEN: usize = 1 + 4; // version + entry count
 const VERSION_VECTOR_MIN_ENTRY_LEN: usize = 4 + 8 + 4; // replica length + frontier + range count
 const VERSION_VECTOR_RANGE_LEN: usize = 8 + 8; // inclusive start + end
 
@@ -419,7 +418,6 @@ impl VersionVector {
         }
 
         let mut bytes = Vec::with_capacity(encoded_len);
-        bytes.extend_from_slice(VERSION_VECTOR_MAGIC);
         bytes.push(VERSION_VECTOR_VERSION);
         bytes.extend_from_slice(&entry_count.to_be_bytes());
         for (replica, version) in entries {
@@ -448,9 +446,6 @@ impl VersionVector {
         }
 
         let mut cursor = VersionVectorCursor::new(bytes);
-        if cursor.take(VERSION_VECTOR_MAGIC.len())? != VERSION_VECTOR_MAGIC {
-            return Err(invalid_encoding("invalid magic"));
-        }
         let version = cursor.read_u8()?;
         if version != VERSION_VECTOR_VERSION {
             return Err(invalid_encoding(format!("unsupported version {version}")));
