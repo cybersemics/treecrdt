@@ -240,7 +240,22 @@ mod serde_impl {
         #[serde(serialize_with = "serde_bytes::serialize")]
         replica: Vec<u8>,
         frontier: u64,
+        #[serde(deserialize_with = "deserialize_ranges")]
         ranges: Vec<(u64, u64)>,
+    }
+
+    // Some Serde formats ignore excess tuple elements; consume every bound before checking arity.
+    fn deserialize_ranges<'de, D>(deserializer: D) -> Result<Vec<(u64, u64)>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<Vec<u64>>::deserialize(deserializer)?
+            .into_iter()
+            .map(|bounds| match bounds.as_slice() {
+                [start, end] => Ok((*start, *end)),
+                _ => Err(D::Error::custom("ranges require exactly two bounds")),
+            })
+            .collect()
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]

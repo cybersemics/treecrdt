@@ -68,7 +68,7 @@ describe('Rust VersionVectorV0 codec through WASM', () => {
     expect(attempts).toBe(2);
   });
 
-  test('passes validated inputs directly to synchronous WASM methods', async () => {
+  test('passes inputs directly to synchronous WASM methods', async () => {
     const vector = { entries: [entry([7, 8, 9], 1n, [[3n, 4n]])] };
     const bytes = fromHex(fixture.validEncodedHex.empty);
     const loadCodec = createVersionVectorCodecLoader(async () => ({
@@ -172,6 +172,18 @@ describe('Rust VersionVectorV0 codec through WASM', () => {
     expect(codec.decodeVersionVectorV0(codec.encodeVersionVectorV0(vector))).toEqual(vector);
   });
 
+  test('accepts safe numeric counters, byte arrays, and iterables through Serde', () => {
+    const vector = {
+      entries: new Set([
+        { replica: [1], frontier: 1, ranges: new Set([new Set([3, Number.MAX_SAFE_INTEGER])]) },
+      ]),
+    };
+    const encoded = codec.encodeVersionVectorV0(vector as unknown as VersionVector);
+    expect(codec.decodeVersionVectorV0(encoded)).toEqual({
+      entries: [entry([1], 1n, [[3n, BigInt(Number.MAX_SAFE_INTEGER)]])],
+    });
+  });
+
   test.each([
     ['unsorted replicas', [entry([2]), entry([1])]],
     ['duplicate replicas', [entry([1]), entry([1])]],
@@ -188,15 +200,18 @@ describe('Rust VersionVectorV0 codec through WASM', () => {
 
   test.each([
     ['non-object vector', null],
-    ['non-array entries', { entries: new Set() }],
+    ['non-iterable entries', { entries: 1 }],
     ['non-object entry', { entries: [null] }],
-    ['plain-array replica', { entries: [{ ...entry(), replica: [1] }] }],
-    ['numeric counter', { entries: [{ ...entry(), frontier: 1 }] }],
-    ['non-array ranges', { entries: [{ ...entry(), ranges: new Set() }] }],
+    ['invalid replica byte', { entries: [{ ...entry(), replica: [256] }] }],
+    [
+      'unsafe numeric counter',
+      { entries: [{ ...entry(), frontier: Number.MAX_SAFE_INTEGER + 1 }] },
+    ],
+    ['non-iterable ranges', { entries: [{ ...entry(), ranges: 1 }] }],
     ['short range', { entries: [{ ...entry(), ranges: [[2n]] }] }],
-    ['long range', { entries: [{ ...entry(), ranges: [[2n, 3n, 4n]] }] }],
-    ['numeric range', { entries: [{ ...entry(), ranges: [[2, 3]] }] }],
-  ])('rejects JS input types that WASM would otherwise coerce: %s', (_name, vector) => {
+    ['long range', { entries: [{ ...entry(), ranges: [[3n, 4n, 5n]] }] }],
+    ['long iterable range', { entries: [{ ...entry(), ranges: [new Set([3n, 4n, 5n])] }] }],
+  ])('rejects malformed or unsafe JS input: %s', (_name, vector) => {
     expect(() => codec.encodeVersionVectorV0(vector as VersionVector)).toThrow(
       VersionVectorCodecError,
     );

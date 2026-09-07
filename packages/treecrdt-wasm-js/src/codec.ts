@@ -37,28 +37,6 @@ function assertBytes(value: unknown): asserts value is Uint8Array {
   }
 }
 
-function assertBigint(value: unknown): asserts value is bigint {
-  if (typeof value !== 'bigint') invalid('counters must be bigint values');
-}
-
-// Rust owns canonical encoding rules; these checks enforce the stricter JavaScript input types.
-function assertVector(vector: VersionVector): void {
-  if (!vector || typeof vector !== 'object' || !Array.isArray(vector.entries)) {
-    invalid('entries must be an array');
-  }
-  for (const entry of vector.entries) {
-    if (!entry || typeof entry !== 'object') invalid('entries must be objects');
-    assertBytes(entry.replica);
-    assertBigint(entry.frontier);
-    if (!Array.isArray(entry.ranges)) invalid('ranges must be an array');
-    for (const range of entry.ranges) {
-      if (!Array.isArray(range) || range.length !== 2) invalid('ranges require exactly two bounds');
-      assertBigint(range[0]);
-      assertBigint(range[1]);
-    }
-  }
-}
-
 export function createVersionVectorCodecLoader(
   loadWasm: () => Promise<VersionVectorCodec>,
 ): () => Promise<VersionVectorCodec> {
@@ -67,7 +45,6 @@ export function createVersionVectorCodecLoader(
     (codecPromise ??= loadWasm()
       .then((wasm) => ({
         encodeVersionVectorV0(vector: VersionVector): Uint8Array {
-          assertVector(vector);
           try {
             return wasm.encodeVersionVectorV0(vector);
           } catch (error) {
