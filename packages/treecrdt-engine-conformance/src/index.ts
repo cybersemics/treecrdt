@@ -2,7 +2,7 @@ import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/e
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
-import { encodeVersionVectorV0 } from '@treecrdt/wasm/codec';
+import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 import {
@@ -386,10 +386,11 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
-function versionVectorBytes(
+async function versionVectorBytes(
   entries: { replica: ReplicaId; frontier: number; ranges?: [number, number][] }[],
 ): Promise<Uint8Array> {
-  return encodeVersionVectorV0({
+  const codec = await loadVersionVectorCodec();
+  return codec.encodeVersionVectorV0({
     entries: entries.map((e) => ({
       replica: replicaIdToBytes(e.replica),
       frontier: BigInt(e.frontier),

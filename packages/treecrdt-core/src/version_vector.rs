@@ -237,6 +237,7 @@ mod serde_impl {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     struct VersionVectorEntry {
+        #[serde(serialize_with = "serde_bytes::serialize")]
         replica: Vec<u8>,
         frontier: u64,
         ranges: Vec<(u64, u64)>,
