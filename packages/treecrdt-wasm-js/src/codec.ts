@@ -12,12 +12,14 @@ export type VersionVector = {
   readonly entries: readonly VersionVectorEntry[];
 };
 
+/** Encode/decode the canonical VersionVector v0 binary format. */
 export type VersionVectorCodec = {
-  encodeVersionVectorV0(vector: VersionVector): Uint8Array;
-  decodeVersionVectorV0(bytes: Uint8Array): VersionVector;
+  encodeVersionVector(vector: VersionVector): Uint8Array;
+  decodeVersionVector(bytes: Uint8Array): VersionVector;
 };
 
 function assertBytes(value: unknown): asserts value is Uint8Array {
+  // Unlike instanceof, this also accepts Uint8Array values from another iframe or VM context.
   if (
     !ArrayBuffer.isView(value) ||
     Object.prototype.toString.call(value) !== '[object Uint8Array]'
@@ -34,12 +36,12 @@ export function createVersionVectorCodecLoader(
   return () =>
     (codecPromise ??= loadWasm()
       .then((wasm) => ({
-        encodeVersionVectorV0(vector: VersionVector): Uint8Array {
-          return wasm.encodeVersionVectorV0(vector);
+        encodeVersionVector(vector: VersionVector): Uint8Array {
+          return wasm.encodeVersionVector(vector);
         },
-        decodeVersionVectorV0(bytes: Uint8Array): VersionVector {
+        decodeVersionVector(bytes: Uint8Array): VersionVector {
           assertBytes(bytes);
-          return wasm.decodeVersionVectorV0(bytes);
+          return wasm.decodeVersionVector(bytes);
         },
       }))
       .catch((error: unknown) => {

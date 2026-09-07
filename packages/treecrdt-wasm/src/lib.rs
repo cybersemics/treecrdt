@@ -99,7 +99,7 @@ fn op_to_js(op: &Operation) -> Result<JsOp, String> {
         .meta
         .known_state
         .as_ref()
-        .map(VersionVector::encode_v0)
+        .map(VersionVector::encode)
         .transpose()
         .map_err(|e| e.to_string())?;
     Ok(JsOp {
@@ -158,7 +158,7 @@ fn js_to_op(js: JsOp) -> Result<Operation, String> {
                     "delete known_state must contain non-zero-length VersionVector v0 bytes".into(),
                 );
             }
-            let vv = VersionVector::decode_v0(&bytes).map_err(|e| e.to_string())?;
+            let vv = VersionVector::decode(&bytes).map_err(|e| e.to_string())?;
             Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, Some(vv))
         }
         "tombstone" => Operation::tombstone(&replica, counter, lamport, hex_to_node(&js.node)?),
@@ -244,7 +244,7 @@ impl WasmTree {
             .inner
             .subtree_version_vector(node)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        vv.encode_v0().map_err(|e| JsValue::from_str(&e.to_string()))
+        vv.encode().map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = treeChildren)]
@@ -367,13 +367,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_known_state_roundtrips_as_exact_v0_bytes() {
+    fn delete_known_state_preserves_encoded_bytes() {
         let replica = ReplicaId::new(b"replica");
         let mut known_state = VersionVector::new();
         for counter in [1, 2, 4] {
             known_state.observe(&replica, counter);
         }
-        let expected_bytes = known_state.encode_v0().unwrap();
+        let expected_bytes = known_state.encode().unwrap();
         let operation = Operation::delete(&replica, 7, 9, NodeId(1), Some(known_state));
 
         let js = op_to_js(&operation).unwrap();

@@ -29,10 +29,10 @@ fn from_hex(value: &str) -> Vec<u8> {
 
 #[test]
 fn v0_empty_vector_has_stable_bytes() {
-    let bytes = VersionVector::new().encode_v0().expect("encode empty vector");
+    let bytes = VersionVector::new().encode().expect("encode empty vector");
     assert_eq!(hex(&bytes), fixture_hex("empty"));
     assert_eq!(
-        VersionVector::decode_v0(&bytes).expect("decode empty vector"),
+        VersionVector::decode(&bytes).expect("decode empty vector"),
         VersionVector::new()
     );
 }
@@ -49,9 +49,9 @@ fn v0_prefix_order_gaps_and_max_counter_have_stable_cross_runtime_bytes() {
         vector.observe(&short_replica, counter);
     }
 
-    let bytes = vector.encode_v0().expect("encode fixture vector");
+    let bytes = vector.encode().expect("encode fixture vector");
     assert_eq!(hex(&bytes), fixture_hex("prefixOrderGapsAndMaxCounter"));
-    let decoded = VersionVector::decode_v0(&bytes).expect("decode fixture vector");
+    let decoded = VersionVector::decode(&bytes).expect("decode fixture vector");
     assert_eq!(decoded, vector);
     assert_eq!(decoded.get(&short_replica), u64::MAX);
 }
@@ -65,13 +65,13 @@ fn zero_observations_do_not_create_semantic_entries() {
 }
 
 #[test]
-fn v0_preserves_zero_length_replica_id() {
+fn preserves_zero_length_replica_id() {
     let replica = ReplicaId::new([]);
     let mut vector = VersionVector::new();
     vector.observe(&replica, 1);
 
-    let bytes = vector.encode_v0().expect("encode zero-length replica ID");
-    let decoded = VersionVector::decode_v0(&bytes).expect("decode zero-length replica ID");
+    let bytes = vector.encode().expect("encode zero-length replica ID");
+    let decoded = VersionVector::decode(&bytes).expect("decode zero-length replica ID");
     assert_eq!(decoded, vector);
 }
 
@@ -84,7 +84,7 @@ fn v0_rejects_shared_invalid_encodings() {
 
     for (name, encoded_hex) in invalid {
         let bytes = from_hex(encoded_hex.as_str().expect("invalid fixture encoded hex"));
-        let error = VersionVector::decode_v0(&bytes).expect_err(name);
+        let error = VersionVector::decode(&bytes).expect_err(name);
         assert!(
             matches!(error, Error::InvalidVersionVector(_)),
             "{name}: {error}"
@@ -94,7 +94,7 @@ fn v0_rejects_shared_invalid_encodings() {
 
 proptest::proptest! {
     #[test]
-    fn v0_roundtrips_observed_counters(
+    fn roundtrips_observed_counters(
         observations in proptest::collection::vec(
             (proptest::collection::vec(proptest::num::u8::ANY, 1..=32), 1u64..=10_000),
             0..200,
@@ -104,16 +104,16 @@ proptest::proptest! {
         for (replica, counter) in observations {
             vector.observe(&ReplicaId::new(replica), counter);
         }
-        let bytes = vector.encode_v0().expect("encode vector");
-        let decoded = VersionVector::decode_v0(&bytes).expect("decode vector");
+        let bytes = vector.encode().expect("encode vector");
+        let decoded = VersionVector::decode(&bytes).expect("decode vector");
         proptest::prop_assert_eq!(decoded, vector);
     }
 
 
     #[test]
-    fn v0_decoder_never_panics_on_arbitrary_bytes(
+    fn decoder_never_panics_on_arbitrary_bytes(
         bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..4096),
     ) {
-        let _ = VersionVector::decode_v0(&bytes);
+        let _ = VersionVector::decode(&bytes);
     }
 }

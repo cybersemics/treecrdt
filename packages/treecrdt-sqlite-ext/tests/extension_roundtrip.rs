@@ -245,7 +245,7 @@ fn json_op(op: &Operation) -> JsonOp {
         node,
         new_parent,
         order_key,
-        known_state: op.meta.known_state.as_ref().map(|vector| vector.encode_v0().unwrap()),
+        known_state: op.meta.known_state.as_ref().map(|vector| vector.encode().unwrap()),
         payload,
     }
 }
@@ -917,7 +917,7 @@ fn local_delete_emits_canonical_known_state() {
     assert_eq!(op.kind, "delete");
     let bytes = op.known_state.as_ref().unwrap();
     assert!(!bytes.is_empty());
-    let vv = VersionVector::decode_v0(bytes).unwrap();
+    let vv = VersionVector::decode(bytes).unwrap();
     assert!(vv.get(&ReplicaId::new(replica)) >= 1);
 
     let (head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);

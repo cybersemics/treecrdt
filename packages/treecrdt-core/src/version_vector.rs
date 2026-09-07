@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use crate::ids::ReplicaId;
 use crate::{Error, Result};
 
-const VERSION_VECTOR_V0_MAGIC: &[u8; 4] = b"TCVV";
-const VERSION_VECTOR_V0_VERSION: u8 = 0;
-const VERSION_VECTOR_V0_HEADER_LEN: usize = VERSION_VECTOR_V0_MAGIC.len() + 1 + 4; // magic + version + entry count
-const VERSION_VECTOR_V0_MIN_ENTRY_LEN: usize = 4 + 8 + 4; // replica length + frontier + range count
-const VERSION_VECTOR_V0_RANGE_LEN: usize = 8 + 8; // inclusive start + end
+const VERSION_VECTOR_MAGIC: &[u8; 4] = b"TCVV";
+const VERSION_VECTOR_VERSION: u8 = 0;
+const VERSION_VECTOR_HEADER_LEN: usize = VERSION_VECTOR_MAGIC.len() + 1 + 4; // magic + version + entry count
+const VERSION_VECTOR_MIN_ENTRY_LEN: usize = 4 + 8 + 4; // replica length + frontier + range count
+const VERSION_VECTOR_RANGE_LEN: usize = 8 + 8; // inclusive start + end
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct ReplicaVersion {
@@ -313,28 +313,25 @@ mod serde_impl {
     }
 }
 
-struct VersionVectorV0Cursor<'a> {
+struct VersionVectorCursor<'a> {
     bytes: &'a [u8],
-    offset: usize,
 }
 
-impl<'a> VersionVectorV0Cursor<'a> {
+impl<'a> VersionVectorCursor<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self { bytes }
     }
 
     fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.offset)
+        self.bytes.len()
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or_else(|| invalid_v0("field length overflow"))?;
-        let value =
-            self.bytes.get(self.offset..end).ok_or_else(|| invalid_v0("truncated input"))?;
-        self.offset = end;
+        let (value, remaining) = self
+            .bytes
+            .split_at_checked(len)
+            .ok_or_else(|| invalid_encoding("truncated input"))?;
+        self.bytes = remaining;
         Ok(value)
     }
 
@@ -344,27 +341,29 @@ impl<'a> VersionVectorV0Cursor<'a> {
 
     fn read_u32(&mut self) -> Result<u32> {
         let bytes: [u8; 4] =
-            self.take(4)?.try_into().map_err(|_| invalid_v0("invalid u32 field"))?;
+            self.take(4)?.try_into().map_err(|_| invalid_encoding("invalid u32 field"))?;
         Ok(u32::from_be_bytes(bytes))
     }
 
     fn read_u64(&mut self) -> Result<u64> {
         let bytes: [u8; 8] =
-            self.take(8)?.try_into().map_err(|_| invalid_v0("invalid u64 field"))?;
+            self.take(8)?.try_into().map_err(|_| invalid_encoding("invalid u64 field"))?;
         Ok(u64::from_be_bytes(bytes))
     }
 }
 
-fn invalid_v0(message: impl Into<String>) -> Error {
+fn invalid_encoding(message: impl Into<String>) -> Error {
     Error::InvalidVersionVector(format!("v0: {}", message.into()))
 }
 
 fn checked_u32(value: usize, field: &str) -> Result<u32> {
-    value.try_into().map_err(|_| invalid_v0(format!("{field} exceeds u32")))
+    value.try_into().map_err(|_| invalid_encoding(format!("{field} exceeds u32")))
 }
 
 fn checked_add_size(total: &mut usize, value: usize) -> Result<()> {
-    *total = total.checked_add(value).ok_or_else(|| invalid_v0("encoded size overflow"))?;
+    *total = total
+        .checked_add(value)
+        .ok_or_else(|| invalid_encoding("encoded size overflow"))?;
     Ok(())
 }
 
@@ -397,31 +396,31 @@ impl VersionVector {
     /// The encoding is stable across storage adapters and runtimes. Entries are sorted by raw
     /// replica bytes, counters are unsigned 64-bit big-endian integers, and semantically empty
     /// entries are omitted.
-    pub fn encode_v0(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut entries: Vec<(&ReplicaId, &ReplicaVersion)> =
             self.entries.iter().filter(|(_, version)| !version.is_empty()).collect();
         entries.sort_by(|(left, _), (right, _)| left.as_bytes().cmp(right.as_bytes()));
 
         let entry_count = checked_u32(entries.len(), "entry count")?;
-        let mut encoded_len = VERSION_VECTOR_V0_HEADER_LEN;
+        let mut encoded_len = VERSION_VECTOR_HEADER_LEN;
         for (replica, version) in &entries {
             checked_u32(replica.as_bytes().len(), "replica id length")?;
             checked_u32(version.ranges.len(), "range count")?;
-            version.validate_ranges().map_err(invalid_v0)?;
+            version.validate_ranges().map_err(invalid_encoding)?;
             checked_add_size(&mut encoded_len, 4)?;
             checked_add_size(&mut encoded_len, replica.as_bytes().len())?;
             checked_add_size(&mut encoded_len, 8 + 4)?;
             let ranges_len = version
                 .ranges
                 .len()
-                .checked_mul(VERSION_VECTOR_V0_RANGE_LEN)
-                .ok_or_else(|| invalid_v0("encoded size overflow"))?;
+                .checked_mul(VERSION_VECTOR_RANGE_LEN)
+                .ok_or_else(|| invalid_encoding("encoded size overflow"))?;
             checked_add_size(&mut encoded_len, ranges_len)?;
         }
 
         let mut bytes = Vec::with_capacity(encoded_len);
-        bytes.extend_from_slice(VERSION_VECTOR_V0_MAGIC);
-        bytes.push(VERSION_VECTOR_V0_VERSION);
+        bytes.extend_from_slice(VERSION_VECTOR_MAGIC);
+        bytes.push(VERSION_VECTOR_VERSION);
         bytes.extend_from_slice(&entry_count.to_be_bytes());
         for (replica, version) in entries {
             let replica_len = checked_u32(replica.as_bytes().len(), "replica id length")?;
@@ -443,23 +442,23 @@ impl VersionVector {
     /// Non-canonical values fail closed: replica entries must be unique and sorted, ranges must be
     /// normalized, empty semantic entries are forbidden, and the input must contain no trailing
     /// bytes.
-    pub fn decode_v0(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < VERSION_VECTOR_V0_HEADER_LEN {
-            return Err(invalid_v0("truncated header"));
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < VERSION_VECTOR_HEADER_LEN {
+            return Err(invalid_encoding("truncated header"));
         }
 
-        let mut cursor = VersionVectorV0Cursor::new(bytes);
-        if cursor.take(VERSION_VECTOR_V0_MAGIC.len())? != VERSION_VECTOR_V0_MAGIC {
-            return Err(invalid_v0("invalid magic"));
+        let mut cursor = VersionVectorCursor::new(bytes);
+        if cursor.take(VERSION_VECTOR_MAGIC.len())? != VERSION_VECTOR_MAGIC {
+            return Err(invalid_encoding("invalid magic"));
         }
         let version = cursor.read_u8()?;
-        if version != VERSION_VECTOR_V0_VERSION {
-            return Err(invalid_v0(format!("unsupported version {version}")));
+        if version != VERSION_VECTOR_VERSION {
+            return Err(invalid_encoding(format!("unsupported version {version}")));
         }
 
         let entry_count = cursor.read_u32()? as usize;
-        if entry_count > cursor.remaining() / VERSION_VECTOR_V0_MIN_ENTRY_LEN {
-            return Err(invalid_v0("entry count exceeds remaining input"));
+        if entry_count > cursor.remaining() / VERSION_VECTOR_MIN_ENTRY_LEN {
+            return Err(invalid_encoding("entry count exceeds remaining input"));
         }
 
         let mut entries = HashMap::with_capacity(entry_count);
@@ -468,14 +467,16 @@ impl VersionVector {
             let replica_len = cursor.read_u32()? as usize;
             let replica = cursor.take(replica_len)?;
             if previous_replica.is_some_and(|previous| previous >= replica) {
-                return Err(invalid_v0("replica ids must be unique and strictly sorted"));
+                return Err(invalid_encoding(
+                    "replica ids must be unique and strictly sorted",
+                ));
             }
             previous_replica = Some(replica);
 
             let frontier = cursor.read_u64()?;
             let range_count = cursor.read_u32()? as usize;
-            if range_count > cursor.remaining() / VERSION_VECTOR_V0_RANGE_LEN {
-                return Err(invalid_v0("range count exceeds remaining input"));
+            if range_count > cursor.remaining() / VERSION_VECTOR_RANGE_LEN {
+                return Err(invalid_encoding("range count exceeds remaining input"));
             }
 
             let mut ranges = Vec::with_capacity(range_count);
@@ -483,20 +484,20 @@ impl VersionVector {
             for _ in 0..range_count {
                 let start = cursor.read_u64()?;
                 let end = cursor.read_u64()?;
-                validate_next_range(previous_end, start, end).map_err(invalid_v0)?;
+                validate_next_range(previous_end, start, end).map_err(invalid_encoding)?;
                 previous_end = end;
                 ranges.push((start, end));
             }
 
             let replica_version = ReplicaVersion { frontier, ranges };
             if replica_version.is_empty() {
-                return Err(invalid_v0("entries must not be semantically empty"));
+                return Err(invalid_encoding("entries must not be semantically empty"));
             }
             entries.insert(ReplicaId(replica.to_vec()), replica_version);
         }
 
         if cursor.remaining() != 0 {
-            return Err(invalid_v0("trailing bytes"));
+            return Err(invalid_encoding("trailing bytes"));
         }
         Ok(Self { entries })
     }

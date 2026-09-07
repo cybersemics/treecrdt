@@ -65,7 +65,7 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
         .meta
         .known_state
         .as_ref()
-        .map(|vv| vv.encode_v0().map_err(|_| SQLITE_ERROR as c_int))
+        .map(|vv| vv.encode().map_err(|_| SQLITE_ERROR as c_int))
         .transpose()?;
 
     match op.kind {

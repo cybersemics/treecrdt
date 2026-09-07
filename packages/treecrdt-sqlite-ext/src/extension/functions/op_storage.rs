@@ -67,7 +67,7 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
         } else {
             unsafe { slice::from_raw_parts(ptr, len) }
         };
-        Some(VersionVector::decode_v0(bytes)?)
+        Some(VersionVector::decode(bytes)?)
     };
 
     let payload = if unsafe { sqlite_column_type(stmt, 9) } == SQLITE_NULL as c_int {
@@ -218,7 +218,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
             ),
         };
 
-        let known_state_bytes = known_state.as_ref().map(VersionVector::encode_v0).transpose()?;
+        let known_state_bytes = known_state.as_ref().map(VersionVector::encode).transpose()?;
         let op_ref = derive_op_ref_v0(doc_id, op.meta.id.replica.as_bytes(), op.meta.id.counter);
 
         let insert_sql = CString::new(
