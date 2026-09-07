@@ -3,7 +3,7 @@ import { utf8ToBytes } from '@noble/hashes/utils';
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import {
-  decodeVersionVectorV0,
+  loadVersionVectorCodec,
   VersionVectorCodecError,
   type VersionVector,
 } from '@treecrdt/wasm/codec';
@@ -122,9 +122,10 @@ function assertKnownStateSize(bytes: Uint8Array): void {
 async function assertCanonicalKnownState(bytes: Uint8Array | undefined): Promise<void> {
   if (bytes === undefined) return;
   assertKnownStateSize(bytes);
+  const codec = await loadVersionVectorCodec();
   let vector: VersionVector;
   try {
-    vector = await decodeVersionVectorV0(bytes);
+    vector = codec.decodeVersionVectorV0(bytes);
   } catch (error) {
     if (error instanceof VersionVectorCodecError) return invalidKnownState();
     throw error;

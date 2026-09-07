@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { beforeAll, expect, test } from 'vitest';
 import {
   hashes as ed25519Hashes,
   getPublicKey,
@@ -8,7 +8,11 @@ import {
 import { sha512 } from '@noble/hashes/sha512';
 
 import type { Operation } from '@treecrdt/interface';
-import { encodeVersionVectorV0, type VersionVectorRange } from '@treecrdt/wasm/codec';
+import {
+  loadVersionVectorCodec,
+  type VersionVectorCodec,
+  type VersionVectorRange,
+} from '@treecrdt/wasm/codec';
 import {
   encodeTreecrdtOpSigInput,
   signTreecrdtOp,
@@ -16,6 +20,11 @@ import {
 } from '../dist/treecrdt-auth.js';
 
 ed25519Hashes.sha512 = sha512;
+
+let codec: VersionVectorCodec;
+beforeAll(async () => {
+  codec = await loadVersionVectorCodec();
+});
 
 const node = '00112233445566778899aabbccddeeff';
 const meta = {
@@ -27,8 +36,8 @@ function operation(kind: Operation['kind'], state?: Uint8Array): Operation {
   return { meta: { ...meta, ...(state ? { knownState: state } : {}) }, kind };
 }
 
-function knownState(frontier = 0n): Promise<Uint8Array> {
-  return encodeVersionVectorV0({
+function knownState(frontier = 0n): Uint8Array {
+  return codec.encodeVersionVectorV0({
     entries: frontier === 0n ? [] : [{ replica: meta.id.replica, frontier, ranges: [] }],
   });
 }
@@ -39,14 +48,14 @@ function versionVectorState(
     frontier: bigint;
     ranges: readonly VersionVectorRange[];
   }>,
-): Promise<Uint8Array> {
-  return encodeVersionVectorV0({ entries });
+): Uint8Array {
+  return codec.encodeVersionVectorV0({ entries });
 }
 
 test('one signature format binds the explicit knownState field', async () => {
   const privateKey = ed25519Utils.randomSecretKey();
   const publicKey = await getPublicKey(privateKey);
-  const state = await knownState();
+  const state = knownState();
   const op = operation({ type: 'delete', node }, state);
 
   const input = await encodeTreecrdtOpSigInput({ docId: 'doc', op });
@@ -62,7 +71,7 @@ test('one signature format binds the explicit knownState field', async () => {
   await expect(
     verifyTreecrdtOp({
       docId: 'doc',
-      op: { ...op, meta: { ...op.meta, knownState: await knownState(1n) } },
+      op: { ...op, meta: { ...op.meta, knownState: knownState(1n) } },
       signature,
       publicKey,
     }),
@@ -117,7 +126,7 @@ test('invalid signatures are rejected before knownState is parsed', async () => 
   const kind = { type: 'delete', node } as const;
   const signature = await signTreecrdtOp({
     docId: 'doc',
-    op: operation(kind, await knownState()),
+    op: operation(kind, knownState()),
     privateKey,
   });
   await expect(
@@ -134,7 +143,7 @@ test('valid signatures are followed by canonical knownState validation', async (
   const privateKey = ed25519Utils.randomSecretKey();
   const publicKey = await getPublicKey(privateKey);
   const kind = { type: 'delete', node } as const;
-  const canonicalState = await versionVectorState([]);
+  const canonicalState = versionVectorState([]);
   const malformedState = canonicalState.slice();
   malformedState[0] ^= 0xff;
 
@@ -158,7 +167,7 @@ test('valid signatures are followed by canonical knownState validation', async (
 test('verification owns the signed knownState bytes across the async boundary', async () => {
   const privateKey = ed25519Utils.randomSecretKey();
   const publicKey = await getPublicKey(privateKey);
-  const state = await knownState(1n);
+  const state = knownState(1n);
   const op = operation({ type: 'delete', node }, state);
   const signature = await signTreecrdtOp({ docId: 'doc', op, privateKey });
 
@@ -171,7 +180,7 @@ test('verification owns the signed knownState bytes across the async boundary', 
 test('signing snapshots the operation and key before asynchronous validation', async () => {
   const privateKey = ed25519Utils.randomSecretKey();
   const publicKey = await getPublicKey(privateKey);
-  const state = await knownState(1n);
+  const state = knownState(1n);
   const op = operation({ type: 'delete', node }, state);
   const original = structuredClone(op);
 
@@ -187,7 +196,7 @@ test('signing snapshots the operation and key before asynchronous validation', a
 });
 
 test.each([0, 1, 31, 33])('auth profile rejects %i-byte replica ids', async (replicaLength) => {
-  const state = await versionVectorState([
+  const state = versionVectorState([
     { replica: new Uint8Array(replicaLength).fill(1), frontier: 1n, ranges: [] },
   ]);
   await expect(
@@ -199,7 +208,7 @@ test.each([0, 1, 31, 33])('auth profile rejects %i-byte replica ids', async (rep
 });
 
 test('knownState accepts the full u64 counter range', async () => {
-  const state = await knownState((1n << 64n) - 1n);
+  const state = knownState((1n << 64n) - 1n);
   await expect(
     encodeTreecrdtOpSigInput({
       docId: 'doc',
@@ -231,12 +240,12 @@ test('knownState entry limit is enforced by the auth profile', async () => {
     replica[31] = index & 0xff;
     return { replica, frontier: 1n, ranges: [] };
   });
-  const tooManyEntries = await versionVectorState(entries);
+  const tooManyEntries = versionVectorState(entries);
   expect(tooManyEntries.length).toBeLessThanOrEqual(1024 * 1024);
   await expect(
     encodeTreecrdtOpSigInput({
       docId: 'doc',
-      op: operation({ type: 'delete', node }, await versionVectorState(entries.slice(0, 4096))),
+      op: operation({ type: 'delete', node }, versionVectorState(entries.slice(0, 4096))),
     }),
   ).resolves.toBeInstanceOf(Uint8Array);
   await expect(
@@ -250,7 +259,7 @@ test('knownState entry limit is enforced by the auth profile', async () => {
 test('signature policy only allows knownState on deletes', async () => {
   const privateKey = ed25519Utils.randomSecretKey();
   const publicKey = await getPublicKey(privateKey);
-  const state = await knownState();
+  const state = knownState();
   const nonDeleteKinds: Operation['kind'][] = [
     {
       type: 'insert',
