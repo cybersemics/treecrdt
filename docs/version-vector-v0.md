@@ -34,6 +34,4 @@ inclusive additional observations after gaps.
 The [shared test vectors](../fixtures/version-vector-v0.json) are normative: native Rust and the
 JavaScript WASM bridge MUST produce the exact valid encodings and reject every invalid value.
 
-JavaScript consumers await `loadVersionVectorCodec()` from `@treecrdt/wasm/codec` when needed. The
-cached codec exposes synchronous `encodeVersionVectorV0(value)` and `decodeVersionVectorV0(bytes)`
-methods backed by Rust. See the [usage example](../packages/treecrdt-wasm-js/README.md).
+See the [JavaScript usage example](../packages/treecrdt-wasm-js/README.md).
