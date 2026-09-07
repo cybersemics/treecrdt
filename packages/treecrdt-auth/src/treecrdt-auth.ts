@@ -11,11 +11,7 @@ export type {
   TreecrdtCapabilityRevocationOptions,
 } from './internal/capability.js';
 
-export {
-  encodeTreecrdtOpSigInputV1,
-  signTreecrdtOpV1,
-  verifyTreecrdtOpV1,
-} from './internal/op-sig.js';
+export { encodeTreecrdtOpSigInput, signTreecrdtOp, verifyTreecrdtOp } from './internal/op-sig.js';
 
 export type { TreecrdtScopeEvaluator } from './internal/scope.js';
 

@@ -38,5 +38,7 @@ export async function verifyEd25519(
   publicKey: Uint8Array,
 ): Promise<boolean> {
   ensureEd25519();
-  return await verifyImpl(signature, message, publicKey);
+  // Authentication needs strongly binding signatures. ZIP215 verification accepts
+  // small-order public keys, including the all-zero key, which are unsafe identities.
+  return await verifyImpl(signature, message, publicKey, { zip215: false });
 }

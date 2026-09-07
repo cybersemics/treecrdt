@@ -9,7 +9,8 @@ It is intentionally **ACL-agnostic at the TreeCRDT core layer**: the CRDT operat
 types and merge semantics do not change. Authorization is enforced by the sync layer
 and by any server that chooses to validate inbound ops.
 
-Status: draft. Backwards compatibility is not guaranteed.
+Draft: revised in place without compatibility with earlier profiles. Recreate signatures and proof
+material after format changes; the surrounding Sync v0 envelope is unchanged.
 
 ## Threat model (baseline)
 
@@ -172,17 +173,14 @@ Reference implementation status:
 
 ## Signed operations
 
-Ops are signed with the doc-scoped Ed25519 key. The signature covers:
-
-- `doc_id`
-- `op_id` (`replica_id` + `counter`)
-- `lamport`
-- op kind + fields
-- payload bytes (ciphertext bytes if payloads are encrypted)
+Ops are signed with the doc-scoped Ed25519 key using the bytes below. Payload bytes are signed as
+transmitted (ciphertext when encrypted).
 
 ### Canonical signing bytes
 
-All integers are big-endian. Strings are UTF-8 with length prefixes.
+All integers are big-endian. Strings are UTF-8 with length prefixes. Number-valued operation
+counters and Lamport timestamps MUST be safe non-negative JavaScript integers. Signature
+verification uses strict RFC 8032 semantics and rejects small-order identity keys.
 
 ```
 sig_input = concat(
@@ -192,7 +190,8 @@ sig_input = concat(
   u64_be(counter),
   u64_be(lamport),
   u8(kind_tag),
-  kind_fields
+  kind_fields,
+  known_state
 )
 ```
 
@@ -212,6 +211,31 @@ Kind tags and fields:
   - node(16)
   - value_tag(u8): 0=clear, 1=payload
   - if value_tag=1: u32_be(len(payload)) || payload_bytes
+
+`known_state` is encoded after the operation fields:
+
+```
+known_state = absent:  u8(0)
+              present: u8(1) || u32_be(len(bytes)) || bytes
+```
+
+The present form MUST contain the canonical
+[TreeCRDT VersionVector v0 bytes](../../version-vector-v0.md). Auth adds three profile constraints:
+each replica id is exactly the 32-byte Ed25519 public key required by Sync v0, the value is at most
+1 MiB, and it contains at most 4,096 entries. Version-vector counters retain the codec's full `u64`
+range; only the JavaScript operation counter and Lamport fields above use safe integers.
+
+Policy APIs require canonical `known_state` on deletes (the canonical empty vector is valid) and
+reject the field on all other operations. Every operation signs its presence tag.
+
+Signers validate the canonical bytes before signing. Verifiers size-check and copy the exact bytes
+into the signature input, verify Ed25519 first, and only then run canonical decoding plus the auth
+profile checks. Invalid signatures therefore cannot trigger version-vector parsing.
+
+### JavaScript integration
+
+`@treecrdt/auth` initializes WASM automatically when validating `knownState`, not on import.
+Browser builds must serve the generated WASM asset; applications do not initialize the codec themselves.
 
 ## Subtree scope enforcement and `pending_context`
 

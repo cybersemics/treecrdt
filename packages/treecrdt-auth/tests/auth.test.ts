@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import { expect, test } from 'vitest';
+import { beforeAll, expect, test } from 'vitest';
 import { encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { loadVersionVectorCodec, type VersionVectorCodec } from '@treecrdt/wasm/codec';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { hashes as ed25519Hashes, getPublicKey, utils as ed25519Utils } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
@@ -29,6 +30,11 @@ import {
 import type { Capability, Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 
 ed25519Hashes.sha512 = sha512;
+
+let codec: VersionVectorCodec;
+beforeAll(async () => {
+  codec = await loadVersionVectorCodec();
+});
 
 function orderKeyFromPosition(position: number): Uint8Array {
   if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
@@ -307,10 +313,16 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
     node: nodeIdFromInt(1),
     orderKey: orderKeyFromPosition(0),
   });
-  const opDelete = makeOp(aPk, 2, 2, {
-    type: 'delete',
-    node: nodeIdFromInt(1),
-  });
+  const knownState = (frontier: bigint) =>
+    codec.encodeVersionVector({ entries: [{ replica: aPk, frontier, ranges: [] }] });
+  const opDelete: Operation = {
+    meta: {
+      id: { replica: aPk, counter: 2 },
+      lamport: 2,
+      knownState: knownState(1n),
+    },
+    kind: { type: 'delete', node: nodeIdFromInt(1) },
+  };
 
   const ops = [opInsert, opDelete];
   const ctx = { docId, purpose: 'reconcile' as const, filterId: 'all' };
@@ -328,6 +340,23 @@ test('auth: signOps selects proof_ref per op when multiple tokens exist', async 
   expect(bytesToHex(auth?.[1]!.proofRef!)).toBe(bytesToHex(tokenDeleteId));
 
   await authB.verifyOps?.(ops, auth, ctx);
+
+  const changedState: Operation = {
+    ...opDelete,
+    meta: { ...opDelete.meta, knownState: knownState(2n) },
+  };
+  await expect(authB.verifyOps?.([changedState], [auth![1]!], ctx)).rejects.toThrow(
+    /invalid op signature/i,
+  );
+
+  const strippedState: Operation = {
+    ...opDelete,
+    meta: { id: opDelete.meta.id, lamport: opDelete.meta.lamport },
+  };
+  await expect(authA.signOps?.([strippedState], ctx)).rejects.toThrow(/require.*knownState/i);
+  await expect(authB.verifyOps?.([strippedState], [auth![1]!], ctx)).rejects.toThrow(
+    /require.*knownState/i,
+  );
 
   const badAuth = [{ ...auth?.[0]!, proofRef: tokenDeleteId }, auth?.[1]!];
   await expect(authB.verifyOps?.(ops, badAuth, ctx)).rejects.toThrow(

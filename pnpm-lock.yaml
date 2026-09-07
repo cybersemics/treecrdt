@@ -270,6 +270,9 @@ importers:
       '@treecrdt/sync-protocol':
         specifier: workspace:*
         version: link:../sync-protocol/protocol
+      '@treecrdt/wasm':
+        specifier: workspace:*
+        version: link:../treecrdt-wasm-js
       cborg:
         specifier: ^4.3.2
         version: 4.3.2
