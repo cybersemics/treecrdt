@@ -14,8 +14,9 @@ async function example() {
 }
 ```
 
-Replica IDs are `Uint8Array` values; frontiers and range bounds are `bigint`. Inputs must already
-be canonical: encoding rejects unsorted entries and non-normalized ranges. The
+The typed API uses `Uint8Array` replica IDs and `bigint` counters; decoding always returns those types.
+Rust also accepts safe integer numbers and compatible byte sequences when encoding. It rejects
+malformed ranges, unsorted entries, and non-normalized ranges. The
 [format contract](https://github.com/cybersemics/treecrdt/blob/main/docs/version-vector-v0.md) describes the bytes and validation rules.
 
 Importing this entry point does not load WASM. The loader initializes it on demand and caches the ready

@@ -37,6 +37,12 @@ fn version_vector_json_rejects_invalid_semantics_and_unknown_fields() {
     let adjacent_range = r#"{"entries":[{"replica":[114,65],"frontier":1,"ranges":[[2,3]]}]}"#;
     assert!(serde_json::from_str::<VersionVector>(adjacent_range).is_err());
 
+    for ranges in ["[[]]", "[[3]]", "[[3,4,5]]"] {
+        let input =
+            format!(r#"{{"entries":[{{"replica":[114,65],"frontier":1,"ranges":{ranges}}}]}}"#);
+        assert!(serde_json::from_str::<VersionVector>(&input).is_err());
+    }
+
     let unknown = r#"{"entries":[{"replica":[114,65],"frontier":1,"ranges":[],"extra":true}]}"#;
     assert!(serde_json::from_str::<VersionVector>(unknown).is_err());
 }
