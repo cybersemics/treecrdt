@@ -94,7 +94,7 @@ Each operation carries version vector information:
   - Created from the operation's replica ID and counter
   - Represents "this specific operation"
 
-- **`known_state`** (in delete operations): Required version-vector snapshot containing canonical VersionVector v0 bytes
+- **`known_state`** (in delete operations): Required snapshot of subtree awareness at delete time
   - Calculated when creating a delete operation
   - Represents "what we knew about the subtree when deleting"
   - Travels with the delete operation to other replicas
@@ -233,8 +233,7 @@ Version vectors are encoded and sent as part of operations during synchronizatio
 
 ### In Delete Operations
 
-Delete operations must carry a `known_state` field containing canonical VersionVector v0 bytes. The
-canonical empty vector is a valid nine-byte value; a zero-length byte field is invalid.
+Delete operations must carry canonical VersionVector v0 bytes in `known_state`, even for empty awareness.
 
 - Carried directly in the operation metadata
 - Sent to other replicas when syncing
@@ -249,10 +248,8 @@ When replicas sync:
 
 ### Binary Encoding
 
-Version vectors use the canonical binary format specified in
-[`docs/version-vector-v0.md`](../version-vector-v0.md). It encodes replica IDs as raw bytes and counters as `u64`, with
-replicas and ranges in a single normalized order. Storage adapters and sync peers use the same exact bytes;
-operation-auth profiles must cover them without re-encoding.
+Storage and sync use [canonical VersionVector v0 bytes](../version-vector-v0.md),
+which operation auth signs without re-encoding.
 
 ## Why Dotted Version Vectors for Defensive Deletion?
 
