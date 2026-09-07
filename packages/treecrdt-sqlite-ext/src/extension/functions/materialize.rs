@@ -192,7 +192,7 @@ fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Opera
     let new_parent = parse_optional_node_id(&op.new_parent)?;
 
     let decoded_known_state = match op.known_state.as_ref() {
-        Some(bytes) => Some(decode_version_vector_v0(bytes)?),
+        Some(bytes) => Some(decode_version_vector(bytes)?),
         None => None,
     };
 

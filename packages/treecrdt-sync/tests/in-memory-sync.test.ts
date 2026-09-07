@@ -171,7 +171,7 @@ test('syncOnce pulls insert, move, payload, and delete operations', async () => 
       meta: {
         id: { replica: replicas.b, counter: 5 },
         lamport: 5,
-        knownState: codec.encodeVersionVectorV0({ entries: [] }),
+        knownState: codec.encodeVersionVector({ entries: [] }),
       },
       kind: { type: 'delete' as const, node: n2 },
     },

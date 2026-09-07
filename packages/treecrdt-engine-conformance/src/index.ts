@@ -386,16 +386,10 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
-async function versionVectorBytes(
-  entries: { replica: ReplicaId; frontier: number; ranges?: [number, number][] }[],
-): Promise<Uint8Array> {
+async function versionVectorBytes(replica: ReplicaId, frontier: number): Promise<Uint8Array> {
   const codec = await loadVersionVectorCodec();
-  return codec.encodeVersionVectorV0({
-    entries: entries.map((e) => ({
-      replica: replicaIdToBytes(e.replica),
-      frontier: BigInt(e.frontier),
-      ranges: (e.ranges ?? []).map(([start, end]) => [BigInt(start), BigInt(end)] as const),
-    })),
+  return codec.encodeVersionVector({
+    entries: [{ replica: replicaIdToBytes(replica), frontier: BigInt(frontier), ranges: [] }],
   });
 }
 
@@ -1274,7 +1268,7 @@ async function scenarioDefensiveDeleteReactiveInsert(
       counter: 2,
       lamport: 2,
       node: parent,
-      knownState: await versionVectorBytes([{ replica, frontier: 1 }]),
+      knownState: await versionVectorBytes(replica, 1),
     }),
   );
 
@@ -1329,7 +1323,7 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
       counter: 2,
       lamport: 3,
       node: parent,
-      knownState: await versionVectorBytes([{ replica: rA, frontier: 1 }]),
+      knownState: await versionVectorBytes(rA, 1),
     }),
   );
 

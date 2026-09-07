@@ -575,7 +575,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         };
         match row.last_change {
             None => Ok(VersionVector::new()),
-            Some(b) => VersionVector::decode_v0(&b),
+            Some(b) => VersionVector::decode(&b),
         }
     }
 
@@ -584,7 +584,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         let started_at = Instant::now();
         let mut vv = self.last_change(node)?;
         vv.merge(delta);
-        let bytes = vv.encode_v0()?;
+        let bytes = vv.encode()?;
 
         if let Some(Some(row)) = self.cache.borrow_mut().get_mut(&node) {
             row.last_change = Some(bytes);
@@ -605,7 +605,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         };
         match row.deleted_at {
             None => Ok(None),
-            Some(b) => VersionVector::decode_v0(&b).map(Some),
+            Some(b) => VersionVector::decode(&b).map(Some),
         }
     }
 
@@ -614,7 +614,7 @@ impl treecrdt_core::NodeStore for PgNodeStore {
         let started_at = Instant::now();
         let mut vv = self.deleted_at(node)?.unwrap_or_else(VersionVector::new);
         vv.merge(delta);
-        let bytes = vv.encode_v0()?;
+        let bytes = vv.encode()?;
 
         let node_bytes = node_to_bytes(node);
         let mut c = self.ctx.client.borrow_mut();
@@ -659,7 +659,7 @@ impl ExactNodeStore for PgNodeStore {
         let bytes = if vv.is_empty() {
             None
         } else {
-            Some(vv.encode_v0()?)
+            Some(vv.encode()?)
         };
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
@@ -682,7 +682,7 @@ impl ExactNodeStore for PgNodeStore {
         self.ensure_node(node)?;
         let node_bytes = node_to_bytes(node);
         let bytes = match vv {
-            Some(vv) if !vv.is_empty() => Some(vv.encode_v0()?),
+            Some(vv) if !vv.is_empty() => Some(vv.encode()?),
             _ => None,
         };
         let mut c = self.ctx.client.borrow_mut();
@@ -1137,7 +1137,7 @@ pub(crate) fn row_to_op(row: Row) -> Result<Operation> {
     let known_state_bytes: Option<Vec<u8>> = row.get(9);
     let known_state = match known_state_bytes {
         None => None,
-        Some(b) => Some(VersionVector::decode_v0(&b)?),
+        Some(b) => Some(VersionVector::decode(&b)?),
     };
 
     let replica_id = ReplicaId(replica);
@@ -1200,7 +1200,7 @@ pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     let known_state_bytes: Option<Vec<u8>> = row.get(base + 9);
     let known_state = match known_state_bytes {
         None => None,
-        Some(b) => Some(VersionVector::decode_v0(&b)?),
+        Some(b) => Some(VersionVector::decode(&b)?),
     };
 
     let replica_id = ReplicaId(replica);
@@ -1263,7 +1263,7 @@ struct OpDbFields {
 fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
     let known_state = match op.meta.known_state.as_ref() {
         None => None,
-        Some(vv) => Some(vv.encode_v0()?),
+        Some(vv) => Some(vv.encode()?),
     };
 
     match &op.kind {

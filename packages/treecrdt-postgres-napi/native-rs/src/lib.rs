@@ -254,7 +254,7 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
 
     let known_state = match op.known_state {
         None => None,
-        Some(b) => Some(VersionVector::decode_v0(&b)?),
+        Some(b) => Some(VersionVector::decode(&b)?),
     };
 
     let meta = treecrdt_core::OperationMetadata {
@@ -312,7 +312,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
 
     let known_state = match op.meta.known_state.as_ref() {
         None => None,
-        Some(vv) => Some(Buffer::from(vv.encode_v0()?)),
+        Some(vv) => Some(Buffer::from(vv.encode()?)),
     };
 
     match op.kind {
