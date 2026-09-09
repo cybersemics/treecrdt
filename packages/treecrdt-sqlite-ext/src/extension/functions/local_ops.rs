@@ -332,7 +332,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_insert: NULL replica\0".as_ptr() as *const c_char,
+                b"treecrdt_local_insert: replica must be a non-empty BLOB\0".as_ptr()
+                    as *const c_char,
             );
             return;
         }
@@ -436,7 +437,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_move: NULL replica\0".as_ptr() as *const c_char,
+                b"treecrdt_local_move: replica must be a non-empty BLOB\0".as_ptr()
+                    as *const c_char,
             );
             return;
         }
@@ -537,7 +539,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_delete: NULL replica\0".as_ptr() as *const c_char,
+                b"treecrdt_local_delete: replica must be a non-empty BLOB\0".as_ptr()
+                    as *const c_char,
             );
             return;
         }
@@ -608,7 +611,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         Err(_) => {
             sqlite_result_error(
                 ctx,
-                b"treecrdt_local_payload: NULL replica\0".as_ptr() as *const c_char,
+                b"treecrdt_local_payload: replica must be a non-empty BLOB\0".as_ptr()
+                    as *const c_char,
             );
             return;
         }
