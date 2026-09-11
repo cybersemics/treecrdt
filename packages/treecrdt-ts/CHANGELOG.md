@@ -1,5 +1,11 @@
 # @treecrdt/interface
 
+## 0.3.0
+
+### Minor Changes
+
+- e829a41: Remove unused legacy sync, storage, access-control, and adapter-factory declarations. Active filtered-sync contracts remain available from `@treecrdt/sync-protocol`.
+
 ## 0.2.0
 
 ### Minor Changes

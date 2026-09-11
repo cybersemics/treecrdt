@@ -1,5 +1,20 @@
 # @treecrdt/wa-sqlite
 
+## 0.5.0
+
+### Minor Changes
+
+- 992283a: Use canonical VersionVector v0 bytes across storage and sync. The new `@treecrdt/wasm/codec` entry
+  point lazily loads the shared Rust implementation and exposes synchronous codec methods once ready.
+  Recreate development databases that contain the unreleased JSON format.
+- 9a0534f: Replace the custom worker RPC with Comlink and split session data access from connection lifecycle. `createWaSqliteApi` is removed; low-level callers that open a wa-sqlite handle themselves should initialize the extension, set the doc id, then pass the database to `createTreecrdtSqliteAdapter` from `@treecrdt/interface/sqlite`. `createTreecrdtClient()` is unchanged for typical apps.
+
+### Patch Changes
+
+- 49ca3c9: Reduce local insert, move, delete, and payload overhead by preparing SQLite helper statements only when each operation needs them.
+- Updated dependencies [e829a41]
+  - @treecrdt/interface@0.3.0
+
 ## 0.4.2
 
 ### Patch Changes

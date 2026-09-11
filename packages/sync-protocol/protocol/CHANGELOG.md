@@ -1,5 +1,16 @@
 # @treecrdt/sync-protocol
 
+## 0.2.0
+
+### Minor Changes
+
+- 2594f3d: Require every duplex transport to expose an idempotent `close` method and a read-only `closeSignal`, treat each transport object as one connection lifecycle, propagate malformed frames and WebSocket closure through sync sessions instead of leaving pending work unresolved, and scope protocol session routing to the originating transport. The high-level custom-transport factory now owns transport cleanup and no longer accepts a separate close callback.
+
+### Patch Changes
+
+- Updated dependencies [e829a41]
+  - @treecrdt/interface@0.3.0
+
 ## 0.1.2
 
 ### Patch Changes
