@@ -1,19 +1,31 @@
 {
   "name": "@treecrdt/wasm",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./codec": {
+      "types": "./dist/codec-node.d.ts",
+      "browser": "./dist/codec-browser.js",
+      "import": "./dist/codec-node.js"
+    }
+  },
   "files": [
     "dist",
-    "pkg"
+    "pkg/**/*",
+    "pkg-web/**/*"
   ],
   "scripts": {
-    "build:wasm": "wasm-pack build ../../packages/treecrdt-wasm --target nodejs --out-dir $(pwd)/pkg --release",
+    "build:wasm": "node ./scripts/build-wasm.mjs",
     "build:ts": "tsc -p tsconfig.json",
     "build": "pnpm run build:wasm && pnpm run build:ts",
-    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
+    "test": "pnpm run build && vitest run"
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*"
@@ -22,6 +34,16 @@
     "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
     "tsx": "^4.19.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cybersemics/treecrdt.git",
+    "directory": "packages/treecrdt-wasm-js"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

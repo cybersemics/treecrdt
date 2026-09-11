@@ -7,19 +7,21 @@ description = "Core TreeCRDT library with storage/index abstractions."
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"], optional = true }
+serde_bytes = { version = "0.11", optional = true }
 serde_json = { version = "1.0", optional = true }
 thiserror = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 
 [features]
 default = []
-serde = ["dep:serde", "dep:serde_json", "dep:chrono"]
+serde = ["dep:serde", "dep:serde_bytes", "dep:serde_json", "dep:chrono"]
 wasm = []
 sql-storage = []
 bench = ["serde"]
 
 [dev-dependencies]
 proptest = "1"
+serde_json = "1"
 
 [[bench]]
 name = "core"
