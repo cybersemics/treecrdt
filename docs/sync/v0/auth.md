@@ -9,8 +9,11 @@ It is intentionally **ACL-agnostic at the TreeCRDT core layer**: the CRDT operat
 types and merge semantics do not change. Authorization is enforced by the sync layer
 and by any server that chooses to validate inbound ops.
 
-Draft: revised in place without compatibility with earlier profiles. Recreate signatures and proof
-material after format changes; the surrounding Sync v0 envelope is unchanged.
+This unreleased auth extension for Sync v0 is revised in place without compatibility with earlier
+drafts. Recreate signatures and proof material after format changes.
+
+Sync v0, VersionVector v0, and auth domains such as `treecrdt/op-sig/v1` identify independently
+versioned formats. The `/v1` suffix does not imply a prior auth release or a Sync protocol upgrade.
 
 ## Threat model (baseline)
 
