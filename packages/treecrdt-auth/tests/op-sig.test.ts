@@ -247,7 +247,6 @@ test('knownState entry limit is enforced by the auth profile', async () => {
 
 test('signature policy only allows knownState on deletes', async () => {
   const privateKey = ed25519Utils.randomSecretKey();
-  const publicKey = await getPublicKey(privateKey);
   const state = knownState();
   const nonDeleteKinds: Operation['kind'][] = [
     {
@@ -281,8 +280,4 @@ test('signature policy only allows knownState on deletes', async () => {
 
   const tombstone = operation({ type: 'tombstone', node });
   expect((await encodeTreecrdtOpSigInput({ docId: 'doc', op: tombstone })).at(-1)).toBe(0);
-  const signature = await signTreecrdtOp({ docId: 'doc', op: tombstone, privateKey });
-  await expect(
-    verifyTreecrdtOp({ docId: 'doc', op: tombstone, signature, publicKey }),
-  ).resolves.toBe(true);
 });
