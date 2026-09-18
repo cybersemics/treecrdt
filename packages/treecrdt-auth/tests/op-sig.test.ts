@@ -9,11 +9,7 @@ import {
 import { sha512 } from '@noble/hashes/sha512';
 
 import type { Operation } from '@treecrdt/interface';
-import {
-  loadVersionVectorCodec,
-  type VersionVectorCodec,
-  type VersionVectorEntry,
-} from '@treecrdt/wasm/codec';
+import { loadVersionVectorCodec, type VersionVectorCodec } from '@treecrdt/wasm/codec';
 import {
   encodeTreecrdtOpSigInput,
   signTreecrdtOp,
@@ -41,10 +37,6 @@ function knownState(frontier = 0n): Uint8Array {
   return codec.encodeVersionVector({
     entries: frontier === 0n ? [] : [{ replica: meta.id.replica, frontier, ranges: [] }],
   });
-}
-
-function versionVectorState(entries: readonly VersionVectorEntry[]): Uint8Array {
-  return codec.encodeVersionVector({ entries });
 }
 
 test('one signature format binds the explicit knownState field', async () => {
@@ -137,7 +129,7 @@ test('valid signatures are followed by canonical knownState validation', async (
   const privateKey = ed25519Utils.randomSecretKey();
   const publicKey = await getPublicKey(privateKey);
   const kind = { type: 'delete', node } as const;
-  const canonicalState = versionVectorState([]);
+  const canonicalState = knownState();
   const malformedState = canonicalState.slice();
   malformedState[0] ^= 0xff;
 
@@ -190,9 +182,9 @@ test('signing snapshots the operation and key before asynchronous validation', a
 });
 
 test.each([0, 1, 31, 33])('auth profile rejects %i-byte replica ids', async (replicaLength) => {
-  const state = versionVectorState([
-    { replica: new Uint8Array(replicaLength).fill(1), frontier: 1n, ranges: [] },
-  ]);
+  const state = codec.encodeVersionVector({
+    entries: [{ replica: new Uint8Array(replicaLength).fill(1), frontier: 1n, ranges: [] }],
+  });
   await expect(
     encodeTreecrdtOpSigInput({
       docId: 'doc',
@@ -234,12 +226,15 @@ test('knownState entry limit is enforced by the auth profile', async () => {
     replica[31] = index & 0xff;
     return { replica, frontier: 1n, ranges: [] };
   });
-  const tooManyEntries = versionVectorState(entries);
+  const tooManyEntries = codec.encodeVersionVector({ entries });
   expect(tooManyEntries.length).toBeLessThanOrEqual(1024 * 1024);
   await expect(
     encodeTreecrdtOpSigInput({
       docId: 'doc',
-      op: operation({ type: 'delete', node }, versionVectorState(entries.slice(0, 4096))),
+      op: operation(
+        { type: 'delete', node },
+        codec.encodeVersionVector({ entries: entries.slice(0, 4096) }),
+      ),
     }),
   ).resolves.toBeInstanceOf(Uint8Array);
   await expect(

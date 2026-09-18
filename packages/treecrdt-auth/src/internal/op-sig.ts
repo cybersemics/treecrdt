@@ -12,7 +12,24 @@ const MAX_KNOWN_STATE_BYTES = 1024 * 1024;
 const MAX_KNOWN_STATE_ENTRIES = 4096;
 const ED25519_PUBLIC_KEY_LEN = 32;
 
-function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Array {
+function prepareOpSignature(opts: { docId: string; op: Operation }): {
+  message: Uint8Array;
+  knownState: Uint8Array | undefined;
+} {
+  const knownState = opts.op.meta.knownState;
+  if (knownState !== undefined && knownState.length > MAX_KNOWN_STATE_BYTES) {
+    throw new Error(
+      `knownState exceeds the ${MAX_KNOWN_STATE_BYTES}-byte operation-signature limit`,
+    );
+  }
+  if (opts.op.kind.type === 'delete') {
+    if (knownState === undefined || knownState.length === 0) {
+      throw new Error('delete operations require non-empty knownState');
+    }
+  } else if (knownState !== undefined) {
+    throw new Error('knownState is only allowed on delete operations');
+  }
+
   const docIdBytes = utf8ToBytes(opts.docId);
   const replicaBytes = replicaIdToBytes(opts.op.meta.id.replica);
 
@@ -83,7 +100,9 @@ function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Ar
     }
   }
 
-  return concatBytes(
+  const message = concatBytes(
+    OP_SIG_DOMAIN,
+    u8(0),
     u32be(docIdBytes.length),
     docIdBytes,
     u32be(replicaBytes.length),
@@ -92,10 +111,17 @@ function encodeTreecrdtOpFields(opts: { docId: string; op: Operation }): Uint8Ar
     u64be(lamport),
     u8(kindTag),
     kindFields,
+    ...(knownState === undefined ? [u8(0)] : [u8(1), u32be(knownState.length), knownState]),
   );
+  return {
+    message,
+    // Validate the message's copy so caller mutations across awaits cannot change the input.
+    knownState:
+      knownState === undefined ? undefined : message.subarray(message.length - knownState.length),
+  };
 }
 
-async function assertCanonicalKnownState(bytes: Uint8Array | undefined): Promise<void> {
+async function validateKnownState(bytes: Uint8Array | undefined): Promise<void> {
   if (bytes === undefined) return;
   const codec = await loadVersionVectorCodec();
   const vector = codec.decodeVersionVector(bytes);
@@ -111,47 +137,13 @@ async function assertCanonicalKnownState(bytes: Uint8Array | undefined): Promise
   }
 }
 
-function assertPolicyOperation(op: Operation, knownState: Uint8Array | undefined): void {
-  if (knownState !== undefined && knownState.length > MAX_KNOWN_STATE_BYTES) {
-    throw new Error(
-      `knownState exceeds the ${MAX_KNOWN_STATE_BYTES}-byte operation-signature limit`,
-    );
-  }
-  if (op.kind.type === 'delete') {
-    if (knownState === undefined || knownState.length === 0) {
-      throw new Error('delete operations require non-empty knownState');
-    }
-  } else if (knownState !== undefined) {
-    throw new Error('knownState is only allowed on delete operations');
-  }
-}
-
-function encodeTreecrdtOpSigInputUnchecked(
-  opts: { docId: string; op: Operation },
-  knownState: Uint8Array | undefined,
-): { message: Uint8Array; signedKnownState: Uint8Array | undefined } {
-  const message = concatBytes(
-    OP_SIG_DOMAIN,
-    u8(0),
-    encodeTreecrdtOpFields(opts),
-    ...(knownState === undefined ? [u8(0)] : [u8(1), u32be(knownState.length), knownState]),
-  );
-  return {
-    message,
-    signedKnownState:
-      knownState === undefined ? undefined : message.subarray(message.length - knownState.length),
-  };
-}
-
 export async function encodeTreecrdtOpSigInput(opts: {
   docId: string;
   op: Operation;
 }): Promise<Uint8Array> {
-  const knownState = opts.op.meta.knownState;
-  assertPolicyOperation(opts.op, knownState);
-  const encoded = encodeTreecrdtOpSigInputUnchecked(opts, knownState);
-  await assertCanonicalKnownState(encoded.signedKnownState);
-  return encoded.message;
+  const { message, knownState } = prepareOpSignature(opts);
+  await validateKnownState(knownState);
+  return message;
 }
 
 export async function signTreecrdtOp(opts: {
@@ -170,12 +162,9 @@ export async function verifyTreecrdtOp(opts: {
   signature: Uint8Array;
   publicKey: Uint8Array;
 }): Promise<boolean> {
-  const knownState = opts.op.meta.knownState;
-  assertPolicyOperation(opts.op, knownState);
-  const encoded = encodeTreecrdtOpSigInputUnchecked({ docId: opts.docId, op: opts.op }, knownState);
-  const verified = await verifyEd25519(opts.signature, encoded.message, opts.publicKey);
+  const { message, knownState } = prepareOpSignature(opts);
+  const verified = await verifyEd25519(opts.signature, message, opts.publicKey);
   if (!verified) return false;
-  // Validate the suffix copied into the signed message, not the caller-owned mutable input.
-  await assertCanonicalKnownState(encoded.signedKnownState);
+  await validateKnownState(knownState);
   return true;
 }
