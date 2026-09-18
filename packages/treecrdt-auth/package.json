@@ -23,6 +23,7 @@
     "@noble/hashes": "^1.8.0",
     "@treecrdt/interface": "workspace:*",
     "@treecrdt/sync-protocol": "workspace:*",
+    "@treecrdt/wasm": "workspace:*",
     "cborg": "^4.3.2"
   },
   "devDependencies": {
