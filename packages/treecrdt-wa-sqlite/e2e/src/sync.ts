@@ -762,10 +762,7 @@ async function runBenchOnce(
   }
 }
 
-async function runBenchCase(
-  workload: SyncBenchWorkload,
-  size: number,
-): Promise<SyncBenchResult> {
+async function runBenchCase(workload: SyncBenchWorkload, size: number): Promise<SyncBenchResult> {
   const bench = buildSyncBenchCase({ workload, size });
   const { iterations, warmupIterations } = syncBenchTiming();
 
