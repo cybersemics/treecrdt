@@ -2,12 +2,8 @@ import { createTreecrdtClient, type TreecrdtClient } from '@treecrdt/wa-sqlite';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { replicaFromLabel } from './op-helpers.js';
 
-type RuntimeChoice = 'auto' | 'dedicated-worker' | 'shared-worker';
-
 type OpenResponsivenessClientOptions = {
   docId: string;
-  filename: string;
-  runtime?: RuntimeChoice;
 };
 
 type WriteBatchOptions = {
@@ -140,11 +136,7 @@ export async function openResponsivenessClient(opts: OpenResponsivenessClientOpt
   storage: TreecrdtClient['storage'];
 }> {
   await closeResponsivenessClient();
-  responsivenessClient = await createTreecrdtClient({
-    docId: opts.docId,
-    storage: { type: 'opfs', filename: opts.filename, fallback: 'throw' },
-    runtime: { type: opts.runtime ?? 'shared-worker' },
-  });
+  responsivenessClient = await createTreecrdtClient({ docId: opts.docId, persistent: true });
   return {
     mode: responsivenessClient.mode,
     runtime: responsivenessClient.runtime,

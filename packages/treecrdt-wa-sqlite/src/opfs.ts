@@ -12,18 +12,16 @@ function hasOpfsGetDirectory(): boolean {
 }
 
 /**
- * Feature check for OPFS + cross-origin isolation.
- * We require getDirectory + crossOriginIsolated. createSyncAccessHandle is only
- * available in Web Workers, so we cannot reliably detect it from the main thread;
- * the OPFS VFS runs in a worker and will fail at init if unsupported (we fall
- * back to memory).
+ * Feature check for OPFS + cross-origin isolation (window or worker context).
+ * createSyncAccessHandle is only available in Web Workers, so it cannot be
+ * detected from here; the OPFS VFS runs in a worker and fails at init if
+ * unsupported.
  */
 export function detectOpfsSupport(): OpfsSupport {
-  const hasWindow = typeof window !== 'undefined';
-  if (!hasWindow) return { available: false, reason: 'No window' };
   const hasOpfs = hasOpfsGetDirectory();
   const isolated =
-    (window as typeof window & { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
+    (globalThis as typeof globalThis & { crossOriginIsolated?: boolean }).crossOriginIsolated ===
+    true;
   const ok = hasOpfs && isolated;
   return ok
     ? { available: true }
@@ -33,6 +31,24 @@ export function detectOpfsSupport(): OpfsSupport {
           ? 'navigator.storage.getDirectory unavailable'
           : 'cross-origin isolation required',
       };
+}
+
+/**
+ * Deterministic, filesystem-safe OPFS filename for a docId, so distinct documents
+ * never share one SQLite database. The hash suffix keeps docIds distinct even when
+ * sanitization collapses their characters.
+ */
+export function opfsFilenameForDocId(docId: string): string {
+  const safe = docId
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .slice(0, 64);
+  // FNV-1a over the docId's UTF-8 bytes.
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(docId)) {
+    hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  }
+  return `/treecrdt-${safe}-${hash.toString(16).padStart(8, '0')}.db`;
 }
 
 const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal'];

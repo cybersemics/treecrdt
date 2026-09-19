@@ -11,11 +11,7 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
   runtime: 'dedicated-worker',
 
   async connect(opts: ResolvedClientOptions): Promise<RuntimeConnection> {
-    const worker = (
-      opts.workerUrl
-        ? new Worker(opts.workerUrl, { type: 'module' })
-        : new Worker(new URL('../worker.js', import.meta.url), { type: 'module' })
-    ) as Worker;
+    const worker = new Worker(new URL('../worker.js', import.meta.url), { type: 'module' });
 
     const connection = Comlink.wrap(worker) as unknown as RemoteTreecrdtConnection;
     let closed = false;
@@ -36,7 +32,6 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
       filename: opts.filename,
       storage: opts.storage,
       docId: opts.docId,
-      fallback: opts.fallback,
     };
 
     let initResult: BackendInitResult;
@@ -47,23 +42,11 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
       throw error;
     }
 
-    if (opts.fallback === 'throw' && initResult.storage !== 'opfs') {
-      const reason = initResult.opfsError ? `: ${initResult.opfsError}` : '';
-      try {
-        await connection.close();
-      } catch {
-        // ignore close errors on init failure
-      } finally {
-        await cleanup();
-      }
-      throw new Error(`OPFS requested but could not be initialized${reason}`);
-    }
-
     return {
       connection,
       mode: 'worker',
       runtime: 'dedicated-worker',
-      storage: initResult.storage === 'opfs' ? 'opfs' : 'memory',
+      storage: initResult.storage,
       filename: initResult.filename,
       docId: opts.docId,
       local: false,

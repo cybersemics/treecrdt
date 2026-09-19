@@ -6,9 +6,14 @@ import { clearOpfsStorage } from '../src/opfs.js';
 import type { Database, TreecrdtClient } from '../src/types.js';
 import { createMockConnection, installDedicatedWorker } from './mock-worker.js';
 
+// Detection is forced available so `persistent: true` reaches the (mocked) worker runtime.
 vi.mock('../src/opfs.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../src/opfs.js')>();
-  return { ...original, clearOpfsStorage: vi.fn() };
+  return {
+    ...original,
+    clearOpfsStorage: vi.fn(),
+    detectOpfsSupport: vi.fn(() => ({ available: true })),
+  };
 });
 
 const mockedClearOpfsStorage = vi.mocked(clearOpfsStorage);
@@ -84,11 +89,7 @@ test('dedicated-worker init failure terminates the endpoint and removes its list
   const endpoint = installDedicatedWorker(connection);
 
   await expect(
-    createTreecrdtClient({
-      docId: 'dedicated-init-failure',
-      runtime: { type: 'dedicated-worker' },
-      storage: { type: 'opfs' },
-    }),
+    createTreecrdtClient({ docId: 'dedicated-init-failure', persistent: true }),
   ).rejects.toThrow('init failed');
 
   expect(endpoint.terminated).toBe(true);
@@ -98,11 +99,7 @@ test('dedicated-worker init failure terminates the endpoint and removes its list
 test('dedicated-worker close failure terminates the endpoint without retrying', async () => {
   const connection = createMockConnection('close');
   const endpoint = installDedicatedWorker(connection);
-  const client = await createTreecrdtClient({
-    docId: 'dedicated-close-failure',
-    runtime: { type: 'dedicated-worker' },
-    storage: { type: 'memory' },
-  });
+  const client = await createTreecrdtClient({ docId: 'dedicated-close-failure', persistent: true });
 
   await expect(client.close()).resolves.toBeUndefined();
   await expect(client.close()).resolves.toBeUndefined();
@@ -116,11 +113,7 @@ test('dedicated-worker close failure terminates the endpoint without retrying', 
 test('dedicated-worker drop failure terminates the endpoint without retrying', async () => {
   const connection = createMockConnection('drop');
   const endpoint = installDedicatedWorker(connection);
-  const client = await createTreecrdtClient({
-    docId: 'dedicated-drop-failure',
-    runtime: { type: 'dedicated-worker' },
-    storage: { type: 'memory' },
-  });
+  const client = await createTreecrdtClient({ docId: 'dedicated-drop-failure', persistent: true });
 
   await expect(client.drop()).rejects.toThrow('drop failed');
   await expect(client.drop()).rejects.toThrow('drop failed');

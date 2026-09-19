@@ -20,11 +20,10 @@ import type {
 } from '@treecrdt/interface/engine';
 import { createTreecrdtEngineLocal } from '@treecrdt/interface/engine';
 import type { MaterializationListener } from './session.js';
-import type { ResolvedClientOptions, RuntimeConnection } from './runtime/types.js';
-import { defaultSharedWorkerName, resolveBrowserEnvironment } from './runtime/resolve.js';
+import type { RuntimeConnection } from './runtime/types.js';
+import { resolveBrowserEnvironment } from './runtime/resolve.js';
 import { directRuntimeStrategy, type OpenDbFn } from './runtime/direct.js';
 import { dedicatedWorkerStrategy } from './runtime/dedicated-worker.js';
-import { sharedWorkerStrategy } from './runtime/shared-worker.js';
 import { createClientMaterializationDispatcher } from './materialization.js';
 import type { ClientOptions, TreecrdtClient } from './types.js';
 
@@ -40,62 +39,29 @@ const APPEND_MANY_CHUNK_SIZE = 2500;
  * never imports the Vite `?url` WASM loader (which would break the Node entry).
  */
 export async function createBrowserTreecrdtClient(
-  opts: ClientOptions = {},
+  opts: ClientOptions,
   openDb: OpenDbFn,
 ): Promise<TreecrdtClient> {
   const env = resolveBrowserEnvironment(opts);
-  const resolved: ResolvedClientOptions = {
-    baseUrl: env.baseUrl,
-    filename: env.storage.filename,
-    storage: env.shouldUseOpfs ? 'opfs' : 'memory',
-    fallback: env.storage.fallback,
-    requireOpfs: env.storage.requireOpfs,
-    docId: env.docId,
-    openDb,
-    workerUrl:
-      env.runtime.type === 'dedicated-worker' || env.runtime.type === 'shared-worker'
-        ? env.runtime.workerUrl
-        : undefined,
-    sharedWorkerName:
-      env.runtime.type === 'shared-worker'
-        ? (env.runtime.name ??
-          defaultSharedWorkerName(env.docId, env.shouldUseOpfs ? env.storage.filename : ':memory:'))
-        : defaultSharedWorkerName(env.docId, env.shouldUseOpfs ? env.storage.filename : ':memory:'),
-  };
-
   const strategy =
-    env.resolvedRuntime === 'shared-worker'
-      ? sharedWorkerStrategy
-      : env.resolvedRuntime === 'dedicated-worker'
-        ? dedicatedWorkerStrategy
-        : directRuntimeStrategy;
-
-  return createClientFromBackend(await strategy.connect(resolved));
+    env.runtime === 'dedicated-worker' ? dedicatedWorkerStrategy : directRuntimeStrategy;
+  return createClientFromBackend(
+    await strategy.connect({
+      baseUrl: env.baseUrl,
+      filename: env.filename,
+      storage: env.storage,
+      docId: env.docId,
+      openDb,
+    }),
+  );
 }
 
 /** Direct in-process client with an injected opener (Node entry + unit tests). */
 export async function buildDirectClient(
-  opts: {
-    baseUrl?: string;
-    filename?: string;
-    storage: 'memory' | 'opfs';
-    docId: string;
-    requireOpfs?: boolean;
-    fallback?: 'memory' | 'throw';
-  },
+  opts: { baseUrl?: string; filename?: string; storage: 'memory' | 'opfs'; docId: string },
   openDb: OpenDbFn,
 ): Promise<TreecrdtClient> {
-  return createClientFromBackend(
-    await directRuntimeStrategy.connect({
-      baseUrl: opts.baseUrl,
-      filename: opts.filename,
-      storage: opts.storage,
-      fallback: opts.fallback ?? (opts.requireOpfs ? 'throw' : 'memory'),
-      requireOpfs: opts.requireOpfs ?? false,
-      docId: opts.docId,
-      openDb,
-    }),
-  );
+  return createClientFromBackend(await directRuntimeStrategy.connect({ ...opts, openDb }));
 }
 
 /** Builds the public TreecrdtClient façade over a connected session (local or Comlink). */
