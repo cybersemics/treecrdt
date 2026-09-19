@@ -18,19 +18,6 @@ export type Database = {
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
-export type TreecrdtStorage =
-  | { type: 'memory' }
-  | { type: 'opfs'; filename?: string; fallback?: 'throw' | 'memory' }
-  | { type: 'auto'; filename?: string; fallback?: 'memory' | 'throw' };
-export type TreecrdtRuntime =
-  | { type: 'auto' }
-  | { type: 'direct' }
-  | { type: 'dedicated-worker'; workerUrl?: string | URL }
-  | { type: 'shared-worker'; workerUrl?: string | URL; name?: string };
-export type TreecrdtAssets = {
-  /** Browser: public URL prefix for wa-sqlite JS assets. Node: optional filesystem directory. */
-  baseUrl?: string;
-};
 
 export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
@@ -41,20 +28,11 @@ export type TreecrdtClient = TreecrdtEngine & {
 };
 
 export type ClientOptions = {
-  storage?: TreecrdtStorage;
-  runtime?: TreecrdtRuntime;
-  assets?: TreecrdtAssets;
-  docId?: string; // used for v0 sync opRef derivation inside the extension
+  /** Stable logical document identity used by CRDT operations and sync; cannot be detected. */
+  docId: string;
+  /** true → durable OPFS storage (throws when OPFS is unavailable); false/omitted → in-memory. */
+  persistent?: boolean;
 };
-
-export type NormalizedStorageOptions = {
-  type: StorageMode | 'auto';
-  filename?: string;
-  requireOpfs: boolean;
-  fallback: 'memory' | 'throw';
-};
-
-export type NormalizedRuntimeOptions = TreecrdtRuntime;
 
 export type CrossTabMaterializationScope = {
   docId: string;

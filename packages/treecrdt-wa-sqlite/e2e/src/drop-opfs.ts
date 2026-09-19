@@ -1,4 +1,9 @@
-import { createTreecrdtClient, detectOpfsSupport, opfsStorageExists } from '@treecrdt/wa-sqlite';
+import {
+  createTreecrdtClient,
+  detectOpfsSupport,
+  opfsFilenameForDocId,
+  opfsStorageExists,
+} from '@treecrdt/wa-sqlite';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
@@ -8,15 +13,9 @@ export async function runDropStorageE2E(): Promise<{ ok: true } | { ok: false; e
     return { ok: false, error: `OPFS unavailable: ${support.reason ?? 'unknown'}` };
   }
 
-  const baseUrl =
-    typeof window !== 'undefined' ? new URL('.', window.location.href).href : undefined;
-
-  const filename = `/drop-test-${crypto.randomUUID()}.db`;
-  const client = await createTreecrdtClient({
-    storage: { type: 'opfs', filename, fallback: 'throw' },
-    runtime: { type: 'dedicated-worker' },
-    assets: { baseUrl },
-  });
+  const docId = `drop-test-${crypto.randomUUID()}`;
+  const filename = opfsFilenameForDocId(docId);
+  const client = await createTreecrdtClient({ docId, persistent: true });
 
   try {
     const root = '0'.repeat(32);

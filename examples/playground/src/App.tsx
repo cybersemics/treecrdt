@@ -20,15 +20,12 @@ import { usePlaygroundPayloads } from "./playground/hooks/usePlaygroundPayloads"
 import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
 import { materializationRefreshPlan } from "./playground/materializationEvents";
 import {
-  ensureOpfsKey,
   initialDocId,
   initialStorage,
   makeDefaultDocId,
   makeNodeId,
-  makeSessionKey,
   persistDocId,
   persistSyncSettings,
-  persistOpfsKey,
   persistStorage,
 } from "./playground/persist";
 import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
@@ -89,9 +86,6 @@ export default function App() {
   const [totalNodes, setTotalNodes] = useState<number | null>(null);
   const [docId, setDocId] = useState<string>(() => initialDocId());
   const [storage, setStorage] = useState<StorageMode>(() => initialStorage());
-  const [sessionKey, setSessionKey] = useState<string>(() =>
-    initialStorage() === "opfs" ? ensureOpfsKey() : makeSessionKey()
-  );
   const [parentChoice, setParentChoice] = useState(ROOT_ID);
   const [collapse, setCollapse] = useState<CollapseState>(() => ({
     defaultCollapsed: true,
@@ -641,25 +635,14 @@ export default function App() {
     };
   }, [closeClientSafely]);
 
-  const initClient = async (storageMode: StorageMode, keyOverride?: string, docIdOverride?: string) => {
+  const initClient = async (storageMode: StorageMode, docIdOverride?: string) => {
     const initEpoch = ++initEpochRef.current;
     setStatus("booting");
     setError(null);
     try {
-      const resolvedBase =
-        typeof window !== "undefined"
-          ? new URL(import.meta.env.BASE_URL ?? "./", window.location.href).href
-          : import.meta.env.BASE_URL ?? "./";
-      const baseUrl = resolvedBase.endsWith("/") ? resolvedBase : `${resolvedBase}/`;
-      const filename = storageMode === "opfs" ? `/treecrdt-playground-${keyOverride ?? sessionKey}.db` : undefined;
       const c = await createTreecrdtClient({
-        storage:
-          storageMode === "opfs"
-            ? { type: "opfs", filename, fallback: "throw" }
-            : { type: "memory" },
-        runtime: { type: "auto" },
-        assets: { baseUrl },
         docId: docIdOverride ?? docId,
+        persistent: storageMode === "opfs",
       });
       if (disposedRef.current || initEpoch !== initEpochRef.current) {
         await closeClientSafely(c);
@@ -681,13 +664,6 @@ export default function App() {
 
   const resetAndInit = async (target: StorageMode, opts: { resetKey?: boolean; docId?: string } = {}) => {
     setStatus("booting");
-    const nextKey =
-      target === "opfs"
-        ? opts.resetKey
-          ? persistOpfsKey(makeSessionKey())
-          : ensureOpfsKey()
-        : sessionKey;
-    setSessionKey(nextKey);
     resetOps();
     setTreeState({
       index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0 } },
@@ -705,8 +681,17 @@ export default function App() {
     const closingClient = clientRef.current;
     clientRef.current = null;
     setClient(null);
-    await closeClientSafely(closingClient);
-    await initClient(target, nextKey, opts.docId);
+    if (opts.resetKey && closingClient) {
+      // OPFS filenames derive from docId, so a reset must drop the store to start fresh.
+      try {
+        await closingClient.drop();
+      } catch {
+        // Best-effort: reset should proceed even when the previous store is already gone.
+      }
+    } else {
+      await closeClientSafely(closingClient);
+    }
+    await initClient(target, opts.docId);
   };
 
   const appendMoveAfter = async (nodeId: string, newParent: string, after: string | null) => {

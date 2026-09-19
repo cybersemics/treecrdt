@@ -15,20 +15,9 @@ export const directRuntimeStrategy: RuntimeStrategy = {
       filename: opts.filename,
       storage: opts.storage,
       docId: opts.docId,
-      fallback: opts.fallback,
       // Direct OPFS uses any-context so it can run off the dedicated worker origin.
       opfsVfs: opts.storage === 'opfs' ? 'any-context' : undefined,
     });
-
-    if (opts.fallback === 'throw' && initResult.storage !== 'opfs') {
-      const reason = initResult.opfsError ? `: ${initResult.opfsError}` : '';
-      try {
-        await connection.close();
-      } catch {
-        // ignore close errors on init failure
-      }
-      throw new Error(`OPFS requested but could not be initialized${reason}`);
-    }
 
     return {
       connection,

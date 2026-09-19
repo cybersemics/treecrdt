@@ -15,14 +15,12 @@ export type BackendInitConfig = {
   filename?: string;
   storage: StorageMode;
   docId: string;
-  fallback: 'memory' | 'throw';
   opfsVfs?: OpfsVfsKind;
 };
 
 export type BackendInitResult = {
   storage: StorageMode;
   filename: string;
-  opfsError?: string;
 };
 
 export type MaterializationListener = (event: MaterializationEvent) => void;
@@ -137,7 +135,6 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
         filename: config.filename,
         storage: config.storage,
         docId: config.docId,
-        requireOpfs: config.fallback === 'throw',
         opfsVfs: config.opfsVfs,
       });
       db = opened.db;
@@ -147,7 +144,7 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
       });
       storedFilename = opened.filename;
       storedStorage = opened.storage;
-      return toInitResult(opened);
+      return { storage: opened.storage, filename: opened.filename };
     });
 
   const closeDb = (): Promise<void> => run(() => closeDbUnlocked());
@@ -209,12 +206,6 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
 };
 
 export default createTreecrdtSession;
-
-function toInitResult(opened: OpenTreecrdtDbResult): BackendInitResult {
-  return opened.opfsError
-    ? { storage: opened.storage, filename: opened.filename, opfsError: opened.opfsError }
-    : { storage: opened.storage, filename: opened.filename };
-}
 
 /**
  * Copy off WASM / SharedArrayBuffer / subarray views, then mark the owned

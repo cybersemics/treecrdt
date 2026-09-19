@@ -4,10 +4,7 @@ export type {
   Database,
   RuntimeMode,
   StorageMode,
-  TreecrdtAssets,
   TreecrdtClient,
-  TreecrdtRuntime,
-  TreecrdtStorage,
 } from './types.js';
 
 export { createTreecrdtClient } from './node/client.js';
