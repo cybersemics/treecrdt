@@ -32,6 +32,8 @@ export type ClientOptions = {
   docId: string;
   /** true → durable OPFS storage (throws when OPFS is unavailable); false/omitted → in-memory. */
   persistent?: boolean;
+  /** OPFS database filename override; used only when persistent is true. */
+  filename?: string;
 };
 
 export type CrossTabMaterializationScope = {

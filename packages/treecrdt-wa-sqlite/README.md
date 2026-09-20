@@ -21,7 +21,7 @@ from this package is already a `SqliteRunner`).
 
 ## Browser usage
 
-Use `createTreecrdtClient()` with a required `docId` and optional `persistent` flag. Browser apps should use `@treecrdt/wa-sqlite/vite-plugin` to copy the JS assets into `public/wa-sqlite/` (asset URLs resolve from Vite's `BASE_URL`). Vite includes the imported WASM in its asset graph and emits it with a content hash.
+Use `createTreecrdtClient()` with a required `docId`, optional `persistent` flag, and optional persistent database `filename`. Browser apps should use `@treecrdt/wa-sqlite/vite-plugin` to copy the JS assets into `public/wa-sqlite/` (asset URLs resolve from Vite's `BASE_URL`). Vite includes the imported WASM in its asset graph and emits it with a content hash.
 
 ```ts
 import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
@@ -32,6 +32,13 @@ const memoryClient = await createTreecrdtClient({ docId: 'my-doc' });
 // Durable: OPFS storage in a dedicated worker. Throws when OPFS is unavailable
 // (e.g. missing cross-origin isolation) — there is no silent memory fallback.
 const persistentClient = await createTreecrdtClient({ docId: 'my-doc', persistent: true });
+
+// Override the OPFS filename when an existing application owns the file naming scheme.
+const namedClient = await createTreecrdtClient({
+  docId: 'my-doc',
+  persistent: true,
+  filename: '/my-existing-file.db',
+});
 ```
 
 Storage, runtime, filename, and asset resolution are selected internally:
@@ -39,7 +46,7 @@ Storage, runtime, filename, and asset resolution are selected internally:
 | `persistent` | Storage | Runtime | Notes |
 | --- | --- | --- | --- |
 | omitted / `false` | memory | `direct` (in-process) | data is gone when the client closes |
-| `true` | OPFS | `dedicated-worker` (Comlink over `Worker`) | one OPFS database per `docId` (filename derived from `docId`); clients in other tabs with the same `docId` share it |
+| `true` | OPFS | `dedicated-worker` (Comlink over `Worker`) | filename derived from `docId` unless explicitly provided; clients using the same filename and `docId` share it |
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
 

@@ -28,7 +28,7 @@ export function browserAssetsBaseUrl(): string {
 }
 
 /**
- * Maps the public two-field options onto storage, runtime, filename, and assets:
+ * Maps the public options onto storage, runtime, filename, and assets:
  * memory runs in-process, persistence runs OPFS in a dedicated worker and throws
  * when OPFS is unavailable (never a silent memory fallback).
  */
@@ -50,7 +50,7 @@ export function resolveBrowserEnvironment(opts: ClientOptions): ResolvedBrowserE
     docId,
     storage: 'opfs',
     runtime: 'dedicated-worker',
-    filename: opfsFilenameForDocId(docId),
+    filename: opts.filename ?? opfsFilenameForDocId(docId),
     baseUrl,
   };
 }
