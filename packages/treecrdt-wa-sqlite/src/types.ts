@@ -34,6 +34,8 @@ export type ClientOptions = {
   persistent?: boolean;
   /** OPFS database filename override; used only when persistent is true. */
   filename?: string;
+  /** Share one worker and database session between browser tabs. */
+  crossTab?: boolean;
 };
 
 export type CrossTabMaterializationScope = {

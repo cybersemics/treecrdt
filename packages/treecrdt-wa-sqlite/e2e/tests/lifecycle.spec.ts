@@ -54,7 +54,7 @@ async function read(page: Page, opts: LifecycleOptions) {
   }, opts);
 }
 
-/** Persistent clients always run OPFS in a dedicated worker. */
+/** This harness opens persistent clients without cross-tab mode. */
 function expectLifecycleTree(state: Awaited<ReturnType<typeof read>>) {
   expect(state).toMatchObject({
     mode: 'worker',

@@ -18,6 +18,16 @@ export function validateDocId(docId: string): string {
   return docId;
 }
 
+export function validateCrossTab(crossTab: boolean | undefined): boolean {
+  if (crossTab !== undefined && typeof crossTab !== 'boolean') {
+    throw new Error('createTreecrdtClient crossTab must be a boolean');
+  }
+  if (crossTab && typeof SharedWorker === 'undefined') {
+    throw new Error('TreeCRDT cross-tab mode requires SharedWorker support');
+  }
+  return crossTab ?? false;
+}
+
 /** wa-sqlite JS assets are served from the app's public root (Vite BASE_URL or "/"). */
 export function browserAssetsBaseUrl(): string {
   const base: string =
@@ -29,15 +39,21 @@ export function browserAssetsBaseUrl(): string {
 
 /**
  * Maps the public options onto storage, runtime, filename, and assets:
- * memory runs in-process, persistence runs OPFS in a dedicated worker and throws
- * when OPFS is unavailable (never a silent memory fallback).
+ * cross-tab clients run in a shared worker; otherwise memory runs in-process and
+ * persistence runs OPFS in a dedicated worker. OPFS never silently falls back.
  */
 export function resolveBrowserEnvironment(opts: ClientOptions): ResolvedBrowserEnvironment {
   const docId = validateDocId(opts.docId);
+  const crossTab = validateCrossTab(opts.crossTab);
   const baseUrl = browserAssetsBaseUrl();
 
   if (!opts.persistent) {
-    return { docId, storage: 'memory', runtime: 'direct', baseUrl };
+    return {
+      docId,
+      storage: 'memory',
+      runtime: crossTab ? 'shared-worker' : 'direct',
+      baseUrl,
+    };
   }
 
   const support = detectOpfsSupport();
@@ -49,7 +65,7 @@ export function resolveBrowserEnvironment(opts: ClientOptions): ResolvedBrowserE
   return {
     docId,
     storage: 'opfs',
-    runtime: 'dedicated-worker',
+    runtime: crossTab ? 'shared-worker' : 'dedicated-worker',
     filename: opts.filename ?? opfsFilenameForDocId(docId),
     baseUrl,
   };

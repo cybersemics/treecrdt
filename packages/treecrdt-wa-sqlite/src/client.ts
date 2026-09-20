@@ -24,6 +24,7 @@ import type { RuntimeConnection } from './runtime/types.js';
 import { resolveBrowserEnvironment } from './runtime/resolve.js';
 import { directRuntimeStrategy, type OpenDbFn } from './runtime/direct.js';
 import { dedicatedWorkerStrategy } from './runtime/dedicated-worker.js';
+import { sharedWorkerStrategy } from './runtime/shared-worker.js';
 import { createClientMaterializationDispatcher } from './materialization.js';
 import type { ClientOptions, TreecrdtClient } from './types.js';
 
@@ -44,7 +45,11 @@ export async function createBrowserTreecrdtClient(
 ): Promise<TreecrdtClient> {
   const env = resolveBrowserEnvironment(opts);
   const strategy =
-    env.runtime === 'dedicated-worker' ? dedicatedWorkerStrategy : directRuntimeStrategy;
+    env.runtime === 'shared-worker'
+      ? sharedWorkerStrategy
+      : env.runtime === 'dedicated-worker'
+        ? dedicatedWorkerStrategy
+        : directRuntimeStrategy;
   return createClientFromBackend(
     await strategy.connect({
       baseUrl: env.baseUrl,

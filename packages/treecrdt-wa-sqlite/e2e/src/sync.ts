@@ -440,8 +440,11 @@ export async function openSharedOpfsCrossTabClient(opts: { docId: string }): Pro
 }> {
   await closeSharedOpfsCrossTabClient();
   sharedOpfsCrossTabEvents = [];
-  // Tabs sharing one docId share one derived OPFS store.
-  sharedOpfsCrossTabClient = await createTreecrdtClient({ docId: opts.docId, persistent: true });
+  sharedOpfsCrossTabClient = await createTreecrdtClient({
+    docId: opts.docId,
+    persistent: true,
+    crossTab: true,
+  });
   sharedOpfsCrossTabUnsubscribe = sharedOpfsCrossTabClient.onMaterialized((event) => {
     sharedOpfsCrossTabEvents.push(event);
   });

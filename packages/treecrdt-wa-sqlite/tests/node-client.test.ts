@@ -48,6 +48,12 @@ test('createTreecrdtClient rejects persistent storage on Node', async () => {
   ).rejects.toThrow(/persistent storage is not supported on Node/);
 });
 
+test('createTreecrdtClient rejects cross-tab mode on Node', async () => {
+  await expect(
+    createTreecrdtClient({ docId: 'wa-sqlite-node-cross-tab', crossTab: true }),
+  ).rejects.toThrow(/requires SharedWorker support/);
+});
+
 test('createTreecrdtClient rejects an empty docId', async () => {
   await expect(createTreecrdtClient({ docId: '' })).rejects.toThrow(/non-empty docId/);
 });

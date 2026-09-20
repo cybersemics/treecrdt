@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 
 import { opfsFilenameForDocId } from '../src/opfs.js';
 import { resolveBrowserEnvironment } from '../src/runtime/resolve.js';
@@ -9,6 +9,10 @@ vi.mock('../src/opfs.js', async (importOriginal) => {
     ...original,
     detectOpfsSupport: vi.fn(() => ({ available: true })),
   };
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 test('persistent storage derives its filename from docId by default', () => {
@@ -26,4 +30,23 @@ test('persistent storage accepts an explicit filename', () => {
       filename: '/existing.db',
     }).filename,
   ).toBe('/existing.db');
+});
+
+test.each([false, true])(
+  'crossTab selects the shared-worker runtime (persistent: %s)',
+  (persistent) => {
+    vi.stubGlobal('SharedWorker', class {});
+    expect(
+      resolveBrowserEnvironment({ docId: 'cross-tab', persistent, crossTab: true }).runtime,
+    ).toBe('shared-worker');
+  },
+);
+
+test('crossTab requires a boolean and SharedWorker support', () => {
+  expect(() =>
+    resolveBrowserEnvironment({ docId: 'cross-tab', crossTab: 'yes' as unknown as boolean }),
+  ).toThrow(/crossTab must be a boolean/);
+  expect(() => resolveBrowserEnvironment({ docId: 'cross-tab', crossTab: true })).toThrow(
+    /requires SharedWorker support/,
+  );
 });

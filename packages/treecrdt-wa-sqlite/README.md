@@ -21,7 +21,7 @@ from this package is already a `SqliteRunner`).
 
 ## Browser usage
 
-Use `createTreecrdtClient()` with a required `docId`, optional `persistent` flag, and optional persistent database `filename`. Browser apps should use `@treecrdt/wa-sqlite/vite-plugin` to copy the JS assets into `public/wa-sqlite/` (asset URLs resolve from Vite's `BASE_URL`). Vite includes the imported WASM in its asset graph and emits it with a content hash.
+Use `createTreecrdtClient()` with a required `docId` and optional `persistent`, `filename`, and `crossTab` options. Browser apps should use `@treecrdt/wa-sqlite/vite-plugin` to copy the JS assets into `public/wa-sqlite/` (asset URLs resolve from Vite's `BASE_URL`). Vite includes the imported WASM in its asset graph and emits it with a content hash.
 
 ```ts
 import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
@@ -39,14 +39,25 @@ const namedClient = await createTreecrdtClient({
   persistent: true,
   filename: '/my-existing-file.db',
 });
+
+// Share one database session between tabs through a SharedWorker.
+const crossTabClient = await createTreecrdtClient({
+  docId: 'my-doc',
+  persistent: true,
+  crossTab: true,
+});
 ```
 
 Storage, runtime, filename, and asset resolution are selected internally:
 
-| `persistent` | Storage | Runtime | Notes |
-| --- | --- | --- | --- |
-| omitted / `false` | memory | `direct` (in-process) | data is gone when the client closes |
-| `true` | OPFS | `dedicated-worker` (Comlink over `Worker`) | filename derived from `docId` unless explicitly provided; clients using the same filename and `docId` share it |
+| `persistent` | `crossTab` | Storage | Runtime | Notes |
+| --- | --- | --- | --- | --- |
+| omitted / `false` | omitted / `false` | memory | `direct` (in-process) | data is gone when the client closes |
+| `true` | omitted / `false` | OPFS | `dedicated-worker` | filename derived from `docId` unless explicitly provided |
+| omitted / `false` | `true` | memory | `shared-worker` | tabs share an in-memory database while at least one client remains connected |
+| `true` | `true` | OPFS | `shared-worker` | tabs share one persistent database session |
+
+`crossTab: true` throws when the browser does not support `SharedWorker`.
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
 
@@ -54,7 +65,7 @@ See the [playground](../../examples/playground/README.md) for a full browser dem
 
 ## Node usage (in-memory WASM)
 
-On Node, `createTreecrdtClient()` runs wa-sqlite in-process with an in-memory database. `persistent: true` throws.
+On Node, `createTreecrdtClient()` runs wa-sqlite in-process with an in-memory database. `persistent: true` and `crossTab: true` throw.
 
 ```ts
 import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
