@@ -45,7 +45,7 @@ import {
   type CapabilityGrant,
   type TreecrdtCapabilityRevocationCheckContext,
 } from './capability.js';
-import { signTreecrdtOpV1, verifyTreecrdtOpV1 } from './op-sig.js';
+import { signTreecrdtOp, verifyTreecrdtOp } from './op-sig.js';
 import { getField } from './claims.js';
 import {
   capAllowsNode,
@@ -650,7 +650,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
           });
           proofRef = selected.tokenId;
         }
-        const sig = await signTreecrdtOpV1({
+        const sig = await signTreecrdtOp({
           docId: ctx.docId,
           op,
           privateKey: opts.localPrivateKey,
@@ -755,7 +755,7 @@ export function createTreecrdtCoseCwtAuth(opts: TreecrdtCoseCwtAuthOptions): Syn
         });
         if (scopeRes === 'deny') throw new Error('capability does not allow op');
 
-        const ok = await verifyTreecrdtOpV1({
+        const ok = await verifyTreecrdtOp({
           docId: ctx.docId,
           op,
           signature: a.sig,

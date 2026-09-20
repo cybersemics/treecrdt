@@ -38,5 +38,6 @@ export async function verifyEd25519(
   publicKey: Uint8Array,
 ): Promise<boolean> {
   ensureEd25519();
-  return await verifyImpl(signature, message, publicKey);
+  // Reject small-order public keys used as replica identities.
+  return await verifyImpl(signature, message, publicKey, { zip215: false });
 }
