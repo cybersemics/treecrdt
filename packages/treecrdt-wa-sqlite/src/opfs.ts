@@ -1,4 +1,4 @@
-import { sha256 } from '@noble/hashes/sha256';
+import { sha256 } from '@noble/hashes/sha2';
 import type { Database } from './types.js';
 import { createDatabase } from './db.js';
 import { initializeTreecrdtExtension } from './extension.js';
