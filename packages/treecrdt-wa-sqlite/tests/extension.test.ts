@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest';
 import { initializeTreecrdtExtension } from '../src/extension.js';
+import { createFakeModule } from './fake-sqlite.js';
 
 const schema = 'CREATE TABLE example (id INTEGER PRIMARY KEY)';
 const runner = () => ({
@@ -8,15 +9,13 @@ const runner = () => ({
 });
 
 test('registers each handle and initializes its schema in a transaction', async () => {
-  const init = vi.fn(async () => 0);
-  const module = { cwrap: vi.fn(() => init) };
+  const module = createFakeModule();
   const db = runner();
 
   await initializeTreecrdtExtension(module, 11, db);
   await initializeTreecrdtExtension(module, 12, db);
 
-  expect(module.cwrap).toHaveBeenCalledOnce();
-  expect(init.mock.calls).toEqual([[11], [12]]);
+  expect(module.init.mock.calls).toEqual([[11], [12]]);
   expect(db.getText).toHaveBeenCalledWith('SELECT treecrdt_schema()');
   expect(db.exec.mock.calls.map(([sql]) => sql)).toEqual([
     'BEGIN IMMEDIATE',
@@ -45,7 +44,7 @@ test('awaits SQL completion before committing or returning', async () => {
     }
   });
   let initialized = false;
-  const initialization = initializeTreecrdtExtension({ cwrap: () => () => 0 }, 21, db).then(() => {
+  const initialization = initializeTreecrdtExtension(createFakeModule(), 21, db).then(() => {
     initialized = true;
   });
   await executing;
@@ -65,9 +64,7 @@ test.each([schema, 'COMMIT'])(
       if (sql === failingSql) throw failure;
       if (sql === 'ROLLBACK') throw new Error('rollback also failed');
     });
-    await expect(initializeTreecrdtExtension({ cwrap: () => () => 0 }, 22, db)).rejects.toBe(
-      failure,
-    );
+    await expect(initializeTreecrdtExtension(createFakeModule(), 22, db)).rejects.toBe(failure);
     expect(db.exec).toHaveBeenLastCalledWith('ROLLBACK');
   },
 );
@@ -75,7 +72,7 @@ test.each([schema, 'COMMIT'])(
 test('does not roll back a transaction it failed to begin', async () => {
   const db = runner();
   db.exec.mockRejectedValue(new Error('lock failed'));
-  await expect(initializeTreecrdtExtension({ cwrap: () => () => 0 }, 23, db)).rejects.toThrow(
+  await expect(initializeTreecrdtExtension(createFakeModule(), 23, db)).rejects.toThrow(
     'lock failed',
   );
   expect(db.exec.mock.calls).toEqual([['BEGIN IMMEDIATE']]);
@@ -83,7 +80,7 @@ test('does not roll back a transaction it failed to begin', async () => {
 
 test('does not execute SQL after registration fails', async () => {
   const db = runner();
-  await expect(initializeTreecrdtExtension({ cwrap: () => () => 10 }, 31, db)).rejects.toThrow(
+  await expect(initializeTreecrdtExtension(createFakeModule(10), 31, db)).rejects.toThrow(
     'TreeCRDT SQLite extension init failed (rc=10)',
   );
   expect(db.getText).not.toHaveBeenCalled();
@@ -93,7 +90,7 @@ test('does not execute SQL after registration fails', async () => {
 test('rejects missing schema before beginning a transaction', async () => {
   const db = runner();
   db.getText.mockResolvedValue('');
-  await expect(initializeTreecrdtExtension({ cwrap: () => () => 0 }, 32, db)).rejects.toThrow(
+  await expect(initializeTreecrdtExtension(createFakeModule(), 32, db)).rejects.toThrow(
     'TreeCRDT extension did not provide its schema',
   );
   expect(db.exec).not.toHaveBeenCalled();

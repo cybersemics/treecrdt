@@ -1,10 +1,10 @@
 import { vi } from 'vitest';
 
-/** Minimal wa-sqlite WASM module: `cwrap` returns `init`, which tests can assert on. */
+/** Minimal wa-sqlite WASM module with a registration spy. */
 export function createFakeModule(initResult = 0) {
-  const init = vi.fn(async () => initResult);
+  const init = vi.fn(() => initResult);
   return {
-    cwrap: vi.fn(() => init),
+    _treecrdt_sqlite_init: init,
     init,
   };
 }
