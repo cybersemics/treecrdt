@@ -9,8 +9,6 @@ use treecrdt_core::{
     Lamport, MaterializationCursor, MaterializationHead, MaterializationKey, MaterializationState,
 };
 
-pub(super) const ROOT_NODE_ID: [u8; 16] = [0u8; 16];
-
 #[derive(Clone, Debug)]
 pub(super) struct TreeMeta(pub(super) MaterializationState);
 
@@ -240,175 +238,15 @@ pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
     Ok(())
 }
 
+pub(super) const SCHEMA_SQL: &str = include_str!("schema.sql");
+
 pub(super) fn ensure_schema(db: *mut sqlite3) -> Result<(), c_int> {
     ensure_api_initialized()?;
-
-    // Core tables.
-    const META: &str = r#"
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-"#;
-    const OPS: &str = r#"
-CREATE TABLE IF NOT EXISTS ops (
-  replica BLOB NOT NULL,
-  counter INTEGER NOT NULL,
-  lamport INTEGER NOT NULL,
-  kind TEXT NOT NULL,
-  parent BLOB,
-  node BLOB NOT NULL,
-  new_parent BLOB,
-  order_key BLOB,
-  op_ref BLOB,
-  known_state BLOB,
-  payload BLOB,
-  PRIMARY KEY (replica, counter)
-);
-"#;
-    // Materialized tree state + indexes.
-    const TREE_META: &str = r#"
-CREATE TABLE IF NOT EXISTS tree_meta (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  head_lamport INTEGER NOT NULL DEFAULT 0,
-  head_replica BLOB NOT NULL DEFAULT X'',
-  head_counter INTEGER NOT NULL DEFAULT 0,
-  head_seq INTEGER NOT NULL DEFAULT 0,
-  replay_lamport INTEGER,
-  replay_replica BLOB,
-  replay_counter INTEGER
-);
-INSERT OR IGNORE INTO tree_meta(id) VALUES (1);
-"#;
-    const TREE_NODES: &str = r#"
-CREATE TABLE IF NOT EXISTS tree_nodes (
-  node BLOB PRIMARY KEY,
-  parent BLOB,
-  order_key BLOB,
-  tombstone INTEGER NOT NULL DEFAULT 0,
-  last_change BLOB,
-  deleted_at BLOB
-);
-"#;
-    const OPREFS_CHILDREN: &str = r#"
-CREATE TABLE IF NOT EXISTS oprefs_children (
-  parent BLOB NOT NULL,
-  op_ref BLOB NOT NULL,
-  seq INTEGER NOT NULL,
-  PRIMARY KEY (parent, op_ref)
-);
-"#;
-    const TREE_PAYLOAD: &str = r#"
-CREATE TABLE IF NOT EXISTS tree_payload (
-  node BLOB PRIMARY KEY,
-  payload BLOB,
-  last_lamport INTEGER NOT NULL,
-  last_replica BLOB NOT NULL,
-  last_counter INTEGER NOT NULL
-);
-"#;
-
-    let rc_meta = {
-        let sql = CString::new(META).expect("meta schema");
-        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
-    };
-    if rc_meta != SQLITE_OK as c_int {
-        return Err(rc_meta);
+    let sql = CString::new(SCHEMA_SQL).expect("schema SQL");
+    let rc = sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut());
+    if rc == SQLITE_OK as c_int {
+        Ok(())
+    } else {
+        Err(rc)
     }
-    let rc_ops = {
-        let sql = CString::new(OPS).expect("ops schema");
-        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
-    };
-    if rc_ops != SQLITE_OK as c_int {
-        return Err(rc_ops);
-    }
-    let rc_tree_meta = {
-        let sql = CString::new(TREE_META).expect("tree_meta schema");
-        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
-    };
-    if rc_tree_meta != SQLITE_OK as c_int {
-        return Err(rc_tree_meta);
-    }
-    let rc_nodes = {
-        let sql = CString::new(TREE_NODES).expect("tree_nodes schema");
-        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
-    };
-    if rc_nodes != SQLITE_OK as c_int {
-        return Err(rc_nodes);
-    }
-    let rc_oprefs = {
-        let sql = CString::new(OPREFS_CHILDREN).expect("oprefs_children schema");
-        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
-    };
-    if rc_oprefs != SQLITE_OK as c_int {
-        return Err(rc_oprefs);
-    }
-
-    let rc_tree_payload = {
-        let sql = CString::new(TREE_PAYLOAD).expect("tree_payload schema");
-        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
-    };
-    if rc_tree_payload != SQLITE_OK as c_int {
-        return Err(rc_tree_payload);
-    }
-
-    const INDEXES: &str = r#"
-CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
-CREATE INDEX IF NOT EXISTS idx_ops_op_ref ON ops(op_ref);
-CREATE INDEX IF NOT EXISTS idx_ops_node_kind_order ON ops(node, kind, lamport, replica, counter);
-CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_order_key_node ON tree_nodes(parent, order_key, node);
-CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_tombstone_order_key_node ON tree_nodes(parent, tombstone, order_key, node);
-CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(parent, seq);
-"#;
-    let rc_idx = {
-        let sql = CString::new(INDEXES).expect("index schema");
-        sqlite_exec(db, sql.as_ptr(), None, null_mut(), null_mut())
-    };
-    if rc_idx != SQLITE_OK as c_int {
-        return Err(rc_idx);
-    }
-
-    // If this is a fresh database with no ops yet, seed the materialized root so appends can
-    // maintain state incrementally without a full catch-up pass.
-    let mut ops_count: i64 = 0;
-    {
-        let sql = CString::new("SELECT COUNT(*) FROM ops").expect("count ops sql");
-        let mut stmt: *mut sqlite3_stmt = null_mut();
-        let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
-        if rc == SQLITE_OK as c_int {
-            let step_rc = unsafe { sqlite_step(stmt) };
-            if step_rc == SQLITE_ROW as c_int {
-                ops_count = unsafe { sqlite_column_int64(stmt, 0) };
-            }
-            unsafe { sqlite_finalize(stmt) };
-        }
-    }
-    if ops_count == 0 {
-        // Ensure ROOT exists even before first catch-up.
-        let _ = {
-            let sql = CString::new(
-                "INSERT OR IGNORE INTO tree_nodes(node,parent,order_key,tombstone) VALUES (?1,NULL,X'',0)",
-            )
-            .expect("root insert sql");
-            let mut stmt: *mut sqlite3_stmt = null_mut();
-            let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
-            if rc != SQLITE_OK as c_int {
-                rc
-            } else {
-                unsafe {
-                    sqlite_bind_blob(
-                        stmt,
-                        1,
-                        ROOT_NODE_ID.as_ptr() as *const c_void,
-                        ROOT_NODE_ID.len() as c_int,
-                        None,
-                    );
-                    sqlite_step(stmt);
-                    sqlite_finalize(stmt)
-                }
-            }
-        };
-    }
-
-    Ok(())
 }

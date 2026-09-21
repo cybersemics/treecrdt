@@ -192,7 +192,7 @@ export async function openWithStorage(
       : await sqlite3.open_v2(file);
     handle = openedHandle;
     const db = createDatabase(sqlite3, openedHandle);
-    await initializeTreecrdtExtension(module, openedHandle);
+    await initializeTreecrdtExtension(module, openedHandle, db);
     let closePromise: Promise<void> | undefined;
     return {
       db,

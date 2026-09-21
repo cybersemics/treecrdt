@@ -14,10 +14,13 @@ pnpm --filter @treecrdt/wa-sqlite build
 The build copies wa-sqlite WASM/JS assets into `dist/wa-sqlite/` for Node and packages them for browser apps via the Vite plugin.
 
 Low-level callers that open a wa-sqlite handle themselves must call
-`initializeTreecrdtExtension(module, handle)`, set the doc id, then
+`initializeTreecrdtExtension(module, handle, db)`, set the doc id, then
 `createTreecrdtSqliteAdapter(db)` from `@treecrdt/interface/sqlite` (a `Database`
 from this package is already a `SqliteRunner`).
-`createTreecrdtClient()` does this automatically.
+`db` must be the `SqliteRunner` for that handle. Initialization registers the
+functions, then executes their shared schema through awaited SQL in one transaction.
+`createTreecrdtClient()` performs initialization automatically. Rebuild the vendor
+WASM and adapter together.
 
 ## Browser usage
 

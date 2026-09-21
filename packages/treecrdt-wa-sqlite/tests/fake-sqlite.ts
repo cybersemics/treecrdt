@@ -6,8 +6,6 @@ export function createFakeModule(initResult = 0) {
   return {
     cwrap: vi.fn(() => init),
     init,
-    retryOps: [] as Promise<unknown>[],
-    pendingOps: [] as Promise<unknown>[],
   };
 }
 
@@ -21,6 +19,7 @@ export type FakeSqliteOptions = {
 export function createFakeSqlite(opts: FakeSqliteOptions = {}) {
   let nextHandle = 1;
   let nextStatement = 100;
+  const schemaStatements = new Set<number>();
 
   return {
     vfs_register: vi.fn(),
@@ -28,8 +27,9 @@ export function createFakeSqlite(opts: FakeSqliteOptions = {}) {
       if (filename === opts.failOpen) throw opts.failOpenError ?? new Error('OPFS open failed');
       return nextHandle++;
     }),
-    statements: vi.fn(() => {
+    statements: vi.fn((_handle: number, sql: string) => {
       const statement = nextStatement++;
+      if (sql === 'SELECT treecrdt_schema()') schemaStatements.add(statement);
       return {
         next: async () => ({ value: statement }),
         return: async () => undefined,
@@ -38,8 +38,10 @@ export function createFakeSqlite(opts: FakeSqliteOptions = {}) {
     bind: vi.fn(async (_statement: number, _index: number, value: unknown) => {
       if (value === opts.failDocId) throw new Error('setDocId failed');
     }),
-    step: vi.fn(async () => 101),
-    column_text: vi.fn(),
+    step: vi.fn(async (statement: number) => (schemaStatements.has(statement) ? 100 : 101)),
+    column_text: vi.fn((statement: number) =>
+      schemaStatements.has(statement) ? 'CREATE TABLE example (id INTEGER)' : null,
+    ),
     finalize: vi.fn(),
     exec: vi.fn(),
     close: vi.fn(),

@@ -1,146 +1,100 @@
 import { expect, test, vi } from 'vitest';
 import { initializeTreecrdtExtension } from '../src/extension.js';
 
-test('initializes each database handle and caches the module wrapper', async () => {
-  const init = vi.fn(async () => 0);
-  const module = {
-    cwrap: vi.fn(() => init),
-    retryOps: [] as Promise<unknown>[],
-  };
+const schema = 'CREATE TABLE example (id INTEGER PRIMARY KEY)';
+const runner = () => ({
+  getText: vi.fn(async () => schema),
+  exec: vi.fn(async (_sql: string) => {}),
+});
 
-  await initializeTreecrdtExtension(module, 11);
-  await initializeTreecrdtExtension(module, 12);
+test('registers each handle and initializes its schema in a transaction', async () => {
+  const init = vi.fn(async () => 0);
+  const module = { cwrap: vi.fn(() => init) };
+  const db = runner();
+
+  await initializeTreecrdtExtension(module, 11, db);
+  await initializeTreecrdtExtension(module, 12, db);
 
   expect(module.cwrap).toHaveBeenCalledOnce();
-  expect(module.cwrap).toHaveBeenCalledWith('treecrdt_sqlite_init', 'number', ['number'], {
-    async: true,
-  });
-  expect(init).toHaveBeenNthCalledWith(1, 11);
-  expect(init).toHaveBeenNthCalledWith(2, 12);
+  expect(init.mock.calls).toEqual([[11], [12]]);
+  expect(db.getText).toHaveBeenCalledWith('SELECT treecrdt_schema()');
+  expect(db.exec.mock.calls.map(([sql]) => sql)).toEqual([
+    'BEGIN IMMEDIATE',
+    schema,
+    'COMMIT',
+    'BEGIN IMMEDIATE',
+    schema,
+    'COMMIT',
+  ]);
 });
 
-test('waits and retries when an async VFS operation requests it', async () => {
-  let attempt = 0;
-  const module = {
-    cwrap: vi.fn(() =>
-      vi.fn(async () => {
-        attempt += 1;
-        if (attempt === 1) {
-          module.retryOps.push(Promise.resolve());
-          return 5;
-        }
-        return 0;
-      }),
-    ),
-    retryOps: [] as Promise<unknown>[],
-  };
-
-  await initializeTreecrdtExtension(module, 21);
-  expect(attempt).toBe(2);
-  expect(module.retryOps).toEqual([]);
-});
-
-test('clears a rejected retry operation without calling the initializer', async () => {
-  const retryFailure = new Error('retry failed');
-  const init = vi.fn(async () => 0);
-  const module = {
-    cwrap: vi.fn(() => init),
-    retryOps: [Promise.reject(retryFailure)],
-  };
-
-  await expect(initializeTreecrdtExtension(module, 22)).rejects.toBe(retryFailure);
-  expect(module.retryOps).toEqual([]);
-  expect(init).not.toHaveBeenCalled();
-});
-
-test('continues through multiple queued retry phases before succeeding', async () => {
-  const phases: string[] = [];
-  let attempt = 0;
-  const init = vi.fn(async () => {
-    attempt += 1;
-    phases.push(`init-${attempt}`);
-    if (attempt <= 3) {
-      const phase = attempt;
-      module.retryOps.push(
-        Promise.resolve().then(() => {
-          phases.push(`retry-${phase}`);
-        }),
-      );
-      return 5;
-    }
-    return 0;
-  });
-  const module = {
-    cwrap: vi.fn(() => init),
-    retryOps: [] as Promise<unknown>[],
-  };
-
-  await initializeTreecrdtExtension(module, 23);
-
-  expect(init).toHaveBeenCalledTimes(4);
-  expect(phases).toEqual(['init-1', 'retry-1', 'init-2', 'retry-2', 'init-3', 'retry-3', 'init-4']);
-  expect(module.retryOps).toEqual([]);
-});
-
-test('waits for pending VFS work before reporting successful initialization', async () => {
-  let releasePending!: () => void;
+test('awaits SQL completion before committing or returning', async () => {
+  let complete!: () => void;
   const pending = new Promise<void>((resolve) => {
-    releasePending = resolve;
+    complete = resolve;
   });
-  const module = {
-    cwrap: vi.fn(() =>
-      vi.fn(async () => {
-        module.pendingOps.push(pending);
-        return 0;
-      }),
-    ),
-    retryOps: [] as Promise<unknown>[],
-    pendingOps: [] as Promise<unknown>[],
-  };
-
+  let started!: () => void;
+  const executing = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const db = runner();
+  db.exec.mockImplementation(async (sql) => {
+    if (sql === schema) {
+      started();
+      await pending;
+    }
+  });
   let initialized = false;
-  const initialization = initializeTreecrdtExtension(module, 24).then(() => {
+  const initialization = initializeTreecrdtExtension({ cwrap: () => () => 0 }, 21, db).then(() => {
     initialized = true;
   });
-  await Promise.resolve();
+  await executing;
   expect(initialized).toBe(false);
-
-  releasePending();
+  expect(db.exec).not.toHaveBeenCalledWith('COMMIT');
+  complete();
   await initialization;
-  expect(module.pendingOps).toEqual([]);
+  expect(db.exec).toHaveBeenLastCalledWith('COMMIT');
 });
 
-test.each([
-  { failure: Object.assign(new Error('checkpoint failed'), { code: 10 }), expectedCode: 10 },
-  { failure: new Error('checkpoint failed'), expectedCode: 1 },
-])(
-  'maps a rejected pending operation to SQLite code $expectedCode',
-  async ({ failure, expectedCode }) => {
-    const module = {
-      cwrap: vi.fn(() =>
-        vi.fn(async () => {
-          module.pendingOps.push(Promise.reject(failure));
-          return 0;
-        }),
-      ),
-      retryOps: [] as Promise<unknown>[],
-      pendingOps: [] as Promise<unknown>[],
-    };
-
-    await expect(initializeTreecrdtExtension(module, 25)).rejects.toThrow(
-      `TreeCRDT SQLite extension init failed (rc=${expectedCode})`,
+test.each([schema, 'COMMIT'])(
+  'rolls back if %s fails and preserves the error',
+  async (failingSql) => {
+    const failure = new Error('storage failed');
+    const db = runner();
+    db.exec.mockImplementation(async (sql) => {
+      if (sql === failingSql) throw failure;
+      if (sql === 'ROLLBACK') throw new Error('rollback also failed');
+    });
+    await expect(initializeTreecrdtExtension({ cwrap: () => () => 0 }, 22, db)).rejects.toBe(
+      failure,
     );
-    expect(module.pendingOps).toEqual([]);
+    expect(db.exec).toHaveBeenLastCalledWith('ROLLBACK');
   },
 );
 
-test('fails clearly when initialization returns an SQLite error code', async () => {
-  const module = {
-    cwrap: vi.fn(() => vi.fn(async () => 10)),
-    retryOps: [] as Promise<unknown>[],
-  };
+test('does not roll back a transaction it failed to begin', async () => {
+  const db = runner();
+  db.exec.mockRejectedValue(new Error('lock failed'));
+  await expect(initializeTreecrdtExtension({ cwrap: () => () => 0 }, 23, db)).rejects.toThrow(
+    'lock failed',
+  );
+  expect(db.exec.mock.calls).toEqual([['BEGIN IMMEDIATE']]);
+});
 
-  await expect(initializeTreecrdtExtension(module, 31)).rejects.toThrow(
+test('does not execute SQL after registration fails', async () => {
+  const db = runner();
+  await expect(initializeTreecrdtExtension({ cwrap: () => () => 10 }, 31, db)).rejects.toThrow(
     'TreeCRDT SQLite extension init failed (rc=10)',
   );
+  expect(db.getText).not.toHaveBeenCalled();
+  expect(db.exec).not.toHaveBeenCalled();
+});
+
+test('rejects missing schema before beginning a transaction', async () => {
+  const db = runner();
+  db.getText.mockResolvedValue('');
+  await expect(initializeTreecrdtExtension({ cwrap: () => () => 0 }, 32, db)).rejects.toThrow(
+    'TreeCRDT extension did not provide its schema',
+  );
+  expect(db.exec).not.toHaveBeenCalled();
 });
