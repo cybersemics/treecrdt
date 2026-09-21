@@ -6,10 +6,11 @@
 #include <sqlite3.h>
 #include <emscripten/emscripten.h>
 
+// Register functions only; the adapter executes schema SQL after this returns.
 // The Rust extension entrypoint (static-link build ignores the sqlite3_api_routines pointer).
-extern int sqlite3_treecrdt_init(sqlite3 *db, char **pzErrMsg, const void *pApi);
+extern int sqlite3_treecrdt_register(sqlite3 *db, char **pzErrMsg, const void *pApi);
 
 EMSCRIPTEN_KEEPALIVE
 int treecrdt_sqlite_init(sqlite3 *db) {
-  return sqlite3_treecrdt_init(db, 0, 0);
+  return sqlite3_treecrdt_register(db, 0, 0);
 }
