@@ -15,6 +15,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test.each([
+  ['derived-filename', '/treecrdt-derived-filename.CKkA3FFh7ePDFYNk9n1Ktw.db'],
+  ['My Document/α', '/treecrdt-my-document.cGyKjTFebsO7Cd3umUvwiA.db'],
+  ['!!!', '/treecrdt-doc.6ExTjn_iUHMO9i3iIMQN-g.db'],
+])('derives a readable OPFS filename with a truncated SHA-256 hash', (docId, filename) => {
+  expect(opfsFilenameForDocId(docId)).toBe(filename);
+});
+
 test('persistent storage derives its filename from docId by default', () => {
   const docId = 'derived-filename';
   expect(resolveBrowserEnvironment({ docId, persistent: true }).filename).toBe(

@@ -52,6 +52,7 @@
     "test": "pnpm --filter @treecrdt/wa-sqlite^... run build && pnpm run build && pnpm run test:native-import && vitest run"
   },
   "dependencies": {
+    "@noble/hashes": "^1.8.0",
     "@treecrdt/interface": "workspace:*",
     "comlink": "^4.4.2"
   },

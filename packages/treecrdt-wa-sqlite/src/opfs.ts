@@ -1,3 +1,4 @@
+import { sha256 } from '@noble/hashes/sha256';
 import type { Database } from './types.js';
 import { createDatabase } from './db.js';
 import { initializeTreecrdtExtension } from './extension.js';
@@ -34,21 +35,23 @@ export function detectOpfsSupport(): OpfsSupport {
 }
 
 /**
- * Deterministic, filesystem-safe OPFS filename for a docId, so distinct documents
- * never share one SQLite database. The hash suffix keeps docIds distinct even when
- * sanitization collapses their characters.
+ * Deterministic, filesystem-safe OPFS filename for a docId. The readable prefix
+ * aids inspection; the 128-bit hash suffix prevents sanitized docIds from aliasing
+ * except in the negligible case of a truncated SHA-256 collision.
  */
 export function opfsFilenameForDocId(docId: string): string {
-  const safe = docId
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .slice(0, 64);
-  // FNV-1a over the docId's UTF-8 bytes.
-  let hash = 0x811c9dc5;
-  for (const byte of new TextEncoder().encode(docId)) {
-    hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
-  }
-  return `/treecrdt-${safe}-${hash.toString(16).padStart(8, '0')}.db`;
+  const prefix =
+    docId
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .slice(0, 64)
+      .replace(/^-+|-+$/g, '') || 'doc';
+  const hashBytes = sha256(new TextEncoder().encode(docId)).subarray(0, 16);
+  const hash = btoa(String.fromCharCode(...hashBytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  return `/treecrdt-${prefix}.${hash}.db`;
 }
 
 const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal'];

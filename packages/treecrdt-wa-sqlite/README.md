@@ -53,7 +53,7 @@ Storage, runtime, filename, and asset resolution are selected internally:
 | `persistent` | `crossTab` | Storage | Runtime | Notes |
 | --- | --- | --- | --- | --- |
 | omitted / `false` | omitted / `false` | memory | `direct` (in-process) | data is gone when the client closes |
-| `true` | omitted / `false` | OPFS | `dedicated-worker` | filename derived from `docId` unless explicitly provided |
+| `true` | omitted / `false` | OPFS | `dedicated-worker` | filename derived from `docId` with a truncated SHA-256 hash unless explicitly provided |
 | omitted / `false` | `true` | memory | `shared-worker` | tabs share an in-memory database while at least one client remains connected |
 | `true` | `true` | OPFS | `shared-worker` | tabs share one persistent database session |
 
