@@ -1,6 +1,6 @@
 // TreeCRDT SQLite extension glue for wa-sqlite.
 // This file is kept out-of-tree from wa-sqlite upstream and is compiled in via
-// Makefile variables (CFILES_EXTRA/VPATH_EXTRA) and linked with the TreeCRDT
+// Makefile variables (CFILES_EXTRA/VPATH) and linked with the TreeCRDT
 // static library.
 
 #include <sqlite3.h>
