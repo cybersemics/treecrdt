@@ -1,9 +1,10 @@
 # TreeCRDT Sync v0: Auth Extension (COSE + CWT) (Draft)
 
-This document defines an optional auth extension for Sync v0, focused on:
-
-- Integrity: prevent forged operations.
-- Authorization: subtree-scoped write permissions (and a path to read gating).
+The owner-grant foundation below implements document identity and direct grants for the
+full-document ownership model in [#38](https://github.com/cybersemics/treecrdt/issues/38).
+The remaining sections describe the existing capability-based Sync v0 implementation;
+[#255](https://github.com/cybersemics/treecrdt/issues/255) replaces that draft in buildable slices.
+Direct owner grants are not yet accepted by sync sessions or the server.
 
 It is intentionally **ACL-agnostic at the TreeCRDT core layer**: the CRDT operation
 types and merge semantics do not change. Authorization is enforced by the sync layer
@@ -14,6 +15,91 @@ drafts. Recreate signatures and proof material after format changes.
 
 Sync v0, VersionVector v0, and auth domains such as `treecrdt/op-sig/v1` identify independently
 versioned formats. The `/v1` suffix does not imply a prior auth release or a Sync protocol upgrade.
+
+## Document identity and direct owner grants
+
+The document authority and each replica use separate Ed25519 keys. Only the authority can issue
+a direct grant. A replica public key identifies a document-scoped operation stream; it is not a
+device or account identity.
+
+### Document ID
+
+```
+doc_id = "treecrdt:doc:v1:" || base64url_no_padding(
+  blake3(utf8("treecrdt/document-id/v1") || 0x00 || authority_public_key)
+)
+```
+
+The digest is all 32 bytes. Keys must be canonical 32-byte Ed25519 public keys and must not have
+small order. IDs must use the exact prefix and canonical unpadded base64url. `deriveDocumentId`
+and `validateDocumentId` share this contract across grant verification and future admission and
+backup/recovery flows. A recovered authority key derives the same document ID; a substituted key
+cannot validate against it.
+
+### Direct grant encoding
+
+An `OwnerGrant` is opaque [COSE_Sign1](https://www.rfc-editor.org/rfc/rfc9052.html#section-4.2)
+bytes. All CBOR uses RFC 8949 core deterministic encoding: definite lengths, shortest encodings,
+and bytewise lexicographic map-key order. No CBOR tags, duplicate keys, unknown claims, or trailing
+bytes are accepted. The complete grant is at most 1,024 bytes.
+
+```
+COSE_Sign1 = [protected_bstr, {}, payload_bstr, signature_bstr]
+protected = {1: -8}  // EdDSA, using Ed25519
+payload = {
+  3: doc_id,                       // CWT audience
+  4: expires_at,                   // CWT expiration, Unix seconds
+  8: {1: {1: 1, -1: 6, -2: replica_public_key}}, // cnf: COSE_Key (OKP, Ed25519)
+  "role": "owner",
+  "authority_pk": authority_public_key
+}
+signature_input = CBOR([
+  "Signature1", protected_bstr, utf8("treecrdt/owner-grant/v1"), payload_bstr
+])
+owner_grant_id = blake3(
+  utf8("treecrdt/owner-grant-id/v1") || 0x00 || complete_COSE_Sign1_bytes
+)[0..16]
+```
+
+The CWT audience and expiry follow [RFC 8392](https://www.rfc-editor.org/rfc/rfc8392.html);
+the confirmation key follows [RFC 8747](https://www.rfc-editor.org/rfc/rfc8747.html#section-3.2).
+The TreeCRDT signature domain is COSE external AAD. The unprotected header must be empty, so no
+unsigned data can select authority or permissions. The authority and replica keys must differ.
+Expiry is required and must be a safe non-negative integer. A grant is expired when
+`nowSec >= expiresAt`; verification defaults to the current clock and always checks expiry.
+
+`verifyDirectOwnerGrant` requires the expected document ID and replica public key. It verifies
+the authority-to-document binding, exact claims, expiry, and strict Ed25519 signature before
+returning the claims and 16-byte grant ID. It does not check revocation or prove possession of
+the replica key; those checks belong to admission. Delegated grants are not accepted by this
+direct-grant verifier. Shared wire vectors are in
+[`fixtures/owner-grant-v1.json`](../../../fixtures/owner-grant-v1.json).
+
+### Key provider
+
+`createMemoryAuthKeyProvider` uses Web Crypto Ed25519 and non-extractable private keys, with no
+fallback when unsupported. Its explicit `storage: "memory"` mode is ephemeral and cannot support
+backup or recovery. Frozen, provider-local `DocumentAuthorityKeyRef` and `ReplicaKeyRef` handles
+expose only the role and document ID; `getPublicKey` returns a copy. The provider checks roles
+at runtime and exposes purpose-specific grant issuance, with no generic signing or private-key
+export. Deletion is idempotent and prevents a pending grant from being returned.
+
+```ts
+const keys = createMemoryAuthKeyProvider();
+const authority = await keys.createDocumentAuthorityKey();
+const replica = await keys.createReplicaKey(authority.docId);
+const replicaPublicKey = await keys.getPublicKey(replica);
+const grant = await keys.issueDirectOwnerGrant({
+  authorityKey: authority,
+  replicaPublicKey,
+  expiresAt: Math.floor(Date.now() / 1000) + 86400,
+});
+await verifyDirectOwnerGrant({ grant, docId: authority.docId, replicaPublicKey });
+```
+
+Durable key storage and sealed recovery are tracked by #251/#246. Operation authorization,
+delegation, and revocation formats continue under #255. Keep the auth minor unreleased until
+the Sync v0 rewrite is complete.
 
 ## Threat model (baseline)
 
