@@ -80,6 +80,27 @@ export function makeSessionKey(): string {
   return bytesToHex(bytes);
 }
 
+function opfsKeyStore(): { get: () => string | null; set: (val: string) => string } {
+  if (typeof window === "undefined") {
+    return { get: () => null, set: (val) => val };
+  }
+  const key = prefixPlaygroundStorageKey("treecrdt-playground-opfs-key");
+  return {
+    get: () => window.localStorage.getItem(key),
+    set: (val: string) => {
+      window.localStorage.setItem(key, val);
+      return val;
+    },
+  };
+}
+
+export function ensureOpfsKey(): string {
+  const store = opfsKeyStore();
+  const existing = store.get();
+  if (existing) return existing;
+  return store.set(makeSessionKey());
+}
+
 const PRIVATE_ROOTS_KEY_PREFIX = "treecrdt-playground-private-roots:";
 
 function privateRootsKey(docId: string): string {

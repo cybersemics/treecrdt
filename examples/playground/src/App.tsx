@@ -20,6 +20,7 @@ import { usePlaygroundPayloads } from "./playground/hooks/usePlaygroundPayloads"
 import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
 import { materializationRefreshPlan } from "./playground/materializationEvents";
 import {
+  ensureOpfsKey,
   initialDocId,
   initialStorage,
   makeDefaultDocId,
@@ -643,6 +644,10 @@ export default function App() {
       const c = await createTreecrdtClient({
         docId: docIdOverride ?? docId,
         persistent: storageMode === "opfs",
+        filename:
+          storageMode === "opfs"
+            ? `/treecrdt-playground-${ensureOpfsKey()}.db`
+            : undefined,
         assetsBaseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href,
       });
       if (disposedRef.current || initEpoch !== initEpochRef.current) {
@@ -683,7 +688,7 @@ export default function App() {
     clientRef.current = null;
     setClient(null);
     if (opts.resetKey && closingClient) {
-      // OPFS filenames derive from docId, so a reset must drop the store to start fresh.
+      // A reset must drop the persistent store before reopening the stable playground filename.
       try {
         await closingClient.drop();
       } catch {
