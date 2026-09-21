@@ -28,13 +28,22 @@ export function validateCrossTab(crossTab: boolean | undefined): boolean {
   return crossTab ?? false;
 }
 
-/** wa-sqlite JS assets are served from the app's public root (Vite BASE_URL or "/"). */
-export function browserAssetsBaseUrl(): string {
-  const base: string =
-    typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL
+/** Resolve asset URLs in the page before passing them to a worker. */
+function absoluteBrowserUrl(url: string): string {
+  return typeof location === 'undefined' ? url : new URL(url, location.href).href;
+}
+
+/** wa-sqlite JS assets are served from an override, Vite BASE_URL, or "/". */
+export function browserAssetsBaseUrl(baseUrl?: string): string {
+  if (baseUrl !== undefined && (typeof baseUrl !== 'string' || baseUrl.length === 0)) {
+    throw new Error('createTreecrdtClient assetsBaseUrl must be a non-empty string');
+  }
+  const base =
+    baseUrl ??
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL
       ? (import.meta as any).env.BASE_URL
-      : '/';
-  return base.endsWith('/') ? base : `${base}/`;
+      : '/');
+  return absoluteBrowserUrl(base.endsWith('/') ? base : `${base}/`);
 }
 
 /**
@@ -45,7 +54,7 @@ export function browserAssetsBaseUrl(): string {
 export function resolveBrowserEnvironment(opts: ClientOptions): ResolvedBrowserEnvironment {
   const docId = validateDocId(opts.docId);
   const crossTab = validateCrossTab(opts.crossTab);
-  const baseUrl = browserAssetsBaseUrl();
+  const baseUrl = browserAssetsBaseUrl(opts.assetsBaseUrl);
 
   if (!opts.persistent) {
     return {

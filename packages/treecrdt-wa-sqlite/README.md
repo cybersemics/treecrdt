@@ -48,6 +48,20 @@ const crossTabClient = await createTreecrdtClient({
 });
 ```
 
+By default, JavaScript assets use Vite's `BASE_URL`, while Vite emits and resolves
+the WASM through its asset graph. Applications with custom asset routing can
+override the public asset base:
+
+```ts
+const client = await createTreecrdtClient({
+  docId: 'my-doc',
+  assetsBaseUrl: new URL('./vendor/', window.location.href).href,
+});
+```
+
+`assetsBaseUrl` must contain the plugin-copied `wa-sqlite/` directory. Relative
+asset overrides are resolved against the page URL before they are sent to a worker.
+
 Storage, runtime, filename, and asset resolution are selected internally:
 
 | `persistent` | `crossTab` | Storage | Runtime | Notes |

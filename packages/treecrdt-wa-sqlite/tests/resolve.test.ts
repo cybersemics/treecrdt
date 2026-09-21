@@ -40,6 +40,19 @@ test('persistent storage accepts an explicit filename', () => {
   ).toBe('/existing.db');
 });
 
+test('asset base URL is validated and resolved before entering a worker', () => {
+  vi.stubGlobal('location', { href: 'https://example.test/app/' });
+  const env = resolveBrowserEnvironment({
+    docId: 'custom-assets',
+    assetsBaseUrl: './sqlite',
+  });
+  expect(env.baseUrl).toBe('https://example.test/app/sqlite/');
+
+  expect(() => resolveBrowserEnvironment({ docId: 'custom-assets', assetsBaseUrl: '' })).toThrow(
+    /assetsBaseUrl must be a non-empty string/,
+  );
+});
+
 test.each([false, true])(
   'crossTab selects the shared-worker runtime (persistent: %s)',
   (persistent) => {

@@ -36,6 +36,8 @@ export type ClientOptions = {
   filename?: string;
   /** Share one worker and database session between browser tabs. */
   crossTab?: boolean;
+  /** Browser-only public URL prefix containing the wa-sqlite JavaScript assets. */
+  assetsBaseUrl?: string;
 };
 
 export type CrossTabMaterializationScope = {

@@ -643,6 +643,7 @@ export default function App() {
       const c = await createTreecrdtClient({
         docId: docIdOverride ?? docId,
         persistent: storageMode === "opfs",
+        assetsBaseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href,
       });
       if (disposedRef.current || initEpoch !== initEpochRef.current) {
         await closeClientSafely(c);
