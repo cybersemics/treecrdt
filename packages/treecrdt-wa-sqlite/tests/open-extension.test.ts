@@ -10,10 +10,14 @@ beforeEach(() => {
   vi.mocked(createOpfsVfs).mockReset();
 });
 
-test('initializes the extension after opening a memory database', async () => {
+test('initializes schema and document ID under the same write transaction', async () => {
   const sqlite3 = createFakeSqlite();
   const module = createFakeModule();
   const load = vi.fn(async () => ({ sqlite3, module }));
+  sqlite3.bind.mockImplementation(async () => {
+    expect(sqlite3.exec.mock.calls[0]).toEqual([1, 'BEGIN IMMEDIATE']);
+    expect(sqlite3.exec).not.toHaveBeenCalledWith(1, 'COMMIT');
+  });
 
   const opened = await openTreecrdtDbWithLoader(
     { storage: 'memory', docId: 'memory-explicit-init' },
