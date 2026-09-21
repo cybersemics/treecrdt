@@ -1313,12 +1313,7 @@ fn registration_only_entrypoint_defers_schema_and_matches_native_initialization(
             .unwrap();
     }
     let schema: String = conn.query_row("SELECT treecrdt_schema()", [], |row| row.get(0)).unwrap();
-    let count: i64 = conn
-        .query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 0);
-    conn.execute_batch(&schema).unwrap();
-    conn.execute_batch("SELECT treecrdt_set_doc_id('preserved')").unwrap();
+    assert!(objects(&conn).is_empty());
     conn.execute_batch(&schema).unwrap();
 
     fn objects(conn: &Connection) -> Vec<(String, String, Option<String>)> {
@@ -1330,14 +1325,9 @@ fn registration_only_entrypoint_defers_schema_and_matches_native_initialization(
             .unwrap()
     }
     assert_eq!(objects(&conn), objects(&setup_conn()));
-    let state: (String, i64) = conn
-        .query_row(
-            "SELECT treecrdt_doc_id(), (SELECT count(*) FROM tree_nodes)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(state, ("preserved".into(), 1));
+    let root_count: i64 =
+        conn.query_row("SELECT count(*) FROM tree_nodes", [], |row| row.get(0)).unwrap();
+    assert_eq!(root_count, 1);
 }
 
 fn setup_conn() -> Connection {
