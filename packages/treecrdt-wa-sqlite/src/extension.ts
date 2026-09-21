@@ -9,6 +9,7 @@ export async function initializeTreecrdtExtension(
   module: WaSqliteModule,
   handle: number,
   db: SqliteRunner,
+  docId?: string,
 ): Promise<void> {
   if (typeof module?._treecrdt_sqlite_init !== 'function') {
     throw new Error('wa-sqlite module does not expose the TreeCRDT extension');
@@ -28,6 +29,8 @@ export async function initializeTreecrdtExtension(
   await db.exec('BEGIN IMMEDIATE');
   try {
     await db.exec(schema);
+    // Pin the ID before releasing the write lock to another opening connection.
+    if (docId !== undefined) await db.getText('SELECT treecrdt_set_doc_id(?1)', [docId]);
     await db.exec('COMMIT');
   } catch (error) {
     try {

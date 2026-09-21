@@ -31,9 +31,7 @@ async function initializeOpenedDatabase(
   let db: Database | undefined;
   try {
     db = createDatabase(sqlite3, handle);
-    await initializeTreecrdtExtension(module, handle, db);
-    // Doc id must be set before CRDT ops; session owns the TreecrdtAdapter separately.
-    await db.getText('SELECT treecrdt_set_doc_id(?1)', [opts.docId]);
+    await initializeTreecrdtExtension(module, handle, db, opts.docId);
     return db;
   } catch (error) {
     try {
