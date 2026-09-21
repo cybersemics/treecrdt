@@ -25,7 +25,9 @@ import {
   initialStorage,
   makeDefaultDocId,
   makeNodeId,
+  makeSessionKey,
   persistDocId,
+  persistOpfsKey,
   persistSyncSettings,
   persistStorage,
 } from "./playground/persist";
@@ -687,16 +689,11 @@ export default function App() {
     const closingClient = clientRef.current;
     clientRef.current = null;
     setClient(null);
-    if (opts.resetKey && closingClient) {
-      // A reset must drop the persistent store before reopening the stable playground filename.
-      try {
-        await closingClient.drop();
-      } catch {
-        // Best-effort: reset should proceed even when the previous store is already gone.
-      }
-    } else {
-      await closeClientSafely(closingClient);
+    if (opts.resetKey && target === "opfs") {
+      // Other tabs may still be using the old file.
+      persistOpfsKey(makeSessionKey());
     }
+    await closeClientSafely(closingClient);
     await initClient(target, opts.docId);
   };
 

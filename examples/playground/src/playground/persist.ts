@@ -101,6 +101,10 @@ export function ensureOpfsKey(): string {
   return store.set(makeSessionKey());
 }
 
+export function persistOpfsKey(value: string): string {
+  return opfsKeyStore().set(value);
+}
+
 const PRIVATE_ROOTS_KEY_PREFIX = "treecrdt-playground-private-roots:";
 
 function privateRootsKey(docId: string): string {
