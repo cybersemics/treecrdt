@@ -18,7 +18,8 @@ type GrantClaims = {
 
 const GRANT_DOMAIN = utf8ToBytes('treecrdt/owner-grant/v1');
 const GRANT_ID_DOMAIN = utf8ToBytes('treecrdt/owner-grant-id/v1\0');
-const PROTECTED_HEADER = encode(new Map([[1, -8]]));
+// COSE alg (1) = Ed25519 (-19): https://www.rfc-editor.org/rfc/rfc9864.html#section-2.2
+const PROTECTED_HEADER = encode(new Map([[1, -19]]));
 const MAX_GRANT_BYTES = 1024;
 
 function equalBytes(a: Uint8Array, b: Uint8Array): boolean {

@@ -45,7 +45,7 @@ bytes are accepted. The complete grant is at most 1,024 bytes.
 
 ```
 COSE_Sign1 = [protected_bstr, {}, payload_bstr, signature_bstr]
-protected = {1: -8}  // EdDSA, using Ed25519
+protected = {1: -19} // Ed25519
 payload = {
   3: doc_id,                       // CWT audience
   4: expires_at,                   // CWT expiration, Unix seconds
@@ -60,6 +60,7 @@ grant_id = blake3(
 )[0..16]
 ```
 
+The Ed25519 algorithm identifier follows [RFC 9864 §2.2](https://www.rfc-editor.org/rfc/rfc9864.html#section-2.2).
 The CWT audience and expiry follow [RFC 8392](https://www.rfc-editor.org/rfc/rfc8392.html);
 the confirmation key follows [RFC 8747](https://www.rfc-editor.org/rfc/rfc8747.html#section-3.2).
 The TreeCRDT signature domain is COSE external AAD. The unprotected header must be empty, so no
