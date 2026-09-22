@@ -1,5 +1,7 @@
 import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
 import {
+  conformanceHashKey,
+  conformanceSlugify,
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
@@ -13,19 +15,29 @@ export async function runTreecrdtEngineConformanceE2E(
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  // OPFS filenames are derived from docId, so a unique prefix per run keeps
-  // persistent scenarios from seeing a previous run's data.
-  const runKey = runId.replace(/[^a-z0-9]/gi, '').slice(0, 10) || 'run';
 
   for (const scenario of treecrdtEngineConformanceScenarios()) {
+    const runKey = runId.replace(/[^a-z0-9]/gi, '').slice(0, 10) || 'run';
+    const scenarioKey = conformanceHashKey(scenario.name);
+    const filenameFor = (name: string) => {
+      const nameKey = (conformanceSlugify(name) || 'db').slice(0, 12);
+      return `/treecrdt-c-${runKey}-${scenarioKey}-${nameKey}.db`;
+    };
+    const openEngine = async (opts: { docId: string; name?: string }) => {
+      const name = opts.name ?? 'main';
+      return await createTreecrdtClient({
+        docId: opts.docId,
+        persistent: storage === 'opfs',
+        filename: storage === 'opfs' ? filenameFor(name) : undefined,
+      });
+    };
+
     await runTreecrdtEngineConformanceScenario(scenario, {
-      docIdPrefix: `treecrdt-wa-engine-conformance-${storage}-${runKey}`,
-      // Peer engines share the scenario docId, which maps to a single OPFS store;
-      // they stay in-memory while persistence scenarios exercise OPFS below.
-      openEngine: ({ docId }) => createTreecrdtClient({ docId }),
+      docIdPrefix: `treecrdt-wa-engine-conformance-${storage}`,
+      openEngine,
       openPersistentEngine:
         storage === 'opfs'
-          ? ({ docId }) => createTreecrdtClient({ docId, persistent: true })
+          ? ({ docId, name }) => openEngine({ docId, name })
           : undefined,
     });
   }
