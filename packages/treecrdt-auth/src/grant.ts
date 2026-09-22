@@ -4,6 +4,7 @@ import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
 
 import { assertAuthPublicKey, validateDocumentId } from './document-id.js';
 import { verifyEd25519 } from './ed25519.js';
+import { equalBytes } from './internal/bytes.js';
 
 declare const grantBrand: unique symbol;
 /** Opaque canonical COSE bytes. Possession alone does not establish authorization. */
@@ -21,10 +22,6 @@ const GRANT_ID_DOMAIN = utf8ToBytes('treecrdt/owner-grant-id/v1\0');
 // COSE alg (1) = Ed25519 (-19): https://www.rfc-editor.org/rfc/rfc9864.html#section-2.2
 const PROTECTED_HEADER = encode(new Map([[1, -19]]));
 const MAX_GRANT_BYTES = 1024;
-
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((byte, i) => byte === b[i]);
-}
 
 /** @internal */
 export function encodeGrantPayload(claims: GrantClaims): Uint8Array {
