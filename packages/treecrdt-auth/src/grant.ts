@@ -33,23 +33,16 @@ export function encodeGrantPayload(claims: GrantClaims): Uint8Array {
   if (!Number.isSafeInteger(claims.expiresAt) || claims.expiresAt < 0) {
     throw new Error('expiresAt must be a safe non-negative integer');
   }
+  const replicaKey = new Map<number, unknown>([
+    [1, 1],
+    [-1, 6],
+    [-2, claims.replicaPublicKey],
+  ]);
   return encode(
     new Map<unknown, unknown>([
       [3, claims.docId],
       [4, claims.expiresAt],
-      [
-        8,
-        new Map([
-          [
-            1,
-            new Map<number, unknown>([
-              [1, 1],
-              [-1, 6],
-              [-2, claims.replicaPublicKey],
-            ]),
-          ],
-        ]),
-      ],
+      [8, new Map([[1, replicaKey]])],
       ['authority_pk', claims.authorityPublicKey],
     ]),
     rfc8949EncodeOptions,
@@ -80,20 +73,15 @@ export async function verifyGrant(opts: {
 
   const envelope = decode(grant, { useMaps: true });
   if (!Array.isArray(envelope) || envelope.length !== 4) throw new Error('Invalid owner grant');
-  const [header, unprotected, payload, signature] = envelope;
+  const [, , payload, signature] = envelope;
+  // Re-encoding fixes both headers and enforces canonical envelope bytes.
   if (
-    !(header instanceof Uint8Array) ||
-    !equalBytes(header, PROTECTED_HEADER) ||
-    !(unprotected instanceof Map) ||
-    unprotected.size !== 0 ||
     !(payload instanceof Uint8Array) ||
     !(signature instanceof Uint8Array) ||
-    signature.length !== 64
+    signature.length !== 64 ||
+    !equalBytes(grant, encodeGrant(payload, signature))
   ) {
     throw new Error('Invalid owner grant COSE envelope');
-  }
-  if (!equalBytes(grant, encodeGrant(payload, signature))) {
-    throw new Error('Non-canonical owner grant');
   }
   const claims = decode(payload, { useMaps: true });
   if (!(claims instanceof Map)) throw new Error('Invalid owner grant claims');

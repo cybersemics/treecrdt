@@ -36,7 +36,6 @@ export function deriveDocumentId(authorityPublicKey: Uint8Array): string {
 
 /** Throws if the document ID is malformed or belongs to a different authority. */
 export function validateDocumentId(docId: string, authorityPublicKey: Uint8Array): void {
-  assertDocumentId(docId);
   if (docId !== deriveDocumentId(authorityPublicKey)) {
     throw new Error('Document authority does not match document ID');
   }
