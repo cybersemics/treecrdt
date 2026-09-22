@@ -36,9 +36,7 @@ export async function runTreecrdtEngineConformanceE2E(
       docIdPrefix: `treecrdt-wa-engine-conformance-${storage}`,
       openEngine,
       openPersistentEngine:
-        storage === 'opfs'
-          ? ({ docId, name }) => openEngine({ docId, name })
-          : undefined,
+        storage === 'opfs' ? ({ docId, name }) => openEngine({ docId, name }) : undefined,
     });
   }
   return { ok: true };
