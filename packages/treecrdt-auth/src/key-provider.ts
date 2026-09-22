@@ -1,65 +1,63 @@
 import { assertDocumentId, deriveDocumentId } from './document-id.js';
-import {
-  encodeOwnerGrant,
-  encodeOwnerGrantPayload,
-  ownerGrantSignatureInput,
-  type OwnerGrant,
-} from './owner-grant.js';
+import { encodeGrant, encodeGrantPayload, grantSignatureInput, type Grant } from './grant.js';
 
-declare const keyRefBrand: unique symbol;
-export type DocumentAuthorityKeyRef = {
-  readonly [keyRefBrand]: true;
-  readonly role: 'document-authority';
+declare const keyHandleBrand: unique symbol;
+type KeyHandle<Role extends 'authority' | 'replica'> = {
+  readonly [keyHandleBrand]: true;
+  readonly role: Role;
   readonly docId: string;
 };
-export type ReplicaKeyRef = {
-  readonly [keyRefBrand]: true;
-  readonly role: 'replica';
-  readonly docId: string;
-};
-type KeyRef = DocumentAuthorityKeyRef | ReplicaKeyRef;
+export type AuthorityKey = KeyHandle<'authority'>;
+export type ReplicaKey = KeyHandle<'replica'>;
+type Key = KeyHandle<'authority' | 'replica'>;
 
 export interface AuthKeyProvider {
   readonly storage: 'memory';
-  createDocumentAuthorityKey(): Promise<DocumentAuthorityKeyRef>;
-  createReplicaKey(docId: string): Promise<ReplicaKeyRef>;
-  getPublicKey(key: KeyRef): Promise<Uint8Array>;
-  deleteKey(key: KeyRef): Promise<void>;
-  issueDirectOwnerGrant(opts: {
-    authorityKey: DocumentAuthorityKeyRef;
+  createAuthorityKey(): Promise<AuthorityKey>;
+  createReplicaKey(docId: string): Promise<ReplicaKey>;
+  getPublicKey(key: Key): Promise<Uint8Array>;
+  deleteKey(key: Key): Promise<void>;
+  issueGrant(opts: {
+    authorityKey: AuthorityKey;
     replicaPublicKey: Uint8Array;
     expiresAt: number;
-  }): Promise<OwnerGrant>;
+  }): Promise<Grant>;
 }
 
 /** Explicitly ephemeral: losing this provider loses its keys. Requires Web Crypto Ed25519. */
 export function createMemoryAuthKeyProvider(): AuthKeyProvider {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error('Web Crypto is unavailable');
-  const keys = new WeakMap<KeyRef, { privateKey: CryptoKey; publicKey: Uint8Array }>();
+  const keys = new WeakMap<Key, { privateKey: CryptoKey; publicKey: Uint8Array }>();
 
-  function lookup(key: KeyRef) {
+  function lookup(key: Key) {
     const value = keys.get(key);
     if (!value) throw new Error('Unknown or deleted key reference');
     return value;
   }
 
-  async function createKey(role: KeyRef['role'], docId?: string): Promise<KeyRef> {
+  async function createKey<Role extends Key['role']>(
+    role: Role,
+    docId?: string,
+  ): Promise<KeyHandle<Role>> {
     const pair = await subtle.generateKey('Ed25519', false, ['sign', 'verify']);
     const publicKey = new Uint8Array(await subtle.exportKey('raw', pair.publicKey));
-    const ref = Object.freeze({ role, docId: docId ?? deriveDocumentId(publicKey) }) as KeyRef;
+    const ref = Object.freeze({
+      role,
+      docId: docId ?? deriveDocumentId(publicKey),
+    }) as KeyHandle<Role>;
     keys.set(ref, { privateKey: pair.privateKey, publicKey });
     return ref;
   }
 
   return {
     storage: 'memory',
-    async createDocumentAuthorityKey() {
-      return (await createKey('document-authority')) as DocumentAuthorityKeyRef;
+    createAuthorityKey() {
+      return createKey('authority');
     },
     async createReplicaKey(docId) {
       assertDocumentId(docId);
-      return (await createKey('replica', docId)) as ReplicaKeyRef;
+      return createKey('replica', docId);
     },
     async getPublicKey(key) {
       return new Uint8Array(lookup(key).publicKey);
@@ -67,25 +65,21 @@ export function createMemoryAuthKeyProvider(): AuthKeyProvider {
     async deleteKey(key) {
       keys.delete(key);
     },
-    async issueDirectOwnerGrant({ authorityKey, replicaPublicKey, expiresAt }) {
+    async issueGrant({ authorityKey, replicaPublicKey, expiresAt }) {
       const key = lookup(authorityKey);
-      if (authorityKey.role !== 'document-authority') throw new Error('Expected authority key');
-      const payload = encodeOwnerGrantPayload({
+      if (authorityKey.role !== 'authority') throw new Error('Expected authority key');
+      const payload = encodeGrantPayload({
         docId: authorityKey.docId,
         authorityPublicKey: key.publicKey,
         replicaPublicKey,
         expiresAt,
       });
       const signature = new Uint8Array(
-        await subtle.sign(
-          'Ed25519',
-          key.privateKey,
-          new Uint8Array(ownerGrantSignatureInput(payload)),
-        ),
+        await subtle.sign('Ed25519', key.privateKey, new Uint8Array(grantSignatureInput(payload))),
       );
       // Deletion while signing must not publish another grant from the deleted key.
       lookup(authorityKey);
-      return encodeOwnerGrant(payload, signature);
+      return encodeGrant(payload, signature);
     },
   };
 }

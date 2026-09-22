@@ -38,7 +38,7 @@ cannot validate against it.
 
 ### Direct grant encoding
 
-An `OwnerGrant` is opaque [COSE_Sign1](https://www.rfc-editor.org/rfc/rfc9052.html#section-4.2)
+A `Grant` is opaque [COSE_Sign1](https://www.rfc-editor.org/rfc/rfc9052.html#section-4.2)
 bytes. All CBOR uses RFC 8949 core deterministic encoding: definite lengths, shortest encodings,
 and bytewise lexicographic map-key order. No CBOR tags, duplicate keys, unknown claims, or trailing
 bytes are accepted. The complete grant is at most 1,024 bytes.
@@ -50,13 +50,12 @@ payload = {
   3: doc_id,                       // CWT audience
   4: expires_at,                   // CWT expiration, Unix seconds
   8: {1: {1: 1, -1: 6, -2: replica_public_key}}, // cnf: COSE_Key (OKP, Ed25519)
-  "role": "owner",
   "authority_pk": authority_public_key
 }
 signature_input = CBOR([
   "Signature1", protected_bstr, utf8("treecrdt/owner-grant/v1"), payload_bstr
 ])
-owner_grant_id = blake3(
+grant_id = blake3(
   utf8("treecrdt/owner-grant-id/v1") || 0x00 || complete_COSE_Sign1_bytes
 )[0..16]
 ```
@@ -65,10 +64,11 @@ The CWT audience and expiry follow [RFC 8392](https://www.rfc-editor.org/rfc/rfc
 the confirmation key follows [RFC 8747](https://www.rfc-editor.org/rfc/rfc8747.html#section-3.2).
 The TreeCRDT signature domain is COSE external AAD. The unprotected header must be empty, so no
 unsigned data can select authority or permissions. The authority and replica keys must differ.
+This grant profile always grants full-document ownership; there is no configurable role claim.
 Expiry is required and must be a safe non-negative integer. A grant is expired when
 `nowSec >= expiresAt`; verification defaults to the current clock and always checks expiry.
 
-`verifyDirectOwnerGrant` requires the expected document ID and replica public key. It verifies
+`verifyGrant` requires the expected document ID and replica public key. It verifies
 the authority-to-document binding, exact claims, expiry, and strict Ed25519 signature before
 returning the claims and 16-byte grant ID. It does not check revocation or prove possession of
 the replica key; those checks belong to admission. Delegated grants are not accepted by this
@@ -79,22 +79,23 @@ direct-grant verifier. Shared wire vectors are in
 
 `createMemoryAuthKeyProvider` uses Web Crypto Ed25519 and non-extractable private keys, with no
 fallback when unsupported. Its explicit `storage: "memory"` mode is ephemeral and cannot support
-backup or recovery. Frozen, provider-local `DocumentAuthorityKeyRef` and `ReplicaKeyRef` handles
-expose only the role and document ID; `getPublicKey` returns a copy. The provider checks roles
-at runtime and exposes purpose-specific grant issuance, with no generic signing or private-key
-export. Deletion is idempotent and prevents a pending grant from being returned.
+backup or recovery. Frozen, provider-local `AuthorityKey` and `ReplicaKey` handles
+share one key-handle implementation and expose only the role and document ID; `getPublicKey`
+returns a copy. The provider checks roles at runtime and exposes purpose-specific grant issuance,
+with no generic signing or private-key export. Deletion is idempotent and prevents a pending grant
+from being returned.
 
 ```ts
 const keys = createMemoryAuthKeyProvider();
-const authority = await keys.createDocumentAuthorityKey();
+const authority = await keys.createAuthorityKey();
 const replica = await keys.createReplicaKey(authority.docId);
 const replicaPublicKey = await keys.getPublicKey(replica);
-const grant = await keys.issueDirectOwnerGrant({
+const grant = await keys.issueGrant({
   authorityKey: authority,
   replicaPublicKey,
   expiresAt: Math.floor(Date.now() / 1000) + 86400,
 });
-await verifyDirectOwnerGrant({ grant, docId: authority.docId, replicaPublicKey });
+await verifyGrant({ grant, docId: authority.docId, replicaPublicKey });
 ```
 
 Durable key storage and sealed recovery are tracked by #251/#246. Operation authorization,

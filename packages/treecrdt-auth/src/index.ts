@@ -7,6 +7,6 @@ export * from './session.js';
 export * from './treecrdt-auth.js';
 export * from './sqlite.js';
 export { deriveDocumentId, validateDocumentId } from './document-id.js';
-export { verifyDirectOwnerGrant } from './owner-grant.js';
-export type { OwnerGrant, DirectOwnerGrantClaims } from './owner-grant.js';
+export { verifyGrant } from './grant.js';
+export type { Grant } from './grant.js';
 export * from './key-provider.js';
