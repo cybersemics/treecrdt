@@ -31,11 +31,7 @@ export type ResolvedClientOptions = {
   baseUrl?: string;
   filename?: string;
   storage: StorageMode;
-  fallback: 'memory' | 'throw';
-  requireOpfs: boolean;
   docId: string;
-  workerUrl?: string | URL;
-  sharedWorkerName?: string;
   openDb: OpenDbFn;
 };
 

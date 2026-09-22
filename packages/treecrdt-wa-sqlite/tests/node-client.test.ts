@@ -14,11 +14,7 @@ function nodeIdFromInt(n: number): string {
 }
 
 async function createWaEngine(opts: { docId: string }) {
-  return await createTreecrdtClient({
-    storage: { type: 'memory' },
-    runtime: { type: 'direct' },
-    docId: opts.docId,
-  });
+  return await createTreecrdtClient({ docId: opts.docId });
 }
 
 test('createTreecrdtClient smoke: insert and read in Node', async () => {
@@ -46,30 +42,20 @@ test('createTreecrdtClient accepts cross-realm typed array payloads in Node', as
   }
 });
 
-test('createTreecrdtClient rejects OPFS on Node', async () => {
+test('createTreecrdtClient rejects persistent storage on Node', async () => {
   await expect(
-    createTreecrdtClient({ storage: { type: 'opfs' }, docId: 'wa-sqlite-node-opfs' }),
-  ).rejects.toThrow(/OPFS is not supported in Node/);
+    createTreecrdtClient({ docId: 'wa-sqlite-node-persistent', persistent: true }),
+  ).rejects.toThrow(/persistent storage is not supported on Node/);
 });
 
-test('createTreecrdtClient rejects dedicated-worker runtime on Node', async () => {
+test('createTreecrdtClient rejects cross-tab mode on Node', async () => {
   await expect(
-    createTreecrdtClient({
-      storage: { type: 'memory' },
-      runtime: { type: 'dedicated-worker' },
-      docId: 'wa-sqlite-node-worker',
-    }),
-  ).rejects.toThrow(/Worker runtimes are browser-only/);
+    createTreecrdtClient({ docId: 'wa-sqlite-node-cross-tab', crossTab: true }),
+  ).rejects.toThrow(/requires SharedWorker support/);
 });
 
-test('createTreecrdtClient rejects shared-worker runtime on Node', async () => {
-  await expect(
-    createTreecrdtClient({
-      storage: { type: 'memory' },
-      runtime: { type: 'shared-worker' },
-      docId: 'wa-sqlite-node-shared-worker',
-    }),
-  ).rejects.toThrow(/Worker runtimes are browser-only/);
+test('createTreecrdtClient rejects an empty docId', async () => {
+  await expect(createTreecrdtClient({ docId: '' })).rejects.toThrow(/non-empty docId/);
 });
 
 for (const scenario of treecrdtEngineConformanceScenarios()) {

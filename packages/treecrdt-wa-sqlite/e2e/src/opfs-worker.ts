@@ -18,7 +18,6 @@ type WorkerRequest = {
   storage?: StorageKind;
   sizes?: number[];
   workloads?: WorkloadName[];
-  baseUrl?: string;
 };
 
 type WorkerResponse = { ok: true; results: BenchPayload[] } | { ok: false; error: string };
@@ -35,28 +34,13 @@ const defaultWorkloads: WorkloadName[] = ['insert-move', 'insert-chain', 'replay
 
 async function createAdapter(
   storage: StorageKind,
-  baseUrl?: string,
 ): Promise<TreecrdtAdapter & { close: () => Promise<void> }> {
-  const clientStorage = storage === 'browser-opfs-coop-sync' ? 'opfs' : 'memory';
+  const persistent = storage === 'browser-opfs-coop-sync';
   let client: TreecrdtClient | null = null;
-  const effectiveBase =
-    baseUrl ??
-    (typeof self !== 'undefined' && 'location' in self
-      ? new URL('/', (self as any).location.href).href
-      : '/');
-  const filename = clientStorage === 'opfs' ? `/bench-${crypto.randomUUID()}.db` : undefined;
   const docId = `bench-${crypto.randomUUID()}`;
   try {
-    console.info(`[opfs-worker] creating client storage=${clientStorage} base=${effectiveBase}`);
-    client = await createTreecrdtClient({
-      storage:
-        clientStorage === 'opfs'
-          ? { type: 'opfs', filename, fallback: 'throw' }
-          : { type: 'memory' },
-      runtime: { type: clientStorage === 'opfs' ? 'dedicated-worker' : 'direct' },
-      assets: { baseUrl: effectiveBase },
-      docId,
-    });
+    console.info(`[opfs-worker] creating client persistent=${persistent}`);
+    client = await createTreecrdtClient({ docId, persistent });
     // sanity check to ensure DB is valid
     await client.ops.all();
   } catch (err) {
@@ -64,12 +48,11 @@ async function createAdapter(
       await client.close();
     }
     const reason = err instanceof Error ? err.message : String(err);
-    console.error(`createAdapter failed (${clientStorage}) base=${effectiveBase}:`, err);
+    console.error(`createAdapter failed (persistent=${persistent}):`, err);
     throw new Error(
       JSON.stringify({
         where: 'createAdapter',
-        storage: clientStorage,
-        base: effectiveBase,
+        storage,
         message: reason,
       }),
     );
@@ -123,7 +106,6 @@ async function createAdapter(
 
 async function runWaSqliteBenchInWorker(
   storage: StorageKind,
-  baseUrl: string | undefined,
   sizes: number[] = defaultSizes,
   workloads: WorkloadName[] = defaultWorkloads,
 ): Promise<BenchPayload[]> {
@@ -133,7 +115,7 @@ async function runWaSqliteBenchInWorker(
   for (const workload of workloadDefs) {
     console.info(`[opfs-worker] workload ${workload.name} start`);
     // Factory must return a NEW adapter each time: runBenchmark calls it per iteration and closes after each.
-    const adapterFactory = () => createAdapter(storage, baseUrl);
+    const adapterFactory = () => createAdapter(storage);
     const res = await runWorkloads(adapterFactory, [workload]);
     const [result] = res;
     const mergedExtra =
@@ -157,12 +139,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   if (ev.data?.type !== 'run') return;
   const storage: StorageKind = ev.data.storage ?? 'browser-opfs-coop-sync';
   try {
-    const results = await runWaSqliteBenchInWorker(
-      storage,
-      ev.data.baseUrl,
-      ev.data.sizes,
-      ev.data.workloads,
-    );
+    const results = await runWaSqliteBenchInWorker(storage, ev.data.sizes, ev.data.workloads);
     const response: WorkerResponse = { ok: true, results };
     self.postMessage(response);
   } catch (err) {

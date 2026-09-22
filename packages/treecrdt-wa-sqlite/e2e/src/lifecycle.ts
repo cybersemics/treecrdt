@@ -2,8 +2,6 @@ import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from '@t
 import { nodeIdFromInt } from '@treecrdt/benchmark';
 import { replicaFromLabel } from './op-helpers.js';
 
-export type LifecycleRuntime = 'direct' | 'dedicated-worker' | 'shared-worker';
-
 const rootId = '0'.repeat(32);
 const parentId = nodeIdFromInt(901);
 const childId = nodeIdFromInt(902);
@@ -15,11 +13,6 @@ let openClient: TreecrdtClient | null = null;
 
 type LifecycleOptions = {
   docId: string;
-  fallback?: 'memory' | 'throw';
-  filename: string;
-  runtime: LifecycleRuntime;
-  /** Pins differently configured clients to one SharedWorker so lifecycle cleanup is observable. */
-  sharedWorkerName?: string;
 };
 
 export type LifecycleState = {
@@ -39,14 +32,7 @@ export type LifecycleState = {
 };
 
 async function createOpfsLifecycleClient(opts: LifecycleOptions): Promise<TreecrdtClient> {
-  return createTreecrdtClient({
-    docId: opts.docId,
-    storage: { type: 'opfs', filename: opts.filename, fallback: opts.fallback ?? 'throw' },
-    runtime:
-      opts.runtime === 'shared-worker' && opts.sharedWorkerName
-        ? { type: 'shared-worker', name: opts.sharedWorkerName }
-        : { type: opts.runtime },
-  });
+  return createTreecrdtClient({ docId: opts.docId, persistent: true });
 }
 
 async function summarizeLifecycleState(client: TreecrdtClient): Promise<LifecycleState> {

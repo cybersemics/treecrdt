@@ -4,10 +4,7 @@ export type {
   Database,
   RuntimeMode,
   StorageMode,
-  TreecrdtAssets,
   TreecrdtClient,
-  TreecrdtRuntime,
-  TreecrdtStorage,
 } from './types.js';
 
 export type { OpfsSupport, OpfsVfsKind, OpfsVfsOptions, OpenOptions } from './opfs.js';
@@ -16,6 +13,7 @@ export {
   createOpfsVfs,
   detectOpfsSupport,
   openWithStorage,
+  opfsFilenameForDocId,
   opfsStorageExists,
 } from './opfs.js';
 

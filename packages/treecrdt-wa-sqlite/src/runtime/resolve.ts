@@ -1,113 +1,81 @@
-import { detectOpfsSupport } from '../opfs.js';
-import type {
-  ClientOptions,
-  NormalizedRuntimeOptions,
-  NormalizedStorageOptions,
-  RuntimeMode,
-  TreecrdtRuntime,
-} from '../types.js';
+import { detectOpfsSupport, opfsFilenameForDocId } from '../opfs.js';
+import type { ClientOptions, RuntimeMode, StorageMode } from '../types.js';
 
 export type ResolvedBrowserEnvironment = {
-  storage: NormalizedStorageOptions;
-  runtime: NormalizedRuntimeOptions;
-  baseUrl?: string;
-  shouldUseOpfs: boolean;
-  resolvedRuntime: RuntimeMode;
   docId: string;
+  storage: StorageMode;
+  runtime: RuntimeMode;
+  /** OPFS path derived from docId; undefined for in-memory databases. */
+  filename?: string;
+  baseUrl: string;
 };
 
-export function normalizeStorageOptions(opts: ClientOptions): NormalizedStorageOptions {
-  const raw = opts.storage ?? { type: 'auto' };
-  if (!raw || typeof raw !== 'object') {
-    throw new Error(
-      'createTreecrdtClient storage must use object options, e.g. { type: "memory" } or { type: "opfs" }',
-    );
+/** docId is part of CRDT/sync identity and cannot be defaulted or detected. */
+export function validateDocId(docId: string): string {
+  if (typeof docId !== 'string' || docId.length === 0) {
+    throw new Error('createTreecrdtClient requires a non-empty docId');
   }
+  return docId;
+}
 
-  if (raw.type === 'memory') {
-    return { type: 'memory', requireOpfs: false, fallback: 'memory' };
+export function validateCrossTab(crossTab: boolean | undefined): boolean {
+  if (crossTab !== undefined && typeof crossTab !== 'boolean') {
+    throw new Error('createTreecrdtClient crossTab must be a boolean');
   }
-  if (raw.type === 'opfs') {
-    const fallback = raw.fallback ?? 'throw';
+  if (crossTab && typeof SharedWorker === 'undefined') {
+    throw new Error('TreeCRDT cross-tab mode requires SharedWorker support');
+  }
+  return crossTab ?? false;
+}
+
+/** Resolve asset URLs in the page before passing them to a worker. */
+function absoluteBrowserUrl(url: string): string {
+  return typeof location === 'undefined' ? url : new URL(url, location.href).href;
+}
+
+/** wa-sqlite JS assets are served from an override, Vite BASE_URL, or "/". */
+export function browserAssetsBaseUrl(baseUrl?: string): string {
+  if (baseUrl !== undefined && (typeof baseUrl !== 'string' || baseUrl.length === 0)) {
+    throw new Error('createTreecrdtClient assetsBaseUrl must be a non-empty string');
+  }
+  const base =
+    baseUrl ??
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL
+      ? (import.meta as any).env.BASE_URL
+      : '/');
+  return absoluteBrowserUrl(base.endsWith('/') ? base : `${base}/`);
+}
+
+/**
+ * Maps the public options onto storage, runtime, filename, and assets:
+ * cross-tab clients run in a shared worker; otherwise memory runs in-process and
+ * persistence runs OPFS in a dedicated worker. OPFS never silently falls back.
+ */
+export function resolveBrowserEnvironment(opts: ClientOptions): ResolvedBrowserEnvironment {
+  const docId = validateDocId(opts.docId);
+  const crossTab = validateCrossTab(opts.crossTab);
+  const baseUrl = browserAssetsBaseUrl(opts.assetsBaseUrl);
+
+  if (!opts.persistent) {
     return {
-      type: 'opfs',
-      filename: raw.filename,
-      requireOpfs: fallback === 'throw',
-      fallback,
+      docId,
+      storage: 'memory',
+      runtime: crossTab ? 'shared-worker' : 'direct',
+      baseUrl,
     };
   }
-  if (raw.type !== 'auto') {
-    throw new Error('createTreecrdtClient storage.type must be "memory", "opfs", or "auto"');
-  }
-  const fallback = raw.fallback ?? 'memory';
-  return {
-    type: 'auto',
-    filename: raw.filename,
-    requireOpfs: fallback === 'throw',
-    fallback,
-  };
-}
 
-export function normalizeRuntimeOptions(opts: ClientOptions): NormalizedRuntimeOptions {
-  return opts.runtime ?? { type: 'auto' };
-}
-
-export function normalizeAssetsBaseUrl(baseUrl?: string): string | undefined {
-  if (baseUrl === undefined) return undefined;
-  return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-}
-
-export function defaultBrowserAssetsBaseUrl(): string {
-  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.BASE_URL) {
-    return (import.meta as any).env.BASE_URL;
-  }
-  return '/';
-}
-
-export function resolveRuntimeMode(runtime: TreecrdtRuntime, shouldUseOpfs: boolean): RuntimeMode {
-  if (runtime.type === 'direct') return 'direct';
-  if (runtime.type === 'dedicated-worker') return 'dedicated-worker';
-  if (runtime.type === 'shared-worker') {
-    if (typeof SharedWorker === 'undefined') {
-      throw new Error('TreeCRDT shared-worker runtime is unavailable in this environment');
-    }
-    return 'shared-worker';
-  }
-  if (shouldUseOpfs) return 'dedicated-worker';
-  return 'direct';
-}
-
-export function defaultSharedWorkerName(docId: string, filename?: string): string {
-  return `treecrdt:${docId}:${filename ?? '/treecrdt.db'}`;
-}
-
-export function resolveBrowserEnvironment(opts: ClientOptions): ResolvedBrowserEnvironment {
-  const storage = normalizeStorageOptions(opts);
-  const runtime = normalizeRuntimeOptions(opts);
-  const docId = opts.docId ?? 'treecrdt';
-  const baseUrl = normalizeAssetsBaseUrl(opts.assets?.baseUrl ?? defaultBrowserAssetsBaseUrl());
   const support = detectOpfsSupport();
-  const shouldUseOpfs = storage.type === 'opfs' || (storage.type === 'auto' && support.available);
-  const resolvedRuntime = resolveRuntimeMode(runtime, shouldUseOpfs);
-
-  assertBrowserOpfsRequirements(storage, support, shouldUseOpfs, resolvedRuntime);
-
-  return { storage, runtime, baseUrl, shouldUseOpfs, resolvedRuntime, docId };
-}
-
-function assertBrowserOpfsRequirements(
-  storage: NormalizedStorageOptions,
-  support: ReturnType<typeof detectOpfsSupport>,
-  shouldUseOpfs: boolean,
-  resolvedRuntime: RuntimeMode,
-): void {
-  const unavailable = () =>
-    new Error(`OPFS unavailable in this environment: ${support.reason ?? 'unknown reason'}`);
-
-  if (storage.type === 'auto' && !support.available && storage.fallback === 'throw') {
-    throw unavailable();
+  if (!support.available) {
+    throw new Error(
+      `TreeCRDT persistent storage requires OPFS, unavailable in this environment: ${support.reason ?? 'unknown reason'}`,
+    );
   }
-  if (shouldUseOpfs && resolvedRuntime === 'direct' && !support.available && storage.requireOpfs) {
-    throw unavailable();
-  }
+  return {
+    docId,
+    storage: 'opfs',
+    runtime: crossTab ? 'shared-worker' : 'dedicated-worker',
+    filename: opts.filename ?? opfsFilenameForDocId(docId),
+    baseUrl,
+  };
 }

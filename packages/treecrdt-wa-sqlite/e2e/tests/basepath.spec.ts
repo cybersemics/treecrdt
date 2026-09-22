@@ -9,15 +9,14 @@ test.describe.serial('non-root base path', () => {
     const summary = await page.evaluate(async () => {
       const fn = (window as any).__createTreecrdtClient;
       if (!fn) return null;
-      const base = new URL('/base-path/', window.location.href).href;
-      return await fn('memory', base);
+      return await fn(false);
     });
     expect(summary).not.toBeNull();
     expect(summary.mode).toBe('direct');
     expect(summary.storage).toBe('memory');
   });
 
-  test('opfs client uses the synchronous build in a dedicated worker with a base path', async ({
+  test('persistent client uses the synchronous build in a dedicated worker with a base path', async ({
     page,
   }, testInfo) => {
     if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
@@ -33,7 +32,7 @@ test.describe.serial('non-root base path', () => {
     const summary = await page.evaluate(async () => {
       const fn = (window as any).__createTreecrdtClient;
       if (!fn) return null;
-      return await fn('opfs', undefined, 'dedicated-worker');
+      return await fn(true);
     });
     expect(summary).not.toBeNull();
     expect(summary.mode).toBe('worker');
@@ -46,35 +45,7 @@ test.describe.serial('non-root base path', () => {
     expect(wasmRequests.some((path) => path.includes('/wa-sqlite-async-'))).toBe(false);
   });
 
-  test('direct opfs uses the Asyncify build in preview with base path', async ({
-    page,
-  }, testInfo) => {
-    if (testInfo.project.name !== 'chromium-basepath-preview') test.skip();
-    const wasmRequests: string[] = [];
-    const moduleRequests: string[] = [];
-    page.on('request', (request) => {
-      const url = new URL(request.url());
-      if (url.pathname.endsWith('.wasm')) wasmRequests.push(url.pathname);
-      if (url.pathname.endsWith('.mjs')) moduleRequests.push(url.pathname);
-    });
-    await page.goto('/base-path/');
-    await page.waitForSelector('[data-testid="run-demo"]', { timeout: 30_000 });
-    const summary = await page.evaluate(async () => {
-      const fn = (window as any).__createTreecrdtClient;
-      if (!fn) return null;
-      return await fn('opfs', undefined, 'direct');
-    });
-    expect(summary).not.toBeNull();
-    expect(summary.mode).toBe('direct');
-    expect(summary.runtime).toBe('direct');
-    expect(summary.storage).toBe('opfs');
-    expect(moduleRequests).toContain('/base-path/wa-sqlite/wa-sqlite-async.mjs');
-    expect(wasmRequests).toContainEqual(
-      expect.stringMatching(/^\/base-path\/assets\/wa-sqlite-async-[A-Za-z0-9_-]+\.wasm$/),
-    );
-  });
-
-  test("opfs init fails when OPFS VFS chunk can't load (and throws)", async ({
+  test("persistent init fails when OPFS VFS chunk can't load (and throws)", async ({
     context,
     page,
   }, testInfo) => {
@@ -86,7 +57,7 @@ test.describe.serial('non-root base path', () => {
       const fn = (window as any).__createTreecrdtClient;
       if (!fn) return { ok: false, message: '__createTreecrdtClient missing' };
       try {
-        await fn('opfs', undefined, 'dedicated-worker');
+        await fn(true);
         return { ok: true, message: '' };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : String(err) };

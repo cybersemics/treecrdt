@@ -1,3 +1,4 @@
+import { sha256 } from '@noble/hashes/sha2';
 import type { Database } from './types.js';
 import { createDatabase } from './db.js';
 import { initializeTreecrdtExtension } from './extension.js';
@@ -12,18 +13,16 @@ function hasOpfsGetDirectory(): boolean {
 }
 
 /**
- * Feature check for OPFS + cross-origin isolation.
- * We require getDirectory + crossOriginIsolated. createSyncAccessHandle is only
- * available in Web Workers, so we cannot reliably detect it from the main thread;
- * the OPFS VFS runs in a worker and will fail at init if unsupported (we fall
- * back to memory).
+ * Feature check for OPFS + cross-origin isolation (window or worker context).
+ * createSyncAccessHandle is only available in Web Workers, so it cannot be
+ * detected from here; the OPFS VFS runs in a worker and fails at init if
+ * unsupported.
  */
 export function detectOpfsSupport(): OpfsSupport {
-  const hasWindow = typeof window !== 'undefined';
-  if (!hasWindow) return { available: false, reason: 'No window' };
   const hasOpfs = hasOpfsGetDirectory();
   const isolated =
-    (window as typeof window & { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
+    (globalThis as typeof globalThis & { crossOriginIsolated?: boolean }).crossOriginIsolated ===
+    true;
   const ok = hasOpfs && isolated;
   return ok
     ? { available: true }
@@ -33,6 +32,26 @@ export function detectOpfsSupport(): OpfsSupport {
           ? 'navigator.storage.getDirectory unavailable'
           : 'cross-origin isolation required',
       };
+}
+
+/**
+ * Deterministic, filesystem-safe OPFS filename for a docId. The readable prefix
+ * aids inspection; the 128-bit hash suffix prevents sanitized docIds from aliasing
+ * except in the negligible case of a truncated SHA-256 collision.
+ */
+export function opfsFilenameForDocId(docId: string): string {
+  const prefix =
+    docId
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .slice(0, 64)
+      .replace(/^-+|-+$/g, '') || 'doc';
+  const hashBytes = sha256(new TextEncoder().encode(docId)).subarray(0, 16);
+  const hash = btoa(String.fromCharCode(...hashBytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  return `/treecrdt-${prefix}.${hash}.db`;
 }
 
 const DB_RELATED_FILE_SUFFIXES = ['', '-journal', '-wal'];
