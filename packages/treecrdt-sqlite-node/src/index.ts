@@ -6,7 +6,6 @@ import {
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
-  decodeSqliteTreeChildRows,
   decodeSqliteTreeRows,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
@@ -22,6 +21,7 @@ import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface'
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
+  createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
 import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import {
@@ -234,16 +234,14 @@ export function createTreecrdtClient(
     },
     opRefs: { all: opRefsAllImpl, children: opRefsChildrenImpl },
     tree: {
-      children: treeChildrenImpl,
-      childrenPage: async (parent, cursor, limit) =>
-        decodeSqliteTreeChildRows(
-          await adapter.treeChildrenPage!(nodeIdToBytes16(parent), cursor, limit),
-        ),
+      ...createTreecrdtTreeNodes({
+        exists: treeExistsImpl,
+        parent: treeParentImpl,
+        payload: treeGetPayloadImpl,
+        children: treeChildrenImpl,
+      }),
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
-      parent: treeParentImpl,
-      exists: treeExistsImpl,
-      getPayload: treeGetPayloadImpl,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),

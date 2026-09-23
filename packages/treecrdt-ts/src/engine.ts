@@ -1,5 +1,6 @@
 import type { Operation, ReplicaId } from './index.js';
-import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
+import type { SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
+import { ROOT_NODE_ID_HEX } from './ids.js';
 
 export type MaterializationSource = {
   /**
@@ -159,19 +160,64 @@ export type TreecrdtEngineOpRefs = {
   children: (parent: string) => Promise<Uint8Array[]>;
 };
 
-export type TreecrdtEngineTree = {
+/**
+ * Lazy materialized-tree handle. Methods issue fresh queries; no local cache.
+ */
+export type TreecrdtNode = {
+  readonly id: string;
+  /** Parent handle, or null when this node is root (or concurrently deleted). */
+  parent: () => Promise<TreecrdtNode | null>;
+  payload: () => Promise<Uint8Array | null>;
+  children: () => Promise<TreecrdtNode[]>;
+};
+
+/**
+ * Per-node read primitives each backend keeps private; used by createTreecrdtTreeNodes.
+ */
+export type TreecrdtNodePrimitives = {
+  exists: (node: string) => Promise<boolean>;
+  parent: (node: string) => Promise<string | null>;
+  payload: (node: string) => Promise<Uint8Array | null>;
   children: (parent: string) => Promise<string[]>;
-  childrenPage?: (
-    parent: string,
-    cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
-    limit: number,
-  ) => Promise<SqliteTreeChildRow[]>;
+};
+
+export type TreecrdtEngineTree = {
+  /** Undefined when the node is absent (tombstoned or never inserted). */
+  get: (node: string) => Promise<TreecrdtNode | undefined>;
+  /** Always-available ROOT handle; does not check existence. */
+  root: TreecrdtNode;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
-  parent: (node: string) => Promise<string | null>;
-  exists: (node: string) => Promise<boolean>;
-  getPayload: (node: string) => Promise<Uint8Array | null>;
 };
+
+/**
+ * Build the Node navigation surface (`get` + `root`) over per-node backend primitives.
+ * Node methods stay lazy so callers always see current materialized state.
+ */
+export function createTreecrdtTreeNodes(
+  primitives: TreecrdtNodePrimitives,
+): Pick<TreecrdtEngineTree, 'get' | 'root'> {
+  const createNode = (id: string): TreecrdtNode => {
+    const node: TreecrdtNode = {
+      id,
+      parent: async () => {
+        const parentId = await primitives.parent(id);
+        return parentId === null ? null : createNode(parentId);
+      },
+      payload: () => primitives.payload(id),
+      children: async () => (await primitives.children(id)).map(createNode),
+    };
+    return node;
+  };
+
+  return {
+    get: async (nodeId) => {
+      if (!(await primitives.exists(nodeId))) return undefined;
+      return createNode(nodeId);
+    },
+    root: createNode(ROOT_NODE_ID_HEX),
+  };
+}
 
 export type TreecrdtEngineMeta = {
   headLamport: () => Promise<number>;

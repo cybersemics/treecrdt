@@ -250,7 +250,9 @@ export async function sampleResponsivenessReads(
 
   for (let i = 0; i < opts.samples; i += 1) {
     const start = performance.now();
-    finalChildCount = (await client.tree.children(parent)).length;
+    const handle =
+      parent === client.tree.root.id ? client.tree.root : await client.tree.get(parent);
+    finalChildCount = handle ? (await handle.children()).length : 0;
     durationsMs.push(performance.now() - start);
     if (intervalMs > 0) await sleep(intervalMs);
   }
@@ -292,7 +294,8 @@ export async function sampleResponsivenessPayloadReads(
 
   for (let i = 0; i < opts.samples; i += 1) {
     const start = performance.now();
-    const payload = await client.tree.getPayload(opts.node);
+    const handle = await client.tree.get(opts.node);
+    const payload = handle ? await handle.payload() : null;
     durationsMs.push(performance.now() - start);
     if (!payload) throw new Error(`missing payload for node ${opts.node}`);
     if (payload.byteLength !== opts.payloadBytes) {
