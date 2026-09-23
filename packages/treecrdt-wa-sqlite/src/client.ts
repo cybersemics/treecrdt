@@ -5,9 +5,7 @@ import {
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
-  decodeSqliteTreeChildRows,
   decodeSqliteTreeRows,
-  type SqliteTreeChildRow,
   type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
@@ -18,7 +16,7 @@ import type {
   MaterializationOutcome,
   WriteOptions,
 } from '@treecrdt/interface/engine';
-import { createTreecrdtEngineLocal } from '@treecrdt/interface/engine';
+import { createTreecrdtEngineLocal, createTreecrdtTreeNodes } from '@treecrdt/interface/engine';
 import type { MaterializationListener } from './session.js';
 import type { RuntimeConnection } from './runtime/types.js';
 import { resolveBrowserEnvironment } from './runtime/resolve.js';
@@ -134,7 +132,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
 
   const appendMany = async (operations: Operation[], writeOpts?: WriteOptions) => {
     if (operations.length <= APPEND_MANY_CHUNK_SIZE) {
-      const outcome = await guard(() => session.appendMany(operations));
+      const outcome = await guard(() => session.operations.appendMany(operations));
       materialized.emitOutcome(outcome, writeOpts?.writeId);
       return;
     }
@@ -143,7 +141,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
     for (let start = 0; start < operations.length; start += APPEND_MANY_CHUNK_SIZE) {
       outcomes.push(
         await guard(() =>
-          session.appendMany(operations.slice(start, start + APPEND_MANY_CHUNK_SIZE)),
+          session.operations.appendMany(operations.slice(start, start + APPEND_MANY_CHUNK_SIZE)),
         ),
       );
     }
@@ -196,53 +194,49 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
     runner,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
-        const outcome = await guard(() => session.append(op));
+        const outcome = await guard(() => session.operations.append(op));
         materialized.emitOutcome(outcome, writeOpts?.writeId);
       },
       appendMany,
-      all: () => guard(async () => decodeSqliteOps(await session.opsSince(0))),
+      all: () => guard(async () => decodeSqliteOps(await session.operations.since(0))),
       since: (lamport, root?) =>
-        guard(async () => decodeSqliteOps(await session.opsSince(lamport, root))),
+        guard(async () => decodeSqliteOps(await session.operations.since(lamport, root))),
       children: (parent) =>
         guard(async () => {
-          const opRefs = decodeSqliteOpRefs(await session.opRefsChildren(parent));
-          return decodeSqliteOps(await session.opsByOpRefs(opRefs));
+          const opRefs = decodeSqliteOpRefs(await session.operations.refsChildren(parent));
+          return decodeSqliteOps(await session.operations.byRefs(opRefs));
         }),
-      get: (opRefs) => guard(async () => decodeSqliteOps(await session.opsByOpRefs(opRefs))),
+      get: (opRefs) => guard(async () => decodeSqliteOps(await session.operations.byRefs(opRefs))),
     },
     opRefs: {
-      all: () => guard(async () => decodeSqliteOpRefs(await session.opRefsAll())),
+      all: () => guard(async () => decodeSqliteOpRefs(await session.operations.refsAll())),
       children: (parent) =>
-        guard(async () => decodeSqliteOpRefs(await session.opRefsChildren(parent))),
+        guard(async () => decodeSqliteOpRefs(await session.operations.refsChildren(parent))),
     },
     tree: {
-      children: (parent) =>
-        guard(async () => decodeSqliteNodeIds(await session.treeChildren(parent))),
-      childrenPage: (
-        parent: string,
-        cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
-        limit: number,
-      ): Promise<SqliteTreeChildRow[]> =>
-        guard(async () =>
-          decodeSqliteTreeChildRows(await session.treeChildrenPage(parent, cursor, limit)),
-        ),
-      dump: () => guard(async () => decodeSqliteTreeRows(await session.treeDump())),
-      nodeCount: () => guard(async () => Number(await session.treeNodeCount())),
-      parent: async (node) => {
-        const result = await guard(() => session.treeParent(node));
-        if (result === null) return null;
-        return nodeIdFromBytes16(toBytes(result));
-      },
-      exists: (node) => guard(async () => Boolean(await session.treeExists(node))),
-      getPayload: async (node) => {
-        const result = await guard(() => session.treePayload(node));
-        return result === null ? null : toBytes(result);
-      },
+      ...createTreecrdtTreeNodes({
+        exists: (node) => guard(async () => Boolean(await session.tree.exists(node))),
+        parent: async (node) => {
+          const result = await guard(() => session.tree.parent(node));
+          if (result === null) return null;
+          return nodeIdFromBytes16(toBytes(result));
+        },
+        payload: async (node) => {
+          const result = await guard(() => session.tree.payload(node));
+          return result === null ? null : toBytes(result);
+        },
+        children: (parent) =>
+          guard(async () => decodeSqliteNodeIds(await session.tree.children(parent))),
+      }),
+      dump: () => guard(async () => decodeSqliteTreeRows(await session.tree.dump())),
+      nodeCount: () => guard(async () => Number(await session.tree.nodeCount())),
     },
     meta: {
-      headLamport: () => guard(async () => Number(await session.headLamport())),
+      headLamport: () => guard(async () => Number(await session.operations.headLamport())),
       replicaMaxCounter: (replica) =>
-        guard(async () => Number(await session.replicaMaxCounter(replicaIdToBytes(replica)))),
+        guard(async () =>
+          Number(await session.operations.replicaMaxCounter(replicaIdToBytes(replica))),
+        ),
     },
     local: localEngine,
     onMaterialized: materialized.onMaterialized,

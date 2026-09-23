@@ -1,0 +1,4 @@
+---
+'@treecrdt/sync': patch
+---
+
