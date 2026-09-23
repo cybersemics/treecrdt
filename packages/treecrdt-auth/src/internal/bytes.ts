@@ -1,3 +1,7 @@
+export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
 export function u8(n: number): Uint8Array {
   if (!Number.isInteger(n) || n < 0 || n > 0xff) throw new Error(`u8 out of range: ${n}`);
   return new Uint8Array([n]);
