@@ -1,5 +1,33 @@
 # @treecrdt/wa-sqlite
 
+## 1.0.0
+
+### Major Changes
+
+- 97166eb: Reduce `createTreecrdtClient()` options to a required `docId` plus optional `persistent`, `filename`, `crossTab`, and `assetsBaseUrl` options. The public `storage` / `runtime` / nested `assets` configuration and the `TreecrdtStorage`, `TreecrdtRuntime`, and `TreecrdtAssets` types are removed. The package now selects storage and runtime internally: in-memory + direct runtime by default, OPFS + dedicated worker for `persistent: true`, and a shared worker when `crossTab: true`. Browser assets default to Vite's `BASE_URL` but the base remains overridable for custom asset routing; Vite continues to emit and resolve the WASM through its asset graph. Persistent filenames are derived deterministically from `docId` when omitted using a readable prefix and the first 16 bytes of its SHA-256 hash encoded as base64url (the derivation is exported as `opfsFilenameForDocId`). The previous `auto` default (OPFS when available) becomes in-memory; persistence is always explicit and never silently falls back — when OPFS is unavailable or fails to initialize, client creation throws with the reason. Cross-tab mode throws when `SharedWorker` is unavailable. On Node, `persistent: true` and `crossTab: true` throw; use `@treecrdt/sqlite-node` for file persistence.
+
+### Minor Changes
+
+- 992283a: Use canonical VersionVector v0 bytes across storage and sync. The new `@treecrdt/wasm/codec` entry
+  point lazily loads the shared Rust implementation and exposes synchronous codec methods once ready.
+  Recreate development databases that contain the unreleased JSON format.
+- 9a0534f: Replace the custom worker RPC with Comlink and split session data access from connection lifecycle. `createWaSqliteApi` is removed; low-level callers that open a wa-sqlite handle themselves should initialize the extension, set the doc id, then pass the database to `createTreecrdtSqliteAdapter` from `@treecrdt/interface/sqlite`. `createTreecrdtClient()` is unchanged for typical apps.
+- 792a8a0: Initialize the shared TreeCRDT schema through awaited SQL in one transaction,
+  replacing the custom VFS retry loop. Failed initialization rolls back schema changes.
+  Document ID setup shares the write transaction so concurrent opens cannot race.
+
+  Low-level callers must now pass the connection's SQL runner as the third argument
+  to `initializeTreecrdtExtension(module, handle, db, docId)`, with an optional document
+  ID to initialize in the same transaction. Rebuild the vendor WASM and
+  adapter together. `createTreecrdtClient()` callers need no changes.
+
+### Patch Changes
+
+- 49ca3c9: Reduce local insert, move, delete, and payload overhead by preparing SQLite helper statements only when each operation needs them.
+- 972f402: Build the bundled wa-sqlite assets from upstream using its existing extension inputs instead of a fork.
+- Updated dependencies [e829a41]
+  - @treecrdt/interface@0.3.0
+
 ## 0.4.2
 
 ### Patch Changes

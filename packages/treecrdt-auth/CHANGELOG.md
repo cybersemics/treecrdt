@@ -1,5 +1,20 @@
 # @treecrdt/auth
 
+## 0.2.0
+
+### Minor Changes
+
+- 917d930: Bind defensive-delete `knownState` into operation signatures to prevent undetected tampering.
+
+### Patch Changes
+
+- Updated dependencies [992283a]
+- Updated dependencies [2594f3d]
+- Updated dependencies [e829a41]
+  - @treecrdt/wasm@0.1.0
+  - @treecrdt/sync-protocol@0.2.0
+  - @treecrdt/interface@0.3.0
+
 ## 0.1.2
 
 ### Patch Changes
