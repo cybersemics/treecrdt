@@ -30,10 +30,12 @@ doc_id = "treecrdt:doc:v1:" || base64url_no_padding(
 )
 COSE_Sign1 = [protected_bstr, {}, payload_bstr, signature_bstr]
 protected = {1: -19} // Ed25519
+replica_key = {1: 1, -1: 6, -2: replica_public_key} // type: OKP, curve: Ed25519, public key
+confirmation = {1: replica_key}  // COSE_Key
 payload = {
   3: doc_id,                       // CWT audience
   4: expires_at,                   // CWT expiration, Unix seconds
-  8: {1: {1: 1, -1: 6, -2: replica_public_key}}, // cnf: COSE_Key (OKP, Ed25519)
+  8: confirmation,                 // cnf
   "authority_pk": authority_public_key
 }
 signature_input = CBOR([

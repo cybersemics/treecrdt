@@ -19,8 +19,14 @@ type GrantClaims = {
 
 const GRANT_DOMAIN = utf8ToBytes('treecrdt/owner-grant/v1');
 const GRANT_ID_DOMAIN = utf8ToBytes('treecrdt/owner-grant-id/v1\0');
-// COSE alg (1) = Ed25519 (-19): https://www.rfc-editor.org/rfc/rfc9864.html#section-2.2
-const PROTECTED_HEADER = encode(new Map([[1, -19]]));
+// COSE Ed25519 algorithm: https://www.rfc-editor.org/rfc/rfc9864.html#section-2.2
+const COSE_HEADER = { algorithm: 1, ed25519: -19 };
+// CWT and confirmation fields: https://www.rfc-editor.org/rfc/rfc8747.html#section-3.2
+const CWT = { audience: 3, expiration: 4, confirmation: 8 };
+const CONFIRMATION = { coseKey: 1 };
+// Octet key pair fields: https://www.rfc-editor.org/rfc/rfc9053.html#section-7.2
+const COSE_KEY = { type: 1, okp: 1, curve: -1, ed25519: 6, publicKey: -2 };
+const PROTECTED_HEADER = encode(new Map([[COSE_HEADER.algorithm, COSE_HEADER.ed25519]]));
 const MAX_GRANT_BYTES = 1024;
 
 /** @internal */
@@ -34,19 +40,18 @@ export function encodeGrantPayload(claims: GrantClaims): Uint8Array {
     throw new Error('expiresAt must be a safe non-negative integer');
   }
   const replicaKey = new Map<number, unknown>([
-    [1, 1],
-    [-1, 6],
-    [-2, claims.replicaPublicKey],
+    [COSE_KEY.type, COSE_KEY.okp],
+    [COSE_KEY.curve, COSE_KEY.ed25519],
+    [COSE_KEY.publicKey, claims.replicaPublicKey],
   ]);
-  return encode(
-    new Map<unknown, unknown>([
-      [3, claims.docId],
-      [4, claims.expiresAt],
-      [8, new Map([[1, replicaKey]])],
-      ['authority_pk', claims.authorityPublicKey],
-    ]),
-    rfc8949EncodeOptions,
-  );
+  const confirmation = new Map([[CONFIRMATION.coseKey, replicaKey]]);
+  const payload = new Map<unknown, unknown>([
+    [CWT.audience, claims.docId],
+    [CWT.expiration, claims.expiresAt],
+    [CWT.confirmation, confirmation],
+    ['authority_pk', claims.authorityPublicKey],
+  ]);
+  return encode(payload, rfc8949EncodeOptions);
 }
 
 /** @internal */
@@ -85,22 +90,24 @@ export async function verifyGrant(opts: {
   }
   const claims = decode(payload, { useMaps: true });
   if (!(claims instanceof Map)) throw new Error('Invalid owner grant claims');
-  const cnf = claims.get(8);
-  const key = cnf instanceof Map ? cnf.get(1) : undefined;
-  const replicaPublicKey = key instanceof Map ? key.get(-2) : undefined;
+  const confirmation = claims.get(CWT.confirmation);
+  const replicaKey =
+    confirmation instanceof Map ? confirmation.get(CONFIRMATION.coseKey) : undefined;
+  const replicaPublicKey =
+    replicaKey instanceof Map ? replicaKey.get(COSE_KEY.publicKey) : undefined;
   const authorityPublicKey = claims.get('authority_pk');
   if (
-    typeof claims.get(3) !== 'string' ||
+    typeof claims.get(CWT.audience) !== 'string' ||
     !(replicaPublicKey instanceof Uint8Array) ||
     !(authorityPublicKey instanceof Uint8Array)
   ) {
     throw new Error('Invalid owner grant identity claims');
   }
   const parsed: GrantClaims = {
-    docId: claims.get(3),
+    docId: claims.get(CWT.audience),
     authorityPublicKey,
     replicaPublicKey,
-    expiresAt: claims.get(4),
+    expiresAt: claims.get(CWT.expiration),
   };
   // Exact re-encoding enforces canonical bytes and rejects extra or alternate claims.
   if (!equalBytes(payload, encodeGrantPayload(parsed))) {
