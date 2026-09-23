@@ -259,8 +259,8 @@ importers:
   packages/treecrdt-auth:
     dependencies:
       '@noble/ed25519':
-        specifier: ^3.0.0
-        version: 3.0.0
+        specifier: ^3.0.1
+        version: 3.0.1
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
@@ -1290,6 +1290,9 @@ packages:
 
   '@noble/ed25519@3.0.0':
     resolution: {integrity: sha512-QyteqMNm0GLqfa5SoYbSC3+Pvykwpn95Zgth4MFVSMKBB75ELl9tX1LAVsN4c3HXOrakHsF2gL4zWDAYCcsnzg==}
+
+  '@noble/ed25519@3.0.1':
+    resolution: {integrity: sha512-t/T8LuK0ym8ALQudCCQCtrRdMSxBnRgHXw+wg+YsSlE6d+on7sX3flqlSJ2mOs9xEuchM36kj9SuX5MG7pXQMA==}
 
   '@noble/hashes@1.8.0':
     resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
@@ -3303,6 +3306,8 @@ snapshots:
       read-yaml-file: 1.1.0
 
   '@noble/ed25519@3.0.0': {}
+
+  '@noble/ed25519@3.0.1': {}
 
   '@noble/hashes@1.8.0': {}
 
