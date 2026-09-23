@@ -1,4 +1,4 @@
-import { assertDocumentId, deriveDocumentId } from './document-id.js';
+import { deriveDocumentId } from './document-id.js';
 import { encodeGrant, encodeGrantPayload, grantSignatureInput, type Grant } from './grant.js';
 
 declare const keyHandleBrand: unique symbol;
@@ -55,8 +55,7 @@ export function createMemoryAuthKeyProvider(): AuthKeyProvider {
     createAuthorityKey() {
       return createKey('authority');
     },
-    async createReplicaKey(docId) {
-      assertDocumentId(docId);
+    createReplicaKey(docId) {
       return createKey('replica', docId);
     },
     async getPublicKey(key) {

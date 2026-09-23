@@ -64,7 +64,6 @@ test('document identity and direct grant match the shared wire vector', async ()
 });
 
 test('document IDs reject malformed and non-canonical forms', async () => {
-  const provider = createMemoryAuthKeyProvider();
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
   const alias = vector.docId.slice(0, -1) + alphabet[alphabet.indexOf(vector.docId.at(-1)!) + 1];
   for (const docId of [
@@ -76,7 +75,7 @@ test('document IDs reject malformed and non-canonical forms', async () => {
     alias,
   ]) {
     expect(() => validateDocumentId(docId, authorityPublicKey)).toThrow(/document ID/);
-    await expect(provider.createReplicaKey(docId)).rejects.toThrow(/Invalid document ID/);
+    await expect(verifyGrant({ ...verification, docId, grant })).rejects.toThrow(/document ID/);
   }
   for (const key of [new Uint8Array(31), new Uint8Array(32), new Uint8Array(32).fill(255)]) {
     expect(() => deriveDocumentId(key)).toThrow();
