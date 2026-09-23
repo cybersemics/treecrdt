@@ -90,38 +90,26 @@ export async function verifyGrant(opts: {
   }
   const claims = decode(payload, { useMaps: true });
   if (!(claims instanceof Map)) throw new Error('Invalid owner grant claims');
-  const confirmation = claims.get(CWT.confirmation);
-  const replicaKey =
-    confirmation instanceof Map ? confirmation.get(CONFIRMATION.coseKey) : undefined;
-  const replicaPublicKey =
-    replicaKey instanceof Map ? replicaKey.get(COSE_KEY.publicKey) : undefined;
   const authorityPublicKey = claims.get('authority_pk');
-  if (
-    typeof claims.get(CWT.audience) !== 'string' ||
-    !(replicaPublicKey instanceof Uint8Array) ||
-    !(authorityPublicKey instanceof Uint8Array)
-  ) {
+  if (!(authorityPublicKey instanceof Uint8Array)) {
     throw new Error('Invalid owner grant identity claims');
   }
-  const parsed: GrantClaims = {
-    docId: claims.get(CWT.audience),
+  const expectedClaims: GrantClaims = {
+    docId: opts.docId,
     authorityPublicKey,
-    replicaPublicKey,
+    replicaPublicKey: new Uint8Array(opts.replicaPublicKey),
     expiresAt: claims.get(CWT.expiration),
   };
-  // Exact re-encoding enforces canonical bytes and rejects extra or alternate claims.
-  if (!equalBytes(payload, encodeGrantPayload(parsed))) {
+  // Re-encode with the expected identity to check binding, canonical bytes and exact claims.
+  if (!equalBytes(payload, encodeGrantPayload(expectedClaims))) {
     throw new Error('Unsupported owner grant claims');
   }
-  if (parsed.docId !== opts.docId || !equalBytes(replicaPublicKey, opts.replicaPublicKey)) {
-    throw new Error('Owner grant document or replica mismatch');
-  }
-  if (nowSec >= parsed.expiresAt) throw new Error('Owner grant expired');
+  if (nowSec >= expectedClaims.expiresAt) throw new Error('Owner grant expired');
   if (!(await verifyEd25519(signature, grantSignatureInput(payload), authorityPublicKey))) {
     throw new Error('Invalid owner grant signature');
   }
   return {
-    ...parsed,
+    ...expectedClaims,
     grantId: blake3(concatBytes(GRANT_ID_DOMAIN, grant)).slice(0, 16),
   };
 }
