@@ -247,28 +247,19 @@ function readChildrenPayloadsWorkload(opts: {
     iterations: 1,
     warmupIterations: 0,
     run: async (adapter: any) => {
-      const parentHandle =
-        opts.targetParent === adapter.tree.root.id
-          ? adapter.tree.root
-          : await adapter.tree.get(opts.targetParent);
-      if (!parentHandle) throw new Error('parent not available');
-      const rows = (await parentHandle.children())
-        .slice(0, opts.pageSize)
-        .map((node) => ({ node: node.id }));
+      const rows = await adapter.tree.childrenPage(opts.targetParent, null, opts.pageSize);
+      if (!Array.isArray(rows)) throw new Error('childrenPage did not return rows');
       if (rows.length !== visibleChildren) {
         throw new Error(`expected ${visibleChildren} child rows, got ${rows.length}`);
       }
 
-      const parentPayload = await parentHandle.payload();
+      const parentPayload = await adapter.tree.getPayload(opts.targetParent);
       if (!(parentPayload instanceof Uint8Array) || parentPayload.length !== opts.payloadBytes) {
         throw new Error('target parent payload missing');
       }
 
       const payloads = await Promise.all(
-        rows.map(async (row: { node: string }) => {
-          const child = await adapter.tree.get(row.node);
-          return child ? await child.payload() : null;
-        }),
+        rows.map((row: { node: string }) => adapter.tree.getPayload(row.node)),
       );
       if (
         payloads.some(
@@ -318,15 +309,14 @@ function insertIntoLargeTreeWorkload(opts: {
         throw new Error('insert did not return the new node');
       }
 
-      const inserted = await adapter.tree.get(newNode);
-      const parent = inserted ? await inserted.parent() : null;
-      if (parent?.id !== opts.targetParent) {
+      const parent = await adapter.tree.parent(newNode);
+      if (parent !== opts.targetParent) {
         throw new Error(
-          `inserted node parent mismatch: expected ${opts.targetParent}, got ${String(parent?.id ?? null)}`,
+          `inserted node parent mismatch: expected ${opts.targetParent}, got ${String(parent)}`,
         );
       }
 
-      const storedPayload = inserted ? await inserted.payload() : null;
+      const storedPayload = await adapter.tree.getPayload(newNode);
       if (!(storedPayload instanceof Uint8Array) || storedPayload.length !== opts.payloadBytes) {
         throw new Error('inserted node payload missing');
       }

@@ -1,7 +1,4 @@
-import {
-  createMaterializationDispatcher,
-  createTreecrdtTreeNodes,
-} from '@treecrdt/interface/engine';
+import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { Change } from '@treecrdt/interface/engine';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import type { Operation, WriteOptions } from '@treecrdt/interface';
@@ -10,17 +7,6 @@ import { deriveOpRefV0, type OpRef } from '@treecrdt/sync-protocol';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
 
 export const ROOT = '0'.repeat(32);
-
-const emptyTree = {
-  ...createTreecrdtTreeNodes({
-    exists: async () => false,
-    parent: async () => null,
-    payload: async () => null,
-    children: async () => [],
-  }),
-  dump: async () => [],
-  nodeCount: async () => 0,
-};
 
 export function orderKeyFromPosition(position: number): Uint8Array {
   if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
@@ -110,7 +96,14 @@ export function createInMemoryTestClient(
       since: async () => [],
       children: async () => [],
     },
-    tree: emptyTree,
+    tree: {
+      children: async () => [],
+      dump: async () => [],
+      nodeCount: async () => 0,
+      parent: async () => null,
+      exists: async () => false,
+      getPayload: async () => null,
+    },
     local: {
       insert: async () => {
         throw new Error('not used');
@@ -195,7 +188,14 @@ export function createInMemoryTestClientWithWriteId(
       since: async () => [],
       children: async () => [],
     },
-    tree: emptyTree,
+    tree: {
+      children: async () => [],
+      dump: async () => [],
+      nodeCount: async () => 0,
+      parent: async () => null,
+      exists: async () => false,
+      getPayload: async () => null,
+    },
     local: {
       insert: async () => {
         throw new Error('not used');

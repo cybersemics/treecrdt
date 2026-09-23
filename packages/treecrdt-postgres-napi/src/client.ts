@@ -3,7 +3,6 @@ import { nodeIdFromBytes16, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/
 import {
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
-  createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
 import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
@@ -114,6 +113,21 @@ export async function createTreecrdtPostgresClient(
   const treeChildrenImpl = async (parent: string) => {
     ensureMaterializedImpl();
     return backend.treeChildren(nodeIdToBytes16(parent)).map((b) => nodeIdFromBytes16(b));
+  };
+
+  const treeChildrenPageImpl = async (
+    parent: string,
+    cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
+    limit: number,
+  ) => {
+    ensureMaterializedImpl();
+    const rows = backend.treeChildrenPage(
+      nodeIdToBytes16(parent),
+      cursor?.orderKey ?? null,
+      cursor?.node ?? null,
+      limit,
+    );
+    return rows.map((r) => ({ node: nodeIdFromBytes16(r.node), orderKey: r.orderKey ?? null }));
   };
 
   const treeDumpImpl = async () => {
@@ -243,14 +257,13 @@ export async function createTreecrdtPostgresClient(
       children: opRefsChildrenImpl,
     },
     tree: {
-      ...createTreecrdtTreeNodes({
-        exists: treeExistsImpl,
-        parent: treeParentImpl,
-        payload: treeGetPayloadImpl,
-        children: treeChildrenImpl,
-      }),
+      children: treeChildrenImpl,
+      childrenPage: treeChildrenPageImpl,
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
+      parent: treeParentImpl,
+      exists: treeExistsImpl,
+      getPayload: treeGetPayloadImpl,
     },
     meta: {
       headLamport: headLamportImpl,

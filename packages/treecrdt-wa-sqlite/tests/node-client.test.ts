@@ -23,7 +23,7 @@ test('createTreecrdtClient smoke: insert and read in Node', async () => {
 
   try {
     await client.local.insert(replica, root, node, { type: 'last' }, null);
-    expect(await client.tree.get(node)).toBeDefined();
+    expect(await client.tree.exists(node)).toBe(true);
     expect(await client.ops.all()).toHaveLength(1);
   } finally {
     await client.close();
@@ -36,7 +36,7 @@ test('createTreecrdtClient accepts cross-realm typed array payloads in Node', as
 
   try {
     await client.local.payload(replica, root, payload);
-    expect(await client.tree.root.payload()).toEqual(Uint8Array.from([1, 2, 3]));
+    expect(await client.tree.getPayload(root)).toEqual(Uint8Array.from([1, 2, 3]));
   } finally {
     await client.close();
   }

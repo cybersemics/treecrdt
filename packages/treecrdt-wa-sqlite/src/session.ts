@@ -26,27 +26,7 @@ export type BackendInitResult = {
 export type MaterializationListener = (event: MaterializationEvent) => void;
 
 export type SqlParam = number | string | null | Uint8Array;
-/** Oplog append/query and op-log metadata. */
-export interface TreecrdtSessionOperations {
-  append: (op: Operation) => Promise<MaterializationOutcome>;
-  appendMany: (ops: Operation[]) => Promise<MaterializationOutcome>;
-  since: (lamport: number, root?: string) => Promise<unknown[]>;
-  refsAll: () => Promise<unknown[]>;
-  refsChildren: (parent: string) => Promise<unknown[]>;
-  byRefs: (opRefs: Uint8Array[]) => Promise<unknown[]>;
-  headLamport: () => Promise<number>;
-  replicaMaxCounter: (replica: Uint8Array) => Promise<number>;
-}
-
-/** Flat materialized-tree primitives used by the public Node API. */
-export interface TreecrdtSessionTree {
-  children: (parent: string) => Promise<unknown[]>;
-  dump: () => Promise<unknown[]>;
-  payload: (node: string) => Promise<Uint8Array | null>;
-  nodeCount: () => Promise<number>;
-  parent: (node: string) => Promise<Uint8Array | null>;
-  exists: (node: string) => Promise<boolean>;
-}
+export type TreeChildrenCursor = { orderKey: Uint8Array; node: Uint8Array };
 
 /**
  * Runtime-agnostic SQLite / CRDT data API.
@@ -55,8 +35,27 @@ export interface TreecrdtSessionTree {
 export interface TreecrdtSession {
   sqlExec: (sql: string) => Promise<void>;
   sqlGetText: (sql: string, params?: SqlParam[]) => Promise<string | null>;
-  readonly operations: TreecrdtSessionOperations;
-  readonly tree: TreecrdtSessionTree;
+
+  append: (op: Operation) => Promise<MaterializationOutcome>;
+  appendMany: (ops: Operation[]) => Promise<MaterializationOutcome>;
+  opsSince: (lamport: number, root?: string) => Promise<unknown[]>;
+  opRefsAll: () => Promise<unknown[]>;
+  opRefsChildren: (parent: string) => Promise<unknown[]>;
+  opsByOpRefs: (opRefs: Uint8Array[]) => Promise<unknown[]>;
+
+  treeChildren: (parent: string) => Promise<unknown[]>;
+  treeChildrenPage: (
+    parent: string,
+    cursor: TreeChildrenCursor | null,
+    limit: number,
+  ) => Promise<unknown[]>;
+  treeDump: () => Promise<unknown[]>;
+  treePayload: (node: string) => Promise<Uint8Array | null>;
+  treeNodeCount: () => Promise<number>;
+  treeParent: (node: string) => Promise<Uint8Array | null>;
+  treeExists: (node: string) => Promise<boolean>;
+  headLamport: () => Promise<number>;
+  replicaMaxCounter: (replica: Uint8Array) => Promise<number>;
 }
 
 /** Open/close and materialization fan-out used only by connection implementations. */
@@ -161,37 +160,34 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
       }
     });
 
-  const operations: TreecrdtSessionOperations = {
-    append: (op) => run(async () => ensureApi().appendOp(op, nodeIdToBytes16, replicaIdToBytes)),
-    appendMany: (ops) =>
-      run(async () => ensureApi().appendOps!(ops, nodeIdToBytes16, replicaIdToBytes)),
-    since: (lamport, root?) => run(async () => ensureApi().opsSince(lamport, root)),
-    refsAll: () => run(async () => ensureApi().opRefsAll()),
-    refsChildren: (parent) => run(async () => ensureApi().opRefsChildren(nodeIdToBytes16(parent))),
-    byRefs: (opRefs) => run(async () => ensureApi().opsByOpRefs(opRefs)),
-    headLamport: () => run(async () => ensureApi().headLamport()),
-    replicaMaxCounter: (replica) => run(async () => ensureApi().replicaMaxCounter(replica)),
-  };
-
-  const tree: TreecrdtSessionTree = {
-    children: (parent) => run(async () => ensureApi().treeChildren(nodeIdToBytes16(parent))),
-    dump: () => run(async () => ensureApi().treeDump()),
-    payload: (node) =>
-      run(async () => transferBinary(await ensureApi().treePayload(nodeIdToBytes16(node)))),
-    nodeCount: () => run(async () => ensureApi().treeNodeCount()),
-    parent: (node) =>
-      run(async () => transferBinary(await ensureApi().treeParent(nodeIdToBytes16(node)))),
-    exists: (node) => run(async () => ensureApi().treeExists(nodeIdToBytes16(node))),
-  };
-
   const session: TreecrdtSession = {
     sqlExec: (sql) =>
       run(async () => {
         await ensureDb().exec(sql);
       }),
     sqlGetText: (sql, params = []) => run(async () => ensureDb().getText(sql, params)),
-    operations,
-    tree,
+
+    append: (op) => run(async () => ensureApi().appendOp(op, nodeIdToBytes16, replicaIdToBytes)),
+    appendMany: (ops) =>
+      run(async () => ensureApi().appendOps!(ops, nodeIdToBytes16, replicaIdToBytes)),
+    opsSince: (lamport, root?) => run(async () => ensureApi().opsSince(lamport, root)),
+    opRefsAll: () => run(async () => ensureApi().opRefsAll()),
+    opRefsChildren: (parent) =>
+      run(async () => ensureApi().opRefsChildren(nodeIdToBytes16(parent))),
+    opsByOpRefs: (opRefs) => run(async () => ensureApi().opsByOpRefs(opRefs)),
+
+    treeChildren: (parent) => run(async () => ensureApi().treeChildren(nodeIdToBytes16(parent))),
+    treeChildrenPage: (parent, cursor, limit) =>
+      run(async () => ensureApi().treeChildrenPage!(nodeIdToBytes16(parent), cursor, limit)),
+    treeDump: () => run(async () => ensureApi().treeDump()),
+    treePayload: (node) =>
+      run(async () => transferBinary(await ensureApi().treePayload(nodeIdToBytes16(node)))),
+    treeNodeCount: () => run(async () => ensureApi().treeNodeCount()),
+    treeParent: (node) =>
+      run(async () => transferBinary(await ensureApi().treeParent(nodeIdToBytes16(node)))),
+    treeExists: (node) => run(async () => ensureApi().treeExists(nodeIdToBytes16(node))),
+    headLamport: () => run(async () => ensureApi().headLamport()),
+    replicaMaxCounter: (replica) => run(async () => ensureApi().replicaMaxCounter(replica)),
   };
 
   return {

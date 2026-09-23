@@ -1,24 +1,24 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { type Operation } from '@treecrdt/interface';
-import type { BoundTreecrdtEngineLocal, MaterializationEvent } from '@treecrdt/interface/engine';
-import { bytesToHex } from '@treecrdt/interface/ids';
-import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from '@treecrdt/wa-sqlite';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { type Operation } from "@treecrdt/interface";
+import type { BoundTreecrdtEngineLocal, MaterializationEvent } from "@treecrdt/interface/engine";
+import { bytesToHex } from "@treecrdt/interface/ids";
+import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from "@treecrdt/wa-sqlite";
 
-import { hexToBytes16 } from './sync-v0';
-import { useVirtualizer } from './virtualizer';
+import { hexToBytes16 } from "./sync-v0";
+import { useVirtualizer } from "./virtualizer";
 
-import { MAX_COMPOSER_NODE_COUNT, ROOT_ID } from './playground/constants';
-import { ComposerPanel } from './playground/components/ComposerPanel';
-import { OpsPanel } from './playground/components/OpsPanel';
-import { PlaygroundHeader } from './playground/components/PlaygroundHeader';
-import { ShareSubtreeDialog } from './playground/components/ShareSubtreeDialog';
-import { PlaygroundToast } from './playground/components/PlaygroundToast';
-import { TreePanel } from './playground/components/TreePanel';
-import { usePlaygroundAuth } from './playground/hooks/usePlaygroundAuth';
-import { usePlaygroundOpsLog } from './playground/hooks/usePlaygroundOpsLog';
-import { usePlaygroundPayloads } from './playground/hooks/usePlaygroundPayloads';
-import { usePlaygroundSync } from './playground/hooks/usePlaygroundSync';
-import { materializationRefreshPlan } from './playground/materializationEvents';
+import { MAX_COMPOSER_NODE_COUNT, ROOT_ID } from "./playground/constants";
+import { ComposerPanel } from "./playground/components/ComposerPanel";
+import { OpsPanel } from "./playground/components/OpsPanel";
+import { PlaygroundHeader } from "./playground/components/PlaygroundHeader";
+import { ShareSubtreeDialog } from "./playground/components/ShareSubtreeDialog";
+import { PlaygroundToast } from "./playground/components/PlaygroundToast";
+import { TreePanel } from "./playground/components/TreePanel";
+import { usePlaygroundAuth } from "./playground/hooks/usePlaygroundAuth";
+import { usePlaygroundOpsLog } from "./playground/hooks/usePlaygroundOpsLog";
+import { usePlaygroundPayloads } from "./playground/hooks/usePlaygroundPayloads";
+import { usePlaygroundSync } from "./playground/hooks/usePlaygroundSync";
+import { materializationRefreshPlan } from "./playground/materializationEvents";
 import {
   ensureOpfsKey,
   initialDocId,
@@ -30,9 +30,9 @@ import {
   persistOpfsKey,
   persistSyncSettings,
   persistStorage,
-} from './playground/persist';
-import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from './playground/storage';
-import { applyChildrenLoaded, flattenForSelectState } from './playground/treeState';
+} from "./playground/persist";
+import { getPlaygroundProfileId, prefixPlaygroundStorageKey } from "./playground/storage";
+import { applyChildrenLoaded, flattenForSelectState } from "./playground/treeState";
 import type {
   BulkAddProgress,
   CollapseState,
@@ -41,39 +41,39 @@ import type {
   StorageMode,
   SyncTransportMode,
   TreeState,
-} from './playground/types';
+} from "./playground/types";
 
-const PLAYGROUND_SYNC_SERVER_URL_KEY = 'treecrdt-playground-sync-server-url';
-const PLAYGROUND_SYNC_TRANSPORT_MODE_KEY = 'treecrdt-playground-sync-transport-mode';
+const PLAYGROUND_SYNC_SERVER_URL_KEY = "treecrdt-playground-sync-server-url";
+const PLAYGROUND_SYNC_TRANSPORT_MODE_KEY = "treecrdt-playground-sync-transport-mode";
 
 function isSyncTransportMode(value: string | null): value is SyncTransportMode {
-  return value === 'local' || value === 'remote' || value === 'hybrid';
+  return value === "local" || value === "remote" || value === "hybrid";
 }
 
 function initialSyncServerUrl(): string {
-  if (typeof window === 'undefined') return '';
-  const fromQuery = new URLSearchParams(window.location.search).get('sync')?.trim();
+  if (typeof window === "undefined") return "";
+  const fromQuery = new URLSearchParams(window.location.search).get("sync")?.trim();
   if (fromQuery && fromQuery.length > 0) return fromQuery;
-  return window.localStorage.getItem(PLAYGROUND_SYNC_SERVER_URL_KEY) ?? '';
+  return window.localStorage.getItem(PLAYGROUND_SYNC_SERVER_URL_KEY) ?? "";
 }
 
 function initialSyncTransportMode(): SyncTransportMode {
-  if (typeof window === 'undefined') return 'local';
+  if (typeof window === "undefined") return "local";
 
   const params = new URLSearchParams(window.location.search);
-  const fromQuery = params.get('transport')?.trim() ?? null;
+  const fromQuery = params.get("transport")?.trim() ?? null;
   if (isSyncTransportMode(fromQuery)) return fromQuery;
 
   const fromStorage = window.localStorage.getItem(PLAYGROUND_SYNC_TRANSPORT_MODE_KEY);
   if (isSyncTransportMode(fromStorage)) return fromStorage;
 
-  const fromQuerySync = params.get('sync')?.trim();
-  if (fromQuerySync && fromQuerySync.length > 0) return 'hybrid';
+  const fromQuerySync = params.get("sync")?.trim();
+  if (fromQuerySync && fromQuerySync.length > 0) return "hybrid";
 
   const storedSyncUrl = window.localStorage.getItem(PLAYGROUND_SYNC_SERVER_URL_KEY)?.trim();
-  if (storedSyncUrl) return 'hybrid';
+  if (storedSyncUrl) return "hybrid";
 
-  return 'local';
+  return "local";
 }
 
 export default function App() {
@@ -83,7 +83,7 @@ export default function App() {
     index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0 } },
     childrenByParent: { [ROOT_ID]: [] },
   }));
-  const [status, setStatus] = useState<Status>('booting');
+  const [status, setStatus] = useState<Status>("booting");
   const [error, setError] = useState<string | null>(null);
   const [headLamport, setHeadLamport] = useState(0);
   const [totalNodes, setTotalNodes] = useState<number | null>(null);
@@ -98,39 +98,35 @@ export default function App() {
   const [bulkAddProgress, setBulkAddProgress] = useState<BulkAddProgress | null>(null);
   const [nodeCount, setNodeCount] = useState(1);
   const [fanout, setFanout] = useState(10);
-  const [newNodeValue, setNewNodeValue] = useState('');
+  const [newNodeValue, setNewNodeValue] = useState("");
   const [showOpsPanel, setShowOpsPanel] = useState(false);
   const [showPeersPanel, setShowPeersPanel] = useState(false);
   const [syncServerUrl, setSyncServerUrl] = useState<string>(() => initialSyncServerUrl());
-  const [syncTransportMode, setSyncTransportMode] = useState<SyncTransportMode>(() =>
-    initialSyncTransportMode(),
-  );
+  const [syncTransportMode, setSyncTransportMode] = useState<SyncTransportMode>(() => initialSyncTransportMode());
   const [composerOpen, setComposerOpen] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    const key = prefixPlaygroundStorageKey('treecrdt-playground-ui-composer-open');
+    if (typeof window === "undefined") return true;
+    const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
     const stored = window.localStorage.getItem(key);
-    if (stored === '0') return false;
-    if (stored === '1') return true;
+    if (stored === "0") return false;
+    if (stored === "1") return true;
     return false;
   });
   const [online, setOnline] = useState(true);
 
   const joinMode =
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('join') === '1';
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("join") === "1";
   const autoSyncJoin =
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('autosync') === '1';
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("autosync") === "1";
   const profileId = useMemo(() => getPlaygroundProfileId(), []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const key = prefixPlaygroundStorageKey('treecrdt-playground-ui-composer-open');
-    window.localStorage.setItem(key, composerOpen ? '1' : '0');
+    if (typeof window === "undefined") return;
+    const key = prefixPlaygroundStorageKey("treecrdt-playground-ui-composer-open");
+    window.localStorage.setItem(key, composerOpen ? "1" : "0");
   }, [composerOpen]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     const next = syncServerUrl.trim();
     if (next.length === 0) {
       window.localStorage.removeItem(PLAYGROUND_SYNC_SERVER_URL_KEY);
@@ -140,7 +136,7 @@ export default function App() {
   }, [syncServerUrl]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     window.localStorage.setItem(PLAYGROUND_SYNC_TRANSPORT_MODE_KEY, syncTransportMode);
   }, [syncTransportMode]);
 
@@ -160,16 +156,10 @@ export default function App() {
     resetPayloadCache,
     schedulePayloadEventUpdates,
   } = usePlaygroundPayloads({ docId, setError });
-  const identityByReplicaRef = useRef<
-    Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>
-  >(new Map());
+  const identityByReplicaRef = useRef<Map<string, { identityPk: Uint8Array; devicePk: Uint8Array }>>(new Map());
   const [, bumpIdentityVersion] = useState(0);
   const onPeerIdentityChain = React.useCallback(
-    (chain: {
-      identityPublicKey: Uint8Array;
-      devicePublicKey: Uint8Array;
-      replicaPublicKey: Uint8Array;
-    }) => {
+    (chain: { identityPublicKey: Uint8Array; devicePublicKey: Uint8Array; replicaPublicKey: Uint8Array }) => {
       const replicaHex = bytesToHex(chain.replicaPublicKey);
       const existing = identityByReplicaRef.current.get(replicaHex);
       if (
@@ -179,13 +169,10 @@ export default function App() {
       ) {
         return;
       }
-      identityByReplicaRef.current.set(replicaHex, {
-        identityPk: chain.identityPublicKey,
-        devicePk: chain.devicePublicKey,
-      });
+      identityByReplicaRef.current.set(replicaHex, { identityPk: chain.identityPublicKey, devicePk: chain.devicePublicKey });
       bumpIdentityVersion((v) => v + 1);
     },
-    [],
+    []
   );
 
   const {
@@ -298,9 +285,7 @@ export default function App() {
       if (childrenLoadInFlightRef.current.has(parentId)) return;
       childrenLoadInFlightRef.current.add(parentId);
       try {
-        const parentHandle =
-          parentId === active.tree.root.id ? active.tree.root : await active.tree.get(parentId);
-        const children = parentHandle ? (await parentHandle.children()).map((node) => node.id) : [];
+        const children = await active.tree.children(parentId);
         setTreeState((prev) => applyChildrenLoaded(prev, parentId, children));
         try {
           const nodeIds = [parentId, ...children].filter((id) => id !== ROOT_ID);
@@ -308,16 +293,16 @@ export default function App() {
             await refreshPayloadsForNodes(active, nodeIds);
           }
         } catch (err) {
-          console.error('Failed to load child payloads', err);
+          console.error("Failed to load child payloads", err);
         }
       } catch (err) {
-        console.error('Failed to load children', err);
-        setError('Failed to load tree children (see console)');
+        console.error("Failed to load children", err);
+        setError("Failed to load tree children (see console)");
       } finally {
         childrenLoadInFlightRef.current.delete(parentId);
       }
     },
-    [client, refreshPayloadsForNodes],
+    [client, refreshPayloadsForNodes]
   );
 
   const refreshParents = React.useCallback(
@@ -337,26 +322,15 @@ export default function App() {
       try {
         const idsNeedingParent = ids.filter((id) => id !== ROOT_ID && !index[id]?.parentId);
         const [childrenResults, parentResults] = await Promise.all([
-          Promise.all(
-            ids.map(async (id) => {
-              const handle =
-                id === active.tree.root.id ? active.tree.root : await active.tree.get(id);
-              const children = handle ? (await handle.children()).map((node) => node.id) : [];
-              return [id, children] as const;
-            }),
-          ),
+          Promise.all(ids.map((id) => active.tree.children(id).then((children) => [id, children] as const))),
           idsNeedingParent.length > 0
             ? Promise.all(
-                idsNeedingParent.map(async (id) => {
-                  const handle = await active.tree.get(id);
-                  const parent = handle ? await handle.parent() : null;
-                  return [id, parent?.id ?? null] as const;
-                }),
+                idsNeedingParent.map((id) => active.tree.parent(id).then((p) => [id, p] as const))
               )
             : Promise.resolve([]),
         ]);
         const parentOverrides = Object.fromEntries(
-          parentResults.filter(([, p]) => p !== null) as [string, string][],
+          parentResults.filter(([, p]) => p !== null) as [string, string][]
         );
         setTreeState((prev) => {
           let next = prev;
@@ -366,10 +340,10 @@ export default function App() {
           return next;
         });
       } catch (err) {
-        console.error('Failed to refresh tree parents', err);
+        console.error("Failed to refresh tree parents", err);
       }
     },
-    [client],
+    [client]
   );
 
   const refreshNodeCount = React.useCallback(
@@ -380,10 +354,10 @@ export default function App() {
         const count = await active.tree.nodeCount();
         setTotalNodes(Number.isFinite(count) ? count : null);
       } catch (err) {
-        console.error('Failed to refresh node count', err);
+        console.error("Failed to refresh node count", err);
       }
     },
-    [client],
+    [client]
   );
 
   const refreshMeta = React.useCallback(
@@ -395,10 +369,10 @@ export default function App() {
         lamportRef.current = Math.max(lamportRef.current, lamport);
         setHeadLamport(lamportRef.current);
       } catch (err) {
-        console.error('Failed to refresh meta', err);
+        console.error("Failed to refresh meta", err);
       }
     },
-    [client],
+    [client]
   );
 
   const refreshParentsScheduledRef = useRef(false);
@@ -420,7 +394,7 @@ export default function App() {
         void refreshParents(ids);
       }, 0);
     },
-    [refreshParents],
+    [refreshParents]
   );
 
   const refreshNodeCountQueuedRef = useRef(false);
@@ -436,7 +410,7 @@ export default function App() {
   const getMaxLamport = React.useCallback(() => BigInt(lamportRef.current), []);
   const getLoadedParentIds = React.useCallback(
     () => Object.keys(treeStateRef.current.childrenByParent),
-    [],
+    []
   );
 
   const applyMaterializationEvent = React.useCallback(
@@ -447,7 +421,7 @@ export default function App() {
       scheduleRefreshParents(parentsToRefresh);
       scheduleRefreshNodeCount();
     },
-    [schedulePayloadEventUpdates, scheduleRefreshNodeCount, scheduleRefreshParents],
+    [schedulePayloadEventUpdates, scheduleRefreshNodeCount, scheduleRefreshParents]
   );
 
   useEffect(() => {
@@ -456,21 +430,21 @@ export default function App() {
   }, [client, applyMaterializationEvent]);
 
   const openNewPeerTab = () => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
-    url.searchParams.set('doc', docId);
-    url.searchParams.set('transport', syncTransportMode);
+    url.searchParams.set("doc", docId);
+    url.searchParams.set("transport", syncTransportMode);
     const remoteSync = syncServerUrl.trim();
     if (remoteSync.length > 0) {
-      url.searchParams.set('sync', remoteSync);
+      url.searchParams.set("sync", remoteSync);
     } else {
-      url.searchParams.delete('sync');
+      url.searchParams.delete("sync");
     }
-    url.searchParams.set('fresh', '1');
-    url.searchParams.delete('replica');
-    url.searchParams.delete('auth');
-    url.hash = '';
-    window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    url.searchParams.set("fresh", "1");
+    url.searchParams.delete("replica");
+    url.searchParams.delete("auth");
+    url.hash = "";
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
   };
 
   const { index, childrenByParent } = treeState;
@@ -525,7 +499,7 @@ export default function App() {
       queueLocalOpsForSync(ops);
       recordOps(ops, { assumeSorted: true });
     },
-    [queueLocalOpsForSync, recordOps],
+    [queueLocalOpsForSync, recordOps]
   );
 
   const grantSubtreeToReplicaPubkey = React.useCallback(
@@ -537,7 +511,7 @@ export default function App() {
     }) => {
       return await grantSubtreeToReplicaPubkeyRaw(postBroadcastMessage, opts);
     },
-    [grantSubtreeToReplicaPubkeyRaw, postBroadcastMessage],
+    [grantSubtreeToReplicaPubkeyRaw, postBroadcastMessage]
   );
 
   useEffect(() => {
@@ -555,12 +529,12 @@ export default function App() {
 
   const nodeLabelForId = React.useCallback(
     (id: string) => payloadDisplayForNode(id).label,
-    [payloadDisplayForNode],
+    [payloadDisplayForNode]
   );
 
   const nodeList = useMemo(
     () => flattenForSelectState(childrenByParent, nodeLabelForId, { rootId: viewRootId }),
-    [childrenByParent, nodeLabelForId, viewRootId],
+    [childrenByParent, nodeLabelForId, viewRootId]
   );
 
   const expandPathTo = React.useCallback(
@@ -580,7 +554,7 @@ export default function App() {
         return { ...prev, overrides };
       });
     },
-    [index],
+    [index]
   );
 
   const visibleNodes = useMemo(() => {
@@ -610,14 +584,14 @@ export default function App() {
   const getOpsScrollElement = React.useCallback(() => opsParentRef.current, []);
   const treeItemKey = React.useCallback(
     (index: number) => visibleNodes[index]?.node.id ?? index,
-    [visibleNodes],
+    [visibleNodes]
   );
   const opsItemKey = React.useCallback(
     (index: number) => {
       const op = ops[index];
       return op ? `${op.meta.id.counter}-${op.meta.lamport}-${index}` : index;
     },
-    [ops],
+    [ops]
   );
   const treeVirtualizer = useVirtualizer({
     count: visibleNodes.length,
@@ -666,13 +640,16 @@ export default function App() {
 
   const initClient = async (storageMode: StorageMode, docIdOverride?: string) => {
     const initEpoch = ++initEpochRef.current;
-    setStatus('booting');
+    setStatus("booting");
     setError(null);
     try {
       const c = await createTreecrdtClient({
         docId: docIdOverride ?? docId,
-        persistent: storageMode === 'opfs',
-        filename: storageMode === 'opfs' ? `/treecrdt-playground-${ensureOpfsKey()}.db` : undefined,
+        persistent: storageMode === "opfs",
+        filename:
+          storageMode === "opfs"
+            ? `/treecrdt-playground-${ensureOpfsKey()}.db`
+            : undefined,
         assetsBaseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href,
       });
       if (disposedRef.current || initEpoch !== initEpochRef.current) {
@@ -685,19 +662,16 @@ export default function App() {
       await refreshMeta(c);
       await ensureChildrenLoaded(ROOT_ID, { nextClient: c, force: true });
       await refreshNodeCount(c);
-      setStatus('ready');
+      setStatus("ready");
     } catch (err) {
-      console.error('Failed to init wa-sqlite', err);
-      setError('Failed to initialize wa-sqlite (see console for details)');
-      setStatus('error');
+      console.error("Failed to init wa-sqlite", err);
+      setError("Failed to initialize wa-sqlite (see console for details)");
+      setStatus("error");
     }
   };
 
-  const resetAndInit = async (
-    target: StorageMode,
-    opts: { resetKey?: boolean; docId?: string } = {},
-  ) => {
-    setStatus('booting');
+  const resetAndInit = async (target: StorageMode, opts: { resetKey?: boolean; docId?: string } = {}) => {
+    setStatus("booting");
     resetOps();
     setTreeState({
       index: { [ROOT_ID]: { parentId: null, order: 0, childCount: 0 } },
@@ -709,13 +683,13 @@ export default function App() {
     setHeadLamport(0);
     setTotalNodes(null);
     setParentChoice(ROOT_ID);
-    setNewNodeValue('');
+    setNewNodeValue("");
     setBulkAddProgress(null);
     setError(null);
     const closingClient = clientRef.current;
     clientRef.current = null;
     setClient(null);
-    if (opts.resetKey && target === 'opfs') {
+    if (opts.resetKey && target === "opfs") {
       // Other tabs may still be using the old file.
       persistOpfsKey(makeSessionKey());
     }
@@ -729,22 +703,18 @@ export default function App() {
     if (authEnabled && (!canWriteStructure || (isScopedAccess && newParent === ROOT_ID))) return;
     setBusy(true);
     try {
-      const placement = after ? { type: 'after' as const, after } : { type: 'first' as const };
+      const placement = after ? { type: "after" as const, after } : { type: "first" as const };
       const op = await localWriter.move(nodeId, newParent, placement);
       handleCommittedLocalOps([op]);
     } catch (err) {
-      console.error('Failed to append move op', err);
-      setError('Failed to move node (see console)');
+      console.error("Failed to append move op", err);
+      setError("Failed to move node (see console)");
     } finally {
       setBusy(false);
     }
   };
 
-  const handleAddNodes = async (
-    parentId: string,
-    count: number,
-    opts: { fanout?: number } = {},
-  ) => {
+  const handleAddNodes = async (parentId: string, count: number, opts: { fanout?: number } = {}) => {
     const localWriter = getLocalWriter();
     if (!localWriter) return;
     if (authEnabled && !canWriteStructure) return;
@@ -752,14 +722,13 @@ export default function App() {
     if (normalizedCount <= 0) return;
     setBusy(true);
     const startedAtMs = Date.now();
-    const progressStep =
-      normalizedCount >= 1_000 ? 50 : normalizedCount >= 200 ? 20 : normalizedCount >= 50 ? 5 : 1;
-    setBulkAddProgress({ total: normalizedCount, completed: 0, phase: 'creating', startedAtMs });
+    const progressStep = normalizedCount >= 1_000 ? 50 : normalizedCount >= 200 ? 20 : normalizedCount >= 50 ? 5 : 1;
+    setBulkAddProgress({ total: normalizedCount, completed: 0, phase: "creating", startedAtMs });
     const ops: Operation[] = [];
     let opsRecorded = false;
     try {
       const fanoutLimit = Math.max(0, Math.floor(opts.fanout ?? fanout));
-      const valueBase = canWritePayload ? newNodeValue.trim() : '';
+      const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const shouldSetValue = canWritePayload && valueBase.length > 0;
 
       if (fanoutLimit <= 0) {
@@ -768,10 +737,12 @@ export default function App() {
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(await localWriter.insert(parentId, nodeId, { type: 'last' }, encryptedPayload));
+          ops.push(await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload));
           const completed = i + 1;
           if (completed === normalizedCount || completed % progressStep === 0) {
-            setBulkAddProgress((prev) => (prev ? { ...prev, completed } : prev));
+            setBulkAddProgress((prev) =>
+              prev ? { ...prev, completed } : prev
+            );
           }
         }
       } else {
@@ -781,7 +752,7 @@ export default function App() {
 
         const getChildCount = (id: string) => {
           const existing = childCountByParent.get(id);
-          if (typeof existing === 'number') return existing;
+          if (typeof existing === "number") return existing;
           return (childrenByParent[id] ?? []).length;
         };
 
@@ -813,21 +784,21 @@ export default function App() {
           const value = normalizedCount > 1 ? `${valueBase} ${i + 1}` : valueBase;
           const payload = shouldSetValue ? textEncoder.encode(value) : null;
           const encryptedPayload = await encryptPayloadBytes(payload);
-          ops.push(
-            await localWriter.insert(targetParent, nodeId, { type: 'last' }, encryptedPayload),
-          );
+          ops.push(await localWriter.insert(targetParent, nodeId, { type: "last" }, encryptedPayload));
 
           setChildCount(targetParent, childCount + 1);
           queue.push(nodeId);
           const completed = i + 1;
           if (completed === normalizedCount || completed % progressStep === 0) {
-            setBulkAddProgress((prev) => (prev ? { ...prev, completed } : prev));
+            setBulkAddProgress((prev) =>
+              prev ? { ...prev, completed } : prev
+            );
           }
         }
       }
 
       setBulkAddProgress((prev) =>
-        prev ? { ...prev, completed: normalizedCount, phase: 'applying' } : prev,
+        prev ? { ...prev, completed: normalizedCount, phase: "applying" } : prev
       );
 
       handleCommittedLocalOps(ops);
@@ -835,8 +806,8 @@ export default function App() {
       expandPathTo(parentId);
     } catch (err) {
       if (!opsRecorded && ops.length > 0) handleCommittedLocalOps(ops);
-      console.error('Failed to add nodes', err);
-      setError('Failed to add nodes (see console)');
+      console.error("Failed to add nodes", err);
+      setError("Failed to add nodes (see console)");
     } finally {
       setBulkAddProgress(null);
       setBusy(false);
@@ -849,19 +820,19 @@ export default function App() {
     if (authEnabled && !canWriteStructure) return;
     setBusy(true);
     try {
-      const valueBase = canWritePayload ? newNodeValue.trim() : '';
+      const valueBase = canWritePayload ? newNodeValue.trim() : "";
       const payload = valueBase.length > 0 ? textEncoder.encode(valueBase) : null;
       const encryptedPayload = await encryptPayloadBytes(payload);
       const nodeId = makeNodeId();
-      const op = await localWriter.insert(parentId, nodeId, { type: 'last' }, encryptedPayload);
+      const op = await localWriter.insert(parentId, nodeId, { type: "last" }, encryptedPayload);
       handleCommittedLocalOps([op]);
       if (!Object.prototype.hasOwnProperty.call(treeStateRef.current.childrenByParent, parentId)) {
         await ensureChildrenLoaded(parentId, { force: true });
       }
       expandPathTo(parentId);
     } catch (err) {
-      console.error('Failed to insert node', err);
-      setError('Failed to insert node (see console)');
+      console.error("Failed to insert node", err);
+      setError("Failed to insert node (see console)");
     } finally {
       setBusy(false);
     }
@@ -880,8 +851,8 @@ export default function App() {
           const op = await localWriter.payload(nodeId, encryptedPayload);
           handleCommittedLocalOps([op]);
         } catch (err) {
-          console.error('Failed to write payload', err);
-          setError('Failed to write payload (see console)');
+          console.error("Failed to write payload", err);
+          setError("Failed to write payload (see console)");
         }
       });
     payloadWriteQueueRef.current = run.catch(() => undefined);
@@ -896,23 +867,23 @@ export default function App() {
       const op = await localWriter.delete(nodeId);
       handleCommittedLocalOps([op]);
     } catch (err) {
-      console.error('Failed to delete node', err);
-      setError('Failed to delete node (see console)');
+      console.error("Failed to delete node", err);
+      setError("Failed to delete node (see console)");
     } finally {
       setBusy(false);
     }
   };
 
-  const handleMove = async (nodeId: string, direction: 'up' | 'down') => {
+  const handleMove = async (nodeId: string, direction: "up" | "down") => {
     const meta = index[nodeId];
     if (!meta || meta.parentId === null) return;
     const siblings = childrenByParent[meta.parentId] ?? [];
     const currentIdx = siblings.indexOf(nodeId);
     if (currentIdx === -1) return;
-    const targetIdx = direction === 'up' ? currentIdx - 1 : currentIdx + 1;
+    const targetIdx = direction === "up" ? currentIdx - 1 : currentIdx + 1;
     if (targetIdx < 0 || targetIdx >= siblings.length) return;
     const without = siblings.filter((id) => id !== nodeId);
-    const after = targetIdx <= 0 ? null : (without[targetIdx - 1] ?? null);
+    const after = targetIdx <= 0 ? null : without[targetIdx - 1] ?? null;
     await appendMoveAfter(nodeId, meta.parentId, after);
   };
 
@@ -932,14 +903,14 @@ export default function App() {
   };
 
   const handleNewDoc = async () => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
-      url.searchParams.set('doc', makeDefaultDocId());
-      url.searchParams.delete('join');
-      url.searchParams.delete('autosync');
-      url.hash = '';
-      window.history.replaceState({}, '', url);
-      const nextDocId = url.searchParams.get('doc')!;
+      url.searchParams.set("doc", makeDefaultDocId());
+      url.searchParams.delete("join");
+      url.searchParams.delete("autosync");
+      url.hash = "";
+      window.history.replaceState({}, "", url);
+      const nextDocId = url.searchParams.get("doc")!;
       setDocId(nextDocId);
       setLiveChildrenParents(new Set());
       setLiveAllEnabled(false);
@@ -963,9 +934,7 @@ export default function App() {
   };
 
   const toggleCollapse = (id: string) => {
-    const currentlyCollapsed = collapse.defaultCollapsed
-      ? !collapse.overrides.has(id)
-      : collapse.overrides.has(id);
+    const currentlyCollapsed = collapse.defaultCollapsed ? !collapse.overrides.has(id) : collapse.overrides.has(id);
     if (currentlyCollapsed) {
       void ensureChildrenLoaded(id);
       // For scoped tokens, expanding a node should opportunistically sync its children.
@@ -983,8 +952,7 @@ export default function App() {
   };
 
   const expandAll = () => setCollapse({ defaultCollapsed: false, overrides: new Set() });
-  const collapseAll = () =>
-    setCollapse({ defaultCollapsed: true, overrides: new Set([viewRootId]) });
+  const collapseAll = () => setCollapse({ defaultCollapsed: true, overrides: new Set([viewRootId]) });
 
   const selfPeerIdShort = selfPeerId
     ? selfPeerId.length > 20
@@ -1029,7 +997,7 @@ export default function App() {
         selfPeerIdShort={selfPeerIdShort}
         onCopyPubkey={() =>
           void (selfPeerId ? copyToClipboard(selfPeerId) : Promise.resolve()).catch((err) =>
-            setSyncError(err instanceof Error ? err.message : String(err)),
+            setSyncError(err instanceof Error ? err.message : String(err))
           )
         }
         onSelectStorage={handleStorageToggle}
@@ -1041,9 +1009,7 @@ export default function App() {
       />
 
       <div className="grid min-w-0 gap-6 md:grid-cols-3">
-        <section
-          className={`${showOpsPanel ? 'md:col-span-2' : 'md:col-span-3'} min-w-0 space-y-4`}
-        >
+        <section className={`${showOpsPanel ? "md:col-span-2" : "md:col-span-3"} min-w-0 space-y-4`}>
           <ComposerPanel
             composerOpen={composerOpen}
             setComposerOpen={setComposerOpen}
@@ -1058,7 +1024,7 @@ export default function App() {
             fanout={fanout}
             setFanout={setFanout}
             onAddNodes={handleAddNodes}
-            ready={status === 'ready'}
+            ready={status === "ready"}
             busy={busy}
             bulkAddProgress={bulkAddProgress}
             canWritePayload={canWritePayload}
@@ -1071,7 +1037,7 @@ export default function App() {
             privateRootsCount={privateRootsCount}
             online={online}
             setOnline={setOnline}
-            ready={status === 'ready'}
+            ready={status === "ready"}
             busy={busy}
             syncBusy={syncBusy}
             liveBusy={liveBusy}
@@ -1196,7 +1162,7 @@ export default function App() {
         onSync={() => {
           void (authCanSyncAll ? handleSync({ all: {} }) : handleScopedSync());
         }}
-        canSync={status === 'ready' && !busy && !syncBusy && peers.length > 0 && online}
+        canSync={status === "ready" && !busy && !syncBusy && peers.length > 0 && online}
         onDetails={() => setShowAuthPanel(true)}
       />
     </div>

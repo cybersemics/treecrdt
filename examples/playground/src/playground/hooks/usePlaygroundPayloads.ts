@@ -114,10 +114,7 @@ export function usePlaygroundPayloads(opts: {
       const unique = [...new Set(nodeIds)].filter((id) => id !== ROOT_ID);
       if (unique.length === 0) return;
       const updates = await Promise.all(
-        unique.map(async (node) => {
-          const handle = await active.tree.get(node);
-          return { node, payload: handle ? await handle.payload() : null };
-        }),
+        unique.map(async (node) => ({ node, payload: await active.tree.getPayload(node) })),
       );
       await applyPayloadUpdatesFromRaw(updates);
     },

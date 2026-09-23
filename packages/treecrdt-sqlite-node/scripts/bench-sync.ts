@@ -1111,30 +1111,20 @@ async function measureFirstViewAfterSync(
   const client = await createTreecrdtClient(db, { docId });
   const expectedChildren = Math.min(firstView.expectedChildren, firstView.pageSize);
   const startedAt = performance.now();
-  const parentHandle =
-    firstView.parent === client.tree.root.id
-      ? client.tree.root
-      : await client.tree.get(firstView.parent);
-  if (!parentHandle) {
-    throw new Error('first-view parent not available');
-  }
-  const rows = (await parentHandle.children())
-    .slice(0, firstView.pageSize)
-    .map((node) => ({ node: node.id }));
-  if (rows.length !== expectedChildren) {
-    throw new Error(`expected ${expectedChildren} child rows after sync, got ${rows.length}`);
+  const rows = await client.tree.childrenPage(firstView.parent, null, firstView.pageSize);
+  if (!Array.isArray(rows) || rows.length !== expectedChildren) {
+    throw new Error(
+      `expected ${expectedChildren} child rows after sync, got ${Array.isArray(rows) ? rows.length : 'non-array'}`,
+    );
   }
 
   if (firstView.includePayloads) {
-    const parentPayload = await parentHandle.payload();
+    const parentPayload = await client.tree.getPayload(firstView.parent);
     if (!(parentPayload instanceof Uint8Array) || parentPayload.length !== firstView.payloadBytes) {
       throw new Error('expected scope-root payload to be present after sync');
     }
     const payloads = await Promise.all(
-      rows.map(async (row: { node: string }) => {
-        const child = await client.tree.get(row.node);
-        return child ? await child.payload() : null;
-      }),
+      rows.map((row: { node: string }) => client.tree.getPayload(row.node)),
     );
     if (
       payloads.some(
