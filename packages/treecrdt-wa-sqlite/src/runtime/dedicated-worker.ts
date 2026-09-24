@@ -14,11 +14,8 @@ export const dedicatedWorkerStrategy: RuntimeStrategy = {
     const worker = new Worker(new URL('../worker.js', import.meta.url), { type: 'module' });
 
     const connection = Comlink.wrap(worker) as unknown as RemoteTreecrdtConnection;
-    let closed = false;
 
     const cleanup = async () => {
-      if (closed) return;
-      closed = true;
       try {
         connection[Comlink.releaseProxy]();
       } catch {
