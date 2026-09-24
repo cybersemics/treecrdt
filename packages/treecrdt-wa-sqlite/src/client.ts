@@ -18,13 +18,13 @@ import type {
 } from '@treecrdt/interface/engine';
 import { createTreecrdtEngineLocal, createTreecrdtTreeNodes } from '@treecrdt/interface/engine';
 import type { MaterializationListener } from './session.js';
-import type { RuntimeConnection } from './runtime/types.js';
+import type { RuntimeConnection, RuntimeStrategy } from './runtime/types.js';
 import { resolveBrowserEnvironment } from './runtime/resolve.js';
 import { directRuntimeStrategy, type OpenDbFn } from './runtime/direct.js';
 import { dedicatedWorkerStrategy } from './runtime/dedicated-worker.js';
 import { sharedWorkerStrategy } from './runtime/shared-worker.js';
 import { createClientMaterializationDispatcher } from './materialization.js';
-import type { ClientOptions, TreecrdtClient } from './types.js';
+import type { ClientOptions, RuntimeMode, TreecrdtClient } from './types.js';
 
 export type { OpenDbFn } from './runtime/direct.js';
 
@@ -32,6 +32,12 @@ export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
 
 // Keep long browser appendMany calls from monopolizing the worker queue.
 const APPEND_MANY_CHUNK_SIZE = 2500;
+
+const runtimeStrategies: Record<RuntimeMode, RuntimeStrategy> = {
+  'direct': directRuntimeStrategy,
+  'dedicated-worker': dedicatedWorkerStrategy,
+  'shared-worker': sharedWorkerStrategy,
+};
 
 /**
  * Browser client factory. Callers must pass a platform opener so this shared module
@@ -42,14 +48,8 @@ export async function createBrowserTreecrdtClient(
   openDb: OpenDbFn,
 ): Promise<TreecrdtClient> {
   const env = resolveBrowserEnvironment(opts);
-  const strategy =
-    env.runtime === 'shared-worker'
-      ? sharedWorkerStrategy
-      : env.runtime === 'dedicated-worker'
-        ? dedicatedWorkerStrategy
-        : directRuntimeStrategy;
   return createClientFromBackend(
-    await strategy.connect({
+    await runtimeStrategies[env.runtime].connect({
       baseUrl: env.baseUrl,
       filename: env.filename,
       storage: env.storage,
