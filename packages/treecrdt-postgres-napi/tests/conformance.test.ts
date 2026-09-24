@@ -100,7 +100,7 @@ maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {
 
       expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
       expect(events).toHaveLength(0);
-      expect(await client.tree.exists(node)).toBe(false);
+      expect(await client.tree.get(node)).toBeUndefined();
       expect(await client.ops.all()).toHaveLength(0);
     } finally {
       unsubscribe();
@@ -129,7 +129,7 @@ maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {
       expect(op.kind.type).toBe('insert');
       expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
       expect(events).toHaveLength(1);
-      expect(await client.tree.exists(node)).toBe(true);
+      expect(await client.tree.get(node)).toBeDefined();
       expect(await client.ops.all()).toHaveLength(1);
     } finally {
       unsubscribe();
