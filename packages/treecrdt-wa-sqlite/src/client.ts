@@ -34,7 +34,7 @@ export const CLIENT_CLOSED_ERROR = 'TreecrdtClient was closed';
 const APPEND_MANY_CHUNK_SIZE = 2500;
 
 const runtimeStrategies: Record<RuntimeMode, RuntimeStrategy> = {
-  'direct': directRuntimeStrategy,
+  direct: directRuntimeStrategy,
   'dedicated-worker': dedicatedWorkerStrategy,
   'shared-worker': sharedWorkerStrategy,
 };
