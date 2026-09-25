@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize, Serializer};
-use treecrdt_core::{Operation, OperationKind, ReplicaId};
+use treecrdt_core::{Operation, OperationId, OperationKind, ReplicaId};
 
 use crate::{hex_to_node, node_to_hex};
 
@@ -27,16 +27,28 @@ pub(crate) struct TypedOperation {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Metadata {
-    id: Id,
+    id: TypedOperationId,
     lamport: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     known_state: Option<Bytes>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Id {
+pub(crate) struct TypedOperationId {
     replica: Bytes,
     counter: u64,
+}
+
+impl TypedOperationId {
+    pub(crate) fn into_id(self) -> Result<OperationId, String> {
+        if self.counter > 9_007_199_254_740_991 {
+            return Err("operation counter must be a safe JavaScript integer".into());
+        }
+        Ok(OperationId::new(
+            &ReplicaId::new(self.replica.0),
+            self.counter,
+        ))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,7 +117,7 @@ impl TypedOperation {
         };
         Ok(Self {
             meta: Metadata {
-                id: Id {
+                id: TypedOperationId {
                     replica: Bytes(op.meta.id.replica.0),
                     counter: op.meta.id.counter,
                 },

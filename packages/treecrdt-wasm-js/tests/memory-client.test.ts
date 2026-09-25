@@ -3,10 +3,13 @@ import { createMemoryClient, type MemoryClient } from '../dist/index.node.js';
 import { createWasmAdapter } from '../dist/adapter.js';
 import { decodeSqliteOps } from '@treecrdt/interface/sqlite';
 import { WasmTree } from '../pkg-web/treecrdt_wasm.js';
+import type { Operation, OperationId } from '@treecrdt/interface';
 
 const root = '0'.repeat(32);
 const a = '1'.repeat(32);
 const b = '2'.repeat(32);
+const c = '3'.repeat(32);
+const d = '4'.repeat(32);
 const payload = new Uint8Array([0, 127, 255]);
 const clients: MemoryClient[] = [];
 async function open() {
@@ -17,6 +20,9 @@ async function open() {
 afterEach(() => {
   for (const client of clients.splice(0)) client.close();
 });
+
+const operationIds = (operations: readonly Operation[]): OperationId[] =>
+  operations.map((operation) => operation.meta.id);
 
 test('initializes explicitly and returns synchronous typed local operations and reads', async () => {
   const client = await open();
@@ -248,4 +254,202 @@ test('preserves received history and the next local identity when a later placem
   const next = client.local.payload(a, new Uint8Array([4]));
   expect(next.meta.id.counter).toBe(1);
   expect(next.meta.lamport).toBe(original.meta.lamport + 1);
+});
+
+test('reverts mixed edits and their receipts using only fresh operations, retaining the full log', async () => {
+  const client = await open();
+  client.transact((document) => {
+    document.local.insert(root, a, null, payload);
+    document.local.insert(root, b, a, payload);
+    document.local.insert(root, d, b, payload);
+  });
+  const before = [...client.getSnapshot()];
+  const edit = client.transact((document) => {
+    document.local.insert(b, c, null, payload);
+    document.local.move(a, b, c);
+    document.local.payload(b, new Uint8Array([9]));
+    document.local.delete(d);
+  }).operations;
+  const edited = [...client.getSnapshot()];
+  const retained = client.operationsFrom(0);
+  const listener = vi.fn();
+  client.subscribe(listener);
+
+  const undo = client.revert(operationIds(edit));
+  expect(undo).not.toBeInstanceOf(Promise);
+  expect(undo.length).toBeGreaterThan(0);
+  expect([...client.getSnapshot()]).toEqual(before);
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(client.operationsFrom(0)).toEqual([...retained, ...undo]);
+
+  const redo = client.revert(operationIds(undo));
+  expect(redo.length).toBeGreaterThan(0);
+  expect([...client.getSnapshot()]).toEqual(edited);
+  expect(listener).toHaveBeenCalledTimes(2);
+  const history = client.operationsFrom(0);
+  expect(history).toEqual([...retained, ...undo, ...redo]);
+  expect(history.map((operation) => operation.meta.id.counter)).toEqual(
+    history.map((_, index) => index + 1),
+  );
+  expect(history.map((operation) => operation.meta.lamport)).toEqual(
+    history.map((_, index) => index + 1),
+  );
+  for (const operation of [...undo, ...redo]) {
+    expect(operation.meta.id.replica).toBeInstanceOf(Uint8Array);
+  }
+
+  const snapshot = client.getSnapshot();
+  expect(client.revert([])).toEqual([]);
+  expect(client.getSnapshot()).toBe(snapshot);
+  expect(client.operationsFrom(0)).toEqual(history);
+  expect(listener).toHaveBeenCalledTimes(2);
+});
+
+test('composes revert with normal writes in one synchronous transaction and publication', async () => {
+  const client = await open();
+  client.local.insert(root, a, null, payload);
+  const edited = client.local.payload(a, new Uint8Array([9]));
+  const listener = vi.fn();
+  client.subscribe(listener);
+  const result = client.transact((document) => {
+    const reverted = document.revert([edited.meta.id]);
+    expect(document.getSnapshot().get(a)?.payload).toEqual(payload);
+    expect(listener).not.toHaveBeenCalled();
+    const inserted = document.local.insert(a, b, null, payload);
+    expect(document.getSnapshot().get(a)?.children).toEqual([b]);
+    expect(listener).not.toHaveBeenCalled();
+    return [...reverted, inserted];
+  });
+  expect(result.operations).toEqual(result.value);
+  expect(client.tree.payload(a)).toEqual(payload);
+  expect(client.tree.children(a)).toEqual([b]);
+  expect(listener).toHaveBeenCalledTimes(1);
+});
+
+test('rolls back a revert and intermediate reads when its transaction later throws', async () => {
+  const client = await open();
+  client.local.insert(root, a, null, payload);
+  const edited = client.local.payload(a, new Uint8Array([9]));
+  const snapshot = client.getSnapshot();
+  const history = client.operationsFrom(0);
+  const lamport = client.maxLamport();
+  const listener = vi.fn();
+  client.subscribe(listener);
+  const failure = new Error('failure after revert');
+  expect(() =>
+    client.transact((document) => {
+      document.revert([edited.meta.id]);
+      expect(document.getSnapshot().get(a)?.payload).toEqual(payload);
+      document.local.insert(a, b, null, payload);
+      expect(document.getSnapshot().has(b)).toBe(true);
+      throw failure;
+    }),
+  ).toThrow(failure);
+  expect(client.getSnapshot()).toBe(snapshot);
+  expect(client.operationsFrom(0)).toEqual(history);
+  expect(client.maxLamport()).toBe(lamport);
+  expect(listener).not.toHaveBeenCalled();
+  const next = client.local.payload(a, new Uint8Array([4]));
+  expect(next.meta.id.counter).toBe(edited.meta.id.counter + 1);
+  expect(next.meta.lamport).toBe(lamport + 1);
+});
+
+test('invalid revert IDs are atomic and poison a containing transaction even when caught', async () => {
+  const client = await open();
+  client.local.insert(root, a, null, payload);
+  const edited = client.local.payload(a, new Uint8Array([9]));
+  const snapshot = client.getSnapshot();
+  const history = client.operationsFrom(0);
+  const lamport = client.maxLamport();
+  const listener = vi.fn();
+  client.subscribe(listener);
+  const unknown = { ...edited.meta.id, counter: 1000 };
+  for (const invalid of [unknown, { replica: new Uint8Array(31), counter: 1 }]) {
+    expect(() => client.revert([edited.meta.id, invalid])).toThrow();
+    expect(client.getSnapshot()).toBe(snapshot);
+    expect(client.operationsFrom(0)).toEqual(history);
+    expect(client.maxLamport()).toBe(lamport);
+  }
+  expect(() =>
+    client.transact((document) => {
+      document.local.insert(root, b, a, payload);
+      expect(() => document.revert([edited.meta.id, unknown])).toThrow();
+    }),
+  ).toThrow();
+  expect(client.getSnapshot()).toBe(snapshot);
+  expect(client.operationsFrom(0)).toEqual(history);
+  expect(client.maxLamport()).toBe(lamport);
+  expect(listener).not.toHaveBeenCalled();
+  expect(client.local.payload(a, payload).meta.id.counter).toBe(edited.meta.id.counter + 1);
+});
+
+test.each(['deleted', 'moved'] as const)(
+  'rejects a %s undo anchor without publishing or appending part of the revert',
+  async (anchorState) => {
+    const client = await open();
+    client.transact((document) => {
+      document.local.insert(root, a, null, payload);
+      document.local.insert(root, b, a, payload);
+      document.local.insert(root, c, b, payload);
+    });
+    const edit = client.transact((document) => {
+      document.local.move(b, c);
+      document.local.payload(c, new Uint8Array([9]));
+    }).operations;
+    if (anchorState === 'deleted') client.local.delete(a);
+    else client.local.move(a, c);
+    const snapshot = client.getSnapshot();
+    const history = client.operationsFrom(0);
+    const listener = vi.fn();
+    client.subscribe(listener);
+    expect(() => client.revert(operationIds(edit))).toThrow(/anchor/);
+    expect(client.getSnapshot()).toBe(snapshot);
+    expect(client.operationsFrom(0)).toEqual(history);
+    expect(client.maxLamport()).toBe(history.at(-1)!.meta.lamport);
+    expect(listener).not.toHaveBeenCalled();
+    expect(client.local.payload(c, payload).meta.id.counter).toBe(history.length + 1);
+  },
+);
+
+test('replicates forward-only undo and redo, explicitly overwriting intervening remote writes', async () => {
+  const left = await open();
+  const right = await open();
+  const initial = left.transact((document) => {
+    document.local.insert(root, a, null, payload);
+    document.local.insert(root, b, a, payload);
+    document.local.insert(root, c, b, payload);
+  }).operations;
+  right.appendOperations(initial);
+  const edit = left.transact((document) => {
+    document.local.move(a, b);
+    document.local.payload(a, new Uint8Array([1]));
+  }).operations;
+  right.appendOperations(edit);
+  const remote = right.transact((document) => {
+    document.local.move(a, c);
+    document.local.payload(a, new Uint8Array([2]));
+  }).operations;
+  left.appendOperations(remote);
+  expect([...left.getSnapshot()]).toEqual([...right.getSnapshot()]);
+
+  const undo = left.revert(operationIds(edit));
+  expect(left.tree.parent(a)).toBe(root);
+  expect(left.tree.payload(a)).toEqual(payload);
+  expect(undo.every((operation) => operation.meta.lamport > remote.at(-1)!.meta.lamport)).toBe(
+    true,
+  );
+  right.appendOperations([...undo].reverse());
+  expect([...right.getSnapshot()]).toEqual([...left.getSnapshot()]);
+
+  const redo = left.revert(operationIds(undo));
+  // Reverting a compensation restores the state it replaced, including those remote writes.
+  expect(left.tree.parent(a)).toBe(c);
+  expect(left.tree.payload(a)).toEqual(new Uint8Array([2]));
+  right.appendOperations([...redo].reverse());
+  expect([...right.getSnapshot()]).toEqual([...left.getSnapshot()]);
+  const count = right.operationCount();
+  right.appendOperations([...initial, ...edit, ...remote, ...undo, ...redo]);
+  expect(right.operationCount()).toBe(count);
+  expect(left.operationCount()).toBe(count);
+  expect(right.operationsFrom(0)).toEqual(expect.arrayContaining(left.operationsFrom(0)));
 });

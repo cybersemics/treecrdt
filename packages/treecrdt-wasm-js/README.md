@@ -20,6 +20,13 @@ Only initialization is asynchronous. `local.insert(parent, node, afterId, payloa
 means first. Omitted/null payload inserts a payload-less node or clears its payload. Calls outside `transact` are
 standalone atomic transactions. Nested or asynchronous transaction callbacks are rejected.
 
+`revert(operationIds)` synchronously returns fresh compensating `Operation`s without removing retained history.
+Pass a transaction receipt's `operations.map(operation => operation.meta.id)` to undo, then pass the returned
+operations' IDs to revert that compensation. It also composes with ordinary writes inside `transact`. This is a
+force-revert: intervening remote writes may be overwritten, and reverting the compensation restores the state it
+replaced, not necessarily the original local edit. Missing operations or stale placement anchors fail atomically.
+Inversion replays retained history synchronously; large histories or deep deleted subtrees can block the caller.
+
 `getSnapshot()` is a read-only map of all live nodes, including the reserved root. Rows contain `id`, `parentId`,
 binary `payload` (or `null`), and ordered `children`. Unchanged snapshots and rows
 retain identity. Held snapshots cannot be mutated through map, row, child-list or payload references. Reads within a

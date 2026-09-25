@@ -11,7 +11,7 @@ use treecrdt_core::{
 use wasm_bindgen::prelude::*;
 
 mod wire;
-use wire::TypedOperation;
+use wire::{TypedOperation, TypedOperationId};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,9 +38,10 @@ export interface TreeSnapshotChanges {
     rows: TreeSnapshotRow[];
     removed: string[];
 }
+export interface TreeOperationId { replica: Uint8Array; counter: number; }
 /** Matches @treecrdt/interface Operation without JSON or hexadecimal binary fields. */
 export interface TreeOperation {
-    meta: { id: { replica: Uint8Array; counter: number }; lamport: number; knownState?: Uint8Array };
+    meta: { id: TreeOperationId; lamport: number; knownState?: Uint8Array };
     kind:
         | { type: 'insert'; parent: string; node: string; orderKey: Uint8Array; payload?: Uint8Array }
         | { type: 'move'; node: string; newParent: string; orderKey: Uint8Array }
@@ -296,6 +297,28 @@ impl WasmTree {
             let (op, _) =
                 inner.local_delete(hex_to_node(&node)?).map_err(|error| error.to_string())?;
             serialize_operation(op)
+        })
+        .map_err(js_error)
+    }
+
+    /// Force-reverts committed operation IDs with new operations, never by truncating history.
+    /// Decoding and encoding participate in the same atomic/poisoned mutation boundary.
+    #[wasm_bindgen(js_name = revertOperations, unchecked_return_type = "TreeOperation[]")]
+    pub fn revert_operations(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "readonly TreeOperationId[]")] ids: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        self.mutate(|inner| {
+            let ids: Vec<TypedOperationId> =
+                serde_wasm_bindgen::from_value(ids).map_err(|error| error.to_string())?;
+            let ids =
+                ids.into_iter().map(TypedOperationId::into_id).collect::<Result<Vec<_>, _>>()?;
+            let operations = inner.revert_operations(&ids).map_err(|error| error.to_string())?;
+            let values = operations
+                .into_iter()
+                .map(TypedOperation::from_op)
+                .collect::<Result<Vec<_>, _>>()?;
+            serialize(&values)
         })
         .map_err(js_error)
     }

@@ -146,6 +146,23 @@ impl TreeCrdt<MemoryStorage, LamportClock> {
     pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
         self.storage.operations_at(indices)
     }
+
+    /// Force-reverts selected committed operations by authoring new local operations atomically.
+    /// Reverting the returned operation IDs performs redo. This is not selective undo: restoring
+    /// a payload or placement can replace a later remote edit. Missing IDs, stale sibling anchors,
+    /// deleted destinations and cycles reject the entire group, preserving its log and clock.
+    /// Inversion reconstructs canonical history and is intended for explicit user undo, not writes.
+    pub fn revert_operations(&mut self, ids: &[OperationId]) -> Result<Vec<Operation>> {
+        let actions = crate::history::derive_inverse(&self.storage, ids)?;
+        let checkpoint = self.memory_checkpoint();
+        match crate::history::apply_inverse(self, actions) {
+            Ok(operations) => Ok(operations),
+            Err(error) => {
+                self.rollback_memory(checkpoint)?;
+                Err(error)
+            }
+        }
+    }
 }
 
 impl<S, C, N, P> TreeCrdt<S, C, N, P>

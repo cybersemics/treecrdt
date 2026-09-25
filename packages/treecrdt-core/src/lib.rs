@@ -5,6 +5,7 @@
 
 pub(crate) mod affected;
 pub mod error;
+mod history;
 pub mod ids;
 pub mod materialization;
 pub mod ops;

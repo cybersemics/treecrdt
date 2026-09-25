@@ -1,4 +1,4 @@
-import type { Operation } from '@treecrdt/interface';
+import type { Operation, OperationId } from '@treecrdt/interface';
 import { bytesToHex } from '@treecrdt/interface/ids';
 import { WasmTree, type InitInput, type TreeSnapshotRow } from '../pkg-web/treecrdt_wasm.js';
 
@@ -12,6 +12,8 @@ export type MemorySnapshotRow = {
 export type MemorySnapshot = ReadonlyMap<string, MemorySnapshotRow>;
 export interface MemoryClient {
   transact<T>(work: (client: MemoryClient) => T): { value: T; operations: Operation[] };
+  /** Appends compensating operations; revert their IDs to redo. May overwrite intervening writes. */
+  revert(operationIds: readonly OperationId[]): Operation[];
   getSnapshot(): MemorySnapshot;
   local: {
     insert(
@@ -179,6 +181,7 @@ export function createInitializedMemoryClient(options: MemoryClientOptions = {})
 
   const client: MemoryClient = {
     transact,
+    revert: (operationIds) => write(() => native.revertOperations(operationIds)),
     getSnapshot,
     local: {
       insert: (
