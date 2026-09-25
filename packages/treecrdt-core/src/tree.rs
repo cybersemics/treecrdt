@@ -6,9 +6,10 @@ use crate::affected::{
 };
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
-use crate::ops::{cmp_op_key, Operation, OperationKind};
+use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
 use crate::traits::{
-    Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
+    Clock, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeStore,
+    ParentOpIndex, PayloadStore, Storage,
 };
 use crate::types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
@@ -20,6 +21,32 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
+}
+
+/// Conservative visible-row invalidations since the last drain. Replay requires a full snapshot.
+/// Consumers must reread rows: an invalidated node need not have visibly changed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SnapshotChanges {
+    pub reset: bool,
+    pub nodes: Vec<NodeId>,
+}
+
+#[derive(Clone, Default)]
+struct SnapshotTracker {
+    enabled: bool,
+    reset: bool,
+    nodes: HashSet<NodeId>,
+}
+
+/// An inexpensive checkpoint for the native memory engine. Retained operation history is not cloned.
+pub struct MemoryCheckpoint {
+    count: usize,
+    clock: LamportClock,
+    counter: u64,
+    version_vector: VersionVector,
+    head: Option<Operation>,
+    op_count: u64,
+    snapshots: SnapshotTracker,
 }
 
 fn attach_source_if_missing(
@@ -56,6 +83,7 @@ where
     payloads: P,
     head: Option<Operation>,
     op_count: u64,
+    snapshots: SnapshotTracker,
 }
 
 impl<S, C> TreeCrdt<S, C, MemoryNodeStore>
@@ -71,6 +99,52 @@ where
             MemoryNodeStore::default(),
             MemoryPayloadStore::default(),
         )
+    }
+}
+
+impl TreeCrdt<MemoryStorage, LamportClock> {
+    pub fn memory_checkpoint(&self) -> MemoryCheckpoint {
+        MemoryCheckpoint {
+            count: self.storage.len(),
+            clock: self.clock.clone(),
+            counter: self.counter,
+            version_vector: self.version_vector.clone(),
+            head: self.head.clone(),
+            op_count: self.op_count,
+            snapshots: self.snapshots.clone(),
+        }
+    }
+
+    /// Restores an uncommitted memory transaction. Only this failure path scans retained history.
+    /// Checkpoints belong to this tree and must be consumed in reverse creation order.
+    pub fn rollback_memory(&mut self, checkpoint: MemoryCheckpoint) -> Result<()> {
+        if checkpoint.count > self.storage.len() {
+            return Err(Error::InvalidOperation(
+                "checkpoint is newer than the operation log".into(),
+            ));
+        }
+        self.storage.truncate(checkpoint.count);
+        self.replay_from_storage()?;
+        // Replay observes retained operations, but cannot undo observations of rejected/duplicate envelopes.
+        self.clock = checkpoint.clock;
+        self.counter = checkpoint.counter;
+        self.version_vector = checkpoint.version_vector;
+        self.head = checkpoint.head;
+        self.op_count = checkpoint.op_count;
+        self.snapshots = checkpoint.snapshots;
+        Ok(())
+    }
+
+    pub fn operation_count(&self) -> usize {
+        self.storage.len()
+    }
+
+    pub fn operations_from(&self, cursor: usize) -> Result<Vec<Operation>> {
+        self.storage.operations_from(cursor)
+    }
+
+    pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
+        self.storage.operations_at(indices)
     }
 }
 
@@ -101,7 +175,56 @@ where
             payloads,
             head: None,
             op_count: 0,
+            snapshots: SnapshotTracker::default(),
         })
+    }
+
+    /// Enables conservative snapshot invalidations without imposing tracking on storage adapters.
+    pub fn track_snapshot_changes(&mut self) {
+        self.snapshots.enabled = true;
+        self.snapshots.reset = true;
+        self.snapshots.nodes.clear();
+    }
+
+    pub fn pending_snapshot_changes(&self) -> SnapshotChanges {
+        let mut nodes: Vec<_> = self.snapshots.nodes.iter().copied().collect();
+        nodes.sort();
+        SnapshotChanges {
+            reset: self.snapshots.reset,
+            nodes,
+        }
+    }
+
+    pub fn drain_snapshot_changes(&mut self) -> SnapshotChanges {
+        let changes = self.pending_snapshot_changes();
+        self.snapshots.reset = false;
+        self.snapshots.nodes.clear();
+        changes
+    }
+
+    fn invalidate_snapshot_paths(&mut self, op: &Operation) -> Result<()> {
+        if !self.snapshots.enabled || self.snapshots.reset {
+            return Ok(());
+        }
+        let mut starts = vec![op.kind.node()];
+        match op.kind {
+            OperationKind::Insert { parent, .. } => starts.push(parent),
+            OperationKind::Move { new_parent, .. } => starts.push(new_parent),
+            _ => {}
+        }
+        let mut visited = HashSet::new();
+        for start in starts {
+            let mut current = Some(start);
+            while let Some(node) = current {
+                if node == NodeId::TRASH || !visited.insert(node) {
+                    break;
+                }
+                self.snapshots.nodes.insert(node);
+                // Raw ancestry is necessary: defensive deletion may restore a tombstoned ancestor.
+                current = self.nodes.parent(node)?;
+            }
+        }
+        Ok(())
     }
 
     fn is_in_order(&self, op: &Operation) -> bool {
@@ -315,24 +438,60 @@ where
         Ok(())
     }
 
+    /// Apply a received batch, replaying retained history at most once.
+    ///
+    /// Persist in arrival order so identity duplicates keep the same first envelope as
+    /// `apply_remote`. Newly inserted ops are then applied in canonical order. A batch
+    /// wholly newer than the current head uses the forward path without a log scan.
+    ///
+    /// Like `apply_remote`, this is not a storage transaction: on a storage/store error,
+    /// callers must roll back their stores or reconstruct the replica before continuing.
+    pub fn apply_remote_batch(&mut self, ops: Vec<Operation>) -> Result<()> {
+        let mut inserted = Vec::with_capacity(ops.len());
+        for op in ops {
+            self.observe_remote(&op);
+            if self.storage.apply(op.clone())? {
+                inserted.push(op);
+            }
+        }
+        inserted.sort_by(cmp_ops);
+        if inserted.first().is_some_and(|op| !self.is_in_order(op)) {
+            return self.replay_from_storage();
+        }
+        for op in inserted {
+            self.invalidate_snapshot_paths(&op)?;
+            Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.invalidate_snapshot_paths(&op)?;
+            self.op_count += 1;
+            self.head = Some(op);
+        }
+        Ok(())
+    }
+
+    fn observe_remote(&mut self, op: &Operation) {
+        self.clock.observe(op.meta.lamport);
+        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
+        if op.meta.id.replica == self.replica_id {
+            self.counter = self.counter.max(op.meta.id.counter);
+        }
+    }
+
     /// Apply one remote operation and return exact incremental delta when available.
     ///
     /// Returns:
     /// - `Some(delta)` for in-order applies where an exact changed-node set is known,
     /// - `None` for duplicate/not-applied ops or paths that require replay.
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
-        self.clock.observe(op.meta.lamport);
-        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-        if op.meta.id.replica == self.replica_id {
-            self.counter = self.counter.max(op.meta.id.counter);
-        }
+        self.observe_remote(&op);
 
         if !self.storage.apply(op.clone())? {
             return Ok(None);
         }
 
         if self.is_in_order(&op) {
+            self.invalidate_snapshot_paths(&op)?;
             let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.invalidate_snapshot_paths(&op)?;
             self.op_count += 1;
             self.head = Some(op.clone());
 
@@ -399,7 +558,9 @@ where
             self.counter = self.counter.max(op.meta.id.counter);
         }
 
+        self.invalidate_snapshot_paths(&op)?;
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        self.invalidate_snapshot_paths(&op)?;
         self.op_count = seq;
         self.head = Some(op.clone());
 
@@ -582,6 +743,10 @@ where
     }
 
     pub fn replay_from_storage(&mut self) -> Result<()> {
+        if self.snapshots.enabled {
+            self.snapshots.reset = true;
+            self.snapshots.nodes.clear();
+        }
         self.version_vector = VersionVector::new();
         self.nodes.reset()?;
         self.payloads.reset()?;
@@ -726,10 +891,12 @@ where
         if !self.storage.apply(op.clone())? {
             return Ok(op);
         }
+        self.invalidate_snapshot_paths(&op)?;
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         let mut starts = affected_parents(snapshot.parent, &op.kind);
         starts.push(op.kind.node());
         self.refresh_tombstones_upward(starts)?;
+        self.invalidate_snapshot_paths(&op)?;
         self.op_count += 1;
         self.head = Some(op.clone());
         Ok(op)

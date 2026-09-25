@@ -1,0 +1,51 @@
+name: WASM preview
+
+on:
+  push:
+    branches: [prototype/synchronous-wasm-view]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wasm-preview-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    if: github.repository == 'cybersemics/treecrdt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - name: Install dependencies
+        run: |
+          cargo install wasm-pack --locked --version 0.15.0
+          pnpm install --frozen-lockfile
+      - name: Build and test
+        run: |
+          cargo test --locked -p treecrdt-core -p treecrdt-wasm
+          pnpm --filter @treecrdt/wasm... run build
+          pnpm -C packages/treecrdt-wasm-js test
+          pnpm -C packages/treecrdt-wasm-js exec playwright install --with-deps chromium
+          pnpm -C packages/treecrdt-wasm-js test:browser
+      - name: Pack and publish preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pnpm -C packages/treecrdt-wasm-js pack --out "$RUNNER_TEMP/treecrdt-wasm.tgz"
+          gh release create "wasm-preview-$GITHUB_SHA" "$RUNNER_TEMP/treecrdt-wasm.tgz" \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Experimental WASM (${GITHUB_SHA:0:12})" \
+            --notes "Prebuilt @treecrdt/wasm for the EM dual-TreeCRDT experiment. Not a stable release. Source: $GITHUB_SHA"

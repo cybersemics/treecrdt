@@ -1,1 +1,5 @@
-/pkg
+/pkg-web/
+/dist/
+/.browser-test-dist/
+/test-results/
+/playwright-report/

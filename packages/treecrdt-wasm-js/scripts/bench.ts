@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { benchTiming, buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
-import { createWasmAdapter } from '../dist/index.js';
+import { createWasmAdapter } from '../dist/adapter.js';
 
 async function main() {
   const opts = parseBenchCliArgs({

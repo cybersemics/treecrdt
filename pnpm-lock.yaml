@@ -566,10 +566,19 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync-protocol':
+        specifier: workspace:*
+        version: link:../sync-protocol/protocol
     devDependencies:
+      '@playwright/test':
+        specifier: ^1.57.0
+        version: 1.57.0
       '@treecrdt/benchmark':
         specifier: workspace:*
         version: link:../treecrdt-benchmark
+      '@treecrdt/engine-conformance':
+        specifier: workspace:*
+        version: link:../treecrdt-engine-conformance
       '@types/node':
         specifier: ^20.19.25
         version: 20.19.25
@@ -579,6 +588,12 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vite:
+        specifier: ^5.4.21
+        version: 5.4.21(@types/node@20.19.25)
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.25)
 
 packages:
 

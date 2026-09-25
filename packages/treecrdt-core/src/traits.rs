@@ -246,6 +246,43 @@ pub struct MemoryStorage {
     ids: HashSet<OperationId>,
 }
 
+impl MemoryStorage {
+    /// Number of accepted operations, in arrival order rather than Lamport order.
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Reads an append-log suffix without scanning or cloning the retained prefix.
+    pub fn operations_from(&self, cursor: usize) -> Result<Vec<Operation>> {
+        self.ops
+            .get(cursor..)
+            .map(<[Operation]>::to_vec)
+            .ok_or_else(|| Error::InvalidOperation("operation cursor is out of range".into()))
+    }
+
+    /// Reads operations in the requested order, including repeated indices.
+    pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
+        indices
+            .iter()
+            .map(|index| {
+                self.ops.get(*index).cloned().ok_or_else(|| {
+                    Error::InvalidOperation("operation index is out of range".into())
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn truncate(&mut self, count: usize) {
+        for op in self.ops.drain(count..) {
+            self.ids.remove(&op.meta.id);
+        }
+    }
+}
+
 impl Storage for MemoryStorage {
     fn apply(&mut self, op: Operation) -> Result<bool> {
         if self.ids.contains(&op.meta.id) {

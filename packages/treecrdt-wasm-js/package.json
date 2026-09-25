@@ -3,25 +3,63 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.node.js",
+  "types": "dist/index.node.d.ts",
+  "exports": {
+    ".": {
+      "browser": {
+        "types": "./dist/index.browser.d.ts",
+        "import": "./dist/index.browser.js"
+      },
+      "node": {
+        "types": "./dist/index.node.d.ts",
+        "import": "./dist/index.node.js"
+      },
+      "types": "./dist/index.browser.d.ts",
+      "default": "./dist/index.browser.js"
+    },
+    "./browser": {
+      "types": "./dist/index.browser.d.ts",
+      "import": "./dist/index.browser.js"
+    },
+    "./node": {
+      "types": "./dist/index.node.d.ts",
+      "import": "./dist/index.node.js"
+    },
+    "./sync": {
+      "types": "./dist/sync.d.ts",
+      "import": "./dist/sync.js"
+    },
+    "./adapter": {
+      "types": "./dist/adapter.d.ts",
+      "import": "./dist/adapter.js"
+    },
+    "./treecrdt_wasm_bg.wasm": "./pkg-web/treecrdt_wasm_bg.wasm"
+  },
   "files": [
     "dist",
-    "pkg"
+    "pkg-web"
   ],
   "scripts": {
-    "build:wasm": "wasm-pack build ../../packages/treecrdt-wasm --target nodejs --out-dir $(pwd)/pkg --release",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "build:ts": "tsc -p tsconfig.json",
     "build": "pnpm run build:wasm && pnpm run build:ts",
-    "benchmark": "pnpm run build && tsx ./scripts/bench.ts"
+    "benchmark": "pnpm run build && tsx ./scripts/bench.ts",
+    "test": "pnpm run build:ts && vitest run",
+    "test:browser": "playwright test"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",
     "@treecrdt/benchmark": "workspace:*",
+    "@treecrdt/engine-conformance": "workspace:*",
+    "@playwright/test": "^1.57.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "vitest": "^1.6.0"
   }
 }

@@ -33,7 +33,7 @@ pub use traits::{
     MemoryPayloadStore, MemoryStorage, NodeStore, NoopParentOpIndex, NoopStorage, ParentOpIndex,
     PayloadStore, Storage, TruncatingParentOpIndex,
 };
-pub use tree::TreeCrdt;
+pub use tree::{MemoryCheckpoint, SnapshotChanges, TreeCrdt};
 pub use types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
     MaterializationSource, MaterializationSourceOperation, NodeExport, NodeSnapshotExport,
