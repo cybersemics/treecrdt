@@ -252,11 +252,9 @@ function readChildrenPayloadsWorkload(opts: {
           ? adapter.tree.root
           : await adapter.tree.get(opts.targetParent);
       if (!parentHandle) throw new Error('parent not available');
-      const rows = (await parentHandle.children())
-        .slice(0, opts.pageSize)
-        .map((node) => ({ node: node.id }));
-      if (rows.length !== visibleChildren) {
-        throw new Error(`expected ${visibleChildren} child rows, got ${rows.length}`);
+      const children = (await parentHandle.children()).slice(0, opts.pageSize);
+      if (children.length !== visibleChildren) {
+        throw new Error(`expected ${visibleChildren} child rows, got ${children.length}`);
       }
 
       const parentPayload = await parentHandle.payload();
@@ -264,12 +262,7 @@ function readChildrenPayloadsWorkload(opts: {
         throw new Error('target parent payload missing');
       }
 
-      const payloads = await Promise.all(
-        rows.map(async (row: { node: string }) => {
-          const child = await adapter.tree.get(row.node);
-          return child ? await child.payload() : null;
-        }),
-      );
+      const payloads = await Promise.all(children.map((child) => child.payload()));
       if (
         payloads.some(
           (payload) => !(payload instanceof Uint8Array) || payload.length !== opts.payloadBytes,
@@ -280,7 +273,7 @@ function readChildrenPayloadsWorkload(opts: {
 
       return {
         extra: {
-          returnedChildren: rows.length,
+          returnedChildren: children.length,
           targetChildren: opts.expectedChildren,
           payloadBytes: opts.payloadBytes,
           pageSize: opts.pageSize,
