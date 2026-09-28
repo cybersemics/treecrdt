@@ -1,5 +1,9 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { createMemoryClient, type MemoryClient } from '../dist/index.node.js';
+import {
+  createMemoryClient,
+  type MemoryClient,
+  type MemoryTransaction,
+} from '../dist/index.node.js';
 import { createWasmAdapter } from '../dist/adapter.js';
 import { decodeSqliteOps } from '@treecrdt/interface/sqlite';
 import { WasmTree } from '../pkg-web/treecrdt_wasm.js';
@@ -42,18 +46,43 @@ test('composes read-your-writes commands and publishes one completed snapshot', 
   const initial = client.getSnapshot();
   const listener = vi.fn(() => expect(client.tree.children(a)).toEqual([b]));
   client.subscribe(listener);
+  let transaction: MemoryTransaction | undefined;
   const result = client.transact((document) => {
+    transaction = document;
+    expect(document.getChanges()).toEqual({ snapshot: initial, changes: [], reset: false });
     document.local.insert(root, a, null, payload);
     expect(document.getSnapshot().get(a)?.payload).toEqual(payload);
+    const first = document.getChanges();
+    expect(first.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: root, childrenChanged: true }),
+        expect.objectContaining({ id: a, payloadChanged: true }),
+      ]),
+    );
+    expect(document.getChanges()).toEqual(first);
     expect(listener).not.toHaveBeenCalled();
     document.local.insert(a, b, null, payload);
     expect(document.getSnapshot().get(a)?.children).toEqual([b]);
+    const second = document.getChanges();
+    expect(second.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: root, childrenChanged: true }),
+        expect.objectContaining({ id: a, payloadChanged: true, childrenChanged: true }),
+        expect.objectContaining({ id: b, payloadChanged: true }),
+      ]),
+    );
+    expect(first.snapshot.has(b)).toBe(false);
+    expect(first.changes.some((change) => change.id === b)).toBe(false);
     expect(listener).not.toHaveBeenCalled();
     return 42;
   });
   expect(result.value).toBe(42);
   expect(result.operations).toHaveLength(2);
   expect(listener).toHaveBeenCalledTimes(1);
+  expect(listener).toHaveBeenCalledWith(result.changes);
+  expect(result.changes.snapshot).toBe(client.getSnapshot());
+  expect(() => transaction!.getChanges()).toThrow();
+  client.transact(() => expect(() => transaction!.getChanges()).toThrow());
   expect(initial.has(a)).toBe(false);
   expect(client.getSnapshot()).toBe(client.getSnapshot());
 });
@@ -67,12 +96,17 @@ test('restores snapshot identity, native log and clock after a transaction throw
   const listener = vi.fn();
   client.subscribe(listener);
   const failure = new Error('rejected');
+  let transaction: MemoryTransaction | undefined;
   expect(() =>
     client.transact((document) => {
+      transaction = document;
       document.local.payload(a, new Uint8Array([3]));
       expect(document.getSnapshot()).not.toBe(initial);
       document.local.insert(a, b, null, payload);
       expect(document.getSnapshot().has(b)).toBe(true);
+      expect(document.getChanges().changes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: b })]),
+      );
       throw failure;
     }),
   ).toThrow(failure);
@@ -81,7 +115,13 @@ test('restores snapshot identity, native log and clock after a transaction throw
   expect(client.maxLamport()).toBe(lamport);
   expect(client.tree.exists(b)).toBe(false);
   expect(listener).not.toHaveBeenCalled();
-  expect(client.local.payload(a, new Uint8Array([4])).meta.id.counter).toBe(count + 1);
+  expect(() => transaction!.getChanges()).toThrow();
+  const next = client.transact((document) => {
+    expect(document.getChanges()).toEqual({ snapshot: initial, changes: [], reset: false });
+    return document.local.payload(a, new Uint8Array([4]));
+  });
+  expect(next.value.meta.id.counter).toBe(count + 1);
+  expect(next.changes.changes.some((change) => change.id === b)).toBe(false);
 });
 
 test('preserves map and unchanged row identity and keeps net no-op transactions quiet', async () => {
@@ -96,17 +136,74 @@ test('preserves map and unchanged row identity and keeps net no-op transactions 
   const invisible = client.transact((document) => document.local.payload(a, payload));
   expect(invisible.operations).toEqual([invisible.value]);
   expect(client.getSnapshot()).toBe(initial);
-  client.transact((document) => {
+  const restored = client.transact((document) => {
     document.local.payload(a, new Uint8Array([3]));
     expect(document.getSnapshot()).not.toBe(initial);
     document.local.payload(a, payload);
+    const changes = document.getChanges();
+    expect(changes.snapshot).toBe(initial);
+    expect(changes.changes).toContainEqual({ id: a, payloadChanged: true, childrenChanged: false });
+    return changes;
   });
+  expect(restored.operations).toHaveLength(2);
+  expect(restored.changes).toEqual(restored.value);
   expect(client.getSnapshot()).toBe(initial);
   expect(listener).not.toHaveBeenCalled();
-  client.local.payload(a, new Uint8Array([4]));
+  client.transact((document) => {
+    document.local.payload(b, new Uint8Array([5]));
+    document.getSnapshot();
+    document.local.payload(b, payload);
+    document.local.payload(a, new Uint8Array([4]));
+  });
   expect(client.getSnapshot()).not.toBe(initial);
   expect(client.getSnapshot().get(b)).toBe(initial.get(b));
   expect(listener).toHaveBeenCalledTimes(1);
+  expect(listener.mock.calls[0]![0].changes).toContainEqual({
+    id: b,
+    payloadChanged: true,
+    childrenChanged: false,
+  });
+});
+
+test('shares unchanged child order and retains cumulative reorder changes when order is restored', async () => {
+  const client = await open();
+  client.transact((document) => {
+    document.local.insert(root, a, null, payload);
+    document.local.insert(root, b, a, payload);
+  });
+  const before = client.getSnapshot();
+  const result = client.transact((document) => document.local.move(b, root, null));
+  expect(result.changes.snapshot.get(root)?.children).toEqual([b, a]);
+  expect(result.changes.changes).toContainEqual({
+    id: root,
+    payloadChanged: false,
+    childrenChanged: true,
+  });
+  expect(result.changes.changes.every((change) => !change.payloadChanged)).toBe(true);
+  expect(result.changes.snapshot.get(a)).toBe(before.get(a));
+  expect(result.changes.snapshot.get(b)).toBe(before.get(b));
+  expect(before.get(root)?.children).toEqual([a, b]);
+
+  const checkpoint = result.changes.snapshot.get(root)!;
+  const restored = client.transact((document) => {
+    document.local.payload(root, payload);
+    expect(document.getSnapshot().get(root)?.children).toBe(checkpoint.children);
+    document.local.move(b, root, a);
+    const intermediate = document.getSnapshot().get(root)!.children;
+    expect(intermediate).toEqual([a, b]);
+    document.local.move(b, root, null);
+    return intermediate;
+  });
+  expect(restored.value).toEqual([a, b]);
+  expect(restored.changes.snapshot.get(root)).not.toBe(checkpoint);
+  expect(restored.changes.snapshot.get(root)?.payload).toEqual(payload);
+  expect(restored.changes.snapshot.get(root)?.children).toBe(checkpoint.children);
+  expect(checkpoint.children).toEqual([b, a]);
+  expect(restored.changes.changes).toContainEqual({
+    id: root,
+    payloadChanged: true,
+    childrenChanged: true,
+  });
 });
 
 test('does not expose mutable snapshot maps, rows, children or payload storage', async () => {
@@ -137,6 +234,11 @@ test('publishes payload-less nodes and clearing payloads as visible snapshot cha
   client.local.payload(a, null);
   expect(client.getSnapshot().get(a)?.payload).toBeNull();
   expect(listener).toHaveBeenCalledTimes(3);
+  expect(listener.mock.calls[2]![0].changes).toContainEqual({
+    id: a,
+    payloadChanged: true,
+    childrenChanged: false,
+  });
 });
 
 test('cannot commit earlier writes when a caught mutator error poisons the native transaction', async () => {
@@ -192,6 +294,23 @@ test('isolates subscriber errors and supports unsubscribing and idempotent close
   client.close();
   client.close();
   expect(() => client.getSnapshot()).toThrow(/closed/);
+});
+
+test('captures transaction changes before a subscriber starts another transaction', async () => {
+  const client = await open();
+  client.subscribe((event) => {
+    if (event.snapshot.has(a) && !event.snapshot.has(b)) client.local.insert(root, b, a, payload);
+  });
+  const listener = vi.fn();
+  client.subscribe(listener);
+  const result = client.transact((document) => document.local.insert(root, a, null, payload));
+  expect(result.operations).toEqual([result.value]);
+  expect(result.changes.snapshot.get(root)?.children).toEqual([a]);
+  expect(result.changes.changes.some((change) => change.id === b)).toBe(false);
+  expect(client.getSnapshot().get(root)?.children).toEqual([a, b]);
+  expect(listener).toHaveBeenCalledTimes(2);
+  expect(listener.mock.calls[0]![0]).toBe(result.changes);
+  expect(listener.mock.calls[1]![0].snapshot).toBe(client.getSnapshot());
 });
 
 test('keeps the legacy benchmark adapter backed by typed operations including insert payloads', async () => {
@@ -264,12 +383,15 @@ test('reverts mixed edits and their receipts using only fresh operations, retain
     document.local.insert(root, d, b, payload);
   });
   const before = [...client.getSnapshot()];
+  const childrenBeforeMove = client.getSnapshot().get(a)!.children;
   const edit = client.transact((document) => {
     document.local.insert(b, c, null, payload);
     document.local.move(a, b, c);
     document.local.payload(b, new Uint8Array([9]));
     document.local.delete(d);
   }).operations;
+  expect(client.getSnapshot().get(a)?.parentId).toBe(b);
+  expect(client.getSnapshot().get(a)?.children).toBe(childrenBeforeMove);
   const edited = [...client.getSnapshot()];
   const retained = client.operationsFrom(0);
   const listener = vi.fn();
@@ -314,9 +436,20 @@ test('composes revert with normal writes in one synchronous transaction and publ
   const result = client.transact((document) => {
     const reverted = document.revert([edited.meta.id]);
     expect(document.getSnapshot().get(a)?.payload).toEqual(payload);
+    expect(document.getChanges().changes).toContainEqual({
+      id: a,
+      payloadChanged: true,
+      childrenChanged: false,
+    });
     expect(listener).not.toHaveBeenCalled();
     const inserted = document.local.insert(a, b, null, payload);
     expect(document.getSnapshot().get(a)?.children).toEqual([b]);
+    expect(document.getChanges().changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: a, payloadChanged: true, childrenChanged: true }),
+        expect.objectContaining({ id: b, payloadChanged: true }),
+      ]),
+    );
     expect(listener).not.toHaveBeenCalled();
     return [...reverted, inserted];
   });
@@ -324,6 +457,7 @@ test('composes revert with normal writes in one synchronous transaction and publ
   expect(client.tree.payload(a)).toEqual(payload);
   expect(client.tree.children(a)).toEqual([b]);
   expect(listener).toHaveBeenCalledTimes(1);
+  expect(listener).toHaveBeenCalledWith(result.changes);
 });
 
 test('rolls back a revert and intermediate reads when its transaction later throws', async () => {

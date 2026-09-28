@@ -10,8 +10,27 @@ export type MemorySnapshotRow = {
   readonly children: readonly string[];
 };
 export type MemorySnapshot = ReadonlyMap<string, MemorySnapshotRow>;
+/** Conservative row invalidations accumulated across all reads in one transaction. */
+export type MemorySnapshotChanges = {
+  readonly snapshot: MemorySnapshot;
+  readonly changes: readonly {
+    readonly id: string;
+    readonly payloadChanged: boolean;
+    readonly childrenChanged: boolean;
+  }[];
+  /** Initialization or replay requires rebuilding derived views from the complete snapshot. */
+  readonly reset: boolean;
+};
+export interface MemoryTransaction extends MemoryClient {
+  /** Reads current state and cumulative changes without consuming them. Valid only during this transaction. */
+  getChanges(): MemorySnapshotChanges;
+}
 export interface MemoryClient {
-  transact<T>(work: (client: MemoryClient) => T): { value: T; operations: Operation[] };
+  transact<T>(work: (client: MemoryTransaction) => T): {
+    value: T;
+    operations: Operation[];
+    changes: MemorySnapshotChanges;
+  };
   /** Appends compensating operations; revert their IDs to redo. May overwrite intervening writes. */
   revert(operationIds: readonly OperationId[]): Operation[];
   getSnapshot(): MemorySnapshot;
@@ -41,7 +60,8 @@ export interface MemoryClient {
   operationsFrom(cursor: number): Operation[];
   operationsAt(indices: readonly number[]): Operation[];
   maxLamport(): number;
-  subscribe(listener: () => void): () => void;
+  /** Publishes visible commits in order, never during reads or rollback. Reentrant writes queue their notifications. */
+  subscribe(listener: (changes: MemorySnapshotChanges) => void): () => void;
   close(): void;
 }
 
@@ -68,24 +88,33 @@ function readonlyMap(entries: Map<string, MemorySnapshotRow>): MemorySnapshot {
   return view;
 }
 
-function equalRow(a: MemorySnapshotRow | undefined, b: TreeSnapshotRow): boolean {
-  if (!a || a.parentId !== b.parentId || a.children.length !== b.children.length) return false;
-  const payload = a.payload;
+/** Compares payload contents because immutable snapshot getters return defensive byte copies. */
+function equalPayload(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  return a === null || b === null
+    ? a === b
+    : a.length === b.length && a.every((byte, index) => byte === b[index]);
+}
+
+/** Compares row fields after unchanged child order has been resolved to an existing immutable array. */
+function equalRow(
+  a: MemorySnapshotRow | undefined,
+  b: TreeSnapshotRow,
+  children: readonly string[],
+): boolean {
   return (
-    (payload === null || b.payload === null
-      ? payload === b.payload
-      : payload.length === b.payload.length &&
-        payload.every((byte, index) => byte === b.payload![index])) &&
-    a.children.every((id, index) => id === b.children[index])
+    !!a &&
+    a.parentId === b.parentId &&
+    a.children === children &&
+    equalPayload(a.payload, b.payload)
   );
 }
 
-function immutableRow(row: TreeSnapshotRow): MemorySnapshotRow {
+function immutableRow(row: TreeSnapshotRow, children: readonly string[]): MemorySnapshotRow {
   const payload = row.payload === null ? null : Uint8Array.from(row.payload);
   return Object.freeze({
     id: row.id,
     parentId: row.parentId,
-    children: Object.freeze([...row.children]),
+    children,
     // Typed arrays cannot be deeply frozen. Return a copy so consumers cannot corrupt a held snapshot.
     get payload() {
       return payload?.slice() ?? null;
@@ -100,8 +129,11 @@ export function createInitializedMemoryClient(options: MemoryClientOptions = {})
   const native = new WasmTree(bytesToHex(replica));
   let snapshot: MemorySnapshot = readonlyMap(new Map());
   let checkpoint: MemorySnapshot | undefined;
+  let changedNodes: Map<string, MemorySnapshotChanges['changes'][number]> | undefined;
+  let reset = false;
   let closed = false;
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(changes: MemorySnapshotChanges) => void>();
+  let notifications: MemorySnapshotChanges[] | undefined;
 
   const ensureOpen = () => {
     if (closed) throw new Error('The memory client is closed');
@@ -120,30 +152,87 @@ export function createInitializedMemoryClient(options: MemoryClientOptions = {})
     for (const row of changes.rows) {
       const current = snapshot.get(row.id);
       const previous = checkpoint?.get(row.id);
+      // Payload/parent edits share child order; restoration within a transaction reuses its checkpoint array.
+      const children =
+        [current?.children, previous?.children].find(
+          (children) =>
+            children &&
+            children.length === row.children.length &&
+            children.every((id, index) => id === row.children[index]),
+        ) ?? Object.freeze([...row.children]);
       next.set(
         row.id,
-        equalRow(current, row) ? current! : equalRow(previous, row) ? previous! : immutableRow(row),
+        equalRow(current, row, children)
+          ? current!
+          : equalRow(previous, row, children)
+            ? previous!
+            : immutableRow(row, children),
       );
     }
-    const unchanged = (old: MemorySnapshot) =>
-      old.size === next.size && [...next].every(([id, row]) => old.get(id) === row);
-    if (unchanged(snapshot)) return snapshot;
-    snapshot = checkpoint && unchanged(checkpoint) ? checkpoint : readonlyMap(next);
+    reset ||= changes.reset;
+    // Reset batches contain only surviving rows, so include previous IDs to capture removals.
+    const affected = new Set([
+      ...changes.rows.map((row) => row.id),
+      ...changes.removed,
+      ...(changes.reset ? snapshot.keys() : []),
+    ]);
+    let hasChanges = false;
+    for (const id of affected) {
+      const before = snapshot.get(id);
+      const after = next.get(id);
+      if (before === after) continue;
+      hasChanges = true;
+      const previous = changedNodes?.get(id);
+      changedNodes?.set(
+        id,
+        Object.freeze({
+          id,
+          payloadChanged:
+            previous?.payloadChanged ||
+            !before ||
+            !after ||
+            !equalPayload(before.payload, after.payload),
+          childrenChanged:
+            previous?.childrenChanged || !before || !after || before.children !== after.children,
+        }),
+      );
+    }
+    if (!hasChanges) return snapshot;
+    snapshot =
+      checkpoint &&
+      checkpoint.size === next.size &&
+      [...changedNodes!.keys()].every((id) => checkpoint!.get(id) === next.get(id))
+        ? checkpoint
+        : readonlyMap(next);
     return snapshot;
   };
 
   const transact = <T>(
-    work: (client: MemoryClient) => T,
-  ): { value: T; operations: Operation[] } => {
+    work: (client: MemoryTransaction) => T,
+  ): { value: T; operations: Operation[]; changes: MemorySnapshotChanges } => {
     ensureOpen();
     if (checkpoint) throw new Error('Nested memory transactions are not supported');
     const previous = getSnapshot();
     const cursor = native.operationCount();
     native.beginTransaction();
     checkpoint = previous;
+    changedNodes = new Map();
+    reset = false;
+    let active = true;
+    /** Captures an immutable batch; other reads never drain this transaction's accumulated invalidations. */
+    const getChanges = (): MemorySnapshotChanges => {
+      if (!active) throw new Error('The memory transaction has finished');
+      const current = getSnapshot();
+      return Object.freeze({
+        snapshot: current,
+        changes: Object.freeze([...changedNodes!.values()]),
+        reset,
+      });
+    };
     let value: T;
+    let changes: MemorySnapshotChanges;
     try {
-      value = work(client);
+      value = work({ ...client, getChanges });
       if (
         value &&
         typeof value === 'object' &&
@@ -152,26 +241,40 @@ export function createInitializedMemoryClient(options: MemoryClientOptions = {})
       ) {
         throw new Error('Memory transactions must be synchronous');
       }
-      getSnapshot();
+      changes = getChanges();
       native.commitTransaction();
     } catch (error) {
       native.rollbackTransaction();
       snapshot = previous;
       throw error;
     } finally {
+      active = false;
       checkpoint = undefined;
+      changedNodes = undefined;
+      reset = false;
     }
     const operations = native.operationsFrom(cursor);
-    if (snapshot !== previous) {
-      for (const listener of [...listeners]) {
+    if (changes.snapshot !== previous) {
+      if (notifications) notifications.push(changes);
+      else {
+        // A subscriber may commit again. Finish delivering this batch before publishing its successor.
+        notifications = [changes];
         try {
-          listener();
-        } catch (error) {
-          console.error('TreeCRDT subscriber failed', error);
+          for (const batch of notifications) {
+            for (const listener of [...listeners]) {
+              try {
+                listener(batch);
+              } catch (error) {
+                console.error('TreeCRDT subscriber failed', error);
+              }
+            }
+          }
+        } finally {
+          notifications = undefined;
         }
       }
     }
-    return { value, operations };
+    return { value, operations, changes };
   };
 
   const write = <T>(work: () => T): T => {
@@ -242,7 +345,7 @@ export function createInitializedMemoryClient(options: MemoryClientOptions = {})
       ensureCommitted();
       return native.maxLamport();
     },
-    subscribe: (listener: () => void): (() => void) => {
+    subscribe: (listener: (changes: MemorySnapshotChanges) => void): (() => void) => {
       ensureOpen();
       listeners.add(listener);
       return () => {

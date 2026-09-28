@@ -5,7 +5,9 @@ export type {
   MemoryClient,
   MemoryClientOptions,
   MemorySnapshot,
+  MemorySnapshotChanges,
   MemorySnapshotRow,
+  MemoryTransaction,
 } from './memory-client.js';
 export type { MemorySnapshotRow as TreeSnapshotRow } from './memory-client.js';
 export type { InitInput } from '../pkg-web/treecrdt_wasm.js';

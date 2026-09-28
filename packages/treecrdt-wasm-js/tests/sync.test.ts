@@ -51,6 +51,14 @@ test('applies a remote batch atomically, publishes once, and treats duplicate de
   const snapshot = receiver.getSnapshot();
   expect(snapshot.get(a)?.children).toEqual([b]);
   expect(listener).toHaveBeenCalledTimes(1);
+  expect(listener.mock.calls[0]![0].snapshot).toBe(snapshot);
+  expect(listener.mock.calls[0]![0].changes).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: root, childrenChanged: true }),
+      expect.objectContaining({ id: a, payloadChanged: true, childrenChanged: true }),
+      expect.objectContaining({ id: b, payloadChanged: true }),
+    ]),
+  );
   await backend.applyOps(operations);
   expect(receiver.getSnapshot()).toBe(snapshot);
   expect(listener).toHaveBeenCalledTimes(1);
@@ -127,6 +135,7 @@ test('ingests historical operations behind a newer head and keeps the first dupl
   const first = source.local.insert(root, a, null, new Uint8Array([1]));
   const second = source.local.insert(root, b, a, new Uint8Array([2]));
   const renamed = source.local.payload(a, new Uint8Array([3]));
+  const deleted = source.local.delete(a);
   const newest = source.local.payload(root, new Uint8Array([4]));
   const conflicting = {
     ...first,
@@ -145,10 +154,17 @@ test('ingests historical operations behind a newer head and keeps the first dupl
     first,
     second,
   ]);
+  const beforeDelete = receiver.getSnapshot();
+  await backend.applyOps([deleted]);
+  const deletion = listener.mock.calls.at(-1)![0];
+  expect(deletion.reset).toBe(true);
+  expect(deletion.snapshot.has(a)).toBe(false);
+  expect(deletion.changes).toEqual(expect.arrayContaining([expect.objectContaining({ id: a })]));
+  expect(beforeDelete.has(a)).toBe(true);
   const snapshot = receiver.getSnapshot();
   await backend.applyOps([conflicting, renamed]);
   expect(receiver.getSnapshot()).toBe(snapshot);
-  expect(listener).toHaveBeenCalledTimes(2);
+  expect(listener).toHaveBeenCalledTimes(3);
   const next = receiver.local.payload(b, new Uint8Array([5]));
   expect(next.meta.id.counter).toBe(1);
   expect(next.meta.lamport).toBe(newest.meta.lamport + 1);

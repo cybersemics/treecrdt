@@ -28,11 +28,14 @@ replaced, not necessarily the original local edit. Missing operations or stale p
 Inversion replays retained history synchronously; large histories or deep deleted subtrees can block the caller.
 
 `getSnapshot()` is a read-only map of all live nodes, including the reserved root. Rows contain `id`, `parentId`,
-binary `payload` (or `null`), and ordered `children`. Unchanged snapshots and rows
+binary `payload` (or `null`), and ordered `children`. Unchanged snapshots, rows, and child lists
 retain identity. Held snapshots cannot be mutated through map, row, child-list or payload references. Reads within a
 transaction are provisional; rollback restores the exact previous snapshot identity and the native operation log.
-`subscribe(listener)` publishes once after a successful visible snapshot change, never midway through a transaction;
-subscriber errors are reported without rolling back the committed edit. It returns an unsubscribe function.
+`transaction.getChanges()` returns `{ snapshot, changes, reset }`: cumulative affected node IDs with payload/child-order
+flags. Reads do not consume changes; flags include intermediate changes even when later restored. `reset` requires a
+full derived-view refresh. The transaction result includes this same batch. `subscribe(listener)` receives it once after
+a successful visible snapshot change, never midway through a transaction or after rollback. Subscriber errors are
+reported without rolling back the committed edit. Operations still need persistence when no visible event is emitted.
 
 `tree.children`, `exists`, `parent`, and `payload` query native state synchronously. `tree.get` and `tree.snapshot`
 read the cached snapshot. The committed log is available through `operationCount()`, `operationsFrom(cursor)` and
