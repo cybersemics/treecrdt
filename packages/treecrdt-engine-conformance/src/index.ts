@@ -963,11 +963,13 @@ async function scenarioTreeGetRootLazyNavigation(
   const root = nodeIdFromInt(0);
   const n1 = nodeIdFromInt(1);
   const n2 = nodeIdFromInt(2);
+  const n3 = nodeIdFromInt(3);
   const missing = 'deadbeefdeadbeefdeadbeefdeadbeef';
   const payload = new TextEncoder().encode('lazy');
 
   assertEqual(await engine.tree.get(missing), undefined, 'tree.get(missing) is undefined');
   assertEqual(engine.tree.root.id, root, 'tree.root.id');
+  assertEqual(await engine.tree.root.parent(), undefined, 'tree.root.parent is undefined');
 
   const beforeInsert = await engine.tree.root.children();
   assertEqual(beforeInsert.length, 0, 'root.children empty before insert');
@@ -1005,6 +1007,13 @@ async function scenarioTreeGetRootLazyNavigation(
     [n1],
     'tree.root.children after mutations',
   );
+
+  await engine.local.insert(replica, n1, n3, { type: 'last' }, null);
+  const n3Handle = await engine.tree.get(n3);
+  assert(n3Handle, 'tree.get(n3) after insert');
+  await engine.local.delete(replica, n1);
+  assertEqual(await engine.tree.get(n1), undefined, 'tree.get(tombstoned parent) is undefined');
+  assertEqual(await n3Handle.parent(), undefined, 'node.parent omits tombstoned parent');
 }
 
 async function scenarioOpsGetPreservesOrderAndRejectsMissingRefs(

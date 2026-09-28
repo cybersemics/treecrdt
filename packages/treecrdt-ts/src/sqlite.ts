@@ -507,7 +507,7 @@ async function treecrdtTreeNodeCount(
 
 /**
  * Fetch the parent of a node (16-byte id).
- * Returns the parent node id as bytes, or null if the node is root or not found.
+ * Returns the live parent node id as bytes, or null if the node or parent is not visible.
  */
 async function treecrdtTreeParent(
   runner: SqliteRunner,
@@ -516,7 +516,10 @@ async function treecrdtTreeParent(
 ): Promise<Uint8Array | null> {
   await treecrdtEnsureMaterialized(runner, emitOutcome);
   const parentHex = await runner.getText(
-    'SELECT CASE WHEN parent IS NULL THEN NULL ELSE lower(hex(parent)) END FROM tree_nodes WHERE node = ?1',
+    'SELECT lower(hex(parent.node)) \
+     FROM tree_nodes AS child \
+     JOIN tree_nodes AS parent ON parent.node = child.parent AND parent.tombstone = 0 \
+     WHERE child.node = ?1 AND child.tombstone = 0',
     [node],
   );
   if (!parentHex) return null;

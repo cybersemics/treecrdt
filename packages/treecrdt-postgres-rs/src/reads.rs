@@ -366,7 +366,15 @@ pub fn tree_parent(
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
         &mut c,
-        "SELECT parent FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
+        "SELECT parent.node \
+         FROM treecrdt_nodes AS child \
+         JOIN treecrdt_nodes AS parent \
+           ON parent.doc_id = child.doc_id \
+          AND parent.node = child.parent \
+          AND parent.tombstone = FALSE \
+         WHERE child.doc_id = $1 \
+           AND child.node = $2 \
+           AND child.tombstone = FALSE",
     )?;
     let rows = c.query(&stmt, &[&doc_id, &node_bytes.as_slice()]).map_err(storage_debug)?;
     let row = match rows.first() {

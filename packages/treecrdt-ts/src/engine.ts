@@ -165,8 +165,8 @@ export type TreecrdtEngineOpRefs = {
  */
 export type TreecrdtNode = {
   readonly id: string;
-  /** Parent handle, or null when this node is root (or concurrently deleted). */
-  parent: () => Promise<TreecrdtNode | null>;
+  /** Parent handle, or undefined when this node or its parent is not visible. */
+  parent: () => Promise<TreecrdtNode | undefined>;
   payload: () => Promise<Uint8Array | null>;
   children: () => Promise<TreecrdtNode[]>;
 };
@@ -202,7 +202,7 @@ export function createTreecrdtTreeNodes(
       id,
       parent: async () => {
         const parentId = await primitives.parent(id);
-        return parentId === null ? null : createNode(parentId);
+        return parentId === null ? undefined : createNode(parentId);
       },
       payload: () => primitives.payload(id),
       children: async () => (await primitives.children(id)).map(createNode),
