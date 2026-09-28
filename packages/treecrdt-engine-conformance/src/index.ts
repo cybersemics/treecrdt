@@ -250,10 +250,6 @@ function replicaFromLabel(label: string): ReplicaId {
   return out;
 }
 
-async function nodeExists(engine: TreecrdtEngine, nodeId: string): Promise<boolean> {
-  return (await engine.tree.get(nodeId)) !== undefined;
-}
-
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -931,11 +927,11 @@ async function scenarioMaterializedSmokeWithOpRefs(
   assertEqual((await (await engine.tree.get(n1))?.parent())?.id ?? null, root, 'tree.parent(n1)');
   assertEqual((await (await engine.tree.get(n2))?.parent())?.id ?? null, n1, 'tree.parent(n2)');
 
-  assertEqual(await nodeExists(engine, root), true, 'tree.exists(root)');
-  assertEqual(await nodeExists(engine, n1), true, 'tree.exists(n1)');
-  assertEqual(await nodeExists(engine, n2), true, 'tree.exists(n2)');
+  assertEqual((await engine.tree.get(root)) !== undefined, true, 'tree.exists(root)');
+  assertEqual((await engine.tree.get(n1)) !== undefined, true, 'tree.exists(n1)');
+  assertEqual((await engine.tree.get(n2)) !== undefined, true, 'tree.exists(n2)');
   assertEqual(
-    await nodeExists(engine, 'deadbeefdeadbeefdeadbeefdeadbeef'),
+    (await engine.tree.get('deadbeefdeadbeefdeadbeefdeadbeef')) !== undefined,
     false,
     'tree.exists(non-existent)',
   );
@@ -1265,14 +1261,14 @@ async function scenarioDefensiveDeleteMoveRestores(
   const n1 = nodeIdFromInt(1);
 
   await engine.local.insert(replica, root, n1, { type: 'last' }, null);
-  assertEqual(await nodeExists(engine, n1), true, 'tree.exists(n1) before delete');
+  assertEqual((await engine.tree.get(n1)) !== undefined, true, 'tree.exists(n1) before delete');
   await engine.local.delete(replica, n1);
   assertArrayEqual(
     (await engine.tree.root.children()).map((node) => node.id),
     [],
     'children after delete',
   );
-  assertEqual(await nodeExists(engine, n1), false, 'tree.exists(n1) after delete');
+  assertEqual((await engine.tree.get(n1)) !== undefined, false, 'tree.exists(n1) after delete');
 
   await engine.local.move(replica, n1, root, { type: 'last' });
   assertArrayEqual(
