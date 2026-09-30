@@ -53,12 +53,6 @@ pub struct NativeOp {
 }
 
 #[napi(object)]
-pub struct NativeTreeChildRow {
-    pub node: Buffer,
-    pub order_key: Option<Buffer>,
-}
-
-#[napi(object)]
 pub struct NativeTreeRow {
     pub node: Buffer,
     pub parent: Option<Buffer>,
@@ -509,42 +503,21 @@ impl PgBackend {
     }
 
     #[napi]
-    pub fn tree_children(&self, parent: Buffer) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
-        let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-        let nodes = treecrdt_postgres::tree_children(&client, &self.doc_id, parent)
-            .map_err(map_core_err)?;
-        Ok(nodes.into_iter().map(|n| Buffer::from(node_to_bytes16(n).to_vec())).collect())
-    }
-
-    #[napi]
-    pub fn tree_children_page(
+    pub fn tree_children(
         &self,
         parent: Buffer,
-        cursor_order_key: Option<Buffer>,
-        cursor_node: Option<Buffer>,
-        limit: u32,
-    ) -> napi::Result<Vec<NativeTreeChildRow>> {
+        index: Option<u32>,
+        length: Option<u32>,
+    ) -> napi::Result<Vec<Buffer>> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-
-        let cursor = match (cursor_order_key, cursor_node) {
-            (None, None) => None,
-            (Some(k), Some(n)) => Some((k.to_vec(), n.to_vec())),
-            _ => return Err(map_err("invalid cursor (expected both order_key and node)")),
-        };
-
-        let rows =
-            treecrdt_postgres::tree_children_page(&client, &self.doc_id, parent, cursor, limit)
+        let nodes =
+            treecrdt_postgres::tree_children(&client, &self.doc_id, parent, index, length)
                 .map_err(map_core_err)?;
-        Ok(rows
+        Ok(nodes
             .into_iter()
-            .map(|row| NativeTreeChildRow {
-                node: Buffer::from(node_to_bytes16(row.node).to_vec()),
-                order_key: row.order_key.map(Buffer::from),
-            })
+            .map(|n| Buffer::from(node_to_bytes16(n).to_vec()))
             .collect())
     }
 

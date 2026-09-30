@@ -20,11 +20,8 @@ export const sharedWorkerStrategy: RuntimeStrategy = {
     const port = sharedWorker.port;
     port.start();
     const connection = Comlink.wrap(port) as unknown as RemoteTreecrdtConnection;
-    let closed = false;
 
     const cleanup = async () => {
-      if (closed) return;
-      closed = true;
       try {
         connection[Comlink.releaseProxy]();
       } catch {

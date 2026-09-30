@@ -69,16 +69,8 @@ export function createPostgresNapiAdapterFactory(url: string): PostgresNapiAdapt
         opRefsAll: async () => backend.listOpRefsAll(),
         opRefsChildren: async (parent) => backend.listOpRefsChildren(parent),
         opsByOpRefs: async (opRefs) => backend.getOpsByOpRefs(opRefs).map(nativeOpToSqliteRow),
-        treeChildren: async (parent) => backend.treeChildren(parent),
-        treeChildrenPage: async (parent, cursor, limit) => {
-          const rows = backend.treeChildrenPage(
-            parent,
-            cursor?.orderKey ?? null,
-            cursor?.node ?? null,
-            limit,
-          );
-          return rows.map((r) => ({ node: r.node, order_key: r.orderKey ?? null }));
-        },
+        treeChildren: async (parent, slice) =>
+          backend.treeChildren(parent, slice?.index ?? null, slice?.length ?? null),
         treeDump: async () => {
           const rows = backend.treeDump();
           return rows.map((r) => ({

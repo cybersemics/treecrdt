@@ -196,12 +196,6 @@ pub fn ops_since(
 }
 
 #[derive(Clone, Debug)]
-pub struct TreeChildRow {
-    pub node: NodeId,
-    pub order_key: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
 pub struct TreeRow {
     pub node: NodeId,
     pub parent: Option<NodeId>,
@@ -213,76 +207,69 @@ pub fn tree_children(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
     parent: NodeId,
+    index: Option<u32>,
+    length: Option<u32>,
 ) -> Result<Vec<NodeId>> {
     ensure_materialized(client, doc_id)?;
     if parent == NodeId::TRASH {
         return Ok(Vec::new());
     }
-    let ctx = PgCtx::new(client.clone(), doc_id)?;
-    let parent_bytes = node_to_bytes(parent);
-    let mut c = client.borrow_mut();
-    let stmt = ctx.stmt(
-        &mut c,
-        "SELECT node FROM treecrdt_nodes \
-         WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-         ORDER BY order_key, node",
-    )?;
-    let rows = c.query(&stmt, &[&doc_id, &parent_bytes.as_slice()]).map_err(storage_debug)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let node: Vec<u8> = row.get(0);
-        out.push(bytes_to_node(&node)?);
-    }
-    Ok(out)
-}
-
-pub fn tree_children_page(
-    client: &Rc<RefCell<Client>>,
-    doc_id: &str,
-    parent: NodeId,
-    cursor: Option<(Vec<u8>, Vec<u8>)>,
-    limit: u32,
-) -> Result<Vec<TreeChildRow>> {
-    ensure_materialized(client, doc_id)?;
-    if parent == NodeId::TRASH {
+    let offset = index.unwrap_or(0);
+    if length == Some(0) {
         return Ok(Vec::new());
     }
     let ctx = PgCtx::new(client.clone(), doc_id)?;
     let parent_bytes = node_to_bytes(parent);
-    let after_order_key: Option<Vec<u8>> = cursor.as_ref().map(|(k, _n)| k.clone());
-    let after_node: Option<Vec<u8>> = cursor.as_ref().map(|(_k, n)| n.clone());
-
     let mut c = client.borrow_mut();
-    let stmt = ctx.stmt(
-        &mut c,
-        "SELECT node, order_key \
-         FROM treecrdt_nodes \
-         WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-           AND ($3::bytea IS NULL OR (order_key > $3::bytea OR (order_key = $3::bytea AND node > $4::bytea))) \
-         ORDER BY order_key, node \
-         LIMIT $5",
-    )?;
-    let rows = c
-        .query(
-            &stmt,
-            &[
-                &doc_id,
-                &parent_bytes.as_slice(),
-                &after_order_key,
-                &after_node,
-                &(limit as i64),
-            ],
-        )
-        .map_err(storage_debug)?;
-
+    let rows = match length {
+        Some(limit) => {
+            let stmt = ctx.stmt(
+                &mut c,
+                "SELECT node FROM treecrdt_nodes \
+                 WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
+                 ORDER BY order_key, node \
+                 OFFSET $3 LIMIT $4",
+            )?;
+            c.query(
+                &stmt,
+                &[
+                    &doc_id,
+                    &parent_bytes.as_slice(),
+                    &(offset as i64),
+                    &(limit as i64),
+                ],
+            )
+            .map_err(storage_debug)?
+        }
+        None if index.is_some() => {
+            let stmt = ctx.stmt(
+                &mut c,
+                "SELECT node FROM treecrdt_nodes \
+                 WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
+                 ORDER BY order_key, node \
+                 OFFSET $3",
+            )?;
+            c.query(
+                &stmt,
+                &[&doc_id, &parent_bytes.as_slice(), &(offset as i64)],
+            )
+            .map_err(storage_debug)?
+        }
+        None => {
+            let stmt = ctx.stmt(
+                &mut c,
+                "SELECT node FROM treecrdt_nodes \
+                 WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
+                 ORDER BY order_key, node",
+            )?;
+            c.query(&stmt, &[&doc_id, &parent_bytes.as_slice()])
+                .map_err(storage_debug)?
+        }
+    };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let node: Vec<u8> = row.get(0);
-        let order_key: Option<Vec<u8>> = row.get(1);
-        out.push(TreeChildRow {
-            node: bytes_to_node(&node)?,
-            order_key,
-        });
+        out.push(bytes_to_node(&node)?);
     }
     Ok(out)
 }
@@ -366,7 +353,15 @@ pub fn tree_parent(
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
         &mut c,
-        "SELECT parent FROM treecrdt_nodes WHERE doc_id = $1 AND node = $2",
+        "SELECT parent.node \
+         FROM treecrdt_nodes AS child \
+         JOIN treecrdt_nodes AS parent \
+           ON parent.doc_id = child.doc_id \
+          AND parent.node = child.parent \
+          AND parent.tombstone = FALSE \
+         WHERE child.doc_id = $1 \
+           AND child.node = $2 \
+           AND child.tombstone = FALSE",
     )?;
     let rows = c.query(&stmt, &[&doc_id, &node_bytes.as_slice()]).map_err(storage_debug)?;
     let row = match rows.first() {
