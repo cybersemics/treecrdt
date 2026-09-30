@@ -23,7 +23,12 @@ import {
   createTreecrdtEngineLocal,
   createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type {
+  LocalWriteOptions,
+  TreecrdtChildrenSlice,
+  TreecrdtEngine,
+  WriteOptions,
+} from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
   type TreecrdtSqliteAuthApi,
@@ -165,8 +170,8 @@ export function createTreecrdtClient(
         opRefs.map((r) => (r instanceof Uint8Array ? r : Uint8Array.from(r))),
       ),
     );
-  const treeChildrenImpl = async (parent: string) =>
-    decodeSqliteNodeIds(await adapter.treeChildren(nodeIdToBytes16(parent)));
+  const treeChildrenImpl = async (parent: string, slice?: TreecrdtChildrenSlice) =>
+    decodeSqliteNodeIds(await adapter.treeChildren(nodeIdToBytes16(parent), slice));
   const treeDumpImpl = async () => decodeSqliteTreeRows(await adapter.treeDump());
   const treeNodeCountImpl = async () => Number(await adapter.treeNodeCount());
   const treeParentImpl = async (node: string) => {

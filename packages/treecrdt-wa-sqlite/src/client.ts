@@ -225,8 +225,8 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
           const result = await guard(() => session.tree.payload(node));
           return result === null ? null : toBytes(result);
         },
-        children: (parent) =>
-          guard(async () => decodeSqliteNodeIds(await session.tree.children(parent))),
+        children: (parent, slice) =>
+          guard(async () => decodeSqliteNodeIds(await session.tree.children(parent, slice))),
       }),
       dump: () => guard(async () => decodeSqliteTreeRows(await session.tree.dump())),
       nodeCount: () => guard(async () => Number(await session.tree.nodeCount())),

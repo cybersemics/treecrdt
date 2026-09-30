@@ -159,6 +159,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializationEventDefensiveRestore,
     },
     {
+      name: 'tree: children slice pagination',
+      run: scenarioChildrenSlicePagination,
+    },
+    {
       name: 'materialized tree: out-of-order ops rebuild correctly',
       run: scenarioOutOfOrderOpsRebuild,
     },
@@ -815,6 +819,58 @@ async function scenarioMaterializationEventDefensiveRestore(
     [child],
     'child should remain visible',
   );
+}
+
+async function scenarioChildrenSlicePagination(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const nodes = Array.from({ length: 10 }, (_, i) => nodeIdFromInt(i + 1));
+  for (const node of nodes) {
+    await engine.local.insert(replica, root, node, { type: 'last' }, null);
+  }
+
+  const all = (await engine.tree.root.children()).map((child) => child.id);
+  assertArrayEqual(all, nodes, 'tree.children after inserts');
+
+  const p1 = (await engine.tree.root.children({ length: 4 })).map((child) => child.id);
+  assertArrayEqual(p1, nodes.slice(0, 4), 'children slice p1');
+
+  const p2 = (await engine.tree.root.children({ index: 4, length: 4 })).map((child) => child.id);
+  assertArrayEqual(p2, nodes.slice(4, 8), 'children slice p2');
+
+  const p3 = (await engine.tree.root.children({ index: 8, length: 4 })).map((child) => child.id);
+  assertArrayEqual(p3, nodes.slice(8, 10), 'children slice p3');
+
+  const p4 = (await engine.tree.root.children({ index: 10, length: 4 })).map((child) => child.id);
+  assertArrayEqual(p4, [], 'children slice past end');
+
+  const tail = (await engine.tree.root.children({ index: 7 })).map((child) => child.id);
+  assertArrayEqual(tail, nodes.slice(7), 'children slice index-only tail');
+
+  const tombstoned = nodes[4]!;
+  await engine.local.delete(replica, tombstoned);
+  const live = nodes.filter((id) => id !== tombstoned);
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((child) => child.id),
+    live,
+    'children excludes tombstone',
+  );
+  assertArrayEqual(
+    (await engine.tree.root.children({ index: 3, length: 2 })).map((child) => child.id),
+    live.slice(3, 5),
+    'children slice skips tombstone',
+  );
+
+  let threw = false;
+  try {
+    await engine.tree.root.children({ index: -1 });
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'children slice rejects negative index');
 }
 
 async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContext): Promise<void> {

@@ -1,4 +1,5 @@
 import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
+import type { TreecrdtChildrenSlice } from '@treecrdt/interface/engine';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 import { createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
@@ -40,7 +41,7 @@ export interface TreecrdtSessionOperations {
 
 /** Flat materialized-tree primitives used by the public Node API. */
 export interface TreecrdtSessionTree {
-  children: (parent: string) => Promise<unknown[]>;
+  children: (parent: string, slice?: TreecrdtChildrenSlice) => Promise<unknown[]>;
   dump: () => Promise<unknown[]>;
   payload: (node: string) => Promise<Uint8Array | null>;
   nodeCount: () => Promise<number>;
@@ -174,7 +175,8 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
   };
 
   const tree: TreecrdtSessionTree = {
-    children: (parent) => run(async () => ensureApi().treeChildren(nodeIdToBytes16(parent))),
+    children: (parent, slice) =>
+      run(async () => ensureApi().treeChildren(nodeIdToBytes16(parent), slice)),
     dump: () => run(async () => ensureApi().treeDump()),
     payload: (node) =>
       run(async () => transferBinary(await ensureApi().treePayload(nodeIdToBytes16(node)))),

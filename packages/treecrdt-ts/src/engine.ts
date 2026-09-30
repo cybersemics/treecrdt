@@ -161,6 +161,33 @@ export type TreecrdtEngineOpRefs = {
 };
 
 /**
+ * Optional half-open index range over a parent's live (non-tombstoned) children, in `(order_key, node)` order.
+ *
+ * Omitted `index` defaults to `0`. Omitted `length` returns from `index` through the end. Out-of-range
+ * starts yield an empty list; a partial tail is returned when `index + length` exceeds the child count.
+ */
+export type TreecrdtChildrenSlice = {
+  index?: number;
+  length?: number;
+};
+
+/** Normalize optional slice args; throws on negative or non-integer values. */
+export function normalizeChildrenSlice(
+  slice?: TreecrdtChildrenSlice,
+): { index: number; length: number | undefined } | undefined {
+  if (slice === undefined) return undefined;
+  const index = slice.index ?? 0;
+  const length = slice.length;
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`invalid children slice index: ${String(slice.index)}`);
+  }
+  if (length !== undefined && (!Number.isInteger(length) || length < 0)) {
+    throw new Error(`invalid children slice length: ${String(slice.length)}`);
+  }
+  return { index, length };
+}
+
+/**
  * Lazy materialized-tree handle. Methods issue fresh queries; no local cache.
  */
 export type TreecrdtNode = {
@@ -168,7 +195,7 @@ export type TreecrdtNode = {
   /** Parent handle, or undefined when this node or its parent is not visible. */
   parent: () => Promise<TreecrdtNode | undefined>;
   payload: () => Promise<Uint8Array | null>;
-  children: () => Promise<TreecrdtNode[]>;
+  children: (slice?: TreecrdtChildrenSlice) => Promise<TreecrdtNode[]>;
 };
 
 /**
@@ -178,7 +205,7 @@ export type TreecrdtNodePrimitives = {
   exists: (node: string) => Promise<boolean>;
   parent: (node: string) => Promise<string | null>;
   payload: (node: string) => Promise<Uint8Array | null>;
-  children: (parent: string) => Promise<string[]>;
+  children: (parent: string, slice?: TreecrdtChildrenSlice) => Promise<string[]>;
 };
 
 export type TreecrdtEngineTree = {
@@ -205,7 +232,7 @@ export function createTreecrdtTreeNodes(
         return parentId === null ? undefined : createNode(parentId);
       },
       payload: () => primitives.payload(id),
-      children: async () => (await primitives.children(id)).map(createNode),
+      children: async (slice) => (await primitives.children(id, slice)).map(createNode),
     };
     return node;
   };

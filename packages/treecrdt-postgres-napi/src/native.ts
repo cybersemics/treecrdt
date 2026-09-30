@@ -60,13 +60,11 @@ export type NativeBackend = {
   listOpRefsChildrenWithParentPayload(parent: Uint8Array): Uint8Array[];
   opsSince(lamport: bigint, root: Uint8Array | null): NativeOp[];
   getOpsByOpRefs(opRefs: Uint8Array[]): NativeOp[];
-  treeChildren(parent: Uint8Array): Uint8Array[];
-  treeChildrenPage(
+  treeChildren(
     parent: Uint8Array,
-    cursorOrderKey: Uint8Array | null,
-    cursorNode: Uint8Array | null,
-    limit: number,
-  ): { node: Uint8Array; orderKey: Uint8Array | null }[];
+    index?: number | null,
+    length?: number | null,
+  ): Uint8Array[];
   treeDump(): {
     node: Uint8Array;
     parent: Uint8Array | null;

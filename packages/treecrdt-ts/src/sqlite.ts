@@ -1,10 +1,15 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
-import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
+import {
+  addMaterializationWriteId,
+  emptyMaterializationOutcome,
+  normalizeChildrenSlice,
+} from './engine.js';
 import type {
   LocalWriteOptions,
   MaterializationEvent,
   MaterializationOutcome,
   MaterializationSource,
+  TreecrdtChildrenSlice,
 } from './engine.js';
 import {
   decodeNodeId,
@@ -331,9 +336,7 @@ export function createTreecrdtSqliteAdapter(
     opRefsAll: () => treecrdtOpRefsAll(runner, emitOutcome),
     opRefsChildren: (parent) => treecrdtOpRefsChildren(runner, parent, emitOutcome),
     opsByOpRefs: (opRefs) => treecrdtOpsByOpRefs(runner, opRefs),
-    treeChildren: (parent) => treecrdtTreeChildren(runner, parent, emitOutcome),
-    treeChildrenPage: (parent, cursor, limit) =>
-      treecrdtTreeChildrenPage(runner, parent, cursor, limit, emitOutcome),
+    treeChildren: (parent, slice) => treecrdtTreeChildren(runner, parent, slice, emitOutcome),
     treeDump: () => treecrdtTreeDump(runner, emitOutcome),
     treeNodeCount: () => treecrdtTreeNodeCount(runner, emitOutcome),
     treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
@@ -417,52 +420,40 @@ async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): 
 async function treecrdtTreeChildren(
   runner: SqliteRunner,
   parent: Uint8Array,
+  slice?: TreecrdtChildrenSlice,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
   await treecrdtEnsureMaterialized(runner, emitOutcome);
-  return sqliteGetJsonOrEmpty(
-    runner,
-    "SELECT COALESCE(json_group_array(node_hex), '[]') FROM (\
-     SELECT lower(hex(node)) AS node_hex \
-     FROM tree_nodes \
-     WHERE parent = ?1 AND tombstone = 0 \
-     ORDER BY order_key, node\
-     )",
-    [parent],
-  );
-}
-
-/**
- * Fetch a page of materialized children for `parent`, including ordering keys.
- *
- * Use `(order_key, node)` as a keyset pagination cursor.
- */
-async function treecrdtTreeChildrenPage(
-  runner: SqliteRunner,
-  parent: Uint8Array,
-  cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
-  limit: number,
-  emitOutcome?: (outcome: MaterializationOutcome) => void,
-): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const afterOrderKey = cursor?.orderKey ?? null;
-  const afterNode = cursor?.node ?? null;
-  return sqliteGetJsonOrEmpty(
-    runner,
-    "SELECT COALESCE(json_group_array(json_object('node', node_hex, 'order_key', order_key_hex)), '[]') \
-     FROM (\
-       SELECT \
-         lower(hex(node)) AS node_hex, \
-         CASE WHEN order_key IS NULL THEN NULL ELSE lower(hex(order_key)) END AS order_key_hex, \
-         order_key, \
-         node \
+  const normalized = normalizeChildrenSlice(slice);
+  if (!normalized) {
+    return sqliteGetJsonOrEmpty(
+      runner,
+      "SELECT COALESCE(json_group_array(node_hex), '[]') FROM (\
+       SELECT lower(hex(node)) AS node_hex \
        FROM tree_nodes \
        WHERE parent = ?1 AND tombstone = 0 \
-         AND (?2 IS NULL OR (order_key > ?2 OR (order_key = ?2 AND node > ?3))) \
-       ORDER BY order_key, node \
-       LIMIT ?4\
-     )",
-    [parent, afterOrderKey, afterNode, limit],
+       ORDER BY order_key, node\
+       )",
+      [parent],
+    );
+  }
+  const { index, length } = normalized;
+  if (length === 0) {
+    return [];
+  }
+  const baseSelect =
+    'SELECT lower(hex(node)) AS node_hex FROM tree_nodes WHERE parent = ?1 AND tombstone = 0 ORDER BY order_key, node';
+  if (length === undefined) {
+    return sqliteGetJsonOrEmpty(
+      runner,
+      `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect} OFFSET ?2)`,
+      [parent, index],
+    );
+  }
+  return sqliteGetJsonOrEmpty(
+    runner,
+    `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect} LIMIT ?3 OFFSET ?2)`,
+    [parent, index, length],
   );
 }
 
@@ -815,28 +806,6 @@ export function decodeSqliteMaterializationOutcome(raw: unknown): Materializatio
     headSeq: Number(value.headSeq ?? 0),
     changes,
   };
-}
-
-export type SqliteTreeChildRow = {
-  node: string;
-  orderKey: Uint8Array | null;
-};
-
-export function decodeSqliteTreeChildRows(raw: unknown): SqliteTreeChildRow[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((row: any) => {
-    const node = decodeNodeId(row.node);
-    const rawOrderKey = row.order_key;
-    const orderKey =
-      rawOrderKey === null || rawOrderKey === undefined
-        ? null
-        : typeof rawOrderKey === 'string'
-          ? hexToBytes(rawOrderKey)
-          : rawOrderKey instanceof Uint8Array
-            ? rawOrderKey
-            : Uint8Array.from(rawOrderKey as any);
-    return { node, orderKey };
-  });
 }
 
 export type SqliteTreeRow = {
