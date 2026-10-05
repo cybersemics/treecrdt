@@ -1,5 +1,5 @@
 import type { Operation } from './index.js';
-import type { MaterializationOutcome, TreecrdtChildrenSlice } from './engine.js';
+import type { MaterializationOutcome } from './engine.js';
 
 export type SerializeNodeId = (id: string) => Uint8Array;
 export type SerializeReplica = (replica: Operation['meta']['id']['replica']) => Uint8Array;
@@ -36,11 +36,11 @@ export interface TreecrdtAdapter {
   /**
    * Fetch materialized live (non-tombstoned) children for a parent node (16-byte id).
    *
-   * Optional `slice` selects an index range in stable `(order_key, node)` order.
+   * `(null, null)` returns all live children; `(offset, null)` returns a suffix; `(offset, limit)` a window.
    *
    * Returns raw JSON-decoded values; `number[][]` (bytes) is the expected shape for SQLite-backed adapters.
    */
-  treeChildren(parent: Uint8Array, slice?: TreecrdtChildrenSlice): Promise<unknown[]>;
+  treeChildren(parent: Uint8Array, offset: number | null, limit: number | null): Promise<unknown[]>;
   /**
    * Dump the full materialized tree state.
    *

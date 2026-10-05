@@ -5,12 +5,7 @@ import {
   createTreecrdtEngineLocal,
   createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
-import type {
-  LocalWriteOptions,
-  TreecrdtChildrenSlice,
-  TreecrdtEngine,
-  WriteOptions,
-} from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
 import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
 
 import {
@@ -116,10 +111,10 @@ export async function createTreecrdtPostgresClient(
     return backend.getOpsByOpRefs(opRefs).map(nativeToOperation);
   };
 
-  const treeChildrenImpl = async (parent: string, slice?: TreecrdtChildrenSlice) => {
+  const treeChildrenImpl = async (parent: string, offset: number | null, limit: number | null) => {
     ensureMaterializedImpl();
     return backend
-      .treeChildren(nodeIdToBytes16(parent), slice?.index ?? null, slice?.length ?? null)
+      .treeChildren(nodeIdToBytes16(parent), offset, limit)
       .map((b) => nodeIdFromBytes16(b));
   };
 

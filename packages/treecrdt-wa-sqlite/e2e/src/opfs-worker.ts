@@ -69,11 +69,15 @@ async function createAdapter(
     opRefsAll: async () => client.opRefs.all(),
     opRefsChildren: async (parent) => client.opRefs.children(bytesToHex(parent)),
     opsByOpRefs: async (opRefs) => client.ops.get(opRefs),
-    treeChildren: async (parent) => {
+    treeChildren: async (parent, offset, limit) => {
       const id = bytesToHex(parent);
       const handle = id === client.tree.root.id ? client.tree.root : await client.tree.get(id);
       if (!handle) return [];
-      return (await handle.children()).map((node) => node.id);
+      const slice =
+        offset === null && limit === null
+          ? undefined
+          : { index: offset, ...(limit !== null ? { length: limit } : {}) };
+      return (await handle.children(slice)).map((node) => node.id);
     },
     treeDump: async () => client.tree.dump(),
     treeNodeCount: async () => client.tree.nodeCount(),

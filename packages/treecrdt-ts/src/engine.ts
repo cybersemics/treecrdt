@@ -205,7 +205,11 @@ export type TreecrdtNodePrimitives = {
   exists: (node: string) => Promise<boolean>;
   parent: (node: string) => Promise<string | null>;
   payload: (node: string) => Promise<Uint8Array | null>;
-  children: (parent: string, slice?: TreecrdtChildrenSlice) => Promise<string[]>;
+  /**
+   * Live children in stable order. `(null, null)` = all; `(offset, null)` = suffix from offset;
+   * `(offset, limit)` = fixed-size window. Empty windows are handled in the engine (no I/O).
+   */
+  children: (parent: string, offset: number | null, limit: number | null) => Promise<string[]>;
 };
 
 export type TreecrdtEngineTree = {
@@ -232,7 +236,13 @@ export function createTreecrdtTreeNodes(
         return parentId === null ? undefined : createNode(parentId);
       },
       payload: () => primitives.payload(id),
-      children: async (slice) => (await primitives.children(id, slice)).map(createNode),
+      children: async (slice) => {
+        const normalized = normalizeChildrenSlice(slice);
+        if (normalized !== undefined && normalized.length === 0) return [];
+        const offset = normalized === undefined ? null : normalized.index;
+        const limit = normalized === undefined ? null : (normalized.length ?? null);
+        return (await primitives.children(id, offset, limit)).map(createNode);
+      },
     };
     return node;
   };

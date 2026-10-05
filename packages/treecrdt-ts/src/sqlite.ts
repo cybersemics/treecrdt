@@ -1,15 +1,10 @@
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
-import {
-  addMaterializationWriteId,
-  emptyMaterializationOutcome,
-  normalizeChildrenSlice,
-} from './engine.js';
+import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
   LocalWriteOptions,
   MaterializationEvent,
   MaterializationOutcome,
   MaterializationSource,
-  TreecrdtChildrenSlice,
 } from './engine.js';
 import {
   decodeNodeId,
@@ -336,7 +331,8 @@ export function createTreecrdtSqliteAdapter(
     opRefsAll: () => treecrdtOpRefsAll(runner, emitOutcome),
     opRefsChildren: (parent) => treecrdtOpRefsChildren(runner, parent, emitOutcome),
     opsByOpRefs: (opRefs) => treecrdtOpsByOpRefs(runner, opRefs),
-    treeChildren: (parent, slice) => treecrdtTreeChildren(runner, parent, slice, emitOutcome),
+    treeChildren: (parent, offset, limit) =>
+      treecrdtTreeChildren(runner, parent, offset, limit, emitOutcome),
     treeDump: () => treecrdtTreeDump(runner, emitOutcome),
     treeNodeCount: () => treecrdtTreeNodeCount(runner, emitOutcome),
     treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
@@ -420,12 +416,14 @@ async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): 
 async function treecrdtTreeChildren(
   runner: SqliteRunner,
   parent: Uint8Array,
-  slice?: TreecrdtChildrenSlice,
+  offset: number | null,
+  limit: number | null,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
   await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const normalized = normalizeChildrenSlice(slice);
-  if (!normalized) {
+  const baseSelect =
+    'SELECT lower(hex(node)) AS node_hex FROM tree_nodes WHERE parent = ?1 AND tombstone = 0 ORDER BY order_key, node';
+  if (offset === null && limit === null) {
     return sqliteGetJsonOrEmpty(
       runner,
       "SELECT COALESCE(json_group_array(node_hex), '[]') FROM (\
@@ -437,23 +435,17 @@ async function treecrdtTreeChildren(
       [parent],
     );
   }
-  const { index, length } = normalized;
-  if (length === 0) {
-    return [];
-  }
-  const baseSelect =
-    'SELECT lower(hex(node)) AS node_hex FROM tree_nodes WHERE parent = ?1 AND tombstone = 0 ORDER BY order_key, node';
-  if (length === undefined) {
+  if (limit === null) {
     return sqliteGetJsonOrEmpty(
       runner,
-      `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect} OFFSET ?2)`,
-      [parent, index],
+      `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect} LIMIT -1 OFFSET ?2)`,
+      [parent, offset],
     );
   }
   return sqliteGetJsonOrEmpty(
     runner,
     `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect} LIMIT ?3 OFFSET ?2)`,
-    [parent, index, length],
+    [parent, offset, limit],
   );
 }
 
