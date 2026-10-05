@@ -1257,8 +1257,7 @@ where
     let apply_result = if let Some(shortcut) =
         try_shortcut_out_of_order_payload_noops(meta, inserted_ops.clone(), |node| {
             load_last_writer(node)
-        })?
-    {
+        })? {
         if shortcut.remaining_ops.is_empty() {
             update_head(&shortcut.resumed_head)?;
             PersistedRemoteApplyResult::applied(inserted_count, shortcut.outcome)
