@@ -311,8 +311,7 @@ where
     }
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
-        self.apply_remote_with_delta(op)?;
-        Ok(())
+        self.apply_remote_batch([op])
     }
 
     /// Apply a received batch, replaying retained history at most once.
@@ -323,8 +322,12 @@ where
     ///
     /// Like `apply_remote`, this is not an atomic transaction. On error, callers must restore
     /// the complete state or rebuild the replica from storage before continuing.
-    pub fn apply_remote_batch(&mut self, operations: Vec<Operation>) -> Result<()> {
-        let mut accepted = Vec::with_capacity(operations.len());
+    pub fn apply_remote_batch(
+        &mut self,
+        operations: impl IntoIterator<Item = Operation>,
+    ) -> Result<()> {
+        let operations = operations.into_iter();
+        let mut accepted = Vec::with_capacity(operations.size_hint().0);
         for op in operations {
             self.observe_remote(&op);
             if self.storage.apply(op.clone())? {
