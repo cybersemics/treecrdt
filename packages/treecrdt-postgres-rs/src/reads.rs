@@ -262,8 +262,7 @@ pub fn tree_children(
                  WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
                  ORDER BY order_key, node",
             )?;
-            c.query(&stmt, &[&doc_id, &parent_bytes.as_slice()])
-                .map_err(storage_debug)?
+            c.query(&stmt, &[&doc_id, &parent_bytes.as_slice()]).map_err(storage_debug)?
         }
     };
     let mut out = Vec::with_capacity(rows.len());

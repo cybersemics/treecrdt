@@ -512,13 +512,9 @@ impl PgBackend {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-        let nodes =
-            treecrdt_postgres::tree_children(&client, &self.doc_id, parent, index, length)
-                .map_err(map_core_err)?;
-        Ok(nodes
-            .into_iter()
-            .map(|n| Buffer::from(node_to_bytes16(n).to_vec()))
-            .collect())
+        let nodes = treecrdt_postgres::tree_children(&client, &self.doc_id, parent, index, length)
+            .map_err(map_core_err)?;
+        Ok(nodes.into_iter().map(|n| Buffer::from(node_to_bytes16(n).to_vec())).collect())
     }
 
     #[napi]
