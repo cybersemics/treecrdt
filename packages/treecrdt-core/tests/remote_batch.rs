@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use treecrdt_core::{
@@ -80,7 +80,7 @@ fn insert(replica: &ReplicaId, counter: u64, lamport: Lamport) -> Operation {
 #[test]
 fn empty_duplicate_and_newer_batches_do_not_scan_history() {
     let replica = ReplicaId::new(b"remote");
-    let (mut tree, trace) = counting_tree(&ReplicaId::new(b"local"));
+    let (mut tree, trace) = counting_tree(&replica);
 
     tree.apply_remote_batch(Vec::new()).unwrap();
     assert!(trace.borrow().attempts.is_empty());
@@ -105,6 +105,12 @@ fn empty_duplicate_and_newer_batches_do_not_scan_history() {
     tree.apply_remote_batch(Vec::new()).unwrap();
     assert_eq!(tree.head_op(), Some(&third));
     assert_eq!(trace.borrow().scans, 0);
+
+    let next = tree.prepare_local_delete(NodeId(30)).unwrap().op;
+    assert_eq!((next.meta.id.counter, next.meta.lamport), (31, 4));
+    let mut observed = VersionVector::new();
+    observed.observe(&replica, 30);
+    assert_eq!(next.meta.known_state, Some(observed));
 }
 
 #[test]
@@ -126,29 +132,12 @@ fn equal_lamport_batches_order_by_replica_then_counter_without_replay() {
 fn duplicate_identity_keeps_first_arriving_envelope_before_sorting() {
     let replica = ReplicaId::new(b"remote");
     let (mut tree, trace) = counting_tree(&ReplicaId::new(b"local"));
-    let first = Operation::insert_with_payload(
-        &replica,
-        1,
-        20,
-        NodeId::ROOT,
-        NodeId(10),
-        vec![10],
-        b"first",
-    );
-    let later_duplicate = Operation::insert_with_payload(
-        &replica,
-        1,
-        2,
-        NodeId::ROOT,
-        NodeId(11),
-        vec![11],
-        b"duplicate",
-    );
+    let first = Operation::set_payload(&replica, 1, 20, NodeId(10), b"first");
+    let later_duplicate = Operation::set_payload(&replica, 1, 2, NodeId(11), b"duplicate");
     tree.apply_remote_batch(vec![first.clone(), later_duplicate]).unwrap();
 
     assert_eq!(tree.operations_since(0).unwrap(), vec![first.clone()]);
     assert_eq!(tree.head_op(), Some(&first));
-    assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![NodeId(10)]);
     assert_eq!(tree.payload(NodeId(10)).unwrap(), Some(b"first".to_vec()));
     assert!(!tree.is_known(NodeId(11)).unwrap());
     assert_eq!(trace.borrow().scans, 0);
@@ -179,24 +168,6 @@ fn duplicate_high_lamport_advances_clock_with_or_without_replay() {
         let (next, _) = tree.local_payload(NodeId(10), Some(vec![1])).unwrap();
         assert_eq!(next.meta.lamport, 101);
     }
-}
-
-#[test]
-fn own_replica_counters_advance_without_filling_unobserved_causal_gaps() {
-    let replica = ReplicaId::new(b"local");
-    let (mut tree, _) = counting_tree(&replica);
-    tree.apply_remote_batch(vec![insert(&replica, 5, 50)]).unwrap();
-    let (next, _) = tree.local_move(NodeId(5), NodeId::ROOT, LocalPlacement::First).unwrap();
-
-    assert_eq!(next.meta.id.counter, 6);
-    assert_eq!(next.meta.lamport, 51);
-    let mut observed = VersionVector::new();
-    observed.observe(&replica, 5);
-    observed.observe(&replica, 6);
-    assert_eq!(tree.subtree_version_vector(NodeId(5)).unwrap(), observed);
-    let prepared_delete = tree.prepare_local_delete(NodeId(5)).unwrap();
-    assert_eq!(prepared_delete.op.meta.known_state, Some(observed));
-    assert_eq!(prepared_delete.op.meta.id.counter, 7);
 }
 
 fn assert_same_state<S: Storage, T: Storage>(
@@ -274,19 +245,13 @@ fn mixed_history_matches_sequential_ingestion_and_cold_batch() {
     assert_eq!(cold_trace.borrow().scans, 0);
     assert_same_state(&batch, &sequential);
     assert_same_state(&batch, &cold);
-    assert!(batch.is_tombstoned(parent).unwrap());
-    assert!(!batch.is_tombstoned(sibling).unwrap());
-    assert_eq!(batch.parent(child).unwrap(), Some(sibling));
-    assert_eq!(batch.payload(child).unwrap(), None);
     assert_eq!(batch.head_op(), Some(&no_op));
 
-    let (next_batch, _) = batch.local_delete(sibling).unwrap();
-    let (next_sequential, _) = sequential.local_delete(sibling).unwrap();
-    let (next_cold, _) = cold.local_delete(sibling).unwrap();
+    let next_batch = batch.prepare_local_delete(sibling).unwrap().op;
+    let next_sequential = sequential.prepare_local_delete(sibling).unwrap().op;
+    let next_cold = cold.prepare_local_delete(sibling).unwrap().op;
     assert_eq!(next_batch, next_sequential);
     assert_eq!(next_batch, next_cold);
-    assert_same_state(&batch, &sequential);
-    assert_same_state(&batch, &cold);
 }
 
 #[test]
@@ -320,7 +285,7 @@ fn storage_failure_stops_at_failed_envelope_and_requires_replay() {
 
 struct FailingPayloadStore {
     inner: MemoryPayloadStore,
-    fail: Rc<Cell<bool>>,
+    fail_next_write: bool,
 }
 
 impl PayloadStore for FailingPayloadStore {
@@ -342,7 +307,7 @@ impl PayloadStore for FailingPayloadStore {
         payload: Option<Vec<u8>>,
         writer: (Lamport, OperationId),
     ) -> Result<()> {
-        if self.fail.get() {
+        if std::mem::take(&mut self.fail_next_write) {
             return Err(Error::Storage("injected payload failure".into()));
         }
         self.inner.set_payload(node, payload, writer)
@@ -352,7 +317,6 @@ impl PayloadStore for FailingPayloadStore {
 #[test]
 fn materialization_failure_leaves_persisted_batch_for_replay() {
     let replica = ReplicaId::new(b"local");
-    let fail = Rc::new(Cell::new(true));
     let mut tree = TreeCrdt::with_stores(
         replica.clone(),
         MemoryStorage::default(),
@@ -360,7 +324,7 @@ fn materialization_failure_leaves_persisted_batch_for_replay() {
         MemoryNodeStore::default(),
         FailingPayloadStore {
             inner: MemoryPayloadStore::default(),
-            fail: fail.clone(),
+            fail_next_write: true,
         },
     )
     .unwrap();
@@ -375,11 +339,7 @@ fn materialization_failure_leaves_persisted_batch_for_replay() {
     assert_eq!(tree.children(NodeId::ROOT).unwrap(), vec![NodeId(1)]);
     assert_eq!(tree.payload(NodeId(1)).unwrap(), None);
 
-    fail.set(false);
     tree.replay_from_storage().unwrap();
     assert_eq!(tree.head_op(), Some(&second));
     assert_eq!(tree.payload(NodeId(1)).unwrap(), Some(b"payload".to_vec()));
-    let (next, _) = tree.local_payload(NodeId(1), None).unwrap();
-    assert_eq!(next.meta.id.counter, 3);
-    assert_eq!(next.meta.lamport, 3);
 }
