@@ -86,14 +86,12 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
       }
       return max;
     },
-    appendOp: async (op, serializeNodeId, serializeReplica) => {
-      const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-      tree.appendOp(JSON.stringify(jsOp));
+    appendOp: async (op, _serializeNodeId, serializeReplica) => {
+      tree.appendOp(toWasmOperation(op, serializeReplica));
       return emptyMaterializationOutcome();
     },
-    appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      const jsOps = ops.map((op) => toJsOp(op, serializeNodeId, serializeReplica));
-      tree.appendOps(JSON.stringify(jsOps));
+    appendOps: async (ops, _serializeNodeId, serializeReplica) => {
+      tree.appendOps(ops.map((op) => toWasmOperation(op, serializeReplica)));
       return emptyMaterializationOutcome();
     },
     opsSince: async (lamport: number) => {
@@ -119,62 +117,21 @@ type JsOp = {
   payload?: string | null;
 };
 
-function toHex(bytes: Uint8Array): string {
-  return bytesToHex(bytes);
-}
-
-function toJsOp(
+function toWasmOperation(
   op: Operation,
-  _serializeNodeId: (id: string) => Uint8Array,
   serializeReplica: (replica: Operation['meta']['id']['replica']) => Uint8Array,
-): JsOp {
-  const base = {
-    replica: toHex(serializeReplica(op.meta.id.replica)),
-    counter: op.meta.id.counter,
-    lamport: op.meta.lamport,
-  };
-
-  switch (op.kind.type) {
-    case 'insert':
-      return {
-        ...base,
-        kind: 'insert',
-        parent: normalizeNodeId(op.kind.parent),
-        node: normalizeNodeId(op.kind.node),
-        order_key: toHex(op.kind.orderKey),
-      };
-    case 'move':
-      return {
-        ...base,
-        kind: 'move',
-        node: normalizeNodeId(op.kind.node),
-        new_parent: normalizeNodeId(op.kind.newParent),
-        order_key: toHex(op.kind.orderKey),
-      };
-    case 'delete':
-      if (!op.meta.knownState || op.meta.knownState.length === 0) {
-        throw new Error('treecrdt: delete operations require meta.knownState');
-      }
-      return {
-        ...base,
-        kind: 'delete',
-        node: normalizeNodeId(op.kind.node),
-        known_state: Array.from(op.meta.knownState),
-      };
-    case 'tombstone':
-      return {
-        ...base,
-        kind: 'tombstone',
-        node: normalizeNodeId(op.kind.node),
-      };
-    case 'payload':
-      return {
-        ...base,
-        kind: 'payload',
-        node: normalizeNodeId(op.kind.node),
-        payload: op.kind.payload === null ? null : toHex(op.kind.payload),
-      };
-    default:
-      throw new Error('unknown op kind');
+): Operation {
+  if (op.kind.type === 'payload' && op.kind.payload === undefined) {
+    throw new Error('treecrdt: payload operations require payload or null');
   }
+  const kind = { ...op.kind, node: normalizeNodeId(op.kind.node) };
+  if (kind.type === 'insert') kind.parent = normalizeNodeId(kind.parent);
+  else if (kind.type === 'move') kind.newParent = normalizeNodeId(kind.newParent);
+  return {
+    meta: {
+      ...op.meta,
+      id: { ...op.meta.id, replica: new Uint8Array(serializeReplica(op.meta.id.replica)) },
+    },
+    kind,
+  };
 }
