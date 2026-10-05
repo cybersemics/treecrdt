@@ -47,11 +47,13 @@ function exposeConnection(connection: MockConnection): MessagePort {
 /** Stubs `Worker` so `createTreecrdtClient` talks to `connection` over Comlink. */
 export function installDedicatedWorker(connection: MockConnection) {
   let terminated = false;
+  let endpoint: MessagePort | null = null;
   vi.stubGlobal(
     'Worker',
     class {
       constructor() {
         const port = exposeConnection(connection);
+        endpoint = port;
         return Object.assign(port, {
           terminate() {
             terminated = true;
@@ -64,6 +66,15 @@ export function installDedicatedWorker(connection: MockConnection) {
   return {
     get terminated() {
       return terminated;
+    },
+    emitError(message = 'worker failed') {
+      if (!endpoint) throw new Error('Worker endpoint was not created');
+      const event = new Event('error');
+      Object.defineProperty(event, 'message', { value: message });
+      endpoint.dispatchEvent(event);
+    },
+    closeEndpoint() {
+      endpoint?.close();
     },
   };
 }
