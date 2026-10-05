@@ -1254,11 +1254,11 @@ where
         inserted_ops.iter().map(|op| op.meta.id.clone()).collect();
     let had_pending_frontier = meta.state().replay_from.is_some();
 
-    let apply_result = if let Some(shortcut) = {
+    let apply_result = if let Some(shortcut) =
         try_shortcut_out_of_order_payload_noops(meta, inserted_ops.clone(), |node| {
             load_last_writer(node)
         })?
-    } {
+    {
         if shortcut.remaining_ops.is_empty() {
             update_head(&shortcut.resumed_head)?;
             PersistedRemoteApplyResult::applied(inserted_count, shortcut.outcome)
