@@ -100,7 +100,10 @@ jobs:
         run: pnpm run fmt:check:ts
 
       - name: Run Clippy linter
-        run: pnpm run clippy
+        run: |
+          rustc --version
+          cargo clippy --version
+          pnpm run clippy
 
       - name: Run Rust tests
         run: cargo test --workspace --all-targets

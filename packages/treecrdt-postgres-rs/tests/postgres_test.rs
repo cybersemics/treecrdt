@@ -57,7 +57,7 @@ impl MaterializationConformanceHarness for PgConformanceHarness {
     }
 
     fn visible_children(&self, parent: NodeId) -> Vec<NodeId> {
-        tree_children(&self.client, &self.doc_id, parent).unwrap()
+        tree_children(&self.client, &self.doc_id, parent, None, None).unwrap()
     }
 
     fn payload(&self, node: NodeId) -> Option<Vec<u8>> {
@@ -419,7 +419,7 @@ fn postgres_backend_large_append_catches_up_materialized_views_on_demand() {
     );
     assert_eq!(max_lamport(&client, &doc_id).unwrap(), op_count);
 
-    let children = tree_children(&client, &doc_id, NodeId::ROOT).unwrap();
+    let children = tree_children(&client, &doc_id, NodeId::ROOT, None, None).unwrap();
     assert_eq!(children.len(), op_count as usize);
 
     let refs_root = list_op_refs_children(&client, &doc_id, NodeId::ROOT).unwrap();
@@ -668,7 +668,7 @@ fn postgres_backend_local_ops_drive_core_materialization_flow() {
 
     ensure_materialized(&client, &doc_id).unwrap();
 
-    let children = tree_children(&client, &doc_id, root).unwrap();
+    let children = tree_children(&client, &doc_id, root, None, None).unwrap();
     assert_eq!(children, vec![sibling, child]);
 
     let refs_root = list_op_refs_children(&client, &doc_id, root).unwrap();
@@ -716,7 +716,7 @@ fn postgres_backend_prepared_local_tx_rolls_back_until_committed() {
     assert_eq!(rejected.op().meta.id.counter, 1);
     rejected.rollback().unwrap();
     assert_eq!(op_count(&client, &doc_id), 0);
-    assert!(tree_children(&client, &doc_id, NodeId::ROOT).unwrap().is_empty());
+    assert!(tree_children(&client, &doc_id, NodeId::ROOT, None, None).unwrap().is_empty());
 
     let node_committed = node(1102);
     let committed = prepare_local_insert_tx(
@@ -736,7 +736,7 @@ fn postgres_backend_prepared_local_tx_rolls_back_until_committed() {
     assert_eq!(result.op.kind.node(), node_committed);
     assert_eq!(op_count(&client, &doc_id), 1);
     assert_eq!(
-        tree_children(&client, &doc_id, NodeId::ROOT).unwrap(),
+        tree_children(&client, &doc_id, NodeId::ROOT, None, None).unwrap(),
         vec![node_committed]
     );
     assert_eq!(

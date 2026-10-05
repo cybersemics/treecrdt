@@ -36,8 +36,11 @@ async function createOpfsLifecycleClient(opts: LifecycleOptions): Promise<Treecr
 }
 
 async function summarizeLifecycleState(client: TreecrdtClient): Promise<LifecycleState> {
-  const parentPayload = await client.tree.getPayload(parentId);
-  const childPayload = await client.tree.getPayload(childId);
+  const parentNode = await client.tree.get(parentId);
+  const childNode = await client.tree.get(childId);
+  const parentPayload = parentNode ? await parentNode.payload() : null;
+  const childPayload = childNode ? await childNode.payload() : null;
+  const childParent = childNode ? await childNode.parent() : null;
   return {
     parentId,
     childId,
@@ -45,11 +48,11 @@ async function summarizeLifecycleState(client: TreecrdtClient): Promise<Lifecycl
     runtime: client.runtime,
     storage: client.storage,
     headLamport: await client.meta.headLamport(),
-    rootChildren: await client.tree.children(rootId),
-    parentChildren: await client.tree.children(parentId),
-    parentExists: await client.tree.exists(parentId),
-    childExists: await client.tree.exists(childId),
-    childParent: await client.tree.parent(childId),
+    rootChildren: (await client.tree.root.children()).map((node) => node.id),
+    parentChildren: parentNode ? (await parentNode.children()).map((node) => node.id) : [],
+    parentExists: parentNode !== undefined,
+    childExists: childNode !== undefined,
+    childParent: childParent?.id ?? null,
     parentPayload: parentPayload ? textDecoder.decode(parentPayload) : null,
     childPayload: childPayload ? textDecoder.decode(childPayload) : null,
   };

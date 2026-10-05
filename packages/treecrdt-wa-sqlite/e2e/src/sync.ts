@@ -301,8 +301,12 @@ export async function runTreecrdtMaterializationEventE2E(): Promise<{
     });
     await client.ops.appendMany(ops);
     unsubscribe();
-    const children = await client.tree.children(root);
-    return { ok: true, eventIds: events.length ? events[events.length - 1]! : [], children };
+    const children = await client.tree.root.children();
+    return {
+      ok: true,
+      eventIds: events.length ? events[events.length - 1]! : [],
+      children: children.map((node) => node.id),
+    };
   } finally {
     await client.close();
   }
@@ -338,7 +342,7 @@ async function runAuthLocalWriteCase(opts: { storage: 'memory' | 'opfs' }): Prom
     }
 
     const rollback = {
-      exists: await client.tree.exists(rollbackNode),
+      exists: (await client.tree.get(rollbackNode)) !== undefined,
       eventCount: events.length,
       opCount: (await client.ops.all()).length,
     };
@@ -355,7 +359,7 @@ async function runAuthLocalWriteCase(opts: { storage: 'memory' | 'opfs' }): Prom
     });
 
     const success = {
-      exists: await client.tree.exists(successNode),
+      exists: (await client.tree.get(successNode)) !== undefined,
       eventCount: events.length,
       opCount: (await client.ops.all()).length,
       authorizedBeforeEvent,
@@ -501,16 +505,22 @@ export async function sharedOpfsCrossTabState(
   const parents = [...new Set([root, ...(opts.parents ?? [])])];
   const childrenByParent: Record<string, string[]> = {};
   for (const parent of parents) {
-    childrenByParent[parent] = await sharedOpfsCrossTabClient.tree.children(parent);
+    const handle =
+      parent === sharedOpfsCrossTabClient.tree.root.id
+        ? sharedOpfsCrossTabClient.tree.root
+        : await sharedOpfsCrossTabClient.tree.get(parent);
+    childrenByParent[parent] = handle ? (await handle.children()).map((node) => node.id) : [];
   }
 
   const existsByNode: Record<string, boolean> = {};
   const parentByNode: Record<string, string | null> = {};
   const payloadByNode: Record<string, string | null> = {};
   for (const node of opts.nodes ?? []) {
-    existsByNode[node] = await sharedOpfsCrossTabClient.tree.exists(node);
-    parentByNode[node] = await sharedOpfsCrossTabClient.tree.parent(node);
-    const payload = await sharedOpfsCrossTabClient.tree.getPayload(node);
+    const handle = await sharedOpfsCrossTabClient.tree.get(node);
+    existsByNode[node] = handle !== undefined;
+    const parent = handle ? await handle.parent() : null;
+    parentByNode[node] = parent?.id ?? null;
+    const payload = handle ? await handle.payload() : null;
     payloadByNode[node] = payload ? new TextDecoder().decode(payload) : null;
   }
 
