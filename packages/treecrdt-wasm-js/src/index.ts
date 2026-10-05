@@ -3,6 +3,7 @@ import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
 import { bytesToHex, hexToBytes, normalizeNodeId } from '@treecrdt/interface/ids';
 import { WasmTree } from '../pkg/treecrdt_wasm.js';
 import { createHash } from 'node:crypto';
+import { isUint8Array } from 'node:util/types';
 
 type LoadOptions = {
   replicaHex?: string;
@@ -117,6 +118,13 @@ type JsOp = {
   payload?: string | null;
 };
 
+// Serde's byte-buffer reader uses realm-local instanceof checks.
+function localByteView(bytes: Uint8Array): Uint8Array {
+  if (bytes instanceof Uint8Array || !isUint8Array(bytes)) return bytes;
+  const view = bytes as Uint8Array;
+  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+}
+
 function toWasmOperation(
   op: Operation,
   serializeReplica: (replica: Operation['meta']['id']['replica']) => Uint8Array,
@@ -127,10 +135,13 @@ function toWasmOperation(
   const kind = { ...op.kind, node: normalizeNodeId(op.kind.node) };
   if (kind.type === 'insert') kind.parent = normalizeNodeId(kind.parent);
   else if (kind.type === 'move') kind.newParent = normalizeNodeId(kind.newParent);
+  if ('orderKey' in kind) kind.orderKey = localByteView(kind.orderKey);
+  if ('payload' in kind && kind.payload) kind.payload = localByteView(kind.payload);
   return {
     meta: {
       ...op.meta,
       id: { ...op.meta.id, replica: new Uint8Array(serializeReplica(op.meta.id.replica)) },
+      knownState: op.meta.knownState && localByteView(op.meta.knownState),
     },
     kind,
   };

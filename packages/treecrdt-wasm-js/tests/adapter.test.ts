@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
@@ -21,42 +22,58 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-test('passes the whole batch into WASM and preserves payload and delete data', async () => {
-  const appendOps = vi.spyOn(WasmTree.prototype, 'appendOps');
-  const payload: Operation = {
-    meta: { id: { replica, counter: 2 }, lamport: 2 },
-    kind: { type: 'payload', node, payload: Uint8Array.of(42) },
-  };
-  await adapter.appendOps!([payload, insert, insert], nodeIdToBytes16, replicaIdToBytes);
-  expect(appendOps).toHaveBeenCalledTimes(1);
-  expect(appendOps.mock.calls[0]![0]).toEqual(
-    expect.arrayContaining([expect.objectContaining({ kind: payload.kind })]),
-  );
-  expect(await adapter.treePayload(nodeIdToBytes16(node))).toEqual(Uint8Array.of(42));
-  expect(await adapter.opsSince(0)).toHaveLength(2);
+test.each([
+  ['local', Uint8Array],
+  ['foreign', runInNewContext('Uint8Array') as Uint8ArrayConstructor],
+])(
+  'passes a %s-realm byte batch into WASM and preserves payload and delete data',
+  async (_, Bytes) => {
+    const appendOps = vi.spyOn(WasmTree.prototype, 'appendOps');
+    const insertWithBytes = {
+      ...insert,
+      kind: { ...insert.kind, orderKey: Bytes.of(99, 128, 99).subarray(1, 2) },
+    };
+    const payload: Operation = {
+      meta: { id: { replica, counter: 2 }, lamport: 2 },
+      kind: { type: 'payload', node, payload: Bytes.of(99, 42, 99).subarray(1, 2) },
+    };
+    await adapter.appendOps!(
+      [payload, insertWithBytes, insertWithBytes],
+      nodeIdToBytes16,
+      replicaIdToBytes,
+    );
+    expect(appendOps).toHaveBeenCalledTimes(1);
+    expect(await adapter.treePayload(nodeIdToBytes16(node))).toEqual(Uint8Array.of(42));
+    expect(await adapter.opsSince(0)).toMatchObject([
+      { kind: 'payload', payload: '2a' },
+      { kind: 'insert', order_key: '80' },
+    ]);
 
-  const knownState = encodeVersionVector({
-    entries: [{ replica, frontier: 2n, ranges: [[4n, 4n]] }],
-  });
-  await adapter.appendOps!(
-    [
-      {
-        meta: {
-          id: { replica, counter: 3 },
-          lamport: 3,
-          knownState,
+    const knownState = Bytes.from([
+      99,
+      ...encodeVersionVector({ entries: [{ replica, frontier: 2n, ranges: [[4n, 4n]] }] }),
+      99,
+    ]).subarray(1, -1);
+    await adapter.appendOps!(
+      [
+        {
+          meta: {
+            id: { replica, counter: 3 },
+            lamport: 3,
+            knownState,
+          },
+          kind: { type: 'delete', node },
         },
-        kind: { type: 'delete', node },
-      },
-    ],
-    nodeIdToBytes16,
-    replicaIdToBytes,
-  );
-  expect(await adapter.treeExists(nodeIdToBytes16(node))).toBe(false);
-  expect(await adapter.opsSince(2)).toMatchObject([
-    { kind: 'delete', known_state: Array.from(knownState) },
-  ]);
-});
+      ],
+      nodeIdToBytes16,
+      replicaIdToBytes,
+    );
+    expect(await adapter.treeExists(nodeIdToBytes16(node))).toBe(false);
+    expect(await adapter.opsSince(2)).toMatchObject([
+      { kind: 'delete', known_state: Array.from(knownState) },
+    ]);
+  },
+);
 
 test.each([undefined, new Uint8Array(), Uint8Array.of(255)])(
   'rejects invalid delete knownState %s before applying the batch',
@@ -95,15 +112,6 @@ test.each([undefined, new Uint8Array(), Uint8Array.of(99, 0, 255, 99).subarray(1
         payload: expectedPayload === null ? undefined : bytesToHex(expectedPayload),
       },
     ]);
-    await adapter.appendOp(
-      {
-        meta: { id: { replica, counter: 2 }, lamport: 2 },
-        kind: { type: 'payload', node, payload: null },
-      },
-      nodeIdToBytes16,
-      replicaIdToBytes,
-    );
-    expect(await adapter.treePayload(nodeIdToBytes16(node))).toBeNull();
   },
 );
 
@@ -143,12 +151,35 @@ test('copies each replica when the serializer reuses a buffer', async () => {
   expect(await adapter.opsSince(0)).toHaveLength(2);
 });
 
-test('rejects a missing payload instead of treating it as an explicit clear', async () => {
+test('rejects a missing payload but accepts an explicit clear', async () => {
   const invalid = { ...insert, kind: { type: 'payload', node } } as Operation;
   await expect(
     adapter.appendOps!([insert, invalid], nodeIdToBytes16, replicaIdToBytes),
   ).rejects.toThrow('payload operations require payload or null');
   expect(await adapter.opsSince(0)).toEqual([]);
+  await adapter.appendOp(
+    { ...insert, kind: { ...insert.kind, payload: Uint8Array.of(42) } },
+    nodeIdToBytes16,
+    replicaIdToBytes,
+  );
+  await adapter.appendOp(
+    {
+      meta: { id: { replica, counter: 2 }, lamport: 2 },
+      kind: { type: 'payload', node, payload: null },
+    },
+    nodeIdToBytes16,
+    replicaIdToBytes,
+  );
+  expect(await adapter.treePayload(nodeIdToBytes16(node))).toBeNull();
+});
+
+test('accepts a typed operation when returning a materialization delta', () => {
+  const tree = new WasmTree('7761736d');
+  try {
+    expect(tree.appendOpWithDelta(insert)).toEqual([insert.kind.parent, node]);
+  } finally {
+    tree.free();
+  }
 });
 
 test.each([
