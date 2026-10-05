@@ -88,26 +88,12 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
     },
     appendOp: async (op, serializeNodeId, serializeReplica) => {
       const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-      if (op.kind.type === 'delete') {
-        if (!op.meta.knownState || op.meta.knownState.length === 0) {
-          throw new Error('treecrdt: delete operations require meta.knownState');
-        }
-        jsOp.known_state = Array.from(op.meta.knownState);
-      }
       tree.appendOp(JSON.stringify(jsOp));
       return emptyMaterializationOutcome();
     },
     appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      for (const op of ops) {
-        const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-        if (op.kind.type === 'delete') {
-          if (!op.meta.knownState || op.meta.knownState.length === 0) {
-            throw new Error('treecrdt: delete operations require meta.knownState');
-          }
-          jsOp.known_state = Array.from(op.meta.knownState);
-        }
-        tree.appendOp(JSON.stringify(jsOp));
-      }
+      const jsOps = ops.map((op) => toJsOp(op, serializeNodeId, serializeReplica));
+      tree.appendOps(JSON.stringify(jsOps));
       return emptyMaterializationOutcome();
     },
     opsSince: async (lamport: number) => {
@@ -166,10 +152,14 @@ function toJsOp(
         order_key: toHex(op.kind.orderKey),
       };
     case 'delete':
+      if (!op.meta.knownState || op.meta.knownState.length === 0) {
+        throw new Error('treecrdt: delete operations require meta.knownState');
+      }
       return {
         ...base,
         kind: 'delete',
         node: normalizeNodeId(op.kind.node),
+        known_state: Array.from(op.meta.knownState),
       };
     case 'tombstone':
       return {
