@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { beforeAll, expect, test } from 'vitest';
 import {
@@ -7,6 +8,7 @@ import {
   utils as ed25519Utils,
 } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
 import { loadVersionVectorCodec, type VersionVectorCodec } from '@treecrdt/wasm/codec';
@@ -281,3 +283,104 @@ test('signature policy only allows knownState on deletes', async () => {
   const tombstone = operation({ type: 'tombstone', node });
   expect((await encodeTreecrdtOpSigInput({ docId: 'doc', op: tombstone })).at(-1)).toBe(0);
 });
+
+type VectorKind =
+  | { type: 'insert'; parent: string; node: string; orderKeyHex: string; payloadHex?: string }
+  | { type: 'move'; node: string; newParent: string; orderKeyHex: string }
+  | { type: 'delete' | 'tombstone'; node: string }
+  | { type: 'payload'; node: string; payloadHex: string | null };
+
+type OpSigVector = {
+  name: string;
+  counter: number;
+  lamport: number;
+  kind: VectorKind;
+  knownStateHex?: string;
+  payloadCommitmentHex?: string;
+  signatureInputHex: string;
+  signatureHex: string;
+};
+
+const opSigFixture: { docId: string; replicaPublicKeyHex: string; vectors: OpSigVector[] } =
+  JSON.parse(readFileSync(new URL('../../../fixtures/op-sig-v1.json', import.meta.url), 'utf8'));
+// The fixture's documented test-only seed.
+const fixturePrivateKey = new Uint8Array(32).fill(2);
+const fixturePublicKey = hexToBytes(opSigFixture.replicaPublicKeyHex);
+
+function vectorKind(kind: VectorKind): Operation['kind'] {
+  switch (kind.type) {
+    case 'insert':
+      return {
+        type: 'insert',
+        parent: kind.parent,
+        node: kind.node,
+        orderKey: hexToBytes(kind.orderKeyHex),
+        ...(kind.payloadHex === undefined ? {} : { payload: hexToBytes(kind.payloadHex) }),
+      };
+    case 'move':
+      return {
+        type: 'move',
+        node: kind.node,
+        newParent: kind.newParent,
+        orderKey: hexToBytes(kind.orderKeyHex),
+      };
+    case 'payload':
+      return {
+        type: 'payload',
+        node: kind.node,
+        payload: kind.payloadHex === null ? null : hexToBytes(kind.payloadHex),
+      };
+    case 'delete':
+      return { type: 'delete', node: kind.node };
+    case 'tombstone':
+      return { type: 'tombstone', node: kind.node };
+  }
+}
+
+function vectorOperation(vector: OpSigVector): Operation {
+  return {
+    meta: {
+      id: { replica: fixturePublicKey, counter: vector.counter },
+      lamport: vector.lamport,
+      ...(vector.knownStateHex === undefined
+        ? {}
+        : { knownState: hexToBytes(vector.knownStateHex) }),
+    },
+    kind: vectorKind(vector.kind),
+  };
+}
+
+test.each(opSigFixture.vectors)('shared operation signature vector: $name', async (vector) => {
+  const { docId } = opSigFixture;
+  const op = vectorOperation(vector);
+  expect(bytesToHex(await encodeTreecrdtOpSigInput({ docId, op }))).toBe(vector.signatureInputHex);
+  if (vector.payloadCommitmentHex !== undefined) {
+    expect(vector.signatureInputHex).toContain(vector.payloadCommitmentHex);
+  }
+
+  const signature = await signTreecrdtOp({ docId, op, privateKey: fixturePrivateKey });
+  expect(bytesToHex(signature)).toBe(vector.signatureHex);
+  await expect(
+    verifyTreecrdtOp({ docId, op, signature, publicKey: fixturePublicKey }),
+  ).resolves.toBe(true);
+});
+
+test.each(opSigFixture.vectors.filter((vector) => vector.payloadCommitmentHex !== undefined))(
+  'a different payload body fails the committed signature: $name',
+  async (vector) => {
+    const op = vectorOperation(vector);
+    if ((op.kind.type !== 'insert' && op.kind.type !== 'payload') || !op.kind.payload) {
+      throw new Error('expected a payload vector');
+    }
+    op.kind.payload = Uint8Array.from([...op.kind.payload, 0]);
+
+    await expect(
+      verifyTreecrdtOp({
+        docId: opSigFixture.docId,
+        op,
+        signature: hexToBytes(vector.signatureHex),
+        publicKey: fixturePublicKey,
+      }),
+    ).resolves.toBe(false);
+  },
+);
