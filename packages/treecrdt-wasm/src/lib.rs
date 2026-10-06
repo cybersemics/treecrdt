@@ -199,6 +199,21 @@ impl WasmTree {
         self.inner.apply_remote(op).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
     }
 
+    /// Decode the complete batch before ingestion. Applying it is not an atomic transaction.
+    #[wasm_bindgen(js_name = appendOps)]
+    pub fn append_ops(&mut self, ops_json: String) -> Result<(), JsValue> {
+        let js_ops: Vec<JsOp> =
+            serde_json::from_str(&ops_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ops = js_ops
+            .into_iter()
+            .map(js_to_op)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| JsValue::from_str(&e))?;
+        self.inner
+            .apply_remote_batch(ops)
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+    }
+
     #[wasm_bindgen(js_name = appendOpWithDelta)]
     pub fn append_op_with_delta(&mut self, op_json: String) -> Result<JsValue, JsValue> {
         let js_op: JsOp =
