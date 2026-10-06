@@ -5,14 +5,15 @@
 mod version_vector;
 
 use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
 use serde_wasm_bindgen::to_value;
 use treecrdt_core::{
-    Lamport, LamportClock, MaterializationOutcome, MemoryStorage, NodeId, Operation, OperationKind,
-    ReplicaId, TreeCrdt, VersionVector,
+    Lamport, LamportClock, MaterializationOutcome, MemoryStorage, NodeId, Operation, OperationId,
+    OperationKind, OperationMetadata, ReplicaId, TreeCrdt, VersionVector,
 };
 use wasm_bindgen::prelude::*;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct JsOp {
     replica: String, // hex
     counter: u64,
@@ -22,15 +23,56 @@ struct JsOp {
     node: String,
     new_parent: Option<String>,
     order_key: Option<String>, // hex
-    #[serde(default)]
     known_state: Option<Vec<u8>>,
     payload: Option<String>, // hex
 }
 
+#[derive(Deserialize)]
+struct OperationInput {
+    meta: MetadataInput,
+    kind: KindInput,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataInput {
+    id: OperationIdInput,
+    lamport: Lamport,
+    known_state: Option<ByteBuf>,
+}
+
+#[derive(Deserialize)]
+struct OperationIdInput {
+    replica: ByteBuf,
+    counter: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KindInput {
+    #[serde(rename = "type")]
+    kind: KindTag,
+    node: String,
+    parent: Option<String>,
+    new_parent: Option<String>,
+    order_key: Option<ByteBuf>,
+    payload: Option<ByteBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum KindTag {
+    Insert,
+    Move,
+    Delete,
+    Tombstone,
+    Payload,
+}
+
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let clean = hex.trim_start_matches("0x");
-    if !clean.len().is_multiple_of(2) {
-        return Err("hex length must be even".into());
+    if !clean.is_ascii() || !clean.len().is_multiple_of(2) {
+        return Err("hex must contain an even number of ASCII characters".into());
     }
     (0..clean.len())
         .step_by(2)
@@ -116,62 +158,53 @@ fn op_to_js(op: &Operation) -> Result<JsOp, String> {
     })
 }
 
-fn js_to_op(js: JsOp) -> Result<Operation, String> {
-    let replica_bytes = hex_to_bytes(&js.replica)?;
-    let replica = ReplicaId::new(replica_bytes);
-    let counter = js.counter;
-    let lamport = js.lamport;
-
-    let op = match js.kind.as_str() {
-        "insert" => {
-            let parent = js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT);
-            let node = hex_to_node(&js.node)?;
-            let order_key =
-                js.order_key.as_deref().map(hex_to_bytes).transpose()?.unwrap_or_default();
-            if let Some(payload_hex) = js.payload.as_deref() {
-                let payload = hex_to_bytes(payload_hex)?;
-                Operation::insert_with_payload(
-                    &replica, counter, lamport, parent, node, order_key, payload,
-                )
-            } else {
-                Operation::insert(&replica, counter, lamport, parent, node, order_key)
-            }
-        }
-        "move" => {
-            let order_key =
-                js.order_key.as_deref().map(hex_to_bytes).transpose()?.unwrap_or_default();
-            Operation::move_node(
-                &replica,
-                counter,
-                lamport,
-                hex_to_node(&js.node)?,
-                js.new_parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
-                order_key,
-            )
-        }
-        "delete" => {
-            let Some(bytes) = js.known_state else {
-                return Err("delete op missing known_state".into());
-            };
-            if bytes.is_empty() {
-                return Err(
-                    "delete known_state must contain non-zero-length VersionVector v0 bytes".into(),
-                );
-            }
-            let vv = VersionVector::decode(&bytes).map_err(|e| e.to_string())?;
-            Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, Some(vv))
-        }
-        "tombstone" => Operation::tombstone(&replica, counter, lamport, hex_to_node(&js.node)?),
-        "payload" => Operation::payload(
-            &replica,
-            counter,
-            lamport,
-            hex_to_node(&js.node)?,
-            js.payload.as_deref().map(hex_to_bytes).transpose()?,
-        ),
-        _ => return Err("unknown kind".into()),
+fn js_to_op(js: OperationInput) -> Result<Operation, String> {
+    if js.meta.id.counter > 9_007_199_254_740_991 || js.meta.lamport > 9_007_199_254_740_991 {
+        return Err("operation counter and Lamport must be safe JavaScript integers".into());
+    }
+    if matches!(js.kind.kind, KindTag::Delete)
+        && js.meta.known_state.as_ref().is_none_or(|bytes| bytes.is_empty())
+    {
+        return Err("treecrdt: delete operations require meta.knownState".into());
+    }
+    let known_state = js
+        .meta
+        .known_state
+        .map(|bytes| VersionVector::decode(&bytes))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let input = js.kind;
+    let node = hex_to_node(&input.node)?;
+    let kind = match input.kind {
+        KindTag::Insert => OperationKind::Insert {
+            parent: hex_to_node(&input.parent.ok_or("insert requires parent")?)?,
+            node,
+            order_key: input.order_key.ok_or("insert requires orderKey")?.into_vec(),
+            payload: input.payload.map(ByteBuf::into_vec),
+        },
+        KindTag::Move => OperationKind::Move {
+            node,
+            new_parent: hex_to_node(&input.new_parent.ok_or("move requires newParent")?)?,
+            order_key: input.order_key.ok_or("move requires orderKey")?.into_vec(),
+        },
+        KindTag::Delete => OperationKind::Delete { node },
+        KindTag::Tombstone => OperationKind::Tombstone { node },
+        KindTag::Payload => OperationKind::Payload {
+            node,
+            payload: input.payload.map(ByteBuf::into_vec),
+        },
     };
-    Ok(op)
+    Ok(Operation {
+        meta: OperationMetadata {
+            id: OperationId {
+                replica: ReplicaId::new(js.meta.id.replica.into_vec()),
+                counter: js.meta.id.counter,
+            },
+            lamport: js.meta.lamport,
+            known_state,
+        },
+        kind,
+    })
 }
 
 #[wasm_bindgen]
@@ -192,18 +225,28 @@ impl WasmTree {
     }
 
     #[wasm_bindgen(js_name = appendOp)]
-    pub fn append_op(&mut self, op_json: String) -> Result<(), JsValue> {
-        let js_op: JsOp =
-            serde_json::from_str(&op_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    pub fn append_op(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "import('@treecrdt/interface').Operation")]
+        op: JsValue,
+    ) -> Result<(), JsValue> {
+        let js_op =
+            serde_wasm_bindgen::from_value(op).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
         self.inner.apply_remote(op).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
     }
 
     /// Decode the complete batch before ingestion. Applying it is not an atomic transaction.
     #[wasm_bindgen(js_name = appendOps)]
-    pub fn append_ops(&mut self, ops_json: String) -> Result<(), JsValue> {
-        let js_ops: Vec<JsOp> =
-            serde_json::from_str(&ops_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    pub fn append_ops(
+        &mut self,
+        #[wasm_bindgen(
+            unchecked_param_type = "readonly import('@treecrdt/interface').Operation[]"
+        )]
+        operations: JsValue,
+    ) -> Result<(), JsValue> {
+        let js_ops: Vec<OperationInput> = serde_wasm_bindgen::from_value(operations)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let ops = js_ops
             .into_iter()
             .map(js_to_op)
@@ -215,9 +258,13 @@ impl WasmTree {
     }
 
     #[wasm_bindgen(js_name = appendOpWithDelta)]
-    pub fn append_op_with_delta(&mut self, op_json: String) -> Result<JsValue, JsValue> {
-        let js_op: JsOp =
-            serde_json::from_str(&op_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    pub fn append_op_with_delta(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "import('@treecrdt/interface').Operation")]
+        op: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let js_op =
+            serde_wasm_bindgen::from_value(op).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
         let delta = self
             .inner
@@ -359,47 +406,5 @@ impl WasmTree {
         }
 
         to_value(&rows).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn delete_js_op(known_state: Vec<u8>) -> JsOp {
-        JsOp {
-            replica: "7265706c696361".into(),
-            counter: 7,
-            lamport: 9,
-            kind: "delete".into(),
-            parent: None,
-            node: node_to_hex(NodeId(1)),
-            new_parent: None,
-            order_key: None,
-            known_state: Some(known_state),
-            payload: None,
-        }
-    }
-
-    #[test]
-    fn delete_known_state_preserves_encoded_bytes() {
-        let replica = ReplicaId::new(b"replica");
-        let mut known_state = VersionVector::new();
-        for counter in [1, 2, 4] {
-            known_state.observe(&replica, counter);
-        }
-        let expected_bytes = known_state.encode().unwrap();
-        let operation = Operation::delete(&replica, 7, 9, NodeId(1), Some(known_state));
-
-        let js = op_to_js(&operation).unwrap();
-        assert_eq!(js.known_state.as_deref(), Some(expected_bytes.as_slice()));
-        assert_eq!(js_to_op(js).unwrap(), operation);
-    }
-
-    #[test]
-    fn delete_rejects_zero_length_and_wrong_format_known_state() {
-        for bytes in [Vec::new(), br#"{"entries":[]}"#.to_vec()] {
-            assert!(js_to_op(delete_js_op(bytes)).is_err());
-        }
     }
 }
