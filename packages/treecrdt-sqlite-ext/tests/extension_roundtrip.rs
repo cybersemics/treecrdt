@@ -555,6 +555,59 @@ fn local_insert_returns_appended_insert_op() {
 }
 
 #[test]
+fn binary_append_validates_complete_batch_before_ingestion() {
+    use ciborium::value::Value;
+
+    let conn = setup_conn();
+    let op = Value::Map(
+        [
+            ("replica", Value::Bytes(b"binary".to_vec())),
+            ("counter", Value::Integer(1.into())),
+            ("lamport", Value::Integer(1.into())),
+            ("kind", Value::Text("insert".into())),
+            ("parent", Value::Bytes(node_bytes(0))),
+            ("node", Value::Bytes(node_bytes(1))),
+            ("order_key", Value::Bytes(vec![0, 255])),
+            ("payload", Value::Bytes(Vec::new())),
+        ]
+        .into_iter()
+        .map(|(name, value)| (Value::Text(name.into()), value))
+        .collect(),
+    );
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&Value::Array(vec![op.clone()]), &mut encoded).unwrap();
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    let mut invalid_second = Vec::new();
+    ciborium::ser::into_writer(&Value::Array(vec![op, Value::Null]), &mut invalid_second).unwrap();
+
+    for invalid in [&encoded[..encoded.len() - 1], &trailing, &invalid_second] {
+        let result: rusqlite::Result<String> = conn.query_row(
+            "SELECT treecrdt_append_ops(?1)",
+            rusqlite::params![invalid],
+            |row| row.get(0),
+        );
+        assert!(result.is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    let outcome: String = conn
+        .query_row(
+            "SELECT treecrdt_append_ops(?1)",
+            rusqlite::params![encoded],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<JsonMaterializationOutcome>(&outcome).unwrap().head_seq,
+        1
+    );
+    assert_eq!(visible_children(&conn, &node_bytes(0)), vec![node_bytes(1)]);
+    assert_eq!(payload_bytes(&conn, &node_bytes(1)), Some(Vec::new()));
+}
+
+#[test]
 fn remote_append_materializes_only_inserted_ops() {
     let harness = setup_conformance_harness();
     materialization_conformance::append_batch_materializes_only_inserted_ops(&harness);

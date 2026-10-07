@@ -631,7 +631,7 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
-  const replica = replicaFromLabel('r1');
+  const replica = Uint8Array.of(99, ...replicaFromLabel('r1'), 99).subarray(1, -1);
   const root = nodeIdFromInt(0);
   const node = nodeIdFromInt(1);
 
@@ -648,16 +648,47 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
     counter: 2,
     lamport: 7,
     node,
-    payload: new Uint8Array([1, 2, 3]),
+    payload: Uint8Array.of(99, 0, 255, 99).subarray(1, -1),
+  });
+  const emptyInsert = makeInsertOp({
+    replica,
+    counter: 3,
+    lamport: 8,
+    parent: root,
+    node: nodeIdFromInt(2),
+    orderKey: Uint8Array.of(99, 0, 2, 99).subarray(1, -1),
+    payload: new Uint8Array(),
   });
 
+  await engine.ops.appendMany([insert]);
   await engine.ops.append(insert);
-  await engine.ops.append(insert);
-  await engine.ops.appendMany([insert, payload]);
+  assertBytesEqual(await (await engine.tree.get(node))!.payload(), null, 'insert without payload');
+  const events = await captureMaterializationEvents(engine, () =>
+    engine.ops.appendMany([emptyInsert, payload, insert, emptyInsert]),
+  );
 
   const refs = await engine.opRefs.all();
-  assertEqual(refs.length, 2, 'opRefs.all length after duplicate append');
-  assertEqual(await engine.meta.headLamport(), 7, 'meta.headLamport after duplicate append');
+  assertEqual(refs.length, 3, 'opRefs.all length after duplicate append');
+  assertEqual(await engine.meta.headLamport(), 8, 'meta.headLamport after duplicate append');
+  const stored = await engine.ops.get(refs);
+  const storedInsert = stored.find((op) => op.meta.id.counter === 3)!;
+  assert(storedInsert.kind.type === 'insert', 'batch insert kind');
+  assertBytesEqual(storedInsert.meta.id.replica, replicaFromLabel('r1'), 'batch replica subview');
+  assertBytesEqual(storedInsert.kind.orderKey, Uint8Array.of(0, 2), 'batch orderKey subview');
+  const inserted = events
+    .flatMap((event) => event.changes)
+    .find((change) => change.kind === 'insert' && change.node === nodeIdFromInt(2));
+  assert(inserted?.kind === 'insert', 'batch emits insert change');
+  assertBytesEqual(inserted.payload, new Uint8Array(), 'insert event preserves empty payload');
+  assertBytesEqual(
+    await (await engine.tree.get(node))!.payload(),
+    Uint8Array.of(0, 255),
+    'batch payload subview',
+  );
+  await engine.ops.appendMany([
+    makePayloadOp({ replica, counter: 4, lamport: 9, node, payload: null }),
+  ]);
+  assertBytesEqual(await (await engine.tree.get(node))!.payload(), null, 'batch payload clear');
 }
 
 async function scenarioMaterializationEventStructuralBatch(
@@ -774,7 +805,13 @@ async function scenarioMaterializationEventDefensiveRestore(
   );
 
   const deleteEvents = await captureMaterializationEvents(b, async () => {
-    await b.ops.appendMany(await a.ops.all());
+    const ops = await a.ops.all();
+    for (const op of ops) {
+      if (op.meta.knownState) {
+        op.meta.knownState = Uint8Array.of(99, ...op.meta.knownState, 99).subarray(1, -1);
+      }
+    }
+    await b.ops.appendMany(ops);
   });
   const receivedDelete = (await b.ops.all()).find((op) => op.kind.type === 'delete');
   assert(receivedDelete, 'receiver must store the delete operation');
