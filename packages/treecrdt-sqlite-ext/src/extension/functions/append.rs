@@ -172,7 +172,7 @@ pub(super) struct AppendOp {
     pub(super) payload: Option<Vec<u8>>,
 }
 
-/// Batch append: accepts a CBOR BLOB or JSON TEXT array with fields matching the ops table.
+/// Batch append: accepts a CBOR BLOB array with fields matching the ops table.
 /// Returns a JSON materialization outcome.
 pub(super) unsafe extern "C" fn treecrdt_append_ops(
     ctx: *mut sqlite3_context,
@@ -182,14 +182,19 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
     if argc != 1 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_append_ops expects one CBOR BLOB or JSON TEXT argument\0".as_ptr()
-                as *const c_char,
+            b"treecrdt_append_ops expects one CBOR BLOB argument\0".as_ptr() as *const c_char,
         );
         return;
     }
 
     let args = unsafe { std::slice::from_raw_parts(argv, argc as usize) };
-    let is_cbor = unsafe { sqlite_value_type(args[0]) } == SQLITE_BLOB as c_int;
+    if unsafe { sqlite_value_type(args[0]) } != SQLITE_BLOB as c_int {
+        sqlite_result_error(
+            ctx,
+            b"treecrdt_append_ops expects a CBOR BLOB\0".as_ptr() as *const c_char,
+        );
+        return;
+    }
     let input_ptr = unsafe { sqlite_value_blob(args[0]) } as *const u8;
     let input_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
     if input_ptr.is_null() || input_len == 0 {
@@ -201,12 +206,9 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
     }
 
     let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
-    let ops: Option<Vec<AppendOp>> = if is_cbor {
-        let mut remaining = input;
-        ciborium::de::from_reader(&mut remaining).ok().filter(|_| remaining.is_empty())
-    } else {
-        serde_json::from_slice(input).ok()
-    };
+    let mut remaining = input;
+    let ops: Option<Vec<AppendOp>> =
+        ciborium::de::from_reader(&mut remaining).ok().filter(|_| remaining.is_empty());
     let ops = match ops {
         Some(v) => v,
         None => {

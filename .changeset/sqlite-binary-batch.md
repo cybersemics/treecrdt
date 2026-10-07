@@ -3,4 +3,4 @@
 '@treecrdt/wa-sqlite': patch
 ---
 
-Send SQLite operation batches as CBOR blobs instead of JSON byte arrays. Retain JSON input for direct SQL callers; stored operations and sync formats are unchanged.
+Send SQLite operation batches as CBOR blobs instead of JSON byte arrays. Update the adapter and extension together: JSON batch input is no longer accepted. Stored operations and sync formats are unchanged.
