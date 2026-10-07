@@ -176,14 +176,16 @@ Reference implementation status:
 
 ## Signed operations
 
-Ops are signed with the doc-scoped Ed25519 key using the bytes below. Payload bytes are signed as
-transmitted (ciphertext when encrypted).
+Ops are signed with the doc-scoped Ed25519 key using the bytes below. Instead of payload bytes, the
+signature covers a commitment to the payload bytes as transmitted (ciphertext when encrypted), so a
+body can later be detached, for example redacted or pruned, without invalidating the signature.
 
 ### Canonical signing bytes
 
-All integers are big-endian. Strings are UTF-8 with length prefixes. Number-valued operation
-counters and Lamport timestamps MUST be safe non-negative JavaScript integers. Signature
-verification uses strict RFC 8032 semantics and rejects small-order identity keys.
+All integers are big-endian. Variable-length fields carry the `u32_be` length prefixes shown; quoted
+domain strings are raw UTF-8 bytes. Number-valued operation counters and Lamport timestamps MUST be
+safe non-negative JavaScript integers. Signature verification uses strict RFC 8032 semantics and
+rejects small-order identity keys.
 
 ```
 sig_input = concat(
@@ -202,8 +204,8 @@ Kind tags and fields:
 
 - Insert: tag=1
   - parent(16) || node(16) || u32_be(len(order_key)) || order_key_bytes
-  - payload_flag(u8): 0 or 1
-  - if payload_flag=1: u32_be(len(payload)) || payload_bytes
+  - payload_flag(u8): 0=absent, 1=present (including empty)
+  - if payload_flag=1: payload_commitment(32)
 - Move: tag=2
   - node(16) || new_parent(16) || u32_be(len(order_key)) || order_key_bytes
 - Delete: tag=3
@@ -212,8 +214,17 @@ Kind tags and fields:
   - node(16)
 - Payload: tag=5
   - node(16)
-  - value_tag(u8): 0=clear, 1=payload
-  - if value_tag=1: u32_be(len(payload)) || payload_bytes
+  - value_tag(u8): 0=clear, 1=payload (including empty)
+  - if value_tag=1: payload_commitment(32)
+
+```
+payload_commitment = blake3("treecrdt/payload-commitment/v1" || 0x00 || payload_bytes)
+```
+
+The commitment is not bound to `doc_id` or the operation id; the signature binds it to the
+operation. It is binding but not hiding: equal bodies have equal commitments, and anyone holding
+the commitment, or the signature with the operation's other signed fields, can confirm a guessed
+body. A detached body stays confidential only if it is high-entropy, such as an encrypted envelope.
 
 `known_state` is encoded after the operation fields:
 
@@ -234,6 +245,8 @@ reject the field on all other operations. Every operation signs its presence tag
 Signers validate the canonical bytes before signing. Verifiers size-check and copy the exact bytes
 into the signature input, verify Ed25519 first, and only then run canonical decoding plus the auth
 profile checks. Invalid signatures therefore cannot trigger version-vector parsing.
+
+Shared test vectors: [`fixtures/op-sig-v1.json`](../../../fixtures/op-sig-v1.json).
 
 ### JavaScript integration
 
