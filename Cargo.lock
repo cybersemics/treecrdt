@@ -1501,7 +1501,7 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde-wasm-bindgen",
- "serde_json",
+ "serde_bytes",
  "treecrdt-core",
  "wasm-bindgen",
 ]
