@@ -643,12 +643,13 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
     node,
     orderKey: orderKeyFromPosition(0),
   });
+  const payloadBytes = Uint8Array.from({ length: 8193 }, (_, i) => i % 256);
   const payload = makePayloadOp({
     replica,
     counter: 2,
     lamport: 7,
     node,
-    payload: Uint8Array.of(99, 0, 255, 99).subarray(1, -1),
+    payload: Uint8Array.of(99, ...payloadBytes, 99).subarray(1, -1),
   });
   const emptyInsert = makeInsertOp({
     replica,
@@ -682,7 +683,7 @@ async function scenarioAppendIdempotentAndHeadLamportMonotonic(
   assertBytesEqual(inserted.payload, new Uint8Array(), 'insert event preserves empty payload');
   assertBytesEqual(
     await (await engine.tree.get(node))!.payload(),
-    Uint8Array.of(0, 255),
+    payloadBytes,
     'batch payload subview',
   );
   await engine.ops.appendMany([

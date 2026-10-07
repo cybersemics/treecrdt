@@ -159,16 +159,22 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AppendOp {
+    #[serde(with = "serde_bytes")]
     pub(super) replica: Vec<u8>,
     pub(super) counter: u64,
     pub(super) lamport: Lamport,
     pub(super) kind: String,
+    #[serde(default, with = "serde_bytes")]
     pub(super) parent: Option<Vec<u8>>,
+    #[serde(with = "serde_bytes")]
     pub(super) node: Vec<u8>,
+    #[serde(default, with = "serde_bytes")]
     pub(super) new_parent: Option<Vec<u8>>,
+    #[serde(default, with = "serde_bytes")]
     pub(super) order_key: Option<Vec<u8>>,
+    #[serde(default, with = "serde_bytes")]
     pub(super) known_state: Option<Vec<u8>>,
-    #[serde(default)]
+    #[serde(default, with = "serde_bytes")]
     pub(super) payload: Option<Vec<u8>>,
 }
 

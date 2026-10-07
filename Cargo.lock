@@ -1527,6 +1527,7 @@ dependencies = [
  "ciborium",
  "rusqlite",
  "serde",
+ "serde_bytes",
  "serde_json",
  "sqlite3ext-sys",
  "treecrdt-core",
