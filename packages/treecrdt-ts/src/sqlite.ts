@@ -86,6 +86,18 @@ function emitLocalOutcome(
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
 
+/**
+ * Appends `bytes` as the next positional parameter and returns its SQL placeholder. Some runners
+ * (wa-sqlite) bind a zero-length Uint8Array as SQL NULL, so empty bytes are inlined as
+ * zeroblob(0) to keep them distinct from an absent value.
+ */
+function blobArg(params: SqlCall['params'], bytes: Uint8Array | null): string {
+  if (bytes === null) return 'NULL';
+  if (bytes.byteLength === 0) return 'zeroblob(0)';
+  params.push(bytes);
+  return `?${params.length}`;
+}
+
 function buildAppendOp(
   kind: OperationKind,
   opts: {
@@ -104,41 +116,30 @@ function buildAppendOp(
   )[];
 
   switch (kind.type) {
-    case 'insert':
-      if (kind.payload !== undefined) {
-        return {
-          sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
-          params: [
-            ...base,
-            'insert',
-            opts.serializeNodeId(kind.parent),
-            opts.serializeNodeId(kind.node),
-            kind.orderKey,
-            kind.payload,
-          ],
-        };
-      }
+    case 'insert': {
+      const params = [
+        ...base,
+        'insert',
+        opts.serializeNodeId(kind.parent),
+        opts.serializeNodeId(kind.node),
+      ];
+      const orderKey = blobArg(params, kind.orderKey);
+      const payload = blobArg(params, kind.payload ?? null);
       return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
-        params: [
-          ...base,
-          'insert',
-          opts.serializeNodeId(kind.parent),
-          opts.serializeNodeId(kind.node),
-          kind.orderKey,
-        ],
+        sql: `SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,${orderKey},${payload})`,
+        params,
       };
-    case 'move':
-      return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
-        params: [
-          ...base,
-          'move',
-          opts.serializeNodeId(kind.node),
-          opts.serializeNodeId(kind.newParent),
-          kind.orderKey,
-        ],
-      };
+    }
+    case 'move': {
+      const params = [
+        ...base,
+        'move',
+        opts.serializeNodeId(kind.node),
+        opts.serializeNodeId(kind.newParent),
+      ];
+      const orderKey = blobArg(params, kind.orderKey);
+      return { sql: `SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,${orderKey},NULL)`, params };
+    }
     case 'delete':
       if (!opts.knownState || opts.knownState.length === 0) {
         throw new Error('treecrdt: delete operations require meta.knownState');
@@ -150,13 +151,19 @@ function buildAppendOp(
     case 'tombstone':
       return {
         sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
-        params: [...base, 'tombstone', opts.serializeNodeId(kind.node), opts.knownState],
+        // Like the batch path, treat an empty knownState as absent.
+        params: [
+          ...base,
+          'tombstone',
+          opts.serializeNodeId(kind.node),
+          opts.knownState && opts.knownState.length > 0 ? opts.knownState : null,
+        ],
       };
-    case 'payload':
-      return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
-        params: [...base, 'payload', opts.serializeNodeId(kind.node), kind.payload],
-      };
+    case 'payload': {
+      const params = [...base, 'payload', opts.serializeNodeId(kind.node)];
+      const payload = blobArg(params, kind.payload);
+      return { sql: `SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,${payload})`, params };
+    }
     default:
       throw new Error('unsupported operation kind');
   }
@@ -535,12 +542,14 @@ async function treecrdtTreePayload(
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<Uint8Array | null> {
   await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const hex = await runner.getText(
-    'SELECT hex(payload) FROM tree_payload WHERE node = ?1 LIMIT 1',
+  // hex() is '' for both NULL and an empty blob, and some runners read NULL text as '', so prefix
+  // the result to keep an empty payload distinct from none.
+  const encoded = await runner.getText(
+    "SELECT CASE WHEN payload IS NULL THEN 'n' ELSE 'x' || hex(payload) END FROM tree_payload WHERE node = ?1 LIMIT 1",
     [node],
   );
-  if (hex === null || hex === undefined || hex === '') return null;
-  return hexToBytes(hex);
+  if (encoded === null || encoded === undefined || encoded === 'n') return null;
+  return hexToBytes(encoded.slice(1));
 }
 
 /**
@@ -645,19 +654,15 @@ export function createTreecrdtSqliteWriter(
     o: { payload?: Uint8Array } & LocalWriteOptions = {},
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
-    const payload = o.payload ?? null;
-    return getLocalOp(
-      'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)',
-      [
-        replicaBytes,
-        nodeIdToBytes16(parent),
-        nodeIdToBytes16(node),
-        placement.type,
-        afterNode,
-        payload,
-      ],
-      o,
-    );
+    const params: SqlCall['params'] = [
+      replicaBytes,
+      nodeIdToBytes16(parent),
+      nodeIdToBytes16(node),
+      placement.type,
+      afterNode,
+    ];
+    const payload = blobArg(params, o.payload ?? null);
+    return getLocalOp(`SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,${payload})`, params, o);
   };
 
   const move = async (
@@ -683,11 +688,9 @@ export function createTreecrdtSqliteWriter(
   };
 
   const payload = async (node: string, next: Uint8Array | null, writeOpts?: LocalWriteOptions) => {
-    return getLocalOp(
-      'SELECT treecrdt_local_payload(?1,?2,?3)',
-      [replicaBytes, nodeIdToBytes16(node), next],
-      writeOpts,
-    );
+    const params: SqlCall['params'] = [replicaBytes, nodeIdToBytes16(node)];
+    const payload = blobArg(params, next);
+    return getLocalOp(`SELECT treecrdt_local_payload(?1,?2,${payload})`, params, writeOpts);
   };
 
   return { insert, move, delete: del, payload };
