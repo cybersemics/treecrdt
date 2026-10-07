@@ -1,3 +1,4 @@
+import { encode } from 'cborg';
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
 import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
@@ -181,29 +182,27 @@ function buildAppendOpsPayload(
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
 ): unknown[] {
-  const serialize = (val: string) => Array.from(serializeNodeId(val));
+  const serialize = (val: string) => new Uint8Array(serializeNodeId(val));
   return ops.map((op) => {
     const { meta, kind } = op;
     const { id, lamport } = meta;
     const { replica, counter } = id;
-    const serReplica = serializeReplica(replica);
     const knownState = meta.knownState;
     const base = {
-      replica: Array.from(serReplica),
+      replica: new Uint8Array(serializeReplica(replica)),
       counter,
       lamport,
       kind: kind.type,
-      order_key: 'orderKey' in kind ? Array.from(kind.orderKey) : null,
-      ...(knownState && knownState.length > 0 ? { known_state: Array.from(knownState) } : {}),
+      order_key: 'orderKey' in kind ? kind.orderKey : null,
+      ...(knownState && knownState.length > 0 ? { known_state: knownState } : {}),
     };
     if (kind.type === 'insert') {
-      const payload = kind.payload ? Array.from(kind.payload) : undefined;
       return {
         ...base,
         parent: serialize(kind.parent),
         node: serialize(kind.node),
         new_parent: null,
-        ...(payload ? { payload } : {}),
+        ...(kind.payload ? { payload: kind.payload } : {}),
       };
     } else if (kind.type === 'move') {
       return {
@@ -215,12 +214,15 @@ function buildAppendOpsPayload(
     } else if (kind.type === 'delete') {
       return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
     } else if (kind.type === 'payload') {
+      if (kind.payload === undefined) {
+        throw new Error('treecrdt: payload operations require payload or null');
+      }
       return {
         ...base,
         parent: null,
         node: serialize(kind.node),
         new_parent: null,
-        payload: kind.payload === null ? null : Array.from(kind.payload),
+        payload: kind.payload,
       };
     }
     return { ...base, parent: null, node: serialize(kind.node), new_parent: null };
@@ -279,14 +281,14 @@ async function treecrdtAppendOps(
     throw new Error('treecrdt: delete operations require meta.knownState');
   }
 
-  // Try bulk entrypoint first, chunked to avoid huge JSON payloads.
+  // Try bulk entrypoint first, chunked to bound the encoded batch size.
   let bulkFailedAt: number | null = null;
   const outcomes: MaterializationOutcome[] = [];
   for (let start = 0; start < ops.length; start += maxBulkOps) {
     const chunk = ops.slice(start, start + maxBulkOps);
     const payload = buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica);
     try {
-      const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
+      const raw = await sqliteGetJson<unknown>(runner, bulkSql, [encode(payload)]);
       outcomes.push(decodeSqliteMaterializationOutcome(raw));
     } catch {
       bulkFailedAt = start;
@@ -298,7 +300,7 @@ async function treecrdtAppendOps(
   const remaining = ops.slice(bulkFailedAt);
   for (const op of remaining) {
     const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
-    const raw = await sqliteGetJson<unknown>(runner, bulkSql, [JSON.stringify(payload)]);
+    const raw = await sqliteGetJson<unknown>(runner, bulkSql, [encode(payload)]);
     outcomes.push(decodeSqliteMaterializationOutcome(raw));
   }
   return mergeMaterializationOutcomes(outcomes);

@@ -35,6 +35,9 @@
     "lint": "echo \"TODO: add linting\"",
     "test": "echo \"TODO: add tests\""
   },
+  "dependencies": {
+    "cborg": "^4.3.2"
+  },
   "devDependencies": {
     "typescript": "^5.3.3"
   },

@@ -6,8 +6,8 @@ use std::ptr::null;
 
 #[cfg(feature = "ext-sqlite")]
 pub(super) use sqlite3ext_sys::{
-    sqlite3, sqlite3_api_routines, sqlite3_context, sqlite3_stmt, sqlite3_value, SQLITE_DONE,
-    SQLITE_ERROR, SQLITE_NULL, SQLITE_OK, SQLITE_ROW, SQLITE_UTF8,
+    sqlite3, sqlite3_api_routines, sqlite3_context, sqlite3_stmt, sqlite3_value, SQLITE_BLOB,
+    SQLITE_DONE, SQLITE_ERROR, SQLITE_NULL, SQLITE_OK, SQLITE_ROW, SQLITE_UTF8,
 };
 
 #[cfg(feature = "static-link")]
@@ -140,12 +140,13 @@ mod ffi {
     pub const SQLITE_ROW: c_int = 100;
     pub const SQLITE_UTF8: c_int = 1;
     pub const SQLITE_NULL: c_int = 5;
+    pub const SQLITE_BLOB: c_int = 4;
 }
 
 #[cfg(feature = "static-link")]
 pub(super) use ffi::{
-    sqlite3, sqlite3_context, sqlite3_stmt, sqlite3_value, SQLITE_DONE, SQLITE_ERROR, SQLITE_NULL,
-    SQLITE_OK, SQLITE_ROW, SQLITE_UTF8,
+    sqlite3, sqlite3_context, sqlite3_stmt, sqlite3_value, SQLITE_BLOB, SQLITE_DONE, SQLITE_ERROR,
+    SQLITE_NULL, SQLITE_OK, SQLITE_ROW, SQLITE_UTF8,
 };
 
 #[cfg(feature = "ext-sqlite")]

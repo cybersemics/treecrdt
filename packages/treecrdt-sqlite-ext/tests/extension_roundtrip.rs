@@ -272,12 +272,13 @@ fn read_replay_frontier(conn: &Connection) -> (Option<i64>, Option<Vec<u8>>, Opt
     .unwrap()
 }
 
-fn append_ops_json(conn: &Connection, ops: &[JsonOp]) -> (MaterializationOutcome, i64) {
-    let json = serde_json::to_string(ops).unwrap();
+fn append_ops(conn: &Connection, ops: &[JsonOp]) -> (MaterializationOutcome, i64) {
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(ops, &mut encoded).unwrap();
     let affected_json: String = conn
         .query_row(
             "SELECT treecrdt_append_ops(?1)",
-            rusqlite::params![json],
+            rusqlite::params![encoded],
             |row| row.get(0),
         )
         .unwrap();
@@ -343,11 +344,11 @@ struct SqliteConformanceHarness {
 
 impl MaterializationConformanceHarness for SqliteConformanceHarness {
     fn append_ops(&self, ops: &[Operation]) {
-        append_ops_json(&self.conn, &json_ops(ops));
+        append_ops(&self.conn, &json_ops(ops));
     }
 
     fn append_ops_with_materialization_outcome(&self, ops: &[Operation]) -> MaterializationOutcome {
-        let (outcome, _) = append_ops_json(&self.conn, &json_ops(ops));
+        let (outcome, _) = append_ops(&self.conn, &json_ops(ops));
         outcome
     }
 
@@ -555,6 +556,70 @@ fn local_insert_returns_appended_insert_op() {
 }
 
 #[test]
+fn binary_append_validates_complete_batch_before_ingestion() {
+    use ciborium::value::Value;
+    use rusqlite::types::Value as SqlValue;
+
+    let conn = setup_conn();
+    let (empty, _) = append_ops(&conn, &[]);
+    assert!(empty.changes.is_empty());
+    let op = Value::Map(
+        [
+            ("replica", Value::Bytes(b"binary".to_vec())),
+            ("counter", Value::Integer(1.into())),
+            ("lamport", Value::Integer(1.into())),
+            ("kind", Value::Text("insert".into())),
+            ("parent", Value::Bytes(node_bytes(0))),
+            ("node", Value::Bytes(node_bytes(1))),
+            ("order_key", Value::Bytes(vec![0, 255])),
+            ("payload", Value::Bytes(Vec::new())),
+        ]
+        .into_iter()
+        .map(|(name, value)| (Value::Text(name.into()), value))
+        .collect(),
+    );
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&Value::Array(vec![op.clone()]), &mut encoded).unwrap();
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    let mut invalid_second = Vec::new();
+    ciborium::ser::into_writer(&Value::Array(vec![op, Value::Null]), &mut invalid_second).unwrap();
+
+    for invalid in [
+        SqlValue::Blob(encoded[..encoded.len() - 1].to_vec()),
+        SqlValue::Blob(trailing),
+        SqlValue::Blob(invalid_second),
+        SqlValue::Blob(Vec::new()),
+        SqlValue::Text("[]".into()),
+        SqlValue::Null,
+        SqlValue::Integer(0),
+    ] {
+        let result: rusqlite::Result<String> = conn.query_row(
+            "SELECT treecrdt_append_ops(?1)",
+            rusqlite::params![invalid],
+            |row| row.get(0),
+        );
+        assert!(result.is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    let outcome: String = conn
+        .query_row(
+            "SELECT treecrdt_append_ops(?1)",
+            rusqlite::params![encoded],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<JsonMaterializationOutcome>(&outcome).unwrap().head_seq,
+        1
+    );
+    assert_eq!(visible_children(&conn, &node_bytes(0)), vec![node_bytes(1)]);
+    assert_eq!(payload_bytes(&conn, &node_bytes(1)), Some(Vec::new()));
+}
+
+#[test]
 fn remote_append_materializes_only_inserted_ops() {
     let harness = setup_conformance_harness();
     materialization_conformance::append_batch_materializes_only_inserted_ops(&harness);
@@ -644,7 +709,7 @@ fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
         materialization_conformance::order_key_from_position(0),
     );
 
-    append_ops_json(&conn, &json_ops(&[second]));
+    append_ops(&conn, &json_ops(&[second]));
     conn.execute_batch(
         "CREATE TRIGGER fail_tree_nodes_insert \
          BEFORE INSERT ON tree_nodes \
@@ -654,10 +719,11 @@ fn remote_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
     )
     .unwrap();
 
-    let append_json = serde_json::to_string(&json_ops(&[first])).unwrap();
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&json_ops(&[first]), &mut encoded).unwrap();
     let append_result: rusqlite::Result<String> = conn.query_row(
         "SELECT treecrdt_append_ops(?1)",
-        rusqlite::params![append_json],
+        rusqlite::params![encoded],
         |row| row.get(0),
     );
     assert!(append_result.is_err());
