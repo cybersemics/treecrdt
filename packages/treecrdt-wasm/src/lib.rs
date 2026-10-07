@@ -2,15 +2,18 @@
 //! WASM-friendly bridge for TreeCRDT.
 //! Exposes a small wasm-bindgen surface that matches the JS adapter needs.
 
+mod version_vector;
+
 use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
 use serde_wasm_bindgen::to_value;
 use treecrdt_core::{
-    Lamport, LamportClock, MaterializationOutcome, MemoryStorage, NodeId, Operation, OperationKind,
-    ReplicaId, TreeCrdt,
+    Lamport, LamportClock, MaterializationOutcome, MemoryStorage, NodeId, Operation, OperationId,
+    OperationKind, OperationMetadata, ReplicaId, TreeCrdt, VersionVector,
 };
 use wasm_bindgen::prelude::*;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct JsOp {
     replica: String, // hex
     counter: u64,
@@ -20,15 +23,56 @@ struct JsOp {
     node: String,
     new_parent: Option<String>,
     order_key: Option<String>, // hex
-    #[serde(default)]
     known_state: Option<Vec<u8>>,
     payload: Option<String>, // hex
 }
 
+#[derive(Deserialize)]
+struct OperationInput {
+    meta: MetadataInput,
+    kind: KindInput,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataInput {
+    id: OperationIdInput,
+    lamport: Lamport,
+    known_state: Option<ByteBuf>,
+}
+
+#[derive(Deserialize)]
+struct OperationIdInput {
+    replica: ByteBuf,
+    counter: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KindInput {
+    #[serde(rename = "type")]
+    kind: KindTag,
+    node: String,
+    parent: Option<String>,
+    new_parent: Option<String>,
+    order_key: Option<ByteBuf>,
+    payload: Option<ByteBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum KindTag {
+    Insert,
+    Move,
+    Delete,
+    Tombstone,
+    Payload,
+}
+
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let clean = hex.trim_start_matches("0x");
-    if !clean.len().is_multiple_of(2) {
-        return Err("hex length must be even".into());
+    if !clean.is_ascii() || !clean.len().is_multiple_of(2) {
+        return Err("hex must contain an even number of ASCII characters".into());
     }
     (0..clean.len())
         .step_by(2)
@@ -55,7 +99,7 @@ fn node_to_hex(id: NodeId) -> String {
     format!("{:032x}", id.0)
 }
 
-fn op_to_js(op: &Operation) -> JsOp {
+fn op_to_js(op: &Operation) -> Result<JsOp, String> {
     let (kind, parent, node, new_parent, order_key, payload) = match &op.kind {
         OperationKind::Insert {
             parent,
@@ -93,8 +137,14 @@ fn op_to_js(op: &Operation) -> JsOp {
             payload.as_deref().map(bytes_to_hex),
         ),
     };
-    let known_state = op.meta.known_state.as_ref().and_then(|vv| serde_json::to_vec(vv).ok());
-    JsOp {
+    let known_state = op
+        .meta
+        .known_state
+        .as_ref()
+        .map(VersionVector::encode)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    Ok(JsOp {
         replica: bytes_to_hex(&op.meta.id.replica.0),
         counter: op.meta.id.counter,
         lamport: op.meta.lamport,
@@ -105,63 +155,56 @@ fn op_to_js(op: &Operation) -> JsOp {
         order_key,
         known_state,
         payload,
-    }
+    })
 }
 
-fn js_to_op(js: JsOp) -> Result<Operation, String> {
-    let replica_bytes = hex_to_bytes(&js.replica)?;
-    let replica = ReplicaId::new(replica_bytes);
-    let counter = js.counter;
-    let lamport = js.lamport;
-
-    let op = match js.kind.as_str() {
-        "insert" => {
-            let parent = js.parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT);
-            let node = hex_to_node(&js.node)?;
-            let order_key =
-                js.order_key.as_deref().map(hex_to_bytes).transpose()?.unwrap_or_default();
-            if let Some(payload_hex) = js.payload.as_deref() {
-                let payload = hex_to_bytes(payload_hex)?;
-                Operation::insert_with_payload(
-                    &replica, counter, lamport, parent, node, order_key, payload,
-                )
-            } else {
-                Operation::insert(&replica, counter, lamport, parent, node, order_key)
-            }
-        }
-        "move" => {
-            let order_key =
-                js.order_key.as_deref().map(hex_to_bytes).transpose()?.unwrap_or_default();
-            Operation::move_node(
-                &replica,
-                counter,
-                lamport,
-                hex_to_node(&js.node)?,
-                js.new_parent.as_deref().map(hex_to_node).transpose()?.unwrap_or(NodeId::ROOT),
-                order_key,
-            )
-        }
-        "delete" => {
-            let Some(bytes) = js.known_state else {
-                return Err("delete op missing known_state".into());
-            };
-            if bytes.is_empty() {
-                return Err("delete known_state must not be empty".into());
-            }
-            let vv = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            Operation::delete(&replica, counter, lamport, hex_to_node(&js.node)?, Some(vv))
-        }
-        "tombstone" => Operation::tombstone(&replica, counter, lamport, hex_to_node(&js.node)?),
-        "payload" => Operation::payload(
-            &replica,
-            counter,
-            lamport,
-            hex_to_node(&js.node)?,
-            js.payload.as_deref().map(hex_to_bytes).transpose()?,
-        ),
-        _ => return Err("unknown kind".into()),
+fn js_to_op(js: OperationInput) -> Result<Operation, String> {
+    if js.meta.id.counter > 9_007_199_254_740_991 || js.meta.lamport > 9_007_199_254_740_991 {
+        return Err("operation counter and Lamport must be safe JavaScript integers".into());
+    }
+    if matches!(js.kind.kind, KindTag::Delete)
+        && js.meta.known_state.as_ref().is_none_or(|bytes| bytes.is_empty())
+    {
+        return Err("treecrdt: delete operations require meta.knownState".into());
+    }
+    let known_state = js
+        .meta
+        .known_state
+        .map(|bytes| VersionVector::decode(&bytes))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let input = js.kind;
+    let node = hex_to_node(&input.node)?;
+    let kind = match input.kind {
+        KindTag::Insert => OperationKind::Insert {
+            parent: hex_to_node(&input.parent.ok_or("insert requires parent")?)?,
+            node,
+            order_key: input.order_key.ok_or("insert requires orderKey")?.into_vec(),
+            payload: input.payload.map(ByteBuf::into_vec),
+        },
+        KindTag::Move => OperationKind::Move {
+            node,
+            new_parent: hex_to_node(&input.new_parent.ok_or("move requires newParent")?)?,
+            order_key: input.order_key.ok_or("move requires orderKey")?.into_vec(),
+        },
+        KindTag::Delete => OperationKind::Delete { node },
+        KindTag::Tombstone => OperationKind::Tombstone { node },
+        KindTag::Payload => OperationKind::Payload {
+            node,
+            payload: input.payload.map(ByteBuf::into_vec),
+        },
     };
-    Ok(op)
+    Ok(Operation {
+        meta: OperationMetadata {
+            id: OperationId {
+                replica: ReplicaId::new(js.meta.id.replica.into_vec()),
+                counter: js.meta.id.counter,
+            },
+            lamport: js.meta.lamport,
+            known_state,
+        },
+        kind,
+    })
 }
 
 #[wasm_bindgen]
@@ -182,17 +225,46 @@ impl WasmTree {
     }
 
     #[wasm_bindgen(js_name = appendOp)]
-    pub fn append_op(&mut self, op_json: String) -> Result<(), JsValue> {
-        let js_op: JsOp =
-            serde_json::from_str(&op_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    pub fn append_op(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "import('@treecrdt/interface').Operation")]
+        op: JsValue,
+    ) -> Result<(), JsValue> {
+        let js_op =
+            serde_wasm_bindgen::from_value(op).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
         self.inner.apply_remote(op).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
     }
 
+    /// Decode the complete batch before ingestion. Applying it is not an atomic transaction.
+    #[wasm_bindgen(js_name = appendOps)]
+    pub fn append_ops(
+        &mut self,
+        #[wasm_bindgen(
+            unchecked_param_type = "readonly import('@treecrdt/interface').Operation[]"
+        )]
+        operations: JsValue,
+    ) -> Result<(), JsValue> {
+        let js_ops: Vec<OperationInput> = serde_wasm_bindgen::from_value(operations)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ops = js_ops
+            .into_iter()
+            .map(js_to_op)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| JsValue::from_str(&e))?;
+        self.inner
+            .apply_remote_batch(ops)
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+    }
+
     #[wasm_bindgen(js_name = appendOpWithDelta)]
-    pub fn append_op_with_delta(&mut self, op_json: String) -> Result<JsValue, JsValue> {
-        let js_op: JsOp =
-            serde_json::from_str(&op_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    pub fn append_op_with_delta(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "import('@treecrdt/interface').Operation")]
+        op: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let js_op =
+            serde_wasm_bindgen::from_value(op).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
         let delta = self
             .inner
@@ -219,7 +291,11 @@ impl WasmTree {
             .inner
             .operations_since(lamport)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        let mapped: Vec<JsOp> = ops.iter().map(op_to_js).collect();
+        let mapped: Vec<JsOp> = ops
+            .iter()
+            .map(op_to_js)
+            .collect::<Result<_, _>>()
+            .map_err(|e| JsValue::from_str(&e))?;
         to_value(&mapped).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -230,7 +306,7 @@ impl WasmTree {
             .inner
             .subtree_version_vector(node)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        serde_json::to_vec(&vv).map_err(|e| JsValue::from_str(&e.to_string()))
+        vv.encode().map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = treeChildren)]

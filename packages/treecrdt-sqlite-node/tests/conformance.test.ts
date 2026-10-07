@@ -58,7 +58,7 @@ test('sqlite auth-aware local write rolls back on auth failure', async () => {
 
     expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
     expect(events).toHaveLength(0);
-    expect(await client.tree.exists(node)).toBe(false);
+    expect(await client.tree.get(node)).toBeUndefined();
     expect(await client.ops.all()).toHaveLength(0);
   } finally {
     unsubscribe();
@@ -85,7 +85,7 @@ test('sqlite auth-aware local write emits materialization after auth succeeds', 
     expect(op.kind.type).toBe('insert');
     expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
     expect(events).toHaveLength(1);
-    expect(await client.tree.exists(node)).toBe(true);
+    expect(await client.tree.get(node)).toBeDefined();
     expect(await client.ops.all()).toHaveLength(1);
   } finally {
     unsubscribe();

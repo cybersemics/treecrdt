@@ -1,5 +1,5 @@
 import { blake3 } from '@noble/hashes/blake3';
-import { utf8ToBytes } from '@noble/hashes/utils';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
 
 import { decode as cborDecode, encode as cborEncode, rfc8949EncodeOptions } from 'cborg';
 
@@ -11,7 +11,6 @@ import {
   coseVerifySign1Ed25519,
   deriveTokenIdV1,
 } from '../cose.js';
-import { concatBytes } from './bytes.js';
 import { getClaim, getField, mapGet, toNumber } from './claims.js';
 import {
   expandCapabilityActions,

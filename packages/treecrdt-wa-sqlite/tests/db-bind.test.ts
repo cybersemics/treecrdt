@@ -1,12 +1,12 @@
 import vm from 'node:vm';
 import { expect, test } from 'vitest';
-import { makeDbAdapter } from '../src/db.js';
+import { createDatabase } from '../src/db.js';
 
-test('makeDbAdapter normalizes cross-realm typed array bind values to blobs', async () => {
+test('createDatabase normalizes cross-realm typed array bind values to blobs', async () => {
   const foreignBytes = vm.runInNewContext('new Uint8Array([1, 2, 3])') as Uint8Array;
   let bound: unknown;
 
-  const db = makeDbAdapter(
+  const db = createDatabase(
     {
       bind: (_stmt: number, _index: number, value: unknown) => {
         bound = value;

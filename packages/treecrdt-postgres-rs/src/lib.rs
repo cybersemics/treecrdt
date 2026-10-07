@@ -18,8 +18,7 @@ pub use local_ops::{
 pub use reads::{
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children,
     list_op_refs_children_with_parent_payload, max_lamport, ops_since, replica_max_counter,
-    tree_children, tree_children_page, tree_dump, tree_exists, tree_node_count, tree_parent,
-    tree_payload, TreeChildRow, TreeRow,
+    tree_children, tree_dump, tree_exists, tree_node_count, tree_parent, tree_payload, TreeRow,
 };
 pub use schema::{ensure_schema, reset_doc_for_tests};
 pub use store::{append_ops, append_ops_with_materialization_outcome, ensure_materialized};

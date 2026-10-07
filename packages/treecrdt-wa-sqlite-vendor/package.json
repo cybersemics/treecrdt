@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "build:treecrdt-sqlite-ext": "cd ../.. && cargo build -p treecrdt-sqlite-ext --target wasm32-unknown-emscripten --release --no-default-features --features static-link",
-    "build:wa-sqlite": "make -C wa-sqlite dist DIST_DIR=../dist VPATH_EXTRA=.. CFILES_EXTRA=treecrdt-ext.c DEPS_EXTRA=../../../target/wasm32-unknown-emscripten/release/libtreecrdt_sqlite_ext.a LIBS_EXTRA=../../../target/wasm32-unknown-emscripten/release/libtreecrdt_sqlite_ext.a",
+    "build:wa-sqlite": "make -C wa-sqlite dist VPATH=.. CFILES_EXTRA=\"treecrdt-ext.c ../../../target/wasm32-unknown-emscripten/release/libtreecrdt_sqlite_ext.a\" && mkdir -p dist && cp wa-sqlite/dist/*.mjs wa-sqlite/dist/*.wasm dist/",
     "build": "pnpm run build:treecrdt-sqlite-ext && pnpm run build:wa-sqlite",
-    "clean": "make -C wa-sqlite clean DIST_DIR=../dist",
+    "clean": "make -C wa-sqlite clean && rm -rf dist",
     "clean:tmp": "make -C wa-sqlite clean-tmp",
     "rebuild": "pnpm run clean && pnpm run build"
   }

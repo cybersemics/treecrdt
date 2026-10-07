@@ -1,0 +1,49 @@
+import { vi } from 'vitest';
+
+/** Minimal wa-sqlite WASM module with a registration spy. */
+export function createFakeModule(initResult = 0) {
+  const init = vi.fn(() => initResult);
+  return {
+    _treecrdt_sqlite_init: init,
+    init,
+  };
+}
+
+export type FakeSqliteOptions = {
+  failDocId?: string;
+  failOpen?: string;
+  failOpenError?: Error;
+};
+
+/** In-memory wa-sqlite API stand-in for open/init tests (no real WASM). */
+export function createFakeSqlite(opts: FakeSqliteOptions = {}) {
+  let nextHandle = 1;
+  let nextStatement = 100;
+  const schemaStatements = new Set<number>();
+
+  return {
+    vfs_register: vi.fn(),
+    open_v2: vi.fn(async (filename: string) => {
+      if (filename === opts.failOpen) throw opts.failOpenError ?? new Error('OPFS open failed');
+      return nextHandle++;
+    }),
+    statements: vi.fn((_handle: number, sql: string) => {
+      const statement = nextStatement++;
+      if (sql === 'SELECT treecrdt_schema()') schemaStatements.add(statement);
+      return {
+        next: async () => ({ value: statement }),
+        return: async () => undefined,
+      };
+    }),
+    bind: vi.fn(async (_statement: number, _index: number, value: unknown) => {
+      if (value === opts.failDocId) throw new Error('setDocId failed');
+    }),
+    step: vi.fn(async (statement: number) => (schemaStatements.has(statement) ? 100 : 101)),
+    column_text: vi.fn((statement: number) =>
+      schemaStatements.has(statement) ? 'CREATE TABLE example (id INTEGER)' : null,
+    ),
+    finalize: vi.fn(),
+    exec: vi.fn(),
+    close: vi.fn(),
+  };
+}

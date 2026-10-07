@@ -3,6 +3,7 @@ import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
 import { bytesToHex, hexToBytes, normalizeNodeId } from '@treecrdt/interface/ids';
 import { WasmTree } from '../pkg/treecrdt_wasm.js';
 import { createHash } from 'node:crypto';
+import { isUint8Array } from 'node:util/types';
 
 type LoadOptions = {
   replicaHex?: string;
@@ -86,28 +87,12 @@ export async function createWasmAdapter(opts: LoadOptions = {}): Promise<Treecrd
       }
       return max;
     },
-    appendOp: async (op, serializeNodeId, serializeReplica) => {
-      const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-      if (op.kind.type === 'delete') {
-        if (!op.meta.knownState || op.meta.knownState.length === 0) {
-          throw new Error('treecrdt: delete operations require meta.knownState');
-        }
-        jsOp.known_state = Array.from(op.meta.knownState);
-      }
-      tree.appendOp(JSON.stringify(jsOp));
+    appendOp: async (op, _serializeNodeId, serializeReplica) => {
+      tree.appendOp(toWasmOperation(op, serializeReplica));
       return emptyMaterializationOutcome();
     },
-    appendOps: async (ops, serializeNodeId, serializeReplica) => {
-      for (const op of ops) {
-        const jsOp = toJsOp(op, serializeNodeId, serializeReplica);
-        if (op.kind.type === 'delete') {
-          if (!op.meta.knownState || op.meta.knownState.length === 0) {
-            throw new Error('treecrdt: delete operations require meta.knownState');
-          }
-          jsOp.known_state = Array.from(op.meta.knownState);
-        }
-        tree.appendOp(JSON.stringify(jsOp));
-      }
+    appendOps: async (ops, _serializeNodeId, serializeReplica) => {
+      tree.appendOps(ops.map((op) => toWasmOperation(op, serializeReplica)));
       return emptyMaterializationOutcome();
     },
     opsSince: async (lamport: number) => {
@@ -133,58 +118,31 @@ type JsOp = {
   payload?: string | null;
 };
 
-function toHex(bytes: Uint8Array): string {
-  return bytesToHex(bytes);
+// Serde's byte-buffer reader uses realm-local instanceof checks.
+function localByteView(bytes: Uint8Array): Uint8Array {
+  if (bytes instanceof Uint8Array || !isUint8Array(bytes)) return bytes;
+  const view = bytes as Uint8Array;
+  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 }
 
-function toJsOp(
+function toWasmOperation(
   op: Operation,
-  _serializeNodeId: (id: string) => Uint8Array,
   serializeReplica: (replica: Operation['meta']['id']['replica']) => Uint8Array,
-): JsOp {
-  const base = {
-    replica: toHex(serializeReplica(op.meta.id.replica)),
-    counter: op.meta.id.counter,
-    lamport: op.meta.lamport,
-  };
-
-  switch (op.kind.type) {
-    case 'insert':
-      return {
-        ...base,
-        kind: 'insert',
-        parent: normalizeNodeId(op.kind.parent),
-        node: normalizeNodeId(op.kind.node),
-        order_key: toHex(op.kind.orderKey),
-      };
-    case 'move':
-      return {
-        ...base,
-        kind: 'move',
-        node: normalizeNodeId(op.kind.node),
-        new_parent: normalizeNodeId(op.kind.newParent),
-        order_key: toHex(op.kind.orderKey),
-      };
-    case 'delete':
-      return {
-        ...base,
-        kind: 'delete',
-        node: normalizeNodeId(op.kind.node),
-      };
-    case 'tombstone':
-      return {
-        ...base,
-        kind: 'tombstone',
-        node: normalizeNodeId(op.kind.node),
-      };
-    case 'payload':
-      return {
-        ...base,
-        kind: 'payload',
-        node: normalizeNodeId(op.kind.node),
-        payload: op.kind.payload === null ? null : toHex(op.kind.payload),
-      };
-    default:
-      throw new Error('unknown op kind');
+): Operation {
+  if (op.kind.type === 'payload' && op.kind.payload === undefined) {
+    throw new Error('treecrdt: payload operations require payload or null');
   }
+  const kind = { ...op.kind, node: normalizeNodeId(op.kind.node) };
+  if (kind.type === 'insert') kind.parent = normalizeNodeId(kind.parent);
+  else if (kind.type === 'move') kind.newParent = normalizeNodeId(kind.newParent);
+  if ('orderKey' in kind) kind.orderKey = localByteView(kind.orderKey);
+  if ('payload' in kind && kind.payload) kind.payload = localByteView(kind.payload);
+  return {
+    meta: {
+      ...op.meta,
+      id: { ...op.meta.id, replica: new Uint8Array(serializeReplica(op.meta.id.replica)) },
+      knownState: op.meta.knownState && localByteView(op.meta.knownState),
+    },
+    kind,
+  };
 }

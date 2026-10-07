@@ -15,7 +15,6 @@
     "@treecrdt/postgres-napi",
     "@treecrdt/sqlite-node",
     "@treecrdt/wa-sqlite-demo",
-    "@treecrdt/wa-sqlite-vendor",
-    "@treecrdt/wasm"
+    "@treecrdt/wa-sqlite-vendor"
   ]
 }

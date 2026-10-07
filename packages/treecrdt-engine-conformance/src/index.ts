@@ -7,9 +7,11 @@ import {
   TRASH_NODE_ID_HEX,
 } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 import {
+  createTreecrdtAuthSession,
   createTreecrdtCoseCwtAuth,
   createTreecrdtSqliteSubtreeScopeEvaluator,
   getEd25519PublicKey,
@@ -162,8 +164,8 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializationEventDefensiveRestore,
     },
     {
-      name: 'tree: childrenPage uses keyset cursor',
-      run: scenarioChildrenPagination,
+      name: 'tree: children slice pagination',
+      run: scenarioChildrenSlicePagination,
     },
     {
       name: 'materialized tree: out-of-order ops rebuild correctly',
@@ -182,6 +184,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializedSmokeWithOpRefs,
     },
     {
+      name: 'tree: get/root lazy Node navigation',
+      run: scenarioTreeGetRootLazyNavigation,
+    },
+    {
       name: 'oprefs_all + ops.get: preserve order and reject missing refs',
       run: scenarioOpsGetPreservesOrderAndRejectsMissingRefs,
     },
@@ -198,8 +204,8 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioOpRefsChildrenCanonicalOrderingOnLamportTies,
     },
     {
-      name: 'append/appendMany: rejects delete without known_state',
-      run: scenarioRejectsDeleteWithoutKnownState,
+      name: 'append/appendMany: rejects invalid delete knownState',
+      run: scenarioRejectsInvalidDeleteKnownState,
     },
     {
       name: 'defensive delete: delete hides node; move restores it',
@@ -214,11 +220,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioDefensiveDeleteOutOfOrderChildInsert,
     },
     {
-      name: 'sync: delete known_state propagates (receiver must not recompute)',
-      run: scenarioSyncKnownStatePropagation,
-    },
-    {
-      name: 'sync auth: signed ops converge (COSE+CWT)',
+      name: 'sync auth: signed ops and defensive deletes converge (COSE+CWT)',
       run: scenarioSyncAuthSignedOps,
     },
     {
@@ -398,17 +400,11 @@ function orderKeyFromPosition(position: number): Uint8Array {
   return bytes;
 }
 
-function vvBytes(
-  entries: { replica: ReplicaId; frontier: number; ranges?: [number, number][] }[],
-): Uint8Array {
-  const payload = {
-    entries: entries.map((e) => ({
-      replica: Array.from(replicaIdToBytes(e.replica)),
-      frontier: e.frontier,
-      ranges: e.ranges ?? [],
-    })),
-  };
-  return new TextEncoder().encode(JSON.stringify(payload));
+async function versionVectorBytes(replica: ReplicaId, frontier: number): Promise<Uint8Array> {
+  const codec = await loadVersionVectorCodec();
+  return codec.encodeVersionVector({
+    entries: [{ replica: replicaIdToBytes(replica), frontier: BigInt(frontier), ranges: [] }],
+  });
 }
 
 function makeInsertOp(opts: {
@@ -496,7 +492,7 @@ async function scenarioLocalOpsBasic(ctx: TreecrdtEngineConformanceContext): Pro
   assertEqual(op2.kind.parent, root, 'op2 insert parent');
   assertEqual(op2.kind.node, b, 'op2 insert node');
 
-  let children = await engine.tree.children(root);
+  let children = (await engine.tree.root.children()).map((child) => child.id);
   assertArrayEqual(children, [a, b], 'children after inserts');
 
   const op3 = await engine.local.move(replica, b, root, { type: 'first' });
@@ -505,7 +501,7 @@ async function scenarioLocalOpsBasic(ctx: TreecrdtEngineConformanceContext): Pro
   assertEqual(op3.kind.node, b, 'op3 move node');
   assertEqual(op3.kind.newParent, root, 'op3 move newParent');
 
-  children = await engine.tree.children(root);
+  children = (await engine.tree.root.children()).map((child) => child.id);
   assertArrayEqual(children, [b, a], 'children after move(first)');
 
   const op4 = await engine.local.delete(replica, a);
@@ -513,7 +509,7 @@ async function scenarioLocalOpsBasic(ctx: TreecrdtEngineConformanceContext): Pro
   if (op4.kind.type !== 'delete') throw new Error(`expected delete op, got ${op4.kind.type}`);
   assertEqual(op4.kind.node, a, 'op4 delete node');
 
-  children = await engine.tree.children(root);
+  children = (await engine.tree.root.children()).map((child) => child.id);
   assertArrayEqual(children, [b], 'children after delete');
 
   const op5 = await engine.local.payload(replica, b, payload);
@@ -779,19 +775,43 @@ async function scenarioMaterializationEventDefensiveRestore(
   const rA = replicaFromLabel('rA');
   const rB = replicaFromLabel('rB');
 
-  const parentInsert = makeInsertOp({
-    replica: rA,
-    counter: 1,
-    lamport: 1,
-    parent: root,
-    node: parent,
-    orderKey: orderKeyFromPosition(0),
-  });
-  await a.ops.append(parentInsert);
-  await b.ops.appendMany([parentInsert]);
+  await b.local.insert(rB, root, parent, { type: 'last' }, null);
+  await a.ops.appendMany(await b.ops.all());
 
+  // A deletes B's parent without seeing B's child insertion.
   const childInsert = await b.local.insert(rB, parent, child, { type: 'last' }, null);
-  await a.local.delete(rA, parent);
+  const deletion = await a.local.delete(rA, parent);
+  assert(
+    deletion.meta.knownState && deletion.meta.knownState.length > 0,
+    'local delete must emit knownState',
+  );
+
+  const deleteEvents = await captureMaterializationEvents(b, async () => {
+    await b.ops.appendMany(await a.ops.all());
+  });
+  const receivedDelete = (await b.ops.all()).find((op) => op.kind.type === 'delete');
+  assert(receivedDelete, 'receiver must store the delete operation');
+  assertBytesEqual(
+    receivedDelete.meta.knownState ?? null,
+    deletion.meta.knownState,
+    'receiver must preserve exact delete knownState bytes',
+  );
+  assert(deleteEvents.length > 0, 'received delete must emit a materialization event');
+  assertEventNodeRefsSortedUnique(
+    materializationEventNodeRefs(deleteEvents[deleteEvents.length - 1]!),
+    'received delete event node refs',
+  );
+  assertArrayEqual(
+    (await b.tree.root.children()).map((node) => node.id),
+    [parent],
+    'receiver preserves parent',
+  );
+  assertArrayEqual(
+    ((await (await b.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    [child],
+    'receiver preserves unseen child',
+  );
+
   const events = await captureMaterializationEvents(a, () => a.ops.appendMany([childInsert]));
   assertEqual(events.length, 1, 'defensive restore should emit one materialization event');
   const refs = materializationEventNodeRefs(events[0]!);
@@ -802,14 +822,22 @@ async function scenarioMaterializationEventDefensiveRestore(
     [parent, child],
     'appendMany defensive restore should include restored parent+child',
   );
-  assertArrayEqual(await a.tree.children(root), [parent], 'restored parent should be visible');
-  assertArrayEqual(await a.tree.children(parent), [child], 'child should remain visible');
+  assertArrayEqual(
+    (await a.tree.root.children()).map((node) => node.id),
+    [parent],
+    'restored parent should be visible',
+  );
+  assertArrayEqual(
+    ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    [child],
+    'child should remain visible',
+  );
 }
 
-async function scenarioChildrenPagination(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+async function scenarioChildrenSlicePagination(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
   const engine = ctx.engine;
-  assert(engine.tree.childrenPage, 'engine.tree.childrenPage not implemented');
-
   const replica = replicaFromLabel('r1');
   const root = nodeIdFromInt(0);
   const nodes = Array.from({ length: 10 }, (_, i) => nodeIdFromInt(i + 1));
@@ -817,55 +845,45 @@ async function scenarioChildrenPagination(ctx: TreecrdtEngineConformanceContext)
     await engine.local.insert(replica, root, node, { type: 'last' }, null);
   }
 
-  const all = await engine.tree.children(root);
+  const all = (await engine.tree.root.children()).map((child) => child.id);
   assertArrayEqual(all, nodes, 'tree.children after inserts');
 
-  const p1 = await engine.tree.childrenPage(root, null, 4);
-  assertEqual(p1.length, 4, 'childrenPage p1 length');
+  const p1 = (await engine.tree.root.children({ length: 4 })).map((child) => child.id);
+  assertArrayEqual(p1, nodes.slice(0, 4), 'children slice p1');
+
+  const p2 = (await engine.tree.root.children({ index: 4, length: 4 })).map((child) => child.id);
+  assertArrayEqual(p2, nodes.slice(4, 8), 'children slice p2');
+
+  const p3 = (await engine.tree.root.children({ index: 8, length: 4 })).map((child) => child.id);
+  assertArrayEqual(p3, nodes.slice(8, 10), 'children slice p3');
+
+  const p4 = (await engine.tree.root.children({ index: 10, length: 4 })).map((child) => child.id);
+  assertArrayEqual(p4, [], 'children slice past end');
+
+  const tail = (await engine.tree.root.children({ index: 7 })).map((child) => child.id);
+  assertArrayEqual(tail, nodes.slice(7), 'children slice index-only tail');
+
+  const tombstoned = nodes[4]!;
+  await engine.local.delete(replica, tombstoned);
+  const live = nodes.filter((id) => id !== tombstoned);
   assertArrayEqual(
-    p1.map((r) => r.node),
-    nodes.slice(0, 4),
-    'childrenPage p1 nodes',
+    (await engine.tree.root.children()).map((child) => child.id),
+    live,
+    'children excludes tombstone',
   );
-
-  const c1 = p1[p1.length - 1]!;
-  assert(c1.orderKey, 'childrenPage cursor orderKey should be present');
-
-  const p2 = await engine.tree.childrenPage(
-    root,
-    { orderKey: c1.orderKey!, node: nodeIdToBytes16(c1.node) },
-    4,
-  );
-  assertEqual(p2.length, 4, 'childrenPage p2 length');
   assertArrayEqual(
-    p2.map((r) => r.node),
-    nodes.slice(4, 8),
-    'childrenPage p2 nodes',
+    (await engine.tree.root.children({ index: 3, length: 2 })).map((child) => child.id),
+    live.slice(3, 5),
+    'children slice skips tombstone',
   );
 
-  const c2 = p2[p2.length - 1]!;
-  assert(c2.orderKey, 'childrenPage cursor2 orderKey should be present');
-
-  const p3 = await engine.tree.childrenPage(
-    root,
-    { orderKey: c2.orderKey!, node: nodeIdToBytes16(c2.node) },
-    4,
-  );
-  assertEqual(p3.length, 2, 'childrenPage p3 length');
-  assertArrayEqual(
-    p3.map((r) => r.node),
-    nodes.slice(8, 10),
-    'childrenPage p3 nodes',
-  );
-
-  const c3 = p3[p3.length - 1]!;
-  assert(c3.orderKey, 'childrenPage cursor3 orderKey should be present');
-  const p4 = await engine.tree.childrenPage(
-    root,
-    { orderKey: c3.orderKey!, node: nodeIdToBytes16(c3.node) },
-    4,
-  );
-  assertEqual(p4.length, 0, 'childrenPage p4 length');
+  let threw = false;
+  try {
+    await engine.tree.root.children({ index: -1 });
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'children slice rejects negative index');
 }
 
 async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContext): Promise<void> {
@@ -898,7 +916,7 @@ async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContex
     }),
   );
 
-  const children = await engine.tree.children(root);
+  const children = (await engine.tree.root.children()).map((child) => child.id);
   const sorted = [...children].sort();
   assertArrayEqual(sorted, [n1, n2].sort(), 'children after out-of-order inserts');
   assertEqual(await engine.tree.nodeCount(), 2, 'tree.nodeCount after out-of-order inserts');
@@ -906,7 +924,7 @@ async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContex
 
   // Rebuilt metadata must remain valid for subsequent local writes.
   await engine.local.insert(replica, root, n3, { type: 'last' }, null);
-  const childrenAfterLocalWrite = await engine.tree.children(root);
+  const childrenAfterLocalWrite = (await engine.tree.root.children()).map((child) => child.id);
   assertArrayEqual(
     [...childrenAfterLocalWrite].sort(),
     [n1, n2, n3].sort(),
@@ -924,6 +942,8 @@ async function scenarioEmptyPayloadCanonicalReplay(
   const lateNode = nodeIdFromInt(22);
   const localNode = nodeIdFromInt(23);
   const empty = new Uint8Array();
+  const payloadOf = async (node: string) =>
+    (await (await engine.tree.get(node))?.payload()) ?? null;
 
   // The late insert invalidates the materialization frontier and forces canonical replay.
   await engine.ops.append(
@@ -937,11 +957,7 @@ async function scenarioEmptyPayloadCanonicalReplay(
       payload: empty,
     }),
   );
-  assertBytesEqual(
-    await engine.tree.getPayload(withEmptyPayload),
-    empty,
-    'empty insert payload before replay',
-  );
+  assertBytesEqual(await payloadOf(withEmptyPayload), empty, 'empty insert payload before replay');
 
   await engine.ops.append(
     makeInsertOp({
@@ -954,16 +970,8 @@ async function scenarioEmptyPayloadCanonicalReplay(
     }),
   );
 
-  assertBytesEqual(
-    await engine.tree.getPayload(withEmptyPayload),
-    empty,
-    'empty insert payload after replay',
-  );
-  assertBytesEqual(
-    await engine.tree.getPayload(lateNode),
-    null,
-    'null remains distinct from empty',
-  );
+  assertBytesEqual(await payloadOf(withEmptyPayload), empty, 'empty insert payload after replay');
+  assertBytesEqual(await payloadOf(lateNode), null, 'null remains distinct from empty');
 
   const replayed = (await engine.ops.all()).find(
     (op) => op.meta.id.counter === 2 && op.kind.type === 'insert',
@@ -980,11 +988,7 @@ async function scenarioEmptyPayloadCanonicalReplay(
       payload: empty,
     }),
   );
-  assertBytesEqual(
-    await engine.tree.getPayload(lateNode),
-    empty,
-    'remote empty payload op stores empty bytes',
-  );
+  assertBytesEqual(await payloadOf(lateNode), empty, 'remote empty payload op stores empty bytes');
   const remotePayload = (await engine.ops.all()).find(
     (op) => op.meta.id.counter === 3 && op.kind.type === 'payload',
   );
@@ -994,26 +998,14 @@ async function scenarioEmptyPayloadCanonicalReplay(
   const localInsert = await engine.local.insert(replica, root, localNode, { type: 'last' }, empty);
   assert(localInsert.kind.type === 'insert', 'local empty insert op');
   assertBytesEqual(localInsert.kind.payload ?? null, empty, 'local insert returns empty payload');
-  assertBytesEqual(
-    await engine.tree.getPayload(localNode),
-    empty,
-    'local insert stores empty payload',
-  );
+  assertBytesEqual(await payloadOf(localNode), empty, 'local insert stores empty payload');
 
   await engine.local.payload(replica, localNode, null);
-  assertBytesEqual(
-    await engine.tree.getPayload(localNode),
-    null,
-    'local payload clear stores null',
-  );
+  assertBytesEqual(await payloadOf(localNode), null, 'local payload clear stores null');
   const localPayload = await engine.local.payload(replica, localNode, empty);
   assert(localPayload.kind.type === 'payload', 'local empty payload op');
   assertBytesEqual(localPayload.kind.payload, empty, 'local payload returns empty bytes');
-  assertBytesEqual(
-    await engine.tree.getPayload(localNode),
-    empty,
-    'local payload stores empty bytes',
-  );
+  assertBytesEqual(await payloadOf(localNode), empty, 'local payload stores empty bytes');
 }
 
 async function scenarioEmptyOrderKeyRoundTrip(
@@ -1035,7 +1027,11 @@ async function scenarioEmptyOrderKeyRoundTrip(
       orderKey: empty,
     }),
   );
-  assertArrayEqual(await engine.tree.children(root), [node], 'empty insert order key materializes');
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((child) => child.id),
+    [node],
+    'empty insert order key materializes',
+  );
   const inserted = (await engine.ops.all()).find(
     (op) => op.meta.id.counter === 1 && op.kind.type === 'insert',
   );
@@ -1053,7 +1049,11 @@ async function scenarioEmptyOrderKeyRoundTrip(
     }),
   );
 
-  assertArrayEqual(await engine.tree.children(root), [], 'empty order key move materializes');
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((child) => child.id),
+    [],
+    'empty order key move materializes',
+  );
   const replayed = (await engine.ops.all()).find(
     (op) => op.meta.id.counter === 2 && op.kind.type === 'move',
   );
@@ -1104,8 +1104,16 @@ async function scenarioMaterializedSmokeWithOpRefs(
   assertEqual(await engine.meta.headLamport(), 3, 'meta.headLamport');
   assertEqual(await engine.meta.replicaMaxCounter(replica), 3, 'meta.replicaMaxCounter');
   assertEqual(await engine.tree.nodeCount(), 2, 'tree.nodeCount');
-  assertArrayEqual(await engine.tree.children(root), [n1], 'tree.children(root)');
-  assertArrayEqual(await engine.tree.children(n1), [n2], 'tree.children(n1)');
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((node) => node.id),
+    [n1],
+    'tree.children(root)',
+  );
+  assertArrayEqual(
+    ((await (await engine.tree.get(n1))?.children()) ?? []).map((node) => node.id),
+    [n2],
+    'tree.children(n1)',
+  );
 
   const dump = await engine.tree.dump();
   const byId = new Map(dump.map((row) => [row.node, row]));
@@ -1113,15 +1121,15 @@ async function scenarioMaterializedSmokeWithOpRefs(
   assertEqual(byId.get(n1)?.parent ?? null, root, 'tree.dump n1 parent');
   assertEqual(byId.get(n2)?.parent ?? null, n1, 'tree.dump n2 parent');
 
-  assertEqual(await engine.tree.parent(root), null, 'tree.parent(root)');
-  assertEqual(await engine.tree.parent(n1), root, 'tree.parent(n1)');
-  assertEqual(await engine.tree.parent(n2), n1, 'tree.parent(n2)');
+  assertEqual((await engine.tree.root.parent())?.id ?? null, null, 'tree.parent(root)');
+  assertEqual((await (await engine.tree.get(n1))?.parent())?.id ?? null, root, 'tree.parent(n1)');
+  assertEqual((await (await engine.tree.get(n2))?.parent())?.id ?? null, n1, 'tree.parent(n2)');
 
-  assertEqual(await engine.tree.exists(root), true, 'tree.exists(root)');
-  assertEqual(await engine.tree.exists(n1), true, 'tree.exists(n1)');
-  assertEqual(await engine.tree.exists(n2), true, 'tree.exists(n2)');
+  assertEqual((await engine.tree.get(root)) !== undefined, true, 'tree.exists(root)');
+  assertEqual((await engine.tree.get(n1)) !== undefined, true, 'tree.exists(n1)');
+  assertEqual((await engine.tree.get(n2)) !== undefined, true, 'tree.exists(n2)');
   assertEqual(
-    await engine.tree.exists('deadbeefdeadbeefdeadbeefdeadbeef'),
+    (await engine.tree.get('deadbeefdeadbeefdeadbeefdeadbeef')) !== undefined,
     false,
     'tree.exists(non-existent)',
   );
@@ -1143,6 +1151,67 @@ async function scenarioMaterializedSmokeWithOpRefs(
     ['move'],
     'opsByOpRefs(n1) kinds',
   );
+}
+
+async function scenarioTreeGetRootLazyNavigation(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const n1 = nodeIdFromInt(1);
+  const n2 = nodeIdFromInt(2);
+  const n3 = nodeIdFromInt(3);
+  const missing = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  const payload = new TextEncoder().encode('lazy');
+
+  assertEqual(await engine.tree.get(missing), undefined, 'tree.get(missing) is undefined');
+  assertEqual(engine.tree.root.id, root, 'tree.root.id');
+  assertEqual(await engine.tree.root.parent(), undefined, 'tree.root.parent is undefined');
+
+  const beforeInsert = await engine.tree.root.children();
+  assertEqual(beforeInsert.length, 0, 'root.children empty before insert');
+
+  await engine.local.insert(replica, root, n1, { type: 'last' }, payload);
+  await engine.local.insert(replica, n1, n2, { type: 'last' }, null);
+
+  const n1Handle = await engine.tree.get(n1);
+  assert(n1Handle, 'tree.get(n1) after insert');
+  assertBytesEqual(await n1Handle.payload(), payload, 'node.payload lazy read');
+
+  const parent = await n1Handle.parent();
+  assert(parent, 'node.parent after insert');
+  assertEqual(parent.id, root, 'node.parent id is root');
+
+  const children = await n1Handle.children();
+  assertArrayEqual(
+    children.map((child) => child.id),
+    [n2],
+    'node.children after insert',
+  );
+
+  // Handles stay lazy: delete then re-query reflects current state.
+  await engine.local.delete(replica, n2);
+  assertArrayEqual(
+    (await n1Handle.children()).map((child) => child.id),
+    [],
+    'node.children reflects delete',
+  );
+  assertEqual(await engine.tree.get(n2), undefined, 'tree.get(deleted) is undefined');
+
+  const rootKids = await engine.tree.root.children();
+  assertArrayEqual(
+    rootKids.map((child) => child.id),
+    [n1],
+    'tree.root.children after mutations',
+  );
+
+  await engine.local.insert(replica, n1, n3, { type: 'last' }, null);
+  const n3Handle = await engine.tree.get(n3);
+  assert(n3Handle, 'tree.get(n3) after insert');
+  await engine.local.delete(replica, n1);
+  assertEqual(await engine.tree.get(n1), undefined, 'tree.get(tombstoned parent) is undefined');
+  assertEqual(await n3Handle.parent(), undefined, 'node.parent omits tombstoned parent');
 }
 
 async function scenarioOpsGetPreservesOrderAndRejectsMissingRefs(
@@ -1341,7 +1410,7 @@ async function scenarioOpRefsChildrenCanonicalOrderingOnLamportTies(
   );
 }
 
-async function scenarioRejectsDeleteWithoutKnownState(
+async function scenarioRejectsInvalidDeleteKnownState(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
@@ -1350,22 +1419,44 @@ async function scenarioRejectsDeleteWithoutKnownState(
   const node = nodeIdFromInt(1);
 
   await engine.local.insert(replica, root, node, { type: 'last' }, null);
+  const initialOpCount = (await engine.ops.all()).length;
+  const invalidStates: { name: string; knownState?: Uint8Array }[] = [
+    { name: 'missing' },
+    { name: 'zero-length', knownState: new Uint8Array() },
+    { name: 'JSON instead of v0', knownState: new TextEncoder().encode('{"entries":[]}') },
+  ];
+  const appenders: { name: string; run: (op: Operation) => Promise<void> }[] = [
+    { name: 'append', run: (op) => engine.ops.append(op) },
+    { name: 'appendMany', run: (op) => engine.ops.appendMany([op]) },
+  ];
+  let counter = 2;
 
-  let threw = false;
-  try {
-    await engine.ops.append(makeDeleteOp({ replica, counter: 2, lamport: 2, node }));
-  } catch {
-    threw = true;
-  }
-  assert(threw, 'append(delete without knownState) should throw');
+  for (const invalid of invalidStates) {
+    for (const appender of appenders) {
+      const op = makeDeleteOp({
+        replica,
+        counter,
+        lamport: counter,
+        node,
+        knownState: invalid.knownState,
+      });
+      counter += 1;
 
-  threw = false;
-  try {
-    await engine.ops.appendMany([makeDeleteOp({ replica, counter: 3, lamport: 3, node })]);
-  } catch {
-    threw = true;
+      let threw = false;
+      try {
+        await appender.run(op);
+      } catch {
+        threw = true;
+      }
+      const label = `${appender.name}(delete with ${invalid.name} knownState)`;
+      assert(threw, `${label} should throw`);
+      assertEqual(
+        (await engine.ops.all()).length,
+        initialOpCount,
+        `${label} must not persist the op`,
+      );
+    }
   }
-  assert(threw, 'appendMany(delete without knownState) should throw');
 }
 
 async function scenarioDefensiveDeleteMoveRestores(
@@ -1377,13 +1468,21 @@ async function scenarioDefensiveDeleteMoveRestores(
   const n1 = nodeIdFromInt(1);
 
   await engine.local.insert(replica, root, n1, { type: 'last' }, null);
-  assertEqual(await engine.tree.exists(n1), true, 'tree.exists(n1) before delete');
+  assertEqual((await engine.tree.get(n1)) !== undefined, true, 'tree.exists(n1) before delete');
   await engine.local.delete(replica, n1);
-  assertArrayEqual(await engine.tree.children(root), [], 'children after delete');
-  assertEqual(await engine.tree.exists(n1), false, 'tree.exists(n1) after delete');
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((node) => node.id),
+    [],
+    'children after delete',
+  );
+  assertEqual((await engine.tree.get(n1)) !== undefined, false, 'tree.exists(n1) after delete');
 
   await engine.local.move(replica, n1, root, { type: 'last' });
-  assertArrayEqual(await engine.tree.children(root), [n1], 'children after move restores');
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((node) => node.id),
+    [n1],
+    'children after move restores',
+  );
 }
 
 async function scenarioDefensiveDeleteReactiveInsert(
@@ -1411,11 +1510,15 @@ async function scenarioDefensiveDeleteReactiveInsert(
       counter: 2,
       lamport: 2,
       node: parent,
-      knownState: vvBytes([{ replica, frontier: 1 }]),
+      knownState: await versionVectorBytes(replica, 1),
     }),
   );
 
-  assertArrayEqual(await engine.tree.children(root), [], 'children after delete');
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((node) => node.id),
+    [],
+    'children after delete',
+  );
 
   await engine.ops.append(
     makeInsertOp({
@@ -1429,12 +1532,12 @@ async function scenarioDefensiveDeleteReactiveInsert(
   );
 
   assertArrayEqual(
-    await engine.tree.children(root),
+    (await engine.tree.root.children()).map((node) => node.id),
     [parent],
     'parent restored after subtree insert',
   );
   assertArrayEqual(
-    await engine.tree.children(parent),
+    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
@@ -1466,11 +1569,15 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
       counter: 2,
       lamport: 3,
       node: parent,
-      knownState: vvBytes([{ replica: rA, frontier: 1 }]),
+      knownState: await versionVectorBytes(rA, 1),
     }),
   );
 
-  assertArrayEqual(await engine.tree.children(root), [], 'parent hidden after delete');
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((node) => node.id),
+    [],
+    'parent hidden after delete',
+  );
 
   // Later we receive an earlier op (lamport=2) from another replica.
   await engine.ops.append(
@@ -1485,56 +1592,16 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
   );
 
   assertArrayEqual(
-    await engine.tree.children(root),
+    (await engine.tree.root.children()).map((node) => node.id),
     [parent],
     'parent restored after out-of-order child insert',
   );
   assertArrayEqual(
-    await engine.tree.children(parent),
+    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
   assertEqual(await engine.tree.nodeCount(), 2, 'nodeCount after restore');
-}
-
-async function scenarioSyncKnownStatePropagation(
-  ctx: TreecrdtEngineConformanceContext,
-): Promise<void> {
-  const a = ctx.engine;
-  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
-
-  const root = nodeIdFromInt(0);
-  const parent = nodeIdFromInt(1);
-  const child = nodeIdFromInt(2);
-  const rA = replicaFromLabel('rA');
-  const rB = replicaFromLabel('rB');
-
-  // Replica B inserts parent, then syncs it to A.
-  await b.local.insert(rB, root, parent, { type: 'last' }, null);
-  await a.ops.appendMany(await b.ops.all());
-
-  // Replica B inserts a child under parent, but A never sees it.
-  await b.local.insert(rB, parent, child, { type: 'last' }, null);
-
-  // Replica A deletes parent without being aware of B's child insert.
-  const del = await a.local.delete(rA, parent);
-  assert(
-    del.meta.knownState && del.meta.knownState.length > 0,
-    'local delete must emit knownState',
-  );
-
-  // Sync A -> B. The delete MUST carry known_state so B doesn't treat it as aware of the child.
-  const eventsOnB = await captureMaterializationEvents(b, async () => {
-    await b.ops.appendMany(await a.ops.all());
-  });
-  assert(eventsOnB.length > 0, 'sync known_state should emit a materialization event on B');
-  assertEventNodeRefsSortedUnique(
-    materializationEventNodeRefs(eventsOnB[eventsOnB.length - 1]!),
-    'sync known_state: materialization event node refs shape',
-  );
-
-  assertArrayEqual(await b.tree.children(root), [parent], 'parent restored after sync delete');
-  assertArrayEqual(await b.tree.children(parent), [child], 'child still present after sync delete');
 }
 
 async function scenarioPersistenceMaterializedTreeReopen(
@@ -1548,12 +1615,20 @@ async function scenarioPersistenceMaterializedTreeReopen(
 
   const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
   await e1.local.insert(replica, root, n1, { type: 'last' }, null);
-  assertArrayEqual(await e1.tree.children(root), [n1], 'children before close');
+  assertArrayEqual(
+    (await e1.tree.root.children()).map((node) => node.id),
+    [n1],
+    'children before close',
+  );
   assertEqual(await e1.tree.nodeCount(), 1, 'nodeCount before close');
   await e1.close();
 
   const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
-  assertArrayEqual(await e2.tree.children(root), [n1], 'children after reopen');
+  assertArrayEqual(
+    (await e2.tree.root.children()).map((node) => node.id),
+    [n1],
+    'children after reopen',
+  );
   assertEqual(await e2.tree.nodeCount(), 1, 'nodeCount after reopen');
 }
 
@@ -1575,12 +1650,20 @@ async function scenarioPersistencePayloadReopen(
   await e1.close();
 
   const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
-  assertArrayEqual(await e2.tree.children(root), [n1, n2], 'children after reopen (payload)');
+  assertArrayEqual(
+    (await e2.tree.root.children()).map((node) => node.id),
+    [n1, n2],
+    'children after reopen (payload)',
+  );
 
-  const payload = await e2.tree.getPayload(n1);
+  const payload = (await (await e2.tree.get(n1))?.payload()) ?? null;
   assert(payload !== null, 'tree.getPayload should return payload for node with payload');
   assertBytesEqual(payload, empty, 'tree.getPayload returns empty payload after reopen');
-  assertBytesEqual(await e2.tree.getPayload(n2), null, 'null remains distinct after reopen');
+  assertBytesEqual(
+    (await (await e2.tree.get(n2))?.payload()) ?? null,
+    null,
+    'null remains distinct after reopen',
+  );
 
   const refs = await e2.opRefs.children(root);
   assertEqual(refs.length, 3, 'opRefs.children length after reopen (payload)');
@@ -1640,7 +1723,11 @@ async function findDepthBfs(opts: {
     const cur = queue.shift();
     if (!cur) break;
 
-    const children = await opts.engine.tree.children(cur.id);
+    const handle =
+      cur.id === opts.engine.tree.root.id
+        ? opts.engine.tree.root
+        : await opts.engine.tree.get(cur.id);
+    const children = ((await handle?.children()) ?? []).map((child) => child.id);
     for (const child of children) {
       if (child === opts.target) return cur.depth + 1;
       if (seen.has(child)) continue;
@@ -1707,9 +1794,8 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
   const bPk = await getEd25519PublicKey(bSk);
 
   const root = nodeIdFromInt(0);
-  await a.local.insert(aPk, root, nodeIdFromInt(1), { type: 'last' }, null);
-  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null);
-  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: 'last' }, null);
+  const parent = nodeIdFromInt(1);
+  const child = nodeIdFromInt(4);
 
   const tokenA = makeCapabilityTokenV1({
     issuerPrivateKey: issuerSk,
@@ -1722,20 +1808,27 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     docId,
   });
 
-  const authA = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: aSk,
-    localPublicKey: aPk,
-    localCapabilityTokens: [tokenA],
+  const sessionA = createTreecrdtAuthSession({
+    docId,
+    trust: { issuerPublicKeys: [issuerPk] },
+    local: { privateKey: aSk, publicKey: aPk, capabilityTokens: [tokenA] },
     requireProofRef: true,
   });
 
-  const authB = createTreecrdtCoseCwtAuth({
-    issuerPublicKeys: [issuerPk],
-    localPrivateKey: bSk,
-    localPublicKey: bPk,
-    localCapabilityTokens: [tokenB],
+  const sessionB = createTreecrdtAuthSession({
+    docId,
+    trust: { issuerPublicKeys: [issuerPk] },
+    local: { privateKey: bSk, publicKey: bPk, capabilityTokens: [tokenB] },
     requireProofRef: true,
+  });
+  await Promise.all([sessionA.ready, sessionB.ready]);
+
+  await a.local.insert(aPk, root, parent, { type: 'last' }, null, { authSession: sessionA });
+  await b.local.insert(bPk, root, nodeIdFromInt(2), { type: 'last' }, null, {
+    authSession: sessionB,
+  });
+  await b.local.insert(bPk, root, nodeIdFromInt(3), { type: 'last' }, null, {
+    authSession: sessionB,
   });
 
   const backendA = createEngineSyncBackend(a);
@@ -1745,11 +1838,11 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     backendA,
     backendB,
     codec: treecrdtSyncV0ProtobufCodec,
-    peerAOptions: { auth: authA },
-    peerBOptions: { auth: authB, maxOpsPerBatch: 1 },
+    peerAOptions: { auth: sessionA.syncAuth },
+    peerBOptions: { auth: sessionB.syncAuth, maxOpsPerBatch: 1 },
   });
 
-  try {
+  const syncAndAssertConverged = async () => {
     await peerA.syncOnce(
       transportA,
       { all: {} },
@@ -1769,6 +1862,59 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
         message: 'sync auth conformance: expected peers to converge',
       },
     );
+  };
+
+  try {
+    await syncAndAssertConverged();
+
+    // A deletes the parent without seeing B's concurrent child insertion.
+    await b.local.insert(bPk, parent, child, { type: 'last' }, null, { authSession: sessionB });
+    assertArrayEqual(
+      ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+      [],
+      'deleter has not seen the child',
+    );
+    let authorizedState: Uint8Array | undefined;
+    const deletion = await a.local.delete(aPk, parent, {
+      authSession: {
+        authorizeLocalOps: async (ops) => {
+          const state = ops[0]?.meta.knownState?.slice();
+          const auth = await sessionA.authorizeLocalOps(ops);
+          authorizedState = state;
+          return auth;
+        },
+      },
+    });
+    assert(authorizedState, 'local delete must authorize its knownState before committing');
+    assertBytesEqual(deletion.meta.knownState ?? null, authorizedState, 'authorized delete state');
+    assert(
+      !(await a.tree.root.children()).some((node) => node.id === parent),
+      'delete initially hides parent',
+    );
+
+    await syncAndAssertConverged();
+
+    for (const [name, engine] of [
+      ['author', a],
+      ['receiver', b],
+    ] as const) {
+      const storedDelete = (await engine.ops.all()).find((op) => op.kind.type === 'delete');
+      assert(storedDelete, `${name} stores the signed delete`);
+      assertBytesEqual(
+        storedDelete.meta.knownState ?? null,
+        authorizedState,
+        `${name} preserves the authorized delete state`,
+      );
+      assert(
+        (await engine.tree.root.children()).some((node) => node.id === parent),
+        `${name} restores parent`,
+      );
+      assertArrayEqual(
+        ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+        [child],
+        `${name} preserves unseen child`,
+      );
+    }
   } finally {
     detach();
   }
@@ -2217,12 +2363,12 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
   }
 
   assertArrayEqual(
-    await c.tree.children(root),
+    (await c.tree.root.children()).map((node) => node.id),
     [subtreeRoot],
     'receiver sees subtree root after relay restart',
   );
   assertArrayEqual(
-    await c.tree.children(subtreeRoot),
+    ((await (await c.tree.get(subtreeRoot))?.children()) ?? []).map((node) => node.id),
     [child],
     'receiver sees child under subtree after relay restart',
   );
@@ -2301,7 +2447,7 @@ async function scenarioSyncAuthExcludedRootNotSynced(
       { maxCodewords: 10_000, codewordsPerMessage: 256 },
     );
 
-    const bKids = await b.tree.children(root);
+    const bKids = (await b.tree.root.children()).map((node) => node.id);
     assertArrayEqual(bKids, [publicNode], 'scoped peer should only see public node');
 
     // B can still write to the allowed node and sync back using `children(root)`.

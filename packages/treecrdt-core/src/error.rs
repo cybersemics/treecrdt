@@ -10,6 +10,8 @@ pub enum Error {
     AccessDenied(String),
     #[error("invalid operation: {0}")]
     InvalidOperation(String),
+    #[error("invalid version vector: {0}")]
+    InvalidVersionVector(String),
     #[error("inconsistent state: {0}")]
     InconsistentState(String),
     #[error("missing dependency: {0}")]

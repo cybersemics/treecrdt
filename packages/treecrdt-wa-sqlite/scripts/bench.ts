@@ -1,8 +1,9 @@
 import path from 'node:path';
 import { buildWorkloads, runWorkloads } from '@treecrdt/benchmark';
 import { parseBenchCliArgs, repoRootFromImportMeta, writeResult } from '@treecrdt/benchmark/node';
-import { createWaSqliteApi, initializeTreecrdtExtension } from '../dist/index.js';
-import { makeDbAdapter } from '../dist/db.js';
+import { createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
+import { initializeTreecrdtExtension } from '../dist/index.node.js';
+import { createDatabase } from '../dist/db.js';
 import { loadWaSqliteNode } from '../dist/node/load-wa-sqlite.js';
 
 async function main() {
@@ -19,7 +20,7 @@ async function main() {
   // Probe extension registration once so benchmark timing isn't dominated by setup errors.
   const probeHandle = await sqlite3.open_v2(':memory:');
   try {
-    await initializeTreecrdtExtension(module, probeHandle);
+    await initializeTreecrdtExtension(module, probeHandle, createDatabase(sqlite3, probeHandle));
     await sqlite3.exec(probeHandle, 'SELECT treecrdt_ops_since(0)');
   } catch (err) {
     const msg = sqlite3.errmsg ? sqlite3.errmsg(probeHandle) : String(err);
@@ -30,9 +31,9 @@ async function main() {
 
   const adapterFactory = async () => {
     const handle = await sqlite3.open_v2(':memory:');
-    await initializeTreecrdtExtension(module, handle);
-    const db = makeDbAdapter(sqlite3, handle);
-    const api = createWaSqliteApi(db);
+    const db = createDatabase(sqlite3, handle);
+    await initializeTreecrdtExtension(module, handle, db);
+    const api = createTreecrdtSqliteAdapter(db);
     await api.setDocId(docId);
     return { ...api, close: () => db.close?.() };
   };

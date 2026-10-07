@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@treecrdt/benchmark": "workspace:*",
+    "@treecrdt/wasm": "workspace:*",
     "@types/node": "^20.19.25",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"

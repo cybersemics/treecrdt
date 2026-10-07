@@ -9,6 +9,7 @@ import {
   wrapDuplexTransportWithCodec,
 } from '@treecrdt/sync-protocol/transport';
 import type { Operation } from '@treecrdt/interface';
+import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
 import { DEFAULT_MAX_OPS_PER_BATCH } from '../src/constants.js';
@@ -137,6 +138,7 @@ test('syncOnce defaults split inbound applies into modest batches', async () => 
 });
 
 test('syncOnce pulls insert, move, payload, and delete operations', async () => {
+  const codec = await loadVersionVectorCodec();
   const docId = `sync-socket-mem-mix-${Math.random().toString(16).slice(2)}`;
   const n1 = nodeIdFromInt(1);
   const n2 = nodeIdFromInt(2);
@@ -169,7 +171,7 @@ test('syncOnce pulls insert, move, payload, and delete operations', async () => 
       meta: {
         id: { replica: replicas.b, counter: 5 },
         lamport: 5,
-        knownState: new Uint8Array([0x5b, 0x5d]), // minimal non-empty (sync requires this for delete)
+        knownState: codec.encodeVersionVector({ entries: [] }),
       },
       kind: { type: 'delete' as const, node: n2 },
     },

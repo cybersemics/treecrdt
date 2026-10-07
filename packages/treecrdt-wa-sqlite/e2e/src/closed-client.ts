@@ -3,9 +3,6 @@ import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 import { orderKeyFromPosition, replicaFromLabel } from './op-helpers.js';
 
 export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; error: string }> {
-  const baseUrl =
-    typeof window !== 'undefined' ? new URL('.', window.location.href).href : undefined;
-
   const root = '0'.repeat(32);
   const replica = replicaFromLabel('closed-test');
   const op = makeOp(replica, 1, 1, {
@@ -16,11 +13,7 @@ export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; 
   });
 
   // --- Direct client (memory)
-  const directClient = await createTreecrdtClient({
-    storage: { type: 'memory' },
-    runtime: { type: 'direct' },
-    assets: { baseUrl },
-  });
+  const directClient = await createTreecrdtClient({ docId: 'e2e-closed-direct' });
   await directClient.close();
 
   const directAppendAfterClose = await directClient.ops.append(op).then(
@@ -36,11 +29,7 @@ export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; 
   if (!directDoubleClose.ok) return directDoubleClose;
 
   // --- Direct client: drop then call
-  const directDrop = await createTreecrdtClient({
-    storage: { type: 'memory' },
-    runtime: { type: 'direct' },
-    assets: { baseUrl },
-  });
+  const directDrop = await createTreecrdtClient({ docId: 'e2e-closed-direct-drop' });
   await directDrop.drop();
   const directAppendAfterDrop = await directDrop.ops.append(op).then(
     () => ({ ok: false as const, error: 'append after drop should have rejected' }),
@@ -57,11 +46,9 @@ export async function runClosedClientE2E(): Promise<{ ok: true } | { ok: false; 
   // --- Worker client (opfs) if available
   const support = detectOpfsSupport();
   if (support.available) {
-    const filename = `/closed-test-${crypto.randomUUID()}.db`;
     const workerClient = await createTreecrdtClient({
-      storage: { type: 'opfs', filename, fallback: 'throw' },
-      runtime: { type: 'dedicated-worker' },
-      assets: { baseUrl },
+      docId: `closed-test-${crypto.randomUUID()}`,
+      persistent: true,
     });
     await workerClient.close();
 

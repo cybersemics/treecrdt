@@ -1,14 +1,35 @@
-import { utf8ToBytes } from '@noble/hashes/utils';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import { signEd25519, verifyEd25519 } from '../ed25519.js';
-import { concatBytes, u32be, u64be, u8 } from './bytes.js';
+import { u32be, u64be, u8 } from './bytes.js';
 
-const OP_SIG_V1_DOMAIN = utf8ToBytes('treecrdt/op-sig/v1');
+const OP_SIG_DOMAIN = utf8ToBytes('treecrdt/op-sig/v1');
+const MAX_KNOWN_STATE_BYTES = 1024 * 1024;
+const MAX_KNOWN_STATE_ENTRIES = 4096;
+const ED25519_PUBLIC_KEY_LEN = 32;
 
-export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation }): Uint8Array {
+function prepareOpSignature(opts: { docId: string; op: Operation }): {
+  message: Uint8Array;
+  knownState: Uint8Array | undefined;
+} {
+  const knownState = opts.op.meta.knownState;
+  if (knownState !== undefined && knownState.length > MAX_KNOWN_STATE_BYTES) {
+    throw new Error(
+      `knownState exceeds the ${MAX_KNOWN_STATE_BYTES}-byte operation-signature limit`,
+    );
+  }
+  if (opts.op.kind.type === 'delete') {
+    if (knownState === undefined || knownState.length === 0) {
+      throw new Error('delete operations require non-empty knownState');
+    }
+  } else if (knownState !== undefined) {
+    throw new Error('knownState is only allowed on delete operations');
+  }
+
   const docIdBytes = utf8ToBytes(opts.docId);
   const replicaBytes = replicaIdToBytes(opts.op.meta.id.replica);
 
@@ -79,8 +100,8 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
     }
   }
 
-  return concatBytes(
-    OP_SIG_V1_DOMAIN,
+  const message = concatBytes(
+    OP_SIG_DOMAIN,
     u8(0),
     u32be(docIdBytes.length),
     docIdBytes,
@@ -90,24 +111,60 @@ export function encodeTreecrdtOpSigInputV1(opts: { docId: string; op: Operation 
     u64be(lamport),
     u8(kindTag),
     kindFields,
+    ...(knownState === undefined ? [u8(0)] : [u8(1), u32be(knownState.length), knownState]),
   );
+  return {
+    message,
+    // Validate the message's copy so caller mutations across awaits cannot change the input.
+    knownState:
+      knownState === undefined ? undefined : message.subarray(message.length - knownState.length),
+  };
 }
 
-export async function signTreecrdtOpV1(opts: {
+async function validateKnownState(bytes: Uint8Array | undefined): Promise<void> {
+  if (bytes === undefined) return;
+  const codec = await loadVersionVectorCodec();
+  const vector = codec.decodeVersionVector(bytes);
+  if (vector.entries.length > MAX_KNOWN_STATE_ENTRIES) {
+    throw new Error(
+      `knownState exceeds the ${MAX_KNOWN_STATE_ENTRIES}-entry operation-signature limit`,
+    );
+  }
+  for (const entry of vector.entries) {
+    if (entry.replica.length !== ED25519_PUBLIC_KEY_LEN) {
+      throw new Error('knownState must use 32-byte replica ids');
+    }
+  }
+}
+
+export async function encodeTreecrdtOpSigInput(opts: {
+  docId: string;
+  op: Operation;
+}): Promise<Uint8Array> {
+  const { message, knownState } = prepareOpSignature(opts);
+  await validateKnownState(knownState);
+  return message;
+}
+
+export async function signTreecrdtOp(opts: {
   docId: string;
   op: Operation;
   privateKey: Uint8Array;
 }): Promise<Uint8Array> {
-  const msg = encodeTreecrdtOpSigInputV1({ docId: opts.docId, op: opts.op });
-  return signEd25519(msg, opts.privateKey);
+  const privateKey = new Uint8Array(opts.privateKey);
+  const message = await encodeTreecrdtOpSigInput({ docId: opts.docId, op: opts.op });
+  return signEd25519(message, privateKey);
 }
 
-export async function verifyTreecrdtOpV1(opts: {
+export async function verifyTreecrdtOp(opts: {
   docId: string;
   op: Operation;
   signature: Uint8Array;
   publicKey: Uint8Array;
 }): Promise<boolean> {
-  const msg = encodeTreecrdtOpSigInputV1({ docId: opts.docId, op: opts.op });
-  return await verifyEd25519(opts.signature, msg, opts.publicKey);
+  const { message, knownState } = prepareOpSignature(opts);
+  const verified = await verifyEd25519(opts.signature, message, opts.publicKey);
+  if (!verified) return false;
+  await validateKnownState(knownState);
+  return true;
 }

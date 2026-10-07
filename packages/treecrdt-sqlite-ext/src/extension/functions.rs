@@ -59,11 +59,8 @@ fn derive_op_ref_v0(doc_id: &[u8], replica: &[u8], counter: u64) -> [u8; OPREF_V
 }
 
 #[cfg(any(feature = "ext-sqlite", feature = "static-link"))]
-fn deserialize_version_vector(bytes: &[u8]) -> Result<VersionVector, c_int> {
-    match serde_json::from_slice(bytes) {
-        Ok(vv) => Ok(vv),
-        Err(_) => Err(SQLITE_ERROR as c_int),
-    }
+fn decode_version_vector(bytes: &[u8]) -> Result<VersionVector, c_int> {
+    VersionVector::decode(bytes).map_err(|_| SQLITE_ERROR as c_int)
 }
 
 /// A simple scalar function that returns the crate version string. Useful to confirm
@@ -78,6 +75,16 @@ unsafe extern "C" fn treecrdt_version_fn(
     // Transfer ownership to SQLite; we provide a destructor to free the CString.
     let ptr = ver.into_raw();
     sqlite_result_text(ctx, ptr as *const c_char, len, Some(drop_cstring));
+}
+
+unsafe extern "C" fn treecrdt_schema_fn(
+    ctx: *mut sqlite3_context,
+    _argc: c_int,
+    _argv: *mut *mut sqlite3_value,
+) {
+    let sql = CString::new(SCHEMA_SQL).expect("schema SQL");
+    let len = sql.as_bytes().len() as c_int;
+    sqlite_result_text(ctx, sql.into_raw(), len, Some(drop_cstring));
 }
 
 #[no_mangle]
@@ -100,6 +107,44 @@ pub extern "C" fn sqlite3_treecrdt_init(
             }
         }
         return rc;
+    }
+
+    register_functions(db, pz_err_msg)
+}
+
+/// Register functions without accessing the database. Browser VFS implementations
+/// may need to await file and lock operations, so the caller executes the schema
+/// returned by treecrdt_schema() after sqlite3_open_v2 has completed.
+///
+/// # Safety
+/// SQLite must supply a valid database handle, error-message output pointer (or
+/// null), and API table for the duration of the call. Static builds ignore p_api.
+#[no_mangle]
+pub unsafe extern "C" fn sqlite3_treecrdt_register(
+    db: *mut sqlite3,
+    pz_err_msg: *mut *mut c_char,
+    p_api: *const sqlite3_api_routines,
+) -> c_int {
+    if let Err(rc) = unsafe { set_sqlite3_api(p_api) } {
+        return rc;
+    }
+    register_functions(db, pz_err_msg)
+}
+
+fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
+    let rc_schema = sqlite_create_function_v2(
+        db,
+        c"treecrdt_schema".as_ptr(),
+        0,
+        SQLITE_UTF8 as c_int,
+        null_mut(),
+        Some(treecrdt_schema_fn),
+        None,
+        None,
+        None,
+    );
+    if rc_schema != SQLITE_OK as c_int {
+        return rc_schema;
     }
 
     let rc = {

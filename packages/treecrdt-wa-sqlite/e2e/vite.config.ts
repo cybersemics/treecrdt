@@ -47,6 +47,7 @@ export default defineConfig({
         path.resolve(__dirname, './public'),
         path.resolve(__dirname, '../dist'),
         path.resolve(__dirname, '../../treecrdt-riblt-wasm-js'),
+        path.resolve(__dirname, '../../treecrdt-wasm-js'),
       ],
     },
   },

@@ -38,14 +38,6 @@ fn node_buffer(node: NodeId) -> Buffer {
     Buffer::from(node_to_bytes16(node).to_vec())
 }
 
-fn vv_from_bytes(bytes: &[u8]) -> CoreResult<VersionVector> {
-    serde_json::from_slice(bytes).map_err(|e| CoreError::Storage(e.to_string()))
-}
-
-fn vv_to_bytes(vv: &VersionVector) -> CoreResult<Vec<u8>> {
-    serde_json::to_vec(vv).map_err(|e| CoreError::Storage(e.to_string()))
-}
-
 #[napi(object)]
 pub struct NativeOp {
     pub lamport: BigInt,
@@ -58,12 +50,6 @@ pub struct NativeOp {
     pub order_key: Option<Buffer>,
     pub payload: Option<Buffer>,
     pub known_state: Option<Buffer>,
-}
-
-#[napi(object)]
-pub struct NativeTreeChildRow {
-    pub node: Buffer,
-    pub order_key: Option<Buffer>,
 }
 
 #[napi(object)]
@@ -262,8 +248,7 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
 
     let known_state = match op.known_state {
         None => None,
-        Some(b) if b.is_empty() => None,
-        Some(b) => Some(vv_from_bytes(&b)?),
+        Some(b) => Some(VersionVector::decode(&b)?),
     };
 
     let meta = treecrdt_core::OperationMetadata {
@@ -321,7 +306,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
 
     let known_state = match op.meta.known_state.as_ref() {
         None => None,
-        Some(vv) => Some(Buffer::from(vv_to_bytes(vv)?)),
+        Some(vv) => Some(Buffer::from(vv.encode()?)),
     };
 
     match op.kind {
@@ -518,43 +503,18 @@ impl PgBackend {
     }
 
     #[napi]
-    pub fn tree_children(&self, parent: Buffer) -> napi::Result<Vec<Buffer>> {
-        let client = connect(&self.url)?;
-        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
-        let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-        let nodes = treecrdt_postgres::tree_children(&client, &self.doc_id, parent)
-            .map_err(map_core_err)?;
-        Ok(nodes.into_iter().map(|n| Buffer::from(node_to_bytes16(n).to_vec())).collect())
-    }
-
-    #[napi]
-    pub fn tree_children_page(
+    pub fn tree_children(
         &self,
         parent: Buffer,
-        cursor_order_key: Option<Buffer>,
-        cursor_node: Option<Buffer>,
-        limit: u32,
-    ) -> napi::Result<Vec<NativeTreeChildRow>> {
+        index: Option<u32>,
+        length: Option<u32>,
+    ) -> napi::Result<Vec<Buffer>> {
         let client = connect(&self.url)?;
         let client = std::rc::Rc::new(std::cell::RefCell::new(client));
         let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
-
-        let cursor = match (cursor_order_key, cursor_node) {
-            (None, None) => None,
-            (Some(k), Some(n)) => Some((k.to_vec(), n.to_vec())),
-            _ => return Err(map_err("invalid cursor (expected both order_key and node)")),
-        };
-
-        let rows =
-            treecrdt_postgres::tree_children_page(&client, &self.doc_id, parent, cursor, limit)
-                .map_err(map_core_err)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| NativeTreeChildRow {
-                node: Buffer::from(node_to_bytes16(row.node).to_vec()),
-                order_key: row.order_key.map(Buffer::from),
-            })
-            .collect())
+        let nodes = treecrdt_postgres::tree_children(&client, &self.doc_id, parent, index, length)
+            .map_err(map_core_err)?;
+        Ok(nodes.into_iter().map(|n| Buffer::from(node_to_bytes16(n).to_vec())).collect())
     }
 
     #[napi]

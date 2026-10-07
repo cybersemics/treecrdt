@@ -1,7 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
 
-type RuntimeChoice = 'dedicated-worker' | 'shared-worker';
-
 type ReadMetrics = {
   ok: true;
   samples: number;
@@ -58,10 +56,7 @@ async function waitForHarness(page: Page) {
   );
 }
 
-async function openClient(
-  page: Page,
-  opts: { docId: string; filename: string; runtime: RuntimeChoice },
-) {
+async function openClient(page: Page, opts: { docId: string }) {
   return page.evaluate(async (openOpts) => {
     const open = window.__openTreecrdtResponsivenessClient;
     if (!open) throw new Error('__openTreecrdtResponsivenessClient not available');
@@ -137,86 +132,72 @@ async function closeClient(page: Page) {
 }
 
 test.describe('worker read responsiveness under write pressure', () => {
-  for (const runtime of ['dedicated-worker', 'shared-worker'] as const) {
-    test(`OPFS ${runtime} reads complete while append pressure is active`, async ({
-      context,
-    }, testInfo) => {
-      if (testInfo.project.name !== 'chromium-dev') test.skip();
-      test.setTimeout(180_000);
+  test('OPFS dedicated-worker reads complete while append pressure is active', async ({
+    context,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(180_000);
 
-      const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-      const docId = `responsiveness-${runtime}-${suffix}`;
-      const filename = `/responsiveness-${runtime}-${suffix}.db`;
-      const batchCount = Math.ceil(totalOps / batchSize);
-      const writerPage = await context.newPage();
-      const readerPage = runtime === 'shared-worker' ? await context.newPage() : writerPage;
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const docId = `responsiveness-${suffix}`;
+    const batchCount = Math.ceil(totalOps / batchSize);
+    const page = await context.newPage();
 
-      writerPage.on('console', (msg) => console.log(`[writer][${msg.type()}] ${msg.text()}`));
-      if (readerPage !== writerPage) {
-        readerPage.on('console', (msg) => console.log(`[reader][${msg.type()}] ${msg.text()}`));
-      }
+    page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
 
-      try {
-        await waitForHarness(writerPage);
-        if (readerPage !== writerPage) await waitForHarness(readerPage);
+    try {
+      await waitForHarness(page);
 
-        const writerSummary = await openClient(writerPage, { docId, filename, runtime });
-        const readerSummary =
-          readerPage === writerPage
-            ? writerSummary
-            : await openClient(readerPage, { docId, filename, runtime });
-        expect(writerSummary).toEqual({ mode: 'worker', runtime, storage: 'opfs' });
-        expect(readerSummary).toEqual({ mode: 'worker', runtime, storage: 'opfs' });
+      const summary = await openClient(page, { docId });
+      expect(summary).toEqual({ mode: 'worker', runtime: 'dedicated-worker', storage: 'opfs' });
 
-        const payloadSeed = await seedPayload(writerPage, { payloadBytes });
-        await startWrites(writerPage, { batchCount, batchSize });
-        const [reads, payloadReads, writes] = await Promise.all([
-          sampleReads(readerPage),
-          samplePayloadReads(readerPage, {
-            node: payloadSeed.node,
-            payloadBytes: payloadSeed.payloadBytes,
-          }),
-          waitWrites(writerPage),
-        ]);
-        const afterWrites = await sampleReads(readerPage, { samples: 1, intervalMs: 0 });
+      const payloadSeed = await seedPayload(page, { payloadBytes });
+      await startWrites(page, { batchCount, batchSize });
+      const [reads, payloadReads, writes] = await Promise.all([
+        sampleReads(page),
+        samplePayloadReads(page, {
+          node: payloadSeed.node,
+          payloadBytes: payloadSeed.payloadBytes,
+        }),
+        waitWrites(page),
+      ]);
+      const afterWrites = await sampleReads(page, { samples: 1, intervalMs: 0 });
 
-        const batchDurations = writes.batchDurationsMs.slice().sort((a, b) => a - b);
-        const p95Batch =
-          batchDurations[
-            Math.min(batchDurations.length - 1, Math.ceil(batchDurations.length * 0.95) - 1)
-          ] ?? 0;
-        console.log(
-          JSON.stringify({
-            runtime,
-            totalOps: writes.totalOps,
-            writeDurationMs: writes.durationMs,
-            writeBatchP95Ms: p95Batch,
-            readP50Ms: reads.p50Ms,
-            readP95Ms: reads.p95Ms,
-            readMaxMs: reads.maxMs,
-            readSamples: reads.durationsMs,
-            payloadBytes: payloadReads.payloadBytes,
-            payloadReadP50Ms: payloadReads.p50Ms,
-            payloadReadP95Ms: payloadReads.p95Ms,
-            payloadReadMaxMs: payloadReads.maxMs,
-            payloadReadSamples: payloadReads.durationsMs,
-            finalChildCount: reads.finalChildCount,
-            finalChildCountAfterWrites: afterWrites.finalChildCount,
-          }),
-        );
+      const batchDurations = writes.batchDurationsMs.slice().sort((a, b) => a - b);
+      const p95Batch =
+        batchDurations[
+          Math.min(batchDurations.length - 1, Math.ceil(batchDurations.length * 0.95) - 1)
+        ] ?? 0;
+      console.log(
+        JSON.stringify({
+          totalOps: writes.totalOps,
+          writeDurationMs: writes.durationMs,
+          writeBatchP95Ms: p95Batch,
+          readP50Ms: reads.p50Ms,
+          readP95Ms: reads.p95Ms,
+          readMaxMs: reads.maxMs,
+          readSamples: reads.durationsMs,
+          payloadBytes: payloadReads.payloadBytes,
+          payloadReadP50Ms: payloadReads.p50Ms,
+          payloadReadP95Ms: payloadReads.p95Ms,
+          payloadReadMaxMs: payloadReads.maxMs,
+          payloadReadSamples: payloadReads.durationsMs,
+          finalChildCount: reads.finalChildCount,
+          finalChildCountAfterWrites: afterWrites.finalChildCount,
+        }),
+      );
 
-        expect(writes.totalOps).toBe(batchCount * batchSize);
-        expect(reads.samples).toBe(samples);
-        expect(payloadReads.samples).toBe(samples);
-        expect(payloadReads.payloadBytes).toBe(payloadBytes);
-        // This is a liveness guard, not a benchmark threshold. Stress runs can tighten it locally.
-        expect(reads.maxMs).toBeLessThan(30_000);
-        expect(payloadReads.maxMs).toBeLessThan(30_000);
-        expect(afterWrites.finalChildCount).toBe(writes.totalOps + 1);
-      } finally {
-        await Promise.allSettled([closeClient(writerPage), closeClient(readerPage)]);
-        await Promise.allSettled([writerPage.close(), readerPage.close()]);
-      }
-    });
-  }
+      expect(writes.totalOps).toBe(batchCount * batchSize);
+      expect(reads.samples).toBe(samples);
+      expect(payloadReads.samples).toBe(samples);
+      expect(payloadReads.payloadBytes).toBe(payloadBytes);
+      // This is a liveness guard, not a benchmark threshold. Stress runs can tighten it locally.
+      expect(reads.maxMs).toBeLessThan(30_000);
+      expect(payloadReads.maxMs).toBeLessThan(30_000);
+      expect(afterWrites.finalChildCount).toBe(writes.totalOps + 1);
+    } finally {
+      await closeClient(page);
+      await page.close();
+    }
+  });
 });

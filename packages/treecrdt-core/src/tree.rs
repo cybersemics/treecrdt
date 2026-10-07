@@ -6,7 +6,7 @@ use crate::affected::{
 };
 use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
-use crate::ops::{cmp_op_key, Operation, OperationKind};
+use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
 use crate::traits::{
     Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
 };
@@ -311,8 +311,47 @@ where
     }
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
-        self.apply_remote_with_delta(op)?;
+        self.apply_remote_batch([op])
+    }
+
+    /// Apply a received batch, replaying retained history at most once.
+    ///
+    /// Persist in arrival order so duplicates retain the same first envelope as `apply_remote`.
+    /// Apply newly accepted operations in canonical order, without a history scan when they are
+    /// all newer than the current head.
+    ///
+    /// Like `apply_remote`, this is not an atomic transaction. On error, callers must restore
+    /// the complete state or rebuild the replica from storage before continuing.
+    pub fn apply_remote_batch(
+        &mut self,
+        operations: impl IntoIterator<Item = Operation>,
+    ) -> Result<()> {
+        let operations = operations.into_iter();
+        let mut accepted = Vec::with_capacity(operations.size_hint().0);
+        for op in operations {
+            self.observe_remote(&op);
+            if self.storage.apply(op.clone())? {
+                accepted.push(op);
+            }
+        }
+        accepted.sort_by(cmp_ops);
+        if accepted.first().is_some_and(|op| !self.is_in_order(op)) {
+            return self.replay_from_storage();
+        }
+        for op in accepted {
+            Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.op_count += 1;
+            self.head = Some(op);
+        }
         Ok(())
+    }
+
+    fn observe_remote(&mut self, op: &Operation) {
+        self.clock.observe(op.meta.lamport);
+        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
+        if op.meta.id.replica == self.replica_id {
+            self.counter = self.counter.max(op.meta.id.counter);
+        }
     }
 
     /// Apply one remote operation and return exact incremental delta when available.
@@ -321,11 +360,7 @@ where
     /// - `Some(delta)` for in-order applies where an exact changed-node set is known,
     /// - `None` for duplicate/not-applied ops or paths that require replay.
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
-        self.clock.observe(op.meta.lamport);
-        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-        if op.meta.id.replica == self.replica_id {
-            self.counter = self.counter.max(op.meta.id.counter);
-        }
+        self.observe_remote(&op);
 
         if !self.storage.apply(op.clone())? {
             return Ok(None);
@@ -393,11 +428,7 @@ where
         index: &mut I,
         seq: u64,
     ) -> Result<ApplyDelta> {
-        self.clock.observe(op.meta.lamport);
-        self.version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-        if op.meta.id.replica == self.replica_id {
-            self.counter = self.counter.max(op.meta.id.counter);
-        }
+        self.observe_remote(&op);
 
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         self.op_count = seq;

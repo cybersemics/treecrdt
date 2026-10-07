@@ -80,6 +80,7 @@ jobs:
       - name: Build TypeScript deps for playground typecheck
         run: |
           pnpm -C packages/treecrdt-ts run build
+          pnpm -C packages/treecrdt-wasm-js run build
           pnpm -C packages/treecrdt-riblt-wasm-js run build
           pnpm -C packages/sync-protocol/protocol run build
           pnpm -C packages/treecrdt-auth run build
@@ -99,10 +100,16 @@ jobs:
         run: pnpm run fmt:check:ts
 
       - name: Run Clippy linter
-        run: pnpm run clippy
+        run: |
+          rustc --version
+          cargo clippy --version
+          pnpm run clippy
 
       - name: Run Rust tests
         run: cargo test --workspace --all-targets
+
+      - name: Run core serde tests
+        run: cargo test -p treecrdt-core --features serde --test serde_version_vector
 
       - name: Run SQLite extension roundtrip tests
         run: cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite
@@ -141,8 +148,14 @@ jobs:
       - name: Build project
         run: pnpm run build
 
+      - name: Run auth tests
+        run: pnpm -C packages/treecrdt-auth exec vitest run
+
       - name: Run sync protocol tests
         run: pnpm -C packages/sync-protocol/protocol exec vitest run
+
+      - name: Run WASM codec tests
+        run: pnpm -C packages/treecrdt-wasm-js exec vitest run
 
       - name: Run sync server core tests
         run: pnpm -C packages/sync-protocol/server/core exec vitest run

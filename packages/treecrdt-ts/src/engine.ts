@@ -1,5 +1,6 @@
 import type { Operation, ReplicaId } from './index.js';
-import type { SqliteTreeChildRow, SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
+import type { SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
+import { ROOT_NODE_ID_HEX } from './ids.js';
 
 export type MaterializationSource = {
   /**
@@ -159,19 +160,101 @@ export type TreecrdtEngineOpRefs = {
   children: (parent: string) => Promise<Uint8Array[]>;
 };
 
+/**
+ * Optional half-open index range over a parent's live (non-tombstoned) children, in `(order_key, node)` order.
+ *
+ * Omitted `index` defaults to `0`. Omitted `length` returns from `index` through the end. Out-of-range
+ * starts yield an empty list; a partial tail is returned when `index + length` exceeds the child count.
+ */
+export type TreecrdtChildrenSlice = {
+  index?: number;
+  length?: number;
+};
+
+/** Normalize optional slice args; throws on negative or non-integer values. */
+export function normalizeChildrenSlice(
+  slice?: TreecrdtChildrenSlice,
+): { index: number; length: number | undefined } | undefined {
+  if (slice === undefined) return undefined;
+  const index = slice.index ?? 0;
+  const length = slice.length;
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`invalid children slice index: ${String(slice.index)}`);
+  }
+  if (length !== undefined && (!Number.isInteger(length) || length < 0)) {
+    throw new Error(`invalid children slice length: ${String(slice.length)}`);
+  }
+  return { index, length };
+}
+
+/**
+ * Lazy materialized-tree handle. Methods issue fresh queries; no local cache.
+ */
+export type TreecrdtNode = {
+  readonly id: string;
+  /** Parent handle, or undefined when this node or its parent is not visible. */
+  parent: () => Promise<TreecrdtNode | undefined>;
+  payload: () => Promise<Uint8Array | null>;
+  children: (slice?: TreecrdtChildrenSlice) => Promise<TreecrdtNode[]>;
+};
+
+/**
+ * Per-node read primitives each backend keeps private; used by createTreecrdtTreeNodes.
+ */
+export type TreecrdtNodePrimitives = {
+  exists: (node: string) => Promise<boolean>;
+  parent: (node: string) => Promise<string | null>;
+  payload: (node: string) => Promise<Uint8Array | null>;
+  /**
+   * Live children in stable order. `(null, null)` = all; `(offset, null)` = suffix from offset;
+   * `(offset, limit)` = fixed-size window. Empty windows are handled in the engine (no I/O).
+   */
+  children: (parent: string, offset: number | null, limit: number | null) => Promise<string[]>;
+};
+
 export type TreecrdtEngineTree = {
-  children: (parent: string) => Promise<string[]>;
-  childrenPage?: (
-    parent: string,
-    cursor: { orderKey: Uint8Array; node: Uint8Array } | null,
-    limit: number,
-  ) => Promise<SqliteTreeChildRow[]>;
+  /** Undefined when the node is absent (tombstoned or never inserted). */
+  get: (node: string) => Promise<TreecrdtNode | undefined>;
+  /** Always-available ROOT handle; does not check existence. */
+  root: TreecrdtNode;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
-  parent: (node: string) => Promise<string | null>;
-  exists: (node: string) => Promise<boolean>;
-  getPayload: (node: string) => Promise<Uint8Array | null>;
 };
+
+/**
+ * Build the Node navigation surface (`get` + `root`) over per-node backend primitives.
+ * Node methods stay lazy so callers always see current materialized state.
+ */
+export function createTreecrdtTreeNodes(
+  primitives: TreecrdtNodePrimitives,
+): Pick<TreecrdtEngineTree, 'get' | 'root'> {
+  const createNode = (id: string): TreecrdtNode => {
+    const node: TreecrdtNode = {
+      id,
+      parent: async () => {
+        const parentId = await primitives.parent(id);
+        return parentId === null ? undefined : createNode(parentId);
+      },
+      payload: () => primitives.payload(id),
+      children: async (slice) => {
+        const normalized = normalizeChildrenSlice(slice);
+        if (normalized !== undefined && normalized.length === 0) return [];
+        const offset = normalized === undefined ? null : normalized.index;
+        const limit = normalized === undefined ? null : (normalized.length ?? null);
+        return (await primitives.children(id, offset, limit)).map(createNode);
+      },
+    };
+    return node;
+  };
+
+  return {
+    get: async (nodeId) => {
+      if (!(await primitives.exists(nodeId))) return undefined;
+      return createNode(nodeId);
+    },
+    root: createNode(ROOT_NODE_ID_HEX),
+  };
+}
 
 export type TreecrdtEngineMeta = {
   headLamport: () => Promise<number>;

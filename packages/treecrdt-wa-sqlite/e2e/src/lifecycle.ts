@@ -2,8 +2,6 @@ import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from '@t
 import { nodeIdFromInt } from '@treecrdt/benchmark';
 import { replicaFromLabel } from './op-helpers.js';
 
-export type LifecycleRuntime = 'direct' | 'dedicated-worker' | 'shared-worker';
-
 const rootId = '0'.repeat(32);
 const parentId = nodeIdFromInt(901);
 const childId = nodeIdFromInt(902);
@@ -15,11 +13,6 @@ let openClient: TreecrdtClient | null = null;
 
 type LifecycleOptions = {
   docId: string;
-  fallback?: 'memory' | 'throw';
-  filename: string;
-  runtime: LifecycleRuntime;
-  /** Pins differently configured clients to one SharedWorker so lifecycle cleanup is observable. */
-  sharedWorkerName?: string;
 };
 
 export type LifecycleState = {
@@ -39,19 +32,15 @@ export type LifecycleState = {
 };
 
 async function createOpfsLifecycleClient(opts: LifecycleOptions): Promise<TreecrdtClient> {
-  return createTreecrdtClient({
-    docId: opts.docId,
-    storage: { type: 'opfs', filename: opts.filename, fallback: opts.fallback ?? 'throw' },
-    runtime:
-      opts.runtime === 'shared-worker' && opts.sharedWorkerName
-        ? { type: 'shared-worker', name: opts.sharedWorkerName }
-        : { type: opts.runtime },
-  });
+  return createTreecrdtClient({ docId: opts.docId, persistent: true });
 }
 
 async function summarizeLifecycleState(client: TreecrdtClient): Promise<LifecycleState> {
-  const parentPayload = await client.tree.getPayload(parentId);
-  const childPayload = await client.tree.getPayload(childId);
+  const parentNode = await client.tree.get(parentId);
+  const childNode = await client.tree.get(childId);
+  const parentPayload = parentNode ? await parentNode.payload() : null;
+  const childPayload = childNode ? await childNode.payload() : null;
+  const childParent = childNode ? await childNode.parent() : null;
   return {
     parentId,
     childId,
@@ -59,11 +48,11 @@ async function summarizeLifecycleState(client: TreecrdtClient): Promise<Lifecycl
     runtime: client.runtime,
     storage: client.storage,
     headLamport: await client.meta.headLamport(),
-    rootChildren: await client.tree.children(rootId),
-    parentChildren: await client.tree.children(parentId),
-    parentExists: await client.tree.exists(parentId),
-    childExists: await client.tree.exists(childId),
-    childParent: await client.tree.parent(childId),
+    rootChildren: (await client.tree.root.children()).map((node) => node.id),
+    parentChildren: parentNode ? (await parentNode.children()).map((node) => node.id) : [],
+    parentExists: parentNode !== undefined,
+    childExists: childNode !== undefined,
+    childParent: childParent?.id ?? null,
     parentPayload: parentPayload ? textDecoder.decode(parentPayload) : null,
     childPayload: childPayload ? textDecoder.decode(childPayload) : null,
   };

@@ -11,8 +11,9 @@ export type OperationId = {
 export type OperationMetadata = {
   id: OperationId;
   lamport: Lamport;
-  // Optional defensive-deletion awareness payload for delete operations.
-  // This is carried end-to-end as an opaque blob (JSON-encoded VersionVector in v0).
+  // Defensive-deletion awareness: absent for most kinds. Delete requires non-zero-length bytes;
+  // the canonical empty VersionVector is a valid nine-byte value.
+  // Carried end-to-end as an opaque canonical VersionVector v0 binary value.
   knownState?: Uint8Array;
 };
 
@@ -71,27 +72,6 @@ export type Operation = {
   meta: OperationMetadata;
   kind: OperationKind;
 };
-
-export type SubtreeFilter = {
-  root: NodeId;
-  depth?: number;
-};
-
-export interface AccessControl {
-  canApply(op: Operation): Promise<void> | void;
-  canRead(node: NodeId): Promise<void> | void;
-}
-
-export interface StorageAdapter {
-  apply(op: Operation): Promise<void> | void;
-  loadSince(lamport: Lamport): Promise<Operation[]> | Operation[];
-  latestLamport(): Promise<Lamport> | Lamport;
-}
-
-export interface SyncProtocol {
-  push(ops: Operation[]): Promise<void> | void;
-  pull(since: Lamport, filter?: SubtreeFilter): Promise<Operation[]> | Operation[];
-}
 
 export * from './adapter.js';
 export * from './ids.js';

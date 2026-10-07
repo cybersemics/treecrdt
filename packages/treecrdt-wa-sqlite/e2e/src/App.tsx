@@ -11,27 +11,23 @@ export default function App() {
   const [ops, setOps] = useState<ViewOp[]>([]);
 
   useEffect(() => {
-    // Expose a small helper for e2e tests to assert client mode.
+    // Expose a small helper for e2e tests to assert the internally selected runtime.
     if (typeof window !== 'undefined') {
-      (window as any).__createTreecrdtClient = async (
-        storage: 'memory' | 'opfs',
-        baseUrl?: string,
-        runtime: 'auto' | 'direct' | 'dedicated-worker' | 'shared-worker' = 'auto',
-      ) => {
+      (window as any).__createTreecrdtClient = async (persistent: boolean) => {
         const c = await createTreecrdtClient({
-          storage: storage === 'opfs' ? { type: 'opfs' } : { type: 'memory' },
-          runtime: { type: runtime },
-          assets: { baseUrl },
+          docId: `e2e-summary-${crypto.randomUUID()}`,
+          persistent,
         });
         const summary = { mode: c.mode, runtime: c.runtime, storage: c.storage };
-        if (c.close) await c.close();
+        // drop instead of close so persistent runs do not leave OPFS files behind.
+        await c.drop();
         return summary;
       };
     }
 
     (async () => {
       try {
-        const c = await createTreecrdtClient({ storage: { type: 'memory' } });
+        const c = await createTreecrdtClient({ docId: 'wa-sqlite-demo' });
         setClient(c);
       } catch (err) {
         console.error('Failed to init wa-sqlite', err);
