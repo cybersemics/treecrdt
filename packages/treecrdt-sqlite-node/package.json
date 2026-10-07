@@ -40,6 +40,7 @@
     "@treecrdt/sync-sqlite": "workspace:*",
     "@treecrdt/sync": "workspace:*",
     "@treecrdt/sync-server-postgres-node": "workspace:*",
+    "@treecrdt/wasm": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "cborg": "^4.3.2",
     "@types/ws": "^8.18.1",

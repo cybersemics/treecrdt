@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use serde_wasm_bindgen::to_value;
 use treecrdt_core::{
-    Lamport, LamportClock, MaterializationOutcome, MemoryStorage, NodeId, Operation, OperationId,
-    OperationKind, OperationMetadata, ReplicaId, TreeCrdt, VersionVector,
+    Lamport, LamportClock, LocalPlacement, MaterializationOutcome, MemoryCheckpoint, MemoryStorage,
+    NodeId, Operation, OperationId, OperationKind, OperationMetadata, ReadNode, ReplicaId,
+    TreeCrdt, VersionVector,
 };
 use wasm_bindgen::prelude::*;
 
@@ -27,24 +28,12 @@ struct JsOp {
     payload: Option<String>, // hex
 }
 
+// Decode JS fields directly: internally tagged enums buffer through Serde Content,
+// which would also accept strings as byte arrays and byte arrays as node IDs.
 #[derive(Deserialize)]
 struct OperationInput {
-    meta: MetadataInput,
+    meta: MetadataValue,
     kind: KindInput,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MetadataInput {
-    id: OperationIdInput,
-    lamport: Lamport,
-    known_state: Option<ByteBuf>,
-}
-
-#[derive(Deserialize)]
-struct OperationIdInput {
-    replica: ByteBuf,
-    counter: u64,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +56,58 @@ enum KindTag {
     Delete,
     Tombstone,
     Payload,
+}
+
+#[derive(Serialize)]
+struct OperationValue {
+    meta: MetadataValue,
+    kind: KindValue,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataValue {
+    id: OperationIdValue,
+    lamport: Lamport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    known_state: Option<ByteBuf>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct OperationIdValue {
+    replica: ByteBuf,
+    counter: u64,
+}
+
+#[derive(Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+enum KindValue {
+    Insert {
+        node: String,
+        parent: String,
+        order_key: ByteBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        payload: Option<ByteBuf>,
+    },
+    Move {
+        node: String,
+        new_parent: String,
+        order_key: ByteBuf,
+    },
+    Delete {
+        node: String,
+    },
+    Tombstone {
+        node: String,
+    },
+    Payload {
+        node: String,
+        payload: Option<ByteBuf>,
+    },
 }
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
@@ -207,9 +248,196 @@ fn js_to_op(js: OperationInput) -> Result<Operation, String> {
     })
 }
 
+impl TryFrom<Operation> for OperationValue {
+    type Error = String;
+
+    fn try_from(op: Operation) -> Result<Self, String> {
+        if op.meta.id.counter > 9_007_199_254_740_991 || op.meta.lamport > 9_007_199_254_740_991 {
+            return Err("operation counter and Lamport must be safe JavaScript integers".into());
+        }
+        let known_state = op
+            .meta
+            .known_state
+            .as_ref()
+            .map(VersionVector::encode)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .map(ByteBuf::from);
+        let kind = match op.kind {
+            OperationKind::Insert {
+                parent,
+                node,
+                order_key,
+                payload,
+            } => KindValue::Insert {
+                node: node_to_hex(node),
+                parent: node_to_hex(parent),
+                order_key: ByteBuf::from(order_key),
+                payload: payload.map(ByteBuf::from),
+            },
+            OperationKind::Move {
+                node,
+                new_parent,
+                order_key,
+            } => KindValue::Move {
+                node: node_to_hex(node),
+                new_parent: node_to_hex(new_parent),
+                order_key: ByteBuf::from(order_key),
+            },
+            OperationKind::Delete { node } => KindValue::Delete {
+                node: node_to_hex(node),
+            },
+            OperationKind::Tombstone { node } => KindValue::Tombstone {
+                node: node_to_hex(node),
+            },
+            OperationKind::Payload { node, payload } => KindValue::Payload {
+                node: node_to_hex(node),
+                payload: payload.map(ByteBuf::from),
+            },
+        };
+        Ok(Self {
+            meta: MetadataValue {
+                id: OperationIdValue {
+                    replica: ByteBuf::from(op.meta.id.replica.0),
+                    counter: op.meta.id.counter,
+                },
+                lamport: op.meta.lamport,
+                known_state,
+            },
+            kind,
+        })
+    }
+}
+
+fn serialize(value: &impl Serialize) -> Result<JsValue, String> {
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true))
+        .map_err(|error| error.to_string())
+}
+
+fn js_error(error: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&error.to_string())
+}
+
+fn placement(after: JsValue) -> Result<LocalPlacement, String> {
+    if after.is_undefined() {
+        return Ok(LocalPlacement::Last);
+    }
+    if after.is_null() {
+        return Ok(LocalPlacement::First);
+    }
+    after
+        .as_string()
+        .ok_or_else(|| "after must be a node ID, null, or undefined".into())
+        .and_then(|id| hex_to_node(&id))
+        .map(LocalPlacement::After)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsReadRow {
+    id: String,
+    parent_id: Option<String>,
+    payload: Option<ByteBuf>,
+    children: Vec<String>,
+}
+
+impl From<ReadNode> for JsReadRow {
+    fn from(row: ReadNode) -> Self {
+        Self {
+            id: node_to_hex(row.id),
+            parent_id: row.parent.map(node_to_hex),
+            payload: row.payload.map(ByteBuf::from),
+            children: row.children.into_iter().map(node_to_hex).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsReadChange {
+    id: String,
+    before: Option<JsReadRow>,
+    after: Option<JsReadRow>,
+}
+
+#[derive(Serialize)]
+struct JsReadChanges {
+    reset: bool,
+    changes: Vec<JsReadChange>,
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const READ_TYPES: &str = r#"
+export interface TreeReadRow {
+    id: string;
+    parentId: string | null;
+    payload: Uint8Array | null;
+    children: string[];
+}
+export interface TreeReadChanges {
+    reset: boolean;
+    changes: { id: string; before: TreeReadRow | null; after: TreeReadRow | null }[];
+}
+"#;
+
 #[wasm_bindgen]
 pub struct WasmTree {
     inner: TreeCrdt<MemoryStorage, LamportClock>,
+    checkpoint: Option<MemoryCheckpoint>,
+    transaction_failed: bool,
+}
+
+impl WasmTree {
+    fn begin(&mut self) -> Result<(), String> {
+        if self.checkpoint.is_some() {
+            return Err("a memory transaction is already active".into());
+        }
+        self.checkpoint = Some(self.inner.memory_checkpoint());
+        self.transaction_failed = false;
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<(), String> {
+        if self.transaction_failed {
+            return Err("the memory transaction failed; roll it back before continuing".into());
+        }
+        self.checkpoint.take().ok_or("no memory transaction is active")?;
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), String> {
+        let checkpoint = self.checkpoint.take().ok_or("no memory transaction is active")?;
+        self.inner.rollback_memory(checkpoint).map_err(|error| error.to_string())?;
+        self.transaction_failed = false;
+        Ok(())
+    }
+
+    /// Boundary failures poison explicit transactions. New local commands also roll back standalone failures;
+    /// legacy ingestion retains its caller-managed transaction contract without checkpoint overhead.
+    fn mutate<T>(
+        &mut self,
+        rollback_standalone: bool,
+        work: impl FnOnce(&mut TreeCrdt<MemoryStorage, LamportClock>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.transaction_failed {
+            return Err("the memory transaction failed; roll it back before continuing".into());
+        }
+        let standalone = (rollback_standalone && self.checkpoint.is_none())
+            .then(|| self.inner.memory_checkpoint());
+        match work(&mut self.inner) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Some(checkpoint) = standalone {
+                    self.inner.rollback_memory(checkpoint).map_err(|rollback| {
+                        format!("{error}; memory rollback failed: {rollback}")
+                    })?;
+                } else if self.checkpoint.is_some() {
+                    self.transaction_failed = true;
+                }
+                Err(error)
+            }
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -221,7 +449,210 @@ impl WasmTree {
         WasmTree {
             inner: TreeCrdt::new(replica, MemoryStorage::default(), LamportClock::default())
                 .unwrap(),
+            checkpoint: None,
+            transaction_failed: false,
         }
+    }
+
+    #[wasm_bindgen(js_name = enableReadTracking)]
+    pub fn enable_read_tracking(&mut self) {
+        self.inner.track_read_changes();
+    }
+
+    #[wasm_bindgen(js_name = readNode, unchecked_return_type = "TreeReadRow | null")]
+    pub fn read_node(&self, node: String) -> Result<JsValue, JsValue> {
+        let row = self
+            .inner
+            .read_node(hex_to_node(&node).map_err(js_error)?)
+            .map_err(js_error)?
+            .map(JsReadRow::from);
+        serialize(&row).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = nodeIds, unchecked_return_type = "string[]")]
+    pub fn node_ids(&self) -> Result<JsValue, JsValue> {
+        let nodes: Vec<_> =
+            self.inner.node_ids().map_err(js_error)?.into_iter().map(node_to_hex).collect();
+        serialize(&nodes).map_err(js_error)
+    }
+
+    /// Owned deltas are cleared only after all rows serialize successfully.
+    #[wasm_bindgen(js_name = drainReadChanges, unchecked_return_type = "TreeReadChanges")]
+    pub fn drain_read_changes(&mut self) -> Result<JsValue, JsValue> {
+        let changes = self.inner.pending_read_changes().map_err(js_error)?;
+        let changes = JsReadChanges {
+            reset: changes.reset,
+            changes: changes
+                .changes
+                .into_iter()
+                .map(|change| JsReadChange {
+                    id: node_to_hex(change.id),
+                    before: change.before.map(JsReadRow::from),
+                    after: change.after.map(JsReadRow::from),
+                })
+                .collect(),
+        };
+        let value = serialize(&changes).map_err(js_error)?;
+        self.inner.clear_read_changes();
+        Ok(value)
+    }
+
+    #[wasm_bindgen(js_name = beginTransaction)]
+    pub fn begin_transaction(&mut self) -> Result<(), JsValue> {
+        self.begin().map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = commitTransaction)]
+    pub fn commit_transaction(&mut self) -> Result<(), JsValue> {
+        self.commit().map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = rollbackTransaction)]
+    pub fn rollback_transaction(&mut self) -> Result<(), JsValue> {
+        self.rollback().map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = localInsert, unchecked_return_type = "import('@treecrdt/interface').Operation")]
+    pub fn local_insert(
+        &mut self,
+        parent: String,
+        node: String,
+        #[wasm_bindgen(unchecked_param_type = "string | null | undefined")] after: JsValue,
+        payload: Option<Vec<u8>>,
+    ) -> Result<JsValue, JsValue> {
+        self.mutate(true, |inner| {
+            let (op, _) = inner
+                .local_insert(
+                    hex_to_node(&parent)?,
+                    hex_to_node(&node)?,
+                    placement(after)?,
+                    payload,
+                )
+                .map_err(|error| error.to_string())?;
+            serialize(&OperationValue::try_from(op)?)
+        })
+        .map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = localMove, unchecked_return_type = "import('@treecrdt/interface').Operation")]
+    pub fn local_move(
+        &mut self,
+        node: String,
+        parent: String,
+        #[wasm_bindgen(unchecked_param_type = "string | null | undefined")] after: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        self.mutate(true, |inner| {
+            let (op, _) = inner
+                .local_move(
+                    hex_to_node(&node)?,
+                    hex_to_node(&parent)?,
+                    placement(after)?,
+                )
+                .map_err(|error| error.to_string())?;
+            serialize(&OperationValue::try_from(op)?)
+        })
+        .map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = localPayload, unchecked_return_type = "import('@treecrdt/interface').Operation")]
+    pub fn local_payload(
+        &mut self,
+        node: String,
+        payload: Option<Vec<u8>>,
+    ) -> Result<JsValue, JsValue> {
+        self.mutate(true, |inner| {
+            let (op, _) = inner
+                .local_payload(hex_to_node(&node)?, payload)
+                .map_err(|error| error.to_string())?;
+            serialize(&OperationValue::try_from(op)?)
+        })
+        .map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = localDelete, unchecked_return_type = "import('@treecrdt/interface').Operation")]
+    pub fn local_delete(&mut self, node: String) -> Result<JsValue, JsValue> {
+        self.mutate(true, |inner| {
+            let (op, _) =
+                inner.local_delete(hex_to_node(&node)?).map_err(|error| error.to_string())?;
+            serialize(&OperationValue::try_from(op)?)
+        })
+        .map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = operationCount)]
+    pub fn operation_count(&self) -> usize {
+        self.inner.operation_count()
+    }
+
+    #[wasm_bindgen(js_name = revertOperations, unchecked_return_type = "import('@treecrdt/interface').Operation[]")]
+    pub fn revert_operations(
+        &mut self,
+        #[wasm_bindgen(
+            unchecked_param_type = "readonly import('@treecrdt/interface').OperationId[]"
+        )]
+        ids: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        self.mutate(true, |inner| {
+            let values: Vec<OperationIdValue> =
+                serde_wasm_bindgen::from_value(ids).map_err(|error| error.to_string())?;
+            let ids = values
+                .into_iter()
+                .map(|value| {
+                    if value.counter > 9_007_199_254_740_991 {
+                        return Err(
+                            "operation counter must be a safe JavaScript integer".to_string()
+                        );
+                    }
+                    Ok(OperationId {
+                        replica: ReplicaId::new(value.replica.into_vec()),
+                        counter: value.counter,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let operations = inner.revert_operations(&ids).map_err(|error| error.to_string())?;
+            let values = operations
+                .into_iter()
+                .map(OperationValue::try_from)
+                .collect::<Result<Vec<_>, _>>()?;
+            serialize(&values)
+        })
+        .map_err(js_error)
+    }
+
+    /// Cursors count accepted operations, not Lamport time, so late historical arrivals are not skipped.
+    #[wasm_bindgen(js_name = operationsFrom, unchecked_return_type = "import('@treecrdt/interface').Operation[]")]
+    pub fn operations_from(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "number")] cursor: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let cursor: usize = serde_wasm_bindgen::from_value(cursor).map_err(js_error)?;
+        let ops = self.inner.operations_from(cursor).map_err(js_error)?;
+        let values = ops
+            .into_iter()
+            .map(OperationValue::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(js_error)?;
+        serialize(&values).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = operationsAt, unchecked_return_type = "import('@treecrdt/interface').Operation[]")]
+    pub fn operations_at(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "readonly number[]")] indices: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let indices: Vec<usize> = serde_wasm_bindgen::from_value(indices).map_err(js_error)?;
+        let ops = self.inner.operations_at(&indices).map_err(js_error)?;
+        let values = ops
+            .into_iter()
+            .map(OperationValue::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(js_error)?;
+        serialize(&values).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = maxLamport, unchecked_return_type = "number")]
+    pub fn max_lamport(&self) -> Result<JsValue, JsValue> {
+        serialize(&self.inner.lamport()).map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = appendOp)]
@@ -230,13 +661,14 @@ impl WasmTree {
         #[wasm_bindgen(unchecked_param_type = "import('@treecrdt/interface').Operation")]
         op: JsValue,
     ) -> Result<(), JsValue> {
-        let js_op =
-            serde_wasm_bindgen::from_value(op).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
-        self.inner.apply_remote(op).map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+        self.mutate(false, |inner| {
+            let js_op = serde_wasm_bindgen::from_value(op).map_err(|error| error.to_string())?;
+            inner.apply_remote(js_to_op(js_op)?).map_err(|error| error.to_string())
+        })
+        .map_err(js_error)
     }
 
-    /// Decode the complete batch before ingestion. Applying it is not an atomic transaction.
+    /// Decode the complete batch before ingestion. Atomic only inside an explicit transaction.
     #[wasm_bindgen(js_name = appendOps)]
     pub fn append_ops(
         &mut self,
@@ -245,16 +677,13 @@ impl WasmTree {
         )]
         operations: JsValue,
     ) -> Result<(), JsValue> {
-        let js_ops: Vec<OperationInput> = serde_wasm_bindgen::from_value(operations)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let ops = js_ops
-            .into_iter()
-            .map(js_to_op)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| JsValue::from_str(&e))?;
-        self.inner
-            .apply_remote_batch(ops)
-            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+        self.mutate(false, |inner| {
+            let js_ops: Vec<OperationInput> =
+                serde_wasm_bindgen::from_value(operations).map_err(|error| error.to_string())?;
+            let ops = js_ops.into_iter().map(js_to_op).collect::<Result<Vec<_>, _>>()?;
+            inner.apply_remote_batch(ops).map_err(|error| error.to_string())
+        })
+        .map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = appendOpWithDelta)]
@@ -263,26 +692,26 @@ impl WasmTree {
         #[wasm_bindgen(unchecked_param_type = "import('@treecrdt/interface').Operation")]
         op: JsValue,
     ) -> Result<JsValue, JsValue> {
-        let js_op =
-            serde_wasm_bindgen::from_value(op).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let op = js_to_op(js_op).map_err(|e| JsValue::from_str(&e))?;
-        let delta = self
-            .inner
-            .apply_remote_with_delta(op)
-            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        let affected: Vec<String> = delta
-            .map(|d| {
-                MaterializationOutcome {
-                    head_seq: 0,
-                    changes: d.changes,
-                }
-                .affected_nodes()
-                .into_iter()
-                .map(node_to_hex)
-                .collect()
-            })
-            .unwrap_or_default();
-        to_value(&affected).map_err(|e| JsValue::from_str(&e.to_string()))
+        self.mutate(false, |inner| {
+            let js_op = serde_wasm_bindgen::from_value(op).map_err(|error| error.to_string())?;
+            let delta = inner
+                .apply_remote_with_delta(js_to_op(js_op)?)
+                .map_err(|error| error.to_string())?;
+            let affected: Vec<String> = delta
+                .map(|d| {
+                    MaterializationOutcome {
+                        head_seq: 0,
+                        changes: d.changes,
+                    }
+                    .affected_nodes()
+                    .into_iter()
+                    .map(node_to_hex)
+                    .collect()
+                })
+                .unwrap_or_default();
+            serialize(&affected)
+        })
+        .map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = opsSince)]
@@ -406,5 +835,56 @@ impl WasmTree {
         }
 
         to_value(&rows).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutation_failures_poison_explicit_transactions_and_restore_reads_on_rollback() {
+        let mut tree = WasmTree::new("01".into());
+        tree.enable_read_tracking();
+        tree.inner.drain_read_changes().unwrap();
+        tree.inner
+            .local_insert(NodeId::ROOT, NodeId(1), LocalPlacement::Last, None)
+            .unwrap();
+        let before = tree.inner.read_node(NodeId(1)).unwrap();
+        let pending = tree.inner.pending_read_changes().unwrap();
+        tree.begin().unwrap();
+        assert!(tree.begin().is_err());
+        tree.inner
+            .local_insert(NodeId(1), NodeId(2), LocalPlacement::Last, None)
+            .unwrap();
+        tree.inner.drain_read_changes().unwrap();
+        assert!(tree
+            .mutate(false, |inner| {
+                inner
+                    .local_move(NodeId(2), NodeId::ROOT, LocalPlacement::After(NodeId(99)))
+                    .map_err(|error| error.to_string())
+            })
+            .is_err());
+        assert!(tree.commit().is_err());
+        assert!(tree.mutate(false, |_| Ok(())).is_err());
+        tree.rollback().unwrap();
+        assert_eq!(tree.inner.read_node(NodeId(1)).unwrap(), before);
+        assert_eq!(tree.inner.read_node(NodeId(2)).unwrap(), None);
+        assert_eq!(tree.inner.pending_read_changes().unwrap(), pending);
+        assert_eq!(tree.operation_count(), 1);
+        let failure: Result<(), String> = tree.mutate(true, |inner| {
+            inner.local_delete(NodeId(1)).unwrap();
+            Err("injected serialization failure after native mutation".into())
+        });
+        assert!(failure.is_err());
+        assert_eq!(tree.inner.read_node(NodeId(1)).unwrap(), before);
+        assert_eq!(tree.inner.pending_read_changes().unwrap(), pending);
+        let (next, _) = tree
+            .inner
+            .local_insert(NodeId::ROOT, NodeId(2), LocalPlacement::Last, None)
+            .unwrap();
+        assert_eq!((next.meta.id.counter, next.meta.lamport), (2, 2));
+        tree.begin().unwrap();
+        tree.commit().unwrap();
     }
 }

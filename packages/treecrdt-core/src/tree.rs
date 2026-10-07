@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::affected::{
     affected_parents, coalesce_materialization_changes, direct_materialization_changes,
@@ -8,7 +8,8 @@ use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
 use crate::traits::{
-    Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
+    Clock, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeStore,
+    ParentOpIndex, PayloadStore, Storage,
 };
 use crate::types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
@@ -20,6 +21,47 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
+}
+
+/// An owned current visible row; it does not pin or share native store state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadNode {
+    pub id: NodeId,
+    pub parent: Option<NodeId>,
+    pub payload: Option<Vec<u8>>,
+    pub children: Vec<NodeId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadChange {
+    pub id: NodeId,
+    pub before: Option<ReadNode>,
+    pub after: Option<ReadNode>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReadChanges {
+    /// Initial tracking activation asks consumers to read current state on demand.
+    pub reset: bool,
+    pub changes: Vec<ReadChange>,
+}
+
+#[derive(Clone, Default)]
+struct ReadTracker {
+    enabled: bool,
+    reset: bool,
+    before: HashMap<NodeId, Option<ReadNode>>,
+}
+
+/// A checkpoint for the native memory engine; retained operation history is not cloned.
+pub struct MemoryCheckpoint {
+    count: usize,
+    clock: LamportClock,
+    counter: u64,
+    version_vector: VersionVector,
+    head: Option<Operation>,
+    op_count: u64,
+    reads: ReadTracker,
 }
 
 fn attach_source_if_missing(
@@ -56,6 +98,7 @@ where
     payloads: P,
     head: Option<Operation>,
     op_count: u64,
+    reads: ReadTracker,
 }
 
 impl<S, C> TreeCrdt<S, C, MemoryNodeStore>
@@ -71,6 +114,66 @@ where
             MemoryNodeStore::default(),
             MemoryPayloadStore::default(),
         )
+    }
+}
+
+impl TreeCrdt<MemoryStorage, LamportClock> {
+    pub fn memory_checkpoint(&self) -> MemoryCheckpoint {
+        MemoryCheckpoint {
+            count: self.storage.len(),
+            clock: self.clock.clone(),
+            counter: self.counter,
+            version_vector: self.version_vector.clone(),
+            head: self.head.clone(),
+            op_count: self.op_count,
+            reads: self.reads.clone(),
+        }
+    }
+
+    /// Restores an uncommitted memory transaction. Only this failure path scans retained history.
+    /// Checkpoints belong to this tree and must be consumed in reverse creation order.
+    pub fn rollback_memory(&mut self, checkpoint: MemoryCheckpoint) -> Result<()> {
+        if checkpoint.count > self.storage.len() {
+            return Err(Error::InvalidOperation(
+                "checkpoint is newer than the operation log".into(),
+            ));
+        }
+        self.storage.truncate(checkpoint.count);
+        self.replay_from_storage()?;
+        // Replay cannot undo clock/counter observations from rejected or duplicate envelopes.
+        self.clock = checkpoint.clock;
+        self.counter = checkpoint.counter;
+        self.version_vector = checkpoint.version_vector;
+        self.head = checkpoint.head;
+        self.op_count = checkpoint.op_count;
+        self.reads = checkpoint.reads;
+        Ok(())
+    }
+
+    pub fn operation_count(&self) -> usize {
+        self.storage.len()
+    }
+
+    pub fn operations_from(&self, cursor: usize) -> Result<Vec<Operation>> {
+        self.storage.operations_from(cursor)
+    }
+
+    pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
+        self.storage.operations_at(indices)
+    }
+
+    /// Force-reverts selected operations with new local operations. This is not selective undo:
+    /// restoring a payload or placement may replace a later remote edit. Revert the returned IDs to redo.
+    pub fn revert_operations(&mut self, ids: &[OperationId]) -> Result<Vec<Operation>> {
+        let actions = crate::history::derive_inverse(&self.storage, ids)?;
+        let checkpoint = self.memory_checkpoint();
+        match crate::history::apply_inverse(self, actions) {
+            Ok(operations) => Ok(operations),
+            Err(error) => {
+                self.rollback_memory(checkpoint)?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -101,7 +204,101 @@ where
             payloads,
             head: None,
             op_count: 0,
+            reads: ReadTracker::default(),
         })
+    }
+
+    pub fn read_node(&self, node: NodeId) -> Result<Option<ReadNode>> {
+        if !self.is_known(node)? || self.is_tombstoned(node)? {
+            return Ok(None);
+        }
+        Ok(Some(ReadNode {
+            id: node,
+            parent: self.parent(node)?.filter(|parent| *parent != NodeId::TRASH),
+            payload: self.payload(node)?,
+            children: self.children(node)?,
+        }))
+    }
+
+    /// Explicit enumeration, including known reserved nodes, without building a row map.
+    pub fn node_ids(&self) -> Result<Vec<NodeId>> {
+        let mut ids = Vec::new();
+        for node in self.nodes.all_nodes()? {
+            if !self.is_tombstoned(node)? {
+                ids.push(node);
+            }
+        }
+        ids.sort_unstable();
+        Ok(ids)
+    }
+
+    pub fn track_read_changes(&mut self) {
+        self.reads.enabled = true;
+        self.reads.reset = true;
+        self.reads.before.clear();
+    }
+
+    pub fn pending_read_changes(&self) -> Result<ReadChanges> {
+        let mut changes = Vec::with_capacity(self.reads.before.len());
+        for (&id, before) in &self.reads.before {
+            let after = self.read_node(id)?;
+            if *before != after {
+                changes.push(ReadChange {
+                    id,
+                    before: before.clone(),
+                    after,
+                });
+            }
+        }
+        changes.sort_by_key(|change| change.id);
+        Ok(ReadChanges {
+            reset: self.reads.reset,
+            changes,
+        })
+    }
+
+    pub fn drain_read_changes(&mut self) -> Result<ReadChanges> {
+        let changes = self.pending_read_changes()?;
+        self.clear_read_changes();
+        Ok(changes)
+    }
+
+    /// Acknowledge pending changes after an embedding successfully serializes them.
+    pub fn clear_read_changes(&mut self) {
+        self.reads.reset = false;
+        // A bulk sync must not leave a document-sized change buffer allocated.
+        self.reads.before = HashMap::new();
+    }
+
+    fn capture_read_paths(&mut self, op: &Operation) -> Result<()> {
+        if !self.reads.enabled || self.reads.reset {
+            return Ok(());
+        }
+        let mut starts = vec![op.kind.node()];
+        match op.kind {
+            OperationKind::Insert { parent, .. } => starts.push(parent),
+            OperationKind::Move { new_parent, .. } => starts.push(new_parent),
+            _ => {}
+        }
+        let mut visited = HashSet::new();
+        for start in starts {
+            let mut current = Some(start);
+            while let Some(node) = current {
+                if !visited.insert(node) {
+                    break;
+                }
+                // Capture before applying the operation, never from its inferred outcome.
+                // Both old ancestry and the destination ancestry can change defensive deletion.
+                if !self.reads.before.contains_key(&node) {
+                    let before = self.read_node(node)?;
+                    self.reads.before.insert(node, before);
+                }
+                // Raw ancestry is necessary: defensive deletion may restore a tombstoned ancestor.
+                // Reserved nodes can themselves be attached; the visited set bounds those paths too.
+                current = self.nodes.parent(node)?;
+            }
+        }
+        Ok(())
     }
 
     fn is_in_order(&self, op: &Operation) -> bool {
@@ -339,6 +536,7 @@ where
             return self.replay_from_storage();
         }
         for op in accepted {
+            self.capture_read_paths(&op)?;
             Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
             self.op_count += 1;
             self.head = Some(op);
@@ -367,6 +565,7 @@ where
         }
 
         if self.is_in_order(&op) {
+            self.capture_read_paths(&op)?;
             let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
             self.op_count += 1;
             self.head = Some(op.clone());
@@ -430,6 +629,7 @@ where
     ) -> Result<ApplyDelta> {
         self.observe_remote(&op);
 
+        self.capture_read_paths(&op)?;
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         self.op_count = seq;
         self.head = Some(op.clone());
@@ -613,6 +813,19 @@ where
     }
 
     pub fn replay_from_storage(&mut self) -> Result<()> {
+        // Replay is the uncommon full-scan fallback. Keep the baseline only during replay,
+        // then retain before-images for actual visible differences, not a second tree map.
+        let baseline = if self.reads.enabled && !self.reads.reset {
+            let mut rows = HashMap::new();
+            for node in self.nodes.all_nodes()? {
+                if let Some(row) = self.read_node(node)? {
+                    rows.insert(node, row);
+                }
+            }
+            Some(rows)
+        } else {
+            None
+        };
         self.version_vector = VersionVector::new();
         self.nodes.reset()?;
         self.payloads.reset()?;
@@ -627,7 +840,7 @@ where
 
         let mut seq: u64 = 0;
         let mut head: Option<Operation> = None;
-        storage.scan_since(0, &mut |op| {
+        storage.scan_all(&mut |op| {
             clock.observe(op.meta.lamport);
             version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
             let _ = Self::apply_forward(nodes, payloads, &op)?;
@@ -639,6 +852,18 @@ where
         self.head = head;
         self.op_count = seq;
         self.counter = self.counter.max(self.version_vector.get(&self.replica_id));
+        if let Some(mut baseline) = baseline {
+            for node in self.nodes.all_nodes()? {
+                let before = baseline.remove(&node);
+                if before != self.read_node(node)? {
+                    // Earlier undrained edits retain their original before-image.
+                    self.reads.before.entry(node).or_insert(before);
+                }
+            }
+            for (node, before) in baseline {
+                self.reads.before.entry(node).or_insert(Some(before));
+            }
+        }
         Ok(())
     }
 
@@ -757,6 +982,7 @@ where
         if !self.storage.apply(op.clone())? {
             return Ok(op);
         }
+        self.capture_read_paths(&op)?;
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         let mut starts = affected_parents(snapshot.parent, &op.kind);
         starts.push(op.kind.node());

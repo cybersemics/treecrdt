@@ -56,6 +56,13 @@ pub trait Storage {
         }
         Ok(())
     }
+
+    /// Iterate the complete log in canonical op-key order.
+    /// The default preserves positive-clock storage behavior. Backends accepting Lamport zero
+    /// must override this rather than excluding those operations with `scan_since(0)`.
+    fn scan_all(&self, visit: &mut dyn FnMut(Operation) -> Result<()>) -> Result<()> {
+        self.scan_since(0, visit)
+    }
 }
 
 /// Storage adapter used when operations are already provided by the caller.
@@ -246,6 +253,43 @@ pub struct MemoryStorage {
     ids: HashSet<OperationId>,
 }
 
+impl MemoryStorage {
+    /// Number of accepted operations, in arrival order rather than Lamport order.
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Reads an append-log suffix without scanning or cloning the retained prefix.
+    pub fn operations_from(&self, cursor: usize) -> Result<Vec<Operation>> {
+        self.ops
+            .get(cursor..)
+            .map(<[Operation]>::to_vec)
+            .ok_or_else(|| Error::InvalidOperation("operation cursor is out of range".into()))
+    }
+
+    /// Reads operations in the requested order, including repeated indices.
+    pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
+        indices
+            .iter()
+            .map(|index| {
+                self.ops.get(*index).cloned().ok_or_else(|| {
+                    Error::InvalidOperation("operation index is out of range".into())
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn truncate(&mut self, count: usize) {
+        for op in self.ops.drain(count..) {
+            self.ids.remove(&op.meta.id);
+        }
+    }
+}
+
 impl Storage for MemoryStorage {
     fn apply(&mut self, op: Operation) -> Result<bool> {
         if self.ids.contains(&op.meta.id) {
@@ -258,6 +302,15 @@ impl Storage for MemoryStorage {
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         Ok(self.ops.iter().filter(|&op| op.meta.lamport > lamport).cloned().collect())
+    }
+
+    fn scan_all(&self, visit: &mut dyn FnMut(Operation) -> Result<()>) -> Result<()> {
+        let mut ops = self.ops.clone();
+        ops.sort_by(cmp_ops);
+        for op in ops {
+            visit(op)?;
+        }
+        Ok(())
     }
 
     fn latest_lamport(&self) -> Lamport {

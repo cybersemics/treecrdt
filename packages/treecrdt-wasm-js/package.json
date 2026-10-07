@@ -13,6 +13,16 @@
       "types": "./dist/codec-node.d.ts",
       "browser": "./dist/codec-browser.js",
       "import": "./dist/codec-node.js"
+    },
+    "./memory": {
+      "types": "./dist/memory-node.d.ts",
+      "browser": "./dist/memory-browser.js",
+      "import": "./dist/memory-node.js"
+    },
+    "./treecrdt_wasm_bg.wasm": "./pkg-web/treecrdt_wasm_bg.wasm",
+    "./sync": {
+      "types": "./dist/sync.d.ts",
+      "import": "./dist/sync.js"
     }
   },
   "files": [
@@ -28,7 +38,8 @@
     "test": "pnpm run build && vitest run"
   },
   "dependencies": {
-    "@treecrdt/interface": "workspace:*"
+    "@treecrdt/interface": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",

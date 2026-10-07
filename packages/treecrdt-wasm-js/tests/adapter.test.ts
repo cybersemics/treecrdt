@@ -1,8 +1,9 @@
 import { runInNewContext } from 'node:vm';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from 'vitest';
 import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import { createWasmAdapter } from '@treecrdt/wasm';
+import { createMemoryClient } from '@treecrdt/wasm/memory';
 import { encodeVersionVector, WasmTree } from '../pkg/treecrdt_wasm.js';
 
 const replica = new Uint8Array(32).fill(1);
@@ -28,6 +29,8 @@ test.each([
 ])(
   'passes a %s-realm byte batch into WASM and preserves payload and delete data',
   async (_, Bytes) => {
+    const memory = await createMemoryClient();
+    onTestFinished(() => memory.close());
     const appendOps = vi.spyOn(WasmTree.prototype, 'appendOps');
     const insertWithBytes = {
       ...insert,
@@ -37,41 +40,35 @@ test.each([
       meta: { id: { replica, counter: 2 }, lamport: 2 },
       kind: { type: 'payload', node, payload: Bytes.of(99, 42, 99).subarray(1, 2) },
     };
-    await adapter.appendOps!(
-      [payload, insertWithBytes, insertWithBytes],
-      nodeIdToBytes16,
-      replicaIdToBytes,
-    );
+    const operations = [payload, insertWithBytes, insertWithBytes];
+    await adapter.appendOps!(operations, nodeIdToBytes16, replicaIdToBytes);
     expect(appendOps).toHaveBeenCalledTimes(1);
     expect(await adapter.treePayload(nodeIdToBytes16(node))).toEqual(Uint8Array.of(42));
     expect(await adapter.opsSince(0)).toMatchObject([
       { kind: 'payload', payload: '2a' },
       { kind: 'insert', order_key: '80' },
     ]);
+    memory.appendOperations(operations);
+    expect(memory.get(node)?.payload).toEqual(Uint8Array.of(42));
+    expect(memory.operationsFrom(0)[1]?.kind).toMatchObject({ orderKey: Uint8Array.of(128) });
 
     const knownState = Bytes.from([
       99,
       ...encodeVersionVector({ entries: [{ replica, frontier: 2n, ranges: [[4n, 4n]] }] }),
       99,
     ]).subarray(1, -1);
-    await adapter.appendOps!(
-      [
-        {
-          meta: {
-            id: { replica, counter: 3 },
-            lamport: 3,
-            knownState,
-          },
-          kind: { type: 'delete', node },
-        },
-      ],
-      nodeIdToBytes16,
-      replicaIdToBytes,
-    );
+    const deletion: Operation = {
+      meta: { id: { replica: Bytes.from(replica), counter: 3 }, lamport: 3, knownState },
+      kind: { type: 'delete', node },
+    };
+    await adapter.appendOps!([deletion], nodeIdToBytes16, replicaIdToBytes);
     expect(await adapter.treeExists(nodeIdToBytes16(node))).toBe(false);
     expect(await adapter.opsSince(2)).toMatchObject([
       { kind: 'delete', known_state: Array.from(knownState) },
     ]);
+    memory.appendOperations([deletion]);
+    expect(memory.get(node)).toBeUndefined();
+    expect(memory.operationsFrom(2)[0]?.meta.knownState).toEqual(Uint8Array.from(knownState));
   },
 );
 
@@ -152,25 +149,27 @@ test('copies each replica when the serializer reuses a buffer', async () => {
 });
 
 test('rejects a missing payload but accepts an explicit clear', async () => {
+  const memory = await createMemoryClient();
+  onTestFinished(() => memory.close());
   const invalid = { ...insert, kind: { type: 'payload', node } } as Operation;
   await expect(
     adapter.appendOps!([insert, invalid], nodeIdToBytes16, replicaIdToBytes),
   ).rejects.toThrow('payload operations require payload or null');
   expect(await adapter.opsSince(0)).toEqual([]);
-  await adapter.appendOp(
-    { ...insert, kind: { ...insert.kind, payload: Uint8Array.of(42) } },
-    nodeIdToBytes16,
-    replicaIdToBytes,
+  expect(() => memory.appendOperations([insert, invalid])).toThrow(
+    'payload operations require payload or null',
   );
-  await adapter.appendOp(
-    {
-      meta: { id: { replica, counter: 2 }, lamport: 2 },
-      kind: { type: 'payload', node, payload: null },
-    },
-    nodeIdToBytes16,
-    replicaIdToBytes,
-  );
+  expect(memory.operationCount()).toBe(0);
+  const withPayload = { ...insert, kind: { ...insert.kind, payload: Uint8Array.of(42) } };
+  const cleared: Operation = {
+    meta: { id: { replica, counter: 2 }, lamport: 2 },
+    kind: { type: 'payload', node, payload: null },
+  };
+  await adapter.appendOp(withPayload, nodeIdToBytes16, replicaIdToBytes);
+  await adapter.appendOp(cleared, nodeIdToBytes16, replicaIdToBytes);
   expect(await adapter.treePayload(nodeIdToBytes16(node))).toBeNull();
+  memory.appendOperations([withPayload, cleared]);
+  expect(memory.get(node)?.payload).toBeNull();
 });
 
 test('accepts a typed operation when returning a materialization delta', () => {

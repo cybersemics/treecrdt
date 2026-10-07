@@ -5,6 +5,7 @@
 
 pub(crate) mod affected;
 pub mod error;
+mod history;
 pub mod ids;
 pub mod materialization;
 pub mod ops;
@@ -33,7 +34,7 @@ pub use traits::{
     MemoryPayloadStore, MemoryStorage, NodeStore, NoopParentOpIndex, NoopStorage, ParentOpIndex,
     PayloadStore, Storage, TruncatingParentOpIndex,
 };
-pub use tree::TreeCrdt;
+pub use tree::{MemoryCheckpoint, ReadChange, ReadChanges, ReadNode, TreeCrdt};
 pub use types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
     MaterializationSource, MaterializationSourceOperation, NodeExport, NodeSnapshotExport,
