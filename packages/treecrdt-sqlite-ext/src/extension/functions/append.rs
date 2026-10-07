@@ -1,5 +1,5 @@
 use super::materialize::json_outcome_from_core;
-use super::util::{read_blob, sqlite_result_json};
+use super::util::{read_blob, read_required_blob, sqlite_result_json};
 use super::*;
 
 /// Append an operation row to the `ops` table. Args:
@@ -41,16 +41,16 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         }
     };
 
-    let replica_ptr = unsafe { sqlite_value_blob(args[0]) } as *const u8;
-    let replica_len = unsafe { sqlite_value_bytes(args[0]) } as usize;
-    if replica_ptr.is_null() || replica_len == 0 {
-        sqlite_result_error(
-            ctx,
-            b"treecrdt_append_op: replica must be a non-empty BLOB\0".as_ptr() as *const c_char,
-        );
-        return;
-    }
-    let replica = unsafe { slice::from_raw_parts(replica_ptr, replica_len) }.to_vec();
+    let replica = match read_required_blob(args[0]) {
+        Ok(replica) => replica,
+        Err(()) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_append_op: replica must be a non-empty BLOB\0".as_ptr() as *const c_char,
+            );
+            return;
+        }
+    };
     let counter_i64 = unsafe { sqlite_value_int64(args[1]) };
     if counter_i64 < 0 {
         sqlite_result_error(

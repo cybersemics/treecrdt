@@ -173,6 +173,7 @@ impl SqliteOpStorage {
 
 impl treecrdt_core::Storage for SqliteOpStorage {
     fn apply(&mut self, op: treecrdt_core::Operation) -> treecrdt_core::Result<bool> {
+        // An empty replica is tree_meta's "no head" sentinel, so stored ops could not be read back.
         if op.meta.id.replica.as_bytes().is_empty() {
             return Err(treecrdt_core::Error::Storage(
                 "replica id must not be empty".into(),

@@ -641,7 +641,7 @@ fn empty_replica_is_rejected_by_direct_local_and_batch_writes() {
 }
 
 #[test]
-fn malformed_empty_replica_row_returns_an_error() {
+fn malformed_empty_replica_row_errors_without_leaking_statements() {
     let conn = setup_conn();
     conn.execute(
         "INSERT INTO ops(replica,counter,lamport,kind,parent,node,order_key,op_ref) \
@@ -655,6 +655,7 @@ fn malformed_empty_replica_row_returns_an_error() {
     });
     assert!(result.is_err());
 
+    // Force materialization to replay from the start so it reads the malformed row.
     conn.execute(
         "UPDATE tree_meta \
          SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 \
@@ -667,7 +668,7 @@ fn malformed_empty_replica_row_returns_an_error() {
     });
     assert!(result.is_err());
 
-    conn.execute_batch("DROP TABLE ops").unwrap();
+    conn.close().expect("failed op reads should finalize their statements");
 }
 
 #[test]

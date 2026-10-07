@@ -32,7 +32,8 @@ export type OperationKind =
        * Optional application payload to initialize alongside insert.
        *
        * When present, this is treated like a `payload` op at the same `(lamport, replica, counter)`,
-       * with last-writer-wins ordering per node.
+       * with last-writer-wins ordering per node. An empty Uint8Array is a present, empty payload,
+       * distinct from omitting it.
        */
       payload?: Uint8Array;
     }
@@ -63,7 +64,8 @@ export type OperationKind =
       type: 'payload';
       node: NodeId;
       /**
-       * `payload = Uint8Array` sets the value, `payload = null` clears it.
+       * `payload = Uint8Array` sets the value, `payload = null` clears it. An empty Uint8Array sets
+       * an empty value, distinct from clearing.
        */
       payload: Uint8Array | null;
     };

@@ -172,11 +172,11 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioOutOfOrderOpsRebuild,
     },
     {
-      name: 'payload: empty bytes survive local writes and canonical replay',
+      name: 'payload: empty bytes survive local writes, append/appendMany and canonical replay',
       run: scenarioEmptyPayloadCanonicalReplay,
     },
     {
-      name: 'operation bytes: empty order key survives append and read',
+      name: 'append/appendMany: empty order key survives materialization and op log read',
       run: scenarioEmptyOrderKeyRoundTrip,
     },
     {
@@ -775,7 +775,9 @@ async function scenarioMaterializationEventDefensiveRestore(
   const rA = replicaFromLabel('rA');
   const rB = replicaFromLabel('rB');
 
-  await b.local.insert(rB, root, parent, { type: 'last' }, null);
+  const empty = new Uint8Array();
+
+  await b.local.insert(rB, root, parent, { type: 'last' }, empty);
   await a.ops.appendMany(await b.ops.all());
 
   // A deletes B's parent without seeing B's child insertion.
@@ -822,6 +824,11 @@ async function scenarioMaterializationEventDefensiveRestore(
     [parent, child],
     'appendMany defensive restore should include restored parent+child',
   );
+  const restoreChange = events[0]!.changes.find(
+    (change) => change.node === parent && change.kind === 'restore',
+  );
+  assert(restoreChange?.kind === 'restore', 'defensive restore reports the parent restore');
+  assertBytesEqual(restoreChange.payload, empty, 'restore reports the empty parent payload');
   assertArrayEqual(
     (await a.tree.root.children()).map((node) => node.id),
     [parent],
@@ -932,133 +939,195 @@ async function scenarioOutOfOrderOpsRebuild(ctx: TreecrdtEngineConformanceContex
   );
 }
 
+// Remote ops reach engines one at a time and in batches (sync uses appendMany).
+const remoteAppenders = ['append', 'appendMany'] as const;
+
+function appendWith(
+  engine: TreecrdtEngine,
+  appender: (typeof remoteAppenders)[number],
+): (op: Operation) => Promise<void> {
+  return appender === 'append'
+    ? (op) => engine.ops.append(op)
+    : (op) => engine.ops.appendMany([op]);
+}
+
+async function payloadOf(
+  engine: TreecrdtEngine,
+  id: string,
+  context = 'tree.get',
+): Promise<Uint8Array | null> {
+  const node = await engine.tree.get(id);
+  assert(node, `${context}: node ${id} should exist`);
+  return node.payload();
+}
+
 async function scenarioEmptyPayloadCanonicalReplay(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
-  const engine = ctx.engine;
   const replica = replicaFromLabel('r1');
   const root = nodeIdFromInt(0);
   const withEmptyPayload = nodeIdFromInt(21);
   const lateNode = nodeIdFromInt(22);
   const localNode = nodeIdFromInt(23);
   const empty = new Uint8Array();
-  const payloadOf = async (node: string) =>
-    (await (await engine.tree.get(node))?.payload()) ?? null;
 
-  // The late insert invalidates the materialization frontier and forces canonical replay.
-  await engine.ops.append(
-    makeInsertOp({
-      replica,
-      counter: 2,
-      lamport: 2,
-      parent: root,
-      node: withEmptyPayload,
-      orderKey: orderKeyFromPosition(1),
-      payload: empty,
-    }),
-  );
-  assertBytesEqual(await payloadOf(withEmptyPayload), empty, 'empty insert payload before replay');
+  for (const appender of remoteAppenders) {
+    const engine = await ctx.createEngine({ docId: ctx.docId, name: appender });
+    const append = appendWith(engine, appender);
+    const label = (message: string) => `${appender}: ${message}`;
 
-  await engine.ops.append(
-    makeInsertOp({
-      replica,
-      counter: 1,
-      lamport: 1,
-      parent: root,
-      node: lateNode,
-      orderKey: orderKeyFromPosition(0),
-    }),
-  );
+    // The late insert invalidates the materialization frontier and forces canonical replay.
+    await append(
+      makeInsertOp({
+        replica,
+        counter: 2,
+        lamport: 2,
+        parent: root,
+        node: withEmptyPayload,
+        orderKey: orderKeyFromPosition(1),
+        payload: empty,
+      }),
+    );
+    assertBytesEqual(
+      await payloadOf(engine, withEmptyPayload, appender),
+      empty,
+      label('empty insert payload before replay'),
+    );
 
-  assertBytesEqual(await payloadOf(withEmptyPayload), empty, 'empty insert payload after replay');
-  assertBytesEqual(await payloadOf(lateNode), null, 'null remains distinct from empty');
+    await append(
+      makeInsertOp({
+        replica,
+        counter: 1,
+        lamport: 1,
+        parent: root,
+        node: lateNode,
+        orderKey: orderKeyFromPosition(0),
+      }),
+    );
 
-  const replayed = (await engine.ops.all()).find(
-    (op) => op.meta.id.counter === 2 && op.kind.type === 'insert',
-  );
-  assert(replayed?.kind.type === 'insert', 'replayed empty insert op');
-  assertBytesEqual(replayed.kind.payload ?? null, empty, 'op log preserves empty insert payload');
+    assertBytesEqual(
+      await payloadOf(engine, withEmptyPayload, appender),
+      empty,
+      label('empty insert payload after replay'),
+    );
+    assertBytesEqual(
+      await payloadOf(engine, lateNode, appender),
+      null,
+      label('null remains distinct from empty'),
+    );
 
-  await engine.ops.append(
-    makePayloadOp({
-      replica,
-      counter: 3,
-      lamport: 3,
-      node: lateNode,
-      payload: empty,
-    }),
-  );
-  assertBytesEqual(await payloadOf(lateNode), empty, 'remote empty payload op stores empty bytes');
-  const remotePayload = (await engine.ops.all()).find(
-    (op) => op.meta.id.counter === 3 && op.kind.type === 'payload',
-  );
-  assert(remotePayload?.kind.type === 'payload', 'remote empty payload op');
-  assertBytesEqual(remotePayload.kind.payload, empty, 'op log preserves remote empty payload op');
+    const replayed = (await engine.ops.all()).find(
+      (op) => op.meta.id.counter === 2 && op.kind.type === 'insert',
+    );
+    assert(replayed?.kind.type === 'insert', label('replayed empty insert op'));
+    assertBytesEqual(
+      replayed.kind.payload ?? null,
+      empty,
+      label('op log preserves empty insert payload'),
+    );
 
+    await append(
+      makePayloadOp({
+        replica,
+        counter: 3,
+        lamport: 3,
+        node: lateNode,
+        payload: empty,
+      }),
+    );
+    assertBytesEqual(
+      await payloadOf(engine, lateNode, appender),
+      empty,
+      label('remote empty payload op stores empty bytes'),
+    );
+    const remotePayload = (await engine.ops.all()).find(
+      (op) => op.meta.id.counter === 3 && op.kind.type === 'payload',
+    );
+    assert(remotePayload?.kind.type === 'payload', label('remote empty payload op'));
+    assertBytesEqual(
+      remotePayload.kind.payload,
+      empty,
+      label('op log preserves remote empty payload op'),
+    );
+  }
+
+  const engine = ctx.engine;
   const localInsert = await engine.local.insert(replica, root, localNode, { type: 'last' }, empty);
   assert(localInsert.kind.type === 'insert', 'local empty insert op');
   assertBytesEqual(localInsert.kind.payload ?? null, empty, 'local insert returns empty payload');
-  assertBytesEqual(await payloadOf(localNode), empty, 'local insert stores empty payload');
+  assertBytesEqual(await payloadOf(engine, localNode), empty, 'local insert stores empty payload');
 
   await engine.local.payload(replica, localNode, null);
-  assertBytesEqual(await payloadOf(localNode), null, 'local payload clear stores null');
+  assertBytesEqual(await payloadOf(engine, localNode), null, 'local payload clear stores null');
   const localPayload = await engine.local.payload(replica, localNode, empty);
   assert(localPayload.kind.type === 'payload', 'local empty payload op');
   assertBytesEqual(localPayload.kind.payload, empty, 'local payload returns empty bytes');
-  assertBytesEqual(await payloadOf(localNode), empty, 'local payload stores empty bytes');
+  assertBytesEqual(await payloadOf(engine, localNode), empty, 'local payload stores empty bytes');
 }
 
 async function scenarioEmptyOrderKeyRoundTrip(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
-  const engine = ctx.engine;
   const replica = replicaFromLabel('r1');
   const root = nodeIdFromInt(0);
   const node = nodeIdFromInt(24);
   const empty = new Uint8Array();
 
-  await engine.ops.append(
-    makeInsertOp({
-      replica,
-      counter: 1,
-      lamport: 1,
-      parent: root,
-      node,
-      orderKey: empty,
-    }),
-  );
-  assertArrayEqual(
-    (await engine.tree.root.children()).map((child) => child.id),
-    [node],
-    'empty insert order key materializes',
-  );
-  const inserted = (await engine.ops.all()).find(
-    (op) => op.meta.id.counter === 1 && op.kind.type === 'insert',
-  );
-  assert(inserted?.kind.type === 'insert', 'empty insert order key op');
-  assertBytesEqual(inserted.kind.orderKey, empty, 'op log preserves empty insert order key');
+  for (const appender of remoteAppenders) {
+    const engine = await ctx.createEngine({ docId: ctx.docId, name: appender });
+    const append = appendWith(engine, appender);
+    const label = (message: string) => `${appender}: ${message}`;
 
-  await engine.ops.append(
-    makeMoveOp({
-      replica,
-      counter: 2,
-      lamport: 2,
-      node,
-      newParent: TRASH_NODE_ID_HEX,
-      orderKey: empty,
-    }),
-  );
+    await append(
+      makeInsertOp({
+        replica,
+        counter: 1,
+        lamport: 1,
+        parent: root,
+        node,
+        orderKey: empty,
+      }),
+    );
+    assertArrayEqual(
+      (await engine.tree.root.children()).map((child) => child.id),
+      [node],
+      label('empty insert order key materializes'),
+    );
+    const inserted = (await engine.ops.all()).find(
+      (op) => op.meta.id.counter === 1 && op.kind.type === 'insert',
+    );
+    assert(inserted?.kind.type === 'insert', label('empty insert order key op'));
+    assertBytesEqual(
+      inserted.kind.orderKey,
+      empty,
+      label('op log preserves empty insert order key'),
+    );
 
-  assertArrayEqual(
-    (await engine.tree.root.children()).map((child) => child.id),
-    [],
-    'empty order key move materializes',
-  );
-  const replayed = (await engine.ops.all()).find(
-    (op) => op.meta.id.counter === 2 && op.kind.type === 'move',
-  );
-  assert(replayed?.kind.type === 'move', 'empty order key move op');
-  assertBytesEqual(replayed.kind.orderKey, empty, 'op log preserves empty order key');
+    await append(
+      makeMoveOp({
+        replica,
+        counter: 2,
+        lamport: 2,
+        node,
+        newParent: TRASH_NODE_ID_HEX,
+        orderKey: empty,
+      }),
+    );
+    assertArrayEqual(
+      (await engine.tree.root.children()).map((child) => child.id),
+      [],
+      label('empty order key move materializes'),
+    );
+    const storedMove = (await engine.ops.all()).find(
+      (op) => op.meta.id.counter === 2 && op.kind.type === 'move',
+    );
+    assert(storedMove?.kind.type === 'move', label('empty order key move op'));
+    assertBytesEqual(
+      storedMove.kind.orderKey,
+      empty,
+      label('op log preserves empty move order key'),
+    );
+  }
 }
 
 async function scenarioMaterializedSmokeWithOpRefs(
@@ -1425,14 +1494,10 @@ async function scenarioRejectsInvalidDeleteKnownState(
     { name: 'zero-length', knownState: new Uint8Array() },
     { name: 'JSON instead of v0', knownState: new TextEncoder().encode('{"entries":[]}') },
   ];
-  const appenders: { name: string; run: (op: Operation) => Promise<void> }[] = [
-    { name: 'append', run: (op) => engine.ops.append(op) },
-    { name: 'appendMany', run: (op) => engine.ops.appendMany([op]) },
-  ];
   let counter = 2;
 
   for (const invalid of invalidStates) {
-    for (const appender of appenders) {
+    for (const appender of remoteAppenders) {
       const op = makeDeleteOp({
         replica,
         counter,
@@ -1444,11 +1509,11 @@ async function scenarioRejectsInvalidDeleteKnownState(
 
       let threw = false;
       try {
-        await appender.run(op);
+        await appendWith(engine, appender)(op);
       } catch {
         threw = true;
       }
-      const label = `${appender.name}(delete with ${invalid.name} knownState)`;
+      const label = `${appender}(delete with ${invalid.name} knownState)`;
       assert(threw, `${label} should throw`);
       assertEqual(
         (await engine.ops.all()).length,
@@ -1656,14 +1721,8 @@ async function scenarioPersistencePayloadReopen(
     'children after reopen (payload)',
   );
 
-  const payload = (await (await e2.tree.get(n1))?.payload()) ?? null;
-  assert(payload !== null, 'tree.getPayload should return payload for node with payload');
-  assertBytesEqual(payload, empty, 'tree.getPayload returns empty payload after reopen');
-  assertBytesEqual(
-    (await (await e2.tree.get(n2))?.payload()) ?? null,
-    null,
-    'null remains distinct after reopen',
-  );
+  assertBytesEqual(await payloadOf(e2, n1), empty, 'empty payload persists across reopen');
+  assertBytesEqual(await payloadOf(e2, n2), null, 'null remains distinct after reopen');
 
   const refs = await e2.opRefs.children(root);
   assertEqual(refs.length, 3, 'opRefs.children length after reopen (payload)');
