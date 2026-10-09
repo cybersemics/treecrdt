@@ -32,6 +32,7 @@ test('composed commands read live rows and publish only owned changed records', 
     local.insert(root, b);
   });
   const enumeration = vi.spyOn(native, 'nodeIds');
+  const drainChanges = vi.spyOn(native, 'drainReadChanges');
   const listener = vi.fn();
   client.subscribe(listener);
   const retainedRow = client.get(a)!;
@@ -41,7 +42,11 @@ test('composed commands read live rows and publish only owned changed records', 
     transaction.local.move('1', '2');
     expect(transaction.get(a)?.parentId).toBe(b);
     const moved = transaction.getChanges();
+    drainChanges.mockClear();
+    expect(transaction.getChanges()).toBe(moved);
+    expect(drainChanges).not.toHaveBeenCalled();
     transaction.local.payload(a, Uint8Array.of(2));
+    expect(transaction.getChanges()).not.toBe(moved);
     expect(transaction.get(a)?.payload).toEqual(Uint8Array.of(2));
     expect(moved.changes.find((change) => change.id === a)?.after?.payload).toEqual(
       Uint8Array.of(1),
@@ -49,6 +54,7 @@ test('composed commands read live rows and publish only owned changed records', 
     expect(listener).not.toHaveBeenCalled();
     expect(() => client.operationsFrom(0)).toThrow('during a transaction');
   });
+  expect(drainChanges).toHaveBeenCalledTimes(1);
   const change = result.changes.changes.find((change) => change.id === a)!;
   expect(change.before).toMatchObject({ parentId: root, payload: Uint8Array.of(1) });
   expect(change.after).toMatchObject({ parentId: b, payload: Uint8Array.of(2) });
@@ -94,6 +100,7 @@ test.each(['callback', 'caught native error', 'caught boundary error'])(
     expect(client.operationsFrom(0)).toEqual([]);
     expect(client.revision).toBe(0);
     expect(listener).not.toHaveBeenCalled();
+    expect(client.transact(({ getChanges }) => getChanges()).value.changes).toEqual([]);
     expect(client.local.insert(root, b)).toEqual(control.local.insert(root, b));
     expect(
       listener.mock.calls[0][0].changes.map((change: { id: string }) => change.id),
@@ -123,8 +130,12 @@ test('net-unchanged edits retain operations without publishing a new revision', 
   client.subscribe(listener);
   const result = client.transact(({ local, getChanges }) => {
     local.payload(a, Uint8Array.of(2));
-    getChanges();
+    const changed = getChanges();
     local.payload(a, Uint8Array.of(1));
+    const restored = getChanges();
+    expect(restored).not.toBe(changed);
+    expect(restored.changes).toEqual([]);
+    expect(getChanges()).toBe(restored);
   });
   expect(result.operations).toHaveLength(2);
   expect(result.changes.changes).toEqual([]);
@@ -144,6 +155,7 @@ test('undo and redo publish real row changes and roll back together with a faile
     local.payload(a, Uint8Array.of(2));
   });
   const undone = client.transact((transaction) => {
+    transaction.getChanges();
     const inverses = transaction.revert(edits.operations.map((op) => op.meta.id));
     expect(transaction.get(a)).toMatchObject({ parentId: root, payload: Uint8Array.of(1) });
     expect(transaction.getChanges().changes.find((change) => change.id === a)).toMatchObject({

@@ -41,6 +41,7 @@ export interface MemoryTransaction extends MemoryReader {
   readonly local: LocalCommands;
   /** Appends compensating operations; revert their IDs to redo. May overwrite intervening writes. */
   revert(operationIds: readonly OperationId[]): Operation[];
+  /** Cumulative changes; repeated reads retain identity until another write is attempted. */
   getChanges(): MemoryChanges;
 }
 export interface MemoryClient extends MemoryReader {
@@ -84,6 +85,7 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   let pending: Map<string, MemoryRowChange> | undefined;
   let reset = false;
   let failed = false;
+  let cachedChanges: MemoryChanges | undefined;
   let notifications: MemoryChanges[] | undefined;
   const listeners = new Set<(changes: MemoryChanges) => void>();
   const ensureOpen = () => {
@@ -125,6 +127,7 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
     delete: (node) => run(() => native.localDelete(normalizeNodeId(node))),
   });
   const collect = (): MemoryChanges => {
+    if (cachedChanges) return cachedChanges;
     const batch = native.drainReadChanges();
     reset ||= batch.reset;
     for (const change of batch.changes) {
@@ -138,13 +141,13 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
         }),
       );
     }
-    return Object.freeze({
+    return (cachedChanges = Object.freeze({
       revision,
       reset,
       changes: Object.freeze(
         [...pending!.values()].filter(({ before, after }) => !equalRows(before, after)),
       ),
-    });
+    }));
   };
   const transact = <T>(work: (transaction: MemoryTransaction) => T) => {
     ensureOpen();
@@ -189,6 +192,7 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
       pending = undefined;
       reset = false;
       failed = false;
+      cachedChanges = undefined;
     }
     const operations = native.operationsFrom(cursor);
     if (changes.reset || changes.changes.length) {
@@ -216,6 +220,7 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   const write = <T>(work: () => T): T => {
     ensureOpen();
     if (!pending) return transact(() => write(work)).value;
+    cachedChanges = undefined;
     try {
       return work();
     } catch (error) {
