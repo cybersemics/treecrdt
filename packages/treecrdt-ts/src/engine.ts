@@ -214,7 +214,7 @@ export type TreecrdtNodePrimitives = {
 };
 
 export type TreecrdtEngineTree = {
-  /** Undefined when the node is absent (tombstoned or never inserted). */
+  /** Resolves ROOT aliases to `root`; undefined when any other node is absent. */
   get: (node: string) => Promise<TreecrdtNode | undefined>;
   /** Always-available ROOT handle; does not check existence. */
   root: TreecrdtNode;
@@ -249,13 +249,16 @@ export function createTreecrdtTreeNodes(
     return node;
   };
 
+  const root = createNode(ROOT_NODE_ID_HEX);
+
   return {
     get: async (nodeId) => {
       const node = createNode(nodeId);
+      if (node.id === root.id) return root;
       if (!(await primitives.exists(node.id))) return undefined;
       return node;
     },
-    root: createNode(ROOT_NODE_ID_HEX),
+    root,
   };
 }
 
