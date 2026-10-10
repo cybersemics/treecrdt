@@ -34,6 +34,10 @@ test('shares lazy browser WASM initialization with the codec and retries failed 
       expect(receiver.get('1'.repeat(32))).toBeUndefined();
       receiver.appendOperations([operation]);
       expect(receiver.get('1'.repeat(32))?.parentId).toBe('0'.repeat(32));
+      source.readHistory([{ from: 0, to: 1 }], ({ before, after }) => {
+        expect(before.get('1'.repeat(32))).toBeUndefined();
+        expect(after.get('1'.repeat(32))?.parentId).toBe('0'.repeat(32));
+      });
       expect(codec.decodeVersionVector(codec.encodeVersionVector({ entries: [] }))).toEqual({
         entries: [],
       });

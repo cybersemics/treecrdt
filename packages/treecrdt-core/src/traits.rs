@@ -271,6 +271,14 @@ impl MemoryStorage {
             .ok_or_else(|| Error::InvalidOperation("operation cursor is out of range".into()))
     }
 
+    /// Copies only the requested accepted-operation range, preserving arrival order.
+    pub fn operations_range(&self, start: usize, end: usize) -> Result<Vec<Operation>> {
+        self.ops
+            .get(start..end)
+            .map(<[Operation]>::to_vec)
+            .ok_or_else(|| Error::InvalidOperation("operation range is out of bounds".into()))
+    }
+
     /// Reads operations in the requested order, including repeated indices.
     pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
         indices

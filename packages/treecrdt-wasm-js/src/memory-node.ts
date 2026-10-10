@@ -11,10 +11,13 @@ export type {
   MemoryClient,
   MemoryClientOptions,
   MemoryChanges,
+  MemoryContent,
   MemoryRowChange,
   MemoryRow,
   MemoryReader,
   MemoryTransaction,
+  MemoryProjection,
+  MemoryProjectionOptions,
 } from './memory-client.js';
 
 /** Opens a synchronous in-memory client after loading its platform WASM runtime. */

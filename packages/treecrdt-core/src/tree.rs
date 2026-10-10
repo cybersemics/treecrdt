@@ -158,6 +158,10 @@ impl TreeCrdt<MemoryStorage, LamportClock> {
         self.storage.operations_from(cursor)
     }
 
+    pub fn operations_range(&self, start: usize, end: usize) -> Result<Vec<Operation>> {
+        self.storage.operations_range(start, end)
+    }
+
     pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
         self.storage.operations_at(indices)
     }

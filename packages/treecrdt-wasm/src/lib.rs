@@ -319,6 +319,12 @@ fn js_error(error: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 
+fn history_cursor(value: JsValue) -> Result<usize, JsValue> {
+    serde_wasm_bindgen::from_value::<u32>(value)
+        .map(|cursor| cursor as usize)
+        .map_err(js_error)
+}
+
 fn placement(after: JsValue) -> Result<LocalPlacement, String> {
     if after.is_undefined() {
         return Ok(LocalPlacement::Last);
@@ -331,6 +337,14 @@ fn placement(after: JsValue) -> Result<LocalPlacement, String> {
         .ok_or_else(|| "after must be a node ID, null, or undefined".into())
         .and_then(|id| hex_to_node(&id))
         .map(LocalPlacement::After)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsReadContent {
+    id: String,
+    parent_id: Option<String>,
+    payload: Option<ByteBuf>,
 }
 
 #[derive(Serialize)]
@@ -368,10 +382,12 @@ struct JsReadChanges {
 
 #[wasm_bindgen(typescript_custom_section)]
 const READ_TYPES: &str = r#"
-export interface TreeReadRow {
+export interface TreeReadContent {
     id: string;
     parentId: string | null;
     payload: Uint8Array | null;
+}
+export interface TreeReadRow extends TreeReadContent {
     children: string[];
 }
 export interface TreeReadChanges {
@@ -387,7 +403,89 @@ pub struct WasmTree {
     transaction_failed: bool,
 }
 
+/// Owns its captured arrival-log prefix; advancing never borrows or changes the source tree.
+#[wasm_bindgen]
+pub struct WasmHistoryReader {
+    tree: WasmTree,
+    remaining: std::vec::IntoIter<Operation>,
+    end: usize,
+}
+
+impl WasmHistoryReader {
+    fn advance_to(&mut self, cursor: usize, track_changes: bool) -> Result<(), String> {
+        let current = self.end - self.remaining.len();
+        if cursor < current || cursor > self.end {
+            return Err("history cursor must advance within the captured operation range".into());
+        }
+        if !track_changes {
+            // A gap needs current rows only, including when late arrivals force a full replay.
+            self.tree.inner.track_read_changes();
+        }
+        self.tree
+            .inner
+            .apply_remote_batch(self.remaining.by_ref().take(cursor - current))
+            .map_err(|error| error.to_string())?;
+        if !track_changes {
+            self.tree.inner.clear_read_changes();
+        }
+        Ok(())
+    }
+}
+
+#[wasm_bindgen]
+impl WasmHistoryReader {
+    #[wasm_bindgen(unchecked_return_type = "TreeReadChanges")]
+    pub fn advance(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "number")] cursor: JsValue,
+        track_changes: bool,
+    ) -> Result<JsValue, JsValue> {
+        self.advance_to(history_cursor(cursor)?, track_changes).map_err(js_error)?;
+        self.tree.drain_read_changes()
+    }
+
+    #[wasm_bindgen(js_name = readNode, unchecked_return_type = "TreeReadRow | null")]
+    pub fn read_node(&self, node: String) -> Result<JsValue, JsValue> {
+        self.tree.read_node(node)
+    }
+
+    #[wasm_bindgen(js_name = readContent, unchecked_return_type = "TreeReadContent | null")]
+    pub fn read_content(&self, node: String) -> Result<JsValue, JsValue> {
+        self.tree.read_content(node)
+    }
+
+    #[wasm_bindgen(js_name = readChildren, unchecked_return_type = "string[]")]
+    pub fn read_children(&self, node: String) -> Result<JsValue, JsValue> {
+        self.tree.read_children(node)
+    }
+
+    #[wasm_bindgen(js_name = readParent, unchecked_return_type = "string | null")]
+    pub fn read_parent(&self, node: String) -> Result<JsValue, JsValue> {
+        self.tree.read_parent(node)
+    }
+
+    #[wasm_bindgen(js_name = nodeIds, unchecked_return_type = "string[]")]
+    pub fn node_ids(&self) -> Result<JsValue, JsValue> {
+        self.tree.node_ids()
+    }
+}
+
 impl WasmTree {
+    fn history_reader(&self, end: usize) -> Result<WasmHistoryReader, String> {
+        if self.checkpoint.is_some() {
+            return Err("operation history is unavailable during a transaction".into());
+        }
+        let operations = self.inner.operations_range(0, end).map_err(|error| error.to_string())?;
+        let mut tree = WasmTree::new("00".into());
+        tree.inner.track_read_changes();
+        tree.inner.clear_read_changes();
+        Ok(WasmHistoryReader {
+            tree,
+            remaining: operations.into_iter(),
+            end,
+        })
+    }
+
     fn begin(&mut self) -> Result<(), String> {
         if self.checkpoint.is_some() {
             return Err("a memory transaction is already active".into());
@@ -467,6 +565,52 @@ impl WasmTree {
             .map_err(js_error)?
             .map(JsReadRow::from);
         serialize(&row).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = readContent, unchecked_return_type = "TreeReadContent | null")]
+    pub fn read_content(&self, node: String) -> Result<JsValue, JsValue> {
+        let node = hex_to_node(&node).map_err(js_error)?;
+        if !self.inner.is_known(node).map_err(js_error)?
+            || self.inner.is_tombstoned(node).map_err(js_error)?
+        {
+            return Ok(JsValue::NULL);
+        }
+        let content = JsReadContent {
+            id: node_to_hex(node),
+            parent_id: self
+                .inner
+                .parent(node)
+                .map_err(js_error)?
+                .filter(|parent| *parent != NodeId::TRASH)
+                .map(node_to_hex),
+            payload: self.inner.payload(node).map_err(js_error)?.map(ByteBuf::from),
+        };
+        serialize(&content).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = readChildren, unchecked_return_type = "string[]")]
+    pub fn read_children(&self, node: String) -> Result<JsValue, JsValue> {
+        let node = hex_to_node(&node).map_err(js_error)?;
+        let children = if !self.inner.is_known(node).map_err(js_error)?
+            || self.inner.is_tombstoned(node).map_err(js_error)?
+        {
+            Vec::new()
+        } else {
+            self.inner.children(node).map_err(js_error)?
+        };
+        let children: Vec<_> = children.into_iter().map(node_to_hex).collect();
+        serialize(&children).map_err(js_error)
+    }
+
+    #[wasm_bindgen(js_name = readParent, unchecked_return_type = "string | null")]
+    pub fn read_parent(&self, node: String) -> Result<JsValue, JsValue> {
+        let parent = self
+            .inner
+            .parent(hex_to_node(&node).map_err(js_error)?)
+            .map_err(js_error)?
+            .filter(|parent| *parent != NodeId::TRASH)
+            .map(node_to_hex);
+        serialize(&parent).map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = nodeIds, unchecked_return_type = "string[]")]
@@ -582,6 +726,14 @@ impl WasmTree {
     #[wasm_bindgen(js_name = operationCount)]
     pub fn operation_count(&self) -> usize {
         self.inner.operation_count()
+    }
+
+    #[wasm_bindgen(js_name = createHistoryReader)]
+    pub fn create_history_reader(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "number")] end: JsValue,
+    ) -> Result<WasmHistoryReader, JsValue> {
+        self.history_reader(history_cursor(end)?).map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = revertOperations, unchecked_return_type = "import('@treecrdt/interface').Operation[]")]
@@ -841,6 +993,40 @@ impl WasmTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_reader_rejects_invalid_boundaries_without_consuming_late_operations() {
+        let mut source = WasmTree::new("01".into());
+        source
+            .inner
+            .local_insert(NodeId::ROOT, NodeId(1), LocalPlacement::Last, None)
+            .unwrap();
+        source
+            .inner
+            .apply_remote(Operation::insert(
+                &ReplicaId::new(b"late"),
+                1,
+                0,
+                NodeId::ROOT,
+                NodeId(2),
+                vec![0, 2],
+            ))
+            .unwrap();
+        assert!(source.history_reader(3).is_err());
+        source.begin().unwrap();
+        assert!(source.history_reader(2).is_err());
+        source.rollback().unwrap();
+        let mut history = source.history_reader(2).unwrap();
+        history.advance_to(1, false).unwrap();
+        assert!(history.advance_to(0, true).is_err());
+        assert!(history.advance_to(3, false).is_err());
+        history.advance_to(2, true).unwrap();
+        let changes = history.tree.inner.drain_read_changes().unwrap().changes;
+        assert_eq!(
+            changes.iter().map(|change| change.id).collect::<Vec<_>>(),
+            vec![NodeId::ROOT, NodeId(2)]
+        );
+    }
 
     #[test]
     fn mutation_failures_poison_explicit_transactions_and_restore_reads_on_rollback() {

@@ -106,6 +106,11 @@ fn indexed_log_reads_preserve_arrival_order_and_historical_tail() {
     let cursor = actual.operation_count();
     actual.apply_remote_batch(vec![low.clone(), high.clone()]).unwrap();
     assert_eq!(actual.operations_from(cursor).unwrap(), vec![low.clone()]);
+    assert_eq!(actual.operations_range(1, 2).unwrap(), vec![high.clone()]);
+    assert_eq!(actual.operations_range(2, 3).unwrap(), vec![low.clone()]);
+    assert!(actual.operations_range(3, 3).unwrap().is_empty());
+    assert!(actual.operations_range(2, 1).is_err());
+    assert!(actual.operations_range(0, 4).is_err());
     assert_eq!(
         actual.operations_at(&[2, 0, 1, 2]).unwrap(),
         vec![low.clone(), zero, high, low]
