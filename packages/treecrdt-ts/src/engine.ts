@@ -1,6 +1,6 @@
 import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
-import { ROOT_NODE_ID_HEX } from './ids.js';
+import { normalizeNodeId, ROOT_NODE_ID_HEX } from './ids.js';
 
 export type MaterializationSource = {
   /**
@@ -191,6 +191,7 @@ export function normalizeChildrenSlice(
  * Lazy materialized-tree handle. Methods issue fresh queries; no local cache.
  */
 export type TreecrdtNode = {
+  /** Canonical 16-byte NodeId encoded as 32 lowercase hex characters. */
   readonly id: string;
   /** Parent handle, or undefined when this node or its parent is not visible. */
   parent: () => Promise<TreecrdtNode | undefined>;
@@ -228,7 +229,8 @@ export type TreecrdtEngineTree = {
 export function createTreecrdtTreeNodes(
   primitives: TreecrdtNodePrimitives,
 ): Pick<TreecrdtEngineTree, 'get' | 'root'> {
-  const createNode = (id: string): TreecrdtNode => {
+  const createNode = (nodeId: string): TreecrdtNode => {
+    const id = normalizeNodeId(nodeId);
     const node: TreecrdtNode = {
       id,
       parent: async () => {
@@ -249,8 +251,9 @@ export function createTreecrdtTreeNodes(
 
   return {
     get: async (nodeId) => {
-      if (!(await primitives.exists(nodeId))) return undefined;
-      return createNode(nodeId);
+      const node = createNode(nodeId);
+      if (!(await primitives.exists(node.id))) return undefined;
+      return node;
     },
     root: createNode(ROOT_NODE_ID_HEX),
   };

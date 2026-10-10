@@ -1025,6 +1025,9 @@ async function scenarioTreeGetRootLazyNavigation(
 
   assertEqual(await engine.tree.get(missing), undefined, 'tree.get(missing) is undefined');
   assertEqual(engine.tree.root.id, root, 'tree.root.id');
+  const rootAliasHandle = await engine.tree.get('0');
+  assert(rootAliasHandle, 'tree.get(root alias)');
+  assertEqual(rootAliasHandle.id, engine.tree.root.id, 'tree.get(root alias) canonical id');
   assertEqual(await engine.tree.root.parent(), undefined, 'tree.root.parent is undefined');
 
   const beforeInsert = await engine.tree.root.children();
@@ -1035,6 +1038,9 @@ async function scenarioTreeGetRootLazyNavigation(
 
   const n1Handle = await engine.tree.get(n1);
   assert(n1Handle, 'tree.get(n1) after insert');
+  const n1AliasHandle = await engine.tree.get('1');
+  assert(n1AliasHandle, 'tree.get(n1 alias) after insert');
+  assertEqual(n1AliasHandle.id, n1, 'tree.get(n1 alias) canonical id');
   assertBytesEqual(await n1Handle.payload(), payload, 'node.payload lazy read');
 
   const parent = await n1Handle.parent();
