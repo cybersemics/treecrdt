@@ -4,6 +4,12 @@ import type { DuplexTransport, WireCodec } from './transport/index.js';
 import { createInMemoryDuplex, wrapDuplexTransportWithCodec } from './transport/index.js';
 import type { Filter, OpRef, SyncBackend, SyncMessage } from './types.js';
 
+/**
+ * Test/benchmark utility for helpers that intentionally queue backend work.
+ *
+ * `flush` is not part of the public `SyncBackend` contract. Awaiting
+ * `applyOps` must still be enough for read-after-write visibility.
+ */
 export type FlushableSyncBackend<Op> = SyncBackend<Op> & { flush: () => Promise<void> };
 
 export function makeQueuedSyncBackend<Op>(opts: {
