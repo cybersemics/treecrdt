@@ -618,6 +618,48 @@ fn postgres_backend_defensive_delete_restores_parent_after_child_insert() {
 }
 
 #[test]
+fn postgres_backend_tracks_replica_counters() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    let replica = ReplicaId::new(b"writer");
+    let imported = Operation::insert(
+        &replica,
+        7,
+        7,
+        NodeId::ROOT,
+        node(1000),
+        order_key_from_position(0),
+    );
+    append_ops(&client, &doc_id, std::slice::from_ref(&imported)).unwrap();
+
+    assert_eq!(
+        replica_max_counter(&client, &doc_id, replica.as_bytes()).unwrap(),
+        7
+    );
+
+    let local = local_insert(
+        &client,
+        &doc_id,
+        &replica,
+        NodeId::ROOT,
+        node(1001),
+        "last",
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(local.meta.id.counter, 8);
+    assert_eq!(
+        replica_max_counter(&client, &doc_id, replica.as_bytes()).unwrap(),
+        8
+    );
+}
+
+#[test]
 fn postgres_backend_local_ops_drive_core_materialization_flow() {
     let Some(client) = connect() else {
         return;
