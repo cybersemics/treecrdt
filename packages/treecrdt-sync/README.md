@@ -9,10 +9,54 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@treecrdt/dis
 - You want a single dependency to **open a websocket** to a sync server and run reconciliation against a SQLite-backed client store.
 - You are fine with the built-in discovery + WebSocket + protobuf wiring.
 
+## Queued outbound upload
+
+Use `createOutboundSync` to queue exact committed local ops for one replaceable remote destination.
+The destination is only a push function, so the queue can sit above the high-level websocket handle
+without taking ownership of its `SyncPeer` or transport.
+
+```ts
+import { createOutboundSync } from '@treecrdt/sync';
+
+const outbound = createOutboundSync({
+  isOnline: () => navigator.onLine,
+});
+
+const removeTarget = outbound.setTarget((ops, opts) => sync.pushLocalOps(ops, opts));
+
+const op = await client.local.payload(replica, node, payload);
+outbound.queueOps([op]);
+
+const result = await outbound.flush();
+if (result.status === 'failed') console.error(result.error);
+
+window.addEventListener('online', () => void outbound.flush());
+```
+
+Installing a new target aborts an active push and replays its batch to the replacement. The cleanup
+returned by `setTarget` is identity-safe: cleanup from an old socket cannot remove a newer target.
+`queueOps` dedupes standard TreeCRDT `Operation` values by `meta.id`; pass `opKey` only for a custom
+op shape or coalescing rule.
+
+`flush()` reports `drained`, `deferred`, `failed`, or `closed`. Missing-target, offline, failed, and
+timed-out pushes keep their operations queued. Setting a target triggers another attempt, but a
+change in application-defined online state does not, so call `flush()` from the application's
+online/reconnect event. `close()` is an async terminal barrier: it aborts and awaits the active
+push, then discards queued work.
+
+The queue is in memory, not durable across a reload or process exit; reconstruct or reconcile
+outstanding work from durable CRDT state after startup.
+
+Low-level `SyncPeer` users can pass `notifyLocalUpdate: ops => peer.notifyLocalUpdate(ops)` to wake
+live mesh subscriptions while keeping those mesh transports separate from the single remote upload
+target.
+
 ## When not to
 
 - You only need the protocol types and `SyncPeer` (use **`@treecrdt/sync-protocol`**).
 - You use a custom transport, no discovery, or an in-memory backend (depend on the protocol and/or **`@treecrdt/discovery`** as needed).
+- You want exact low-level control over each `syncOnce`, `startLive`, and direct push call; use
+  `connectTreecrdtWebSocketSync` directly.
 
 ## Repo location
 
