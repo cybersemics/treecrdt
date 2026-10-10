@@ -6,3 +6,7 @@ export * from './revocation.js';
 export * from './session.js';
 export * from './treecrdt-auth.js';
 export * from './sqlite.js';
+export { deriveDocumentId, validateDocumentId } from './document-id.js';
+export { verifyGrant } from './grant.js';
+export type { Grant } from './grant.js';
+export * from './key-provider.js';
